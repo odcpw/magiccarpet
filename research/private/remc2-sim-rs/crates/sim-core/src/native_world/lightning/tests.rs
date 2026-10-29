@@ -339,6 +339,112 @@ fn lightning_holder_produces_each_tier_and_failed_allocation_still_consumes_the_
 }
 
 #[test]
+fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
+    // The ordinary Level 16 group-zero source is a persistent Lightning
+    // pickup. Only the player's position and casting resources are staged;
+    // acquisition, hand selection, targeting and projectiles are scheduled.
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level16");
+    for tier in 0_u8..=2 {
+        let mut campaign = crate::campaign::CampaignSession::open(
+            &package,
+            crate::campaign::spec::CampaignSelection::ordinary(16).unwrap(),
+        ).expect("actual Level 16 owner package opens");
+        let session = campaign.simulation_mut();
+        let player = session.state.entity_index;
+        let source = session.session.state.live.economy.entities.iter()
+            .find(|row| row.active && (row.class, row.model, row.action) == (15, 7, 23))
+            .cloned().expect("actual persistent Lightning pickup");
+        assert_eq!(source.index, 160);
+        for _ in 0..12 {
+            let position = session.session.state.live.economy.entities[usize::from(source.index)].position;
+            session.set_level2_entity_position(player, position).unwrap();
+            session.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event|
+                !matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                "pickup dispatch errors: {:?}", session.dispatch_events());
+            if session.shared_spells().local_player().enabled_spell_holders[7] != 0 { break; }
+        }
+        let holder = session.shared_spells().local_player().enabled_spell_holders[7];
+        assert_eq!(holder, source.index, "ordinary overlap acquires the authored pickup");
+        assert_eq!(session.shared_spells().pickup(holder).unwrap().action, 21);
+
+        let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 7).unwrap() as i8;
+        session.step_outer_turn(crate::PlayerCommand {
+            opcode: 31, argument_1: ui, argument_2: tier as i8,
+            ..crate::PlayerCommand::default()
+        }, 0);
+        assert_eq!(session.shared_spells().pickup(holder).unwrap().level_gate, tier as i8,
+            "ordinary hand selection applies the source tier");
+
+        let rule = RULES.tiers[usize::from(tier)];
+        let castle_position = session.state.position;
+        let castle = session.economy_mut().build_castle(castle_position, player)
+            .expect("real owner Castle constructor");
+        assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(
+            castle, rule.castle_mana_required));
+        {
+            let live = &mut session.session.state.live;
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.max_mana = rule.mana_cost + 1_000;
+            parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+            parent.set_mana(rule.mana_cost + 1_000);
+            parent.set_mana_regen(0);
+            let parent = parent.clone();
+            live.shared_spells.sync_player_entity_from_authority(&parent);
+            live.shared_spells.player_mana = parent.mana;
+            live.shared_spells.caster.mana = parent.mana;
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+            live.economy.refresh_owner_mana_rows();
+        }
+        let target = session.session.state.live.economy.entities.iter()
+            .find(|row| row.active && row.class == 5 && row.model == 9 && row.life > 0)
+            .cloned().expect("actual Level 16 living target");
+        let player_fov = session.session.state.live.economy.entities[usize::from(player)].array_fov();
+        let position = crate::Position {
+            x: target.position.x.wrapping_sub(1_024), y: target.position.y,
+            z: target.position.z.wrapping_sub(player_fov),
+        };
+        session.set_level2_entity_position(player, position).unwrap();
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(position, target.position);
+        session.set_level2_player_aim_for_test(yaw, pitch);
+        let target_handle = session.session.state.live.economy.handle(target.index).unwrap();
+        let mut saw_ray = false;
+        let mut saw_shot = false;
+        let mut saw_storm = false;
+        let mut saw_endpoint = false;
+        let mut damaged = false;
+        let mut trace = Vec::new();
+        for turn in 0..96 {
+            let command = if turn == 0 { crate::PlayerCommand { flags: 0x10, ..Default::default() } }
+                else { crate::PlayerCommand::default() };
+            session.step_outer_turn(command, 0);
+            let live = &session.session.state.live;
+            let relevant = live.economy.entities.iter().filter(|row| row.active && row.source_id == player
+                && matches!((row.class, row.model), (9, 9 | 12) | (10, 23 | 38)))
+                .map(|row| (row.index, row.class, row.model, row.action, row.life, row.drawing_disabled()))
+                .collect::<Vec<_>>();
+            saw_ray |= relevant.iter().any(|row| (row.1, row.2) == (9, 9));
+            saw_shot |= relevant.iter().any(|row| (row.1, row.2) == (9, 12));
+            saw_storm |= relevant.iter().any(|row| (row.1, row.2) == (10, 38));
+            saw_endpoint |= relevant.iter().any(|row| (row.1, row.2) == (10, 23));
+            if live.economy.handle(target.index) == Some(target_handle) {
+                damaged |= live.economy.entities[usize::from(target.index)].life < target.life;
+            }
+            let errors = session.dispatch_events().iter().filter(|event|
+                matches!(event, super::super::Mc2DispatchEvent::Error { .. })).collect::<Vec<_>>();
+            trace.push(format!("turn={turn} target_life={} relevant={relevant:?} errors={errors:?}",
+                live.economy.entities[usize::from(target.index)].life));
+            assert!(errors.is_empty(), "tier={tier}: {}", trace.join("\n"));
+            if saw_ray && saw_endpoint && damaged && (tier == 0 || saw_shot && saw_storm) { break; }
+        }
+        assert!(saw_ray && saw_endpoint && damaged && (tier == 0 || saw_shot && saw_storm),
+            "ordinary tier {tier} must reach its scheduled Lightning damage consumer:\n{}", trace.join("\n"));
+    }
+}
+
+#[test]
 fn lightning_missing_or_replaced_parent_only_advances_holder_timers() {
     for replaced in [false, true] {
         let (mut session, slot, parent_slot) = ready_lightning(0);

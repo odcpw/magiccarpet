@@ -3076,8 +3076,29 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .expect("family-2 holder remains authoritative after construction");
     let occupied_mana_cost = occupied_holder.mana_cost;
     let holder_max_mana = occupied_holder.max_mana;
+    let occupied_tier = crate::spell_activation::level2_applied_tier(occupied_holder.level_gate)
+        .expect("the acquired Castle holder has an applied source tier");
+    let next_castle_stage = occupied
+        .economy()
+        .castle()
+        .expect("the first upgrade retains its real Castle")
+        .level
+        .checked_add(1)
+        .expect("this ordinary upgrade has a following Castle stage");
+    let repeat_cost = occupied
+        .shared_spells()
+        .physical_spell_profile(
+            CASTLE_SPELL_FAMILY,
+            occupied_tier,
+            occupied.state.entity_index,
+            Some(i32::from(next_castle_stage)),
+        )
+        .expect("the actual next-stage Castle price is defined")
+        .mana;
+    let required_capacity = occupied_mana_cost.max(repeat_cost);
     // The real reset capacity is only 1,000. Waiting at the Castle cannot
-    // fund a 10,000-cost upgrade until the player actually owns more mana.
+    // fund an upgrade until the player actually owns more mana. The final
+    // repeated cast pays the new stage's price, so collect its capacity too.
     // Use the ordinary row-11 switch and its authored group-1 spheres,
     // followed by hand casts and the normal ownership/capacity boundary.
     // Position and aim are controlled inputs to this focused regression;
@@ -3145,7 +3166,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter()
         .position(|family| *family == 1).expect("public Possession menu family") as i8;
     for claim in 0..mana_sources.len() {
-        if occupied.shared_spells().player_entity().max_mana >= occupied_mana_cost {
+        if occupied.shared_spells().player_entity().max_mana >= required_capacity {
             break;
         }
         occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
@@ -3169,7 +3190,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
                     .is_some_and(|handle| mana_sources.contains(&handle)))
             .min_by_key(|sphere| crate::distance_3d_wrapped(recharge_position, sphere.position))
             .copied().unwrap_or_else(|| panic!(
-                "actual authored mana must remain claimable before the upgrade is affordable: claim={claim}, max={}, cost={occupied_mana_cost}, owned={}, sources={mana_sources:?}, current={:?}",
+                "actual authored mana must remain claimable before both Castle casts are affordable: claim={claim}, max={}, first_cost={occupied_mana_cost}, repeat_cost={repeat_cost}, required={required_capacity}, owned={}, sources={mana_sources:?}, current={:?}",
                 occupied.shared_spells().player_entity().max_mana,
                 occupied.economy().owner_mana_aggregate(player_slot),
                 occupied.economy().spheres().iter().map(|sphere| (
@@ -3188,9 +3209,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         occupied.state.target_speed = 0;
         occupied.state.actual_speed = 0;
         let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(approach, target);
-        occupied.state.yaw = yaw;
-        occupied.state.display_pitch = pitch;
-        occupied.state.effective_pitch = pitch;
+        // Publish the declared aim to the same source player and pitch
+        // accumulator as the other controlled public-cast checks. Assigning
+        // only display_pitch lets the intervening flight step reset the
+        // launch to horizontal before Possession can acquire its real target.
+        occupied.set_level2_player_aim_for_test(yaw, pitch);
         let event_start = occupied.economy().events().len();
         occupied.step_outer_turn(PlayerCommand {
             opcode: 6,
@@ -3201,7 +3224,21 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         let mut saw_flyer = false;
         let mut saw_effect = false;
         let mut saw_claim = false;
-        for _ in 0..32 {
+        let mut ownership_trace = Vec::new();
+        for turn in 0..32 {
+            ownership_trace.push((
+                turn,
+                occupied.session.state.live.economy.handle(sphere.source_entity_index),
+                occupied.economy().spheres().iter()
+                    .find(|row| row.source_entity_index == sphere.source_entity_index).copied(),
+                occupied.economy().possession_projectiles().iter()
+                    .filter(|row| row.source_id_entity_index == player_slot)
+                    .copied().collect::<Vec<_>>(),
+                occupied.economy().possession_effects().iter()
+                    .filter(|row| row.source_id_entity_index == player_slot)
+                    .copied().collect::<Vec<_>>(),
+                occupied.state.position,
+            ));
             saw_flyer |= occupied.economy().possession_projectiles().iter()
                 .any(|row| row.source_id_entity_index == player_slot);
             saw_effect |= occupied.economy().possession_effects().iter()
@@ -3217,7 +3254,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             occupied.step_outer_turn(PlayerCommand::default(), 0);
         }
         assert!(saw_flyer && saw_effect && saw_claim,
-            "claim {claim} must use the real hand, flyer, effect and owner mailbox: flyer={saw_flyer}, effect={saw_effect}, claim={saw_claim}, target={sphere:?}");
+            "claim {claim} must use the real hand, flyer, effect and owner mailbox: flyer={saw_flyer}, effect={saw_effect}, claim={saw_claim}, target={sphere:?}, source_trace={ownership_trace:#?}");
         // Claiming is not allowed to publish sub_60F00's capacity early.
         occupied.step_outer_turn(PlayerCommand::default(), 0);
     }
@@ -3227,8 +3264,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     occupied.state.effective_pitch = 0;
     occupied.state.target_speed = 0;
     occupied.state.actual_speed = 0;
-    assert!(occupied.shared_spells().player_entity().max_mana >= occupied_mana_cost,
-        "actual owned source mana must supply the upgrade capacity");
+    assert!(occupied.shared_spells().player_entity().max_mana >= required_capacity,
+        "actual owned source mana must supply both Castle cast capacities: max={}, first_cost={occupied_mana_cost}, repeat_cost={repeat_cost}, sources={mana_sources:?}, current={:?}",
+        occupied.shared_spells().player_entity().max_mana,
+        occupied.economy().spheres());
     let player_before_recharge = occupied.shared_spells().player_entity().clone();
     let overlap_before_recharge = occupied
         .economy()
@@ -3460,6 +3499,35 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         holder_cleared,
         "upgrade construction eventually releases holder"
     );
+    let recast_holder = occupied
+        .shared_spells()
+        .dynamic_pickups
+        .iter()
+        .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
+        .expect("the real Castle holder survives its release")
+        .clone();
+    let recast_mana_before = occupied.shared_spells().caster.mana;
+    // Holder release is distinct from paying for another upgrade. Reuse the
+    // same ordinary upkeep path that funded the first public cast; no mana
+    // or capacity is granted to make a repeated cast succeed.
+    for _ in 0..32 {
+        if occupied.shared_spells().caster.mana >= recast_holder.mana_cost {
+            break;
+        }
+        occupied.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        occupied.shared_spells().caster.mana >= recast_holder.mana_cost,
+        "ordinary upkeep must fund the actual repeat cost: before={recast_mana_before}, after={}, cost={}, max={}, root={:?}, position={:?}, overlap={}",
+        occupied.shared_spells().caster.mana,
+        recast_holder.mana_cost,
+        occupied.shared_spells().player_entity().max_mana,
+        occupied.economy().castle(),
+        occupied.state.position,
+        occupied.economy().player_castle_shift_aabb_overlap(occupied.shared_spells().player_entity()),
+    );
+    let recast_caster = occupied.shared_spells().player_entity().clone();
+    let recast_root = occupied.economy().castle();
     occupied.step_outer_turn(request, 0);
     assert!(
         occupied
@@ -3469,7 +3537,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             .any(|projectile| {
                 (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
             }),
-        "a later public recast allocates a new upgrade flyer even when occupied-root contact retires it in the same pass"
+        "a funded later public recast allocates a new upgrade flyer even when occupied-root contact retires it in the same pass: holder={recast_holder:?}, caster={recast_caster:?}, root={recast_root:?}, after_caster={:?}, events={:?}, dispatch={:?}",
+        occupied.shared_spells().player_entity(),
+        occupied.economy().events(),
+        occupied.dispatch_events(),
     );
     assert!(
         occupied

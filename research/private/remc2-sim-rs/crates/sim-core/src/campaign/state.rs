@@ -1004,6 +1004,11 @@ fn digest_source_sidecars(state: &ResetState) -> CanonicalDigest {
         append_len(hasher, state.goats.goats().len());
         append_len(hasher, state.bad_stones.len());
         state.nyphur_dispatcher.hash_into(hasher, &state.economy.entities);
+        state.player_visibility.hash_into(
+            hasher,
+            &state.economy,
+            &state.core.players[usize::from(state.core.runtime.local_player_slot)],
+        );
         digest_outer_reset_state(hasher, state);
     })
 }

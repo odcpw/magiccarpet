@@ -693,9 +693,10 @@ namespace MagicCarpet.Native
                     if (!materialRows.ContainsKey(row.selectedTmap))
                         throw new InvalidOperationException($"selected environment TMAP {row.selectedTmap} is empty or absent");
             MaterializeMinimapPixels(presentedIndices, minimapEntities, minimapTables, generation, tick, minimapSymbols, fullMap);
-            if ((minimap.visibilityFlags & 8) != 0)
-                sourceMinimapLabels.Materialize(presentedIndices, session, cache, minimapTables, generation, tick, fullMap);
-            else sourceMinimapLabels.Clear();
+            // The native map plan reads the current physical Beyond Sight
+            // holder and returns no labels when its source effect is inactive.
+            // Do not apply a second, independently cached status gate here.
+            sourceMinimapLabels.Materialize(presentedIndices, session, cache, minimapTables, generation, tick, fullMap);
             if (fullMap) MaterializeMapCross(presentedIndices, minimapTables, fullMapCrossColor);
             MaterializeMinimapMarks(presentedIndices, minimapMarks, minimapTables, generation, tick, fullMap);
             EnsureWorld(fullMap ? presentedIndices : session.SceneFrameIndices, palette);

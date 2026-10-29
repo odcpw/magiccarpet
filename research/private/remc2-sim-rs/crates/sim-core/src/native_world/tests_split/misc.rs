@@ -2881,61 +2881,59 @@ fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
 
 #[test]
 fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
-    let mut session = level_two_campaign_session();
-    let invisible_source = authored_status_reward_prerequisite(&mut session, 11);
-    let invisible_position = invisible_source.position;
-    let remote_mana = session.shared_spells().player_mana().wrapping_add(7_777);
-    {
-        let mut shared = session.shared_spells_mut();
-        let remote = &mut shared.player_entities[1];
-        remote.active = true;
-        remote.model = 0;
-        remote.mana = remote_mana;
-        remote.record[2] = 1;
-        remote.record[68] = 0;
-        remote.position = invisible_position;
-        remote.record[80..82].copy_from_slice(&invisible_position.x.to_le_bytes());
-        remote.record[82..84].copy_from_slice(&invisible_position.y.to_le_bytes());
-        remote.record[84..86].copy_from_slice(&invisible_position.z.to_le_bytes());
-        let source = shared
-            .dynamic_pickups
-            .iter_mut()
-            .find(|entity| entity.index == invisible_source.source_entity_index)
-            .expect("authored family-11 source row");
-        source.phase = 0;
-        source.record[66] = 0;
-    }
-    let far_position = Position {
-        x: invisible_position.x.wrapping_add(0x2000),
-        y: invisible_position.y,
-        z: invisible_position.z,
-    };
-    let acquired = (0..4).find_map(|_| {
-        session
-            .shared_spells_mut()
-            .step_level2_spell_acquisition(11, 111, far_position)
-            .expect("remote family-11 source pass")
-    });
-    let acquired = acquired.expect("remote model-0 player acquires Invisible");
-    activate_status_source_for_test(&mut session, acquired.source_slot);
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let ordinary = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || generated.join("mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let selection = crate::campaign::spec::CampaignSelection::ordinary(18).unwrap();
+    let mut session = crate::campaign::CampaignSession::open(ordinary.join("level18"), selection)
+        .expect("real Mission18 rival holders")
+        .simulation()
+        .clone();
+    let rival = session
+        .shared_spells()
+        .players
+        .iter()
+        .find(|player| player.is_ai && player.enabled_spell_holders[11] != 0)
+        .expect("imported rival with a real Invisible holder")
+        .clone();
+    let owner = rival.entity_index;
+    let invisible_slot = rival.enabled_spell_holders[11];
+    let owner_mode = session
+        .campaign_player_visibility(selection, rival.slot)
+        .unwrap()
+        .owner_visibility_mode;
+    session
+        .shared_spells_mut()
+        .player_entities
+        .iter_mut()
+        .find(|row| row.index == owner)
+        .unwrap()
+        .set_mana(10_000);
+    activate_status_source_for_test(&mut session, invisible_slot);
     {
         let live = &mut session.session.state.live;
         let castle = live
             .economy
             .economy
-            .build_castle_at(invisible_position, invisible_position, 112, false, true)
+            .build_castle_at(Position::default(), Position::default(), owner, false, true)
             .expect("same declared remote Castle prerequisite");
-        assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(castle, 2_000));
+        assert!(
+            live.economy
+                .economy
+                .set_castle_mana_prerequisite_for_test(castle, 10_000)
+        );
         support_spells::step_source_slot(
             &mut live.shared_spells,
             &mut live.economy,
             &mut live.core,
-            acquired.source_slot,
+            invisible_slot,
         )
         .expect("actual per-owner Invisible callback");
     }
     let hidden = session
-        .nyphur_visibility()
+        .campaign_player_visibility(selection, rival.slot)
         .expect("remote Invisible visibility projection");
     assert_eq!(
         session
@@ -2944,56 +2942,133 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
             .visibility_mode,
         1
     );
-    assert_eq!(hidden.owner_visibility_mode, 0);
-    assert!(!hidden.beyond_sight_holder_present);
-    assert!(hidden.visible_to_local_player);
+    assert_eq!(hidden.owner_visibility_mode, owner_mode);
 
-    let beyond_position = session.shared_spells().pickups()[0].position;
-    {
-        let mut shared = session.shared_spells_mut();
-        shared.players[0].family_selected_tiers[12] = 1;
-        shared.pickups[0].phase = 0;
-        shared.pickups[0].record[66] = 0;
+    // Carry a family obtained by the ordinary Level2 pickup into the real
+    // Mission18 starting-holder constructor. This is a controlled entry
+    // boundary, not an earned portal transition or an earned tier unlock.
+    let mut origin = level_two_campaign_session();
+    let origin_pickup = acquire_level_two_beyond_sight_from_ordinary_route(&mut origin);
+    let family = origin
+        .shared_spells()
+        .pickup(origin_pickup.source_slot)
+        .unwrap()
+        .model;
+    assert_eq!(family, BEYOND_SIGHT_FAMILY);
+    session
+        .apply_carried_spell_families(&[family], Some(family))
+        .unwrap();
+    let morph_slot = rival.enabled_spell_holders[4];
+    let morph = session.shared_spells().pickup(morph_slot).unwrap();
+    assert_eq!((morph.class, morph.model, morph.action), (15, 4, 12));
+    assert_eq!(morph.source_spell_parent_entity_index(), owner);
+    activate_status_source_for_test(&mut session, morph_slot);
+    assert!(session.economy.entities[usize::from(morph_slot)].active_value > 0);
+    for tier in [1, 2] {
+        for command in [
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 12,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            PlayerCommand {
+                opcode: 41,
+                argument_1: tier,
+                ..PlayerCommand::default()
+            },
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 12,
+                argument_2: tier,
+                ..PlayerCommand::default()
+            },
+        ] {
+            session.step_outer_turn(command, 0);
+        }
+        let visibility = session
+            .campaign_player_visibility(selection, rival.slot)
+            .unwrap();
+        assert_eq!(visibility.beyond_sight_tier, Some(tier as u8));
+        assert!(visibility.family4_gate_active);
+        assert_eq!(visibility.visible_to_local_player, tier == 2);
     }
-    {
-        let terrain = session.canonical_terrain().clone();
-        let live = &mut session.session.state.live;
-        let shared = &mut live.shared_spells;
-        let economy = &mut live.economy.economy;
-        shared
-            .step_level2_spell_acquisition_with_economy(economy, 12, 111, beyond_position, &terrain)
-            .expect("local family-12 source pass")
-            .expect("local model-0 player acquires Beyond Sight");
+
+    // The remote callback control above is not an earned pickup. Exercise the
+    // local visibility relation through the separate real Level2 producer.
+    let mut session = level_two_campaign_session();
+    let beyond = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
+    for command in [
+        PlayerCommand {
+            opcode: 40,
+            argument_1: 12,
+            argument_2: 7,
+            ..PlayerCommand::default()
+        },
+        PlayerCommand {
+            opcode: 41,
+            argument_1: 1,
+            ..PlayerCommand::default()
+        },
+        PlayerCommand {
+            opcode: 31,
+            argument_1: 12,
+            argument_2: 1,
+            ..PlayerCommand::default()
+        },
+    ] {
+        session.step_outer_turn(command, 0);
     }
-    {
-        let mut shared = session.shared_spells_mut();
-        shared.player_mana = 5_000;
-        shared.player_entity.mana = 5_000;
-        shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
-        shared.player_entities[0].mana = 5_000;
-        shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
-        shared
-            .beyond_sight
-            .as_mut()
-            .expect("local family-12 acquisition seeds Beyond Sight state")
-            .parent_mana = 5_000;
-        assert!(shared.activate_beyond_sight(256, false));
+    let parent = session.state.entity_index;
+    let castle = session
+        .economy_mut()
+        .build_castle_at(
+            Position::default(),
+            Position::default(),
+            parent,
+            false,
+            true,
+        )
+        .expect("actual local Castle for Beyond Sight");
+    assert!(
+        session
+            .economy_mut()
+            .set_castle_mana_prerequisite_for_test(castle, 10_000)
+    );
+    session
+        .shared_spells_mut()
+        .set_local_player_mana_for_test(5_000);
+    session.economy.entities[usize::from(parent)].set_mana(5_000);
+    if let Some(fire) = session.context.spell_fire.as_mut() {
+        fire.caster.mana = 5_000;
     }
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 12,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    assert_eq!(
+        session.economy.entities[usize::from(beyond.source_slot)].active_value,
+        261
+    );
+
+    // Slot 113 is a different family's real holder, not a Morph. Even if a
+    // stale family-4 index points to it, the live consumer must reject it.
+    let mut stale_session = session.clone();
     {
-        let mut shared = session.shared_spells_mut();
-        shared.players[1].enabled_spell_holders[4] = 113;
-        shared.holders[0].active_value = 1;
+        let live = &mut stale_session.session.state.live;
+        live.core.players[1].enabled_spell_holders[4] = 113;
+        live.economy.entities[113].active_value = 1;
     }
-    let blocked = session
+    let stale = stale_session
         .nyphur_visibility()
-        .expect("family-4 visibility gate projection");
-    assert!(blocked.family4_gate_active);
-    assert!(!blocked.visible_to_local_player);
-    {
-        let mut shared = session.shared_spells_mut();
-        shared.players[1].enabled_spell_holders[4] = 0;
-        shared.holders[0].active_value = 0;
-    }
+        .expect("wrong-family visibility gate");
+    assert!(!stale.family4_gate_active);
+    assert!(stale.visible_to_local_player);
     let revealed = session
         .nyphur_visibility()
         .expect("Beyond Sight visibility projection");
@@ -3002,7 +3077,43 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
     assert!(revealed.beyond_sight_active);
     assert_eq!(revealed.beyond_sight_tier, Some(1));
     assert!(revealed.visible_to_local_player);
-    assert_eq!(acquired.parent_entity_index, 112);
+    session
+        .shared_spells_mut()
+        .set_local_player_mana_for_test(0);
+    session.economy.entities[usize::from(parent)].set_mana(0);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let expired = session.nyphur_visibility().expect("failed-gate visibility");
+    assert!(expired.beyond_sight_holder_present);
+    assert!(!expired.beyond_sight_active);
+    assert_eq!(expired.beyond_sight_tier, Some(1));
+    assert!(
+        expired.visible_to_local_player,
+        "the held tier remains passive after expiry"
+    );
+    // Controlled reuse boundary: preserve the exact class/family/parent bytes
+    // while the real free-stack allocator advances the slot generation. This
+    // is a stale-reference negative, not an acquired replacement spell.
+    {
+        let arena = &mut session.session.state.live.economy;
+        let slot = beyond.source_slot;
+        let old = arena.handle(slot).expect("live Beyond Sight holder");
+        let same_payload = arena.entities[usize::from(slot)].clone();
+        arena.entities[usize::from(slot)].reclaim_source_row();
+        arena.economy.release_slot(slot, None);
+        assert_eq!(arena.economy.allocate_slot(), Some(slot));
+        arena.entities[usize::from(slot)] = same_payload;
+        let replacement = arena.handle(slot).expect("reused numeric slot");
+        assert_ne!(replacement.generation, old.generation);
+        assert!(arena.resolve(old).is_none());
+    }
+    let reused = session.nyphur_visibility().expect("reused holder slot");
+    assert!(!reused.beyond_sight_holder_present);
+    assert_eq!(reused.beyond_sight_tier, None);
+    assert!(session.beyond_sight_state().is_none());
+    let before = session.economy.entities[usize::from(beyond.source_slot)].clone();
+    assert!(!session.activate_beyond_sight_holder(256, false).unwrap());
+    assert_eq!(session.economy.entities[usize::from(beyond.source_slot)], before);
+    assert_eq!(beyond.parent_entity_index, parent);
 }
 
 #[test]
@@ -3072,6 +3183,23 @@ fn level_two_invisible_expiry_replays_queued_setspell_word() {
 
 #[test]
 fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
+    let mut free = level_two_campaign_session();
+    free.step_outer_turn(
+        PlayerCommand {
+            opcode: 0x1e,
+            argument_1: 9,
+            ..PlayerCommand::default()
+        },
+        u8::MAX,
+    );
+    let free_slot = acquire_level_two_beyond_sight_from_ordinary_route(&mut free).source_slot;
+    let free_holder = free.shared_spells().pickup(free_slot).unwrap();
+    let free_state = free.shared_spells().beyond_sight_state().unwrap();
+    assert_eq!(free_holder.mana_regen, 0);
+    assert_eq!(free_holder.mana, 1);
+    assert_eq!(free_state.mana_regen_requirement, free_holder.mana_regen);
+    assert_eq!(free_state.mana_cost, free_holder.max_mana);
+
     let mut session = level_two_campaign_session();
     let baseline_hash = session.shared_spells().reset_hash();
     let outcome = acquire_level_two_beyond_sight_from_ordinary_route(&mut session);
@@ -3082,6 +3210,15 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
     assert_eq!(cold.holder_entity_index, outcome.source_slot);
     assert_eq!(cold.action, BEYOND_SIGHT_ACTIVE_ACTION);
     assert_eq!(cold.active_value, 0);
+    let holder = session.shared_spells().pickup(outcome.source_slot).unwrap();
+    assert_eq!(cold.tier, holder.level_gate.cast_unsigned());
+    assert_eq!(cold.activation_value, holder.activation_value.cast_signed());
+    assert_eq!(cold.mana_cost, holder.max_mana);
+    assert_eq!(cold.mana_regen_requirement, holder.mana_regen);
+    assert_eq!(
+        cold.countdown,
+        i16::from_le_bytes([holder.record[58], holder.record[59]])
+    );
 
     let declared_mana = 5_000_i32;
     let baseline_capacity = session.economy().owner_max_mana[&cold.parent_entity_index];
@@ -3129,6 +3266,21 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
         flags: 0x40,
         ..PlayerCommand::default()
     };
+    // The retained native activation entry uses the same physical holder and
+    // must publish its timer for the next ordinary scheduler visit.
+    let mut direct = session.clone();
+    assert!(direct.activate_beyond_sight_holder(256, false).unwrap());
+    let direct_state = direct.beyond_sight_state().unwrap();
+    assert_eq!(direct_state.active_value, cold.activation_value);
+    assert_eq!(
+        direct.economy.entities[usize::from(outcome.source_slot)].active_value,
+        cold.activation_value
+    );
+    direct.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        direct.beyond_sight_state().unwrap().active_value,
+        cold.activation_value - 1
+    );
     let mut capacity_limited = session.clone();
     assert!(
         capacity_limited
@@ -3794,6 +3946,18 @@ fn level_two_beyond_sight_core_opcode31_applies_profile_at_zero_unlocked_tier() 
     assert_eq!(holder_after_op31.level_gate, 1);
     assert_eq!(holder_after_op31.record_bytes()[74], 1);
     assert_eq!(holder_after_op31.activation_value, 261);
+    let selected = shared
+        .beyond_sight_state()
+        .expect("selected Beyond Sight state");
+    assert_eq!(
+        selected.activation_value,
+        holder_after_op31.activation_value.cast_signed()
+    );
+    assert_eq!(selected.mana_cost, holder_after_op31.max_mana);
+    assert_eq!(
+        selected.mana_regen_requirement,
+        holder_after_op31.mana_regen
+    );
     assert_eq!(
         shared
             .beyond_sight_state()
@@ -3815,12 +3979,108 @@ fn level_two_beyond_sight_core_opcode31_applies_profile_at_zero_unlocked_tier() 
     assert_eq!(shared.players[0].right_spell_slot_raw, 12);
     assert_eq!(shared.players[0].right_subspell_index, 1);
     assert_eq!(shared.players[0].record_bytes()[559], 1);
+
+    // The protocol control above does not claim an earned unlock. Exercise
+    // both selected payloads through the ordinary cast and holder visit.
+    for (tier, duration, cost) in [(1, 261, 2_400), (2, 361, 5_000)] {
+        let mut selected = session.clone();
+        if tier == 2 {
+            for command in [
+                PlayerCommand {
+                    opcode: 40,
+                    argument_1: 12,
+                    argument_2: 7,
+                    ..PlayerCommand::default()
+                },
+                PlayerCommand {
+                    opcode: 41,
+                    argument_1: tier,
+                    ..PlayerCommand::default()
+                },
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: 12,
+                    argument_2: tier,
+                    ..PlayerCommand::default()
+                },
+            ] {
+                selected.step_outer_turn(command, 0);
+            }
+        }
+        let state = selected.shared_spells().beyond_sight_state().unwrap();
+        assert_eq!(
+            (state.tier, state.activation_value, state.mana_cost),
+            (tier as u8, duration, cost)
+        );
+        let parent = state.parent_entity_index;
+        let castle = selected
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                parent,
+                false,
+                true,
+            )
+            .expect("actual owner Castle for Beyond Sight tier");
+        assert!(
+            selected
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, 10_000)
+        );
+        let mana = 7_000_i32;
+        {
+            let mut shared = selected.shared_spells_mut();
+            shared.player_mana = mana;
+            shared.player_entity.mana = mana;
+            shared.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+            shared.player_entities[0].mana = mana;
+            shared.player_entities[0].record[148..152].copy_from_slice(&mana.to_le_bytes());
+            shared.beyond_sight.as_mut().unwrap().parent_mana = mana;
+        }
+        selected.economy.entities[usize::from(parent)].set_mana(mana);
+        selected.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 12,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let activated = selected.shared_spells().beyond_sight_state().unwrap();
+        assert_eq!(activated.active_value, duration);
+        assert_eq!(
+            selected.economy.entities[usize::from(source_slot)].active_value,
+            duration
+        );
+        selected.step_outer_turn(PlayerCommand::default(), 0);
+        let pulsed = selected.shared_spells().beyond_sight_state().unwrap();
+        assert_eq!(pulsed.active_value, duration - 1);
+        assert_eq!(pulsed.experience_awarded, activated.experience_awarded + 1);
+    }
 }
 
 #[test]
 fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
     let mut session = level_two_campaign_session();
     let source_slot = acquire_level_two_beyond_sight_from_ordinary_route(&mut session).source_slot;
+    let parent = session.state.entity_index;
+    let castle = session
+        .economy_mut()
+        .build_castle_at(
+            Position::default(),
+            Position::default(),
+            parent,
+            false,
+            true,
+        )
+        .expect("actual owner Castle for the source Beyond Sight predicate");
+    assert!(
+        session
+            .economy_mut()
+            .set_castle_mana_prerequisite_for_test(castle, 10_000)
+    );
     {
         let mut shared = session.shared_spells_mut();
         shared.player_mana = 5_000;
@@ -3833,8 +4093,22 @@ fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
             .as_mut()
             .expect("cold Beyond Sight state")
             .parent_mana = 5_000;
-        assert!(shared.activate_beyond_sight(256, false));
     }
+    session.economy.entities[usize::from(parent)].set_mana(5_000);
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 12,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    assert_eq!(
+        session.economy.entities[usize::from(source_slot)].active_value,
+        151,
+        "the ordinary command activated the authoritative imported holder"
+    );
     // While the holder is active, SetSpell queues the newly selected tier in
     // word 0x2c. The earlier synthetic test wrote that projection directly and
     // therefore bypassed the authoritative imported row.
@@ -3867,6 +4141,37 @@ fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
             .record_bytes()[48..50],
         2_u16.to_le_bytes()
     );
+    let mut free = session.clone();
+    free.step_outer_turn(
+        PlayerCommand {
+            opcode: 0x1e,
+            argument_1: 9,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    assert!(free.shared_spells.free_spell_usage);
+    let source = &mut free.economy.entities[usize::from(source_slot)];
+    source.active_value = 1;
+    source.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+    free.shared_spells_mut()
+        .beyond_sight
+        .as_mut()
+        .expect("active Beyond Sight state")
+        .active_value = 1;
+    free.step_outer_turn(PlayerCommand::default(), 0);
+    let free_holder = free.shared_spells().pickup(source_slot).unwrap();
+    let free_state = free.shared_spells().beyond_sight_state().unwrap();
+    assert_eq!(free_holder.record_bytes()[48..50], [0, 0]);
+    assert_eq!(free_holder.level_gate, 1);
+    assert_eq!(free_holder.activation_value, 261);
+    assert_eq!(free_holder.mana_regen, 0);
+    assert_eq!(free_holder.mana, 1);
+    assert_eq!(free_state.tier, 1);
+    assert_eq!(free_state.mana_regen_requirement, 0);
+    let source = &mut session.economy.entities[usize::from(source_slot)];
+    source.active_value = 1;
+    source.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
     session
         .shared_spells_mut()
         .beyond_sight

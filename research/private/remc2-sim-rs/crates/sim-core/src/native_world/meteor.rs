@@ -59,30 +59,31 @@ fn set_owner(row: &mut EntitySnapshot, owner: u16) {
     put(row, 30, owner);
 }
 
-/// sub_4D500 followed by sub_6DCA0's family9 and successful sub_6AB00 launch.
-pub(crate) fn launch(
+/// The common sub_4D500/sub_6DCA0 family9 constructor. The caller owns
+/// later player-holder or Castle-controller writes and launch sound.
+pub(crate) fn construct(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
-    holder_slot: u16,
-    parent_slot: u16,
-    input: CastInput,
+    position: Position,
+    position_slot: Option<u16>,
+    inherited_speed: i16,
+    tier: u8,
 ) -> Result<Option<u16>, String> {
+    let rule = RULES
+        .tiers
+        .get(usize::from(tier))
+        .ok_or("Meteor constructor tier is outside source spell rules")?;
     let particle = *particles
         .get(usize::from(PARTICLE))
         .ok_or("Meteor requires retained particle76")?;
-    let parent = arena
-        .entities
-        .get(usize::from(parent_slot))
-        .ok_or("Meteor parent address is outside source arena")?;
-    let position = parent.position;
-    // sub_6DCA0 receives the pre-constructor speed by value.
-    let inherited_speed = parent.actual_speed;
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
-    let position = if slot == parent_slot {
-        Position { x: 0, y: 0, z: 0 }
+    // The source receives a position pointer: NewEvent clears the address
+    // before copying that position when allocation reuses the pointed row.
+    let position = if position_slot == Some(slot) {
+        Position::default()
     } else {
         position
     };
@@ -109,9 +110,48 @@ pub(crate) fn launch(
     super::cave_features::bind_particle(&mut row, PARTICLE, particle)?;
     row.record[71] = 10;
     row.record[72] = 17;
-    // Publish the new fixed address before borrowing parent/holder again.
+    row.set_subspell_index(rule.damage);
+    row.set_source_byte_46(rule.impact_duration);
+    arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
+    Ok(Some(slot))
+}
+
+/// The successful sub_6AB00 player launch adds holder/parent state after the
+/// common constructor has published its new fixed address.
+pub(crate) fn launch(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    holder_slot: u16,
+    parent_slot: u16,
+    input: CastInput,
+) -> Result<Option<u16>, String> {
+    let parent = arena
+        .entities
+        .get(usize::from(parent_slot))
+        .ok_or("Meteor parent address is outside source arena")?;
+    let holder = arena
+        .entities
+        .get(usize::from(holder_slot))
+        .ok_or("Meteor holder address is outside source arena")?;
+    let tier = crate::spell_activation::level2_applied_tier(holder.level_gate)
+        .ok_or("Meteor holder has a negative source tier")?;
+    // Both speed and the source table pointer are selected before NewEvent.
+    let (position, inherited_speed) = (parent.position, parent.actual_speed);
+    let Some(slot) = construct(
+        arena,
+        terrain,
+        particles,
+        position,
+        Some(parent_slot),
+        inherited_speed,
+        tier,
+    )?
+    else {
+        return Ok(None);
+    };
     let parent = arena.entities[usize::from(parent_slot)].clone();
     let holder = arena
         .entities

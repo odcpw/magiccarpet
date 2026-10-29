@@ -3,8 +3,8 @@
 use super::{EntitySnapshot, Level2SharedSpellResetSession, RenderableMapSeed, SessionTerrain};
 use crate::campaign::{source_arena::SourceArena, state::CanonicalRuntimeState};
 use crate::spell_activation::{
-    BeyondSightState, InvisibleSpecialWrite, InvisibleState, ShieldState, level2_applied_tier,
-    level2_set_spell_profile, support_spell_rule,
+    BeyondSightState, InvisibleSpecialWrite, InvisibleState, Level2SetSpellProfile, ShieldState,
+    level2_applied_tier, level2_set_spell_profile, support_spell_rule,
 };
 use crate::spells::support::{
     SupportSpellHolder, SupportSpellPlayer, SupportSpellSound, SupportSpellStep, TeleportCastles,
@@ -268,6 +268,7 @@ fn step_status_holder(
     parent: Option<&mut EntitySnapshot>,
     castle_mana: Option<i32>,
     beyond_sight_experience: i32,
+    queued_profile: Option<(u8, Level2SetSpellProfile)>,
 ) -> Result<
     (
         SupportSpellStep,
@@ -374,12 +375,7 @@ fn step_status_holder(
         parent.set_control_flags(next_flags);
     }
     if cleanup {
-        let queued = holder.source_word_2c();
-        if let Some(tier) = queued
-            .checked_sub(1)
-            .and_then(|tier| u8::try_from(tier).ok())
-            && let Some(profile) = level2_set_spell_profile(holder.model, tier)
-        {
+        if let Some((tier, profile)) = queued_profile {
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.set_source_word_2c(0);
         }
@@ -490,11 +486,23 @@ pub(super) fn step_source_slot(
             .ok_or("Beyond Sight award lost its holder")?;
     }
     let (result, status) = if matches!(holder.model, 6 | 11 | 12) {
+        // sub_6D880 reapplies SetSpell at expiry. Resolve after any fresh
+        // Beyond Sight XP award, which can queue a tier in the same visit.
+        let queued_profile = holder
+            .source_word_2c()
+            .checked_sub(1)
+            .and_then(|tier| u8::try_from(tier).ok())
+            .and_then(|tier| {
+                shared
+                    .physical_spell_profile(holder.model, tier, parent_slot, None)
+                    .map(|profile| (tier, profile))
+            });
         let (step, state, special) = step_status_holder(
             &mut holder,
             parent.as_mut(),
             castle_mana,
             beyond_sight_experience,
+            queued_profile,
         )?;
         if let Some(write) = special {
             if write.clear_protection {

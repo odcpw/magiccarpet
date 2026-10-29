@@ -2865,8 +2865,13 @@ mod production_tests {
     }
 
     fn ordinary_level_seven() -> crate::native_world::Mc2Simulation {
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level7");
+        let package = std::env::var_os("MC_LEVEL7_HOUSE_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level7")
+            },
+            PathBuf::from,
+        );
         CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
             .expect("actual ordinary Level7 package")
             .simulation()

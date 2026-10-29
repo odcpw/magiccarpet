@@ -186,6 +186,65 @@ fn ordinary_level_23_materializes_source_house_27_and_runs_construction() {
 }
 
 #[test]
+fn ordinary_level_seven_materializes_owner_house_39_and_runs_its_build() {
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let narrow = generated.join("mc-bhq6-ordinary-20261024-b/level7");
+    let geometry = std::env::var_os("MC_LEVEL7_HOUSE_PACKAGE").map_or_else(
+        || generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level7"),
+        PathBuf::from,
+    );
+    let read = |root: &PathBuf, name: &str| std::fs::read(root.join(name)).unwrap();
+    for name in ["authored-level.bin", "entities.bin", "building-parameters.bin"] {
+        assert_eq!(read(&narrow, name), read(&geometry, name), "the two packages retain the same owner {name}");
+    }
+    let parameters = crate::campaign::source_facts::decode_building_parameters(
+        &read(&narrow, "building-parameters.bin"),
+    ).expect("actual owner building parameters");
+    let expected = *parameters.get(&39).expect("actual source House parameter");
+    assert!(!crate::house::decode_house_construction_inputs(
+        &read(&narrow, "feature-construction-inputs.bin"),
+    ).unwrap().contains_key(&39), "narrow package must exercise the full-table join");
+    assert!(crate::house::decode_house_construction_inputs(
+        &read(&geometry, "feature-construction-inputs.bin"),
+    ).unwrap().contains_key(&39), "the second real package retains BUILD 39 geometry");
+
+    let narrow_campaign = crate::campaign::CampaignSession::open(
+        narrow,
+        crate::campaign::spec::CampaignSelection::ordinary(7).unwrap(),
+    ).expect("real Night 7 opens with its full owner table");
+    let narrow_house = narrow_campaign.simulation().ordinary().houses().iter()
+        .find(|house| house.entity_index == 82).expect("real source House 82");
+    assert_eq!((narrow_house.building_index, narrow_house.parameter), (39, expected));
+    assert!(!narrow_campaign.simulation().ordinary().house_build_footprints.contains_key(&39),
+        "missing geometry must not be synthesized from the parameter table");
+
+    let mut campaign = crate::campaign::CampaignSession::open(
+        geometry,
+        crate::campaign::spec::CampaignSelection::ordinary(7).unwrap(),
+    ).expect("real Night 7 with retained BUILD geometry");
+    let house = campaign.simulation().ordinary().houses().iter()
+        .find(|house| house.entity_index == 82).expect("real source House 82");
+    assert_eq!((house.building_index, house.action, house.parameter),
+        (39, crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION, expected));
+    assert!(campaign.simulation().ordinary().house_build_footprints.contains_key(&39));
+    let mut built = false;
+    for _ in 0..64 {
+        campaign.step(PlayerCommand::default(), 0);
+        assert!(!campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Error { source_slot: 82, .. }
+        )), "actual House 82 dispatch failed: {:?}", campaign.simulation().dispatch_events());
+        built |= campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::House { source_slot: 82, events, .. }
+                if events.iter().any(|event| matches!(event,
+                    HouseStepEvent::ConstructionPass { .. } | HouseStepEvent::ConstructionCompleted { .. }
+                ))
+        ));
+        if built { break; }
+    }
+    assert!(built, "the ordinary source scheduler must run real House 82's BUILD consumer");
+}
+
+#[test]
 fn ordinary_level_23_imports_linked_castles_and_construction_children() {
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
         || {
@@ -666,8 +725,8 @@ fn level_two_possession_contact_retry_preserves_shifted_life_and_prologue_reclai
     );
     assert_eq!(
         retry.position.z,
-        target.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT),
-        "source contact copies the temporary model-39 +28 Z without mutating the target"
+        target.position.z.wrapping_add(target.collision_yaw),
+        "source contact copies the target's temporary collision-axis Z without mutating it"
     );
     assert_eq!(
         session
@@ -747,7 +806,7 @@ fn level_two_possession_contact_retry_preserves_shifted_life_and_prologue_reclai
             z: retry_target
                 .position
                 .z
-                .wrapping_add(POSSESSION_TARGET_Z_SHIFT),
+                .wrapping_add(retry_target.collision_yaw),
             ..retry_target.position
         }
     );
@@ -881,7 +940,7 @@ fn level_two_possession_contact_retry_preserves_shifted_life_and_prologue_reclai
             .expect("eventual no-target expiry creates one model-12 effect")
             .position
             .z,
-        target.position.z.wrapping_add(POSSESSION_TARGET_Z_SHIFT),
+        target.position.z.wrapping_add(target.collision_yaw),
         "model-12 is created at the shifted contact position"
     );
 
@@ -5767,6 +5826,7 @@ fn level_two_mana_sphere_retains_birth_particle_until_color_callback() {
             .unwrap()
     };
     let born = read(&session);
+    assert_eq!(born.collision_yaw, POSSESSION_TARGET_Z_SHIFT);
     assert_eq!(
         (born.mana, born.particle_index, born.collision_pitch),
         (128, 53, 28)
@@ -5808,6 +5868,19 @@ fn level_two_mana_sphere_retains_birth_particle_until_color_callback() {
         ),
         (52, 13, 13, 13, 13)
     );
+    // A real sphere's particle callback changed its axis from 28 to 13.
+    // Source sub_65580 uses that current value for the flyer's contact Z.
+    let owner = session.state.entity_index;
+    let projectile_slot = session.economy_mut().spawn_possession_projectile(
+        updated.position, owner, 116, 0, 0, -POSSESSION_PROJECTILE_SPEED, updated.position,
+    ).expect("source arena admits possession contact probe");
+    let projectile = *session.economy().possession_projectiles().iter()
+        .find(|row| row.source_entity_index == projectile_slot).unwrap();
+    let (contact_slot, contact_position) = level2_first_possession_target(
+        session.economy().map_chains(), &[updated], &[], projectile,
+    ).expect("updated real sphere remains a contact candidate");
+    assert_eq!(contact_slot, slot);
+    assert_eq!(contact_position.z, updated.position.z.wrapping_add(updated.collision_yaw));
 
     let baseline_hash = session.economy().reset_hash();
     {
@@ -5993,7 +6066,10 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
         .chain(part_slots.iter().copied())
         .collect::<BTreeSet<_>>();
     let imported = session.economy.entities.to_vec();
-    let guidance_targets = session.economy().fireball_guidance_targets(&imported);
+    let guidance_targets = session
+        .economy()
+        .fireball_guidance_targets(&imported)
+        .unwrap();
     let collision_targets = session.economy().fireball_collision_targets(&imported);
     let guidance = guidance_targets
         .iter()
@@ -6024,6 +6100,8 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
             source_id: root_slot,
             class: 5,
             model: root.model,
+            stage_mode: root_render.stage_var2,
+            parent_entity_index: root_render.parent_entity_index,
             top_position: Position {
                 z: root.position.z.wrapping_add(root_render.render_yaw),
                 ..root.position
@@ -6100,6 +6178,7 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
     let guidance = session
         .economy()
         .fireball_guidance_targets(&imported)
+        .unwrap()
         .into_iter()
         .map(|target| target.source_slot)
         .collect::<BTreeSet<_>>();

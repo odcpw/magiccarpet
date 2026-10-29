@@ -1238,6 +1238,101 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         "owner switch must produce its authored model18 group: {:?}",
         session.dispatch_events()
     );
+    // The same authored group has the ordinary Alliance source. Its real
+    // fresh-player state also exercises the source resource gate: the holder
+    // can be acquired, but a cast cannot launch without an earned Castle and
+    // the required mana. Positive casting requires real carried progression.
+    let alliance = session
+        .economy()
+        .spell_pickups()
+        .iter()
+        .find(|source| source.authored_index == 765)
+        .copied()
+        .expect("group 23 constructs its owner-authored Alliance pickup");
+    assert_eq!(alliance.family, 24);
+    assert_eq!(
+        session.shared_spells().authored_pickup_slots().get(&765),
+        Some(&alliance.source_entity_index)
+    );
+    let mut alliance_far = session.clone();
+    let mut far_alliance = alliance.position;
+    far_alliance.x = far_alliance.x.wrapping_add(0x6000);
+    alliance_far
+        .set_level2_entity_position(player, far_alliance)
+        .unwrap();
+    for _ in 0..4 {
+        alliance_far.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!alliance_far.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::SpellAcquisition {
+                source_slot,
+                result: Some(_),
+                ..
+            } if *source_slot == alliance.source_entity_index
+        )));
+    }
+    let mut alliance_near = session.clone();
+    alliance_near
+        .set_level2_entity_position(player, alliance.position)
+        .unwrap();
+    let alliance_acquired = (0..4).find_map(|_| {
+        alliance_near.step_outer_turn(PlayerCommand::default(), 0);
+        alliance_near
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Mc2DispatchEvent::SpellAcquisition {
+                    family: 24,
+                    source_slot,
+                    result: Some(outcome),
+                    ..
+                } if *source_slot == alliance.source_entity_index => Some(*outcome),
+                _ => None,
+            })
+    });
+    let alliance_acquired =
+        alliance_acquired.expect("overlap acquires the authored Alliance source");
+    assert_eq!(alliance_acquired.source_slot, alliance.source_entity_index);
+    assert_eq!(
+        alliance_near
+            .shared_spells()
+            .players()
+            .iter()
+            .find(|row| row.entity_index == player)
+            .expect("source player")
+            .enabled_spell_holders[24],
+        alliance.source_entity_index
+    );
+    let alliance_acquired_session = alliance_near.clone();
+    assert_eq!(alliance_near.economy().player_castle_entity_index(), 0);
+    let alliance_ui = crate::SOURCE_SPELL_INDEX_MAP
+        .iter()
+        .position(|family| *family == 24)
+        .expect("Alliance has a source menu entry") as i8;
+    alliance_near.step_outer_turn(
+        PlayerCommand {
+            opcode: 31,
+            argument_1: alliance_ui,
+            argument_2: 0,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    for turn in 0..4 {
+        alliance_near.step_outer_turn(
+            PlayerCommand {
+                flags: if turn == 0 { 0x10 } else { 0 },
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert!(
+            !alliance_near.entities().iter().any(|row| row.active
+                && row.class == 9
+                && row.model == 25
+                && row.source_id == player)
+        );
+    }
     // The same owner group includes the Fireball source. Exercise the real
     // pickup on a branch so it cannot change the creature attack below.
     let fireball = session
@@ -1322,10 +1417,363 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         3,
         "all three owner-authored model18 roots must be live"
     );
+    // Controlled resource boundary: the holder above is the actual authored
+    // pickup, while Castle and mana are deliberately staged for this focused
+    // integration check. This is not evidence of earned campaign resources.
+    let rule = crate::level_definition::late_spells::ALLIANCE_PROPERTIES.tiers[0];
+    let actor_slot = slots[0].0;
+    for (castle_mana, player_mana, settled, admitted) in [
+        (
+            rule.runtime_castle_mana_limit - 1,
+            rule.mana_cost,
+            false,
+            false,
+        ),
+        (
+            rule.runtime_castle_mana_limit,
+            rule.mana_cost - 1,
+            false,
+            false,
+        ),
+        // The immediate full-arena cast is the observed NewEvent failure
+        // control; it still charges mana, as in source sub_6CD20.
+        (rule.runtime_castle_mana_limit, rule.mana_cost, false, false),
+        (rule.runtime_castle_mana_limit, rule.mana_cost, true, true),
+    ] {
+        let mut cast = alliance_acquired_session.clone();
+        if settled {
+            let actor_handle = cast.source_arena().handle(actor_slot).unwrap();
+            let holder_handle = cast
+                .source_arena()
+                .handle(alliance.source_entity_index)
+                .unwrap();
+            let emitters = cast
+                .economy()
+                .authored_model53()
+                .iter()
+                .filter(|source| source.active)
+                .map(|source| source.source_entity_index)
+                .collect::<Vec<_>>();
+            assert!(
+                !emitters.is_empty(),
+                "the authored group produced model53 sources"
+            );
+            let mut lifetime_trace = Vec::new();
+            // Model53 emits for its source life of 6; its model0 children
+            // have life 8, followed by hide and next-pass reclaim. These are
+            // ordinary no-input turns, not fabricated free slots or actors.
+            for _ in 0..32 {
+                let emitting = cast
+                    .economy()
+                    .authored_model53()
+                    .iter()
+                    .filter(|source| source.active && source.life >= 0)
+                    .count();
+                let children = cast
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .filter(|child| child.active && emitters.contains(&child.parent_entity_index))
+                    .count();
+                lifetime_trace.push((emitting, children, cast.economy().free_slot_count()));
+                if emitting == 0 && children == 0 && cast.economy().free_slot_count() >= 2 {
+                    break;
+                }
+                cast.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            assert!(
+                cast.economy()
+                    .authored_model53()
+                    .iter()
+                    .all(|source| !source.active || source.life < 0),
+                "authored model53 emission must stop: {lifetime_trace:?}"
+            );
+            assert!(
+                cast.economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .all(|child| !child.active || !emitters.contains(&child.parent_entity_index)),
+                "source children must hide and reclaim: {lifetime_trace:?}"
+            );
+            assert!(
+                cast.economy().free_slot_count() >= 2,
+                "source reclaim must leave capacity for flyer and impact: {lifetime_trace:?}"
+            );
+            assert_eq!(
+                cast.source_arena().handle(actor_slot),
+                Some(actor_handle),
+                "the authored target must retain its original generation"
+            );
+            assert_eq!(
+                cast.source_arena().handle(alliance.source_entity_index),
+                Some(holder_handle),
+                "the acquired holder must retain its original generation"
+            );
+        }
+        let castle = cast
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                player,
+                false,
+                true,
+            )
+            .expect("controlled source Castle constructor");
+        assert!(
+            cast.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, castle_mana)
+        );
+        cast.economy.entities[usize::from(player)].set_mana(player_mana);
+        {
+            let mut shared = cast.shared_spells_mut();
+            shared.player_entity.set_mana(player_mana);
+            shared.player_entities[0] = shared.player_entity.clone();
+            shared.caster.mana = player_mana;
+            shared.player_mana = player_mana;
+        }
+        cast.step_outer_turn(
+            PlayerCommand {
+                opcode: 31,
+                argument_1: alliance_ui,
+                argument_2: 0,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let target = cast.entities()[usize::from(actor_slot)].position;
+        let player_position = Position {
+            x: target.x,
+            y: target.y.wrapping_add(1024),
+            z: target.z.wrapping_add(1024),
+        };
+        cast.set_level2_entity_position(player, player_position)
+            .unwrap();
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(player_position, target);
+        // Exercise the actual PlayerEvents input words, while keeping the
+        // combined launch direction aimed at the same authored creature.
+        let (aim_yaw, aim_pitch) = if settled { (71_i16, -43_i16) } else { (0, 0) };
+        cast.state.yaw = yaw.wrapping_sub(aim_yaw);
+        cast.state.display_pitch = pitch.wrapping_sub(aim_pitch);
+        cast.state.effective_pitch = pitch.wrapping_sub(aim_pitch);
+        cast.state.actual_speed = 0;
+        cast.state.target_speed = 0;
+        let parent_handle = cast
+            .source_arena()
+            .handle(player)
+            .expect("live player generation");
+        let actor_handle = cast
+            .source_arena()
+            .handle(actor_slot)
+            .expect("live actor generation");
+        let mut previous_mana = cast.entities()[usize::from(player)].mana;
+        let mut launched = false;
+        let mut impacted = false;
+        let mut allied = false;
+        let mut charged = false;
+        let mut aimed_from_input = false;
+        let mut trace = Vec::new();
+        for turn in 0..16 {
+            cast.step_outer_turn(
+                PlayerCommand {
+                    flags: if turn == 0 { 0x10 } else { 0 },
+                    argument_6: aim_yaw.cast_unsigned(),
+                    argument_8: aim_pitch.cast_unsigned(),
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            if settled && !aimed_from_input {
+                if let Some(projectile) = cast.entities().iter().find(|row| {
+                    row.active && (row.class, row.model) == (9, 25) && row.source_id == player
+                }) {
+                    let parent = &cast.entities()[usize::from(player)];
+                    let mut expected = parent.position;
+                    crate::move_entity(
+                        &mut expected,
+                        parent.yaw.wrapping_add(aim_yaw),
+                        parent.pitch.wrapping_add(aim_pitch),
+                        16_384,
+                    );
+                    let target = Position {
+                        x: u16::from_le_bytes([projectile.record[158], projectile.record[159]]),
+                        y: u16::from_le_bytes([projectile.record[160], projectile.record[161]]),
+                        z: i16::from_le_bytes([projectile.record[162], projectile.record[163]]),
+                    };
+                    assert_eq!(
+                        target, expected,
+                        "Alliance aim must use latched input words"
+                    );
+                    aimed_from_input = true;
+                }
+            }
+            let products = cast
+                .entities()
+                .iter()
+                .filter(|row| {
+                    row.active
+                        && row.source_id == player
+                        && matches!((row.class, row.model), (9, 25) | (10, 74))
+                })
+                .map(|row| {
+                    (
+                        row.index,
+                        row.class,
+                        row.model,
+                        row.position,
+                        row.drawing_disabled(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            launched |= products.iter().any(|row| (row.1, row.2) == (9, 25));
+            impacted |= products.iter().any(|row| (row.1, row.2) == (10, 74));
+            let row = &cast.entities()[usize::from(actor_slot)];
+            let parent = u16::from_le_bytes([row.record[44], row.record[45]]);
+            allied |= row.record[77] == 14
+                && parent == player
+                && cast.source_arena().creature_parent_binding(actor_handle) == Some(parent_handle);
+            let errors = cast
+                .dispatch_events()
+                .iter()
+                .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+                .cloned()
+                .collect::<Vec<_>>();
+            let current_castle_mana = cast.economy().castle_for_owner(player).map(|row| row.mana);
+            let current_player_mana = cast.entities()[usize::from(player)].mana;
+            charged |= previous_mana - current_player_mana == rule.mana_cost;
+            previous_mana = current_player_mana;
+            let holder = cast
+                .shared_spells()
+                .pickup(alliance.source_entity_index)
+                .map(|row| {
+                    (
+                        row.index,
+                        row.active,
+                        row.action,
+                        row.active_value,
+                        row.activation_value,
+                        row.source_spell_parent_entity_index(),
+                    )
+                });
+            let sounds = cast
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        crate::native_world::Level2EconomyEvent::PreparedSound {
+                            entity_index, sound_id: 9, ..
+                        } if *entity_index == player
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let raw_products = cast
+                .entities()
+                .iter()
+                .filter(|row| {
+                    matches!((row.class, row.model), (9, 25) | (10, 74))
+                        && (row.active || row.source_id == player)
+                })
+                .map(|row| {
+                    (
+                        row.index,
+                        row.source_id,
+                        row.active,
+                        row.class,
+                        row.model,
+                        row.position,
+                        row.source_word_96(),
+                        row.drawing_disabled(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let observed_slots = sounds
+                .iter()
+                .filter_map(|event| match event {
+                    crate::native_world::Level2EconomyEvent::PreparedSound {
+                        source_entity_index,
+                        ..
+                    } => Some(*source_entity_index),
+                    _ => None,
+                })
+                .chain(raw_products.iter().map(|row| row.0))
+                .collect::<Vec<_>>();
+            let visits = cast
+                .cf10_production_schedule_receipts()
+                .into_iter()
+                .filter(|receipt| {
+                    matches!(
+                        receipt,
+                        crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                            if observed_slots.contains(slot)
+                    )
+                })
+                .collect::<Vec<_>>();
+            let generations = observed_slots
+                .iter()
+                .map(|slot| (*slot, cast.source_arena().handle(*slot)))
+                .collect::<Vec<_>>();
+            let population = (
+                cast.entities().iter().filter(|row| row.active).count(),
+                cast.economy()
+                    .authored_model53()
+                    .iter()
+                    .filter(|source| source.active)
+                    .count(),
+                cast.economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .filter(|child| child.active)
+                    .count(),
+            );
+            trace.push((
+                turn,
+                row.position,
+                row.action,
+                row.record[77],
+                parent,
+                current_castle_mana,
+                current_player_mana,
+                products,
+                errors,
+                (
+                    cast.economy().free_slot_count(),
+                    holder,
+                    sounds,
+                    raw_products,
+                    visits,
+                    generations,
+                    population,
+                ),
+            ));
+            if launched && impacted && allied {
+                break;
+            }
+        }
+        if admitted {
+            assert!(
+                launched && aimed_from_input && impacted && allied,
+                "controlled at-gate Alliance must reach the live model18: launched={launched}, aimed={aimed_from_input}, impact={impacted}, allied={allied}, trace={trace:?}"
+            );
+        } else {
+            assert!(
+                !launched && !impacted && !allied,
+                "immediate controlled cast must not launch or take over: trace={trace:?}"
+            );
+            if castle_mana == rule.runtime_castle_mana_limit && player_mana == rule.mana_cost {
+                assert!(
+                    charged,
+                    "the saturated source cast must still charge mana: trace={trace:?}"
+                );
+            }
+        }
+    }
     // Fire once through the actual selected holder and starting player mana.
     // The paired branch receives the same movement and source turns without
     // the fire input; neither branch edits creature or inventory state.
-    let actor_slot = slots[0].0;
     let fireball_ui = crate::SOURCE_SPELL_INDEX_MAP
         .iter()
         .position(|family| *family == 0)
@@ -1357,6 +1805,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     let life_before = actor.life;
     let mut player_projectile = false;
     let mut actor_hit = false;
+    let mut shot_trace = Vec::new();
     for turn in 0..16 {
         pickup_near.step_outer_turn(
             PlayerCommand {
@@ -1365,14 +1814,46 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             },
             0,
         );
-        player_projectile |= pickup_near
+        let shots = pickup_near
             .economy()
             .fireball_projectiles()
             .iter()
-            .any(|shot| shot.owner_entity_index == player);
+            .filter(|shot| shot.owner_entity_index == player)
+            .copied()
+            .collect::<Vec<_>>();
+        player_projectile |= !shots.is_empty();
         let row = &pickup_near.entities()[usize::from(actor_slot)];
         actor_hit |= row.life < life_before
             && u16::from_le_bytes([row.record[42], row.record[43]]) == player;
+        let errors = pickup_near
+            .dispatch_events()
+            .iter()
+            .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        let impacts = pickup_near
+            .entities()
+            .iter()
+            .filter(|effect| effect.active && (effect.class, effect.model) == (10, 0))
+            .map(|effect| {
+                (
+                    effect.index,
+                    effect.source_id,
+                    effect.source_word_96(),
+                    effect.position,
+                    effect.drawing_disabled(),
+                )
+            })
+            .collect::<Vec<_>>();
+        shot_trace.push((
+            turn,
+            row.position,
+            row.life,
+            pickup_near.economy().free_slot_count(),
+            shots,
+            impacts,
+            errors,
+        ));
         no_fire.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !no_fire
@@ -1387,9 +1868,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     }
     assert!(
         player_projectile && actor_hit,
-        "owner Fireball must reach the authored model18 through real input: projectile={player_projectile}, hit={actor_hit}, actor={:?}, events={:?}",
-        pickup_near.entities()[usize::from(actor_slot)],
-        pickup_near.dispatch_events()
+        "owner Fireball must reach the authored model18 through real input: projectile={player_projectile}, hit={actor_hit}, trace={shot_trace:?}"
     );
     let model21_slots = session
         .entities()

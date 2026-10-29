@@ -1205,6 +1205,13 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         phase.wrapping_add(1),
         "the same-pass source tail runs after the hit"
     );
+    assert!(
+        !session
+            .source_arena()
+            .imported_creature_runtime_identity(parent.source_slot, &BTreeMap::new())
+            .expect("the original dying root retains its semantic identity")
+            .living
+    );
 
     let mut children = BTreeMap::new();
     let mut parent_hidden = false;
@@ -1276,6 +1283,15 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
                 panic!("split child {slot} must survive to landing");
             };
             assert_eq!((row.class, row.model), (5, 25));
+            let identity = session
+                .source_arena()
+                .imported_creature_runtime_identity(slot, &BTreeMap::new())
+                .expect("the real split child retains its semantic root");
+            assert_eq!(identity.handle, *child);
+            assert!(
+                identity.living,
+                "a live split child remains in the living-root consumer"
+            );
             if row.record[74] >= 3 {
                 landed.insert(slot);
             }
@@ -1289,6 +1305,37 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         children.len(),
         "all three small children land and enter their acting state"
     );
+    let phases = children
+        .iter()
+        .map(|(&slot, child)| {
+            let Some(SourceEntityView::Imported(row)) =
+                attack.simulation().source_arena().resolve(*child)
+            else {
+                panic!("landed child {slot} lost its source generation");
+            };
+            (slot, row.phase)
+        })
+        .collect::<BTreeMap<_, _>>();
+    attack.step(PlayerCommand::default(), 0);
+    let session = attack.simulation();
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "Night Army post-landing dispatch failed: {:?}",
+        session.dispatch_events()
+    );
+    for (&slot, child) in &children {
+        let Some(SourceEntityView::Imported(row)) = session.source_arena().resolve(*child) else {
+            panic!("landed child {slot} must receive its next source visit");
+        };
+        assert_eq!(
+            row.phase,
+            phases[&slot].wrapping_add(1),
+            "child {slot} acts after landing"
+        );
+    }
     for child in children.values() {
         crate::native_world::area_damage::contact(
             attack.simulation_mut().source_arena_mut(),
@@ -1316,6 +1363,13 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         for (&slot, child) in &children {
             match arena.resolve(*child) {
                 Some(SourceEntityView::Imported(row)) if row.drawing_disabled() => {
+                    let identity = arena
+                        .imported_creature_runtime_identity(slot, &BTreeMap::new())
+                        .expect("hidden child remains a source root until reclaim");
+                    assert!(
+                        !identity.living,
+                        "hidden child is excluded from living roots"
+                    );
                     hidden.insert(slot);
                 }
                 None if hidden.contains(&slot) => {
@@ -1840,6 +1894,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
             .expect("consume the actual source free stack");
     }
     let parent_rng = exhausted.entities[usize::from(parent_slot)].entity_rng;
+    let exhausted_population = exhausted.economy.source_creature_population;
     assert!(exhausted.entities[usize::from(parent_slot)].mana > 0);
     let families = family_with_cymmerian(parent_slot);
     mc2::step_row(
@@ -1855,6 +1910,11 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     .unwrap();
     assert_eq!(exhausted.entities[usize::from(parent_slot)].action, 205);
     assert_eq!(
+        exhausted.economy.source_creature_population,
+        exhausted_population + 3,
+        "source global population increases by three even when split allocation fails"
+    );
+    assert_eq!(
         exhausted.entities[usize::from(parent_slot)].entity_rng,
         crate::native_world::level2_next_rng16(parent_rng),
         "the failed mana allocation still consumes the source RNG draw"
@@ -1867,6 +1927,61 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
             } if *parent_entity_index == parent_slot
         )),
         "failed source allocation does not publish a split burst"
+    );
+
+    // Two free source slots exercise the partially allocated branch: the
+    // third NewEvent fails, so the source does not award its remainder.
+    let mut partial = arena.clone();
+    let mut partial_runtime = runtime.clone();
+    let mut partial_terrain = terrain.clone();
+    partial.finish_source_group();
+    for row in &mut partial.entities {
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    }
+    assert!(partial.economy.typed_replacement_candidate().is_none());
+    partial.rebuild_source_free_arena();
+    while partial.economy.free_slot_count() > 2 {
+        partial
+            .allocate_source_slot_with_terrain(&mut partial_terrain)
+            .expect("reserve the source free stack down to two slots");
+    }
+    partial.entities[usize::from(parent_slot)].set_mana(100);
+    let population_before_partial = partial.economy.source_creature_population;
+    mc2::step_row(
+        &mut partial,
+        &mut partial_runtime,
+        &mut partial_terrain,
+        &particles,
+        parent_slot,
+        &[],
+        &families,
+        crate::native_world::source_target::Context::default(),
+    )
+    .unwrap();
+    let partial_children = partial
+        .entities
+        .iter()
+        .filter_map(|row| {
+            let identity = partial.imported_creature_runtime_identity(
+                row.index,
+                &std::collections::BTreeMap::new(),
+            )?;
+            (identity.origin
+                == (crate::campaign::source_arena::CreatureRootOrigin::CreatureConversion {
+                    producer_slot: parent_slot,
+                }))
+            .then_some(row.mana)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        partial_children,
+        [33, 33],
+        "a failed final attempt drops the source remainder"
+    );
+    assert_eq!(
+        partial.economy.source_creature_population,
+        population_before_partial + 3,
+        "source population increments by three despite partial allocation"
     );
 
     // Exercise NewEvent's frozen fallback with this actual source address.
@@ -1928,6 +2043,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         .collect::<std::collections::BTreeSet<_>>();
     let families = family_with_cymmerian(parent_slot);
 
+    let population = arena.economy.source_creature_population;
     mc2::step_row(
         &mut arena,
         &mut runtime,
@@ -1939,6 +2055,11 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         crate::native_world::source_target::Context::default(),
     )
     .unwrap();
+    assert_eq!(
+        arena.economy.source_creature_population,
+        population + 3,
+        "large source death increases the global population by three"
+    );
 
     let children = arena
         .entities

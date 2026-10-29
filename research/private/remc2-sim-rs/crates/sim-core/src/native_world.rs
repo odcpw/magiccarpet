@@ -548,6 +548,7 @@ pub use world_types::*;
 
 pub(crate) mod area_damage;
 pub(crate) mod source_target;
+pub(crate) mod castle_defense;
 mod ballistic_scenery;
 #[path = "campaign/simulation.rs"]
 mod simulation;
@@ -581,6 +582,7 @@ pub(crate) use meteor::{Admission as MeteorAdmission, admission as meteor_admiss
 mod night_cache;
 mod player_damage;
 mod player_spell_state;
+mod player_visibility;
 pub use player_spell_state::GlobalSpecialState;
 mod support_spells;
 pub(crate) mod terrain_strip;
@@ -1190,6 +1192,7 @@ pub struct Level2CastleProjectile {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FireballProjectileOrigin {
     PlayerSpell,
+    CastleDefense,
     Firefly,
     Dragon,
     Worm,
@@ -1209,6 +1212,8 @@ pub enum FireballProjectileOrigin {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2FireballProjectile {
     pub origin: FireballProjectileOrigin,
+    /// SetEntityIndex changes appearance independently of collision axes.
+    pub visual_index: u16,
     /// Descriptor61 target selectors retained in source xtype/xsubtype bytes.
     pub target_class: u8,
     pub target_model: u8,
@@ -2864,6 +2869,7 @@ pub struct Level2EconomyState {
     local_player_entity_index: u16,
 
     castle_children: Vec<Level2CastleChild>,
+    castle_defense: castle_defense::State,
     castle_defenders: Vec<creatures::creature_15::CastleDefenderState>,
 
     castle_footprint: Option<CastleBuildFootprint>,
@@ -2992,6 +2998,7 @@ pub struct Mc2LiveState {
     pub(crate) mission: MissionContentSession,
     pub(crate) fireball_launch_sound_id: u16,
     pub(crate) nyphur_dispatcher: RivalWizardRoster,
+    pub(crate) player_visibility: player_visibility::PlayerVisibility,
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
     pub(crate) source_frame_timing_index: u8,

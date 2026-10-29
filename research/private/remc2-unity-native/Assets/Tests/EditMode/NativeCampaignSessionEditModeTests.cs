@@ -2253,7 +2253,7 @@ namespace MagicCarpet.Native.Tests
             return hud;
         }
 
-        private static (NativeSim.CampaignStepSnapshot snapshot,
+        internal static (NativeSim.CampaignStepSnapshot snapshot,
             NativeSim.CampaignEvent[] events) StepLevel2SpellPresentation(
             NativeCampaignSession session,
             CampaignSpellPresenter presenter,
@@ -2443,7 +2443,7 @@ namespace MagicCarpet.Native.Tests
             return (entity.x, entity.y, entity.z);
         }
 
-        private static (ushort x, ushort y, short z, ulong rootTick) DriveLevel2OrdinaryManaWindow(
+        internal static (ushort x, ushort y, short z, ulong rootTick) DriveLevel2OrdinaryManaWindow(
             NativeCampaignSession session,
             CampaignSpellPresenter presenter,
             int requiredMana,
@@ -2765,7 +2765,7 @@ namespace MagicCarpet.Native.Tests
                 castleRootTick);
         }
 
-        private static void DriveLevel2FirstCastleDefenderReturn(
+        internal static void DriveLevel2FirstCastleDefenderReturn(
             NativeCampaignSession session,
             CampaignSpellPresenter presenter,
             (ushort x, ushort y, short z) position,

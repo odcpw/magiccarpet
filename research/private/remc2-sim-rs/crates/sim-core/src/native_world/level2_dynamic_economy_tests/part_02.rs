@@ -3240,6 +3240,42 @@ fn level_two_owner_mana_projection_matches_source_filters_and_reset() {
     assert_eq!(session.economy().reset_hash(), baseline_hash);
     assert_eq!(session.economy().owner_mana_aggregate(111), 0);
     assert_eq!(session.economy().owner_mana_global(), 12_835);
+
+    // A controlled ordinary constructor uses the actual typed Firefly
+    // carrier. Its retired raw shadow cannot supply its current mana.
+    let terrain = SessionTerrain::from_inspection(&inspection);
+    let mut economy = session.economy().clone();
+    economy.rebuild_owner_mana_projection_at_source_boundary(inspection.entities());
+    economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
+    let owner = inspection.players()[0].entity_index;
+    let before = (
+        economy.owner_mana_global(),
+        economy.owner_max_mana_capacity(owner),
+    );
+    let firefly = economy
+        .allocate_authored_firefly_unbound(0, Position::default(), 600, &terrain)
+        .expect("ordinary Firefly constructor allocates its typed carrier");
+    assert_eq!(firefly.mana, 300);
+    economy
+        .source_owner
+        .insert(firefly.source_entity_index, owner);
+    economy.rebuild_owner_mana_projection_at_source_boundary(inspection.entities());
+    economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
+    assert_eq!(economy.owner_mana_global(), before.0 + 300);
+    assert_eq!(economy.owner_max_mana_capacity(owner), before.1 + 300);
+
+    // Keep the same packet and owner relation, retiring only its authoritative
+    // carrier. A stale typed record must not survive the next boundary scan.
+    economy
+        .authored_class5
+        .iter_mut()
+        .find(|row| row.source_entity_index == firefly.source_entity_index)
+        .unwrap()
+        .active = false;
+    economy.rebuild_owner_mana_projection_at_source_boundary(inspection.entities());
+    economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
+    assert_eq!(economy.owner_mana_global(), before.0);
+    assert_eq!(economy.owner_max_mana_capacity(owner), before.1);
 }
 
 #[test]
@@ -3263,7 +3299,7 @@ fn level_two_sphere_capacity_follows_current_credit_relation_at_source_boundary(
         )
         .expect("ordinary death sphere") as u16;
     let mut economy = session.economy_mut();
-    economy.rebuild_owner_mana_projection_at_source_boundary();
+    economy.rebuild_owner_mana_projection_at_source_boundary(inspection.entities());
     economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
     let first_before = economy
         .owner_max_mana
@@ -3289,7 +3325,7 @@ fn level_two_sphere_capacity_follows_current_credit_relation_at_source_boundary(
         Some(&first_before),
         "the current source pass retains its published capacity"
     );
-    economy.rebuild_owner_mana_projection_at_source_boundary();
+    economy.rebuild_owner_mana_projection_at_source_boundary(inspection.entities());
     economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
     assert_eq!(
         economy
@@ -3314,7 +3350,7 @@ fn level_two_sphere_capacity_follows_current_credit_relation_at_source_boundary(
         .unwrap();
     assert_eq!(sphere.owner_entity_index, first_owner);
     sphere.player_entity_index = 0;
-    economy.rebuild_owner_mana_projection_at_source_boundary();
+    economy.rebuild_owner_mana_projection_at_source_boundary(inspection.entities());
     economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
     assert_eq!(
         economy

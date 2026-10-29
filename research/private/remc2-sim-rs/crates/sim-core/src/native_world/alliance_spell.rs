@@ -186,6 +186,7 @@ fn construct_carrier(
     parent_slot: u16,
     holder_slot: u16,
     parameters: rules::ProjectileParameters,
+    input: CastInput,
 ) -> Result<Option<u16>, String> {
     let parent_before = arena
         .entities
@@ -236,10 +237,10 @@ fn construct_carrier(
         put_word(row, 42, holder_slot);
         put_word(row, 44, holder.source_spell_parent_entity_index());
         set_owner(row, parent.source_id);
-        let yaw = parent.yaw.wrapping_add(parent.next_entity() as i16);
-        let pitch = parent
-            .pitch
-            .wrapping_add(i16::from_le_bytes([parent.record[172], parent.record[173]]));
+        // sub_6CD20 reads Type_str_164's input auxiliary words. The raw
+        // entity's nextEntity word is a map-chain link, not an aim offset.
+        let yaw = parent.yaw.wrapping_add(input.aim_yaw);
+        let pitch = parent.pitch.wrapping_add(input.aim_pitch);
         let mut aim = parent.position;
         move_entity(&mut aim, yaw, pitch, 16_384);
         put_word(row, 158, aim.x);
@@ -310,8 +311,8 @@ pub(crate) fn step_holder(
         castle_mana: input.castle_mana,
         yaw: parent.yaw,
         pitch: parent.pitch,
-        next_entity: parent.next_entity(),
-        entity_index2: u16::from_le_bytes([parent.record[172], parent.record[173]]),
+        next_entity: input.aim_yaw.cast_unsigned(),
+        entity_index2: input.aim_pitch.cast_unsigned(),
         height_offset: parent.array_fov(),
         pending_cast_auxiliary: input.auxiliary_byte,
     });
@@ -337,8 +338,15 @@ pub(crate) fn step_holder(
         }
         if visit.projectile_allocation_attempts != 0 {
             let parameters = rule.projectile_parameters(caster, slot);
-            outcome.projectile =
-                construct_carrier(arena, terrain, particles, parent_slot, slot, parameters)?;
+            outcome.projectile = construct_carrier(
+                arena,
+                terrain,
+                particles,
+                parent_slot,
+                slot,
+                parameters,
+                input,
+            )?;
             if let Some(projectile) = outcome.projectile {
                 outcome.clear_player_aux = Some(parent_slot);
                 arena
@@ -407,6 +415,7 @@ pub(crate) fn step_projectile(
 enum TypedAllianceOwner {
     Bee,
     Firefly,
+    Archer,
 }
 
 fn typed_projection(
@@ -418,6 +427,10 @@ fn typed_projection(
         .or_else(|| {
             super::level2_class5::firefly::alliance_projection(arena, slot)
                 .map(|row| (TypedAllianceOwner::Firefly, row))
+        })
+        .or_else(|| {
+            super::level2_class5::archer::alliance_projection(arena, slot)
+                .map(|row| (TypedAllianceOwner::Archer, row))
         })
 }
 
@@ -499,6 +512,11 @@ pub(crate) fn step_impact(
                             arena, *child, row, parent,
                         )?
                     }
+                    TypedAllianceOwner::Archer => {
+                        super::level2_class5::archer::apply_alliance_takeover(
+                            arena, *child, row, parent,
+                        )?
+                    }
                 };
                 if !applied {
                     return Err(format!(
@@ -553,4 +571,85 @@ pub(crate) fn step_impact(
             .prepare_sound(sound_entity, sound_entity, -1, sound);
     }
     Ok(impact)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carried_alliance_holder_launch_uses_aim_not_map_links() {
+        let mut base = crate::native_world::tests::level_two_campaign_session();
+        // The retained family is a controlled campaign input; its holder and
+        // arena slot are created by the real carry constructor.
+        base.apply_carried_spell_families(&[24], Some(24)).unwrap();
+        let parent_slot = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player.enabled_spell_holders[24];
+        assert_ne!(holder_slot, 0);
+        let rule = rules::SOURCE_RULES[0];
+        let mut launches = Vec::new();
+        for (aim_yaw, aim_pitch, map_next, spare_pitch) in [
+            (0_i16, 0_i16, 0_u16, 0_i16),
+            (0, 0, 123, -456),
+            (32, -64, 0, 0),
+            (32, -64, 123, -456),
+        ] {
+            let mut simulation = base.clone();
+            let particles = simulation.session.definition.presentation.particles.clone();
+            let live = &mut simulation.session.state.live;
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            assert_eq!((holder.class, holder.model, holder.action), (15, 24, 72));
+            assert_eq!(holder.source_spell_parent_entity_index(), parent_slot);
+            // Stage the source activation boundary; the actual holder visit
+            // below performs the allocation and pulse with controlled mana.
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            let parent = &mut live.economy.entities[usize::from(parent_slot)];
+            parent.set_mana(rule.mana_cost);
+            parent.set_yaw(i16::MAX - 15);
+            parent.set_pitch(i16::MIN + 31);
+            // These are independent raw map-link/spare words, not input aim.
+            parent.record[28..30].copy_from_slice(&map_next.to_le_bytes());
+            parent.record[172..174].copy_from_slice(&spare_pitch.to_le_bytes());
+            let parent_position = parent.position;
+            let expected_yaw = parent.yaw.wrapping_add(aim_yaw);
+            let expected_pitch = parent.pitch.wrapping_add(aim_pitch);
+            let mut expected_axis = parent_position;
+            move_entity(&mut expected_axis, expected_yaw, expected_pitch, 16_384);
+            let outcome = step_holder(
+                &mut live.shared_spells,
+                &mut live.economy,
+                &mut live.terrain,
+                &particles,
+                holder_slot,
+                CastInput {
+                    aim_yaw,
+                    aim_pitch,
+                    auxiliary_byte: 7,
+                    castle_mana: Some(rule.castle_mana_required),
+                },
+            )
+            .expect("real Alliance holder visit");
+            assert!(outcome.charged);
+            let slot = outcome
+                .projectile
+                .expect("Alliance source carrier allocated");
+            let flyer = &live.economy.entities[usize::from(slot)];
+            assert_eq!((flyer.class, flyer.model, flyer.action), (9, 25, 26));
+            assert_eq!((flyer.yaw, flyer.pitch), (expected_yaw, expected_pitch));
+            assert_eq!(&flyer.record[158..160], &expected_axis.x.to_le_bytes());
+            assert_eq!(&flyer.record[160..162], &expected_axis.y.to_le_bytes());
+            assert_eq!(&flyer.record[162..164], &expected_axis.z.to_le_bytes());
+            launches.push((flyer.yaw, flyer.pitch, expected_axis));
+        }
+        assert_eq!(
+            launches[0], launches[1],
+            "map links do not change zero-input aim"
+        );
+        assert_eq!(
+            launches[2], launches[3],
+            "map links do not change nonzero aim"
+        );
+        assert_ne!(launches[0], launches[2], "latched aim changes the carrier");
+    }
 }

@@ -290,6 +290,22 @@ namespace MagicCarpet.Native.Tests
             {
                 runtime.QualificationInitializeGameRuntimeProductionFromArguments(InstalledOpeningArguments());
                 Assert.That(runtime.GameRuntimeNightPresentationReady, Is.True);
+                const System.Reflection.BindingFlags privateInstance =
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var borrowed = (NativeCampaignSession)typeof(MagicCarpetRuntime)
+                    .GetField("campaignSession", privateInstance).GetValue(runtime);
+                var surface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeNightSurface", privateInstance).GetValue(runtime);
+                var environment = (OwnerAssetCache)typeof(MagicCarpetRuntime)
+                    .GetField("gameRuntimeEnvironmentCache", privateInstance).GetValue(runtime);
+                var labels = (SourceMinimapLabels)typeof(CampaignPresentationSurface)
+                    .GetField("sourceMinimapLabels", privateInstance).GetValue(surface);
+                Assert.That(borrowed.Handle.ToString(), Is.EqualTo(runtime.GameRuntimeProductionIdentity.session.session_id));
+                Assert.That(surface.Generation, Is.EqualTo(borrowed.Generation));
+                Assert.That(labels.Coverage, Is.Null, "the opening player has no active Beyond Sight label");
+                surface.PresentEnvironment(borrowed, environment, 0, true);
+                Assert.That(labels.Coverage, Is.Null, "the full map uses the same inactive native plan");
+                surface.PresentEnvironment(borrowed, environment);
                 var total = System.Diagnostics.Stopwatch.StartNew();
                 for (var i = 0; i < 32; i++)
                 {
@@ -314,6 +330,18 @@ namespace MagicCarpet.Native.Tests
                     Assert.That(runtime.GameRuntimeNightPresentationHash, Is.Not.Zero);
                 }
                 Debug.Log($"MC_SPAWN_PROFILE frames=32 elapsed_ms={total.Elapsed.TotalMilliseconds:F3}");
+                var previousGeneration = borrowed.Generation;
+                var previousTick = borrowed.Tick;
+                runtime.QualificationResetGameRuntimeProduction();
+                Assert.That(borrowed.Generation, Is.Not.EqualTo(previousGeneration));
+                Assert.That(surface.Generation, Is.EqualTo(borrowed.Generation));
+                Assert.That(labels.Coverage, Is.Null);
+                surface.PresentEnvironment(borrowed, environment, 0, true);
+                Assert.That(labels.Coverage, Is.Null);
+                var staleStatus = NativeSim.mc_native_campaign_world_map_labels_json(
+                    borrowed.Handle, previousGeneration, previousTick, IntPtr.Zero, 0, out var required);
+                Assert.That(staleStatus, Is.EqualTo(NativeSim.GenerationMismatch));
+                Assert.That(required, Is.Zero);
             }
             finally
             {

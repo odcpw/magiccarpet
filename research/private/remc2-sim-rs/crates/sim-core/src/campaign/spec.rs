@@ -2451,6 +2451,12 @@ impl CampaignDefinition {
         Ok(sha256_hex(&identity))
     }
 
+    /// Whether the validated package declares this member. A declared member
+    /// must still be re-read and hash-checked by `read_member`.
+    pub(crate) fn has_member(&self, name: &str) -> bool {
+        self.member_hashes.contains_key(name)
+    }
+
     /// Re-read one validated package member for a session consumer.
     ///
     /// Preflight validates the complete package before a session can exist,

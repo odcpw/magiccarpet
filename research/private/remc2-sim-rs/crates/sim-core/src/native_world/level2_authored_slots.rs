@@ -304,6 +304,7 @@ impl Level2EconomyState {
             local_player_entity_index: 0,
 
             castle_children: Vec::new(),
+            castle_defense: castle_defense::State::default(),
             castle_defenders: Vec::new(),
 
             castle_footprint: None,
@@ -501,6 +502,7 @@ impl Level2EconomyState {
         self.source_rng.remove(&slot);
         self.source_owner.remove(&slot);
         self.fields.skeleton_summon.forget(slot);
+        self.castle_defense.forget(slot);
         let generation = self.slot_generations.entry(slot).or_default();
         *generation = generation.wrapping_add(1);
         // The fallback branch zeroes every rebuilt model/class list head.
@@ -567,6 +569,7 @@ impl Level2EconomyState {
             return;
         }
         self.fields.skeleton_summon.forget(slot);
+        self.castle_defense.forget(slot);
         self.converted_skeleton_origins.remove(&slot);
         let _ = self.map_chains.sync_entity(RenderableMapSeed {
             entity_index: slot,
@@ -5730,25 +5733,138 @@ impl Level2EconomyState {
     }
 
     /// Run the source `sub_60F00` owner-row reset at the owning-pass
-    /// boundary. House callbacks update `source_owner` during the cursor;
-    /// those writes become visible only at this next boundary, while typed
-    /// sphere/carrier callbacks continue to refresh their own rows without
-    /// retroactively changing the frozen baseline relation for the pass.
-    pub(super) fn rebuild_owner_mana_projection_at_source_boundary(&mut self) {
-        self.owner_mana_rows = self
-            .owner_mana_rows
-            .iter()
-            .filter(|row| !self.slot_generations.contains_key(&row.source_entity_index))
-            .filter_map(|row| {
-                self.source_owner
-                    .get(&row.source_entity_index)
-                    .map(|&owner| Level2OwnerManaRow {
-                        player_entity_index: owner,
-                        ..*row
-                    })
-            })
-            .collect();
+    /// boundary. Raw creatures born during the previous cursor must enter
+    /// the same scan as imported records and typed economy rows. The caller
+    /// supplies the current arena, after hidden-row reclaim; typed slots
+    /// exclude their stale raw shadows. Later callbacks cannot republish the
+    /// resulting global or capacity sinks before the next source boundary.
+    pub(super) fn rebuild_owner_mana_projection_at_source_boundary(
+        &mut self,
+        current_raw_rows: &[EntitySnapshot],
+    ) {
+        let typed_slots = self
+            .live_arena_slots()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        self.owner_mana_rows.clear();
         self.refresh_owner_mana_rows();
+        // These actors have retired their raw shadows. Read their current
+        // carriers, including body mana copied by the source constructors;
+        // neither reset packets nor a caster/parent relation owns this mana.
+        let typed_mana_rows = self
+            .authored_class5
+            .iter()
+            .filter(|row| {
+                row.active
+                    && typed_slots.get(&row.source_entity_index)
+                        == Some(&Level2DynamicArenaKind::AuthoredClass5)
+            })
+            .map(|row| {
+                (
+                    row.source_entity_index,
+                    5,
+                    row.model,
+                    self.source_owner(row.source_entity_index),
+                    row.mana,
+                )
+            })
+            .chain(
+                self.bee_creatures
+                    .iter()
+                    .filter(|row| {
+                        row.active
+                            && typed_slots.get(&row.source_entity_index)
+                                == Some(&Level2DynamicArenaKind::BeeCreature)
+                    })
+                    .map(|row| {
+                        (
+                            row.source_entity_index,
+                            row.source_class,
+                            row.model,
+                            self.source_owner(row.source_entity_index),
+                            row.mana,
+                        )
+                    }),
+            )
+            .chain(
+                self.authored_dragon_parts
+                    .iter()
+                    .filter(|row| {
+                        row.active
+                            && typed_slots.get(&row.source_entity_index)
+                                == Some(&Level2DynamicArenaKind::AuthoredDragonPart)
+                    })
+                    .map(|row| {
+                        (
+                            row.source_entity_index,
+                            5,
+                            row.model,
+                            self.source_owner(row.source_entity_index),
+                            row.mana,
+                        )
+                    }),
+            )
+            .chain(
+                self.authored_class5_model3_children
+                    .iter()
+                    .filter(|row| {
+                        row.active
+                            && typed_slots.get(&row.source_entity_index)
+                                == Some(&Level2DynamicArenaKind::AuthoredClass5Model3Child)
+                    })
+                    .map(|row| {
+                        (
+                            row.source_entity_index,
+                            5,
+                            row.model,
+                            row.player_owner_entity_index,
+                            row.mana,
+                        )
+                    }),
+            )
+            .chain(
+                self.authored_model45
+                    .iter()
+                    .filter(|row| {
+                        row.active
+                            && typed_slots.get(&row.source_entity_index)
+                                == Some(&Level2DynamicArenaKind::AuthoredModel45)
+                    })
+                    .map(|row| {
+                        (
+                            row.source_entity_index,
+                            row.source_class,
+                            row.model,
+                            self.source_owner(row.source_entity_index),
+                            row.mana,
+                        )
+                    }),
+            )
+            .collect::<Vec<_>>();
+        for (slot, class, model, owner, mana) in typed_mana_rows {
+            self.install_owner_mana_row(slot, class, model, owner, mana);
+        }
+        // Install raw rows after the typed refresh: a dynamically allocated
+        // raw creature has a slot generation, but no typed-family carrier.
+        // Re-reading the current arena at every boundary also removes rows
+        // reclaimed or replaced since the preceding scan.
+        for source in current_raw_rows.iter().filter(|source| {
+            source.active
+                && !typed_slots.contains_key(&source.index)
+                && !self.free_slots.contains(&source.index)
+                && level2_owner_mana_row_qualifies(source.class, source.model)
+        }) {
+            self.owner_mana_rows.push(Level2OwnerManaRow {
+                source_entity_index: source.index,
+                source_class: source.class,
+                source_model: source.model,
+                player_entity_index: source.source_player_entity_index(),
+                mana: source.mana,
+                active: true,
+            });
+        }
+        self.owner_mana_rows
+            .sort_unstable_by_key(|row| row.source_entity_index);
         self.publish_owner_mana_projection();
     }
 
@@ -5774,6 +5890,16 @@ impl Level2EconomyState {
     #[must_use]
     pub const fn owner_mana_global(&self) -> i32 {
         self.owner_mana_global
+    }
+
+    /// Capacity frozen by the most recent source `sub_60F00` scan and used
+    /// by the ordinary sphere-ownership arbitration consumer.
+    #[must_use]
+    pub fn owner_max_mana_capacity(&self, owner_entity_index: u16) -> i32 {
+        self.owner_max_mana
+            .get(&owner_entity_index)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Bind one imported `sub_60810` life coefficient. `256` is the source
@@ -8032,6 +8158,9 @@ impl Level2EconomyState {
             // producer identity still participates in future-state identity.
             match projectile.origin {
                 FireballProjectileOrigin::PlayerSpell => {}
+                FireballProjectileOrigin::CastleDefense => {
+                    hasher.update(b"castle-defense-fireball-origin-v1");
+                }
                 FireballProjectileOrigin::Firefly => {
                     hasher.update(b"firefly-fireball-origin-v1");
                 }
@@ -8062,6 +8191,10 @@ impl Level2EconomyState {
                 FireballProjectileOrigin::Eruption => {
                     hasher.update(b"eruption-fireball-origin-v1");
                 }
+            }
+            if projectile.visual_index != crate::level1_mission::FIREBALL_RENDER_INDEX {
+                hasher.update(b"fireball-source-visual-index-v1");
+                hasher.update(projectile.visual_index.to_le_bytes());
             }
             if projectile.target_class != 0 || projectile.target_model != 0 {
                 hasher.update(b"fireball-target-selector-v1");
@@ -8405,6 +8538,7 @@ impl Level2EconomyState {
             hasher.update([child.source_byte_43]);
             hasher.update(child.source_word_4a.to_le_bytes());
         }
+        self.castle_defense.hash_into(&mut hasher);
         if let Some(footprint) = &self.castle_footprint {
             hasher.update([1, footprint.index, footprint.width, footprint.height]);
             for cell in footprint.cells() {

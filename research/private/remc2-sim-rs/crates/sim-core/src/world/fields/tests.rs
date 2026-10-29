@@ -231,6 +231,270 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
         let tile = live.economy.map_chains.tile_of(controller);
         (controller, handle, owner, position, phase, tile)
     };
+
+    // Source budget10000 divided among three births gives each Skeleton one
+    // mana. The source owner totals are frozen for this pass and include the
+    // new raw actors at the next membership boundary.
+    let mut mana_case = session.clone();
+    let mut empty_case = session.clone();
+    let mut mana_properties = properties;
+    let FieldDefinition::SkeletonSummon {
+        scheduled_budget,
+        max_births,
+        owner_cap,
+        ..
+    } = &mut mana_properties
+    else {
+        unreachable!("this controller has Skeleton summon properties");
+    };
+    *scheduled_budget = 10_000;
+    *max_births = 3;
+    *owner_cap = 3;
+    skeleton_summon::bind_definition(
+        &mut mana_case.session.state.live.economy,
+        controller,
+        mana_properties,
+    )
+    .unwrap();
+    let mut empty_properties = mana_properties;
+    let FieldDefinition::SkeletonSummon { max_births, .. } = &mut empty_properties else {
+        unreachable!("this controller has Skeleton summon properties");
+    };
+    *max_births = 0;
+    skeleton_summon::bind_definition(
+        &mut empty_case.session.state.live.economy,
+        controller,
+        empty_properties,
+    )
+    .unwrap();
+    for candidate in [&mut mana_case, &mut empty_case] {
+        candidate.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !candidate
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "mana controller must not roll back: {:?}",
+            candidate.dispatch_events()
+        );
+    }
+    let spawned = mana_case
+        .creature_runtime_census()
+        .roots_of_kind(CreatureKind::Skeleton)
+        .filter(|identity| {
+            identity.origin == CreatureRootOrigin::FieldSummon { controller: handle }
+        })
+        .map(|identity| identity.handle)
+        .collect::<Vec<_>>();
+    assert_eq!(spawned.len(), 3);
+    assert!(spawned.iter().all(|handle| {
+        mana_case.session.state.live.economy.entities[usize::from(handle.source_slot)].mana == 1
+    }));
+    let totals = |candidate: &crate::native_world::Mc2Simulation| {
+        let economy = &candidate.session.state.live.economy.economy;
+        (
+            economy.owner_mana_global(),
+            economy.owner_max_mana_capacity(owner),
+            candidate
+                .session
+                .state
+                .live
+                .shared_spells
+                .player_entity()
+                .max_mana,
+        )
+    };
+    assert_eq!(
+        totals(&mana_case),
+        totals(&empty_case),
+        "new births do not alter the frozen source totals in the same pass"
+    );
+    for candidate in [&mut mana_case, &mut empty_case] {
+        candidate.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !candidate
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "mana membership boundary must not roll back: {:?}",
+            candidate.dispatch_events()
+        );
+    }
+    let (global, capacity, player_max) = totals(&mana_case);
+    let (empty_global, empty_capacity, empty_player_max) = totals(&empty_case);
+    assert_eq!(global, empty_global + 3);
+    assert_eq!(capacity, empty_capacity + 3);
+    assert_eq!(player_max, empty_player_max + 3);
+
+    // sub_36D50 uses those capacities to choose the owner of merged spheres.
+    // Give a real rival an identical threshold in both controlled branches:
+    // only the three newly counted Skeleton mana distinguish the outcome.
+    let rival = mana_case
+        .players()
+        .iter()
+        .map(|player| player.entity_index)
+        .find(|&slot| {
+            slot != 0
+                && slot != owner
+                && mana_case
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .entities
+                    .get(usize::from(slot))
+                    .is_some_and(|row| row.active && row.class == 3)
+        })
+        .expect("retained Level2 has another active player");
+    let arbitrate = |mut candidate: crate::native_world::Mc2Simulation| {
+        let live = &mut candidate.session.state.live;
+        let economy = &mut live.economy.economy;
+        economy.set_owner_max_mana(rival, empty_capacity.checked_add(1).unwrap());
+        let rng = live.economy.entities[usize::from(controller)].entity_rng;
+        let target = economy
+            .spawn_mana_sphere_from_death(controller, position, 0, rng, 1, rival, &live.terrain)
+            .expect("rival source sphere allocation") as u16;
+        let source = economy
+            .spawn_mana_sphere_from_death(controller, position, 0, rng, 1, owner, &live.terrain)
+            .expect("player source sphere allocation") as u16;
+        assert!(economy.merge_mana_spheres(target, source));
+        economy
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.active && sphere.source_entity_index == target)
+            .expect("merged sphere remains live")
+            .player_entity_index
+    };
+    assert_eq!(arbitrate(empty_case.clone()), rival);
+    assert_eq!(arbitrate(mana_case.clone()), owner);
+
+    // A genuine lethal Fireball mailbox runs the Skeleton's own death
+    // callback. Its one mana becomes an owned sphere; it must not disappear
+    // or remain duplicated in the reclaimed actor.
+    let mut dying = mana_case.clone();
+    let previous_spheres = dying
+        .session
+        .state
+        .live
+        .economy
+        .economy
+        .spheres()
+        .iter()
+        .filter(|sphere| sphere.active)
+        .map(|sphere| {
+            (
+                sphere.source_entity_index,
+                dying
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .slot_generation(sphere.source_entity_index),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let target = spawned[0];
+    let countdown = dying.session.state.live.economy.entities[usize::from(target.source_slot)]
+        .source_dword_10()
+        .max(0) as usize;
+    dying
+        .stage_imported_skeleton_fireball_damage_for_test(target.source_slot, rival, 1_500)
+        .expect("the real Fireball damage pulse reaches the summoned Skeleton");
+    let mut reclaimed = false;
+    // Countdown action72 precedes the damage/death actions; death action77
+    // runs on its source eight-phase cadence, then reclaim occurs next pass.
+    for _ in 0..(countdown + 12) {
+        dying.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !dying
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Skeleton death must not roll back: {:?}",
+            dying.dispatch_events()
+        );
+        let arena = &dying.session.state.live.economy;
+        if !arena.entities[usize::from(target.source_slot)].active
+            || arena.economy.slot_generation(target.source_slot) != target.generation
+        {
+            reclaimed = true;
+            break;
+        }
+    }
+    assert!(reclaimed, "lethally hit summoned Skeleton is reclaimed");
+    let arena = &dying.session.state.live.economy;
+    let sphere_mana = arena
+        .economy
+        .spheres()
+        .iter()
+        .filter(|sphere| {
+            sphere.active
+                && sphere.player_entity_index == owner
+                && !previous_spheres.contains(&(
+                    sphere.source_entity_index,
+                    arena.economy.slot_generation(sphere.source_entity_index),
+                ))
+        })
+        .map(|sphere| sphere.mana)
+        .sum::<i32>();
+    let remaining_mana = spawned
+        .iter()
+        .filter_map(|handle| {
+            let row = &arena.entities[usize::from(handle.source_slot)];
+            (row.active
+                && !row.drawing_disabled()
+                && arena.economy.slot_generation(handle.source_slot) == handle.generation)
+                .then_some(row.mana)
+        })
+        .sum::<i32>();
+    assert!(
+        sphere_mana > 0,
+        "actual Skeleton death creates an owned mana sphere"
+    );
+    assert_eq!(
+        remaining_mana + sphere_mana,
+        3,
+        "death transfers mana without duplication"
+    );
+
+    // Isolate reclaim of the existing raw rows without running their death
+    // callback: actual deaths transfer positive mana to new spheres instead.
+    let mut removed = mana_case.clone();
+    let mut retained = mana_case.clone();
+    for handle in &spawned {
+        let arena = &mut removed.session.state.live.economy;
+        assert_eq!(
+            arena.economy.slot_generation(handle.source_slot),
+            handle.generation
+        );
+        arena.entities[usize::from(handle.source_slot)].disable_drawing();
+    }
+    assert_eq!(totals(&removed), totals(&retained));
+    for candidate in [&mut removed, &mut retained] {
+        candidate.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !candidate
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "raw Skeleton reclaim must not roll back: {:?}",
+            candidate.dispatch_events()
+        );
+    }
+    let (removed_global, removed_capacity, removed_player_max) = totals(&removed);
+    let (retained_global, retained_capacity, retained_player_max) = totals(&retained);
+    assert_eq!(removed_global + 3, retained_global);
+    assert_eq!(removed_capacity + 3, retained_capacity);
+    assert_eq!(removed_player_max + 3, retained_player_max);
+    for handle in &spawned {
+        let arena = &removed.session.state.live.economy;
+        assert!(
+            !arena.entities[usize::from(handle.source_slot)].active
+                || arena.economy.slot_generation(handle.source_slot) != handle.generation
+        );
+    }
+
     if let Some(invalid_position) = invalid_position {
         let live = &session.session.state.live;
         let mut arena = live.economy.clone();

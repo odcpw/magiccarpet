@@ -77,6 +77,86 @@ impl ArcherStageRuntime for RuntimeSnapshot {
     }
 }
 
+/// Project the live typed Archer into the fields read by the Alliance impact.
+/// This value is temporary; the typed source and stage remain authoritative.
+pub(crate) fn alliance_projection(arena: &SourceArena, slot: u16) -> Option<EntitySnapshot> {
+    let handle = arena.handle(slot)?;
+    if !matches!(arena.resolve(handle), Some(crate::campaign::source_arena::SourceEntityView::Dynamic(
+        crate::native_world::Level2DynamicArenaKind::AuthoredClass5
+    ))) {
+        return None;
+    }
+    let source = arena.authored_class5().iter().find(|row| {
+        row.active && row.source_entity_index == slot && row.model == ARCHER_MODEL
+    })?;
+    let state = arena.authored_class5_archer().iter().find(|row| {
+        row.source_entity_index == slot && row.slot_generation == handle.generation
+    })?;
+    let mut row = arena.entities.get(usize::from(slot))?.clone();
+    row.active = true;
+    row.record[2] = 1;
+    row.source_id = state.entity_id;
+    row.record[30..32].copy_from_slice(&state.entity_id.to_le_bytes());
+    row.class = 5;
+    row.model = ARCHER_MODEL;
+    row.record[67] = 5;
+    row.record[68] = ARCHER_MODEL;
+    row.set_source_action(source.action);
+    row.set_position(source.position);
+    row.set_life(source.life);
+    row.set_control_flags((state.control_flags & !0x400) | if source.drawing_enabled { 0 } else { 0x400 });
+    row.record[44..46].copy_from_slice(&state.stage.parent.to_le_bytes());
+    row.record[50..52].copy_from_slice(&state.stage.remaining.to_le_bytes());
+    row.record[52..54].copy_from_slice(&state.stage.duration.to_le_bytes());
+    row.record[76] = state.stage.index;
+    row.record[77] = state.stage.mode;
+    row.record[78..80].copy_from_slice(&state.stage.relation.to_le_bytes());
+    row.record[154..156].copy_from_slice(&source.word_0x96_150.to_le_bytes());
+    Some(row)
+}
+
+/// Commit a successful source impact only to the exact projected incarnation.
+pub(crate) fn apply_alliance_takeover(
+    arena: &mut SourceArena,
+    child: SourceEntityHandle,
+    row: &EntitySnapshot,
+    parent: Option<SourceEntityHandle>,
+) -> Result<bool, String> {
+    let slot = child.source_slot;
+    if row.index != slot || (row.class, row.model) != (5, ARCHER_MODEL)
+        || row.record[76] != 0 || row.record[77] != 14
+        || arena.handle(slot) != Some(child)
+        || alliance_projection(arena, slot).is_none_or(|current| current.source_id != row.source_id)
+    {
+        return Ok(false);
+    }
+    let parent_slot = u16::from_le_bytes([row.record[44], row.record[45]]);
+    let bound_parent = parent.filter(|handle| handle.source_slot == parent_slot)
+        .or_else(|| (parent_slot != 0).then(|| SourceEntityHandle {
+            source_slot: parent_slot, generation: arena.slot_generation(parent_slot),
+        }));
+    if let Some(parent) = bound_parent {
+        if !arena.bind_carried_creature_parent(child, parent) {
+            return Err(format!("Alliance Archer {slot} lost its parent binding"));
+        }
+    }
+    let source = arena.economy.authored_class5.iter_mut().find(|source| {
+        source.active && source.source_entity_index == slot && source.model == ARCHER_MODEL
+    }).ok_or_else(|| format!("Alliance Archer {slot} lost its typed source"))?;
+    source.action = row.action;
+    source.word_0x96_150 = row.source_word_96();
+    let state = arena.economy.authored_class5_archer.iter_mut().find(|state| {
+        state.source_entity_index == slot && state.slot_generation == child.generation
+    }).ok_or_else(|| format!("Alliance Archer {slot} lost its stage"))?;
+    state.stage.parent = parent_slot;
+    state.stage.remaining = i16::from_le_bytes([row.record[50], row.record[51]]);
+    state.stage.duration = i16::from_le_bytes([row.record[52], row.record[53]]);
+    state.stage.index = row.record[76];
+    state.stage.mode = row.record[77];
+    state.stage.relation = u16::from_le_bytes([row.record[78], row.record[79]]);
+    Ok(true)
+}
+
 /// Resolve live dynamic occupants before the immutable reset row at the same
 /// slot. This is also the target view used by the ordinary Archer callbacks.
 pub(crate) fn target_in_arena(arena: &SourceArena, slot: u16) -> Option<ArcherTarget> {
@@ -123,6 +203,10 @@ fn target_in_arena_with_dynamic_slots(
             .authored_class5_archer()
             .iter()
             .find(|row| row.source_entity_index == slot);
+        let firefly = arena
+            .authored_fireflies()
+            .iter()
+            .find(|row| row.source_entity_index == slot);
         return Some(ArcherTarget {
             entity_index: slot,
             class: 5,
@@ -130,7 +214,9 @@ fn target_in_arena_with_dynamic_slots(
             action: source.action,
             active: source.active,
             life: source.life,
-            control_flags: state.map_or(0, |row| row.control_flags)
+            control_flags: state.map(|row| row.control_flags)
+                .or_else(|| firefly.map(|row| row.control_flags))
+                .unwrap_or(0)
                 | if source.drawing_enabled {
                     0
                 } else {
@@ -181,7 +267,8 @@ fn target_in_arena_with_dynamic_slots(
             action: source.action,
             active: source.active,
             life: i32::from(source.life),
-            control_flags: source.control_flags,
+            control_flags: (source.control_flags & !ENTITY_DRAW_DISABLED_BIT)
+                | if source.drawing_enabled { 0 } else { ENTITY_DRAW_DISABLED_BIT },
             minimum_speed: source.minimum_speed,
             maximum_speed: source.maximum_speed,
             actual_speed: source.actual_speed,
@@ -270,11 +357,50 @@ pub(crate) fn relations_in_arena(arena: &SourceArena) -> Vec<ArcherRelation> {
                     frozen_class5_member: false,
                 });
             }
+            // Bee and Firefly actors keep their live Alliance fields in
+            // family state, not the retained reset row at this address.
+            // sub_1E9C0 consults these fields before attacking a sibling.
+            if let Some(source) = arena.bee_creatures().iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+            {
+                return Some(ArcherRelation {
+                    slot,
+                    target,
+                    source_id: source.entity_id,
+                    parent: source.parent_entity_index,
+                    stage_index: source.stage_var1,
+                    stage_mode: source.stage_var2,
+                    stage_relation: source.stage_relation,
+                    attacker: source.damage_attacker_entity_index,
+                    yaw: source.yaw,
+                    roll: source.roll,
+                    half_width: source.shift_rot_x as i16,
+                    frozen_class5_member: false,
+                });
+            }
             if let Some(source) = arena
                 .authored_class5()
                 .iter()
                 .find(|row| row.source_entity_index == slot)
             {
+                if let Some(state) = arena.authored_fireflies().iter()
+                    .find(|row| row.source_entity_index == slot)
+                {
+                    return Some(ArcherRelation {
+                        slot,
+                        target,
+                        source_id: state.entity_id,
+                        parent: state.parent_entity_index,
+                        stage_index: state.stage_var1,
+                        stage_mode: state.stage_var2,
+                        stage_relation: state.stage_relation,
+                        attacker: source.word_0x26,
+                        yaw: source.yaw,
+                        roll: source.roll,
+                        half_width: source.shift_rot_x,
+                        frozen_class5_member: false,
+                    });
+                }
                 let state = arena
                     .authored_class5_archer()
                     .iter()
@@ -599,6 +725,15 @@ pub(crate) fn step_source_runtime(
         .copied()
         .ok_or_else(|| format!("Archer slot {slot} has no owned state"))?;
     let mut relations = relations_in_arena(arena);
+    // Stage 14 must resolve the caster observed at takeover, not a later
+    // occupant of the same slot. Preserve unbound pre-existing source rows.
+    if state.stage.mode == 14
+        && let Some(child) = arena.handle(slot)
+        && let Some(parent) = arena.creature_parent_binding(child)
+        && (parent.source_slot != state.stage.parent || arena.resolve(parent).is_none())
+    {
+        relations.retain(|row| row.slot != state.stage.parent);
+    }
     for row in &mut relations {
         row.frozen_class5_member = row.target.class == 5
             && frozen_models
@@ -1821,6 +1956,168 @@ mod tests {
             relations: &[],
             stage: ArcherStageState::default(),
             stage_runtime: None,
+        }
+    }
+
+    #[test]
+    fn scheduled_alliance_controls_authored_archer_until_caster_generation_is_lost() {
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let parent_slot = session.state.entity_index;
+        let position = session.state.position;
+        let parent = session.source_arena().handle(parent_slot).unwrap();
+        let (slot, effect) = {
+            let live = &mut session.session.state.live;
+            let archer = construct_campaign_archer(
+                &mut live.economy, &mut live.terrain, 232, position, ARCHER_MAX_LIFE,
+            ).expect("ordinary authored Archer constructor");
+            let effect = crate::native_world::alliance_spell::construct_impact(
+                &mut live.economy, &mut live.terrain,
+            ).expect("Alliance terminal allocation");
+            let row = &mut live.economy.entities[usize::from(effect)];
+            row.source_id = parent_slot;
+            row.record[30..32].copy_from_slice(&parent_slot.to_le_bytes());
+            row.record[74] = 32;
+            row.subspell_index = 40;
+            row.record[154..156].copy_from_slice(&archer.source_entity_index.to_le_bytes());
+            (archer.source_entity_index, effect)
+        };
+        let child = session.source_arena().handle(slot).unwrap();
+        let effect_handle = session.source_arena().handle(effect).unwrap();
+        let original_id = session.source_arena().authored_class5_archer().iter()
+            .find(|state| state.source_entity_index == slot).unwrap().entity_id;
+        session.step_level2_source_pass(0);
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })));
+        let state = session.source_arena().authored_class5_archer().iter()
+            .find(|state| state.source_entity_index == slot).unwrap();
+        assert_eq!(state.entity_id, original_id);
+        assert_eq!((state.stage.mode, state.stage.parent, state.stage.duration), (14, parent_slot, 40));
+        assert!((1..=40).contains(&state.stage.remaining));
+        assert_eq!(session.source_arena().creature_parent_binding(child), Some(parent));
+        assert!(session.source_arena().resolve(effect_handle).is_some());
+        assert!(session.source_arena().entities[usize::from(effect)].drawing_disabled());
+        session.step_level2_source_pass(1);
+        assert!(session.source_arena().resolve(effect_handle).is_none());
+
+        for recycled in [false, true] {
+            let mut control = session.clone();
+            if recycled {
+                let live = &mut control.session.state.live;
+                live.economy.economy.release_slot(parent_slot, None);
+                assert_eq!(live.economy.allocate_source_slot_with_terrain(&mut live.terrain), Some(parent_slot));
+                let mut replacement = crate::native_world::cave_features::new_event(parent_slot, 5, position);
+                replacement.class = 3;
+                replacement.model = 0;
+                replacement.record[67] = 3;
+                replacement.set_life(1_000);
+                live.economy.entities[usize::from(parent_slot)] = replacement;
+                assert_ne!(live.economy.handle(parent_slot), Some(parent));
+            }
+            control.step_level2_source_pass(0);
+            assert!(!control.dispatch_events().iter().any(|event|
+                matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })));
+            let state = control.source_arena().authored_class5_archer().iter()
+                .find(|state| state.source_entity_index == slot).unwrap();
+            assert_eq!(state.entity_id, original_id);
+            if recycled {
+                assert_eq!((state.stage.mode, state.stage.parent, state.stage.index), (10, 0, 0));
+            } else {
+                assert_eq!((state.stage.mode, state.stage.parent), (14, parent_slot));
+            }
+        }
+    }
+
+    #[test]
+    fn allied_archer_reads_typed_creature_current_parent_before_selecting_attack() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let runtime = session.session.state.live.core.runtime.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let parent = session.state.entity_index;
+        let position = session.state.position;
+        let archer = construct_campaign_archer(&mut arena, &mut terrain, 232, position, ARCHER_MAX_LIFE)
+            .expect("ordinary authored Archer");
+        let firefly = arena.economy.allocate_authored_firefly_unbound(0, position, 1_000, &terrain)
+            .expect("ordinary unbound Firefly");
+        crate::world::effects::sync_position(
+            &mut arena, &mut terrain, firefly.source_entity_index, firefly.position, true, false,
+        ).unwrap();
+        let bee = crate::native_world::creatures::bee::mc2::allocate_authored(
+            &mut arena, &mut terrain, 149, position, 1_000,
+        ).expect("ordinary authored Bee on Day terrain");
+        let tile = ((position.x >> 8) as u8, (position.y >> 8) as u8);
+        let order = arena.economy.map_chains.entity_chain(tile.0, tile.1);
+        assert!(order.contains(&archer.source_entity_index));
+        assert!(order.contains(&firefly.source_entity_index));
+        assert!(order.contains(&bee.source_entity_index));
+        for target in [archer.source_entity_index, firefly.source_entity_index, bee.source_entity_index] {
+            let effect = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain)
+                .expect("Alliance terminal");
+            let row = &mut arena.entities[usize::from(effect)];
+            row.source_id = parent;
+            row.record[30..32].copy_from_slice(&parent.to_le_bytes());
+            row.record[74] = 1;
+            row.subspell_index = 40;
+            row.record[154..156].copy_from_slice(&target.to_le_bytes());
+            let impact = crate::native_world::alliance_spell::step_impact(&mut arena, effect, &order)
+                .expect("source Alliance impact");
+            assert!(impact.affected_entities.contains(&target));
+        }
+        for (target, is_bee, same_parent) in [
+            (firefly.source_entity_index, false, true),
+            (firefly.source_entity_index, false, false),
+            (bee.source_entity_index, true, true),
+            (bee.source_entity_index, true, false),
+        ] {
+            let mut control = arena.clone();
+            let mut world = terrain.clone();
+            let mut control_runtime = runtime.clone();
+            control.entities[usize::from(parent)].record[154..156]
+                .copy_from_slice(&target.to_le_bytes());
+            if !same_parent {
+                if is_bee {
+                    control.economy.bee_creatures.iter_mut()
+                        .find(|state| state.source_entity_index == target)
+                        .unwrap().parent_entity_index = 0;
+                } else {
+                    control.economy.authored_fireflies.iter_mut()
+                        .find(|state| state.source_entity_index == target)
+                        .unwrap().parent_entity_index = 0;
+                }
+            }
+            let relation = relations_in_arena(&control).into_iter()
+                .find(|row| row.slot == target).unwrap();
+            assert_eq!(relation.stage_mode, 14);
+            assert_eq!(relation.parent, if same_parent { parent } else { 0 });
+            let families = control.rebuilt_class5_model_slots();
+            step_source_runtime(&mut control, &mut control_runtime, &mut world, particles,
+                archer.source_entity_index, &families, &[parent], &[]).unwrap();
+            let root = control.authored_class5().iter()
+                .find(|row| row.source_entity_index == archer.source_entity_index).unwrap();
+            if same_parent {
+                assert_eq!(root.word_0x96_150, 0, "same-parent allied creature is not attacked");
+                assert_eq!(root.action, ARCHER_ACTION_IDLE_VISUAL);
+            } else {
+                assert_eq!(root.word_0x96_150, target);
+                assert_eq!(root.action, ARCHER_ACTION_ATTACK,
+                    "the near-identical different-parent creature remains a real target");
+                for _ in 0..=ARCHER_DESCRIPTOR_CADENCE {
+                    let families = control.rebuilt_class5_model_slots();
+                    step_source_runtime(&mut control, &mut control_runtime, &mut world, particles,
+                        archer.source_entity_index, &families, &[parent], &[]).unwrap();
+                    if control.authored_class5_archer_children().iter().any(|child|
+                        child.active && child.parent_entity_index == archer.source_entity_index)
+                    {
+                        break;
+                    }
+                }
+                let arrow = control.authored_class5_archer_children().iter().find(|child|
+                    child.active && child.parent_entity_index == archer.source_entity_index)
+                    .expect("the ordinary attack callback allocates its real arrow");
+                assert_eq!((arrow.source_class, arrow.model, arrow.xtype, arrow.xsubtype),
+                    (9, 13, 5, if is_bee { 2 } else { 19 }));
+            }
         }
     }
 

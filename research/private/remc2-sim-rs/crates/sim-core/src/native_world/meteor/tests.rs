@@ -58,6 +58,68 @@ fn exhaust(arena: &mut SourceArena) {
 }
 
 #[test]
+fn meteor_common_constructor_preserves_tiers_and_source_position_alias() {
+    let (session, holder_slot, parent) = ready_holder();
+    let particles = session.session.definition.presentation.particles.clone();
+    let live = &session.session.state.live;
+    let position = Position { x: 0x4000, y: 0x5000, z: 1200 };
+    for tier in 0..3_u8 {
+        let mut arena = live.economy.clone();
+        let mut terrain = live.terrain.clone();
+        let slot = construct(&mut arena, &mut terrain, &particles, position, None, 20, tier)
+            .unwrap()
+            .expect("source constructor allocates its ordinary flyer");
+        let row = &arena.entities[usize::from(slot)];
+        let rule = RULES.tiers[usize::from(tier)];
+        assert_eq!((row.class, row.model, row.action), (9, 3, 3));
+        assert_eq!((row.position, row.actual_speed), (position, RULES.projectile_speed + 20));
+        assert_eq!((row.subspell_index, row.record[74]), (rule.damage, rule.impact_duration));
+        assert_eq!((row.record[71], row.record[72], row.particle_parameter_index), (10, 17, Some(76)));
+        assert_eq!((row.source_id, word(row, 42), word(row, 154)), (slot, 0, 0));
+        assert_eq!(arena.economy.source_rng.get(&slot), Some(&row.entity_rng));
+
+        let mut arena = live.economy.clone();
+        let mut terrain = live.terrain.clone();
+        let mut holder = live.shared_spells.pickup(holder_slot).unwrap().clone();
+        holder.active_value = 0;
+        put(&mut holder, 50, 0);
+        holder.apply_nyphur_spell_profile(
+            crate::spell_activation::level2_set_spell_profile(9, tier).unwrap(),
+            tier,
+        );
+        arena.entities[usize::from(holder_slot)] = holder;
+        let player_shot = launch(
+            &mut arena, &mut terrain, &particles, holder_slot, parent, CastInput::default(),
+        ).unwrap().expect("ordinary player launch allocates its flyer");
+        let row = &arena.entities[usize::from(player_shot)];
+        assert_eq!((row.subspell_index, row.record[74]), (rule.damage, rule.impact_duration));
+        assert_eq!((row.source_id, word(row, 42)), (parent, holder_slot));
+    }
+
+    let mut arena = live.economy.clone();
+    let mut terrain = live.terrain.clone();
+    let before = arena.economy.free_slot_count();
+    assert!(construct(&mut arena, &mut terrain, &particles, position, None, 0, 3).is_err());
+    assert_eq!(arena.economy.free_slot_count(), before);
+    exhaust(&mut arena);
+    assert_eq!(construct(&mut arena, &mut terrain, &particles, position, None, 0, 0).unwrap(), None);
+
+    // Adversarial allocator boundary: the position pointer addresses the
+    // replacement slot itself. The source clears that row before copying it.
+    let flags = arena.entities[usize::from(parent)].control_flags;
+    let pointed_position = arena.entities[usize::from(parent)].position;
+    arena.entities[usize::from(parent)]
+        .set_control_flags(flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    arena.rebuild_source_free_arena();
+    let slot = construct(&mut arena, &mut terrain, &particles, pointed_position, Some(parent), 0, 0)
+        .unwrap()
+        .expect("frozen replacement cursor admits the pointed source row");
+    assert_eq!(slot, parent);
+    assert_eq!(arena.entities[usize::from(slot)].position, Position::default());
+    assert_eq!(arena.entities[usize::from(slot)].subspell_index, RULES.tiers[0].damage);
+}
+
+#[test]
 fn meteor_admission_uses_source_parent_and_castle_thresholds() {
     let (session, slot, parent_slot) = ready_holder();
     let live = &session.session.state.live;

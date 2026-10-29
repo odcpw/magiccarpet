@@ -997,7 +997,9 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 {
                     let economy = &mut self.owner.session.state.live.economy;
                     economy.rebuild_possession_guidance_source_slots();
-                    economy.rebuild_owner_mana_projection_at_source_boundary();
+                    economy.economy.rebuild_owner_mana_projection_at_source_boundary(
+                        &economy.entities,
+                    );
                     economy.rebuild_settlement_mana_rows(
                         self.owner.session.state.live.ordinary.houses(),
                     );
@@ -5382,6 +5384,9 @@ impl Mc2Simulation {
                 )
                 .map_err(NativeWorldError::new)?;
             }
+            if missing.iter().any(|(family, _)| *family == BEYOND_SIGHT_FAMILY) {
+                live.player_visibility.bind_beyond_sight(&live.economy, &live.shared_spells.local_player);
+            }
         }
 
         // InitialiseSpells retains the learned 0x3E9 flags but clears the
@@ -5879,6 +5884,10 @@ impl Mc2Simulation {
                 u16::from(runtime.local_player_slot),
             );
         let nyphur_dispatcher = RivalWizardRoster::from_source_reset(&economy, &players, &mission)?;
+        let player_visibility = player_visibility::PlayerVisibility::from_reset(
+            &economy,
+            &players[usize::from(runtime.local_player_slot)],
+        );
         let live = Mc2LiveState {
             core: CanonicalRuntimeState {
                 state,
@@ -5896,6 +5905,7 @@ impl Mc2Simulation {
             mission,
             fireball_launch_sound_id: crate::level1_mission::FIREBALL_LAUNCH_SOUND,
             nyphur_dispatcher,
+            player_visibility,
             source_frame_timing_index: 0,
             source_setting_30: crate::campaign::source_setting::SourceSetting30::new(),
             source_model45_building_selectors,
@@ -6930,7 +6940,7 @@ impl Mc2Simulation {
                     (
                         source.source_entity_index,
                         source.owner_entity_index,
-                        crate::level1_mission::FIREBALL_RENDER_INDEX,
+                        source.visual_index,
                         source.yaw,
                         source.position,
                         source.control_flags,
@@ -8459,6 +8469,13 @@ impl Mc2Simulation {
     /// refresh the canonical player record. Scheduler cleanup and later
     /// source slots consume these canonical rows.
     fn bind_rival_acquisition(&mut self, outcome: SpellHolderAcquisitionOutcome) -> Result<()> {
+        if outcome.family == BEYOND_SIGHT_FAMILY
+            && outcome.parent_entity_index == self.session.state.live.shared_spells.local_player.entity_index
+        {
+            self.commit_imported_spell_source_projection(outcome.source_slot)?;
+            let live = &mut self.session.state.live;
+            live.player_visibility.bind_beyond_sight(&live.economy, &live.shared_spells.local_player);
+        }
         let Some(player) = self.session.state.live.shared_spells.players().iter()
             .find(|player| player.is_ai && player.entity_index == outcome.parent_entity_index)
             .cloned() else { return Ok(()) };
@@ -9141,81 +9158,65 @@ impl Mc2Simulation {
         selection: CampaignSelection,
     ) -> Result<Level2NyphurVisibility> {
         let participant = self.campaign_presentation_opponent(selection)?;
-        if participant.player_slot == u8::MAX && participant.entity_index == u16::MAX {
-            return Ok(Level2NyphurVisibility {
-                owner_visibility_mode: 0,
-                beyond_sight_holder_present: false,
-                beyond_sight_active: false,
-                beyond_sight_tier: None,
-                family4_gate_active: false,
-                visible_to_local_player: false,
-            });
-        }
-        let owner = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .players
-            .get(usize::from(participant.player_slot))
-            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur visibility owner is absent"))?;
-        let owner_visibility_mode = owner.visibility_mode;
-        let beyond_sight = self.session.state.live.shared_spells.beyond_sight;
-        let local_entity_index = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .local_player
-            .entity_index;
-        let beyond_sight_holder_present =
-            beyond_sight.is_some_and(|state| state.parent_entity_index == local_entity_index);
-        let beyond_sight_active = beyond_sight.is_some_and(|state| {
-            state.parent_entity_index == local_entity_index && state.active_value > 0
-        });
-        let beyond_sight_tier = beyond_sight
-            .filter(|state| state.parent_entity_index == local_entity_index)
-            .map(|state| state.tier);
-        let family4_holder_index = owner.enabled_spell_holders[4];
-        let family4_gate_active = family4_holder_index != 0
-            && (self
-                .session
-                .state
-                .live
-                .economy
-                .entities
-                .get(usize::from(family4_holder_index))
-                .is_some_and(|entity| entity.active_value != 0)
-                || self
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .pickup(family4_holder_index)
-                    .is_some_and(|entity| entity.active_value != 0)
-                || self
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .holders
-                    .iter()
-                    .find(|entity| entity.index == family4_holder_index)
-                    .is_some_and(|entity| entity.active_value != 0));
-        let visible_to_local_player = match beyond_sight_tier {
-            None => true,
-            Some(0) => owner_visibility_mode == 0 && !family4_gate_active,
-            Some(1) => !family4_gate_active,
-            Some(2..) => true,
+        self.campaign_player_visibility(selection, participant.player_slot)
+    }
+
+    /// GameUI sub_63570 for one current participant, including every live
+    /// single-player rival rather than only the opening Nyphur row.
+    pub fn campaign_player_visibility(
+        &self,
+        selection: CampaignSelection,
+        player_slot: u8,
+    ) -> Result<Level2NyphurVisibility> {
+        self.validate_campaign_presentation_selection(selection)?;
+        let live = &self.session.state.live;
+        let local = &live.core.players[usize::from(live.core.runtime.local_player_slot)];
+        let target = live.core.players.get(usize::from(player_slot))
+            .filter(|player| player.slot == player_slot
+                && player_slot < live.core.runtime.player_count);
+        Ok(live.player_visibility.snapshot(&live.economy, &live.nyphur_dispatcher, local, target))
+    }
+
+    pub(crate) fn current_beyond_sight_holder(&self) -> Option<&EntitySnapshot> {
+        let live = &self.session.state.live;
+        live.player_visibility.local_holder(
+            &live.economy,
+            &live.core.players[usize::from(live.core.runtime.local_player_slot)],
+        )
+    }
+
+    /// Read the current bound physical row, including after expiry or reuse.
+    pub fn beyond_sight_state(&self) -> Option<BeyondSightState> {
+        let live = &self.session.state.live;
+        live.player_visibility.status_snapshot(
+            &live.economy,
+            &live.core.players[usize::from(live.core.runtime.local_player_slot)],
+            live.shared_spells.beyond_sight_state(),
+        )
+    }
+
+    /// The retained C ABI activation shares the source holder authority with
+    /// normal input; its next scheduled callback must see this exact timer.
+    pub fn activate_beyond_sight_holder(
+        &mut self,
+        direction_mask: u16,
+        help_enabled: bool,
+    ) -> Result<bool> {
+        let Some(state) = self.beyond_sight_state() else { return Ok(false); };
+        let slot = state.holder_entity_index;
+        self.refresh_imported_spell_source_projection(slot)?;
+        let accepted = {
+            let live = &mut self.session.state.live;
+            let player = &live.core.players[usize::from(live.core.runtime.local_player_slot)];
+            let parent = live.economy.entities.get_mut(usize::from(state.parent_entity_index))
+                .ok_or_else(|| NativeWorldError::new("current Beyond Sight parent is absent"))?;
+            live.shared_spells.activate_current_beyond_sight(
+                state, parent, player, direction_mask, help_enabled,
+            )
         };
-        Ok(Level2NyphurVisibility {
-            owner_visibility_mode,
-            beyond_sight_holder_present,
-            beyond_sight_active,
-            beyond_sight_tier,
-            family4_gate_active,
-            visible_to_local_player,
-        })
+        self.commit_imported_spell_source_projection(slot)?;
+        self.sync_level2_spell_fire_context();
+        Ok(accepted)
     }
 
     #[must_use]
@@ -10519,6 +10520,26 @@ impl Level2EconomyTestView<'_> {
 
     pub(crate) fn step_castle_child_terminal_slot(&mut self, source_slot: u16) -> bool {
         let live = &mut self.session.session.state.live;
+        if crate::native_world::castle_defense::is_controller(&live.economy, source_slot) {
+            let context = source_target::Context {
+                spells: Some(&live.shared_spells),
+                particles: Some(&self.session.session.definition.presentation.particles),
+                ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+            };
+            let step = crate::native_world::castle_defense::step(
+                &mut live.economy, &mut live.terrain,
+                &self.session.session.definition.presentation.particles,
+                context, source_slot, live.core.state.entity_index,
+            ).expect("actual Castle controller callback");
+            if let Some((entity_index, sound_id)) = step.sound {
+                live.shared_spells.emit_flight_effect(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::CastleDefenseFirstShot,
+                    entity_index, player_index: -1, sound_id,
+                });
+            }
+            return step.live;
+        }
         let auxiliary_membership = live
             .economy
             .economy
@@ -14499,7 +14520,7 @@ impl Mc2Simulation {
                                     5,
                                     25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
                                 )
-                                | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 27 | 31)
+                                | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 31)
                                 | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
@@ -16103,6 +16124,7 @@ impl Mc2Simulation {
                     .live
                     .shared_spells
                     .award_spell_experience(owner, family, i32::from(hits));
+                publish_spell_progression(&mut self.session.state.live, owner, family);
             }
         }
         Ok(())
@@ -24923,6 +24945,40 @@ impl Mc2Simulation {
             }
             Level2DynamicArenaKind::CastleChild | Level2DynamicArenaKind::CastleController => {
                 let live = &mut self.session.state.live;
+                if crate::native_world::castle_defense::is_controller(&live.economy, source_slot) {
+                    let context = source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        map_type: Some(live.terrain.map_type()),
+                        player: Some((live.core.state.entity_index, live.core.state.position,
+                            live.player_life)),
+                        player_orientation: Some((live.core.state.yaw,
+                            live.core.state.roll_accumulator)),
+                        particles: Some(&self.session.definition.presentation.particles),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    match crate::native_world::castle_defense::step(
+                        &mut live.economy, &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        context, source_slot, live.core.state.entity_index,
+                    ) {
+                        Ok(step) => {
+                            if let Some((entity_index, sound_id)) = step.sound {
+                                live.shared_spells.emit_flight_effect(FlightEvent::PrepareSound {
+                                    #[cfg(test)]
+                                    audio_site: crate::MissionAudioSite::CastleDefenseFirstShot,
+                                    entity_index, player_index: -1, sound_id,
+                                });
+                            }
+                            step.live
+                        }
+                        Err(message) => {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error {
+                                pass, source_slot, message,
+                            });
+                            false
+                        }
+                    }
+                } else {
                 let current_membership;
                 let auxiliary_membership = match auxiliary_membership {
                     Some(membership) => membership,
@@ -24940,6 +24996,7 @@ impl Mc2Simulation {
                     auxiliary_membership,
                     &mut live.terrain,
                 )
+                }
             }
             Level2DynamicArenaKind::CastleRoot => true,
         };
@@ -25833,6 +25890,10 @@ impl Mc2Simulation {
         .map_err(NativeWorldError::new)?;
         live.player_life = actor.life;
         live.player_protection_ticks = 100;
+        live.player_visibility.bind_beyond_sight(
+            &live.economy,
+            &live.shared_spells.local_player,
+        );
         for player in &mut live.core.players {
             if let Some(authority) = live
                 .shared_spells
@@ -27752,6 +27813,7 @@ mod tests {
             let mut campaign =
                 CampaignSession::open(&package, CampaignSelection::ordinary(level).unwrap())
                     .unwrap();
+            eprintln!("Army case: level {level}, tier {tier}, model {model}, package {package_name}");
             if level == 6 {
                 // This ordinary package starts with its real Army pickup;
                 // use the source overlap and acquisition cadence to obtain it.
@@ -28017,7 +28079,11 @@ mod tests {
                     &campaign, player, holder,
                 );
             }
+            if level == 1 && model == 19 {
+                summon_army::tests::assert_clear_terrain_survivors(&campaign, player, holder);
+            }
             let mut saw_flyer = false;
+            let mut activation_observations = Vec::new();
             let mut saw_paid_cast = false;
             let mut saw_cooldown = false;
             let mut saw_recast_rejected = false;
@@ -28028,6 +28094,8 @@ mod tests {
             let mut observed_army_children = Vec::new();
             let mut terminal_ring_observations = Vec::new();
             let mut child_damage_observations = Vec::new();
+            let mut firefly_blockage_observations = Vec::new();
+            let mut terrain_death_children = BTreeSet::new();
             let mut last_firefly_visits = BTreeMap::new();
             let mut expired_creatures = BTreeSet::new();
             let mut saw_creature_reclaim = false;
@@ -28057,6 +28125,8 @@ mod tests {
                         fire.caster.mana = army_tier.mana_cost;
                     }
                 }
+                let population_before_turn = campaign.simulation().economy().source_creature_population;
+                let terrain_deaths_before_turn = terrain_death_children.len();
                 campaign.step(
                     if turn == 0 || turn == recast_turn {
                         PlayerCommand {
@@ -28080,6 +28150,36 @@ mod tests {
                     session.dispatch_events()
                 );
                 let arena = &session.session.state.live.economy;
+                if turn <= recast_turn {
+                    let parent = &arena.entities[usize::from(player)];
+                    let holder_row = session.shared_spells().pickup(holder).unwrap();
+                    let local = &session.shared_spells().local_player;
+                    let sounds = session.dispatch_events().iter().filter_map(|event| match event {
+                        Mc2DispatchEvent::Economy { source_slot, event: Level2EconomyEvent::PreparedSound {
+                            source_entity_index, entity_index, sound_id: 9, ..
+                        }, .. } => Some((*source_slot, *source_entity_index, *entity_index)),
+                        _ => None,
+                    }).collect::<Vec<_>>();
+                    let callbacks = session.cf10_production_schedule_receipts().iter().filter_map(|receipt| match receipt {
+                        crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                            if matches!(selector.registry_key().selector,
+                                crate::campaign::spec::BehaviorSelector::ClassAction { class: 9, action: 25 }) => Some(*slot),
+                        _ => None,
+                    }).collect::<Vec<_>>();
+                    let products = arena.entities.iter().filter(|row| row.active
+                        && matches!((row.class, row.model), (9, 24) | (10, 72)))
+                        .map(|row| (row.index, row.class, row.model, row.life, row.phase,
+                            row.drawing_disabled(), u16::from_le_bytes([row.record[42], row.record[43]])))
+                        .collect::<Vec<_>>();
+                    activation_observations.push((turn,
+                        (parent.action, parent.life, parent.mana, parent.mana_regen, parent.position,
+                            parent.yaw, parent.pitch, parent.control_flags),
+                        (holder_row.action, holder_row.level_gate, holder_row.active_value,
+                            holder_row.activation_value, holder_row.max_mana, holder_row.mana_regen,
+                            holder_row.source_spell_parent_entity_index()),
+                        (local.left_spell_slot_raw, local.right_spell_slot_raw, local.selected_spell_ui_index),
+                        arena.economy.free_slot_count(), sounds, callbacks, products));
+                }
                 for row in &arena.entities {
                     if row.active
                         && (row.class, row.model, row.action) == (9, 24, 25)
@@ -28130,12 +28230,49 @@ mod tests {
                             .find(|row| row.source_entity_index == identity.handle.source_slot);
                         let sidecar = arena.economy.authored_fireflies().iter()
                             .find(|row| row.source_entity_index == identity.handle.source_slot);
+                        if model == 19 && !identity.living
+                            && let (Some(row), Some(state)) = (row, sidecar)
+                            && state.movement_blocked
+                        {
+                            summon_army::tests::assert_terrain_death_reclaims(session, identity.handle);
+                            terrain_death_children.insert(identity.handle.source_slot);
+                            // A fatal sub_1B8C0 retry retains position and
+                            // stores its opposite heading. Capture the real
+                            // terrain at the first observation for comparison.
+                            let terrain = &session.session.state.live.terrain;
+                            let initial_yaw = crate::ground_creature_motion::opposite_heading(row.yaw);
+                            let motion = crate::ground_creature_motion::step_ground_creature_motion(
+                                row.position, initial_yaw, row.roll, row.actual_speed, terrain,
+                                crate::ground_creature_motion::GroundCreatureMotionConfig {
+                                    half_width: row.shift_rot_x, half_height: row.shift_rot_y,
+                                    ground_clearance: 51, descent: -8, turn_limit: 113,
+                                    terrain_mask: u32::MAX, maximum_tile_slope: 20,
+                                },
+                            );
+                            let tile_x = row.position.x & 0xff00;
+                            let tile_y = row.position.y & 0xff00;
+                            let slopes = (-1_i16..=1).flat_map(|dy| (-1_i16..=1).map(move |dx| {
+                                let position = Position { x: tile_x.wrapping_add_signed(dx * 256),
+                                    y: tile_y.wrapping_add_signed(dy * 256), z: 0 };
+                                (dx, dy, crate::ground_creature_motion::tile_slope_metric(terrain, position))
+                            })).collect::<Vec<_>>();
+                            firefly_blockage_observations.push((turn, identity.handle, row.yaw,
+                                row.roll, row.actual_speed, motion, slopes));
+                        }
                         observed_army_children.push((turn, identity.handle, identity.living,
                             (row.map(|row| (row.action, row.life, row.drawing_enabled, row.source_byte_3e,
                                 row.word_0x26, row.position)),
                              sidecar.map(|row| (row.stage_var2, row.word_0x2e, row.parent_entity_index,
                                 row.movement_blocked)))));
                     }
+                }
+                let new_terrain_deaths = terrain_death_children.len() - terrain_deaths_before_turn;
+                if new_terrain_deaths != 0 {
+                    // Army construction does not increment source364D2;
+                    // each fatal sub_1B8C0 visit decrements it exactly once.
+                    assert_eq!(arena.economy.source_creature_population,
+                        population_before_turn.saturating_sub(u32::try_from(new_terrain_deaths).unwrap()),
+                        "fatal newborns reach the authoritative population sink");
                 }
                 for event in session.dispatch_events() {
                     if let Mc2DispatchEvent::Economy {
@@ -28248,7 +28385,7 @@ mod tests {
                         }
                     }
                 }
-                if summoned.len() == expected_count
+                if summoned.len() + terrain_death_children.len() == expected_count
                     && saw_summoned_upkeep
                     && rings
                         .values()
@@ -28262,7 +28399,8 @@ mod tests {
                     break;
                 }
             }
-            assert!(saw_flyer, "public cast produces ordinary 9/24/25");
+            assert!(saw_flyer,
+                "public cast produces ordinary 9/24/25: level {level}, tier {tier}, model {model}, holder {holder}, player {player}; activation={activation_observations:?}; rings={rings:?}; births={observed_army_children:?}");
             assert!(
                 saw_cooldown,
                 "public cast starts the selected tier cooldown"
@@ -28280,11 +28418,15 @@ mod tests {
                 expected_count,
                 "scheduled impact publishes ring count for level {level}, tier {tier}, model {model}"
             );
-            assert_eq!(
-                summoned.len(),
-                expected_count,
-                "scheduled rings allocate the real family for level {level}, tier {tier}, model {model}; observed={observed_army_children:?}; terminal_rings={terminal_ring_observations:?}; child_damage={child_damage_observations:?}"
-            );
+            assert_eq!(observed_army_children.len(), expected_count,
+                "all requested Army constructors return real generation-bound births");
+            if terrain_death_children.is_empty() {
+                assert_eq!(summoned.len(), expected_count,
+                    "scheduled rings allocate the real living family for level {level}, tier {tier}, model {model}");
+            } else {
+                assert_eq!(summoned.len() + terrain_death_children.len(), expected_count,
+                    "every missing survivor has the exact source terrain-death and reclaim proof; observed={observed_army_children:?}; terminal_rings={terminal_ring_observations:?}; child_damage={child_damage_observations:?}; blockage={firefly_blockage_observations:?}");
+            }
             assert!(
                 saw_summoned_upkeep,
                 "summoned creatures reach their actual scheduled lifetime consumer"
@@ -30635,8 +30777,11 @@ mod tests {
         // Use a real imported Builder identity to check the source-supported
         // post-build callback band. The package kind/model stay Builder;
         // wrong handler and wrong semantic-kind controls remain rejected.
+        // This retained export has the same authored/entity/BLDGPRM bytes
+        // as the earlier package and includes the real reset-House BUILD
+        // footprints required by its ordinary entry constructor.
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level7");
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level7");
         let campaign = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
             .expect("actual Night7 package retains imported Builders");
         let builder = campaign.simulation().creature_runtime_census()
@@ -35018,9 +35163,17 @@ mod tests {
         let mut expected_projectile_position = expected_launch_position;
         let mut expected_projectile_pitch = expected_pitch;
         if projectile_visited {
+            // sub_1CC20 aims at the actor's position; the later sub_65820
+            // visit guides toward the current actor's collision centre.
+            let guidance_target = Position {
+                z: source_target_position.z.wrapping_add(
+                    live.economy.entities[usize::from(player_entity_index)].array_yaw(),
+                ),
+                ..source_target_position
+            };
             let (_, desired_pitch) = crate::level1_mission::projectile_guidance_angles(
                 expected_launch_position,
-                source_target_position,
+                guidance_target,
             );
             expected_projectile_pitch = expected_projectile_pitch.wrapping_add(crate::turn_toward(
                 expected_projectile_pitch,
@@ -35435,7 +35588,7 @@ mod tests {
                 1,
                 1,
                 expected_trigger_position,
-                if trigger_visited { 0x401 } else { 1 },
+                if trigger_visited { 0x405 } else { 5 },
                 !trigger_visited,
                 !trigger_visited,
             )
@@ -35444,12 +35597,20 @@ mod tests {
             trigger.source_byte_3e,
             (trigger.source_entity_index as u8).wrapping_add(u8::from(trigger_visited))
         );
+        let trigger_generation = live.economy.slot_generation(trigger.source_entity_index);
+        let is_trigger_visit = |plan: &Level2ResolvedSourcePlan| {
+            plan.observed_dynamic_cursor_row().is_some_and(|row| {
+                row.source_slot == trigger.source_entity_index
+                    && row.generation == trigger_generation
+                    && row.kind == Level2DynamicArenaKind::TerrainStripCloseTrigger
+            })
+        };
         let receipts = campaign.simulation().cf10_production_schedule_receipts();
         assert_eq!(
             receipts.iter().any(|receipt| matches!(
                 receipt,
-                ScheduleReceipt::CallbackCompleted { slot, .. }
-                    if *slot == trigger.source_entity_index
+                ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                    if *slot == trigger.source_entity_index && is_trigger_visit(selector)
             )),
             trigger_visited
         );
@@ -35474,7 +35635,7 @@ mod tests {
                 live.economy.entities[usize::from(TERRAIN_CONTROLLER_SLOT)].life,
             ),
             (
-                0x401,
+                0x405,
                 false,
                 false,
                 (trigger.source_entity_index as u8).wrapping_add(1),
@@ -35484,13 +35645,13 @@ mod tests {
         let receipts = campaign.simulation().cf10_production_schedule_receipts();
         assert!(receipts.iter().any(|receipt| matches!(
             receipt,
-            ScheduleReceipt::CallbackCompleted { slot, .. }
-                if *slot == trigger.source_entity_index
+            ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                if *slot == trigger.source_entity_index && is_trigger_visit(selector)
         )));
         assert!(receipts.iter().any(|receipt| matches!(
             receipt,
-            ScheduleReceipt::EpilogueCompleted { slot, .. }
-                if *slot == trigger.source_entity_index
+            ScheduleReceipt::EpilogueCompleted { slot, original, .. }
+                if *slot == trigger.source_entity_index && is_trigger_visit(original)
         )));
 
         let terrain_before_close = campaign.terrain_hash();

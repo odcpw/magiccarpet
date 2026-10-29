@@ -4050,6 +4050,15 @@ impl Mc2CampaignBackend {
         use crate::campaign::source_arena::SourceEntityView;
         use crate::native_world::Level2DynamicArenaKind;
 
+        if holder.model == 12
+            && self
+                .campaign
+                .simulation()
+                .current_beyond_sight_holder()
+                .is_none_or(|current| current.index != holder.index)
+        {
+            return None;
+        }
         let arena = self.campaign.simulation().source_arena();
         let handle = arena.handle(holder.index)?;
         match arena.resolve(handle)? {

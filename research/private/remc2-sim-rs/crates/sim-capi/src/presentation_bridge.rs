@@ -120,6 +120,22 @@ const DAY_MINIMAP_PALETTE: CampaignMinimapPalette = CampaignMinimapPalette {
     v91: 0xE8,
 };
 
+// The same sealed CLRN indices used by the original Night classifier in
+// level1_mission; active Beyond Sight also uses Night player colours.
+const NIGHT_MINIMAP_PALETTE: CampaignMinimapPalette = CampaignMinimapPalette {
+    map_type: MapType::Night,
+    generic_entity: 0x84,
+    civilians: 23,
+    marker_stone: 23,
+    unpossessed_building: 177,
+    spells: 119,
+    unpossessed_building_2: 215,
+    creature: 176,
+    objective_location: 184,
+    v90: 0x84,
+    v91: 0xE8,
+};
+
 // GameUI.cpp::DrawMinimapEntities_B_61A00 uses the active environment's
 // colour lookup. Retained CLRC-0 (sha256 7065c63f39233435a2934397f075c495
 // ae2b6107a98d7d499082f9731d9dacdd), offsets 4095/15/136/2184/3840/3855.
@@ -516,24 +532,38 @@ fn campaign_map_plan(
         .get(local_player_slot)
         .ok_or_else(|| "level2 minimap local player is unavailable".to_owned())?;
     let local_entity_index = local_player.entity_index;
-    let nyphur = session
-        .campaign_presentation_opponent(selection)
-        .map_err(|error| error.to_string())?;
+    let mut participants = session
+        .players()
+        .iter()
+        .filter(|player| {
+            player.slot < session.runtime().player_count
+                && usize::from(player.slot) != local_player_slot
+        })
+        .map(|player| {
+            session
+                .campaign_player_visibility(selection, player.slot)
+                .map(|visibility| (player, visibility))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    participants.sort_unstable_by_key(|(player, _)| player.slot);
+    // Retain the opening HUD's compact flags while applying visibility to
+    // every participant separately in both source entity and name passes.
     let visibility = session
-        .campaign_presentation_visibility(selection)
+        .campaign_player_visibility(
+            selection,
+            participants
+                .first()
+                .map_or(u8::MAX, |(player, _)| player.slot),
+        )
         .map_err(|error| error.to_string())?;
-    let palette = if selection.map_type_id == 2 {
-        &CAVE_MINIMAP_PALETTE
-    } else {
-        &DAY_MINIMAP_PALETTE
+    let palette = match selection.map_type_id {
+        1 => &NIGHT_MINIMAP_PALETTE,
+        2 => &CAVE_MINIMAP_PALETTE,
+        _ => &DAY_MINIMAP_PALETTE,
     };
     // GameUI's v83 is holder.word_2E, not possession of a family-12 holder.
-    let family12_enabled = local_player.enabled_spell_holders[12] != 0
-        && session.entities().iter().any(|entity| {
-            entity.index == local_player.enabled_spell_holders[12]
-                && entity.active
-                && entity.active_value != 0
-        });
+    let family12_enabled = visibility.beyond_sight_active;
 
     let mut inputs = Vec::new();
     for entity in session.entities() {
@@ -547,12 +577,6 @@ fn campaign_map_plan(
                 source.active && source.model == 19 && source.source_entity_index == entity.index
             })
         {
-            continue;
-        }
-        let source_player_entity_index = entity.source_player_entity_index();
-        let is_nyphur = entity.index == nyphur.entity_index
-            || source_player_entity_index == nyphur.entity_index;
-        if is_nyphur && !visibility.visible_to_local_player {
             continue;
         }
         let (input, parameter_record_index) =
@@ -603,11 +627,6 @@ fn campaign_map_plan(
         } else {
             0
         };
-        if (slot == nyphur.entity_index || player_link == nyphur.entity_index)
-            && !visibility.visible_to_local_player
-        {
-            continue;
-        }
         let is_player = |index: u16| {
             session.entities().iter().any(|candidate| {
                 candidate.index == index && candidate.active && candidate.class == 3
@@ -640,9 +659,9 @@ fn campaign_map_plan(
 
     let mut entities = Vec::new();
     for (input, parameter_record_index) in inputs {
-        let command = if selection == CampaignSelection::LEVEL1 {
-            // The qualified Night package uses DrawMinimapEntities' Night
-            // classifier directly; Day palette overrides are a separate branch.
+        let command = if selection.map_type_id == 1 && !(input.class == 3 && input.model == 3) {
+            // Preserve the qualified Night classifier. Mines use the shared
+            // source owner/active-Beyond gate and actual player-colour selector.
             level1_minimap_entity_command(&session.state, input)
         } else {
             level2_day_minimap_command(
@@ -673,24 +692,22 @@ fn campaign_map_plan(
     }
 
     // DrawMinimapEntities' separate Beyond Sight player pass follows the
-    // ordinary entity pass. The opening campaigns have one nonlocal player,
-    // represented by the canonical opponent and sub_63570 visibility helper.
+    // ordinary entity pass, in player-table order (GameUI.cpp sub_63570).
+    // Its held-tier predicate applies here; ordinary owned creatures and
+    // objects retain their own source classifiers above.
     let mut labels = Vec::new();
-    if family12_enabled && visibility.visible_to_local_player {
-        if let Some((player, entity)) = session
-            .players()
-            .get(usize::from(nyphur.player_slot))
-            .filter(|player| player.is_ai && player.entity_index != local_entity_index)
-            .and_then(|player| {
-                session
-                    .entities()
-                    .iter()
-                    .find(|entity| {
-                        entity.index == player.entity_index && entity.active && entity.life >= 0
-                    })
-                    .map(|entity| (player, entity))
-            })
-        {
+    if family12_enabled {
+        for (player, visibility) in &participants {
+            if !visibility.visible_to_local_player {
+                continue;
+            }
+            let Some(entity) = session
+                .entities()
+                .get(usize::from(player.entity_index))
+                .filter(|entity| entity.active && entity.class == 3 && entity.life >= 0)
+            else {
+                continue;
+            };
             let (x, y) = geometry.project(map_view, entity.position);
             let palette_index = level2_day_player_colour(session, entity.index, false, palette)
                 .ok_or_else(|| "Beyond Sight player colour is unavailable".to_owned())?;
@@ -715,7 +732,9 @@ fn campaign_map_plan(
                 x,
                 y,
                 palette_index,
-                text: SOURCE_WIZARD_NAMES[usize::from(player.player_color_index())],
+                text: *SOURCE_WIZARD_NAMES
+                    .get(usize::from(player.player_color_index()))
+                    .ok_or_else(|| "Beyond Sight wizard name is unavailable".to_owned())?,
             });
         }
     }
@@ -858,7 +877,7 @@ fn campaign_map_plan(
         }
     }
 
-    if selection == CampaignSelection::LEVEL1 {
+    if selection.map_type_id == 1 {
         // Source DrawMinimapMarks: CLRN[0xff0] for fixed targets and
         // CLRN[3840] for entity targets and arrows (sealed Night palette).
         for mark in &mut marks {

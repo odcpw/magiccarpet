@@ -129,7 +129,7 @@ fn class5_gate_fields(arena: &SourceArena, slot: u16) -> Option<(u8, u8, u16)> {
                     .authored_fireflies
                     .iter()
                     .find(|state| state.source_entity_index == slot)
-                    .map(|state| (state.stage_var2, 0))
+                    .map(|state| (state.stage_var2, state.parent_entity_index))
             })
             .unwrap_or((0, 0));
         Some((row.source_byte_39, stage.0, stage.1))

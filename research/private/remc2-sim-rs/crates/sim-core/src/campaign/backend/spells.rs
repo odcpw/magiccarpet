@@ -344,7 +344,7 @@ pub(super) fn emission_availability(
     parent: Option<&EntitySnapshot>,
     castle_mana: Option<i32>,
 ) -> SpellAvailability {
-    if holder.model != 9 {
+    if !matches!(holder.model, 9 | 12) {
         return SpellAvailability::Ready;
     }
     let Some(parent) = parent.filter(|parent| {
@@ -355,6 +355,22 @@ pub(super) fn emission_availability(
     }) else {
         return SpellAvailability::InvalidCaster;
     };
+    if holder.model == 12 {
+        use crate::spell_activation::{BeyondSightAdmission, beyond_sight_admission};
+        return match beyond_sight_admission(
+            parent.mana,
+            parent.life,
+            holder.max_mana,
+            holder.mana_regen,
+            true,
+            castle_mana,
+        ) {
+            BeyondSightAdmission::Allowed => SpellAvailability::Ready,
+            BeyondSightAdmission::ParentUnavailable => SpellAvailability::InvalidCaster,
+            BeyondSightAdmission::InsufficientCasterMana
+            | BeyondSightAdmission::InsufficientCastleMana => SpellAvailability::InsufficientMana,
+        };
+    }
     use crate::native_world::{MeteorAdmission, meteor_admission};
     match meteor_admission(
         holder,
@@ -407,7 +423,14 @@ pub(super) fn assigned_player_command(
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::guard;
+    use super::super::{
+        GameCommand, Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs, default_catalog,
+        load_mc2_campaign,
+    };
     use super::*;
+    use crate::game_session::GameSession;
+    use std::{path::PathBuf, sync::Arc};
 
     #[test]
     fn cave_in_command_and_carry_use_the_same_closed_semantic_binding() {
@@ -434,5 +457,154 @@ mod tests {
             let id = SemanticId::parse(unsupported).unwrap();
             assert_eq!(semantic_spell_kind(&id), None);
         }
+    }
+
+    #[test]
+    fn beyond_sight_public_pickup_readiness_cast_and_failed_gate() {
+        let root = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+            },
+            PathBuf::from,
+        );
+        let definition = Arc::new(load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            912,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let (slot, position, parent) = {
+            let simulation = session.backend().campaign.simulation();
+            let pickup = simulation
+                .shared_spells()
+                .pickups()
+                .iter()
+                .find(|holder| holder.model == 12 && holder.action == 37)
+                .expect("ordinary Beyond Sight pickup from the owner package");
+            (pickup.index, pickup.position, simulation.state.entity_index)
+        };
+        session
+            .backend_mut()
+            .campaign
+            .simulation_mut()
+            .set_level2_entity_position(parent, position)
+            .unwrap();
+        for _ in 0..2 {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let spell = |session: &GameSession<Mc2CampaignBackend>| {
+            session
+                .snapshot()
+                .value
+                .player_spells
+                .into_iter()
+                .find(|spell| spell.id.as_str() == "spell.beyond_sight")
+                .unwrap()
+        };
+        let acquired = spell(&session);
+        assert!(acquired.acquired);
+        assert_eq!(
+            (acquired.tier, acquired.unlocked_tier, acquired.mana_cost),
+            (0, 0, 1_800)
+        );
+        for tier in [1, 2] {
+            let rejected = session.step(
+                guard(&session),
+                GameCommand {
+                    assign_spell: Some(sim_session::SpellAssignment {
+                        spell_id: acquired.id.clone(),
+                        tier,
+                        hand: sim_session::SpellAssignmentHand::Left,
+                        holder_actor: acquired.holder_actor,
+                    }),
+                    ..GameCommand::default()
+                },
+            );
+            assert!(rejected.is_err(), "unearned tier {tier} must remain locked");
+        }
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    assign_spell: Some(sim_session::SpellAssignment {
+                        spell_id: acquired.id.clone(),
+                        tier: 0,
+                        hand: sim_session::SpellAssignmentHand::Left,
+                        holder_actor: acquired.holder_actor,
+                    }),
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let simulation = session.backend_mut().campaign.simulation_mut();
+        let castle = simulation
+            .economy_mut()
+            .build_castle(crate::Position::default(), parent)
+            .unwrap();
+        assert!(
+            simulation
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, 10_000)
+        );
+        // Controlled resource boundary; no acquired/unlocked state is injected.
+        let set_mana = |simulation: &mut crate::native_world::Mc2Simulation, mana: i32| {
+            let entity = &mut simulation.economy.entities[usize::from(parent)];
+            entity.mana = mana;
+            entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+            simulation
+                .shared_spells_mut()
+                .set_local_player_mana_for_test(mana);
+            if let Some(fire) = simulation
+                .session
+                .state
+                .live
+                .core
+                .context
+                .spell_fire
+                .as_mut()
+            {
+                fire.caster.mana = mana;
+            }
+        };
+        set_mana(simulation, 1_799);
+        assert_eq!(
+            spell(&session).availability,
+            SpellAvailability::InsufficientMana
+        );
+        set_mana(session.backend_mut().campaign.simulation_mut(), 5_000);
+        assert_eq!(spell(&session).availability, SpellAvailability::Ready);
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(acquired.id),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(spell(&session).availability, SpellAvailability::Active);
+        assert_eq!(
+            session.backend().campaign.simulation().economy.entities[usize::from(slot)]
+                .active_value,
+            151
+        );
+        set_mana(session.backend_mut().campaign.simulation_mut(), 0);
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let ended = spell(&session);
+        assert!(ended.acquired, "expired holders remain in inventory");
+        assert_eq!(ended.availability, SpellAvailability::InsufficientMana);
+        assert_eq!(
+            session.backend().campaign.simulation().economy.entities[usize::from(slot)]
+                .active_value,
+            0
+        );
     }
 }

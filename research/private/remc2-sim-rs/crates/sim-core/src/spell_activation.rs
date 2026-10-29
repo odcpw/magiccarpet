@@ -1668,6 +1668,40 @@ pub const BEYOND_SIGHT_FAMILY: u8 = 12;
 pub const BEYOND_SIGHT_ACTIVE_ACTION: u8 = 36;
 pub const BEYOND_SIGHT_XP_THRESHOLDS: [i32; 3] = [0, 360, 1_080];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BeyondSightAdmission {
+    Allowed,
+    ParentUnavailable,
+    InsufficientCasterMana,
+    InsufficientCastleMana,
+}
+
+/// Source `sub_68D50`, shared by the scheduled pulse and a read-only fresh
+/// cast observation. Costs come from the current physical holder profile.
+#[must_use]
+pub(crate) fn beyond_sight_admission(
+    parent_mana: i32,
+    parent_life: i32,
+    mana_cost: i32,
+    castle_mana_required: i32,
+    fresh_pulse: bool,
+    castle_mana: Option<i32>,
+) -> BeyondSightAdmission {
+    if parent_mana < 0 {
+        return BeyondSightAdmission::InsufficientCasterMana;
+    }
+    if parent_life < 0 {
+        return BeyondSightAdmission::ParentUnavailable;
+    }
+    if castle_mana_required != 0 && castle_mana.is_none_or(|mana| mana < castle_mana_required) {
+        return BeyondSightAdmission::InsufficientCastleMana;
+    }
+    if fresh_pulse && parent_mana < mana_cost {
+        return BeyondSightAdmission::InsufficientCasterMana;
+    }
+    BeyondSightAdmission::Allowed
+}
+
 #[must_use]
 pub fn beyond_sight_unlocked_tier(total_experience: i32) -> i8 {
     BEYOND_SIGHT_XP_THRESHOLDS
@@ -1773,18 +1807,14 @@ impl BeyondSightState {
 
     #[must_use]
     pub fn authoritative_predicate(&self, parent_castle_mana: Option<i32>) -> bool {
-        if self.parent_mana < 0 || self.parent_life < 0 {
-            return false;
-        }
-        if self.mana_regen_requirement != 0 {
-            let Some(castle_mana) = parent_castle_mana else {
-                return false;
-            };
-            if self.mana_regen_requirement > castle_mana {
-                return false;
-            }
-        }
-        self.active_value != self.activation_value || self.parent_mana >= self.mana_cost
+        beyond_sight_admission(
+            self.parent_mana,
+            self.parent_life,
+            self.mana_cost,
+            self.mana_regen_requirement,
+            self.active_value == self.activation_value,
+            parent_castle_mana,
+        ) == BeyondSightAdmission::Allowed
     }
 
     /// Apply the source `sub_6D8B0(parent, 12, 1)` first-pulse award. The

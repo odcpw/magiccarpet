@@ -769,7 +769,17 @@ pub(super) struct Level2FireballGuidanceTarget {
     pub source_id: u16,
     pub class: u8,
     pub model: u8,
+    pub stage_mode: u8,
+    pub parent_entity_index: u16,
     pub top_position: Position,
+}
+
+impl Level2FireballGuidanceTarget {
+    /// sub_67CB0 preserves birth identity when Alliance changes allegiance.
+    pub(super) fn can_be_acquired_by(self, owner: u16) -> bool {
+        self.source_id != owner
+            && (self.class != 5 || self.stage_mode != 14 || self.parent_entity_index != owner)
+    }
 }
 
 fn fireball_target_selector_matches(
@@ -988,6 +998,7 @@ impl Level2EconomyState {
         let entity_rng = self.new_event_rng(source_entity_index);
         let projectile = Level2FireballProjectile {
             origin: payload.origin,
+            visual_index: crate::level1_mission::FIREBALL_RENDER_INDEX,
             source_entity_index,
             entity_rng,
             owner_entity_index: payload.source_id_entity_index,
@@ -1182,7 +1193,7 @@ impl Level2EconomyState {
         defer_birth: bool,
         views: Option<&[std::result::Result<Option<super::source_target::View>, String>]>,
     ) -> std::result::Result<Level2FireballStep, String> {
-        let guidance_targets = self.fireball_guidance_targets(imported_entities);
+        let guidance_targets = self.fireball_guidance_targets(imported_entities)?;
         let collision_targets = if views.is_none() {
             self.fireball_collision_targets(imported_entities)
         } else {
@@ -1338,7 +1349,7 @@ impl Level2EconomyState {
                 for target in guidance_targets
                     .iter()
                     .copied()
-                    .filter(|target| target.source_id != projectile.owner_entity_index)
+                    .filter(|target| target.can_be_acquired_by(projectile.owner_entity_index))
                     .filter(|target| {
                         fireball_target_selector_matches(&projectile, target.class, target.model)
                     })
@@ -1709,7 +1720,7 @@ impl Level2EconomyState {
     pub(super) fn fireball_guidance_targets(
         &self,
         imported_entities: &[EntitySnapshot],
-    ) -> Vec<Level2FireballGuidanceTarget> {
+    ) -> std::result::Result<Vec<Level2FireballGuidanceTarget>, String> {
         let class3_slots = imported_entities
             .iter()
             .filter(|entity| {
@@ -1743,6 +1754,8 @@ impl Level2EconomyState {
                         source_id: entity.source_id,
                         class: entity.class,
                         model: entity.model,
+                        stage_mode: entity.record[77],
+                        parent_entity_index: entity.source_spell_parent_entity_index(),
                         top_position: Position {
                             z: entity
                                 .position
@@ -1778,6 +1791,8 @@ impl Level2EconomyState {
                         source_id: entity.source_id,
                         class: entity.class,
                         model: entity.model,
+                        stage_mode: entity.record[77],
+                        parent_entity_index: entity.source_spell_parent_entity_index(),
                         top_position: Position {
                             z: entity
                                 .position
@@ -1796,6 +1811,8 @@ impl Level2EconomyState {
                             source_id: bee.entity_id,
                             class: 5,
                             model: 2,
+                            stage_mode: bee.stage_var2,
+                            parent_entity_index: bee.parent_entity_index,
                             top_position: bee.position,
                         })
                 }));
@@ -1804,20 +1821,49 @@ impl Level2EconomyState {
                 model,
                 level2_class5::archer::ARCHER_MODEL | level2_class5::firefly::FIREFLY_MODEL
             ) {
-                bucket.extend(self.authored_class5.iter().filter_map(|source| {
-                    (source.active
+                for source in self.authored_class5.iter().filter(|source| {
+                    source.active
                         && source.drawing_enabled
                         && source.life >= 0
                         && source.model == model
-                        && source.source_byte_39 != 0)
-                        .then_some(Level2FireballGuidanceTarget {
-                            source_slot: source.source_entity_index,
-                            source_id: source.source_entity_index,
-                            class: 5,
-                            model: source.model,
-                            top_position: source.position,
-                        })
-                }));
+                        && source.source_byte_39 != 0
+                }) {
+                    let (source_id, stage_mode, parent_entity_index) =
+                        if model == level2_class5::archer::ARCHER_MODEL {
+                            let state = self
+                                .authored_class5_archer
+                                .iter()
+                                .find(|state| state.source_entity_index == source.source_entity_index)
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Fireball target {} lost its Archer state",
+                                        source.source_entity_index,
+                                    )
+                                })?;
+                            (state.entity_id, state.stage.mode, state.stage.parent)
+                        } else {
+                            let state = self
+                                .authored_fireflies
+                                .iter()
+                                .find(|state| state.source_entity_index == source.source_entity_index)
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Fireball target {} lost its Firefly state",
+                                        source.source_entity_index,
+                                    )
+                                })?;
+                            (state.entity_id, state.stage_var2, state.parent_entity_index)
+                        };
+                    bucket.push(Level2FireballGuidanceTarget {
+                        source_slot: source.source_entity_index,
+                        source_id,
+                        class: 5,
+                        model: source.model,
+                        stage_mode,
+                        parent_entity_index,
+                        top_position: source.position,
+                    });
+                }
             }
             if model == level2_class5::dragon::DRAGON_MODEL {
                 bucket.extend(self.authored_class5.iter().filter_map(|source| {
@@ -1834,9 +1880,11 @@ impl Level2EconomyState {
                         && self.map_chains.is_linked(source.source_entity_index))
                     .then_some(Level2FireballGuidanceTarget {
                         source_slot: source.source_entity_index,
-                        source_id: source.source_entity_index,
+                        source_id: render.entity_id,
                         class: 5,
                         model: source.model,
+                        stage_mode: render.stage_var2,
+                        parent_entity_index: render.parent_entity_index,
                         top_position: Position {
                             z: source.position.z.wrapping_add(render.render_yaw),
                             ..source.position
@@ -1854,6 +1902,10 @@ impl Level2EconomyState {
                         source_id: part.entity_id,
                         class: 5,
                         model: part.model,
+                        // sub_4B240 copies the root's constructor StageVar2;
+                        // the retained part carrier has no stage callback.
+                        stage_mode: 0,
+                        parent_entity_index: part.parent_entity_index,
                         top_position: Position {
                             z: part.position.z.wrapping_add(part.render_yaw),
                             ..part.position
@@ -1864,7 +1916,7 @@ impl Level2EconomyState {
             bucket.sort_unstable_by_key(|target| target.source_slot);
             targets.extend(bucket);
         }
-        targets
+        Ok(targets)
     }
 
     /// Project the map-linked rows needed by `sub_10780`. The qualified
@@ -3131,8 +3183,8 @@ impl Level2EconomyState {
     }
 
     /// Advance one dynamic Castle child through its source callback or the
-    /// terminal no-callback branch. Model 79/action 0x56 is the live
-    /// `sub_3AF00` Castle-defend callback; model 42/action 44 is the
+    /// terminal no-callback branch. Model 79/action 0x56 is owned by
+    /// castle_defense over the real SourceArena; model 42/action 44 is the
     /// BUILD-backed 37BC0 callback; model 41/action 43 remains the separate
     /// MSPRD-backed 377F0 callback. Other terminal rows retain source
     /// disable/reclaim.
@@ -3159,7 +3211,7 @@ impl Level2EconomyState {
             child.active
                 && child.source_entity_index == source_slot
                 && ((child.source_class == 5 && child.model == 15)
-                    || (child.source_class == 10 && matches!(child.model, 41 | 42 | 43 | 79)))
+                    || (child.source_class == 10 && matches!(child.model, 41 | 42 | 43)))
         }) else {
             return false;
         };
@@ -3169,9 +3221,6 @@ impl Level2EconomyState {
             // `UpdateEntities_57730` hidden-row prepass. That prepass runs
             // before the next dispatch walk, independently of this root.
             return true;
-        }
-        if child.source_class == 10 && child.model == 79 && child.action == 0x56 {
-            return self.step_castle_controller_slot(child_index, terrain);
         }
         if child.source_class == 10 && child.model == 43 && child.action == 45 {
             return self.step_castle_upgrade_product(child_index);
@@ -3256,87 +3305,6 @@ impl Level2EconomyState {
         if had_hidden_rows || had_hidden_projectiles {
             self.refresh_owner_mana_rows();
         }
-    }
-
-    /// Bounded Level 2 slice of `sub_3AF00_castle_defend_event` for the live
-    /// stage-1 model-79/action-0x56 controller. The first callback captures
-    /// the pre-hover axis and applies the source signed six-unit height
-    /// adjustment without RNG or terrain-material writes. The second callback
-    /// advances the source RNG once and arms the source dword-10 timer. The
-    /// later defense-spell/chain branches remain outside this slice, but the
-    /// live row stays map-linked and source-owned throughout.
-    fn step_castle_controller_slot(
-        &mut self,
-        child_index: usize,
-        terrain: &SessionTerrain,
-    ) -> bool {
-        let child = self.castle_children[child_index];
-        if child.life < 0 || child.id_entity_index == 0 {
-            let child = {
-                let child = &mut self.castle_children[child_index];
-                child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
-                child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
-                child.active = false;
-                *child
-            };
-            self.sync_castle_child_map(child);
-            return false;
-        }
-        if matches!(child.cave_collision_cooldown, 9 | 0x0a) {
-            let child = {
-                let child = &mut self.castle_children[child_index];
-                child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
-                child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
-                child.active = false;
-                *child
-            };
-            self.sync_castle_child_map(child);
-            return false;
-        }
-
-        {
-            let child = &mut self.castle_children[child_index];
-            match child.cave_collision_cooldown {
-                0 => {
-                    // `sub_3AF00` case 0 stores axis_0x9A before the
-                    // callback-time hover adjustment.
-                    child.axis_position = child.position;
-                    child.cave_collision_cooldown = 1;
-                }
-                1 => {
-                    // Cases 1 -> LABEL_9 use the newly advanced source RNG,
-                    // then immediately decrement the 16..63 timer once.
-                    child.entity_rng = child.entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
-                    child.cave_collision_cooldown = 2;
-                    child.source_dword_10 = i32::from(child.entity_rng % 0x30) + 15;
-                }
-                2 => {
-                    child.source_dword_10 = child.source_dword_10.wrapping_sub(1);
-                    if child.source_dword_10 == 0 {
-                        child.cave_collision_cooldown = 3;
-                    }
-                }
-                _ => {}
-            }
-
-            let ground = terrain.ground_height(child.position);
-            let clearance = if child.source_word_4a <= 1 { 384 } else { 224 };
-            let target = ground.saturating_add(clearance);
-            if child.position.z < target {
-                child.position.z = target;
-            } else if child.source_byte_3e & 8 != 0 {
-                child.position.z = child.position.z.wrapping_add(6);
-            } else {
-                child.position.z = child.position.z.wrapping_sub(6);
-            }
-
-            // ApplyEvents increments byte_0x3E after the callback, so the
-            // height branch above sees the pre-increment callback byte.
-            child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
-        }
-        let child = self.castle_children[child_index];
-        self.sync_castle_child_map(child);
-        true
     }
 
     fn step_castle_upgrade_product(&mut self, child_index: usize) -> bool {

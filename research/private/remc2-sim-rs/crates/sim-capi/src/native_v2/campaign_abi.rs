@@ -1141,7 +1141,7 @@ pub extern "C" fn mc_native_campaign_beyond_sight_state(
             }
             Ok(campaign_beyond_sight_snapshot(
                 generation,
-                reset.shared_spells().beyond_sight_state(),
+                reset.beyond_sight_state(),
             ))
         })
     })
@@ -1180,17 +1180,17 @@ pub extern "C" fn mc_native_campaign_beyond_sight_activate(
                 ));
             }
             if !reset
-                .shared_spells_mut()
-                .activate_beyond_sight(direction_mask, help_enabled != 0)
+                .activate_beyond_sight_holder(direction_mask, help_enabled != 0)
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?
             {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
-                    "campaign Beyond Sight holder is not active",
+                    "campaign Beyond Sight activation was refused by the current holder",
                 ));
             }
             Ok(campaign_beyond_sight_snapshot(
                 generation,
-                reset.shared_spells().beyond_sight_state(),
+                reset.beyond_sight_state(),
             ))
         })
     })

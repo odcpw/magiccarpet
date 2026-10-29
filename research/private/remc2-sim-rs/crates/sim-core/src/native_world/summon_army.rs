@@ -982,8 +982,265 @@ pub(crate) fn step_ring_with_family(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn assert_terrain_death_reclaims(
+        original: &super::super::Mc2Simulation,
+        child: SourceEntityHandle,
+    ) {
+        let arena = &original.session.state.live.economy;
+        let source = arena
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == child.source_slot)
+            .unwrap();
+        let state = arena
+            .economy
+            .authored_fireflies()
+            .iter()
+            .find(|row| row.source_entity_index == child.source_slot)
+            .unwrap();
+        assert_eq!(arena.handle(child.source_slot), Some(child));
+        assert_eq!(
+            (
+                source.model,
+                source.action,
+                source.life,
+                source.drawing_enabled
+            ),
+            (19, 159, -1, true)
+        );
+        assert_eq!(
+            (source.word_0x26, source.pending_word_0x62, state.stage_var2),
+            (0, 0, 13)
+        );
+        assert!(state.movement_blocked && state.word_0x2e.cast_signed() > 1);
+        let descriptor = &original.session.definition.presentation.entity_parameters[88];
+        assert_ne!(
+            descriptor[32] & 1,
+            0,
+            "source descriptor permits terrain death"
+        );
+        let limit = i32::from(i16::from_le_bytes([descriptor[16], descriptor[17]]));
+        let terrain = &original.session.state.live.terrain;
+        // Independently spell out sub_1B8C0's source headings and movement;
+        // do not use the shared retry kernel as its own expected result.
+        let yaw = source.yaw.wrapping_add(1024) & 2047;
+        let headings = [
+            yaw,
+            yaw.wrapping_add(341) & 2047,
+            ((yaw.wrapping_sub(341) & 0x0700) | (yaw.wrapping_sub(85) & 255)),
+            source.yaw,
+        ];
+        for (attempt, heading) in headings.into_iter().enumerate() {
+            let mut candidate = source.position;
+            move_entity(&mut candidate, heading, 0, source.actual_speed);
+            if attempt == 0 {
+                assert_ne!(
+                    (candidate.x >> 8, candidate.y >> 8),
+                    (source.position.x >> 8, source.position.y >> 8)
+                );
+            }
+            let slope = crate::ground_creature_motion::tile_slope_metric(terrain, candidate);
+            assert!(
+                slope >= limit,
+                "source candidate {attempt}, heading {heading}: slope {slope} < {limit}"
+            );
+        }
+        let tile = arena.economy.map_chains.tile_of(child.source_slot);
+        assert!(
+            arena.economy.map_chains.is_linked(child.source_slot),
+            "fatal first visit retains source map membership"
+        );
+        let assert_no_errors = |session: &super::super::Mc2Simulation| {
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                "terrain death must not roll back: {:?}",
+                session.dispatch_events()
+            );
+        };
+        let mut follow = original.clone();
+        follow.step_level2_source_pass(0);
+        assert_no_errors(&follow);
+        let arena = &follow.session.state.live.economy;
+        assert_eq!(arena.handle(child.source_slot), Some(child));
+        let source = arena
+            .economy
+            .authored_class5()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == child.source_slot)
+            .unwrap();
+        let state = arena
+            .economy
+            .authored_fireflies()
+            .iter()
+            .find(|row| row.source_entity_index == child.source_slot)
+            .unwrap();
+        assert_eq!(source.life, -1);
+        assert!(
+            source.drawing_enabled,
+            "negative life reaches timer before the hide visit"
+        );
+        assert!(state.word_0x2e.cast_signed() <= 1);
+        follow.step_level2_source_pass(1);
+        assert_no_errors(&follow);
+        let arena = &follow.session.state.live.economy;
+        assert_eq!(arena.handle(child.source_slot), Some(child));
+        assert!(arena.economy.authored_class5().iter().any(|row| row.active
+            && row.source_entity_index == child.source_slot
+            && !row.drawing_enabled));
+        assert_eq!(arena.economy.map_chains.tile_of(child.source_slot), tile);
+        assert!(
+            !follow
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == child.source_slot)
+        );
+        follow.step_level2_source_pass(2);
+        assert_no_errors(&follow);
+        let arena = &follow.session.state.live.economy;
+        assert!(
+            arena.resolve(child).is_none(),
+            "following boundary reclaims the original generation"
+        );
+        if arena.handle(child.source_slot).is_none() {
+            assert!(!arena.economy.map_chains.is_linked(child.source_slot));
+        }
+    }
+
+    pub(crate) fn assert_clear_terrain_survivors(
+        original: &crate::campaign::CampaignSession,
+        owner: u16,
+        holder: u16,
+    ) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut campaign = original.clone();
+        let session = campaign.simulation_mut();
+        let terrain = &session.session.state.live.terrain;
+        let origin = session.state.position;
+        let mut candidates = (-32_i16..=32)
+            .flat_map(|dy| {
+                (-32_i16..=32).map(move |dx| {
+                    (
+                        i32::from(dx) * i32::from(dx) + i32::from(dy) * i32::from(dy),
+                        Position {
+                            x: (origin.x & 0xff00)
+                                .wrapping_add_signed(dx * 256)
+                                .wrapping_add(128),
+                            y: (origin.y & 0xff00)
+                                .wrapping_add_signed(dy * 256)
+                                .wrapping_add(128),
+                            z: 0,
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(distance, _)| *distance);
+        let mut position = candidates
+            .into_iter()
+            .map(|(_, position)| position)
+            .find(|center| {
+                (-4_i16..=4).all(|dy| {
+                    (-4_i16..=4).all(|dx| {
+                        let point = Position {
+                            x: center.x.wrapping_add_signed(dx * 256),
+                            y: center.y.wrapping_add_signed(dy * 256),
+                            z: 0,
+                        };
+                        terrain.material_mask(point) & 1 == 0
+                            && crate::ground_creature_motion::tile_slope_metric(terrain, point) < 20
+                    })
+                })
+            })
+            .expect("real nearby owner terrain has a traversable Army landing region");
+        position.z = terrain.ground_height(position).wrapping_add(2048);
+        session.set_level2_entity_position(owner, position).unwrap();
+        let mut rings = BTreeSet::new();
+        let mut survivors = BTreeMap::new();
+        for turn in 0..64 {
+            if turn < 3 {
+                campaign
+                    .simulation_mut()
+                    .set_level2_player_aim_for_test(0, 512);
+            }
+            campaign.step(
+                if turn == 0 {
+                    crate::PlayerCommand {
+                        opcode: 6,
+                        argument_1: 19,
+                        flags: 0x40,
+                        ..crate::PlayerCommand::default()
+                    }
+                } else {
+                    crate::PlayerCommand::default()
+                },
+                0,
+            );
+            let session = campaign.simulation();
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                "clear-terrain ordinary Army cast: {:?}",
+                session.dispatch_events()
+            );
+            let arena = &session.session.state.live.economy;
+            for row in arena.entities.iter().filter(|row| {
+                row.active && (row.class, row.model) == (10, 72) && word(row, 42) == holder
+            }) {
+                let handle = arena.handle(row.index).unwrap();
+                rings.insert((handle.source_slot, handle.generation));
+            }
+            survivors.clear();
+            for identity in session
+                .creature_runtime_census()
+                .roots_of_kind(crate::level_definition::CreatureKind::Firefly)
+            {
+                if identity.living
+                    && identity.origin
+                        == (CreatureRootOrigin::SummonedSpell {
+                            holder_slot: holder,
+                        })
+                {
+                    assert_eq!(
+                        arena.creature_parent_binding(identity.handle),
+                        arena.handle(owner)
+                    );
+                    survivors.insert(identity.handle.source_slot, identity.handle);
+                }
+            }
+            if survivors.len() == 8 {
+                break;
+            }
+        }
+        assert_eq!(
+            rings.len(),
+            8,
+            "safe cast still creates all eight source rings"
+        );
+        assert_eq!(
+            survivors.len(),
+            8,
+            "ordinary Army on real clear terrain retains eight living Fireflies"
+        );
+        let sprites = campaign
+            .simulation()
+            .campaign_entity_presentations(0)
+            .unwrap();
+        assert!(
+            survivors
+                .keys()
+                .all(|slot| sprites.iter().any(|row| row.entity_index == *slot))
+        );
+    }
 
     fn ring_fixture(
         free_slots: usize,

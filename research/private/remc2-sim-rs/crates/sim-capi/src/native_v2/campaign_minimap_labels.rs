@@ -169,6 +169,83 @@ mod tests {
             serde_json::json!([]),
             "owning an inactive Beyond Sight holder does not reveal the player label"
         );
+        let active_tick = campaign_abi::with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+                unreachable!()
+            };
+            // The real source command pays the physical holder's immediate
+            // activation cost. The following source visit owns the separate
+            // first-pulse gate; this is deliberately not a funded-duration test.
+            reset.step_outer_turn(
+                PlayerCommand {
+                    opcode: 6,
+                    argument_1: 12,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            assert_eq!(reset.entities()[38].active_value, 151);
+            assert!(
+                reset
+                    .campaign_player_visibility(
+                        sim_core::campaign::spec::CampaignSelection::LEVEL2,
+                        1,
+                    )
+                    .unwrap()
+                    .beyond_sight_active
+            );
+            Ok(reset.state.tick)
+        })
+        .expect("normal source cast publishes the actual held row");
+        assert_eq!(
+            mc_native_campaign_minimap_labels_json(
+                handle,
+                0,
+                active_tick,
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                &raw mut required,
+            ),
+            MC_STATUS_OK
+        );
+        let active: serde_json::Value =
+            serde_json::from_slice(&bytes[..required as usize]).unwrap();
+        assert_eq!(active["labels"].as_array().unwrap().len(), 1);
+        assert_eq!(active["labels"][0]["subject_entity_index"], 112);
+        assert_eq!(active["labels"][0]["text"], "Nyphur");
+        let ended_tick = campaign_abi::with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+                unreachable!()
+            };
+            // This genuine starting player has no Castle-funded capacity for
+            // the 1800 first pulse. Its next normal visit must clear labels,
+            // while retaining the acquired tier-0 inventory relation.
+            reset.step_outer_turn(PlayerCommand::default(), 0);
+            assert_eq!(reset.entities()[38].active_value, 0);
+            assert_eq!(reset.players()[0].enabled_spell_holders[12], 38);
+            let visibility = reset
+                .campaign_player_visibility(sim_core::campaign::spec::CampaignSelection::LEVEL2, 1)
+                .unwrap();
+            assert!(visibility.beyond_sight_holder_present);
+            assert!(!visibility.beyond_sight_active);
+            assert_eq!(visibility.beyond_sight_tier, Some(0));
+            Ok(reset.state.tick)
+        })
+        .expect("actual first-pulse failure clears only the active consumer");
+        assert_eq!(
+            mc_native_campaign_minimap_labels_json(
+                handle,
+                0,
+                ended_tick,
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                &raw mut required,
+            ),
+            MC_STATUS_OK
+        );
+        let ended: serde_json::Value = serde_json::from_slice(&bytes[..required as usize]).unwrap();
+        assert_eq!(ended["labels"], serde_json::json!([]));
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 }

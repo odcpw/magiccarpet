@@ -513,13 +513,16 @@ pub(crate) fn step_projectile(
                 })
             })
             .map(|target| (target.index, target.position));
+        let guidance_targets = if marker.is_none() {
+            arena.economy.fireball_guidance_targets(&arena.entities)?
+        } else {
+            Vec::new()
+        };
         marker
             .or_else(|| {
-                arena
-                    .economy
-                    .fireball_guidance_targets(&arena.entities)
+                guidance_targets
                     .into_iter()
-                    .filter(|target| target.source_id != row.source_id)
+                    .filter(|target| target.can_be_acquired_by(row.source_id))
                     .filter(|target| {
                         arena
                             .entities

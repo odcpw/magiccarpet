@@ -1,5 +1,26 @@
 use super::*;
 
+/// Resolve House properties from the full owner table when the package
+/// declares it. Earlier qualified package schemas retain only the BUILD
+/// construction subset; use that subset only when the full member is absent
+/// from the validated descriptor, never when a declared member fails to read.
+fn campaign_house_parameters(
+    definition: &ValidatedCampaignDefinition,
+) -> Result<BTreeMap<u8, HouseParameter>> {
+    if definition.has_member("building-parameters.bin") {
+        let owner = definition
+            .read_member("building-parameters.bin")
+            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+        crate::campaign::source_facts::decode_building_parameters(&owner)
+            .map_err(NativeWorldError::new)
+    } else {
+        let inputs = definition
+            .read_member("feature-construction-inputs.bin")
+            .map_err(|error| NativeWorldError::new(error.to_string()))?;
+        decode_campaign_house_parameters(&inputs).map_err(NativeWorldError::new)
+    }
+}
+
 /// Qualified owner bytes for MC2's stage-1 Castle BUILD record. The same
 /// 128-byte payload is validated from `castle-stage-1.cells.u8` by the Level 1
 /// owner-cache loader (SHA-256
@@ -1394,7 +1415,7 @@ pub(super) fn level2_first_possession_target(
                     z: candidate
                         .position
                         .z
-                        .wrapping_add(super::level2_dynamic_economy::POSSESSION_TARGET_Z_SHIFT),
+                        .wrapping_add(candidate.collision_yaw),
                     ..candidate.position
                 },
             ));
@@ -4735,12 +4756,7 @@ impl NativeWorldInspection {
         // Both reset builders expose the definition's exact BUILD parameter
         // bank. The qualified Day bundle also needs retained authored houses
         // and their destruction successors for later activation groups.
-        let construction_inputs = definition
-            .read_member("feature-construction-inputs.bin")
-            .map_err(|error| NativeWorldError::new(error.to_string()))?;
-        session.ordinary_mut().house_parameters =
-            decode_campaign_house_parameters(&construction_inputs)
-                .map_err(NativeWorldError::new)?;
+        session.ordinary_mut().house_parameters = campaign_house_parameters(definition)?;
         session.session.rebase();
         // Every campaign boot path needs the same Castle construction data.
         // The qualified Day capability bundle takes a different reset builder
@@ -4946,11 +4962,7 @@ impl NativeWorldInspection {
                 &wizard.blocked_spells,
             )?;
         }
-        let construction_inputs = definition
-            .read_member("feature-construction-inputs.bin")
-            .map_err(|error| NativeWorldError::new(error.to_string()))?;
-        let house_parameters = decode_campaign_house_parameters(&construction_inputs)
-            .map_err(NativeWorldError::new)?;
+        let house_parameters = campaign_house_parameters(definition)?;
         let ordinary = Level2OrdinaryResetSession::from_campaign_parts(
             &self.entities,
             &self.players,

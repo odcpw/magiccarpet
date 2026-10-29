@@ -667,7 +667,12 @@ pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> 
                 row.shift_rot_y as i16,
             ),
             damage_mask: 1,
-            control_flags: row.control_flags,
+            control_flags: row.control_flags
+                | if row.drawing_enabled {
+                    0
+                } else {
+                    ENTITY_DRAW_DISABLED_BIT
+                },
         });
     }
     if let Some(row) = economy

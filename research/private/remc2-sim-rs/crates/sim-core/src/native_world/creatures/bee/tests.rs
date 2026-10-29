@@ -1196,6 +1196,23 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         effect.record[154..156].copy_from_slice(&actual_bee.to_le_bytes());
         impact_slot
     };
+    // Observe the real scheduled terminal at individual source boundaries:
+    // it stays allocated for its hiding pass and is retired on the next.
+    let mut boundary = actual.clone();
+    let impact_handle = boundary.source_arena().handle(impact_slot).unwrap();
+    assert!(!boundary.source_arena().economy.map_chains.is_linked(impact_slot));
+    boundary.step_level2_source_pass(0);
+    assert!(boundary.source_arena().resolve(impact_handle).is_some());
+    assert!(boundary.source_arena().entities[usize::from(impact_slot)].drawing_disabled());
+    assert!(!boundary.campaign_entity_presentations(0).unwrap().iter()
+        .any(|row| row.entity_index == impact_slot),
+        "the hidden Alliance terminal is absent from the real presentation consumer");
+    boundary.step_level2_source_pass(1);
+    assert!(boundary.source_arena().resolve(impact_handle).is_none(),
+        "the next source boundary reclaims the original Alliance terminal generation");
+    if boundary.source_arena().handle(impact_slot).is_none() {
+        assert!(!boundary.source_arena().economy.map_chains.is_linked(impact_slot));
+    }
     let before = actual.source_arena().bee_creatures().iter()
         .find(|row| row.source_entity_index == actual_bee).unwrap().clone();
     let before_map = actual.source_arena().economy.map_chains.entity_chain(
@@ -1232,16 +1249,51 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         }
         *control.source_arena_mut() = controlled_arena;
         *control.canonical_terrain_mut() = controlled_terrain;
-        for _ in 0..2 {
+        let mut visits = Vec::new();
+        for turn in 0..2 {
             control.step_outer_turn(crate::PlayerCommand::default(), 0);
             assert!(!control.dispatch_events().iter().any(|event|
                 matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
                 "Bee Alliance source pass must execute without rollback: {:?}", control.dispatch_events());
+            if turn == 0 {
+                let arena = control.source_arena();
+                let view = crate::native_world::source_target::read(
+                    arena, Default::default(), actual_bee,
+                ).unwrap().expect("the original Bee remains allocated for its first-pass tail");
+                assert_eq!(view.drawing_disabled(), parent_reused,
+                    "shared source targeting observes the actual same-pass hide");
+                let archer = crate::native_world::level2_class5::archer::target_in_arena(arena, actual_bee)
+                    .expect("the original Bee remains an Archer source target until reclaim");
+                assert_eq!(archer.control_flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT != 0,
+                    parent_reused, "Archer targeting observes the same hidden state");
+            }
+            visits.push((turn, control.source_arena().handle(actual_bee),
+                control.source_arena().bee_creatures().iter()
+                    .find(|row| row.source_entity_index == actual_bee).copied(),
+                control.shared_spells().pickup(holder).map(|row| (row.active_value, row.source_word_96()))));
         }
-        let current = control.source_arena().bee_creatures().iter()
-            .find(|row| row.active && row.source_entity_index == actual_bee).unwrap();
-        assert_eq!(current.stage_var2, if parent_reused { 10 } else { 14 },
-            "Alliance follows the original parent generation");
+        if parent_reused {
+            // The original Alliance parent is gone, so its Bee returns to
+            // StageVar10. This body is also still owned by the real Morph
+            // holder: sub_6A030 hides word96 when that holder expires.
+            let first = visits[0].2.expect("Bee remains allocated for the hiding pass");
+            assert_eq!(visits[0].1, Some(actual_bee_handle));
+            assert_eq!((first.stage_var2, first.parent_entity_index, first.drawing_enabled),
+                (10, 0, false), "parent loss and Morph expiry share the first pass: {visits:?}");
+            assert_eq!(visits[0].3, Some((0, 0)), "the Morph holder expires and clears word96");
+            assert!(control.source_arena().resolve(actual_bee_handle).is_none(),
+                "the following source boundary reclaims the original Bee generation");
+            if control.source_arena().handle(actual_bee).is_none() {
+                assert!(!control.source_arena().economy.map_chains.is_linked(actual_bee));
+                assert!(!control.campaign_entity_presentations(0).unwrap().iter()
+                    .any(|row| row.entity_index == actual_bee));
+            }
+        } else {
+            let current = control.source_arena().bee_creatures().iter()
+                .find(|row| row.active && row.source_entity_index == actual_bee)
+                .unwrap_or_else(|| panic!("Alliance Bee disappeared with its parent live: {visits:?}"));
+            assert_eq!(current.stage_var2, 14, "Alliance follows the original parent generation");
+        }
     }
 
     let first_remaining = actual.source_arena().bee_creatures().iter()

@@ -773,15 +773,48 @@ impl Level2SharedSpellResetSession {
                 )
                 .expect("validated starting Beyond Sight tier");
                 state.parent_mana_regen = parent.mana_regen;
+                Self::copy_beyond_sight_holder(&mut state, source);
                 self.beyond_sight = Some(state);
             }
             _ => {}
         }
     }
 
+    /// Bind the lifecycle to the physical holder's current payload. An active
+    /// SetSpell may have queued a different tier, so the physical tier remains
+    /// authoritative until cleanup applies that queue.
+    fn copy_beyond_sight_holder(state: &mut BeyondSightState, holder: &EntitySnapshot) {
+        let Ok(tier @ 0..=2) = u8::try_from(holder.level_gate) else {
+            return;
+        };
+        state.tier = tier;
+        state.active_value = i16::from_le_bytes([holder.record[50], holder.record[51]]);
+        state.activation_value = holder.activation_value.cast_signed();
+        state.mana_cost = holder.max_mana;
+        state.mana_regen_requirement = holder.mana_regen;
+        state.countdown = i16::from_le_bytes([holder.record[58], holder.record[59]]);
+    }
+
     #[cfg(test)]
     pub(crate) fn player_life_regen_for_test(&self) -> i32 {
         self.player_life_regen
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_local_player_mana_for_test(&mut self, mana: i32) {
+        self.player_mana = mana;
+        self.caster.mana = mana;
+        self.player_entity.mana = mana;
+        self.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+        for entity in &mut self.player_entities {
+            if entity.index == self.player_entity.index {
+                entity.mana = mana;
+                entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+            }
+        }
+        if let Some(state) = self.beyond_sight.as_mut() {
+            state.parent_mana = mana;
+        }
     }
 
     /// Rehydrate the source class-15/player carriers selected by a campaign
@@ -2256,6 +2289,52 @@ impl Level2SharedSpellResetSession {
         self.beyond_sight
     }
 
+    pub(super) fn activate_current_beyond_sight(
+        &mut self,
+        mut state: BeyondSightState,
+        parent: &mut EntitySnapshot,
+        player: &PlayerSnapshot,
+        direction_mask: u16,
+        help_enabled: bool,
+    ) -> bool {
+        let mut caster = SpellCasterState {
+            entity_index: parent.index,
+            model: parent.model,
+            mana: parent.mana,
+            control_flags: parent.control_flags,
+            player_color_index: player.player_color_index(),
+            control_mode: player.visibility_mode,
+        };
+        let mut holder = SpellActivationHolder {
+            entity_index: state.holder_entity_index,
+            model: BEYOND_SIGHT_FAMILY,
+            level_gate: state.tier.cast_signed(),
+            active_value: state.active_value,
+            activation_value: state.activation_value.cast_unsigned(),
+            mana_cost: state.mana_cost,
+            ..SpellActivationHolder::default()
+        };
+        self.events.clear();
+        let accepted = crate::spell_activation::activate_spell(
+            &mut caster, Some(&mut holder), direction_mask, help_enabled, &mut self.events,
+        );
+        state.active_value = holder.active_value;
+        state.parent_mana = caster.mana;
+        if accepted {
+            state.action = BEYOND_SIGHT_ACTIVE_ACTION;
+            state.cleanup_requested = false;
+        }
+        self.beyond_sight = Some(state);
+        self.capture_activation_effects(0);
+        self.sync_beyond_sight_projection();
+        // sub_5F660/sub_5F7E0 publish direction and the pointer-action clear
+        // on the actual parent, preserving its unrelated control bits.
+        parent.set_control_flags(caster.control_flags);
+        self.sync_player_entity_from_authority(parent);
+        self.caster = caster;
+        accepted
+    }
+
     #[must_use]
     pub const fn beyond_sight_auxiliary(&self) -> Level2PlayerEventAuxiliary {
         self.beyond_sight_auxiliary
@@ -2382,6 +2461,7 @@ impl Level2SharedSpellResetSession {
         ) else {
             return;
         };
+        self.sync_typed_spell_profile_from_holder(holder.entity_index);
         let beyond_sight = self
             .beyond_sight
             .as_mut()
@@ -2412,7 +2492,12 @@ impl Level2SharedSpellResetSession {
             .unwrap_or_default();
         if queued_spell != 0 {
             let tier = queued_spell.saturating_sub(1).min(2) as u8;
-            if let Some(profile) = level2_set_spell_profile(BEYOND_SIGHT_FAMILY, tier) {
+            if let Some(profile) = self.physical_spell_profile(
+                BEYOND_SIGHT_FAMILY,
+                tier,
+                beyond_sight.parent_entity_index,
+                None,
+            ) {
                 if let Some(holder) = self.pickup_mut(beyond_sight.holder_entity_index) {
                     holder.level_gate = tier.cast_signed();
                     holder.subspell_index = profile.subspell_index;
@@ -3788,35 +3873,7 @@ impl Level2SharedSpellResetSession {
             .expect("validated Level 2 Beyond Sight tier");
             beyond_sight.parent_mana_regen = parent.mana_regen;
             if let Some(holder) = active_holder_projection.as_ref() {
-                let active_word_2e = u16::from_le_bytes(
-                    holder.record[50..52]
-                        .try_into()
-                        .expect("Beyond Sight active word extent"),
-                );
-                if active_word_2e != 0 {
-                    beyond_sight.active_value = active_word_2e.cast_signed();
-                    beyond_sight.activation_value = u16::from_le_bytes(
-                        holder.record[52..54]
-                            .try_into()
-                            .expect("Beyond Sight activation word extent"),
-                    )
-                    .cast_signed();
-                    beyond_sight.mana_cost = holder.max_mana;
-                    beyond_sight.mana_regen_requirement = holder.mana_regen;
-                    for tier in 0..=2 {
-                        let Some(profile) = level2_set_spell_profile(BEYOND_SIGHT_FAMILY, tier)
-                        else {
-                            continue;
-                        };
-                        if beyond_sight.activation_value == profile.word_0x30.cast_signed()
-                            && holder.max_mana == profile.max_mana
-                            && holder.mana_regen == profile.mana_regen
-                        {
-                            beyond_sight.tier = tier;
-                            break;
-                        }
-                    }
-                }
+                Self::copy_beyond_sight_holder(&mut beyond_sight, holder);
             }
             self.beyond_sight = Some(beyond_sight);
             self.sync_beyond_sight_projection();
