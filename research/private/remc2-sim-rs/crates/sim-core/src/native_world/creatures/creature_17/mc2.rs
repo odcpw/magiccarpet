@@ -322,9 +322,15 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: crate::native_world::source_target::Context<'_>,
     frozen_family: &[u16],
-) {
-    crate::native_world::creatures::stage_route::prepare_source_pass(arena, runtime, frozen_family);
+) -> Result<(), String> {
+    crate::native_world::creatures::stage_route::prepare_source_pass(
+        arena,
+        runtime,
+        targets,
+        frozen_family,
+    )
 }
 
 /// Ordinary `sub_4DC40` class-9/model-20 construction followed by the exact
@@ -425,6 +431,7 @@ pub(crate) fn step_projectile(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<guided_projectile::StepOutcome, String> {
     guided_projectile::step(
         arena,
@@ -436,6 +443,7 @@ pub(crate) fn step_projectile(
             pitch_turn: 22,
         },
         None,
+        context,
     )
 }
 

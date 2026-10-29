@@ -461,16 +461,28 @@ impl VillagerFamily {
         source_entity_index: u16,
         source_id: u16,
     ) {
+        self.apply_source_kill(source_entity_index, source_id, Some(source_id));
+    }
+
+    pub(crate) fn apply_source_kill(
+        &mut self,
+        source_entity_index: u16,
+        killer: u16,
+        attacker: Option<u16>,
+    ) -> bool {
         let Some(villager) = self
             .villagers
             .iter_mut()
             .find(|villager| villager.entity_index == source_entity_index)
         else {
-            return;
+            return false;
         };
         villager.life = -1;
-        villager.kill_credit_entity = source_id.cast_signed();
-        villager.current_attacker = source_id.cast_signed();
+        villager.kill_credit_entity = killer.cast_signed();
+        if let Some(attacker) = attacker {
+            villager.current_attacker = attacker.cast_signed();
+        }
+        true
     }
 
     /// `sub_12500` class-5 stage service for Level 1's kind-7 broadcast.

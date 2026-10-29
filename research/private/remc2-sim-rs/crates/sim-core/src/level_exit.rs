@@ -16,6 +16,15 @@ pub const EXIT_PALETTE_BLACK_REQUEST: u8 = 5;
 
 const EXIT_TARGET_DISTANCE: u32 = 0x180;
 
+/// Destination of an ordinary exit, fixed when the mission is opened.
+/// The game adapter derives this from retained campaign progress.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OrdinaryExitRoute {
+    #[default]
+    CampaignMap,
+    UnfinishedSecretContinuation,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u8)]
 pub enum ExitMovementResolution {
@@ -43,6 +52,7 @@ pub enum LevelExitEffect {
 /// this same carrier; there is no level-specific exit session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LevelExitSequence {
+    pub ordinary_exit_route: OrdinaryExitRoute,
     pub active: bool,
     pub complete: bool,
     pub phase: u8,
@@ -63,6 +73,7 @@ pub struct LevelExitSequence {
 impl Default for LevelExitSequence {
     fn default() -> Self {
         Self {
+            ordinary_exit_route: OrdinaryExitRoute::CampaignMap,
             active: false,
             complete: false,
             phase: 0,
@@ -105,7 +116,14 @@ impl LevelExitSequence {
         context: &mut FlightContext,
         portal_position: Option<Position>,
     ) -> Vec<LevelExitEffect> {
-        self.advance_sequence(world, profile, player, context, portal_position, false)
+        self.advance_sequence(
+            world,
+            profile,
+            player,
+            context,
+            portal_position,
+            self.ordinary_exit_route == OrdinaryExitRoute::UnfinishedSecretContinuation,
+        )
     }
 
     /// Action 11 shares `sub_5E8C0_endGameSeq` with the ordinary exit, but
@@ -435,6 +453,35 @@ mod tests {
                     )
                     .is_empty()
             );
+        }
+    }
+
+    #[test]
+    fn ordinary_exit_result_follows_the_retained_parent_route() {
+        for (route, expected) in [
+            (OrdinaryExitRoute::CampaignMap, 10),
+            (OrdinaryExitRoute::UnfinishedSecretContinuation, 26),
+        ] {
+            let mut sequence = LevelExitSequence {
+                ordinary_exit_route: route,
+                active: true,
+                phase: 12,
+                ..LevelExitSequence::default()
+            };
+            let effects = sequence.advance(
+                &FlatWorld,
+                FlightProfile::OUTDOOR,
+                &mut FlightState::default(),
+                &mut FlightContext::default(),
+                None,
+            );
+            assert_eq!(
+                effects,
+                vec![LevelExitEffect::Completed {
+                    result_code: expected
+                }]
+            );
+            assert_eq!(sequence.result_code, expected);
         }
     }
 

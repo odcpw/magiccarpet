@@ -6157,6 +6157,43 @@ fn cast_level_two_family0_fireball_at_bee(
 
 #[test]
 fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() {
+    fn observe_burst(
+        session: &Mc2Simulation,
+        bee_slot: u16,
+        handle: &mut Option<crate::campaign::source_arena::SourceEntityHandle>,
+        saw_dispatched_expiry: &mut bool,
+    ) {
+        if handle.is_none()
+            && let Some(slot) = session.economy().events().iter().find_map(|event| match event {
+                Level2EconomyEvent::DeathBurstSpawned {
+                    source_entity_index,
+                    parent_entity_index,
+                    ..
+                } if *parent_entity_index == bee_slot => Some(*source_entity_index),
+                _ => None,
+            })
+        {
+            let row = &session.source_arena().entities[usize::from(slot)];
+            assert_eq!((row.class, row.model, row.action), (10, 1, 1));
+            *handle = Some(session.source_arena().handle(slot).unwrap());
+        }
+        if let Some(burst) = *handle {
+            *saw_dispatched_expiry |= session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Mc2DispatchEvent::Economy {
+                    source_slot,
+                    event: Level2EconomyEvent::DeathBurstExpired {
+                        source_entity_index,
+                        parent_entity_index,
+                    },
+                    ..
+                } if *source_slot == burst.source_slot
+                    && *source_entity_index == burst.source_slot
+                    && *parent_entity_index == bee_slot
+            ));
+        }
+    }
+
     let mut session = level_two_campaign_session();
     let baseline_hash = session.campaign_state_hash();
     session
@@ -6242,6 +6279,8 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() 
     assert_eq!(output_counts(&session), (0, 0));
     let mut phase_zero_callback_seen = false;
     let mut reached_reclaim = false;
+    let mut burst_handle = None;
+    let mut saw_dispatched_expiry = false;
     for _ in 0..10 {
         let before = session
             .economy()
@@ -6251,6 +6290,12 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() 
             .copied();
         let before_counts = output_counts(&session);
         session.step_outer_turn(PlayerCommand::default(), 0);
+        observe_burst(
+            &session,
+            bee_slot,
+            &mut burst_handle,
+            &mut saw_dispatched_expiry,
+        );
         let after = session
             .economy()
             .bee_creatures()
@@ -6315,6 +6360,86 @@ fn level_two_public_fireball_lethal_bee_waits_for_phase_zero_and_credits_kill() 
         vec![230, 231]
     );
     assert_eq!(output_counts(&session), (1, 1));
+
+    let burst = burst_handle.expect("real Bee death created a raw burst generation");
+    for _ in 0..8 {
+        if saw_dispatched_expiry && session.source_arena().resolve(burst).is_none() {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        observe_burst(
+            &session,
+            bee_slot,
+            &mut burst_handle,
+            &mut saw_dispatched_expiry,
+        );
+    }
+    assert!(
+        saw_dispatched_expiry,
+        "the actual burst expiry reaches the source-pass event consumer"
+    );
+    assert!(
+        session.source_arena().resolve(burst).is_none(),
+        "the next source boundary reclaims the original burst generation"
+    );
+
+    // Stage possession of the actual public-Fireball death sphere, then let
+    // an ordinary stage-one Castle source visit collect it. This isolates the
+    // Castle consumer; it does not pretend to exercise a Possession cast.
+    let reward_slot = session
+        .economy()
+        .events()
+        .iter()
+        .find_map(|event| match event {
+            Level2EconomyEvent::ManaSphereSpawned {
+                sphere_id,
+                source_entity_index,
+                ..
+            } if *source_entity_index == bee_slot => u16::try_from(*sphere_id).ok(),
+            _ => None,
+        })
+        .expect("the real Bee death published its sphere slot");
+    let reward = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index == reward_slot)
+        .copied()
+        .expect("the public Fireball reward remains live for collection");
+    let player = session.state.entity_index;
+    assert!(session.economy_mut().claim_mana_sphere(reward_slot, player));
+    let castle_slot = session
+        .economy_mut()
+        .build_castle(reward.position, player)
+        .expect("the focused consumer setup constructs a stage-one Castle");
+    for _ in 0..4 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        if session.economy().events().iter().any(|event| {
+            matches!(event, Level2EconomyEvent::ManaSphereCollected {
+                sphere_id, carrier_id, mana,
+            } if *sphere_id == reward.id && *carrier_id == u32::from(castle_slot)
+                && *mana == reward.mana)
+        }) {
+            break;
+        }
+    }
+    assert!(
+        session.economy().events().iter().any(|event| {
+            matches!(event, Level2EconomyEvent::ManaSphereCollected {
+            sphere_id, carrier_id, mana,
+        } if *sphere_id == reward.id && *carrier_id == u32::from(castle_slot)
+            && *mana == reward.mana)
+        }),
+        "the scheduled Castle consumes the actual Fireball death reward"
+    );
+    assert!(
+        session
+            .economy()
+            .castle_for_owner(player)
+            .is_some_and(|castle| {
+                castle.source_entity_index == castle_slot && castle.mana >= reward.mana
+            })
+    );
     session.reset();
     assert_eq!(session.campaign_state_hash(), baseline_hash);
     assert_eq!(

@@ -19,6 +19,33 @@ where
     serializer.serialize_str(&value.to_string())
 }
 
+fn deserialize_u64_decimal<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let text = String::deserialize(deserializer)?;
+    let value = text.parse::<u64>().map_err(serde::de::Error::custom)?;
+    if value == 0 || value.to_string() != text {
+        return Err(serde::de::Error::custom("invalid opaque actor identity"));
+    }
+    Ok(value)
+}
+
+fn deserialize_optional_actor<'de, D>(deserializer: D) -> Result<Option<RuntimeActorId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let text = Option::<String>::deserialize(deserializer)?;
+    let Some(text) = text.filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    let value = text.parse::<u64>().map_err(serde::de::Error::custom)?;
+    if value == 0 || value.to_string() != text {
+        return Err(serde::de::Error::custom("invalid opaque actor identity"));
+    }
+    Ok(Some(RuntimeActorId(value)))
+}
+
 fn serialize_u64_hex<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -117,6 +144,10 @@ pub struct SpellObservation {
     pub id: SemanticId,
     pub display_name: String,
     pub acquired: bool,
+    /// Opaque live-holder identity, interpreted together with the enclosing
+    /// session generation. It changes when the source slot is reused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder_actor: Option<RuntimeActorId>,
     pub selected: bool,
     pub tier: i8,
     pub unlocked_tier: u8,
@@ -265,6 +296,13 @@ pub struct SpellAssignment {
     pub spell_id: SemanticId,
     pub tier: u8,
     pub hand: SpellAssignmentHand,
+    /// Optional observation binding; omitted by semantic-only clients.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_actor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub holder_actor: Option<RuntimeActorId>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -280,6 +318,12 @@ pub enum SpellMarkHand {
 pub struct SpellMark {
     pub spell_id: SemanticId,
     pub hand: SpellMarkHand,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_actor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub holder_actor: Option<RuntimeActorId>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -380,8 +424,14 @@ fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct RuntimeActorId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct RuntimeActorId(
+    #[serde(
+        serialize_with = "serialize_u64_decimal",
+        deserialize_with = "deserialize_u64_decimal"
+    )]
+    pub u64,
+);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RuntimeParticipantId(#[serde(serialize_with = "serialize_u64_decimal")] pub u64);

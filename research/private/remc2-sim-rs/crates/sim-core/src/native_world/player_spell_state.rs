@@ -26,6 +26,40 @@ impl GlobalSpecialState {
 }
 
 impl Level2SharedSpellResetSession {
+    /// Source A4 feedback for accepted damage, Duel and resolved Steal.
+    pub(super) fn set_player_hit_feedback(&mut self) {
+        self.set_player_hit_frame_time(4);
+        self.player_life_regen_cooldown = 16;
+        self.player_hit_effect_cooldown = 64;
+    }
+
+    /// Apply the directional mailbox feedback to the authoritative local row
+    /// and its shared spell projections before continuing ordinary upkeep.
+    pub(super) fn apply_directional_feedback(
+        &mut self,
+        actor: &mut EntitySnapshot,
+        duel_consumed: bool,
+        steal_consumed: bool,
+        steal_attacker_resolved: bool,
+    ) -> bool {
+        if !actor.active
+            || actor.class != 3
+            || actor.index != self.player_entity.index
+            || actor.life < 0
+        {
+            return false;
+        }
+        if duel_consumed || (steal_consumed && steal_attacker_resolved) {
+            self.set_player_hit_feedback();
+        }
+        if duel_consumed || steal_consumed {
+            actor.apply_source_sub_5ef70();
+            self.sync_player_entity_from_authority(actor);
+            self.sync_typed_spell_parent_caches_from_player_entity();
+        }
+        true
+    }
+
     #[must_use]
     pub fn global_special_state(&self) -> GlobalSpecialState {
         self.global_special_state
@@ -214,6 +248,59 @@ impl Mc2LiveState {
         }
     }
 
+    /// Run the Castle callback with its actual player inventory consumer at
+    /// `sub_605E0`, before the root is hidden and the remaining handler tail.
+    pub(crate) fn step_castle_action_with_player_state(
+        &mut self,
+        castle_slot: u16,
+        reset_free_slots: &[u16],
+        remove_rival_castle_spell: bool,
+    ) -> bool {
+        let final_profile = self.economy.castle_at(castle_slot).and_then(|castle| {
+            if castle.level == 0 {
+                return None;
+            }
+            let owner = castle.source_id_entity_index;
+            if self.economy.entities.get(usize::from(owner))?.action > 1 {
+                return None;
+            }
+            let player = self
+                .shared_spells
+                .players
+                .iter()
+                .find(|player| player.entity_index == owner)?;
+            let tier = player.family_selected_tiers[2].clamp(0, 2).cast_unsigned();
+            self.shared_spells
+                .physical_spell_profile(2, tier, owner, Some(0))
+                .map(|profile| (tier, profile))
+        });
+        let Self {
+            economy: arena,
+            core,
+            terrain,
+            shared_spells,
+            nyphur_dispatcher,
+            ..
+        } = self;
+        let crate::campaign::source_arena::SourceArena {
+            economy, entities, ..
+        } = arena;
+        let mut consumer = CastlePlayerConsumer {
+            entities,
+            shared_spells,
+            core,
+            nyphur_dispatcher,
+        };
+        economy.step_castle_action_with_final_loss(
+            castle_slot,
+            terrain,
+            reset_free_slots,
+            &mut |economy, castle| {
+                consumer.final_loss(economy, castle, remove_rival_castle_spell, final_profile);
+            },
+        )
+    }
+
     /// sub60780 forces a cold SetSpell while retaining W; sub6D8B0 uses
     /// the ordinary SetSpell queue branch when the holder remains active.
     pub(crate) fn refresh_castle_spell_profile(
@@ -241,7 +328,6 @@ impl Mc2LiveState {
         else {
             return;
         };
-        let slot = player.enabled_spell_holders[2];
         let tier = player.family_selected_tiers[2].clamp(0, 2).cast_unsigned();
         let profile = if let Some(stage) = stage_override {
             self.shared_spells
@@ -252,34 +338,14 @@ impl Mc2LiveState {
         let Some(profile) = profile else {
             return;
         };
-        let apply = |holder: &mut EntitySnapshot| {
-            let active = holder.active_value;
-            let word = [holder.record[50], holder.record[51]];
-            if force {
-                holder.active_value = 0;
-                holder.record[50..52].fill(0);
-            }
-            holder.apply_nyphur_spell_profile(profile, tier);
-            if force {
-                holder.active_value = active;
-                holder.record[50..52].copy_from_slice(&word);
-            }
-        };
-        if let Some(holder) = self
-            .shared_spells
-            .pickup_mut(slot)
-            .filter(|holder| holder.active && holder.model == 2)
-        {
-            apply(holder);
-        }
-        if let Some(holder) = self
-            .economy
-            .entities
-            .get_mut(usize::from(slot))
-            .filter(|holder| slot != 0 && holder.active && holder.class == 15 && holder.model == 2)
-        {
-            apply(holder);
-        }
+        apply_castle_spell_profile(
+            &mut self.economy.entities,
+            &mut self.shared_spells,
+            owner,
+            force,
+            tier,
+            profile,
+        );
     }
 
     /// PlayerEvents opcode42 runs before UpdateEntities. The Castle's normal
@@ -299,6 +365,142 @@ impl Mc2LiveState {
             .expect("validated owned Castle")
             .life = -1;
         self.economy.entities[usize::from(castle.source_entity_index)].set_life(-1);
+    }
+}
+
+/// Borrowed owners needed at the Castle's inventory boundary. The economy
+/// passes its current state into the hook; no second arena or inventory is held.
+struct CastlePlayerConsumer<'a> {
+    entities: &'a mut [EntitySnapshot],
+    shared_spells: &'a mut Level2SharedSpellResetSession,
+    core: &'a mut crate::campaign::state::CanonicalRuntimeState,
+    nyphur_dispatcher: &'a mut NyphurCapability,
+}
+
+impl CastlePlayerConsumer<'_> {
+    fn final_loss(
+        &mut self,
+        economy: &Level2EconomyState,
+        castle: Level2CastleState,
+        remove_rival_castle_spell: bool,
+        final_profile: Option<(u8, Level2SetSpellProfile)>,
+    ) {
+        let owner = castle.source_id_entity_index;
+        if owner == 0
+            || economy.slot_generation(owner) != castle.owner_slot_generation
+            || self
+                .entities
+                .get(usize::from(owner))
+                .is_none_or(|row| !row.active || row.class != 3)
+        {
+            return;
+        }
+        // sub_60810 refreshes the final stage's holder before sub_605E0
+        // retires it. Keep that profile write ahead of inventory removal.
+        if let Some((tier, profile)) = final_profile {
+            apply_castle_spell_profile(
+                self.entities,
+                self.shared_spells,
+                owner,
+                true,
+                tier,
+                profile,
+            );
+        }
+        let remove_spell =
+            remove_rival_castle_spell && self.entities[usize::from(owner)].model == 1;
+        let holder_slot = self
+            .shared_spells
+            .players
+            .iter()
+            .find(|player| player.entity_index == owner)
+            .map_or(0, |player| player.enabled_spell_holders[2]);
+        if remove_spell
+            && let Some(holder) = self
+                .entities
+                .get_mut(usize::from(holder_slot))
+                .filter(|holder| {
+                    holder_slot != 0
+                        && holder.active
+                        && (holder.class, holder.model) == (15, 2)
+                        && holder.source_spell_parent_entity_index() == owner
+                })
+        {
+            holder.disable_drawing();
+            self.shared_spells.sync_pickup_from_authority(holder);
+        }
+        for player in self
+            .shared_spells
+            .players
+            .iter_mut()
+            .chain(self.core.players.iter_mut())
+            .chain(std::iter::once(&mut self.shared_spells.local_player))
+            .filter(|player| player.entity_index == owner)
+        {
+            player.record[42..44].fill(0);
+            if remove_spell {
+                player.enabled_spell_holders[2] = 0;
+                player.record[272..274].fill(0);
+            }
+        }
+        if remove_spell {
+            for state in &mut self.shared_spells.acquisitions {
+                if state.owner_entity_index == owner && state.family == 2 {
+                    state.holder_relation = 0;
+                }
+            }
+            if self.shared_spells.local_player.entity_index == owner
+                && let Some(fire) = self.core.context.spell_fire.as_mut()
+            {
+                fire.enabled_holder_indices = self.shared_spells.enabled_spell_holder_indices();
+            }
+        }
+        if let Some(dispatcher) = self.nyphur_dispatcher.as_mut() {
+            dispatcher.apply_final_castle_loss(owner, remove_spell);
+        }
+    }
+}
+
+fn apply_castle_spell_profile(
+    entities: &mut [EntitySnapshot],
+    shared_spells: &mut Level2SharedSpellResetSession,
+    owner: u16,
+    force: bool,
+    tier: u8,
+    profile: Level2SetSpellProfile,
+) {
+    let Some(player) = shared_spells
+        .players
+        .iter()
+        .find(|player| player.entity_index == owner)
+    else {
+        return;
+    };
+    let slot = player.enabled_spell_holders[2];
+    let apply = |holder: &mut EntitySnapshot| {
+        let active = holder.active_value;
+        let word = [holder.record[50], holder.record[51]];
+        if force {
+            holder.active_value = 0;
+            holder.record[50..52].fill(0);
+        }
+        holder.apply_nyphur_spell_profile(profile, tier);
+        if force {
+            holder.active_value = active;
+            holder.record[50..52].copy_from_slice(&word);
+        }
+    };
+    if let Some(holder) = shared_spells
+        .pickup_mut(slot)
+        .filter(|holder| holder.active && holder.model == 2)
+    {
+        apply(holder);
+    }
+    if let Some(holder) = entities
+        .get_mut(usize::from(slot))
+        .filter(|holder| slot != 0 && holder.active && holder.class == 15 && holder.model == 2)
+    {
+        apply(holder);
     }
 }
 

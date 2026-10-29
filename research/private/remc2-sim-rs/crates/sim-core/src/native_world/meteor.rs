@@ -305,6 +305,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&super::guided_projectile::Targets<'_>>,
+    context: super::source_target::Context<'_>,
 ) -> Result<super::guided_projectile::StepOutcome, String> {
     let outcome = super::guided_projectile::step(
         arena,
@@ -316,6 +317,7 @@ pub(crate) fn step_projectile(
             pitch_turn: RULES.projectile_pitch_turn,
         },
         targets,
+        context,
     )?;
     after_projectile(arena, terrain, particles, slot, outcome.impact_slot)?;
     Ok(outcome)

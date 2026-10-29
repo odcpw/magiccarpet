@@ -2166,6 +2166,15 @@ impl crate::native_world::Level2EconomyState {
     /// Construction burial writes life and both credit words directly;
     /// it neither consumes nor synthesizes an ordinary damage mailbox.
     pub(crate) fn apply_settlement_construction_kill(&mut self, slot: u16, source_id: u16) -> bool {
+        self.apply_settlement_source_kill(slot, source_id, Some(source_id))
+    }
+
+    pub(crate) fn apply_settlement_source_kill(
+        &mut self,
+        slot: u16,
+        killer: u16,
+        attacker: Option<u16>,
+    ) -> bool {
         let Some(row) = self
             .house_residents
             .iter_mut()
@@ -2174,8 +2183,10 @@ impl crate::native_world::Level2EconomyState {
             return false;
         };
         row.life = -1;
-        row.kill_credit_entity = source_id;
-        row.current_attacker = source_id;
+        row.kill_credit_entity = killer;
+        if let Some(attacker) = attacker {
+            row.current_attacker = attacker;
+        }
         true
     }
 

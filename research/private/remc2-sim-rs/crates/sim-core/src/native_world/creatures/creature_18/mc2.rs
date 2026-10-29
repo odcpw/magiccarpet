@@ -260,6 +260,7 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
             position: row.position,
             yaw: row.yaw as i16,
             roll: row.roll as i16,
+            half_width: row.half_width,
             previous: row.previous,
             next: row.next,
             target: row.target,
@@ -291,6 +292,7 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
             position: row.position,
             yaw: row.yaw,
             roll: row.source_roll(),
+            half_width: row.array_pitch(),
             previous: word(row, 58),
             next: row.next_relation.unwrap_or(0),
             target: word(row, 154),
@@ -316,9 +318,15 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: crate::native_world::source_target::Context<'_>,
     frozen_family: &[u16],
-) {
-    crate::native_world::creatures::stage_route::prepare_source_pass(arena, runtime, frozen_family);
+) -> Result<(), String> {
+    crate::native_world::creatures::stage_route::prepare_source_pass(
+        arena,
+        runtime,
+        targets,
+        frozen_family,
+    )
 }
 
 /// Materialize one `sub_1D460` fan member in the shared typed Fireball arena.
@@ -332,10 +340,12 @@ fn launch_projectile(
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
+    let mut initial_position = launch.position;
+    initial_position.z = initial_position.z.wrapping_sub(super::RULES.fan_lift);
     let payload =
         crate::native_world::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
             origin: crate::native_world::FireballProjectileOrigin::Creature18,
-            position: launch.position,
+            position: initial_position,
             yaw: launch.yaw,
             pitch: launch.pitch,
             axis_position: Position::default(),
@@ -351,8 +361,23 @@ fn launch_projectile(
     arena
         .economy
         .initialize_fireball_projectile(slot, payload, 0)
-        .map(Some)
-        .ok_or_else(|| format!("model-18 Fireball map linkage failed at slot{slot}"))
+        .ok_or_else(|| format!("model-18 Fireball map linkage failed at slot{slot}"))?;
+    crate::world::effects::sync_position(arena, terrain, slot, initial_position, true, false)?;
+    crate::world::effects::lighting::admit_source(
+        arena,
+        terrain,
+        slot,
+        initial_position,
+        crate::world::effects::lighting::SourceLight::Fireball,
+    );
+    arena
+        .economy
+        .fireball_projectiles
+        .iter_mut()
+        .find(|projectile| projectile.source_entity_index == slot)
+        .ok_or_else(|| format!("model-18 Fireball lost allocated slot{slot}"))?
+        .position = launch.position;
+    Ok(Some(slot))
 }
 
 /// Apply one source callback. The shared root keeps dispatch, same-pass child
@@ -380,6 +405,7 @@ pub(crate) fn step_row(
         targets: &targets,
         class3,
         model18: &families[usize::from(SOURCE_MODEL)],
+        families,
     };
     let mut effects = super::step(&mut actor, &context)
         .ok_or_else(|| format!("unsupported model-18 action{}", actor.action))?;
@@ -388,6 +414,15 @@ pub(crate) fn step_row(
     arena.economy.source_rng.insert(slot, actor.rng);
     for _ in 0..effects.population_decrements {
         arena.economy.decrement_source_creature_population();
+    }
+    for (linked_slot, flags) in &effects.linked_blink_flags {
+        if let Some(row) = arena
+            .entities
+            .get_mut(usize::from(*linked_slot))
+            .filter(|row| row.active)
+        {
+            row.set_control_flags((row.control_flags & !0x0600_0000) | *flags);
+        }
     }
     if callback_action == 148 {
         effects.kill_credit =

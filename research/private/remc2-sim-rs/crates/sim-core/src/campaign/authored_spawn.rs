@@ -1,10 +1,35 @@
 //! Admission policy and family-owned construction for authored Level 2 rows.
 
+use std::collections::BTreeSet;
+
 use crate::{
     campaign::source_arena::SourceArena,
-    level1_mission::AuthoredFeature,
+    level1_mission::{AUTHORED_FEATURE_COUNT, AuthoredFeature},
     native_world::{RuntimeSnapshot, SessionTerrain},
 };
+
+/// `sub_4A1E0` visits the authored table in index order, beginning at one.
+/// Row zero is a sentinel even when it contains a matching nonzero type.
+/// Consumed rows correspond to source records whose type has been cleared.
+pub(crate) fn source_group_rows(
+    features: &[AuthoredFeature],
+    group: i16,
+    consumed: &BTreeSet<u16>,
+) -> Vec<AuthoredFeature> {
+    let mut rows = features
+        .iter()
+        .copied()
+        .filter(|feature| {
+            feature.index != 0
+                && usize::from(feature.index) < AUTHORED_FEATURE_COUNT
+                && feature.kind != 0
+                && feature.activation_group == group
+                && !consumed.contains(&feature.index)
+        })
+        .collect::<Vec<_>>();
+    rows.sort_unstable_by_key(|feature| feature.index);
+    rows
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AuthoredSpawnFamily {

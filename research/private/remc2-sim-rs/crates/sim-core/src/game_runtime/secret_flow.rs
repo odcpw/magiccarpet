@@ -77,6 +77,16 @@ impl SecretFlowState {
         &self.completed_secret_levels
     }
 
+    /// An unfinished discovery is eligible for its game's parent-replay rule.
+    /// The adapter still resolves the selected parent and destination in its
+    /// validated catalog; active secret sessions cannot start a second route.
+    #[must_use]
+    pub(crate) fn is_discovered_unfinished(&self, level: &SemanticLevelId) -> bool {
+        self.return_frame.is_none()
+            && self.discovered_secret_levels.contains(level)
+            && !self.completed_secret_levels.contains(level)
+    }
+
     #[must_use]
     pub(crate) fn return_frame(&self) -> Option<&SecretMissionReturnFrame> {
         self.return_frame.as_ref()
@@ -522,6 +532,7 @@ mod tests {
             .unwrap();
         assert_eq!(returned, parent);
         assert_eq!(resumed.discovered_secret_levels(), &[secret_level.clone()]);
+        assert!(!resumed.is_discovered_unfinished(&secret_level));
         assert_eq!(resumed.completed_secret_levels(), &[secret_level]);
         assert_eq!(returned.selected_level_id.as_ref(), Some(&parent_level));
         assert_eq!(returned.completed_levels, parent.completed_levels);
@@ -544,12 +555,15 @@ mod tests {
     fn abandoning_a_secret_discovers_it_without_granting_completion() {
         let (parent, parent_flow, secret_flow, secret_level) = fixture();
         let mut state = SecretFlowState::default();
+        assert!(!state.is_discovered_unfinished(&secret_level));
         state
             .enter_secret(&parent_flow, parent, secret_level.clone())
             .unwrap();
+        assert!(!state.is_discovered_unfinished(&secret_level));
         let _parent = state
             .return_to_parent(&secret_flow, SecretMissionOutcome::Abandoned)
             .unwrap();
+        assert!(state.is_discovered_unfinished(&secret_level));
         assert_eq!(state.discovered_secret_levels(), &[secret_level]);
         assert!(state.completed_secret_levels().is_empty());
     }

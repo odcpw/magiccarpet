@@ -332,6 +332,7 @@ pub(crate) fn allocate(
 /// Runtime UpdateEntities continues to use its existing following-pass reclaim.
 pub(crate) fn reclaim(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16) {
     let rng = arena.entities[usize::from(slot)].entity_rng;
+    arena.effects.forget_source_slot(slot);
     arena.economy.map_chains.set_map_entity_unlink(slot);
     synchronize_links(arena, terrain, slot);
     arena.entities[usize::from(slot)].reclaim_source_row();

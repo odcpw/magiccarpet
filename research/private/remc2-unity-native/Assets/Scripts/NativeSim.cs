@@ -93,6 +93,7 @@ namespace MagicCarpet.Native
         internal const byte AudioActionUpdateExisting = 7;
         internal const byte AudioActionEndLoop = 8;
         internal const byte AudioActionSuppressNoExisting = 9;
+        internal const byte AudioActionSuppressNullSample = 10;
         internal const ushort AudioVoiceNone = ushort.MaxValue;
         internal const byte AudioEntitySoundRestartOrStart = 1;
         internal const byte AudioPlayIfNotPlaying = 2;

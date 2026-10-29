@@ -605,6 +605,31 @@ fn owner_data_death_outputs_use_frozen_raw_replacements_in_source_order() {
     dying.life = -1;
     dying.source_byte_3e = 8;
     let models = std::array::from_fn(|_| Vec::new());
+    let mut exhausted = arena.clone();
+    let mut exhausted_world = world.clone();
+    exhausted.finish_source_group();
+    assert_eq!(exhausted.free_slot_count(), 0);
+    let failed = mc2::step_in_arena(
+        &mut exhausted,
+        &session.session.state.live.core.runtime,
+        &mut exhausted_world,
+        particles,
+        source.source_entity_index,
+        &models,
+        &[],
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(failed.death_conversion);
+    assert!(
+        !exhausted.economy.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. }
+                if *parent_entity_index == source.source_entity_index
+        )),
+        "failed allocation must not publish a burst event"
+    );
     let effects = mc2::step_in_arena(
         &mut arena,
         &session.session.state.live.core.runtime,
@@ -637,6 +662,23 @@ fn owner_data_death_outputs_use_frozen_raw_replacements_in_source_order() {
     );
     assert_eq!(burst.particle_parameter_index, Some(41));
     assert_eq!(burst.control_flags, 0x20004);
+    assert_eq!(
+        arena
+            .economy
+            .events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    source_entity_index, parent_entity_index, id_entity_index,
+                } if *source_entity_index == burst.index
+                    && *parent_entity_index == source.source_entity_index
+                    && *id_entity_index == source.entity_id
+            ))
+            .count(),
+        1,
+        "the actual raw radial explosion is published once to its death consumer"
+    );
     assert!(!arena.entities[usize::from(replacements[0].0)].active);
     for &(slot, old_tile, generation) in &replacements[..2] {
         assert_eq!(arena.slot_generation(slot), generation.wrapping_add(1));
@@ -658,6 +700,220 @@ fn owner_data_death_outputs_use_frozen_raw_replacements_in_source_order() {
     assert_eq!(
         arena.economy.source_rng[&source.source_entity_index],
         dying.entity_rng
+    );
+
+    let burst_slot = replacements[1].0;
+    let burst_handle = arena.handle(burst_slot).unwrap();
+    // The same live source with a different death parent has a different
+    // future expiry consumer and must produce a different arena receipt.
+    let mut other_parent = arena.clone();
+    other_parent.effects.forget_source_slot(burst_slot);
+    crate::world::effects::register_death_burst(
+        &mut other_parent,
+        burst_slot,
+        source.source_entity_index.wrapping_add(1),
+    )
+    .unwrap();
+    assert_eq!(
+        arena.economy.reset_hash_with_terrain(&world),
+        other_parent.economy.reset_hash_with_terrain(&world)
+    );
+    assert_ne!(
+        arena.reset_hash_with_terrain(&world),
+        other_parent.reset_hash_with_terrain(&world)
+    );
+    let mut replaced = arena.clone();
+    let mut replaced_world = world.clone();
+    replaced.rebuild_source_free_arena();
+    for _ in 0..replaced.entities.len() {
+        if replaced.resolve(burst_handle).is_none() {
+            break;
+        }
+        if crate::world::effects::allocate(
+            &mut replaced,
+            &mut replaced_world,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            position,
+            particles,
+        )
+        .unwrap()
+        .is_none()
+        {
+            break;
+        }
+    }
+    assert!(
+        replaced.resolve(burst_handle).is_none(),
+        "the frozen replacement allocator reuses the actual burst slot"
+    );
+    assert!(!replaced.effects.death_burst_origins().contains_key(&burst_slot));
+    assert!(
+        !replaced.economy.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2EconomyEvent::DeathBurstExpired {
+                source_entity_index, parent_entity_index,
+            } if *source_entity_index == burst_slot && *parent_entity_index == source.source_entity_index
+        )),
+        "replacement is not a burst expiry"
+    );
+
+    // The scheduler temporarily takes effect state while a different effect
+    // can allocate children. Its allocator then sees the empty arena state,
+    // so reconcile the taken state before putting it back.
+    let mut cross_replaced = arena.clone();
+    let mut cross_world = world.clone();
+    let mut taken_state = std::mem::take(&mut cross_replaced.effects);
+    cross_replaced.rebuild_source_free_arena();
+    for _ in 0..cross_replaced.entities.len() {
+        if cross_replaced.resolve(burst_handle).is_none() {
+            break;
+        }
+        if crate::world::effects::allocate(
+            &mut cross_replaced,
+            &mut cross_world,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            position,
+            particles,
+        )
+        .unwrap()
+        .is_none()
+        {
+            break;
+        }
+    }
+    assert!(cross_replaced.resolve(burst_handle).is_none());
+    assert!(taken_state.death_burst_origins().contains_key(&burst_slot));
+    taken_state.retain_current_generations(&cross_replaced);
+    assert!(!taken_state.death_burst_origins().contains_key(&burst_slot));
+    cross_replaced.effects = taken_state;
+    assert!(
+        !cross_replaced.economy.events().iter().any(|event| matches!(
+            event,
+            crate::native_world::Level2EconomyEvent::DeathBurstExpired {
+                source_entity_index, parent_entity_index,
+            } if *source_entity_index == burst_slot && *parent_entity_index == source.source_entity_index
+        )),
+        "reconciling an effect child replacement does not report expiry"
+    );
+
+    // sub_57F20 returns a slot without changing its generation. Reconcile
+    // a temporarily taken effect state even before a future NewEvent reuse.
+    let mut reclaimed = arena.clone();
+    let mut reclaim_world = world.clone();
+    let mut reclaimed_state = std::mem::take(&mut reclaimed.effects);
+    crate::world::terrain::cave_features::reclaim(
+        &mut reclaimed,
+        &mut reclaim_world,
+        burst_slot,
+    );
+    assert_eq!(reclaimed.slot_generation(burst_slot), burst_handle.generation);
+    assert!(reclaimed.economy.free_source_slots().contains(&burst_slot));
+    reclaimed_state.retain_current_generations(&reclaimed);
+    assert!(!reclaimed_state.death_burst_origins().contains_key(&burst_slot));
+    assert!(!reclaimed.economy.events().iter().any(|event| matches!(
+        event,
+        crate::native_world::Level2EconomyEvent::DeathBurstExpired {
+            source_entity_index, parent_entity_index,
+        } if *source_entity_index == burst_slot && *parent_entity_index == source.source_entity_index
+    )));
+
+    // Point the frozen fallback cursor at this actual Bee burst. During its
+    // own action-1 visit its first successful child allocation can then
+    // replace the callback's fixed address, which remains the source pointer.
+    let mut self_replaced = arena.clone();
+    let mut self_world = world.clone();
+    self_replaced.rebuild_source_free_arena();
+    loop {
+        let mut probe = self_replaced.clone();
+        let mut probe_world = self_world.clone();
+        let candidate = crate::world::effects::allocate(
+            &mut probe,
+            &mut probe_world,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            position,
+            particles,
+        )
+        .unwrap()
+        .expect("frozen replacement cursor reaches the real burst");
+        if candidate == burst_slot {
+            break;
+        }
+        assert_eq!(
+            crate::world::effects::allocate(
+                &mut self_replaced,
+                &mut self_world,
+                sim_definition::adapter::mc2_effect_definition(
+                    crate::level_definition::EffectKind::Impact,
+                ),
+                position,
+                particles,
+            )
+            .unwrap(),
+            Some(candidate)
+        );
+    }
+    let seed = (0..=u16::MAX)
+        .find(|seed| level2_next_rng16(*seed) % 157 >= 79)
+        .unwrap();
+    self_replaced.entities[usize::from(burst_slot)].set_entity_rng(seed);
+    let mut state = std::mem::take(&mut self_replaced.effects);
+    crate::world::effects::visit(
+        &mut self_replaced,
+        &mut self_world,
+        burst_slot,
+        particles,
+        &mut state,
+        |_, _| Ok(0),
+    )
+    .unwrap();
+    self_replaced.effects = state;
+    let current = &self_replaced.entities[usize::from(burst_slot)];
+    assert!(self_replaced.resolve(burst_handle).is_none());
+    assert_eq!((current.class, current.model, current.action), (10, 0, 0));
+    assert_ne!(current.control_flags & 0x80, 0, "post-birth pointer write");
+    assert!(!self_replaced.effects.death_burst_origins().contains_key(&burst_slot));
+    assert!(!self_replaced.economy.events().iter().any(|event| matches!(
+        event,
+        crate::native_world::Level2EconomyEvent::DeathBurstExpired {
+            source_entity_index, parent_entity_index,
+        } if *source_entity_index == burst_slot && *parent_entity_index == source.source_entity_index
+    )));
+
+    for visit in 0..3 {
+        let mut state = std::mem::take(&mut arena.effects);
+        crate::world::effects::visit(
+            &mut arena,
+            &mut world,
+            burst_slot,
+            particles,
+            &mut state,
+            |_, _| Ok(0),
+        )
+        .unwrap();
+        arena.effects = state;
+        let expiries = arena
+            .economy
+            .events()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                crate::native_world::Level2EconomyEvent::DeathBurstExpired {
+                    source_entity_index, parent_entity_index,
+                } if *source_entity_index == burst_slot && *parent_entity_index == source.source_entity_index
+            ))
+            .count();
+        assert_eq!(expiries, usize::from(visit == 2));
+    }
+    assert!(arena.entities[usize::from(burst_slot)].drawing_disabled());
+    assert!(
+        arena.resolve(burst_handle).is_some(),
+        "hide retains the actual generation until the next source boundary"
     );
 }
 

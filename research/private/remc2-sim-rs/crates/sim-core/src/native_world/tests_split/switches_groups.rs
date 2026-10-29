@@ -761,6 +761,75 @@ fn level_two_model_zero_one_switches_use_strict_xy_predicates() {
 }
 
 #[test]
+fn level_two_root_switch_skips_nonzero_authored_row_zero() {
+    let mut session = level_two_campaign_session();
+    let root = session
+        .level2_imported_switch_roots
+        .iter()
+        .find(|root| root.authored_index == 109 && root.target_group == 9)
+        .copied()
+        .expect("real row-109 group-9 switch");
+    let wind = session
+        .mission()
+        .authored_features()
+        .iter()
+        .find(|feature| feature.index == 110)
+        .copied()
+        .expect("real group-9 Wind row");
+    // Source-language negative control only: a matching nonzero sentinel
+    // must be ignored. The real row109 -> group9 -> row110 route is unchanged.
+    let mut sentinel = wind;
+    sentinel.index = 0;
+    session.session.state.live.mission.authored_features_mut()[0] = sentinel;
+    session
+        .set_level2_entity_position(session.state.entity_index, root.position)
+        .expect("place the real player at the switch");
+
+    let mut published = false;
+    for _ in 0..16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        published |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 9, authored_indices, .. }
+                if *source_slot == root.source_slot && authored_indices.as_ref() == [110]
+        ));
+        if published {
+            break;
+        }
+    }
+    assert!(
+        published,
+        "the real switch publishes only row110, never row0"
+    );
+    assert!(
+        session
+            .economy()
+            .authored_model22()
+            .iter()
+            .any(|source| { source.authored_index == 110 && source.active && source.action == 22 })
+    );
+    assert_eq!(session.economy().model22_spawned_children().len(), 11);
+    let producer = &session.entities()[usize::from(root.source_slot)];
+    assert!(producer.active && producer.drawing_disabled());
+    let producer_handle = session
+        .source_arena()
+        .handle(root.source_slot)
+        .expect("hidden source retains its original generation");
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session.source_arena().resolve(producer_handle).is_none(),
+        "the hidden source is reclaimed at the following pass, even if its slot is reused"
+    );
+}
+
+#[test]
 fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
     let mut session = level_two_campaign_session();
     let root = session

@@ -100,6 +100,9 @@ pub struct PlayerPreferences {
     pub sky: bool,
     #[serde(default = "source_graphics_enabled")]
     pub shadows: bool,
+    /// Source `m_wDynamicLighting`; old profiles retain the enabled default.
+    #[serde(default = "source_graphics_enabled")]
+    pub dynamic_lighting: bool,
     pub brightness: [u8; 3],
     pub flight_assistance: bool,
     pub fullscreen: bool,
@@ -138,6 +141,7 @@ impl Default for PlayerPreferences {
             reflections: true,
             sky: true,
             shadows: true,
+            dynamic_lighting: true,
             brightness: [0; 3],
             flight_assistance: false,
             fullscreen: false,
@@ -685,11 +689,13 @@ mod tests {
     #[test]
     fn original_render_options_default_enabled_for_existing_profiles() {
         let mut old = serde_json::to_value(PlayerPreferences::default()).unwrap();
-        for field in ["reflections", "sky", "shadows"] {
+        for field in ["reflections", "sky", "shadows", "dynamic_lighting"] {
             old.as_object_mut().unwrap().remove(field);
         }
         let restored: PlayerPreferences = serde_json::from_value(old).unwrap();
-        assert!(restored.reflections && restored.sky && restored.shadows);
+        assert!(
+            restored.reflections && restored.sky && restored.shadows && restored.dynamic_lighting
+        );
     }
 
     #[test]
@@ -913,6 +919,7 @@ mod tests {
                     spell_id: id.clone(),
                     tier: 0,
                     hand: SpellAssignmentHand::Left,
+                    holder_actor: None,
                 }),
                 ..GameCommand::default()
             },
@@ -920,6 +927,7 @@ mod tests {
                 mark_spell: Some(SpellMark {
                     spell_id: id,
                     hand: SpellMarkHand::Left,
+                    holder_actor: None,
                 }),
                 ..GameCommand::default()
             },
@@ -1010,6 +1018,7 @@ mod tests {
         prefs.reflections = false;
         prefs.sky = false;
         prefs.shadows = false;
+        prefs.dynamic_lighting = false;
         prefs.auto_show_objectives_for_foreign_languages = true;
         store
             .command(PreferencesCommand::Apply { preferences: prefs })
@@ -1047,6 +1056,7 @@ mod tests {
             store.snapshot().preferences
         );
         assert_eq!(cold.snapshot().preferences.player_name, "OLIVER");
+        assert!(!cold.snapshot().preferences.dynamic_lighting);
         assert_eq!(fs::read(&save).unwrap(), b"existing campaign save");
         fs::remove_file(path).unwrap();
         fs::remove_file(save).unwrap();

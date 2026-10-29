@@ -542,6 +542,7 @@ namespace MagicCarpet.Native
             public EnvironmentProduct palette, tables, colors, blocks, sky, source16, day_exit_tables;
             public Level3TextureBank tmaps;
             public EnvironmentBitmapBank[] bitmap_banks;
+            public EnvironmentBitmap cursor;
         }
 
         [Serializable]
@@ -726,6 +727,30 @@ namespace MagicCarpet.Native
                     RequireLevel2(extent > 0 && cache.ReadOutput(row.indices_path).Length == extent &&
                         mask.Length == extent && mask.All(value => value <= 1), "environment bitmap extent/coverage");
                 }
+            var cursor = descriptor.cursor;
+            var hasPointerSource = sources.ContainsKey("owner_data:DATA/POINTERS.DAT");
+            // Legacy caches have no POINTERS source. New generations must
+            // retain and bind the selected hardware cursor as a unit.
+            if (hasPointerSource)
+            {
+                var selector = new[] { 1, 9, 10 }[map];
+                var asset = $"owner_data:DATA/POINTERS.DAT#{selector}";
+                var indicesPath = $"cursor/pointers/{selector:000}.indices.u8";
+                var maskPath = $"cursor/pointers/{selector:000}.mask.u8";
+                RequireLevel2(cursor != null && cursor.selector == selector && cursor.width > 0 && cursor.height > 0 &&
+                    cursor.indices_path == indicesPath && cursor.mask_path == maskPath &&
+                    rows.TryGetValue(indicesPath, out var indicesRow) && indicesRow.source_asset_ids.SequenceEqual(new[] { asset }) &&
+                    rows.TryGetValue(maskPath, out var maskRow) && maskRow.source_asset_ids.SequenceEqual(new[] { asset }),
+                    "environment original pointer binding");
+                var extent = checked(cursor.width * cursor.height);
+                var mask = cache.ReadOutput(maskPath);
+                RequireLevel2(cache.ReadOutput(indicesPath).Length == extent && mask.Length == extent &&
+                    mask.All(value => value <= 1), "environment original pointer extent/coverage");
+            }
+            else
+                RequireLevel2(cursor == null || cursor.width == 0 && cursor.height == 0 &&
+                    string.IsNullOrEmpty(cursor.indices_path) && string.IsNullOrEmpty(cursor.mask_path),
+                    "legacy environment has no pointer binding");
             cache.EnvironmentMaterials = descriptor;
             cache.EnvironmentPackage = package;
             return cache;

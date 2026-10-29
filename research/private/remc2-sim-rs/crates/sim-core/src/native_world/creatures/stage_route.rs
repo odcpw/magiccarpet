@@ -6,7 +6,7 @@
 use super::archer::ArcherStageRuntime;
 use crate::Position;
 use crate::campaign::source_arena::SourceArena;
-use crate::native_world::{EntitySnapshot, RuntimeRelation, RuntimeSnapshot};
+use crate::native_world::{EntitySnapshot, RuntimeRelation, RuntimeSnapshot, source_target};
 
 pub(crate) struct Route<'a> {
     pub model: u8,
@@ -41,7 +41,7 @@ impl Route<'_> {
     pub(crate) fn prepare(
         &mut self,
         runtime: &mut dyn ArcherStageRuntime,
-        target_is_dead: impl Fn(u16) -> bool,
+        mut target_is_dead: impl FnMut(u16) -> bool,
     ) {
         let action = *self.action & 7;
         if matches!(action, 4 | 5) || (*self.index == 0 && *self.mode == 0) {
@@ -148,9 +148,10 @@ fn edit_route(source: &mut EntitySnapshot, edit: impl FnOnce(&mut Route<'_>)) {
 /// their two source bits on successive passes rather than remaining sticky.
 pub(crate) fn update_shared_stage_variables(
     runtime: &mut RuntimeSnapshot,
-    entities: &[EntitySnapshot],
+    arena: &SourceArena,
+    targets: source_target::Context<'_>,
     models: &[Vec<u16>; 29],
-) {
+) -> Result<(), String> {
     // Source count is the highest active authored index, so retain and visit
     // holes below it; a cleared count suppresses this scan without erasing rows.
     let active_count = usize::from(runtime.active_stage_variable_count());
@@ -177,9 +178,8 @@ pub(crate) fn update_shared_stage_variables(
                     match row.relation {
                         RuntimeRelation::LiveEntity(slot)
                         | RuntimeRelation::LiveEntityIndex(slot) => {
-                            entities.get(usize::from(slot)).is_some_and(|target| {
-                                target.life < 0 || target.control_flags & 0x400 != 0
-                            })
+                            source_target::read(arena, targets, slot)?
+                                .is_some_and(|target| target.life < 0 || target.drawing_disabled())
                         }
                         _ => false,
                     }
@@ -196,6 +196,14 @@ pub(crate) fn update_shared_stage_variables(
         row.flags = flags as i8;
         runtime.bytes[392 + index * 12 + 1] = flags;
     }
+    Ok(())
+}
+
+fn has_source_route(source: &EntitySnapshot) -> bool {
+    source.active
+        && source.class == 5
+        && (matches!(source.model, 3 | 9 | 17 | 18 | 21 | 26 | 28)
+            || (source.model == 27 && (216..=223).contains(&source.action)))
 }
 
 pub(crate) fn bind_source(
@@ -210,9 +218,7 @@ pub(crate) fn bind_source(
     let source = arena
         .entities
         .get_mut(usize::from(slot))
-        .filter(|source| {
-            source.active && source.class == 5 && matches!(source.model, 3 | 9 | 17 | 18 | 26 | 28)
-        })
+        .filter(|source| has_source_route(source))
         .ok_or_else(|| format!("source route lost creature slot {slot}"))?;
     edit_route(source, |route| route.bind(runtime, index));
     Ok(())
@@ -221,26 +227,41 @@ pub(crate) fn bind_source(
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: source_target::Context<'_>,
     model_slots: &[u16],
-) {
-    // Route preparation changes no target life/visibility. Capture only this
-    // predicate once so each actor can borrow its own source row mutably.
-    let dead_targets = arena
-        .entities
-        .iter()
-        .filter(|target| target.life < 0 || target.control_flags & 0x400 != 0)
-        .map(|target| target.index)
-        .collect::<std::collections::BTreeSet<_>>();
+) -> Result<(), String> {
     for &slot in model_slots {
-        let Some(source) = arena.entities.get_mut(usize::from(slot)).filter(|source| {
-            source.active && source.class == 5 && matches!(source.model, 3 | 9 | 17 | 18 | 26 | 28)
-        }) else {
+        let Some(mut source) = arena
+            .entities
+            .get(usize::from(slot))
+            .filter(|source| has_source_route(source))
+            .cloned()
+        else {
             continue;
         };
-        edit_route(source, |route| {
-            route.prepare(runtime, |target| dead_targets.contains(&target));
+        // Route preparation changes only this row's route fields. Resolve the
+        // target lazily at the source read, before committing those fields;
+        // typed occupants do not lend their retained raw life or flags.
+        let mut target_error = None;
+        edit_route(&mut source, |route| {
+            route.prepare(runtime, |target| {
+                match source_target::read(arena, targets, target) {
+                    Ok(target) => {
+                        target.is_some_and(|target| target.life < 0 || target.drawing_disabled())
+                    }
+                    Err(error) => {
+                        target_error = Some(error);
+                        false
+                    }
+                }
+            });
         });
+        if let Some(error) = target_error {
+            return Err(error);
+        }
+        arena.entities[usize::from(slot)] = source;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -250,6 +271,138 @@ mod tests {
     use crate::native_world::Mc2DispatchEvent;
     use crate::{FlightWorld, PlayerCommand};
     use std::path::PathBuf;
+
+    #[test]
+    fn typed_target_life_controls_stage_flags_and_route_relations() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/level3-day-block32-campaign-recipe-v2");
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL3).unwrap();
+        let session = campaign.simulation();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let bee = super::super::bee::mc2::allocate_authored(
+            &mut arena,
+            &mut terrain,
+            2,
+            Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            },
+            1_000,
+        )
+        .unwrap();
+        let target = bee.source_entity_index;
+        let source = &mut arena.entities[93];
+        assert_eq!((source.class, source.model), (5, 9));
+        source.set_source_action(79);
+        source.record[76] = 1;
+        source.record[77] = 3;
+        source.record[78..80].copy_from_slice(&target.to_le_bytes());
+        // A typed occupant owns its life even though its address retains
+        // different, still-living raw bytes.
+        arena.entities[usize::from(target)].set_life(1_000);
+        arena.entities[usize::from(target)].set_control_flags(0);
+        runtime.stage_variables[1].kind = 3;
+        runtime.stage_variables[1].flags = 2;
+        runtime.stage_variables[1].relation = RuntimeRelation::Scalar(2);
+        assert!(runtime.set_active_stage_variable_count(1));
+        let mut models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        models[2].push(target);
+
+        for dead in [false, true] {
+            let mut arena = arena.clone();
+            let mut runtime = runtime.clone();
+            arena
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|row| row.source_entity_index == target)
+                .unwrap()
+                .life = if dead { -1 } else { 1_000 };
+            prepare_source_pass(
+                &mut arena,
+                &mut runtime,
+                source_target::Context::default(),
+                &[93],
+            )
+            .unwrap();
+            let relation =
+                u16::from_le_bytes([arena.entities[93].record[78], arena.entities[93].record[79]]);
+            assert_eq!(relation, if dead { 0 } else { target });
+            runtime.stage_variables[1].flags = 0;
+            runtime.stage_variables[1].relation = RuntimeRelation::LiveEntity(target);
+            update_shared_stage_variables(
+                &mut runtime,
+                &arena,
+                source_target::Context::default(),
+                &models,
+            )
+            .unwrap();
+            assert_eq!(runtime.stage_variables[1].flags & 4 != 0, dead);
+            assert_eq!(arena.entities[usize::from(target)].life, 1_000);
+        }
+    }
+
+    #[test]
+    fn model27_prepass_resumes_only_the_root_without_interrupting_attack() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-1pb-16-level2-full-build-v2");
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        let session = campaign.simulation();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let allocation = super::super::creature_27::mc2::allocate_authored(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            &session.session.definition.presentation.particles,
+            Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            },
+            4_027,
+        )
+        .unwrap()
+        .unwrap();
+        let root = allocation.root.source_slot;
+        let head = allocation.heads[0].source_slot;
+        let body = allocation.bodies[0][0].source_slot;
+        assert!(bind_source(&mut arena, &mut runtime, root, 0).is_ok());
+        assert!(bind_source(&mut arena, &mut runtime, head, 0).is_err());
+        assert!(bind_source(&mut arena, &mut runtime, body, 0).is_err());
+        for slot in [root, head, body] {
+            arena.entities[usize::from(slot)].record[77] = 13;
+        }
+        let phases = [root, head, body].map(|slot| arena.entities[usize::from(slot)].phase);
+        prepare_source_pass(
+            &mut arena,
+            &mut runtime,
+            source_target::Context::default(),
+            &[root, head, body],
+        )
+        .unwrap();
+        assert_eq!(arena.entities[usize::from(root)].action, 223);
+        assert_eq!(arena.entities[usize::from(head)].action, 233);
+        assert_eq!(arena.entities[usize::from(body)].action, 234);
+        assert_eq!(
+            [root, head, body].map(|slot| arena.entities[usize::from(slot)].phase),
+            phases,
+            "route preparation does not advance callback phases"
+        );
+        arena.entities[usize::from(root)].set_source_action(218);
+        prepare_source_pass(
+            &mut arena,
+            &mut runtime,
+            source_target::Context::default(),
+            &[root],
+        )
+        .unwrap();
+        assert_eq!(arena.entities[usize::from(root)].action, 218);
+    }
 
     #[test]
     fn opening_skeleton_arrival_releases_route_before_ordinary_visit() {

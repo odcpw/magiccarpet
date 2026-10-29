@@ -95,6 +95,8 @@ pub(crate) struct Context<'a> {
     pub targets: &'a [Target],
     pub class3: &'a [u16],
     pub model21: &'a [u16],
+    /// Frozen class5 family membership from the beginning of this source pass.
+    pub families: &'a [Vec<u16>],
     pub runtime: &'a mut dyn StageRuntime,
 }
 
@@ -118,6 +120,7 @@ pub(crate) struct Strike {
     pub target_slot: u16,
     pub target_class: u8,
     pub target_model: u8,
+    pub initial_position: Position,
     pub position: Position,
     pub target_position: Position,
     pub yaw: i16,
@@ -136,7 +139,9 @@ pub(crate) struct Effects {
     pub water_splash: Option<Position>,
     pub sound: Option<u8>,
     pub kill_credit: Option<u16>,
+    pub earlier_feedback: Option<(u16, u8)>,
     pub feedback: Option<(u16, u8)>,
+    pub linked_blink_flags: Vec<(u16, u32)>,
     pub prekill: bool,
     pub population_decrements: u32,
     pub kill: bool,
@@ -468,7 +473,13 @@ fn attack(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
             return;
         }
     }
-    let target = ctx.target(actor.target()).filter(|target| living(*target));
+    let target_slot = actor.target();
+    let target = if target_slot != 0 {
+        stage::alliance_target(actor, ctx, effects, ctx.target(target_slot))
+    } else {
+        None
+    }
+    .filter(|target| living(*target));
     let mut reset = target.is_none();
     if let Some(target) = target {
         if can_steer_jump(actor) {
@@ -508,6 +519,7 @@ fn attack(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
                     target_slot: target.slot,
                     target_class: target.class,
                     target_model: target.model,
+                    initial_position: actor.row.position,
                     position: Position {
                         z: actor.row.position.z.wrapping_add(actor.row.array_fov()),
                         ..actor.row.position

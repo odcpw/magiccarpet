@@ -189,9 +189,15 @@ impl CastleDefenderState {
     }
 
     pub(crate) fn apply_construction_kill(&mut self, source_id: u16) {
+        self.apply_source_kill(source_id, Some(source_id));
+    }
+
+    pub(crate) fn apply_source_kill(&mut self, killer: u16, attacker: Option<u16>) {
         self.life = -1;
-        self.killer_entity_index = source_id;
-        self.damage_attacker_entity_index = source_id;
+        self.killer_entity_index = killer;
+        if let Some(attacker) = attacker {
+            self.damage_attacker_entity_index = attacker;
+        }
     }
 
     /// Called only for an enabled callback, on the current fixed-slot occupant.

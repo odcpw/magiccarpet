@@ -56,6 +56,8 @@ pub(crate) struct Target {
     /// Raw source word at record bytes154..156, retained across peer actions.
     pub target: u16,
     pub next: u16,
+    pub parent: u16,
+    pub stage_mode: u8,
     pub link: u16,
     pub attacker: u16,
     pub killer: u16,
@@ -110,6 +112,11 @@ pub(crate) struct Effects {
     pub spell_theft: Option<SpellTheft>,
     pub peer_updates: Vec<PeerUpdate>,
     pub sound: Option<u8>,
+    pub earlier_feedback: Option<(u16, u8)>,
+    /// Source owner and spell family awarded by the summon hit helper.
+    pub feedback: Option<(u16, u8)>,
+    /// Generation-bound linked actors whose Alliance blink flags change.
+    pub linked_blink_flags: Vec<(SourceEntityHandle, u32)>,
     pub prekill: bool,
     /// Source killer slot from action212; the MC2 adapter commits and clears it.
     pub kill_credit: Option<u16>,
@@ -117,8 +124,8 @@ pub(crate) struct Effects {
     pub population_decrements: u32,
     /// StageVar handlers that source-disable the row after their final visit.
     pub stage_hide: bool,
-    /// Source `sub_1E580` mode13 expiry emits both authored mana sphere calls.
-    pub stage_mana_expiry: bool,
+    /// `sub_1E580`: both modes emit an impact; mode13 also emits model73.
+    pub stage_expiry: Option<bool>,
 }
 
 pub(crate) struct Actor<'a> {
@@ -726,7 +733,9 @@ pub(crate) fn step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effec
         }),
         STAGE_ACTION => {
             let effects = stage::step(actor, ctx)?;
-            generic_tail(actor);
+            if effects.stage_expiry.is_none() {
+                generic_tail(actor);
+            }
             Ok(effects)
         }
         action => Err(format!("unsupported model26 action{action}")),

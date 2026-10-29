@@ -1080,6 +1080,7 @@ fn level_two_ai_modes_8_9_13_and_mode5_nocall_are_exact() {
                     .as_ref()
                     .map_or(0, |effects| effects.move_speed_flag),
                 live.shared_spells.local_player.player_color_index(),
+                None,
             )
             .unwrap();
     }
@@ -3918,6 +3919,7 @@ fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
             &presentation,
             0,
             active_level_color_index,
+            None,
         )
         .expect("eligible Castle defender dispatch");
     assert_eq!(dispatcher.state_byte, 9);
@@ -3959,6 +3961,7 @@ fn level_two_nyphur_sub_14250_uses_live_castle_defender_projection() {
             &presentation,
             0,
             active_level_color_index,
+            None,
         )
         .expect("overlapping Castle defender falls through");
     assert_ne!(overlapping_dispatcher.state_byte, 9);
@@ -4022,12 +4025,418 @@ fn nyphur_dispatch_refreshes_castle_links_and_projects_both_owners() {
                 &session.session.definition.presentation,
                 0,
                 live.shared_spells.local_player.player_color_index(),
+                None,
             )
             .unwrap();
         assert_eq!(dispatcher.common_upkeep.castle_entity_index, expected);
         assert!(!entities[usize::from(human_castle)].active);
         assert!(!entities[usize::from(rival_castle)].active);
     }
+}
+
+#[test]
+fn nyphur_directional_prelude_resumes_same_visit_without_repeating_protection() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let session = inspection.level2_reset_session().unwrap();
+    let live = &session.session.state.live;
+    let players = &live.core.players;
+    let castles = [];
+    for (word159, admitted) in [(0, true), (1, false)] {
+        let mut direct = live.nyphur_dispatcher.clone();
+        let mut split = direct.clone();
+        direct.common_upkeep.word_0x159 = word159;
+        split.common_upkeep.word_0x159 = word159;
+        let mut direct_entities = live.economy.entities.clone();
+        let mut split_entities = direct_entities.clone();
+        if !admitted {
+            direct_entities[112].record[116..128].fill(0x5a);
+            split_entities[112].record[116..128].fill(0x5a);
+        }
+        let mut direct_spheres = live.economy.spheres().to_vec();
+        let mut split_spheres = direct_spheres.clone();
+        let expected = direct
+            .step_dispatch(
+                0,
+                112,
+                &mut direct_entities,
+                &mut direct_spheres,
+                &castles,
+                live.economy.castle_children(),
+                players,
+                &live.terrain,
+                &session.session.definition.presentation,
+                0,
+                live.shared_spells.local_player.player_color_index(),
+                None,
+            )
+            .unwrap();
+        let prelude = split
+            .prepare_directional_upkeep(112, &mut split_entities, &castles, players, &[])
+            .unwrap();
+        assert_eq!(prelude.admitted(), admitted);
+        if !admitted {
+            assert_eq!(&split_entities[112].record[98..134], &[0; 36]);
+        }
+        let actual = split
+            .step_dispatch(
+                0,
+                112,
+                &mut split_entities,
+                &mut split_spheres,
+                &castles,
+                live.economy.castle_children(),
+                players,
+                &live.terrain,
+                &session.session.definition.presentation,
+                0,
+                live.shared_spells.local_player.player_color_index(),
+                Some(prelude),
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(split.common_upkeep, direct.common_upkeep);
+        assert_eq!(split_entities[112], direct_entities[112]);
+    }
+}
+
+#[test]
+fn nyphur_directional_feedback_tracks_consumed_lanes_not_effect_success() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let session = inspection.level2_reset_session().unwrap();
+    let live = &session.session.state.live;
+    let mut dispatcher = live.nyphur_dispatcher.clone();
+    let mut actor = live.economy.entities[112].clone();
+    assert!(dispatcher.apply_directional_feedback(&mut actor, false, true, false));
+    assert_eq!(dispatcher.common_upkeep.player_hit_frame_time, 0);
+    assert_eq!(dispatcher.common_upkeep.dword_0x18d, 0);
+    assert_eq!(dispatcher.common_upkeep.word_0x24c, 0);
+    assert!(dispatcher.apply_directional_feedback(&mut actor, true, false, false));
+    assert_eq!(dispatcher.common_upkeep.player_hit_frame_time, 4);
+    assert_eq!(dispatcher.common_upkeep.dword_0x18d, 16);
+    assert_eq!(dispatcher.common_upkeep.word_0x24c, 64);
+    let mut wrong_actor = actor.clone();
+    wrong_actor.index = 111;
+    assert!(!dispatcher.apply_directional_feedback(&mut wrong_actor, true, true, true));
+}
+
+#[test]
+fn nyphur_directional_prelude_rejects_reused_typed_source_slot() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let session = inspection.level2_reset_session().unwrap();
+    let live = &session.session.state.live;
+    let mut dispatcher = live.nyphur_dispatcher.clone();
+    let before = dispatcher.common_upkeep.clone();
+    let mut entities = live.economy.entities.clone();
+    let actor = entities[112].clone();
+    assert!(
+        dispatcher
+            .prepare_directional_upkeep(112, &mut entities, &[], &live.core.players, &[112])
+            .is_err()
+    );
+    assert_eq!(dispatcher.common_upkeep, before);
+    assert_eq!(entities[112], actor);
+}
+
+#[test]
+fn nyphur_directional_prelude_excludes_typed_occupant_shadow_from_player_scan() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let session = inspection.level2_reset_session().unwrap();
+    let live = &session.session.state.live;
+    let mut arena = live.economy.clone();
+    let bee = arena
+        .economy
+        .allocate_authored_bee(1, live.core.state.position, None, 3_000, &live.terrain)
+        .expect("ordinary Bee occupies a typed source slot");
+    let shadow = &mut arena.entities[usize::from(bee.source_entity_index)];
+    shadow.active = true;
+    shadow.class = 3;
+    shadow.model = 0;
+    shadow.life = 1;
+    let occupied = arena
+        .economy
+        .live_arena_slots()
+        .iter()
+        .map(|(slot, _)| *slot)
+        .collect::<Vec<_>>();
+    let expected = arena
+        .entities
+        .iter()
+        .filter(|row| {
+            row.active
+                && row.life >= 0
+                && row.class == 3
+                && row.model == 0
+                && !occupied.contains(&row.index)
+        })
+        .map(|row| row.index)
+        .last();
+    let mut dispatcher = live.nyphur_dispatcher.clone();
+    let _prelude = dispatcher
+        .prepare_directional_upkeep(112, &mut arena.entities, &[], &live.core.players, &occupied)
+        .unwrap();
+    assert_eq!(dispatcher.common_upkeep.source_list_model_zero, expected);
+    assert_ne!(
+        dispatcher.common_upkeep.source_list_model_zero,
+        Some(bee.source_entity_index)
+    );
+}
+
+#[test]
+fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
+    // Carry is a bounded initial-inventory setup; the hand command, holder,
+    // flyer, field and recipient below all run on ordinary source passes.
+    let mut session = level_two_campaign_session();
+    session
+        .apply_carried_spell_families(&[13], Some(13))
+        .unwrap();
+    let caster = session.session.state.live.core.state.entity_index;
+    let target = LEVEL2_NYPHUR_ENTITY_INDEX;
+    {
+        let live = &mut session.session.state.live;
+        let castle = live
+            .economy
+            .economy
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                caster,
+                false,
+                true,
+            )
+            .expect("real local Castle constructor");
+        live.economy.economy.castle_at_mut(castle).unwrap().mana = 20_000;
+        let parent = &mut live.economy.entities[usize::from(caster)];
+        parent.max_mana = 20_000;
+        parent.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());
+        parent.set_mana(20_000);
+        let parent = parent.clone();
+        live.shared_spells
+            .sync_player_entity_from_authority(&parent);
+        live.shared_spells.player_mana = 20_000;
+        live.shared_spells.caster.mana = 20_000;
+        live.shared_spells
+            .sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() {
+            fire.caster.mana = 20_000;
+        }
+        let target_row = &mut live.economy.entities[usize::from(target)];
+        target_row.max_mana = 10_000;
+        target_row.record[144..148].copy_from_slice(&10_000_i32.to_le_bytes());
+        target_row.set_mana(8_000);
+        let target_row = target_row.clone();
+        let dispatcher = live.nyphur_dispatcher.as_mut().unwrap();
+        assert!(dispatcher.sync_spell_target_resources(&target_row));
+        dispatcher.common_upkeep.max_mana = 10_000;
+        dispatcher.common_upkeep.word_0x159 = 0;
+    }
+    let ui_index = crate::SOURCE_SPELL_INDEX_MAP
+        .iter()
+        .position(|family| *family == 13)
+        .unwrap() as i8;
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 31,
+            argument_1: ui_index,
+            argument_2: 0,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    {
+        // Stage the actual rival in the caster's forward arc before firing.
+        // It remains under ordinary AI movement on every subsequent pass.
+        let live = &mut session.session.state.live;
+        let parent = live.economy.entities[usize::from(caster)].clone();
+        let actor = crate::native_world::area_damage::source_actor(&mut live.economy, None, target)
+            .expect("live source Nyphur target");
+        let mut position = parent.position;
+        crate::move_entity(&mut position, parent.yaw, parent.pitch, 1_536);
+        position.z = parent
+            .position
+            .z
+            .wrapping_add(parent.array_fov())
+            .wrapping_sub(actor.shape.vertical_offset);
+        live.economy.entities[usize::from(target)].set_position(position);
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            target,
+            position,
+            true,
+            true,
+        )
+        .unwrap();
+    }
+    let experience_before = session.session.state.live.shared_spells.spell_experience[13];
+    session.step_outer_turn(
+        PlayerCommand {
+            flags: 0x10,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let mut projectile = None;
+    for _ in 0..4 {
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        projectile = session
+            .session
+            .state
+            .live
+            .economy
+            .entities
+            .iter()
+            .find(|row| {
+                row.active
+                    && (row.class, row.model, row.action) == (9, 8, 8)
+                    && row.source_id == caster
+            })
+            .map(|row| row.index);
+        if projectile.is_some() {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let projectile =
+        projectile.expect("ordinary hand input and scheduled holder produced Steal flyer");
+    let mut trace = Vec::new();
+    for turn in 0..16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let live = &session.session.state.live;
+        let target_row = &live.economy.entities[usize::from(target)];
+        trace.push(format!(
+            "turn={turn} flyer={:?} target_mana={} xp={} errors={:?}",
+            live.economy.entities[usize::from(projectile)],
+            target_row.mana,
+            live.shared_spells.spell_experience[13],
+            session.dispatch_events()
+        ));
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        if live.shared_spells.spell_experience[13] > experience_before {
+            assert!(
+                target_row.mana < 7_000,
+                "actual recipient paid the tier-zero transfer"
+            );
+            return;
+        }
+    }
+    panic!(
+        "scheduled carried Steal did not reach real Nyphur:\n{}",
+        trace.join("\n")
+    );
+}
+
+#[test]
+fn scheduled_steal_contact_obeys_nyphur_protection_before_consumption() {
+    use crate::combat::actors::PlayerEffectLane;
+
+    // The holder and flyer callbacks stage a real impact; only the field and
+    // recipient visits below are scheduler-driven. This does not exercise
+    // normal spell acquisition or input selection.
+    let (mut unprotected, caster, target, field) =
+        crate::native_world::directional_spells::tests::staged_steal_mana_impact();
+    assert_eq!(target, LEVEL2_NYPHUR_ENTITY_INDEX);
+    assert!(
+        field > target,
+        "the field must run after this actor's first visit"
+    );
+    {
+        let live = &mut unprotected.session.state.live;
+        let target_row = live.economy.entities[usize::from(target)].clone();
+        let dispatcher = live.nyphur_dispatcher.as_mut().unwrap();
+        assert!(dispatcher.sync_spell_target_resources(&target_row));
+        dispatcher.common_upkeep.max_mana = target_row.max_mana;
+        dispatcher.common_upkeep.castle_entity_index = 0;
+        dispatcher.common_upkeep.word_0x159 = 0;
+    }
+    let mut protected = unprotected.clone();
+    protected
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .as_mut()
+        .unwrap()
+        .common_upkeep
+        .word_0x159 = 2;
+
+    for session in [&mut unprotected, &mut protected] {
+        let before_field = session.session.state.live.economy.entities[usize::from(field)].clone();
+        let before_target =
+            session.session.state.live.economy.entities[usize::from(target)].clone();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let live = &mut session.session.state.live;
+        let actor = crate::native_world::area_damage::source_actor(&mut live.economy, None, target);
+        let target_row = &live.economy.entities[usize::from(target)];
+        let field_row = &live.economy.entities[usize::from(field)];
+        let candidates = crate::level1_mission::source_map_search_slots(
+            &live.economy.map_chains,
+            field_row.position,
+            &crate::level1_mission::source_search_offsets(2),
+        );
+        assert!(
+            target_row
+                .pending_player_effect(PlayerEffectLane::StealMana)
+                .is_some(),
+            "the scheduled field submitted its contact after the recipient's visit: \
+             before_field={:?} before_target={:?} after_field={:?} after_target={:?} \
+             actor={actor:?} target_linked={} target_tile={:#06x} candidates={candidates:?}",
+            before_field,
+            before_target,
+            field_row,
+            target_row,
+            live.economy.map_chains.is_linked(target),
+            live.economy.map_chains.tile_of(target),
+        );
+    }
+    for session in [&mut unprotected, &mut protected] {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        assert!(
+            session.session.state.live.economy.entities[usize::from(target)]
+                .pending_player_effect(PlayerEffectLane::StealMana)
+                .is_none(),
+            "the next recipient visit must consume or clear the contact"
+        );
+    }
+    let accepted = &unprotected.session.state.live;
+    let rejected = &protected.session.state.live;
+    assert_eq!(
+        rejected.economy.entities[usize::from(target)].mana
+            - accepted.economy.entities[usize::from(target)].mana,
+        2_000,
+        "only the unprotected recipient transfers mana"
+    );
+    assert_eq!(
+        accepted.shared_spells.spell_experience[13],
+        rejected.shared_spells.spell_experience[13] + 1
+    );
+    assert!(
+        accepted.economy.entities[usize::from(caster)].mana
+            >= rejected.economy.entities[usize::from(caster)].mana
+    );
+    assert_eq!(unprotected.nyphur_common_upkeep().unwrap().word_0x24c, 64);
+    assert_ne!(protected.nyphur_common_upkeep().unwrap().word_0x24c, 64);
 }
 
 #[test]

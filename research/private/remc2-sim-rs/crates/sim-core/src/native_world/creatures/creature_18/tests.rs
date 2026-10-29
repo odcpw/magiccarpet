@@ -1,5 +1,6 @@
 use super::*;
 use crate::campaign::source_arena::SourceArena;
+use crate::native_world::RuntimeRelation;
 
 fn put(row: &mut crate::native_world::EntitySnapshot, offset: usize, value: u16) {
     row.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -61,6 +62,254 @@ fn model_slots(arena: &SourceArena) -> [Vec<u16>; 29] {
 }
 
 #[test]
+fn authored_point_route_waits_for_prepass_and_hostile_hit_starts_attack() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let mut runtime = simulation.session.state.live.core.runtime.clone();
+    runtime.stage_variables[1] = crate::native_world::RuntimeStageVariable {
+        kind: 1,
+        flags: 0,
+        word_2: 0,
+        relation: RuntimeRelation::AxisScalar((20_000_u32 << 16) | 20_000),
+    };
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let enemy = Target {
+        slot: 12,
+        source_id: 12,
+        class: 3,
+        model: 0,
+        life: 100,
+        position,
+        ..Target::default()
+    };
+    let targets = [enemy];
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &runtime,
+        targets: &targets,
+        class3: &[12],
+        model18: &[],
+        families: &[],
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 123, position, &mut counter);
+    actor.action = 151;
+    actor.route_index = 1;
+    actor.route_mode = 1;
+    actor.phase = 8;
+    actor.control_flags |= 0x800;
+    let mut hit = actor;
+    hit.pending_damage = 50;
+    hit.pending_attacker = enemy.slot;
+    step(&mut actor, &context).unwrap();
+    assert_eq!((actor.action, actor.route_mode, actor.target), (151, 1, 0));
+    step(&mut hit, &context).unwrap();
+    assert_eq!(hit.life, RULES.max_life - 50);
+    assert_eq!(
+        (hit.action, hit.route_mode, hit.target),
+        (146, 10, enemy.slot)
+    );
+}
+
+#[test]
+fn summoned_target_scan_compares_source_squared_distances() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let parent = Target {
+        slot: 9,
+        source_id: 9,
+        class: 3,
+        model: 0,
+        life: 100,
+        position,
+        ..Target::default()
+    };
+    let farther = Target {
+        slot: 12,
+        source_id: 12,
+        class: 3,
+        model: 0,
+        life: 100,
+        position: Position {
+            x: 20_100,
+            y: 20_009,
+            z: 0,
+        },
+        ..Target::default()
+    };
+    let closer = Target {
+        slot: 13,
+        source_id: 13,
+        position: Position {
+            x: 20_100,
+            y: 20_000,
+            z: 0,
+        },
+        ..farther
+    };
+    assert_eq!(
+        crate::legacy_sqrt(super::xy_squared(parent.position, farther.position)),
+        crate::legacy_sqrt(super::xy_squared(parent.position, closer.position))
+    );
+    let targets = [parent, farther, closer];
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &simulation.session.state.live.core.runtime,
+        targets: &targets,
+        class3: &[12, 13],
+        model18: &[],
+        families: &[],
+    };
+    let only_farther = Creature18Context {
+        class3: &[12],
+        ..context
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 123, position, &mut counter);
+    actor.action = 151;
+    actor.route_mode = 16;
+    actor.route_remaining = 40;
+    actor.parent = parent.slot;
+    actor.phase = 8;
+    actor.control_flags |= 0x800;
+    let mut without_closer = actor;
+    step(&mut actor, &context).unwrap();
+    assert_eq!(actor.target, closer.slot);
+    step(&mut without_closer, &only_farther).unwrap();
+    assert_eq!(without_closer.target, farther.slot);
+}
+
+#[test]
+fn authored_guard_uses_frozen_class3_membership_after_target_dies() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let mut runtime = simulation.session.state.live.core.runtime.clone();
+    runtime.stage_variables[1] = crate::native_world::RuntimeStageVariable {
+        kind: 2,
+        flags: 0,
+        word_2: 0,
+        relation: RuntimeRelation::AxisScalar((20_000_u32 << 16) | 20_000),
+    };
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let enemy = Target {
+        slot: 12,
+        source_id: 12,
+        class: 3,
+        model: 0,
+        life: -1,
+        position: Position {
+            x: 21_000,
+            ..position
+        },
+        ..Target::default()
+    };
+    let targets = [enemy];
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &runtime,
+        targets: &targets,
+        class3: &[12],
+        model18: &[],
+        families: &[],
+    };
+    let missing = Creature18Context {
+        class3: &[],
+        ..context
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 123, position, &mut counter);
+    actor.action = 151;
+    actor.route_index = 1;
+    actor.route_mode = 2;
+    actor.phase = RULES.source_scan_period;
+    actor.yaw = heading_for_positions(position, enemy.position) as i16;
+    actor.control_flags |= 0x800;
+    let mut absent = actor;
+    step(&mut actor, &context).unwrap();
+    assert_eq!(
+        (actor.action, actor.route_mode, actor.target),
+        (146, 10, enemy.slot)
+    );
+    step(&mut absent, &missing).unwrap();
+    assert_eq!(
+        (absent.action, absent.route_mode, absent.target),
+        (151, 2, 0)
+    );
+}
+
+#[test]
+fn authored_model_route_selects_only_frozen_source_family() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let mut runtime = simulation.session.state.live.core.runtime.clone();
+    runtime.stage_variables[1] = crate::native_world::RuntimeStageVariable {
+        kind: 3,
+        flags: 2,
+        word_2: 0,
+        relation: RuntimeRelation::AxisScalar(21),
+    };
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let enemy = Target {
+        slot: 12,
+        source_id: 12,
+        class: 5,
+        model: 21,
+        life: 100,
+        position: Position {
+            x: 21_000,
+            ..position
+        },
+        ..Target::default()
+    };
+    let targets = [enemy];
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[21].push(enemy.slot);
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &runtime,
+        targets: &targets,
+        class3: &[],
+        model18: &[],
+        families: &families,
+    };
+    let missing = Creature18Context {
+        families: &[],
+        ..context
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 123, position, &mut counter);
+    actor.action = 151;
+    actor.route_index = 1;
+    actor.route_mode = 3;
+    actor.phase = 8;
+    actor.control_flags |= 0x800;
+    let mut absent = actor;
+    step(&mut actor, &context).unwrap();
+    assert_eq!(
+        (actor.action, actor.route_mode, actor.target),
+        (146, 10, enemy.slot)
+    );
+    step(&mut absent, &missing).unwrap();
+    assert_eq!(
+        (absent.action, absent.route_mode, absent.target),
+        (151, 3, 0)
+    );
+}
+
+#[test]
 fn constructor_binds_source18_properties_and_first_callback_enters_patrol() {
     let simulation = crate::native_world::tests::level_two_campaign_session();
     let particles = &simulation.session.definition.presentation.particles;
@@ -99,6 +348,7 @@ fn constructor_binds_source18_properties_and_first_callback_enters_patrol() {
         targets: &targets,
         class3: &class3,
         model18: &model18,
+        families: &[],
     };
     let mut actor = mc2::load(&row, 9);
 
@@ -133,6 +383,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
         z: target_position.z,
     };
     let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
+    terrain.map_type = crate::native_world::MapType::Night;
     let actor_slot = add_creature(arena, terrain, &particles, actor_position, 146);
     {
         let actor = &mut arena.entities[usize::from(actor_slot)];
@@ -143,6 +394,10 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
     }
     let classes = class3_slots(arena);
     let families = model_slots(arena);
+    let mut unlit_arena = arena.clone();
+    unlit_arena.dynamic_lighting_enabled = false;
+    let mut unlit_runtime = runtime.clone();
+    let mut unlit_terrain = terrain.clone();
     let before = arena.economy.fireball_projectiles().len();
     let effects = mc2::step_row(
         arena, runtime, terrain, &particles, actor_slot, &classes, &families,
@@ -150,6 +405,34 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
     .expect("model18 attack callback succeeds");
 
     assert_eq!(effects.projectile_slots.len(), 5);
+    let source_position = arena.entities[usize::from(actor_slot)].position;
+    for slot in &effects.projectile_slots {
+        assert!(
+            arena
+                .dynamic_lighting
+                .active_slots()
+                .any(|(_, light)| light.linked
+                    && light.source_entity_index == *slot
+                    && light.position == source_position)
+        );
+    }
+    let unlit = mc2::step_row(
+        &mut unlit_arena,
+        &mut unlit_runtime,
+        &mut unlit_terrain,
+        &particles,
+        actor_slot,
+        &classes,
+        &families,
+    )
+    .expect("disabled lighting does not reject the five source projectiles");
+    assert_eq!(unlit.projectile_slots.len(), 5);
+    assert!(unlit.projectile_slots.iter().all(|slot| {
+        !unlit_arena
+            .dynamic_lighting
+            .active_slots()
+            .any(|(_, light)| light.linked && light.source_entity_index == *slot)
+    }));
     assert!(
         effects.projectiles.is_empty(),
         "raw spawn intents stay in the leaf"
@@ -189,7 +472,18 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
         );
     }
 
-    let second = add_creature(arena, terrain, &particles, actor.position, 146);
+    let actor_position = actor.position;
+    let source_slot = effects.projectile_slots[0];
+    let consumer = {
+        let (economy, entities) = (&mut arena.economy, &arena.entities);
+        economy.step_fireball_projectile_slot(source_slot, terrain, entities)
+    };
+    assert!(
+        consumer.live || consumer.impact_slot.is_some(),
+        "the shared source fireball consumer must advance the emitted shot"
+    );
+
+    let second = add_creature(arena, terrain, &particles, actor_position, 146);
     {
         let actor = &mut arena.entities[usize::from(second)];
         actor.set_phase(RULES.source_scan_period);
@@ -450,6 +744,7 @@ fn action144_clears_target_when_three_dimensional_distance_exceeds_range() {
         targets: &targets,
         class3: &class3,
         model18: &model18,
+        families: &[],
     };
     let mut phase = 0;
     let mut actor = construct(7, 3, 0x1234, actor_position, &mut phase);
@@ -474,6 +769,7 @@ fn tracking_without_target_does_not_restart_patrol_or_consume_rng() {
         targets: &[],
         class3: &[],
         model18: &[],
+        families: &[],
     };
     let mut counter = 0;
     let mut actor = construct(7, 1, 0x1234, Position::default(), &mut counter);
@@ -564,14 +860,34 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         3,
         "all three owner-authored model18 roots must be live"
     );
+    let model21_slots = session
+        .entities()
+        .iter()
+        .filter_map(|row| {
+            let identity = session.creature_identity_for_source_slot(row.index)?;
+            (identity.kind == crate::level_definition::CreatureKind::Creature21
+                && matches!(
+                    identity.origin,
+                    CreatureRootOrigin::AuthoredRecord {
+                        authored_record: 569..=571
+                    }
+                ))
+            .then_some((row.index, row.phase))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        model21_slots.len(),
+        3,
+        "the same real group also constructs its three model21 roots"
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
-    for (slot, phase) in slots {
+    for (slot, phase) in slots.into_iter().chain(model21_slots) {
         let actor = &session.entities()[usize::from(slot)];
         assert!(actor.active && !actor.drawing_disabled());
         assert_eq!(
             actor.phase,
             phase.wrapping_add(1),
-            "normal source scheduler visits model18 slot {slot}"
+            "normal source scheduler visits authored creature slot {slot}"
         );
     }
 }
@@ -605,6 +921,7 @@ fn attack_turns_toward_non_player_attacker_with_source_phase_caps() {
         targets: &targets,
         class3: &[],
         model18: &[],
+        families: &[],
     };
     let mut counter = 0;
     let mut actor = construct(7, 1, 0x1234, position, &mut counter);
@@ -638,8 +955,183 @@ fn attack_turns_toward_non_player_attacker_with_source_phase_caps() {
         targets: &hidden_targets,
         ..context
     };
+    actor.action = 144;
+    actor.attack_phase = 1;
+    actor.timer = 10;
+    actor.target = hidden.slot;
+    step(&mut actor, &hidden_context).expect("tracking reads a hidden source target");
+    assert_eq!(actor.target, hidden.slot);
+
+    actor.action = 146;
     actor.attack_phase = 1;
     actor.timer = 10;
     let effects = step(&mut actor, &hidden_context).expect("hidden target callback");
     assert!(effects.projectiles.is_empty());
+}
+
+#[test]
+fn alliance_follows_parent_and_only_fires_at_its_selected_target() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let target = Target {
+        slot: 42,
+        class: 5,
+        model: 15,
+        life: 100,
+        position: Position {
+            x: 21_000,
+            ..position
+        },
+        ..Target::default()
+    };
+    let parent = Target {
+        slot: 9,
+        class: 3,
+        life: 100,
+        target: 42,
+        position,
+        ..Target::default()
+    };
+    let child = Target {
+        slot: 11,
+        class: 5,
+        model: 18,
+        life: RULES.max_life,
+        ..Target::default()
+    };
+    let targets = [parent, target, child];
+    let context = Creature18Context {
+        terrain: &simulation.session.state.live.terrain,
+        runtime: &simulation.session.state.live.core.runtime,
+        targets: &targets,
+        class3: &[],
+        model18: &[],
+        families: &[],
+    };
+    let mut counter = 0;
+    let mut actor = construct(7, 1, 0x1234, position, &mut counter);
+    actor.action = 151;
+    actor.route_mode = 14;
+    actor.route_remaining = 40;
+    actor.route_duration = 40;
+    actor.parent = parent.slot;
+    actor.linked_child = child.slot;
+    actor.phase = 1;
+    actor.pending_attacker = target.slot;
+    actor.pending_damage = 50;
+    let effects = step(&mut actor, &context).expect("Alliance stage callback");
+    assert_eq!(actor.life, RULES.max_life - 50);
+    assert_eq!((actor.target, actor.action), (target.slot, 146));
+    assert_eq!(effects.earlier_feedback, Some((parent.slot, 19)));
+    assert_eq!(effects.feedback, Some((parent.slot, 24)));
+
+    actor.attack_phase = 1;
+    actor.phase = 0;
+    actor.timer = 10;
+    let mut rejected = actor;
+    let mut rejected_parent = parent;
+    rejected_parent.target = 43;
+    let rejected_targets = [rejected_parent, target, child];
+    let rejected_context = Creature18Context {
+        targets: &rejected_targets,
+        ..context
+    };
+    let rejected_effects =
+        step(&mut rejected, &rejected_context).expect("Alliance rejects other target");
+    assert!(rejected_effects.projectiles.is_empty());
+    assert_eq!(rejected.attack_phase, 2);
+
+    let effects = step(&mut actor, &context).expect("Alliance firing callback");
+    assert_eq!(effects.projectiles.len(), 5);
+    assert_eq!(actor.route_remaining, 38);
+    assert_eq!(actor.control_flags & 0x0600_0000, 0x0400_0000);
+    assert_eq!(effects.linked_blink_flags, [(child.slot, 0x0400_0000)]);
+
+    actor.action = 151;
+    actor.route_remaining = 1;
+    let effects = step(&mut actor, &context).expect("Alliance expiration callback");
+    assert_eq!((actor.route_mode, actor.parent, actor.target), (10, 0, 0));
+    assert_eq!(actor.control_flags & 0x0600_0000, 0);
+    assert_eq!(effects.linked_blink_flags, [(child.slot, 0)]);
+}
+
+#[test]
+fn alliance_firing_materializes_projectiles_and_updates_linked_source_flags() {
+    let mut simulation = crate::native_world::tests::level_two_campaign_session();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let parent = live
+        .economy
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0)
+        .expect("source player")
+        .index;
+    let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
+    let position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let actor = add_creature(arena, terrain, &particles, position, 146);
+    let child = add_creature(arena, terrain, &particles, position, 144);
+    let target = add_creature(
+        arena,
+        terrain,
+        &particles,
+        Position {
+            x: 21_000,
+            ..position
+        },
+        144,
+    );
+    put(&mut arena.entities[usize::from(parent)], 154, target);
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.set_phase(0);
+        row.set_source_dword_10(10);
+        row.record[74] = 1;
+        row.record[77] = 14;
+        put(row, 44, parent);
+        put(row, 50, 40);
+        put(row, 52, 40);
+        put(row, 56, child);
+        put(row, 154, target);
+    }
+    let classes = class3_slots(arena);
+    let families = model_slots(arena);
+    let before = arena.economy.fireball_projectiles().len();
+    let outcome = mc2::step_row(
+        arena, runtime, terrain, &particles, actor, &classes, &families,
+    )
+    .expect("Alliance source firing");
+    assert_eq!(outcome.projectile_slots.len(), 5);
+    assert_eq!(arena.economy.fireball_projectiles().len(), before + 5);
+    assert_eq!(
+        arena.entities[usize::from(child)].control_flags & 0x0600_0000,
+        0x0400_0000
+    );
+
+    put(&mut arena.entities[usize::from(parent)], 154, child);
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.set_phase(0);
+        row.set_source_dword_10(10);
+        row.record[74] = 1;
+    }
+    let outcome = mc2::step_row(
+        arena, runtime, terrain, &particles, actor, &classes, &families,
+    )
+    .expect("Alliance rejected-target callback");
+    assert!(outcome.projectile_slots.is_empty());
+    assert_eq!(arena.economy.fireball_projectiles().len(), before + 5);
 }

@@ -29,6 +29,25 @@ pub(crate) fn head_angles(index: usize) -> (i16, i16) {
     (HEAD_POSES[index][3], HEAD_POSES[index][4])
 }
 
+/// Source sub_2A9F0 runs after the head's body pose and projectile call.
+pub(super) fn head_tail_position(
+    root: &EntitySnapshot,
+    head_index: usize,
+    mut position: Position,
+) -> Position {
+    let distance = [30, 0, 0, 0, 40][head_index];
+    let vertical = [-80_i16, -100, -100, -70, -70][head_index];
+    let (yaw, pitch) = head_angles(head_index);
+    position.z = position.z.wrapping_add(vertical);
+    move_entity(
+        &mut position,
+        root.yaw.wrapping_add(yaw),
+        root.pitch.wrapping_add(pitch),
+        distance,
+    );
+    position
+}
+
 const BODY_CURVE: [[i16; 2]; 16] = [
     [0, 0],
     [106, 36],
@@ -97,7 +116,11 @@ fn prepare_row(
     if let Some(phase) = phase {
         row.set_phase(phase);
     }
-    put_word(&mut row, SOURCE_OWNER, root_slot);
+    // NewEvent clears word32 on the root; sub_4D000 sets it only on
+    // the linked heads and body parts.
+    if slot != root_slot {
+        put_word(&mut row, SOURCE_OWNER, root_slot);
+    }
     row.parameter_relation = descriptor;
     if let Some(descriptor) = descriptor {
         row.record[164..168].copy_from_slice(&(u32::from(descriptor) + 1).to_le_bytes());
@@ -249,12 +272,13 @@ fn part(
     root: u16,
     action: u8,
     index: u8,
+    killed_chain: bool,
 ) -> Option<SourceEntityHandle> {
     let row = arena.entities.get(usize::from(slot))?;
     (row.active
         && row.class == ENTITY_CLASS
         && row.model == SOURCE_MODEL
-        && row.action == action
+        && (row.action == action || (killed_chain && row.action == super::ACTION_BASE + 5))
         && row.record[SOURCE_PART_INDEX] == index
         && row.source_id == root
         && word(row, 30) == root
@@ -269,7 +293,13 @@ pub(crate) fn read_chain(arena: &SourceArena, root: SourceEntityHandle) -> Resul
     let Some(SourceEntityView::Imported(root_row)) = arena.resolve(root) else {
         return Err(format!("model27 root {} is stale", root.source_slot));
     };
-    if root_row.class != ENTITY_CLASS || root_row.model != SOURCE_MODEL || root_row.action == 180 {
+    if root_row.class != ENTITY_CLASS
+        || root_row.model != SOURCE_MODEL
+        || root_row.action == 180
+        || root_row.source_id != root.source_slot
+        || word(root_row, 30) != root.source_slot
+        || word(root_row, SOURCE_OWNER) != 0
+    {
         return Err(format!(
             "model27 root {} has the wrong source identity",
             root.source_slot
@@ -290,12 +320,9 @@ pub(crate) fn read_chain(arena: &SourceArena, root: SourceEntityHandle) -> Resul
             arena,
             head_slot,
             root.source_slot,
-            if killed_chain {
-                super::ACTION_BASE + 5
-            } else {
-                HEAD_ACTION
-            },
+            HEAD_ACTION,
             head_index as u8,
+            killed_chain,
         ) else {
             return Err(format!(
                 "model27 root {} lost head {head_index}",
@@ -319,12 +346,9 @@ pub(crate) fn read_chain(arena: &SourceArena, root: SourceEntityHandle) -> Resul
                 arena,
                 body_slot,
                 root.source_slot,
-                if killed_chain {
-                    super::ACTION_BASE + 5
-                } else {
-                    BODY_ACTION
-                },
+                BODY_ACTION,
                 head_index as u8,
+                killed_chain,
             ) else {
                 return Err(format!(
                     "model27 root {} lost body segment {body_index} for head {head_index}",

@@ -1,4 +1,5 @@
 use super::*;
+use crate::campaign::source_arena::SourceArena;
 use crate::native_world::{
     ParticleParameter, PlayerSnapshot, RuntimeRelation, RuntimeSnapshot, RuntimeStageVariable,
 };
@@ -6,6 +7,22 @@ use crate::native_world::{
 fn terrain() -> SessionTerrain {
     let session = crate::native_world::tests::level_two_campaign_session();
     session.canonical_terrain().clone()
+}
+
+fn full_level_two_session() -> crate::native_world::Mc2Simulation {
+    let package = std::env::var_os("MC_SETTLEMENT_FULL_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-1pb-16-level2-full-build-v2")
+        });
+    crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("owner-exported Level 2 retains constructor counters")
+    .simulation()
+    .clone()
 }
 
 fn position(x: u16) -> Position {
@@ -49,6 +66,8 @@ fn player_target(slot: u16, position: Position) -> Target {
         right_spell: None,
         target: 0,
         next: 0,
+        parent: 0,
+        stage_mode: 0,
         link: 0,
         attacker: 0,
         killer: 0,
@@ -128,7 +147,7 @@ fn constructor_matches_source_orientation_and_particle_extents() {
     let seed = 0x1234_u16;
     let rng = seed.wrapping_mul(9377).wrapping_add(9439);
     let expected_rotation = ((rng & 0x07ff).wrapping_sub(1)) as i16;
-    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let simulation = full_level_two_session();
     let mut runtime = simulation.session.state.live.core.runtime.clone();
     runtime.bytes[crate::native_world::RUNTIME_BYTES + usize::from(SOURCE_MODEL)] = 17;
 
@@ -171,9 +190,653 @@ fn constructor_matches_source_orientation_and_particle_extents() {
 }
 
 #[test]
+fn owner_level6_model26_drains_its_real_player_in_the_normal_source_pass() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level6");
+    let campaign = CampaignSession::open(package, CampaignSelection::ordinary(6).unwrap())
+        .expect("ordinary owner Level6 package");
+    let mut session = campaign.simulation().clone();
+    let actor = session.entities()[73].clone();
+    let player = session.entities()[77].clone();
+    assert_eq!((actor.class, actor.model, actor.action), (5, 26, 210));
+    assert_eq!((player.class, player.model), (3, 0));
+    assert_eq!(
+        u16::from_le_bytes([actor.record[154], actor.record[155]]),
+        77
+    );
+    assert!(player.mana > 0);
+
+    // The unchanged owner-data actor targets the player. In the near-identical
+    // negative, only its target word is cleared before the same source pass.
+    let mut without_target = session.clone();
+    put(
+        &mut without_target.session.state.live.economy.entities[73],
+        154,
+        0,
+    );
+    without_target.step_outer_turn(PlayerCommand::default(), 0);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(session.entities()[73].phase, actor.phase.wrapping_add(1));
+    assert!(
+        session.entities()[77].mana < without_target.entities()[77].mana,
+        "scheduled source actor must drain the actual player carrier"
+    );
+}
+
+#[test]
+fn ordinary_damage_advances_prekill_mana_death_and_generation_reclaim() {
+    let mut simulation = full_level_two_session();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let (arena, shared, runtime, terrain) = (
+        &mut live.economy,
+        &mut live.shared_spells,
+        &mut live.core.runtime,
+        &mut live.terrain,
+    );
+    let player = arena
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0 && row.life >= 0)
+        .expect("owner session has a living player");
+    let (player_slot, position) = (player.index, player.position);
+    let actor = mc2::allocate_authored(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        500,
+    )
+    .unwrap()
+    .expect("ordinary source slot");
+    let handle = arena.handle(actor).unwrap();
+    let empty_bindings = std::collections::BTreeMap::new();
+    let living = |arena: &SourceArena| {
+        arena
+            .creature_runtime_census(&empty_bindings, &empty_bindings)
+            .roots_of_kind(crate::level_definition::CreatureKind::Creature26)
+            .any(|root| root.handle == handle && root.living)
+    };
+    assert!(living(arena));
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.record[98..102].copy_from_slice(&(RULES.max_life + 1).to_le_bytes());
+        put(row, 102, player_slot);
+    }
+    let mut nonfatal_arena = arena.clone();
+    let mut nonfatal_shared = shared.clone();
+    let mut nonfatal_terrain = terrain.clone();
+    nonfatal_arena.entities[usize::from(actor)].record[98..102]
+        .copy_from_slice(&(RULES.max_life - 1).to_le_bytes());
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[usize::from(SOURCE_MODEL)].push(actor);
+    mc2::step_row(
+        &mut nonfatal_arena,
+        &mut nonfatal_shared,
+        runtime,
+        &mut nonfatal_terrain,
+        &particles,
+        actor,
+        &[player_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            nonfatal_arena.entities[usize::from(actor)].life,
+            nonfatal_arena.entities[usize::from(actor)].action
+        ),
+        (1, DRAIN_ACTION)
+    );
+    assert_eq!(
+        nonfatal_arena.economy.authored_bee_kill_census(player_slot),
+        0
+    );
+    assert!(living(&nonfatal_arena));
+    mc2::step_row(
+        arena,
+        shared,
+        runtime,
+        terrain,
+        &particles,
+        actor,
+        &[player_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(arena.entities[usize::from(actor)].action, PREKILL_ACTION);
+    assert_eq!(arena.economy.authored_bee_kill_census(player_slot), 0);
+    assert!(!living(arena));
+    mc2::step_row(
+        arena,
+        shared,
+        runtime,
+        terrain,
+        &particles,
+        actor,
+        &[player_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(arena.entities[usize::from(actor)].action, KILL_ACTION);
+    assert_eq!(arena.economy.authored_bee_kill_census(player_slot), 1);
+    arena.entities[usize::from(actor)].set_phase(0);
+    let sphere_count = arena.economy.spheres.len();
+    mc2::step_row(
+        arena,
+        shared,
+        runtime,
+        terrain,
+        &particles,
+        actor,
+        &[player_slot],
+        &families,
+    )
+    .unwrap();
+    assert!(arena.entities[usize::from(actor)].drawing_disabled());
+    assert_eq!(arena.economy.spheres[sphere_count].mana, RULES.initial_mana);
+    assert_eq!(arena.handle(actor), Some(handle));
+    arena
+        .rebuild_source_arena_with_terrain(terrain, &[])
+        .unwrap();
+    assert!(arena.resolve(handle).is_none());
+    assert!(!living(arena));
+}
+
+#[test]
+fn stage_follow_copies_hidden_and_dead_parent_pose_before_hiding() {
+    let simulation = full_level_two_session();
+    let terrain = &simulation.session.state.live.terrain;
+    let runtime = &simulation.session.state.live.core.runtime;
+    let mut parent = player_target(2, position(21_000));
+    parent.flags |= ENTITY_DRAW_DISABLED_BIT;
+    parent.yaw = 123;
+    parent.roll = 456;
+    let mut follower = actor_row(1, STAGE_ACTION, position(20_000));
+    follower.set_life(RULES.max_life);
+    follower.record[77] = 12;
+    put(&mut follower, 44, parent.slot);
+    let mut dead_parent = parent;
+    dead_parent.life = -1;
+    let mut dead_follow = follower.clone();
+    let mut missing_parent = follower.clone();
+    put(&mut missing_parent, 44, 5);
+    let effects = run_model26_action(&mut follower, terrain, runtime, &[parent], &[2], &[1]);
+    assert!(!effects.stage_hide);
+    assert_eq!(
+        (follower.position, follower.yaw, follower.source_roll()),
+        (parent.position, parent.yaw, parent.roll)
+    );
+    let effects = run_model26_action(
+        &mut dead_follow,
+        terrain,
+        runtime,
+        &[dead_parent],
+        &[2],
+        &[1],
+    );
+    assert!(effects.stage_hide);
+    assert_eq!(
+        (
+            dead_follow.position,
+            dead_follow.yaw,
+            dead_follow.source_roll()
+        ),
+        (parent.position, parent.yaw, parent.roll)
+    );
+    let effects = run_model26_action(&mut missing_parent, terrain, runtime, &[parent], &[2], &[1]);
+    assert!(effects.stage_hide);
+    assert_eq!(missing_parent.position, Position::default());
+    assert_eq!((missing_parent.yaw, missing_parent.source_roll()), (0, 0));
+}
+
+#[test]
+fn alliance_blink_is_committed_to_live_linked_actor_and_cleared_on_expiry() {
+    let mut simulation = full_level_two_session();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let (arena, shared, runtime, terrain) = (
+        &mut live.economy,
+        &mut live.shared_spells,
+        &mut live.core.runtime,
+        &mut live.terrain,
+    );
+    let parent = arena
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0 && row.life > 0)
+        .expect("owner session has a live player");
+    let (parent_slot, position) = (parent.index, parent.position);
+    let actor = mc2::allocate_authored(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        500,
+    )
+    .unwrap()
+    .unwrap();
+    let child = mc2::allocate_authored(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        501,
+    )
+    .unwrap()
+    .unwrap();
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.set_source_action(STAGE_ACTION);
+        row.set_phase(8);
+        row.record[77] = 14;
+        put(row, 44, parent_slot);
+        put(row, 50, 40);
+        put(row, 52, 40);
+        put(row, 56, child);
+    }
+    let mut expired_arena = arena.clone();
+    let mut expired_shared = shared.clone();
+    let mut expired_terrain = terrain.clone();
+    put(&mut expired_arena.entities[usize::from(actor)], 50, 1);
+    let row = &mut expired_arena.entities[usize::from(child)];
+    row.set_control_flags(row.control_flags | 0x0600_0000);
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    mc2::step_row(
+        arena,
+        shared,
+        runtime,
+        terrain,
+        &particles,
+        actor,
+        &[parent_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(
+        arena.entities[usize::from(child)].control_flags & 0x0600_0000,
+        0x0400_0000
+    );
+    mc2::step_row(
+        &mut expired_arena,
+        &mut expired_shared,
+        runtime,
+        &mut expired_terrain,
+        &particles,
+        actor,
+        &[parent_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(
+        expired_arena.entities[usize::from(child)].control_flags & 0x0600_0000,
+        0
+    );
+}
+
+#[test]
+fn alliance_follows_parent_target_and_updates_linked_blink_flags() {
+    let simulation = full_level_two_session();
+    let terrain = &simulation.session.state.live.terrain;
+    let runtime = &simulation.session.state.live.core.runtime;
+    let mut parent = player_target(2, position(20_000));
+    parent.target = 3;
+    let enemy = player_target(3, position(21_000));
+    let mut child = player_target(4, position(20_000));
+    child.class = 5;
+    child.model = SOURCE_MODEL;
+    child.life = RULES.max_life;
+    let mut summon = actor_row(1, STAGE_ACTION, position(20_000));
+    summon.set_life(RULES.max_life);
+    summon.set_phase(8);
+    summon.record[77] = 14;
+    put(&mut summon, 44, parent.slot);
+    put(&mut summon, 50, 40);
+    put(&mut summon, 52, 40);
+    put(&mut summon, 56, child.slot);
+    summon.record[98..102].copy_from_slice(&50_i32.to_le_bytes());
+    put(&mut summon, 102, enemy.slot);
+    let mut allied_target = enemy;
+    allied_target.parent = parent.slot;
+    allied_target.stage_mode = 14;
+    let mut rejected = summon.clone();
+    rejected.record[98..104].fill(0);
+    let effects = run_model26_action(
+        &mut summon,
+        terrain,
+        runtime,
+        &[parent, enemy, child],
+        &[2, 3],
+        &[1, 4],
+    );
+    assert_eq!(summon.life, RULES.max_life - 50);
+    assert_eq!(
+        (summon.action, word(&summon, 154)),
+        (DRAIN_ACTION, enemy.slot)
+    );
+    assert_eq!(effects.earlier_feedback, Some((parent.slot, 19)));
+    assert_eq!(effects.feedback, Some((parent.slot, 24)));
+    assert_eq!(summon.control_flags & 0x0600_0000, 0x0400_0000);
+    assert_eq!(
+        effects.linked_blink_flags,
+        vec![(child.handle, 0x0400_0000)]
+    );
+    let effects = run_model26_action(
+        &mut rejected,
+        terrain,
+        runtime,
+        &[parent, allied_target, child],
+        &[2, 3],
+        &[1, 4],
+    );
+    assert_eq!((rejected.action, word(&rejected, 154)), (STAGE_ACTION, 0));
+    assert_eq!(effects.feedback, None);
+    assert_eq!(effects.earlier_feedback, None);
+}
+
+#[test]
+fn summon_acquires_an_enemy_and_returns_to_parent_when_none_exists() {
+    let simulation = full_level_two_session();
+    let terrain = &simulation.session.state.live.terrain;
+    let runtime = &simulation.session.state.live.core.runtime;
+    let parent = player_target(2, position(20_000));
+    let enemy = player_target(3, position(21_000));
+    let mut summon = actor_row(1, STAGE_ACTION, position(20_000));
+    summon.set_life(RULES.max_life);
+    summon.set_phase(8);
+    summon.record[77] = 16;
+    put(&mut summon, 44, parent.slot);
+    put(&mut summon, 50, 10);
+    let mut alone = summon.clone();
+
+    let effects = run_model26_action(
+        &mut summon,
+        terrain,
+        runtime,
+        &[parent, enemy],
+        &[parent.slot, enemy.slot],
+        &[1],
+    );
+    assert_eq!(
+        (summon.action, word(&summon, 154)),
+        (DRAIN_ACTION, enemy.slot)
+    );
+    assert_eq!(word(&summon, 50), 10);
+    assert_eq!(effects.feedback, None);
+
+    let effects = run_model26_action(
+        &mut alone,
+        terrain,
+        runtime,
+        &[parent],
+        &[parent.slot],
+        &[1],
+    );
+    assert_eq!((alone.action, word(&alone, 154)), (STAGE_ACTION, 0));
+    assert_eq!(word(&alone, 50), 6);
+    assert_eq!(effects.feedback, None);
+}
+
+#[test]
+fn summon_hostile_hit_awards_parent_while_parent_hit_does_not() {
+    let simulation = full_level_two_session();
+    let terrain = &simulation.session.state.live.terrain;
+    let runtime = &simulation.session.state.live.core.runtime;
+    let parent = player_target(2, position(20_000));
+    let enemy = player_target(3, position(21_000));
+    let mut summon = actor_row(1, STAGE_ACTION, position(20_000));
+    summon.set_life(RULES.max_life);
+    summon.set_phase(1);
+    summon.record[77] = 16;
+    put(&mut summon, 44, parent.slot);
+    put(&mut summon, 50, 10);
+    summon.record[98..102].copy_from_slice(&50_i32.to_le_bytes());
+    put(&mut summon, 102, enemy.slot);
+    let mut parent_hit = summon.clone();
+    put(&mut parent_hit, 102, parent.slot);
+    let targets = [parent, enemy];
+
+    let effects = run_model26_action(&mut summon, terrain, runtime, &targets, &[2, 3], &[1]);
+    assert_eq!(summon.life, RULES.max_life - 50);
+    assert_eq!(summon.action, DRAIN_ACTION);
+    assert_eq!(effects.feedback, Some((parent.slot, 19)));
+    let effects = run_model26_action(&mut parent_hit, terrain, runtime, &targets, &[2, 3], &[1]);
+    assert_eq!(parent_hit.life, RULES.max_life - 50);
+    assert_eq!(parent_hit.action, STAGE_ACTION);
+    assert_eq!(effects.feedback, None);
+}
+
+#[test]
+fn summon_expiry_publishes_source_products_then_reclaims_on_next_pass() {
+    for mode in [13, 16] {
+        let mut simulation = full_level_two_session();
+        let particles = simulation
+            .session
+            .definition
+            .presentation
+            .particles
+            .to_vec();
+        let live = &mut simulation.session.state.live;
+        let position = live
+            .economy
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.model == 0)
+            .expect("source player")
+            .position;
+        let (arena, shared, runtime, terrain) = (
+            &mut live.economy,
+            &mut live.shared_spells,
+            &mut live.core.runtime,
+            &mut live.terrain,
+        );
+        let slot = mc2::allocate_authored(
+            arena,
+            runtime,
+            terrain,
+            &particles,
+            position,
+            RULES.max_life,
+            None,
+            500,
+        )
+        .unwrap()
+        .expect("available source slot");
+        let handle = arena.handle(slot).unwrap();
+        {
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(STAGE_ACTION);
+            row.record[76] = 0;
+            row.record[77] = mode;
+            put(row, 44, 0);
+            put(row, 50, 10);
+            row.record[98..102].copy_from_slice(&50_i32.to_le_bytes());
+            put(row, 102, 1);
+        }
+        let before = arena
+            .entities
+            .iter()
+            .filter(|row| row.active)
+            .map(|row| row.index)
+            .collect::<std::collections::BTreeSet<_>>();
+        let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        let parent = arena
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.model == 0)
+            .unwrap()
+            .index;
+        let mut following_arena = arena.clone();
+        let mut following_shared = shared.clone();
+        let mut following_terrain = terrain.clone();
+        {
+            let row = &mut following_arena.entities[usize::from(slot)];
+            put(row, 44, parent);
+            row.record[98..104].fill(0);
+            row.set_phase(1);
+        }
+        mc2::step_row(
+            &mut following_arena,
+            &mut following_shared,
+            runtime,
+            &mut following_terrain,
+            &particles,
+            slot,
+            &[],
+            &families,
+        )
+        .expect("live parent follow callback");
+        assert!(!following_arena.entities[usize::from(slot)].drawing_disabled());
+        assert!(
+            following_arena
+                .entities
+                .iter()
+                .all(|row| !row.active || before.contains(&row.index))
+        );
+
+        mc2::step_row(
+            arena,
+            shared,
+            runtime,
+            terrain,
+            &particles,
+            slot,
+            &[],
+            &families,
+        )
+        .expect("parent-loss expiry consumes real source products");
+        let row = &arena.entities[usize::from(slot)];
+        assert!(row.active && row.drawing_disabled());
+        assert!(arena.economy.map_chains.is_linked(slot));
+        assert_eq!(
+            i32::from_le_bytes(row.record[98..102].try_into().unwrap()),
+            50,
+            "expiry precedes damage mailbox consumption"
+        );
+        assert_eq!(arena.handle(slot), Some(handle));
+        let born = arena
+            .entities
+            .iter()
+            .filter(|row| row.active && !before.contains(&row.index))
+            .map(|row| (row.class, row.model))
+            .collect::<Vec<_>>();
+        assert!(born.contains(&(10, 0)));
+        assert_eq!(born.contains(&(10, 73)), mode == 13);
+
+        arena
+            .rebuild_source_arena_with_terrain(terrain, &[])
+            .unwrap();
+        assert!(
+            arena.resolve(handle).is_none(),
+            "following pass reclaims the old generation"
+        );
+        assert!(!arena.economy.map_chains.is_linked(slot));
+    }
+}
+
+#[test]
+fn summon_expiry_reclaims_a_replacement_at_the_same_source_address() {
+    let mut simulation = full_level_two_session();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let position = live
+        .economy
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0)
+        .unwrap()
+        .position;
+    let (arena, shared, runtime, terrain) = (
+        &mut live.economy,
+        &mut live.shared_spells,
+        &mut live.core.runtime,
+        &mut live.terrain,
+    );
+    let slot = mc2::allocate_authored(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        501,
+    )
+    .unwrap()
+    .unwrap();
+    for row in &mut arena.entities {
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    }
+    arena.economy.exhaust_new_event_capacity_for_test();
+    {
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_source_action(STAGE_ACTION);
+        row.set_control_flags(row.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+        row.record[76] = 0;
+        row.record[77] = 16;
+        put(row, 44, 0);
+        put(row, 50, 10);
+    }
+    arena.rebuild_source_free_arena();
+    let old = arena.handle(slot).unwrap();
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    mc2::step_row(
+        arena,
+        shared,
+        runtime,
+        terrain,
+        &particles,
+        slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(arena.resolve(old).is_none());
+    let replacement = arena
+        .handle(slot)
+        .expect("impact occupies the source address");
+    assert_eq!(replacement.generation, old.generation.wrapping_add(1));
+    let row = &arena.entities[usize::from(slot)];
+    assert_eq!((row.class, row.model), (10, 0));
+    assert!(row.drawing_disabled());
+    arena
+        .rebuild_source_arena_with_terrain(terrain, &[])
+        .unwrap();
+    assert!(arena.resolve(replacement).is_none());
+}
+
+#[test]
 fn drain_applies_source_mana_amount_and_steals_the_selected_unheld_spell() {
     let terrain = terrain();
     let mut row = actor_row(1, DRAIN_ACTION, position(20_000));
+    row.set_phase(0);
     put(&mut row, 154, 2);
     let thief = SourceEntityHandle {
         source_slot: 1,
@@ -253,13 +916,11 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
     let victim = arena.entities[usize::from(victim_slot)].clone();
     assert!(victim.active && victim.class == 3 && victim.model == 0);
     let victim_player = victim.source_player_entity_index();
-    assert!(
-        shared
-            .players
-            .iter()
-            .any(|player| player.entity_index == victim_player)
-            || shared.local_player.entity_index == victim_player
-    );
+    let player_index = shared
+        .players
+        .iter()
+        .position(|player| player.entity_index == victim_player)
+        .expect("victim has a source player record");
     let family = 4;
     let holder_action = family * 3;
     let pickup = arena
@@ -333,7 +994,7 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
         "a current typed holder cannot overwrite a different raw occupant"
     );
     assert_eq!(
-        occupied_shared.local_player.enabled_spell_holders[usize::from(family)],
+        occupied_shared.players[player_index].enabled_spell_holders[usize::from(family)],
         holder_slot,
         "a rejected identity leaves the player hand unchanged"
     );
@@ -349,10 +1010,10 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
     assert_eq!(word(stolen, 74), 1);
     assert_eq!(stolen.position, victim.position);
     assert_eq!(
-        shared.local_player.enabled_spell_holders[usize::from(family)],
+        shared.players[player_index].enabled_spell_holders[usize::from(family)],
         0
     );
-    assert_eq!(shared.local_player.right_spell_slot_raw, -1);
+    assert_eq!(shared.players[player_index].right_spell_slot_raw, -1);
     assert_eq!(arena.handle(holder_slot), Some(theft.holder));
 
     arena.entities[usize::from(thief_slot)].set_life(-1);
@@ -371,7 +1032,7 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
     let returned = arena.entities[usize::from(holder_slot)].clone();
     assert_eq!(returned.action, holder_action + 1);
     assert_eq!(word(&returned, 42), 0);
-    mc2::prepare_source_pass(&mut arena, &mut runtime, &[]);
+    mc2::prepare_source_pass(&mut arena, &mut runtime, Default::default(), &[]).unwrap();
     let typed = arena
         .economy
         .spell_pickups()
@@ -388,6 +1049,7 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
 fn drain_does_not_steal_a_spell_holder_already_linked_to_another_thief() {
     let terrain = terrain();
     let mut row = actor_row(1, DRAIN_ACTION, position(20_000));
+    row.set_phase(0);
     put(&mut row, 154, 2);
     let holder = SourceEntityHandle {
         source_slot: 8,
@@ -499,6 +1161,37 @@ fn action214_is_rejected_as_unsupported_source_dispatch() {
 }
 
 #[test]
+fn stage_peer_avoidance_runs_even_when_heading_update_is_blocked() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = &simulation.session.state.live.terrain;
+    let mut runtime = simulation.session.state.live.core.runtime.clone();
+    runtime.stage_variables[0] = RuntimeStageVariable {
+        kind: 1,
+        flags: 0,
+        word_2: 0,
+        relation: RuntimeRelation::AxisScalar((20_000_u32 << 16) | 30_000),
+    };
+    let mut actor = actor_row(1, STAGE_ACTION, position(20_000));
+    actor.set_life(RULES.max_life);
+    actor.set_phase(8);
+    actor.record[77] = 1;
+    actor.set_source_roll(777);
+    actor.set_control_flags(actor.control_flags | 0x40000);
+    let mut without_peer = actor.clone();
+    let mut peer = player_target(3, position(20_100));
+    peer.class = 5;
+    peer.model = SOURCE_MODEL;
+
+    run_model26_action(&mut actor, terrain, &runtime, &[peer], &[], &[1, 3]);
+    assert_eq!(
+        actor.source_roll(),
+        heading_for_positions(peer.position, actor.position) as i16
+    );
+    run_model26_action(&mut without_peer, terrain, &runtime, &[], &[], &[1]);
+    assert_eq!(without_peer.source_roll(), 777);
+}
+
+#[test]
 fn action215_turns_toward_its_bound_stage_point() {
     let simulation = crate::native_world::tests::level_two_campaign_session();
     let terrain = simulation.session.state.live.terrain.clone();
@@ -510,12 +1203,13 @@ fn action215_turns_toward_its_bound_stage_point() {
         relation: RuntimeRelation::AxisScalar((20_000_u32 << 16) | 30_000),
     };
     let mut row = actor_row(1, STAGE_ACTION, position(20_000));
+    row.set_phase(8);
     row.record[76] = 1;
     row.record[77] = 1;
     row.set_source_roll(777);
     let effects = run_model26_action(&mut row, &terrain, &runtime, &[], &[], &[1]);
 
-    assert_eq!(row.source_roll(), 0);
+    assert_eq!(row.source_roll(), 512);
     assert_eq!(effects.population_decrements, 0);
 
     let player = player_target(2, position(21_000));

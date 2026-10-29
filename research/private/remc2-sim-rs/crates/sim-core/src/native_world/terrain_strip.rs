@@ -11,361 +11,7 @@ use super::{EntitySnapshot, MapType, Position, SessionTerrain, TerrainPlanes};
 ///
 /// The source arena retains the controller's authoritative words. This owner
 /// borrows only that row and the terrain; it never acquires a whole session.
-pub(crate) mod cave_corridors {
-    use super::{MapType, SessionTerrain, TileCursor};
-    use crate::{
-        Position,
-        campaign::source_arena::SourceArena,
-        level_definition::{CaveCorridorDefinition, CorridorOrientation},
-        native_world::{EntityAuthority, EntitySnapshot, EntitySpecialRelation},
-        renderable_map_chain::RenderableMapSeed,
-    };
-
-    /// Source `sub_516C0`, followed by authored `PrepareEvents_49540`
-    /// orientation/extent writes. Failed/non-cave construction has no births.
-    pub(crate) fn construct(
-        arena: &mut SourceArena,
-        terrain: &SessionTerrain,
-        position: Position,
-        properties: CaveCorridorDefinition,
-    ) -> Option<u16> {
-        if terrain.map_type != MapType::Cave {
-            return None;
-        }
-        let slot = arena.economy.allocate_slot()?;
-        let rng = arena.economy.new_event_rng(slot);
-        if arena
-            .economy
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: slot,
-                active: true,
-                x: position.x,
-                y: position.y,
-            })
-            .is_err()
-        {
-            arena.economy.release_slot(slot, None);
-            return None;
-        }
-        let links = (
-            arena.economy.map_chains.old_map_entity(slot),
-            arena.economy.map_chains.next_entity(slot),
-        );
-        let mut record = vec![0; 176].into_boxed_slice();
-        record[0..2].copy_from_slice(&slot.to_le_bytes());
-        record[2] = 1;
-        record[8..12].copy_from_slice(&300_i32.to_le_bytes());
-        // Constructor clears NewEvent's bit8 and sets hidden-controller bit1;
-        // AddEventToMap adds bit4. maxLife retains NewEvent's 300, life is 0.
-        record[16..20].copy_from_slice(&5_u32.to_le_bytes());
-        record[24..26].copy_from_slice(&rng.to_le_bytes());
-        record[26..28].copy_from_slice(&links.0.to_le_bytes());
-        record[28..30].copy_from_slice(&links.1.to_le_bytes());
-        record[30..32].copy_from_slice(&slot.to_le_bytes());
-        record[61] = (-6_i8) as u8;
-        record[66] = slot as u8;
-        record[67] = 14;
-        record[68] = 2;
-        record[69] = 255;
-        record[70] = 255;
-        record[71] = 10;
-        record[73] = 7;
-        record[80..82].copy_from_slice(&position.x.to_le_bytes());
-        record[82..84].copy_from_slice(&position.y.to_le_bytes());
-        record[84..86].copy_from_slice(&position.z.to_le_bytes());
-        // NewEvent's zero particle word is retained. The controller bit hides
-        // this row; its presentation is the changed terrain, not a sprite.
-        record[134..136].copy_from_slice(&16_i16.to_le_bytes());
-        record[164..168].copy_from_slice(&60_u32.to_le_bytes());
-        record[168] = 2;
-        record[172..176].copy_from_slice(&1_u32.to_le_bytes());
-        arena.entities[usize::from(slot)] = EntitySnapshot {
-            index: slot,
-            source_id: slot,
-            authority: EntityAuthority::FrozenObserved,
-            active: true,
-            max_life: 300,
-            life: 0,
-            next_relation: None,
-            class: 14,
-            model: 2,
-            control_flags: 5,
-            entity_rng: rng,
-            action: 7,
-            action_marker: 0,
-            level_gate: 0,
-            position,
-            yaw: 0,
-            pitch: 0,
-            fov: 0,
-            phase: slot as u8,
-            subspell_index: 0,
-            byte_3b: 0,
-            byte_3c: 0,
-            font_type_index: 0,
-            active_value: 0,
-            activation_value: 0,
-            mana_regen: 0,
-            actual_speed: 16,
-            max_mana: 0,
-            mana_cost: 0,
-            mana: 0,
-            particle_parameter_index: Some(0),
-            parameter_relation: Some(59),
-            special_relation: EntitySpecialRelation::GlobalSpecialState,
-            record,
-        };
-        bind_properties(&mut arena.entities[usize::from(slot)], properties);
-        let old_head_is_dynamic = arena
-            .economy
-            .live_arena_slots()
-            .iter()
-            .any(|(index, _)| *index == links.0);
-        if links.0 != 0 && !old_head_is_dynamic {
-            arena.entities[usize::from(links.0)].record[28..30]
-                .copy_from_slice(&slot.to_le_bytes());
-        }
-        arena.economy.source_rng.insert(slot, rng);
-        Some(slot)
-    }
-
-    /// Bind immutable construction content to the authoritative source words.
-    /// Imported frame-zero controllers and later NewEvent births use the same
-    /// fields; behavior never reads a second mutable property mirror.
-    pub(crate) fn bind_properties(source: &mut EntitySnapshot, properties: CaveCorridorDefinition) {
-        source.set_source_word_2c(i16::from(
-            properties.orientation() == CorridorOrientation::AlongX,
-        ));
-        source.set_source_word_96(properties.extent() as u16);
-    }
-
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    pub(crate) struct Visit {
-        pub(crate) prepare_sound: bool,
-        pub(crate) end_loop: bool,
-        pub(crate) reclaim: bool,
-    }
-
-    impl Visit {
-        /// Ordered descriptors consumed by the existing campaign audio journal.
-        /// The terrain controller never installs an actor sprite or draw clock.
-        pub(crate) fn effects(self, source_slot: u16) -> impl Iterator<Item = crate::FlightEvent> {
-            [
-                self.prepare_sound
-                    .then_some(crate::FlightEvent::PrepareSound {
-                        #[cfg(test)]
-                        audio_site: crate::MissionAudioSite::TerrainStrip,
-                        entity_index: source_slot,
-                        player_index: -1,
-                        sound_id: 47,
-                    }),
-                self.end_loop.then_some(crate::FlightEvent::EndLoop {
-                    #[cfg(test)]
-                    audio_site: crate::MissionAudioSite::TerrainStrip,
-                    entity_index: source_slot,
-                    player_index: -1,
-                    sound_id: 47,
-                }),
-            ]
-            .into_iter()
-            .flatten()
-        }
-    }
-
-    /// Execute against the arena authority. Invalid initialization removes the
-    /// map link and returns the slot to NewEvent immediately, in this callback.
-    pub(crate) fn visit(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16) -> Visit {
-        let source = &mut arena.entities[usize::from(slot)];
-        let result = step(terrain, source);
-        if result.reclaim {
-            let rng = source.entity_rng;
-            // SetMapEntity_57E50 clears the linkage bit but retains the
-            // retired row's old/next words. The live neighbors must reflect
-            // the unlink before the common scheduler epilogue runs.
-            source.set_control_flags(source.control_flags & !4);
-            source.reclaim_source_row();
-            let neighbors = [
-                arena.economy.map_chains.old_map_entity(slot),
-                arena.economy.map_chains.next_entity(slot),
-            ];
-            arena.economy.release_slot(slot, Some(rng));
-            for neighbor in neighbors.into_iter().filter(|slot| *slot != 0) {
-                if arena
-                    .economy
-                    .live_arena_slots()
-                    .iter()
-                    .any(|(slot, _)| *slot == neighbor)
-                {
-                    continue;
-                }
-                let links = (
-                    arena.economy.map_chains.old_map_entity(neighbor),
-                    arena.economy.map_chains.next_entity(neighbor),
-                );
-                let row = &mut arena.entities[usize::from(neighbor)];
-                row.record[26..28].copy_from_slice(&links.0.to_le_bytes());
-                row.record[28..30].copy_from_slice(&links.1.to_le_bytes());
-            }
-        }
-        result
-    }
-
-    /// Initialize or advance one corridor. Life 1 seals the opening and life 2
-    /// restores its surroundings. Both branches emit Prepare47 *before* the
-    /// terminal EndLoop47, including a callback that makes no height writes.
-    pub(crate) fn step(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) -> Visit {
-        if terrain.map_type != MapType::Cave || source.life as u32 > 2 {
-            return Visit::default();
-        }
-        let center = TileCursor::from_xy(
-            source.position.x.to_be_bytes()[0],
-            source.position.y.to_be_bytes()[0],
-        );
-        let horizontal = source.source_word_2c() != 0;
-        // The source words are signed, including word96 despite its other
-        // uses as an unsigned entity relation. Keep integer promotion here.
-        let length = (2 * ((i32::from(source.source_word_96() as i16) << 8) + 512) + 128) >> 8;
-        let (width, height) = if horizontal { (length, 2) } else { (2, length) };
-        let mut corner = center;
-        corner.add_x(-(width >> 1));
-        corner.add_y(-(height >> 1));
-        let planes = &mut terrain.planes;
-        let mut visit = Visit::default();
-        let mut mutated = false;
-        if source.life == 0 {
-            source.set_life(4);
-            // The C loop wraps a byte cursor indefinitely on malformed maps.
-            // One complete wrapped axis is exhaustive; failure is the source
-            // immediate sub_57F20 path, not a draw-disabled tombstone.
-            let bound = |delta: i32| {
-                let mut cursor = center;
-                for _ in 0..256 {
-                    if planes.angles[cursor.index()] & 8 != 0 {
-                        return Some(planes.ground_heights[cursor.index()]);
-                    }
-                    if horizontal {
-                        cursor.add_x(delta);
-                    } else {
-                        cursor.add_y(delta);
-                    }
-                }
-                None
-            };
-            let (Some(first), Some(second)) = (bound(-1), bound(1)) else {
-                visit.reclaim = true;
-                return visit;
-            };
-            let mut position = source.position;
-            position.z = (i16::from(first) + i16::from(second)) >> 1;
-            source.set_position(position);
-            for y in 0..height {
-                let mut cursor = corner;
-                cursor.add_y(y);
-                for _ in 0..width {
-                    planes.angles[cursor.index()] |= 0x80;
-                    cursor.add_x(1);
-                    mutated = true;
-                }
-            }
-        } else {
-            visit.prepare_sound = true;
-            let product = 8 * length;
-            let speed = (product - if product < 0 { -31 } else { 0 }) >> 5;
-            let midpoint = i32::from(source.position.z);
-            let floor_limit = (i32::from(planes.ground_heights[center.index()]) + speed + 1)
-                .max(0)
-                .min(midpoint);
-            let ceiling_limit = (i32::from(planes.secondary_heights[center.index()]) - speed - 1)
-                .max(midpoint)
-                .min(254);
-            let mut settled = true;
-            for y in 0..height {
-                let mut cursor = corner;
-                cursor.add_y(y);
-                for _ in 0..width {
-                    let index = cursor.index();
-                    if source.life == 1 {
-                        if planes.angles[index] & 8 == 0 {
-                            let floor =
-                                (i32::from(planes.ground_heights[index]) + speed).min(floor_limit);
-                            if floor > i32::from(planes.ground_heights[index]) {
-                                planes.ground_heights[index] = floor as u8;
-                                settled = false;
-                            }
-                            let ceiling = (i32::from(planes.secondary_heights[index]) - speed)
-                                .max(ceiling_limit);
-                            if ceiling < i32::from(planes.secondary_heights[index]) {
-                                planes.secondary_heights[index] = ceiling as u8;
-                                settled = false;
-                            }
-                        }
-                    } else {
-                        let mut neighbors = [cursor; 3];
-                        for (neighbor, offset) in neighbors.iter_mut().zip([-1, 2, 3]) {
-                            if horizontal {
-                                neighbor.set_y(corner.y().wrapping_add(offset as u8));
-                            } else {
-                                neighbor.set_x(corner.x().wrapping_add(offset as u8));
-                            }
-                        }
-                        let [a, b, c] = neighbors.map(TileCursor::index);
-                        let floor_limit = restored_height(
-                            planes.ground_heights[a],
-                            planes.ground_heights[b],
-                            planes.ground_heights[c],
-                        );
-                        let floor =
-                            (i32::from(planes.ground_heights[index]) - speed).max(floor_limit);
-                        if floor < i32::from(planes.ground_heights[index]) {
-                            planes.ground_heights[index] = floor as u8;
-                            settled = false;
-                        }
-                        let ceiling_limit = restored_height(
-                            planes.secondary_heights[a],
-                            planes.secondary_heights[b],
-                            planes.secondary_heights[c],
-                        );
-                        let ceiling =
-                            (i32::from(planes.secondary_heights[index]) + speed).min(ceiling_limit);
-                        if ceiling > i32::from(planes.secondary_heights[index]) {
-                            planes.secondary_heights[index] = ceiling as u8;
-                            settled = false;
-                        }
-                    }
-                    let angle = planes.angles[index];
-                    if planes.secondary_heights[index] > planes.ground_heights[index] {
-                        planes.angles[index] &= 0xf7;
-                    } else {
-                        planes.angles[index] |= 8;
-                    }
-                    mutated |= planes.angles[index] != angle;
-                    cursor.add_x(1);
-                }
-            }
-            mutated |= !settled;
-            if settled {
-                source.set_life(if source.life == 1 { 3 } else { 4 });
-                visit.end_loop = true;
-            }
-        }
-        if mutated {
-            terrain.mutation_sequence = terrain.mutation_sequence.wrapping_add(1);
-        }
-        visit
-    }
-
-    fn restored_height(first: u8, second: u8, third: u8) -> i32 {
-        let (first, second, third) = (i32::from(first), i32::from(second), i32::from(third));
-        if (first - second).abs() <= 4 {
-            (first + second) / 2
-        } else if (first - third).abs() > 4 {
-            second
-        } else {
-            first
-        }
-    }
-}
+pub(crate) use crate::world::terrain::cave_corridors;
 
 const TERRAIN_STRIP_TYPE: u8 = 8;
 const TERRAIN_STRIP_SOUND: u16 = 47;
@@ -391,6 +37,43 @@ pub(crate) struct TerrainStripCloseTrigger {
     pub(crate) position: Position,
     pub(crate) drawing_enabled: bool,
     pub(crate) active: bool,
+}
+
+/// Allocate an authored opening command through the shared source arena and
+/// publish its map link to the terrain plane read by ordinary consumers.
+pub(crate) fn allocate_close_trigger(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+    authored_index: u16,
+    position: Position,
+) -> Option<TerrainStripCloseTrigger> {
+    let slot = arena.allocate_source_slot_with_terrain(terrain)?;
+    let trigger =
+        arena
+            .economy
+            .initialize_terrain_strip_close_trigger(slot, authored_index, position)?;
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
+        .expect("the allocated terrain trigger has a valid source map slot");
+    Some(trigger)
+}
+
+/// The command remains linked through its callback epilogue. Publish its
+/// unlink before the following source-boundary reclamation releases its slot.
+pub(crate) fn prepare_trigger_reclaim(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+) -> Result<(), String> {
+    let hidden = arena
+        .economy
+        .terrain_strip_close_triggers()
+        .iter()
+        .filter(|trigger| !trigger.active)
+        .map(|trigger| (trigger.source_entity_index, trigger.position))
+        .collect::<Vec<_>>();
+    for (slot, position) in hidden {
+        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
+    }
+    Ok(())
 }
 
 /// Mutable source words used by `sub_59F60` after the generic constructor.
@@ -484,38 +167,38 @@ impl TerrainStripVisit {
 /// remc2 deliberately mixes whole-word arithmetic with byte-field arithmetic.
 /// Keeping both forms explicit preserves carry behavior at map seams.
 #[derive(Clone, Copy)]
-struct TileCursor(u16);
+pub(crate) struct TileCursor(u16);
 
 impl TileCursor {
-    const fn from_xy(x: u8, y: u8) -> Self {
+    pub(crate) const fn from_xy(x: u8, y: u8) -> Self {
         Self(u16::from_le_bytes([x, y]))
     }
 
-    const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self.0 as usize
     }
 
-    const fn x(self) -> u8 {
+    pub(crate) const fn x(self) -> u8 {
         self.0.to_le_bytes()[0]
     }
 
-    const fn y(self) -> u8 {
+    pub(crate) const fn y(self) -> u8 {
         self.0.to_le_bytes()[1]
     }
 
-    fn set_x(&mut self, x: u8) {
+    pub(crate) fn set_x(&mut self, x: u8) {
         self.0 = u16::from_le_bytes([x, self.y()]);
     }
 
-    fn set_y(&mut self, y: u8) {
+    pub(crate) fn set_y(&mut self, y: u8) {
         self.0 = u16::from_le_bytes([self.x(), y]);
     }
 
-    fn add_x(&mut self, delta: i32) {
+    pub(crate) fn add_x(&mut self, delta: i32) {
         self.set_x(self.x().wrapping_add(delta as u8));
     }
 
-    fn add_y(&mut self, delta: i32) {
+    pub(crate) fn add_y(&mut self, delta: i32) {
         self.set_y(self.y().wrapping_add(delta as u8));
     }
 
@@ -1456,7 +1139,7 @@ mod tests {
         };
         let slot = cave_corridors::construct(
             &mut live.economy,
-            &live.terrain,
+            &mut live.terrain,
             owner_row.position,
             properties,
         )
@@ -1514,11 +1197,19 @@ mod tests {
         let mut trigger_position = owner_row.position;
         trigger_position.x = trigger_position.x.wrapping_add(128);
         trigger_position.y = trigger_position.y.wrapping_add(128);
-        let trigger = live
-            .economy
-            .economy
-            .allocate_terrain_strip_close_trigger(0, trigger_position, &live.terrain)
-            .unwrap();
+        let trigger =
+            allocate_close_trigger(&mut live.economy, &mut live.terrain, 0, trigger_position)
+                .unwrap();
+        assert_eq!(trigger.control_flags & 4, 4);
+        let trigger_tile =
+            usize::from(trigger_position.y >> 8) * 256 + usize::from(trigger_position.x >> 8);
+        assert_eq!(
+            live.terrain.planes.entity_indices[trigger_tile],
+            live.economy
+                .economy
+                .map_chains
+                .tile_head(trigger_tile as u16) as i16
+        );
         for pass in 0..=255 {
             session.step_level2_source_pass(pass);
             if session.session.state.live.economy.entities[usize::from(slot)].life == 4 {
@@ -1540,6 +1231,62 @@ mod tests {
                 .iter()
                 .any(|row| row.active && row.source_entity_index == trigger.source_entity_index)
         );
+        let live = &session.session.state.live;
+        assert!(
+            !live
+                .economy
+                .economy
+                .terrain_strip_close_triggers()
+                .iter()
+                .any(|row| row.source_entity_index == trigger.source_entity_index),
+            "the following source pass reclaims the retired command"
+        );
+        assert_eq!(
+            live.terrain.planes.entity_indices[trigger_tile],
+            live.economy
+                .economy
+                .map_chains
+                .tile_head(trigger_tile as u16) as i16,
+            "the retired command no longer leaves a stale terrain map head"
+        );
+        // The source reclaims a corridor synchronously when no closed bound
+        // exists. Its numeric row still receives this pass's common epilogue.
+        let live = &mut session.session.state.live;
+        let source = &mut live.economy.entities[usize::from(slot)];
+        let old_phase = source.phase;
+        let horizontal = source.source_word_2c() != 0;
+        let tile_x = usize::from(source.position.x >> 8);
+        let tile_y = usize::from(source.position.y >> 8);
+        source.set_life(0);
+        for coordinate in 0..256 {
+            let index = if horizontal {
+                tile_y * 256 + coordinate
+            } else {
+                coordinate * 256 + tile_x
+            };
+            live.terrain.planes.angles[index] &= !8;
+        }
+        session.step_level2_source_pass(0);
+        let live = &session.session.state.live;
+        let source = &live.economy.entities[usize::from(slot)];
+        assert!(
+            !source.active && source.class == 0,
+            "invalid bound reclaims in the callback"
+        );
+        assert_eq!(
+            source.phase,
+            old_phase.wrapping_add(1),
+            "same-pass epilogue advances retained row"
+        );
+        assert_eq!(source.record_bytes()[66], source.phase);
+        let tile = tile_y * 256 + tile_x;
+        assert_eq!(
+            live.terrain.planes.entity_indices[tile],
+            live.economy.economy.map_chains.tile_head(tile as u16) as i16,
+            "reclaim immediately publishes the surviving map head"
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event,
+            crate::native_world::Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == slot)));
         session.reset();
         assert!(
             session.session.state.live == baseline,
@@ -1584,11 +1331,15 @@ mod tests {
             };
             let slot = cave_corridors::construct(
                 &mut live.economy,
-                &live.terrain,
+                &mut live.terrain,
                 position,
                 corridor_properties(orientation, extent),
             )
             .expect("Cave constructor uses the shared NewEvent arena");
+            assert_eq!(
+                live.terrain.planes.entity_indices[0], slot as i16,
+                "AddEventToMap publishes the live controller in the terrain head plane"
+            );
             let row = &live.economy.entities[usize::from(slot)];
             assert_eq!(
                 (
@@ -1655,11 +1406,12 @@ mod tests {
             let before_failure = live.terrain.clone();
             let neighbor = cave_corridors::construct(
                 &mut live.economy,
-                &live.terrain,
+                &mut live.terrain,
                 position,
                 corridor_properties(orientation, extent),
             )
             .unwrap();
+            assert_eq!(live.terrain.planes.entity_indices[0], neighbor as i16);
             let failed = cave_corridors::visit(&mut live.economy, &mut live.terrain, slot);
             assert!(failed.reclaim);
             assert!(!live.economy.entities[usize::from(slot)].active);
@@ -1682,11 +1434,32 @@ mod tests {
                     .entity_chain(0, 0)
                     .contains(&slot)
             );
+            let mut expected_after_failure = before_failure;
+            expected_after_failure.planes.entity_indices[0] = neighbor as i16;
             assert!(
-                live.terrain == before_failure,
-                "failed initialization retains geometry"
+                live.terrain == expected_after_failure,
+                "failed initialization retains geometry and publishes the surviving map head"
             );
+            let generation = live.economy.economy.slot_generation(slot);
+            let reused = cave_corridors::construct(
+                &mut live.economy,
+                &mut live.terrain,
+                position,
+                corridor_properties(orientation, extent),
+            )
+            .expect("the just-reclaimed row is available to NewEvent");
+            assert_eq!(
+                reused, slot,
+                "immediate reclaim returns the row to the live free stack"
+            );
+            assert_ne!(live.economy.economy.slot_generation(reused), generation);
+            assert!(cave_corridors::visit(&mut live.economy, &mut live.terrain, reused).reclaim);
             assert!(cave_corridors::visit(&mut live.economy, &mut live.terrain, neighbor).reclaim);
+            assert_eq!(
+                live.terrain.planes.entity_indices[0],
+                live.economy.economy.map_chains.tile_head(0) as i16,
+                "immediate reclaim publishes the final map head"
+            );
         }
         session.reset();
         assert!(
@@ -1698,7 +1471,7 @@ mod tests {
         assert_eq!(
             cave_corridors::construct(
                 &mut live.economy,
-                &live.terrain,
+                &mut live.terrain,
                 position(5, 5),
                 corridor_properties(0, 0)
             ),
@@ -1883,6 +1656,340 @@ mod tests {
                 .unwrap_err()
                 .contains("no semantic mechanic"),
             "missing initial bindings remain invalid"
+        );
+
+        // The real mission session, scheduler and renderer consume the same
+        // owner package. The earlier direct checks isolate all six source
+        // records; this path exercises normal command turns and trigger births.
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = root.join("mc-bhq8-level4-collision-v2-cave");
+        let cache = root.join("mc-b9s2-cursor-level4-20261029");
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            &package,
+            &cache,
+            crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
+        )
+        .expect("actual Level4 campaign and matching Cave materials open");
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache)
+            .expect("actual package-selected Cave renderer assets");
+        let initial_frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+            campaign.inspection(),
+            campaign.simulation(),
+            &assets,
+            campaign.generation(),
+        )
+        .expect("real Cave presentation consumes the initial source terrain");
+        let roots = {
+            let live = &campaign.simulation().session.state.live;
+            [false, true].map(|horizontal| {
+                let row = live
+                    .economy
+                    .entities
+                    .iter()
+                    .find(|row| {
+                        row.active
+                            && (row.class, row.model, row.action) == (14, 2, 7)
+                            && row.life == 1
+                            && (row.source_word_2c() != 0) == horizontal
+                    })
+                    .expect("real Level4 supplies a live corridor in each orientation");
+                (
+                    row.index,
+                    row.position,
+                    live.terrain.ground_height(row.position),
+                    live.terrain.ceiling_height(row.position).unwrap(),
+                )
+            })
+        };
+        for _ in 0..256 {
+            let _ = campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(
+                !campaign
+                    .simulation()
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
+                    )),
+                "real corridor source pass reported an error: {:?}",
+                campaign.simulation().dispatch_events()
+            );
+            if roots.iter().all(|(slot, _, _, _)| {
+                campaign.simulation().session.state.live.economy.entities[usize::from(*slot)].life
+                    == 3
+            }) {
+                break;
+            }
+        }
+        {
+            let live = &campaign.simulation().session.state.live;
+            for (slot, position, floor, ceiling) in roots {
+                assert_eq!(live.economy.entities[usize::from(slot)].life, 3);
+                assert!(live.terrain.ground_height(position) > floor);
+                assert!(live.terrain.ceiling_height(position).unwrap() < ceiling);
+                assert!(live.terrain.cave_collision_blocked(position));
+                let mut probe = position;
+                probe.z = (floor + ceiling) / 2;
+                assert_ne!(
+                    crate::resolve_legacy_movement(
+                        &mut crate::FlightState::default(),
+                        probe,
+                        probe,
+                        crate::FlightProfile::CAVE,
+                        &live.terrain,
+                    ),
+                    crate::MovementResolution::Accept(probe),
+                    "ordinary flight rejects the real closed corridor"
+                );
+            }
+        }
+        let closed_frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+            campaign.inspection(),
+            campaign.simulation(),
+            &assets,
+            campaign.generation(),
+        )
+        .expect("real Cave presentation consumes the closed live terrain");
+        assert_eq!(closed_frame.tick, campaign.simulation().state.tick);
+        assert_ne!(
+            closed_frame.terrain_input_hash,
+            initial_frame.terrain_input_hash
+        );
+        assert_eq!(closed_frame.indices.len(), initial_frame.indices.len());
+        let closed_planes = campaign
+            .simulation()
+            .session
+            .state
+            .live
+            .terrain
+            .planes
+            .clone();
+        let authored = crate::level1_mission::parse_authored_features(
+            &std::fs::read(package.join("authored-level.bin")).unwrap(),
+        )
+        .expect("actual Level4 source trigger records");
+        {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            for (_, position, _, _) in roots {
+                let feature = authored
+                    .iter()
+                    .find(|row| {
+                        row.kind == 10
+                            && row.subtype == 63
+                            && row.tile_x == position.x >> 8
+                            && row.tile_y == position.y >> 8
+                    })
+                    .expect("source-authored open trigger addresses this corridor");
+                let position =
+                    feature.world_position(live.terrain.ground_height(feature.world_position(0)));
+                allocate_close_trigger(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    feature.index,
+                    position,
+                )
+                .expect("ordinary source constructor allocates the authored opening trigger");
+            }
+        }
+        for _ in 0..256 {
+            let _ = campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(
+                !campaign
+                    .simulation()
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
+                    ))
+            );
+            if roots.iter().all(|(slot, _, _, _)| {
+                campaign.simulation().session.state.live.economy.entities[usize::from(*slot)].life
+                    == 4
+            }) {
+                break;
+            }
+        }
+        let live = &campaign.simulation().session.state.live;
+        for (slot, position, _, _) in roots {
+            assert_eq!(live.economy.entities[usize::from(slot)].life, 4);
+            assert!(!live.terrain.cave_collision_blocked(position));
+            let mut probe = position;
+            probe.z = (live.terrain.ground_height(position)
+                + live.terrain.ceiling_height(position).unwrap())
+                / 2;
+            assert_eq!(
+                crate::resolve_legacy_movement(
+                    &mut crate::FlightState::default(),
+                    probe,
+                    probe,
+                    crate::FlightProfile::CAVE,
+                    &live.terrain,
+                ),
+                crate::MovementResolution::Accept(probe),
+                "ordinary flight accepts the real reopened corridor"
+            );
+        }
+        let opened_frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+            campaign.inspection(),
+            campaign.simulation(),
+            &assets,
+            campaign.generation(),
+        )
+        .expect("real Cave presentation consumes the reopened live terrain");
+        assert_eq!(opened_frame.tick, campaign.simulation().state.tick);
+        assert_ne!(
+            opened_frame.terrain_input_hash,
+            closed_frame.terrain_input_hash
+        );
+        // Compare the two genuinely produced corridor geometries at the same
+        // tick and camera. A cross-tick input hash alone also changes with the
+        // camera/turn and cannot prove a visible terrain difference.
+        let opened_planes = campaign
+            .simulation()
+            .session
+            .state
+            .live
+            .terrain
+            .planes
+            .clone();
+        for (slot, position, _, _) in roots {
+            let row = &campaign.simulation().session.state.live.economy.entities[usize::from(slot)];
+            let horizontal = row.source_word_2c() != 0;
+            let length = 2 * (i32::from(row.source_word_96() as i16) + 2);
+            let (width, height) = if horizontal { (length, 2) } else { (2, length) };
+            let mut cells = Vec::new();
+            for dy in 0..height {
+                for dx in 0..width {
+                    let x = (i32::from(position.x >> 8) - (width >> 1) + dx) as u8;
+                    let y = (i32::from(position.y >> 8) - (height >> 1) + dy) as u8;
+                    cells.push(usize::from(y) * 256 + usize::from(x));
+                }
+            }
+            let eye = (campaign
+                .simulation()
+                .session
+                .state
+                .live
+                .terrain
+                .ground_height(position)
+                + campaign
+                    .simulation()
+                    .session
+                    .state
+                    .live
+                    .terrain
+                    .ceiling_height(position)
+                    .unwrap())
+                / 2;
+            let mut visible = false;
+            for yaw in [0, 512, 1024, 1536] {
+                campaign
+                    .simulation_mut()
+                    .session
+                    .state
+                    .scratch
+                    .source_camera_pose = Some(sim_session::CameraPose {
+                    x: if horizontal {
+                        position.x.wrapping_sub(512)
+                    } else {
+                        position.x
+                    },
+                    y: if horizontal {
+                        position.y
+                    } else {
+                        position.y.wrapping_sub(512)
+                    },
+                    z: eye,
+                    yaw,
+                    pitch: 0,
+                    roll: 0,
+                });
+                let opened = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                    campaign.inspection(),
+                    campaign.simulation(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .unwrap();
+                {
+                    let planes = &mut campaign.simulation_mut().session.state.live.terrain.planes;
+                    for &cell in &cells {
+                        planes.ground_heights[cell] = closed_planes.ground_heights[cell];
+                        planes.secondary_heights[cell] = closed_planes.secondary_heights[cell];
+                        planes.angles[cell] = closed_planes.angles[cell];
+                    }
+                }
+                let closed = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                    campaign.inspection(),
+                    campaign.simulation(),
+                    &assets,
+                    campaign.generation(),
+                )
+                .unwrap();
+                {
+                    let planes = &mut campaign.simulation_mut().session.state.live.terrain.planes;
+                    for &cell in &cells {
+                        planes.ground_heights[cell] = opened_planes.ground_heights[cell];
+                        planes.secondary_heights[cell] = opened_planes.secondary_heights[cell];
+                        planes.angles[cell] = opened_planes.angles[cell];
+                    }
+                }
+                assert_ne!(opened.terrain_input_hash, closed.terrain_input_hash);
+                if opened.indices != closed.indices {
+                    visible = true;
+                    break;
+                }
+            }
+            assert!(
+                visible,
+                "real corridor geometry reaches visible Cave pixels in either orientation"
+            );
+        }
+        let (slot, position, _, _) = roots[0];
+        let old_phase = {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            let row = &mut live.economy.entities[usize::from(slot)];
+            let phase = row.phase;
+            let horizontal = row.source_word_2c() != 0;
+            row.set_life(0);
+            let x = usize::from(position.x >> 8);
+            let y = usize::from(position.y >> 8);
+            for coordinate in 0..256 {
+                let index = if horizontal {
+                    y * 256 + coordinate
+                } else {
+                    coordinate * 256 + x
+                };
+                live.terrain.planes.angles[index] &= !8;
+            }
+            phase
+        };
+        let _ = campaign.step(crate::PlayerCommand::default(), 0);
+        assert!(
+            !campaign
+                .simulation()
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
+        let live = &campaign.simulation().session.state.live;
+        let row = &live.economy.entities[usize::from(slot)];
+        assert!(
+            !row.active && row.class == 0,
+            "real scheduler immediately reclaims invalid bounds"
+        );
+        assert_eq!(
+            row.phase,
+            old_phase.wrapping_add(1),
+            "source epilogue follows immediate reclaim"
+        );
+        assert_eq!(row.record_bytes()[66], row.phase);
+        let tile = usize::from(position.y >> 8) * 256 + usize::from(position.x >> 8);
+        assert_eq!(
+            live.terrain.planes.entity_indices[tile],
+            live.economy.economy.map_chains.tile_head(tile as u16) as i16
         );
     }
 

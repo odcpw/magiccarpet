@@ -535,8 +535,23 @@ pub struct BehaviorRequirement {
 
 /// CF-03 supplies the compiled registry.  CF-02 requires it explicitly so a
 /// descriptor can never certify its own handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviorAvailability {
+    Enabled,
+    SourceDisabled,
+    Unknown,
+}
+
 pub trait CampaignCapabilityRegistry {
     fn contains(&self, key: &BehaviorKey) -> bool;
+
+    fn availability(&self, key: &BehaviorKey) -> BehaviorAvailability {
+        if self.contains(key) {
+            BehaviorAvailability::Enabled
+        } else {
+            BehaviorAvailability::Unknown
+        }
+    }
 }
 
 impl<F> CampaignCapabilityRegistry for F
@@ -546,6 +561,32 @@ where
     fn contains(&self, key: &BehaviorKey) -> bool {
         self(key)
     }
+}
+
+fn source_disabled_multipart_rows(key: &BehaviorKey, rows: &[AuthoredBehaviorRow]) -> bool {
+    if key.dispatch_site != 2
+        || !matches!(
+            key.selector,
+            BehaviorSelector::ClassAction {
+                class: 5,
+                action: 233 | 234
+            }
+        )
+    {
+        return false;
+    }
+    let mut matching = rows
+        .iter()
+        .filter(|row| {
+            row.initial_source_slot.is_some()
+                && key.selector
+                    == (BehaviorSelector::ClassAction {
+                        class: row.class,
+                        action: row.action,
+                    })
+        })
+        .peekable();
+    matching.peek().is_some() && matching.all(|row| row.model == 27)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2078,7 +2119,10 @@ impl CampaignDefinition {
                 "declared required behavior roots differ from the live reset selectors",
             );
         }
-        if presentation_recipe.terrain_graphics_flags != 0 {
+        // Bit 4 is consumed by the actual last-Castle loss path: only a rival
+        // loses its existing Castle spell holder. Other bits still require
+        // their own gameplay/presentation consumers before runtime admission.
+        if presentation_recipe.terrain_graphics_flags & !4 != 0 {
             return fail(
                 ValidationStage::BehaviorClosure,
                 format!(
@@ -2088,7 +2132,18 @@ impl CampaignDefinition {
             );
         }
         for requirement in &declared_requirements {
-            if !capabilities.contains(&requirement.key) {
+            let supported = match capabilities.availability(&requirement.key) {
+                BehaviorAvailability::Enabled => true,
+                // These disabled slots are advanced by the multipart root,
+                // not by the scheduler. Only initial MODEL27 parts qualify;
+                // reset adoption validates the complete, owned chains before
+                // a session is published.
+                BehaviorAvailability::SourceDisabled => {
+                    source_disabled_multipart_rows(&requirement.key, &declared_rows)
+                }
+                BehaviorAvailability::Unknown => false,
+            };
+            if !supported {
                 return fail(
                     ValidationStage::BehaviorClosure,
                     format!(
@@ -3640,6 +3695,7 @@ fn validate_feature_boundary(
     )? {
         1 => "mc2-feature-construction-inputs/v1",
         2 => "mc2-feature-construction-inputs/v2",
+        3 => "mc2-feature-construction-inputs/v3",
         _ => {
             return fail(
                 ValidationStage::TypedMembers,
@@ -5339,6 +5395,42 @@ mod tests {
             .expect_err("a Level 2 player layout cannot be substituted into Level 1");
         assert_eq!(error.stage, ValidationStage::TypedMembers);
         assert!(error.message.contains("players.bin header/extent changed"));
+    }
+
+    #[test]
+    fn source_disabled_rows_require_initial_multipart_ownership() {
+        let key = super::BehaviorKey {
+            dispatch_site: 2,
+            selector: super::BehaviorSelector::ClassAction {
+                class: 5,
+                action: 233,
+            },
+        };
+        let row = super::AuthoredBehaviorRow {
+            authored_record: 2,
+            initial_source_slot: Some(3),
+            class: 5,
+            action: 233,
+            model: 27,
+            subtype: 0,
+            initial_dispatch_sites: vec![1, 2, 3],
+        };
+        assert!(super::source_disabled_multipart_rows(
+            &key,
+            std::slice::from_ref(&row)
+        ));
+        let mut wrong_model = row.clone();
+        wrong_model.model = 26;
+        assert!(!super::source_disabled_multipart_rows(
+            &key,
+            &[row.clone(), wrong_model]
+        ));
+        let mut dormant = row.clone();
+        dormant.initial_source_slot = None;
+        assert!(!super::source_disabled_multipart_rows(&key, &[dormant]));
+        let mut wrong_site = key.clone();
+        wrong_site.dispatch_site = 1;
+        assert!(!super::source_disabled_multipart_rows(&wrong_site, &[row]));
     }
 
     #[test]

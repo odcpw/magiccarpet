@@ -61,7 +61,10 @@ pub(crate) fn apply(
             continue;
         }
 
-        let (overlap, closes_boss) = if candidate.model < 10 {
+        // Only the Castle projectile (model10) substitutes the player's
+        // Castle position and shifts. The other admitted models jump to
+        // LABEL_19 in sub_21F60 and use their own position.
+        let (overlap, closes_boss) = if candidate.model == 10 {
             let (target_position, target_half_x, target_half_y) = castle.unwrap_or((
                 candidate.position,
                 SOURCE_AXIS_HALF_EXTENT,
@@ -89,7 +92,7 @@ pub(crate) fn apply(
         } else if boss {
             let overlap = crate::distance_3d_wrapped(protected.position, candidate.position)
                 <= BOSS_PROJECTILE_RADIUS;
-            // Both the boss distance branch and its small-projectile axis
+            // Both the boss distance branch and its Castle-projectile axis
             // branch set v19; special-building protection ignores the flag.
             (overlap, overlap)
         } else {
@@ -322,4 +325,66 @@ fn hide_candidate(arena: &mut SourceArena, candidate: Projectile) -> Result<(), 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_castle_projectiles_use_the_boss_distance_boundary() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let live = &session.session.state.live;
+        for model in [2_u8, 4, 5, 22, 23, 25, 30] {
+            for distance in [3_072_u16, 3_073] {
+                let mut arena = live.economy.clone();
+                let mut terrain = live.terrain.clone();
+                let mut runtime = live.core.runtime.clone();
+                let mut spells = live.shared_spells.clone();
+                let boss = super::super::mc2::allocate_authored(
+                    &mut arena,
+                    &mut runtime,
+                    &mut terrain,
+                    &session.session.definition.presentation.particles,
+                    live.core.state.position,
+                    2,
+                )
+                .unwrap()
+                .unwrap();
+                let mut position = arena.entities[usize::from(boss)].position;
+                position.x = position.x.wrapping_add(distance);
+                // A diagnostic raw class9 row isolates sub_21F60's model
+                // selection; this does not claim an ordinary spell producer.
+                let projectile = arena
+                    .allocate_source_slot_with_terrain(&mut terrain)
+                    .unwrap();
+                let row = &mut arena.entities[usize::from(projectile)];
+                row.active = true;
+                row.class = 9;
+                row.model = model;
+                row.action = model;
+                row.record[67] = 9;
+                row.record[68] = model;
+                row.record[73] = model;
+                row.set_control_flags(0);
+                row.set_position(position);
+                crate::world::effects::sync_position(
+                    &mut arena,
+                    &mut terrain,
+                    projectile,
+                    position,
+                    true,
+                    false,
+                )
+                .unwrap();
+
+                apply(&mut arena, &mut terrain, boss, &mut spells, &[projectile]).unwrap();
+                assert_eq!(
+                    arena.entities[usize::from(projectile)].drawing_disabled(),
+                    distance == 3_072,
+                    "model{model} at distance{distance} uses its own position",
+                );
+            }
+        }
+    }
 }

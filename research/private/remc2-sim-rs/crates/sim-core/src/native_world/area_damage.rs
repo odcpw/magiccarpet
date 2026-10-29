@@ -334,6 +334,11 @@ pub(crate) fn source_life(
     {
         return Some(view.life);
     }
+    read_arena_life(arena, slot)
+}
+
+/// Immutable life projection shared by current-address target readers.
+pub(crate) fn read_arena_life(arena: &SourceArena, slot: u16) -> Option<i32> {
     let economy = &arena.economy;
     macro_rules! row_life {
         ($rows:expr) => {
@@ -380,6 +385,56 @@ pub(crate) fn apply_construction_kill(
     if target.class != 5 || target.source_id == source_id {
         return Ok(false);
     }
+    write_direct_creature_kill(arena, actors, slot, source_id, Some(source_id))
+}
+
+/// `KillAllCreatures_1B5F0` walks the existing source lists, including friendly
+/// creatures. It writes the killer word without replacing a damage attacker
+/// or consuming the pending mailbox. Model27 enters its real kill callback.
+pub(crate) fn apply_encounter_creature_kills(
+    arena: &mut SourceArena,
+    mut actors: Option<ActorDomains<'_>>,
+    lists: &EffectLists,
+    families: &[Vec<u16>; 29],
+    player: u16,
+) -> Result<(), String> {
+    if !lists.is_current(arena) {
+        return Ok(());
+    }
+    for (model, slots) in families.iter().enumerate() {
+        if model == 10 {
+            continue;
+        }
+        for &slot in slots {
+            if model == 27 {
+                let row = arena
+                    .entities
+                    .get_mut(usize::from(slot))
+                    .filter(|row| row.active && row.class == 5 && row.model == 27)
+                    .ok_or_else(|| format!("final encounter lost model27 source slot {slot}"))?;
+                row.set_source_action(221);
+                row.record[40..42].copy_from_slice(&player.to_le_bytes());
+            } else if !write_direct_creature_kill(
+                arena,
+                actors.as_mut().map(ActorDomains::reborrow),
+                slot,
+                player,
+                None,
+            )? {
+                return Err(format!("final encounter lost frozen creature slot {slot}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_direct_creature_kill(
+    arena: &mut SourceArena,
+    mut actors: Option<ActorDomains<'_>>,
+    slot: u16,
+    source_id: u16,
+    attacker: Option<u16>,
+) -> Result<bool, String> {
     if let Some(domains) = actors.as_mut() {
         if domains
             .goats
@@ -387,7 +442,7 @@ pub(crate) fn apply_construction_kill(
             .iter()
             .any(|row| row.active && row.entity_index == slot)
         {
-            domains.goats.apply_house_construction_kill(slot, source_id);
+            domains.goats.apply_source_kill(slot, source_id, attacker);
             let goat = domains
                 .goats
                 .goats()
@@ -405,12 +460,12 @@ pub(crate) fn apply_construction_kill(
         {
             domains
                 .villagers
-                .apply_house_construction_kill(slot, source_id);
+                .apply_source_kill(slot, source_id, attacker);
             return Ok(true);
         }
     }
     let economy = &mut arena.economy;
-    if economy.apply_settlement_construction_kill(slot, source_id) {
+    if economy.apply_settlement_source_kill(slot, source_id, attacker) {
         return Ok(true);
     }
     if let Some(row) = economy
@@ -420,7 +475,9 @@ pub(crate) fn apply_construction_kill(
     {
         row.life = -1;
         row.kill_credit_entity_index = source_id;
-        row.damage_attacker_entity_index = source_id;
+        if let Some(attacker) = attacker {
+            row.damage_attacker_entity_index = attacker;
+        }
         return Ok(true);
     }
     if let Some(row) = economy
@@ -428,7 +485,7 @@ pub(crate) fn apply_construction_kill(
         .iter_mut()
         .find(|row| row.active && row.source_entity_index == slot)
     {
-        row.apply_construction_kill(source_id);
+        row.apply_source_kill(source_id, attacker);
         return Ok(true);
     }
     if let Some(row) = economy
@@ -438,7 +495,9 @@ pub(crate) fn apply_construction_kill(
     {
         row.life = -1;
         row.word_0x24 = source_id;
-        row.word_0x26 = source_id;
+        if let Some(attacker) = attacker {
+            row.word_0x26 = attacker;
+        }
         return Ok(true);
     }
     if let Some(row) = economy
@@ -448,7 +507,9 @@ pub(crate) fn apply_construction_kill(
     {
         row.life = -1;
         row.word_0x24 = source_id;
-        row.word_0x26 = source_id;
+        if let Some(attacker) = attacker {
+            row.word_0x26 = attacker;
+        }
         return Ok(true);
     }
     if let Some(row) = economy
@@ -458,7 +519,9 @@ pub(crate) fn apply_construction_kill(
     {
         row.life = -1;
         row.word_0x24 = source_id;
-        row.word_0x26 = source_id;
+        if let Some(attacker) = attacker {
+            row.word_0x26 = attacker;
+        }
         return Ok(true);
     }
     if economy.live_arena_cursor_row(slot).is_some() {
@@ -472,8 +535,266 @@ pub(crate) fn apply_construction_kill(
         .filter(|row| row.active && row.class == 5)
         .ok_or_else(|| format!("construction burial lost admitted class5 slot {slot}"))?;
     row.set_life(-1);
-    row.set_damage_result_words(source_id, source_id);
+    let attacker = attacker.unwrap_or_else(|| row.word_26());
+    row.set_damage_result_words(source_id, attacker);
     Ok(true)
+}
+
+/// Read a current arena-owned damage actor without borrowing mutation
+/// services or retaining a previous occupant's raw projection.
+pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> {
+    if slot == 0 {
+        return None;
+    }
+    let economy = &arena.economy;
+    if let Some(row) = economy
+        .spheres
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(Actor {
+            source_id: row.source_entity_index,
+            class: 10,
+            model: 39,
+            position: row.position,
+            shape: shape(
+                row.collision_pitch,
+                row.collision_roll,
+                row.collision_yaw,
+                row.collision_fov,
+            ),
+            damage_mask: 3,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy
+        .castle_defenders
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(Actor {
+            source_id: row.id_entity_index,
+            class: 5,
+            model: 15,
+            position: row.position,
+            shape: shape(row.shift_rot_x, row.shift_rot_y, 125, row.fov),
+            damage_mask: row.byte_38,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy.castle_at(slot) {
+        return Some(Actor {
+            source_id: row.source_id_entity_index,
+            class: row.source_class,
+            model: row.source_model,
+            position: row.position,
+            shape: shape(
+                row.shift_pitch,
+                row.shift_roll,
+                row.shift_yaw,
+                row.shift_fov,
+            ),
+            damage_mask: row.source_byte_38,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy
+        .bee_creatures
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        // Particle 3 supplies array.yaw; SetEntityShiftRot replaces only
+        // pitch/roll/fov. Read the current carrier after either operation.
+        return Some(Actor {
+            source_id: row.entity_id,
+            class: row.source_class,
+            model: row.model,
+            position: row.position,
+            shape: shape(
+                row.shift_rot_x as i16,
+                row.shift_rot_x as i16,
+                row.collision_vertical_offset,
+                row.shift_rot_y as i16,
+            ),
+            damage_mask: 1,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy
+        .house_residents
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        // AddVilliger/AddBuilder/AddTrader set byte38=1. Their current
+        // domain does not mutate that constructor-owned mask.
+        return Some(Actor {
+            source_id: row.source_id,
+            class: 5,
+            model: row.model,
+            position: row.position,
+            shape: shape(
+                row.collision_half_width,
+                row.collision_half_width,
+                row.collision_vertical_offset,
+                row.collision_half_height,
+            ),
+            damage_mask: 1,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy
+        .authored_dragon_parts
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        let mask = economy
+            .authored_class5_runtime
+            .iter()
+            .find(|root| root.source_entity_index == row.parent_entity_index)
+            .map_or(1, |root| root.byte_0x38);
+        return Some(Actor {
+            source_id: row.entity_id,
+            class: 5,
+            model: row.model,
+            position: row.position,
+            shape: shape(
+                row.render_pitch,
+                row.render_roll,
+                row.render_yaw,
+                row.render_fov,
+            ),
+            damage_mask: mask,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy
+        .authored_class5_model3_children
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        let mask = economy
+            .authored_class5_runtime
+            .iter()
+            .find(|root| root.source_entity_index == row.parent_entity_index)
+            .map_or(1, |root| root.byte_0x38);
+        return Some(Actor {
+            // sub_4B6F0 qmemcpy copies the root's id into every body.
+            // The immutable constructor parent retains that id even if
+            // the root's numeric slot is later reclaimed and reused.
+            source_id: row.parent_entity_index,
+            class: 5,
+            model: row.model,
+            position: row.position,
+            shape: shape(
+                row.render_pitch,
+                row.render_roll,
+                row.render_yaw,
+                row.render_fov,
+            ),
+            damage_mask: mask,
+            control_flags: row.control_flags,
+        });
+    }
+    if let Some(row) = economy
+        .authored_class5
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        let runtime = economy
+            .authored_class5_runtime
+            .iter()
+            .find(|state| state.source_entity_index == slot);
+        let archer = economy
+            .authored_class5_archer
+            .iter()
+            .find(|state| state.source_entity_index == slot);
+        let firefly = economy
+            .authored_fireflies
+            .iter()
+            .find(|state| state.source_entity_index == slot);
+        let dragon = economy
+            .authored_dragons
+            .iter()
+            .find(|state| state.source_entity_index == slot);
+        let model3 = economy
+            .authored_class5_model3
+            .iter()
+            .find(|state| state.source_entity_index == slot);
+        let flags = archer
+            .map(|state| state.control_flags)
+            .or_else(|| firefly.map(|state| state.control_flags))
+            .or_else(|| dragon.map(|state| state.control_flags))
+            .or_else(|| model3.map(|state| state.control_flags))
+            .or_else(|| match row.model {
+                // These two current adapters keep NewEvent's fixed
+                // collision bit: model9 never writes flags, and Trader
+                // explicitly starts each canonical callback with 8.
+                // Do not admit another family through a generic default.
+                9 | 14 => Some(8),
+                _ => None,
+            })?;
+        let dimensions = if let Some(state) = dragon {
+            shape(
+                state.render_pitch,
+                state.render_roll,
+                state.render_yaw,
+                state.render_fov,
+            )
+        } else if let Some(state) = model3 {
+            shape(
+                state.render_pitch,
+                state.render_roll,
+                state.render_yaw,
+                state.render_fov,
+            )
+        } else {
+            let offset = if row.model == 4 {
+                super::level2_class5::archer::ARCHER_COLLISION_VERTICAL_OFFSET
+            } else {
+                0
+            };
+            shape(row.shift_rot_x, row.shift_rot_x, offset, row.shift_rot_y)
+        };
+        return Some(Actor {
+            source_id: archer.map_or(slot, |state| state.entity_id),
+            class: 5,
+            model: row.model,
+            position: row.position,
+            shape: dimensions,
+            damage_mask: archer
+                .map(|state| state.byte_0x38)
+                .or_else(|| runtime.map(|state| state.byte_0x38))
+                .unwrap_or(1),
+            control_flags: flags
+                | if row.drawing_enabled {
+                    0
+                } else {
+                    ENTITY_DRAW_DISABLED_BIT
+                },
+        });
+    }
+    // A dynamic occupant cannot expose a previous raw occupant's mailbox.
+    if economy.live_arena_cursor_row(slot).is_some() {
+        return None;
+    }
+    let row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active)?;
+    Some(Actor {
+        source_id: row.source_id,
+        class: row.class,
+        model: row.model,
+        position: row.position,
+        shape: shape(
+            row.array_pitch(),
+            row.array_roll(),
+            row.array_yaw(),
+            row.array_fov(),
+        ),
+        damage_mask: row.source_byte_38(),
+        control_flags: row.control_flags,
+    })
 }
 
 struct ArenaTargets<'arena, 'actors> {
@@ -488,7 +809,175 @@ struct ArenaTargets<'arena, 'actors> {
 pub(crate) struct EffectLists {
     class3: Vec<u16>,
     model45: Vec<u16>,
+    mana_chain: Vec<u16>,
     epoch: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EncounterManaAction {
+    Approach(u8),
+    Refresh,
+}
+
+fn mutate_encounter_mana(
+    action: EncounterManaAction,
+    flags: &mut u32,
+    life: &mut i32,
+    max_life: &mut i32,
+) -> Result<(), String> {
+    match action {
+        EncounterManaAction::Approach(1) => *flags = (*flags | 0x0100_0000) & !0x0080_0000,
+        EncounterManaAction::Approach(2) => *flags = (*flags | 0x8000_0000) & !0x0001_0000,
+        EncounterManaAction::Approach(3) => *flags |= ENTITY_DRAW_DISABLED_BIT,
+        EncounterManaAction::Approach(mode) => {
+            return Err(format!("unknown encounter mana-chain approach mode {mode}"));
+        }
+        EncounterManaAction::Refresh => {
+            *flags |= 0x2000;
+            *max_life = 140;
+            *life = 140;
+        }
+    }
+    Ok(())
+}
+
+/// Consume sub_21490/phase14 writes at their source call site, before any
+/// subsequent NewEvent can clear the frozen dword38523 head.
+pub(crate) fn apply_encounter_world_action(
+    arena: &mut SourceArena,
+    lists: &EffectLists,
+    action: EncounterManaAction,
+    particles: &[super::ParticleParameter],
+) -> Result<(), String> {
+    if !lists.is_current(arena) {
+        return Ok(());
+    }
+    for &slot in &lists.mana_chain {
+        match arena
+            .economy
+            .live_arena_cursor_row(slot)
+            .map(|row| row.kind)
+        {
+            Some(super::Level2DynamicArenaKind::ManaSphere) => {
+                let row = arena
+                    .economy
+                    .spheres
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                    .ok_or_else(|| format!("encounter mana sphere {slot} lost its carrier"))?;
+                mutate_encounter_mana(
+                    action,
+                    &mut row.control_flags,
+                    &mut row.life,
+                    &mut row.max_life,
+                )?;
+            }
+            Some(super::Level2DynamicArenaKind::PlayerDeathMarker) => {
+                let row = arena
+                    .economy
+                    .player_death_markers
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                    .ok_or_else(|| format!("encounter death marker {slot} lost its carrier"))?;
+                mutate_encounter_mana(
+                    action,
+                    &mut row.control_flags,
+                    &mut row.life,
+                    &mut row.max_life,
+                )?;
+                publish_player_death_marker(arena, slot, particles)?;
+            }
+            Some(kind) => {
+                return Err(format!(
+                    "encounter mana address {slot} was replaced by unsupported current {kind:?}"
+                ));
+            }
+            None => {
+                // Frozen source pointers read the current address, including
+                // retained freed rows; there is no active/class/generation gate.
+                let row = arena
+                    .entities
+                    .get_mut(usize::from(slot))
+                    .ok_or_else(|| format!("encounter mana address {slot} is outside the arena"))?;
+                let (mut flags, mut life, mut max_life) =
+                    (row.control_flags, row.life, row.max_life);
+                mutate_encounter_mana(action, &mut flags, &mut life, &mut max_life)?;
+                row.set_control_flags(flags);
+                row.set_life(life);
+                row.set_max_life(max_life);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Preserve the current typed marker's fixed row for pointer consumers after
+/// reclaim. The original particle binding supplies its actual collision axes.
+pub(crate) fn publish_player_death_marker(
+    arena: &mut SourceArena,
+    slot: u16,
+    particles: &[super::ParticleParameter],
+) -> Result<(), String> {
+    let marker = arena
+        .economy
+        .player_death_markers
+        .iter()
+        .find(|row| row.source_entity_index == slot)
+        .copied()
+        .ok_or_else(|| format!("source player death marker {slot} is absent"))?;
+    let particle = *particles
+        .get(usize::from(marker.particle_parameter_index))
+        .ok_or_else(|| format!("player death marker {slot} has no retained particle"))?;
+    let mut row =
+        crate::world::terrain::cave_features::new_event(slot, marker.entity_rng, marker.position);
+    row.class = 10;
+    row.model = 40;
+    row.set_source_action(42);
+    row.set_phase(marker.dispatch_phase);
+    row.set_source_dword_10(marker.constructor_phase as i32);
+    row.set_max_life(marker.max_life);
+    row.set_life(marker.life);
+    row.set_control_flags(marker.control_flags);
+    row.record[60] = marker.byte_38;
+    crate::world::terrain::cave_features::bind_particle(
+        &mut row,
+        marker.particle_parameter_index,
+        particle,
+    )?;
+    row.set_map_links(
+        arena.economy.map_chains.old_map_entity(slot),
+        arena.economy.map_chains.next_entity(slot),
+    );
+    arena.entities[usize::from(slot)] = row;
+    Ok(())
+}
+
+/// Called only at the following source boundary, after the hiding callback's
+/// own epilogue. Unlink the actual map row before returning its slot to NewEvent.
+pub(crate) fn retire_hidden_player_death_markers(
+    arena: &mut SourceArena,
+    terrain: &mut super::SessionTerrain,
+) -> Result<(), String> {
+    let hidden = arena
+        .economy
+        .player_death_markers
+        .iter()
+        .filter(|row| row.active && row.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
+        .map(|row| (row.source_entity_index, row.position))
+        .collect::<Vec<_>>();
+    for (slot, position) in hidden {
+        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
+        arena.entities[usize::from(slot)].reclaim_source_row();
+        if let Some(marker) = arena
+            .economy
+            .player_death_markers
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+        {
+            marker.active = false;
+        }
+    }
+    Ok(())
 }
 
 impl EffectLists {
@@ -543,6 +1032,43 @@ pub(crate) fn capture_effect_lists(
     EffectLists {
         class3: targets.class3_slots(),
         model45,
+        mana_chain: {
+            let mut slots = targets
+                .arena
+                .entities
+                .iter()
+                .filter(|row| {
+                    row.active
+                        && row.class == 10
+                        && matches!(row.model, 39 | 40 | 57)
+                        && targets
+                            .arena
+                            .economy
+                            .live_arena_cursor_row(row.index)
+                            .is_none()
+                })
+                .map(|row| row.index)
+                .collect::<BTreeSet<_>>();
+            slots.extend(
+                targets
+                    .arena
+                    .economy
+                    .spheres
+                    .iter()
+                    .filter(|row| row.active)
+                    .map(|row| row.source_entity_index),
+            );
+            slots.extend(
+                targets
+                    .arena
+                    .economy
+                    .player_death_markers
+                    .iter()
+                    .filter(|row| row.active)
+                    .map(|row| row.source_entity_index),
+            );
+            slots.into_iter().collect()
+        },
         epoch: targets.arena.economy.replacement_list_epoch,
     }
 }
@@ -741,262 +1267,13 @@ impl AreaWorld for ArenaTargets<'_, '_> {
                 control_flags: view.control_flags,
             });
         }
-        if let Some(row) = economy
-            .spheres
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
+        let mut actor = read_arena_actor(self.arena, slot)?;
+        if economy.live_arena_cursor_row(slot).is_none()
+            && let Some((_, position)) = self.player.filter(|(index, _)| *index == slot)
         {
-            return Some(Actor {
-                source_id: row.source_entity_index,
-                class: 10,
-                model: 39,
-                position: row.position,
-                shape: shape(
-                    row.collision_pitch,
-                    row.collision_roll,
-                    row.collision_yaw,
-                    row.collision_fov,
-                ),
-                damage_mask: 3,
-                control_flags: row.control_flags,
-            });
+            actor.position = position;
         }
-        if let Some(row) = economy
-            .castle_defenders
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
-        {
-            return Some(Actor {
-                source_id: row.id_entity_index,
-                class: 5,
-                model: 15,
-                position: row.position,
-                shape: shape(row.shift_rot_x, row.shift_rot_y, 125, row.fov),
-                damage_mask: row.byte_38,
-                control_flags: row.control_flags,
-            });
-        }
-        if let Some(row) = economy.castle_at(slot) {
-            return Some(Actor {
-                source_id: row.source_id_entity_index,
-                class: row.source_class,
-                model: row.source_model,
-                position: row.position,
-                shape: shape(
-                    row.shift_pitch,
-                    row.shift_roll,
-                    row.shift_yaw,
-                    row.shift_fov,
-                ),
-                damage_mask: row.source_byte_38,
-                control_flags: row.control_flags,
-            });
-        }
-        if let Some(row) = economy
-            .bee_creatures
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
-        {
-            // Particle 3 supplies array.yaw; SetEntityShiftRot replaces only
-            // pitch/roll/fov. Read the current carrier after either operation.
-            return Some(Actor {
-                source_id: row.entity_id,
-                class: row.source_class,
-                model: row.model,
-                position: row.position,
-                shape: shape(
-                    row.shift_rot_x as i16,
-                    row.shift_rot_x as i16,
-                    row.collision_vertical_offset,
-                    row.shift_rot_y as i16,
-                ),
-                damage_mask: 1,
-                control_flags: row.control_flags,
-            });
-        }
-        if let Some(row) = economy
-            .house_residents
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
-        {
-            // AddVilliger/AddBuilder/AddTrader set byte38=1. Their current
-            // domain does not mutate that constructor-owned mask.
-            return Some(Actor {
-                source_id: row.source_id,
-                class: 5,
-                model: row.model,
-                position: row.position,
-                shape: shape(
-                    row.collision_half_width,
-                    row.collision_half_width,
-                    row.collision_vertical_offset,
-                    row.collision_half_height,
-                ),
-                damage_mask: 1,
-                control_flags: row.control_flags,
-            });
-        }
-        if let Some(row) = economy
-            .authored_dragon_parts
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
-        {
-            let root = economy
-                .authored_dragons
-                .iter()
-                .find(|root| root.source_entity_index == row.parent_entity_index);
-            let mask = economy
-                .authored_class5_runtime
-                .iter()
-                .find(|root| root.source_entity_index == row.parent_entity_index)
-                .map_or(1, |root| root.byte_0x38);
-            return Some(Actor {
-                source_id: row.entity_id,
-                class: 5,
-                model: row.model,
-                position: row.position,
-                shape: shape(
-                    row.render_pitch,
-                    row.render_roll,
-                    row.render_yaw,
-                    row.render_fov,
-                ),
-                damage_mask: mask,
-                control_flags: root.map_or(8, |root| root.control_flags),
-            });
-        }
-        if let Some(row) = economy
-            .authored_class5_model3_children
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
-        {
-            let mask = economy
-                .authored_class5_runtime
-                .iter()
-                .find(|root| root.source_entity_index == row.parent_entity_index)
-                .map_or(1, |root| root.byte_0x38);
-            return Some(Actor {
-                // sub_4B6F0 qmemcpy copies the root's id into every body.
-                // The immutable constructor parent retains that id even if
-                // the root's numeric slot is later reclaimed and reused.
-                source_id: row.parent_entity_index,
-                class: 5,
-                model: row.model,
-                position: row.position,
-                shape: shape(
-                    row.render_pitch,
-                    row.render_roll,
-                    row.render_yaw,
-                    row.render_fov,
-                ),
-                damage_mask: mask,
-                control_flags: row.control_flags,
-            });
-        }
-        if let Some(row) = economy
-            .authored_class5
-            .iter()
-            .find(|row| row.active && row.source_entity_index == slot)
-        {
-            let runtime = economy
-                .authored_class5_runtime
-                .iter()
-                .find(|state| state.source_entity_index == slot);
-            let archer = economy
-                .authored_class5_archer
-                .iter()
-                .find(|state| state.source_entity_index == slot);
-            let firefly = economy
-                .authored_fireflies
-                .iter()
-                .find(|state| state.source_entity_index == slot);
-            let dragon = economy
-                .authored_dragons
-                .iter()
-                .find(|state| state.source_entity_index == slot);
-            let model3 = economy
-                .authored_class5_model3
-                .iter()
-                .find(|state| state.source_entity_index == slot);
-            let flags = archer
-                .map(|state| state.control_flags)
-                .or_else(|| firefly.map(|state| state.control_flags))
-                .or_else(|| dragon.map(|state| state.control_flags))
-                .or_else(|| model3.map(|state| state.control_flags))
-                .or_else(|| match row.model {
-                    // These two current adapters keep NewEvent's fixed
-                    // collision bit: model9 never writes flags, and Trader
-                    // explicitly starts each canonical callback with 8.
-                    // Do not admit another family through a generic default.
-                    9 | 14 => Some(8),
-                    _ => None,
-                })?;
-            let dimensions = if let Some(state) = dragon {
-                shape(
-                    state.render_pitch,
-                    state.render_roll,
-                    state.render_yaw,
-                    state.render_fov,
-                )
-            } else if let Some(state) = model3 {
-                shape(
-                    state.render_pitch,
-                    state.render_roll,
-                    state.render_yaw,
-                    state.render_fov,
-                )
-            } else {
-                let offset = if row.model == 4 {
-                    super::level2_class5::archer::ARCHER_COLLISION_VERTICAL_OFFSET
-                } else {
-                    0
-                };
-                shape(row.shift_rot_x, row.shift_rot_x, offset, row.shift_rot_y)
-            };
-            return Some(Actor {
-                source_id: archer.map_or(slot, |state| state.entity_id),
-                class: 5,
-                model: row.model,
-                position: row.position,
-                shape: dimensions,
-                damage_mask: archer
-                    .map(|state| state.byte_0x38)
-                    .or_else(|| runtime.map(|state| state.byte_0x38))
-                    .unwrap_or(1),
-                control_flags: flags
-                    | if row.drawing_enabled {
-                        0
-                    } else {
-                        ENTITY_DRAW_DISABLED_BIT
-                    },
-            });
-        }
-        // A dynamic occupant cannot expose a previous raw occupant's mailbox.
-        if economy.live_arena_cursor_row(slot).is_some() {
-            return None;
-        }
-        let row = self
-            .arena
-            .entities
-            .get(usize::from(slot))
-            .filter(|row| row.active)?;
-        Some(Actor {
-            source_id: row.source_id,
-            class: row.class,
-            model: row.model,
-            position: self
-                .player
-                .filter(|(index, _)| *index == slot)
-                .map_or(row.position, |(_, position)| position),
-            shape: shape(
-                row.array_pitch(),
-                row.array_roll(),
-                row.array_yaw(),
-                row.array_fov(),
-            ),
-            damage_mask: row.source_byte_38(),
-            control_flags: row.control_flags,
-        })
+        Some(actor)
     }
 
     fn mark_model2(&mut self, slot: u16) -> Result<(), String> {
@@ -1211,6 +1488,311 @@ impl ArenaTargets<'_, '_> {
 mod tests {
     use super::*;
     use crate::world::terrain::disasters::{RingProfile, mc2};
+
+    #[test]
+    fn encounter_kill_uses_frozen_creatures_and_preserves_attackers_and_mailboxes() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-1pb-16-level2-full-build-v2");
+        let campaign = crate::campaign::CampaignSession::open(
+            package,
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .unwrap();
+        let live = &campaign.simulation().session.state.live;
+        let mut arena = live.economy.clone();
+        let mut runtime = live.core.runtime.clone();
+        let mut terrain = live.terrain.clone();
+        let mut goats = live.goats.clone();
+        let mut ordinary = live.ordinary.clone();
+        let particles = &campaign
+            .simulation()
+            .session
+            .definition
+            .presentation
+            .particles;
+        let player = live.core.state.entity_index;
+        let player_before = arena.entities[usize::from(player)].clone();
+        let position = live.core.state.position;
+        let bee = super::super::creatures::bee::mc2::allocate_authored(
+            &mut arena,
+            &mut terrain,
+            2,
+            position,
+            1_000,
+        )
+        .unwrap()
+        .source_entity_index;
+        {
+            let row = arena
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|row| row.source_entity_index == bee)
+                .unwrap();
+            row.entity_id = player; // KillAll also kills friendly source ids.
+            row.damage_attacker_entity_index = 777;
+            row.pending_damage = 321;
+            row.pending_attacker_entity_index = 778;
+        }
+        let raw = super::super::creatures::creature_25::mc2::allocate_authored(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            position,
+            2_000,
+            None,
+            25,
+        )
+        .unwrap()
+        .unwrap();
+        arena.entities[usize::from(raw)].set_source_roll(123);
+        arena.entities[usize::from(raw)].set_damage_result_words(1, 777);
+        arena.entities[usize::from(raw)].record[98..102].copy_from_slice(&321_i32.to_le_bytes());
+        arena.entities[usize::from(raw)].record[102..104].copy_from_slice(&778_u16.to_le_bytes());
+        let chain = super::super::creatures::creature_27::mc2::allocate_authored(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            position,
+            27,
+        )
+        .unwrap()
+        .unwrap();
+        let root = chain.root.source_slot;
+        let root_life = arena.entities[usize::from(root)].life;
+        let body = chain.bodies[0][0].source_slot;
+        let families = arena.rebuilt_class5_model_slots();
+        let lists = capture_effect_lists(
+            &mut arena,
+            Some(ActorDomains::new(&mut goats, &mut ordinary)),
+        );
+        let later = super::super::creatures::bee::mc2::allocate_authored(
+            &mut arena,
+            &mut terrain,
+            3,
+            position,
+            1_000,
+        )
+        .unwrap()
+        .source_entity_index;
+        assert!(lists.is_current(&arena));
+        assert!(!families[2].contains(&later));
+
+        let mut invalidated = arena.clone();
+        invalidated.economy.replacement_list_epoch =
+            invalidated.economy.replacement_list_epoch.wrapping_add(1);
+        apply_encounter_creature_kills(&mut invalidated, None, &lists, &families, player).unwrap();
+        assert_eq!(invalidated.entities[usize::from(raw)].life, 2_000);
+
+        apply_encounter_creature_kills(
+            &mut arena,
+            Some(ActorDomains::new(&mut goats, &mut ordinary)),
+            &lists,
+            &families,
+            player,
+        )
+        .unwrap();
+        let bee = arena
+            .economy
+            .bee_creatures
+            .iter()
+            .find(|row| row.source_entity_index == bee)
+            .unwrap();
+        assert_eq!(
+            (
+                bee.life,
+                bee.kill_credit_entity_index,
+                bee.damage_attacker_entity_index
+            ),
+            (-1, player, 777)
+        );
+        assert_eq!(
+            (bee.pending_damage, bee.pending_attacker_entity_index),
+            (321, 778)
+        );
+        let raw = &arena.entities[usize::from(raw)];
+        assert_eq!(
+            (raw.life, raw.word_24(), raw.word_26(), raw.source_roll()),
+            (-1, player, 777, 123)
+        );
+        assert_eq!(&raw.record[98..104], &[65, 1, 0, 0, 10, 3]);
+        assert_eq!(
+            (
+                arena.entities[usize::from(root)].action,
+                arena.entities[usize::from(root)].life
+            ),
+            (221, root_life)
+        );
+        assert!(
+            chain
+                .heads
+                .iter()
+                .all(|head| arena.entities[usize::from(head.source_slot)].action == 221)
+        );
+        assert_eq!(arena.entities[usize::from(body)].action, 234);
+        assert_eq!(arena.entities[usize::from(player)], player_before);
+        assert_eq!(
+            arena
+                .economy
+                .bee_creatures
+                .iter()
+                .find(|row| row.source_entity_index == later)
+                .unwrap()
+                .life,
+            1_000
+        );
+    }
+
+    #[test]
+    fn encounter_mana_chain_mutates_real_carriers_and_reclaims_hidden_markers() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let player = session.state.entity_index;
+        let player_before = arena.entities[usize::from(player)].clone();
+        let sphere = arena
+            .economy
+            .spawn_mana_sphere_from_death(
+                999,
+                session.state.position,
+                0,
+                0x1234,
+                500,
+                player,
+                &terrain,
+            )
+            .unwrap() as u16;
+        let marker = arena
+            .economy
+            .allocate_player_death_marker(player, session.state.position)
+            .unwrap()
+            .source_entity_index;
+        let lists = capture_effect_lists(&mut arena, None);
+        let later = arena
+            .economy
+            .allocate_player_death_marker(player, session.state.position)
+            .unwrap()
+            .source_entity_index;
+
+        let before_flags = arena.economy.reset_hash();
+        apply_encounter_world_action(
+            &mut arena,
+            &lists,
+            EncounterManaAction::Approach(1),
+            particles,
+        )
+        .unwrap();
+        assert_ne!(arena.economy.reset_hash(), before_flags);
+        for slot in [sphere, marker] {
+            let context = super::super::source_target::Context {
+                particles: Some(particles),
+                ..Default::default()
+            };
+            let current = super::super::source_target::read(&arena, context, slot)
+                .unwrap()
+                .unwrap();
+            assert_ne!(current.control_flags & 0x0100_0000, 0);
+            assert_eq!(current.control_flags & 0x0080_0000, 0);
+        }
+        apply_encounter_world_action(
+            &mut arena,
+            &lists,
+            EncounterManaAction::Approach(2),
+            particles,
+        )
+        .unwrap();
+        apply_encounter_world_action(&mut arena, &lists, EncounterManaAction::Refresh, particles)
+            .unwrap();
+        assert_eq!(
+            arena
+                .economy
+                .spheres
+                .iter()
+                .find(|row| row.source_entity_index == sphere)
+                .map(|row| (row.life, row.max_life)),
+            Some((140, 140))
+        );
+        let current = arena
+            .economy
+            .player_death_markers
+            .iter()
+            .find(|row| row.source_entity_index == marker)
+            .unwrap();
+        assert_eq!((current.life, current.max_life), (140, 140));
+        assert_eq!(current.control_flags & 0x8000_2000, 0x8000_2000);
+        assert_eq!(arena.entities[usize::from(player)], player_before);
+        assert_eq!(
+            arena
+                .economy
+                .player_death_markers
+                .iter()
+                .find(|row| row.source_entity_index == later)
+                .unwrap()
+                .control_flags,
+            12
+        );
+
+        // A source fallback clears every list head. An otherwise identical
+        // callback must leave the same canonical carriers alone afterward.
+        let mut invalidated = arena.clone();
+        invalidated.economy.replacement_list_epoch =
+            invalidated.economy.replacement_list_epoch.wrapping_add(1);
+        apply_encounter_world_action(
+            &mut invalidated,
+            &lists,
+            EncounterManaAction::Approach(3),
+            particles,
+        )
+        .unwrap();
+        assert_eq!(
+            invalidated
+                .economy
+                .player_death_markers
+                .iter()
+                .find(|row| row.source_entity_index == marker)
+                .unwrap()
+                .control_flags
+                & ENTITY_DRAW_DISABLED_BIT,
+            0
+        );
+
+        apply_encounter_world_action(
+            &mut arena,
+            &lists,
+            EncounterManaAction::Approach(3),
+            particles,
+        )
+        .unwrap();
+        assert!(
+            arena
+                .economy
+                .player_death_markers
+                .iter()
+                .any(|row| row.source_entity_index == marker && row.active)
+        );
+        assert!(arena.economy.map_chains.is_linked(marker));
+        retire_hidden_player_death_markers(&mut arena, &mut terrain).unwrap();
+        arena.economy.reclaim_inactive_slots_at_source_boundary();
+        assert!(!arena.economy.map_chains.is_linked(marker));
+        assert!(arena.economy.free_source_slots().contains(&marker));
+        assert!(
+            !arena
+                .economy
+                .player_death_markers
+                .iter()
+                .any(|row| row.source_entity_index == marker)
+        );
+        let retained = &arena.entities[usize::from(marker)];
+        assert!(!retained.active);
+        assert_eq!(
+            (retained.class, retained.life, retained.max_life),
+            (0, 140, 140)
+        );
+        assert_eq!(retained.position, session.state.position);
+    }
 
     #[test]
     fn gravity_bounty_preserves_full_signed_mailbox_and_typed_authority() {

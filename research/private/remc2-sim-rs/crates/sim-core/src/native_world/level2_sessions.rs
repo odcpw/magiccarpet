@@ -35,6 +35,43 @@ mod castle_revival_tests {
     }
 
     #[test]
+    fn local_directional_feedback_preserves_lane_and_upkeep_semantics() {
+        let (mut shared, _) = fixture();
+        assert_eq!(shared.player_hit_effect_cooldown, 0);
+        let baseline_hash = shared.reset_hash();
+        let mut different = shared.clone();
+        different.player_hit_effect_cooldown = 1;
+        assert_ne!(baseline_hash, different.reset_hash());
+
+        shared.set_player_hit_frame_time(0);
+        shared.player_life_regen_cooldown = 0;
+        let mut actor = shared.player_entity.clone();
+        actor.record[58..60].copy_from_slice(&0_i16.to_le_bytes());
+        assert!(shared.apply_directional_feedback(&mut actor, false, true, false));
+        assert_eq!(actor.record[58..60], 100_i16.to_le_bytes());
+        assert_eq!(shared.player_entity.record[58..60], actor.record[58..60]);
+        assert_eq!(shared.local_player.hit_frame_time, 0);
+        assert_eq!(shared.player_life_regen_cooldown, 0);
+        assert_eq!(shared.player_hit_effect_cooldown, 0);
+
+        assert!(shared.apply_directional_feedback(&mut actor, false, true, true));
+        assert_eq!(shared.local_player.hit_frame_time, 4);
+        assert_eq!(shared.player_life_regen_cooldown, 16);
+        assert_eq!(shared.player_hit_effect_cooldown, 64);
+        assert!(shared.step_local_player_unboosted_upkeep(0, false, None));
+        assert_eq!(shared.player_life_regen_cooldown, 15);
+        assert_eq!(shared.player_hit_effect_cooldown, 63);
+
+        let mut stale = actor.clone();
+        stale.index = stale.index.wrapping_add(1);
+        assert!(!shared.apply_directional_feedback(&mut stale, true, false, false));
+        assert_eq!(shared.player_hit_effect_cooldown, 63);
+        dead_actor(&mut shared);
+        assert!(!shared.step_local_player_unboosted_upkeep(0, false, None));
+        assert_eq!(shared.player_hit_effect_cooldown, 63);
+    }
+
+    #[test]
     fn castle_revival_restores_same_actor_and_rebuilds_holders_without_resetting_progress() {
         let (mut shared, mut economy) = fixture();
         // This raw reset package has no bound starting Fireball. Produce its
@@ -230,7 +267,7 @@ mod authored_spell_family_tests {
     use super::*;
 
     #[test]
-    fn authored_army_mine_and_alliance_rows_use_source_constructors_and_acquisition() {
+    fn authored_starting_army_mine_and_alliance_rows_use_source_constructors_and_acquisition() {
         let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
             .expect("qualified source player/arena package");
         let mut shared = Level2SharedSpellResetSession::from_campaign_parts(
@@ -263,7 +300,7 @@ mod authored_spell_family_tests {
         };
         let particles = vec![particle; 78];
 
-        for family in [19_u8, 23, 24] {
+        for family in [0_u8, 1, 19, 23, 24] {
             let authored_index = 50_000 + u16::from(family);
             let feature = crate::level1_mission::AuthoredFeature {
                 index: authored_index,
@@ -278,6 +315,26 @@ mod authored_spell_family_tests {
                 parameter_2: 0,
                 parameter_3: 0,
             };
+            if family == 0 {
+                let before_shared = shared.clone();
+                let before_economy = economy.clone();
+                let invalid = AuthoredFeature {
+                    subtype: 26,
+                    ..feature
+                };
+                assert!(
+                    shared
+                        .materialize_authored_spell_pickup(
+                            &mut economy,
+                            invalid,
+                            &terrain,
+                            &particles,
+                        )
+                        .is_err()
+                );
+                assert_eq!(shared, before_shared);
+                assert_eq!(economy, before_economy);
+            }
             let slot = shared
                 .materialize_authored_spell_pickup(&mut economy, feature, &terrain, &particles)
                 .unwrap()
@@ -294,6 +351,14 @@ mod authored_spell_family_tests {
             assert_eq!(pickup.subspell_index, profile.subspell_index);
             assert_eq!(pickup.activation_value, profile.word_0x30);
             assert_eq!(
+                pickup.control_flags, 4,
+                "AddSpellXX clears bit 8 and AddEventToMap sets map membership bit 4"
+            );
+            assert!(
+                !pickup.drawing_disabled(),
+                "an ordinary pickup remains visible until acquisition"
+            );
+            assert_eq!(
                 (pickup.mana, pickup.max_mana, pickup.mana_regen),
                 (profile.mana, profile.max_mana, profile.mana_regen)
             );
@@ -305,6 +370,74 @@ mod authored_spell_family_tests {
             assert_eq!(acquisition.source_slot, slot);
             assert_eq!(acquisition.source_action, family * 3 + 1);
             assert_eq!(acquisition.subspell_index, profile.subspell_index);
+            let replacement = economy
+                .allocate_spell_replacement(family, slot, pickup.position)
+                .expect("AddSpellXX persistent replacement uses the ordinary allocator");
+            shared
+                .materialize_spell_replacement_pickup(replacement)
+                .expect("the real family constructor supplies its retained prototype");
+            let replacement_row = shared.pickup(replacement.source_entity_index).unwrap();
+            assert_eq!(replacement_row.action, family * 3 + 2);
+            assert_eq!(replacement_row.control_flags, 4);
+            assert!(
+                !replacement_row.drawing_disabled(),
+                "the replacement remains collectible"
+            );
+            if family == 0 {
+                // Controlled missing-inventory setup. Collection still runs
+                // the real source collision and acquisition transition.
+                shared.set_enabled_spell_holder_index(0, 0);
+                let state = shared
+                    .acquisitions
+                    .iter_mut()
+                    .find(|state| state.family == 0)
+                    .unwrap();
+                state.holder_relation = 0;
+                let position = shared.pickup(slot).unwrap().position;
+                shared
+                    .step_level2_spell_acquisition_with_economy(
+                        &mut economy,
+                        0,
+                        shared.player_entity.index,
+                        position,
+                        &terrain,
+                    )
+                    .unwrap()
+                    .expect("visible source Fireball is acquired through its ordinary callback");
+                assert_eq!(shared.local_player.enabled_spell_holders[0], slot);
+                assert_eq!(shared.pickup(slot).unwrap().action, 0);
+                let phase = shared.pickup(slot).unwrap().phase;
+                shared
+                    .finish_dynamic_starting_spell_holder(&mut economy, slot)
+                    .unwrap();
+                assert_eq!(shared.pickup(slot).unwrap().phase, phase.wrapping_add(1));
+                assert_eq!(
+                    economy
+                        .spell_pickups
+                        .iter()
+                        .find(|row| row.source_entity_index == slot)
+                        .unwrap()
+                        .phase,
+                    phase.wrapping_add(1)
+                );
+                let before = shared.clone();
+                let mut retired = economy.clone();
+                retired
+                    .spell_pickups
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot)
+                    .unwrap()
+                    .active = false;
+                assert!(
+                    shared
+                        .finish_dynamic_starting_spell_holder(&mut retired, slot)
+                        .is_err()
+                );
+                assert_eq!(
+                    shared, before,
+                    "a retired typed carrier cannot mutate the shared holder"
+                );
+            }
         }
     }
 }
@@ -706,6 +839,7 @@ impl Level2SharedSpellResetSession {
             player_mana: player_entity.mana,
             player_life_regen: 0,
             player_life_regen_cooldown: 0,
+            player_hit_effect_cooldown: 0,
             player_entity: player_entity.clone(),
             players: players.to_vec().into_boxed_slice(),
             player_entities,
@@ -918,6 +1052,7 @@ impl Level2SharedSpellResetSession {
 
             player_life_regen: 0,
             player_life_regen_cooldown: 0,
+            player_hit_effect_cooldown: 0,
 
             player_entity: player_entity.clone(),
 
@@ -2136,6 +2271,8 @@ impl Level2SharedSpellResetSession {
             return Ok(Some(*source_slot));
         }
         let family = match authored.subtype {
+            0 => 0,
+            1 => 1,
             2 => 2,
             3 => 3,
             4 => 4,
@@ -2321,6 +2458,56 @@ impl Level2SharedSpellResetSession {
         state.mana = entity.mana;
         state.return_side = entity.source_word_4a();
         Ok(Some(source.source_entity_index))
+    }
+
+    /// Publish the source epilogue of an acquired starting spell into its
+    /// NewEvent carrier. Its family callback already owns casting and charge.
+    pub(crate) fn finish_dynamic_starting_spell_holder(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        source_slot: u16,
+    ) -> Result<()> {
+        let holder = self
+            .pickup(source_slot)
+            .filter(|holder| {
+                holder.active
+                    && holder.class == 15
+                    && holder.model <= 2
+                    && physical_spell_action(holder.model, PhysicalSpellActionRole::Active)
+                        == Some(holder.action)
+            })
+            .ok_or_else(|| {
+                NativeWorldError::new("dynamic starting holder lost its current spell")
+            })?;
+        let (family, action, position, phase) = (
+            holder.model,
+            holder.action,
+            holder.position,
+            holder.phase.wrapping_add(1),
+        );
+        if let Some(source) = economy.spell_pickups.iter_mut().find(|source| {
+            source.active && source.source_entity_index == source_slot && source.family == family
+        }) {
+            source.action = action;
+            source.position = position;
+            source.phase = phase;
+        } else if let Some(source) = economy.spell_replacements.iter_mut().find(|source| {
+            source.active && source.source_entity_index == source_slot && source.family == family
+        }) {
+            source.action = action;
+            source.position = position;
+            source.phase = phase;
+        } else {
+            return Err(NativeWorldError::new(
+                "dynamic starting holder lost its NewEvent carrier",
+            ));
+        }
+        let holder = self
+            .pickup_mut(source_slot)
+            .expect("validated current starting holder");
+        holder.phase = phase;
+        holder.record[66] = phase;
+        Ok(())
     }
 
     /// Bind an economy-owned `sub_69250` replacement to the shared spell
@@ -2669,6 +2856,9 @@ impl Level2SharedSpellResetSession {
             self.player_life_regen_cooldown = self.player_life_regen_cooldown.wrapping_sub(1);
         } else {
             life = life.wrapping_add(self.player_life_regen);
+        }
+        if self.player_hit_effect_cooldown != 0 {
+            self.player_hit_effect_cooldown = self.player_hit_effect_cooldown.wrapping_sub(1);
         }
         life = life.clamp(-1, self.player_entity.max_life);
         let mut mana = self
@@ -4076,6 +4266,10 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
         hasher.update(self.player_life_regen_cooldown.to_le_bytes());
+        if self.player_hit_effect_cooldown != 0 {
+            hasher.update(b"source-player-hit-effect-cooldown-v1");
+            hasher.update(self.player_hit_effect_cooldown.to_le_bytes());
+        }
         self.global_special_state.append_hash(&mut hasher);
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());
@@ -4234,6 +4428,10 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
         hasher.update(self.player_life_regen_cooldown.to_le_bytes());
+        if self.player_hit_effect_cooldown != 0 {
+            hasher.update(b"source-player-hit-effect-cooldown-v1");
+            hasher.update(self.player_hit_effect_cooldown.to_le_bytes());
+        }
         self.global_special_state.append_hash(&mut hasher);
         for experience in self.persistent_spell_experience {
             hasher.update(experience.to_le_bytes());

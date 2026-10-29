@@ -207,6 +207,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&guided_projectile::Targets<'_>>,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<guided_projectile::StepOutcome, String> {
     let outcome = guided_projectile::step(
         arena,
@@ -218,6 +219,7 @@ pub(crate) fn step_projectile(
             pitch_turn: RULES.projectile_pitch_turn,
         },
         targets,
+        context,
     )?;
     if let Some(child) = outcome.impact_slot {
         // sub_66250 runs after sub_65820 has copied its ordinary impact
@@ -330,6 +332,9 @@ mod tests {
                 &particles,
                 flyer,
                 None,
+                crate::native_world::source_target::Context::from_ordinary(
+                    &live.goats, &live.ordinary,
+                ),
             )
             .unwrap();
             let child = visit

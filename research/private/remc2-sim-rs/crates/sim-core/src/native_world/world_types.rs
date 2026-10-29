@@ -4463,6 +4463,8 @@ pub struct NativeWorldInspection {
     pub(super) runtime: RuntimeSnapshot,
     pub(super) presentation: PresentationSelectors,
     pub(super) terrain_rng: u16,
+    pub(super) dynamic_lighting: crate::dynamic_lighting::DynamicLightingState,
+    pub(super) dynamic_lighting_enabled: bool,
     pub(super) reset_state: Option<FlightState>,
     pub(super) authored_level: Box<[u8]>,
     pub(super) collision_masks: Option<CollisionMaskBank>,
@@ -4674,6 +4676,8 @@ impl NativeWorldInspection {
             .mission_content_template_from_definition(definition)?
             .session();
         let mut session = self.build_campaign_reset_session(definition, mission, learned_spells)?;
+        session.session.state.live.economy.dynamic_lighting = self.dynamic_lighting.clone();
+        session.session.state.live.economy.dynamic_lighting_enabled = self.dynamic_lighting_enabled;
         {
             let live = &mut session.session.state.live;
             super::level2_class5::firefly::adopt_imported_fireflies(
@@ -4931,7 +4935,7 @@ impl NativeWorldInspection {
                     GoatBehaviorConfig::LEVEL_ONE,
                 )
             };
-        Ok(Mc2Simulation::new(
+        Mc2Simulation::new(
             self.metadata.map_type.profile(),
             self.package_sha256.clone(),
             state,
@@ -4949,7 +4953,7 @@ impl NativeWorldInspection {
             mission,
             NyphurCapability::absent(),
             self.collision_masks.clone(),
-        ))
+        )
     }
 
     fn build_level2_reset_session(
@@ -5054,7 +5058,7 @@ impl NativeWorldInspection {
         let goats =
             GoatFamily::from_level_two_entities(&self.entities, GOAT_STAGE_POINT, goat_config)
                 .map_err(NativeWorldError::new)?;
-        Ok(Mc2Simulation::new(
+        Mc2Simulation::new(
             self.metadata.map_type.profile(),
             self.package_sha256.clone(),
             state,
@@ -5072,7 +5076,7 @@ impl NativeWorldInspection {
             mission,
             NyphurCapability::present(nyphur_dispatcher),
             self.collision_masks.clone(),
-        ))
+        )
     }
 
     /// Mission construction is intentionally fail-closed until the Level 2

@@ -190,11 +190,42 @@ mod tests {
         game_definition::SemanticId,
         game_runtime::GameRuntime,
         game_session::{
-            CampaignSnapshot, GameCommand, GameSession, MarkedSpellCycle, SpellAssignmentHand,
-            SpellCycleDirection, SpellHand, SpellMark, SpellMarkHand, SpellObservation,
+            CampaignSnapshot, GameCommand, GameSession, MarkedSpellCycle, RuntimeActorId,
+            SpellAssignment, SpellAssignmentHand, SpellCycleDirection, SpellHand, SpellMark,
+            SpellMarkHand, SpellObservation,
         },
     };
     use std::{path::PathBuf, sync::Arc};
+
+    #[test]
+    fn spell_holder_actor_wire_identity_is_opaque_and_optional() {
+        use crate::game_session::{RuntimeActorId, SpellAssignment};
+
+        let bound: SpellAssignment = serde_json::from_str(
+            r#"{"spell_id":"spell.fireball","tier":0,"hand":"left","holder_actor":"18446744073709551615"}"#,
+        )
+        .unwrap();
+        assert_eq!(bound.holder_actor, Some(RuntimeActorId(u64::MAX)));
+        assert_eq!(
+            serde_json::to_value(&bound).unwrap()["holder_actor"],
+            u64::MAX.to_string()
+        );
+        let unbound: SpellAssignment =
+            serde_json::from_str(r#"{"spell_id":"spell.fireball","tier":0,"hand":"left"}"#)
+                .unwrap();
+        assert_eq!(unbound.holder_actor, None);
+        let unity_empty: SpellAssignment = serde_json::from_str(
+            r#"{"spell_id":"spell.fireball","tier":0,"hand":"left","holder_actor":""}"#,
+        )
+        .unwrap();
+        assert_eq!(unity_empty.holder_actor, None);
+        for invalid in ["0", "01", "-1", "18446744073709551616"] {
+            let value = format!(
+                r#"{{"spell_id":"spell.fireball","tier":0,"hand":"left","holder_actor":"{invalid}"}}"#
+            );
+            assert!(serde_json::from_str::<SpellAssignment>(&value).is_err());
+        }
+    }
 
     fn fireball(snapshot: &CampaignSnapshot) -> &SpellObservation {
         snapshot
@@ -230,6 +261,7 @@ mod tests {
                         mark_spell: Some(SpellMark {
                             spell_id,
                             hand: SpellMarkHand::Right,
+                            holder_actor: None,
                         }),
                         ..GameCommand::default()
                     },
@@ -341,6 +373,42 @@ mod tests {
             fireball(&baseline).acquired,
             "Level 2 baseline acquires family 0"
         );
+        let holder = fireball(&baseline)
+            .holder_actor
+            .expect("live holder identity");
+        let stale = RuntimeActorId(if holder.0 == u64::MAX {
+            holder.0 - 1
+        } else {
+            holder.0 + 1
+        });
+        let before_stale = session.snapshot();
+        for command in [
+            GameCommand {
+                mark_spell: Some(SpellMark {
+                    spell_id: SemanticId::parse("spell.fireball").unwrap(),
+                    hand: SpellMarkHand::Left,
+                    holder_actor: Some(stale),
+                }),
+                ..GameCommand::default()
+            },
+            GameCommand {
+                assign_spell: Some(SpellAssignment {
+                    spell_id: SemanticId::parse("spell.fireball").unwrap(),
+                    tier: 0,
+                    hand: SpellAssignmentHand::Left,
+                    holder_actor: Some(stale),
+                }),
+                ..GameCommand::default()
+            },
+        ] {
+            let stale_guard = super::super::tests::guard(&session);
+            assert!(session.step(stale_guard, command).is_err());
+            assert_eq!(
+                session.snapshot(),
+                before_stale,
+                "stale holder rejection is atomic"
+            );
+        }
         let mark_guard = super::super::tests::guard(&session);
         let marked = session
             .step(
@@ -349,6 +417,7 @@ mod tests {
                     mark_spell: Some(SpellMark {
                         spell_id: SemanticId::parse("spell.fireball").unwrap(),
                         hand: SpellMarkHand::Left,
+                        holder_actor: Some(holder),
                     }),
                     ..GameCommand::default()
                 },

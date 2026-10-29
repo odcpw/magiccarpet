@@ -59,7 +59,7 @@ pub(crate) fn decode_house_construction_inputs(
     };
     if bytes.len() < 16
         || &bytes[..4] != b"MCI3"
-        || !matches!(word(bytes, 4)?, 1 | 2)
+        || !matches!(word(bytes, 4)?, 1 | 2 | 3)
         || word(bytes, 6)? != 16
         || word(bytes, 10)? != 1
         || dword(bytes, 12)? != 0
@@ -264,7 +264,7 @@ pub(crate) fn decode_campaign_house_parameters(
 ) -> Result<BTreeMap<u8, HouseParameter>, String> {
     if bytes.len() < 16
         || bytes.get(..4) != Some(b"MCI3")
-        || !matches!(u16::from_le_bytes([bytes[4], bytes[5]]), 1 | 2)
+        || !matches!(u16::from_le_bytes([bytes[4], bytes[5]]), 1 | 2 | 3)
         || u16::from_le_bytes([bytes[6], bytes[7]]) != 16
         || u16::from_le_bytes([bytes[10], bytes[11]]) != 1
         || bytes[12..16] != [0, 0, 0, 0]

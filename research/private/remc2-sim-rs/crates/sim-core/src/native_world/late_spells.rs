@@ -364,7 +364,7 @@ fn construct_retaliation(
             let payload =
                 crate::native_world::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
                     origin: crate::native_world::FireballProjectileOrigin::PlayerSpell,
-                    position: origin,
+                    position: sphere.position,
                     yaw,
                     pitch,
                     axis_position: target_position,
@@ -383,6 +383,28 @@ fn construct_retaliation(
             else {
                 return Ok(None);
             };
+            crate::world::effects::sync_position(
+                arena,
+                terrain,
+                projectile,
+                sphere.position,
+                true,
+                false,
+            )?;
+            crate::world::effects::lighting::admit_source(
+                arena,
+                terrain,
+                projectile,
+                sphere.position,
+                crate::world::effects::lighting::SourceLight::Fireball,
+            );
+            let row = arena
+                .economy
+                .fireball_projectiles
+                .iter_mut()
+                .find(|row| row.active && row.source_entity_index == projectile)
+                .ok_or("RapidFire constructor lost its Fireball carrier")?;
+            row.position = origin;
             // Source sub_36770 plays sound9 only when the ordinary constructor
             // succeeds; this stays attached to the real projectile slot.
             arena.economy.prepare_sound(projectile, sphere.index, -1, 9);
@@ -397,12 +419,13 @@ fn construct_retaliation(
                 terrain,
                 particles,
                 crate::native_world::lightning::Product::Ray,
-                origin,
+                sphere.position,
             )?
             else {
                 return Ok(None);
             };
             let projectile = &mut arena.entities[usize::from(slot)];
+            projectile.set_position(origin);
             projectile.record[69] = target.class;
             projectile.record[70] = target.model;
             projectile.record[71] = 10;
@@ -548,6 +571,7 @@ pub(crate) fn step_sphere_slot(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
+    context: super::source_target::Context<'_>,
 ) -> Result<SphereOutcome, String> {
     let Some(mut row) = arena
         .entities
@@ -563,7 +587,16 @@ pub(crate) fn step_sphere_slot(
     // sub_36680. Existing links are retained so the tier cadence can observe
     // repeated contacts over successive ordinary callbacks.
     if word(&row, 108) == 0
-        && let Some((target, _)) = super::guided_projectile::collision(arena, &row)
+        && let Some((target, _)) = super::guided_projectile::collision(
+            arena,
+            &row,
+            super::source_target::Context {
+                spells: Some(&*shared),
+                particles: Some(particles),
+                map_type: Some(terrain.map_type()),
+                ..context
+            },
+        )?
     {
         put_word(&mut row, 108, target);
         row.record[104..108].fill(0);

@@ -182,6 +182,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&guided_projectile::Targets<'_>>,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<StepOutcome, String> {
     let outcome = guided_projectile::step(
         arena,
@@ -193,6 +194,7 @@ pub(crate) fn step_projectile(
             pitch_turn: RULES.projectile_pitch_turn,
         },
         targets,
+        context,
     )?;
     if let Some(impact_slot) = outcome.impact_slot {
         // sub_66280 reads byte46 after sub_65820 returns. The fixed source
@@ -330,6 +332,9 @@ mod tests {
             &particles,
             flyer,
             None,
+            crate::native_world::source_target::Context::from_ordinary(
+                &live.goats, &live.ordinary,
+            ),
         )
         .unwrap();
         let child_slot = outcome

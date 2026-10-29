@@ -151,17 +151,17 @@ def main(arguments):
         # Local installed owner content. A supplied set replaces this entire list.
         resources = [
             {'package': GENERATED / 'mc-bhq8-level1-collision-v5-night',
-             'owner': GENERATED / 'mc-oi68-level1-fullbank-v2-20261029',
+             'owner': GENERATED / 'mc-b9s2-cursor-level1-20261029',
              'presentation': GENERATED / 'mc2-level1-night-cache-v2'},
             {'package': GENERATED / 'mc-level2-vault-successor-closure-20261025',
-             'owner': GENERATED / 'mc-oi68-level2-fullbank-v2-20261029',
+             'owner': GENERATED / 'mc-b9s2-cursor-level2-vault-20261029',
              'presentation': GENERATED / 'level2-vault-successor-owner-cache-20261025'},
             {'package': GENERATED / 'level3-day-block32-campaign-recipe-v2',
-             'owner': GENERATED / 'mc-oi68-level3-fullbank-v2-20261029',
+             'owner': GENERATED / 'mc-b9s2-cursor-level3-20261029',
              'presentation': GENERATED / 'level3-day-spell-owner-cache-audio-v4'},
             {'package': GENERATED / 'mc-bhq6-ordinary-20261025-zclu5fjj/level4',
-             'owner': GENERATED / 'mc-oi62-environment-level4-audio-v3',
-             'presentation': GENERATED / 'mc-oi62-environment-level4-audio-v3'},
+             'owner': GENERATED / 'mc-b9s2-cursor-level4-20261029',
+             'presentation': GENERATED / 'mc-b9s2-cursor-level4-20261029'},
         ]
     seen = set()
     native = ['-mc-game-runtime']

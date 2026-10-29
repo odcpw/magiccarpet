@@ -993,16 +993,28 @@ impl GoatFamily {
         source_entity_index: u16,
         source_id: u16,
     ) {
+        self.apply_source_kill(source_entity_index, source_id, Some(source_id));
+    }
+
+    pub(crate) fn apply_source_kill(
+        &mut self,
+        source_entity_index: u16,
+        killer: u16,
+        attacker: Option<u16>,
+    ) -> bool {
         let Some(goat) = self
             .goats
             .iter_mut()
             .find(|goat| goat.entity_index == source_entity_index)
         else {
-            return;
+            return false;
         };
         goat.life = -1;
-        goat.kill_credit_entity = source_id.cast_signed();
-        goat.current_attacker = source_id.cast_signed();
+        goat.kill_credit_entity = killer.cast_signed();
+        if let Some(attacker) = attacker {
+            goat.current_attacker = attacker.cast_signed();
+        }
+        true
     }
 
     #[must_use]

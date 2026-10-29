@@ -2730,12 +2730,28 @@ fn level_two_mana_carrier_outside_attraction_retries_target_and_releases_claim()
 
 #[test]
 fn level_two_spell_replacement_uses_shared_arena_and_outer_cursor() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 spell-replacement session");
+    let mut session = level_two_campaign_session();
     let baseline_hash = session.economy().reset_hash();
+    let feature = *session
+        .mission()
+        .authored_features()
+        .iter()
+        .find(|feature| feature.index == 156)
+        .expect("retained Level2 family11 authored producer");
+    assert_eq!((feature.kind, feature.subtype), (15, 11));
+    session
+        .activate_authored_group_prerequisite_for_test(
+            u16::try_from(feature.activation_group).unwrap(),
+        )
+        .unwrap();
+    let parent = session
+        .economy()
+        .spell_pickups()
+        .iter()
+        .find(|row| row.authored_index == feature.index)
+        .expect("real group constructor publishes family11")
+        .source_entity_index;
+    assert_eq!(session.shared_spells().pickup(parent).unwrap().model, 11);
     let first_free = *session
         .economy()
         .free_slots
@@ -2758,14 +2774,14 @@ fn level_two_spell_replacement_uses_shared_arena_and_outer_cursor() {
         z: 128,
     };
     let replacement = session
-        .allocate_level2_spell_replacement(11, 38, position)
+        .allocate_level2_spell_replacement(11, parent, position)
         .expect("family-11 replacement allocation");
     assert_eq!(replacement.source_entity_index, expected_slot);
     assert_eq!(
         replacement.entity_rng,
         expected_slot.wrapping_add(global_rng as u16)
     );
-    assert_eq!(replacement.parent_entity_index, 38);
+    assert_eq!(replacement.parent_entity_index, parent);
     assert_eq!(replacement.position, position);
     assert_eq!(replacement.family, 11);
     assert_eq!(replacement.action, 35);
@@ -2824,11 +2840,11 @@ fn level_two_spell_replacement_uses_shared_arena_and_outer_cursor() {
             .contains(&expected_slot)
     );
 
-    session.economy_mut().free_slots.clear();
+    session.economy_mut().exhaust_new_event_capacity_for_test();
     let rows_before_failure = session.economy().spell_replacements().len();
     assert!(
         session
-            .allocate_level2_spell_replacement(6, 155, position)
+            .allocate_level2_spell_replacement(11, parent, position)
             .is_none()
     );
     assert_eq!(

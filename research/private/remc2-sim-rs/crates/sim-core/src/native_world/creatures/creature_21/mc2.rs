@@ -42,7 +42,7 @@ pub(super) fn launch_strike(
     let payload =
         crate::native_world::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
             origin: crate::native_world::FireballProjectileOrigin::Creature21,
-            position: strike.position,
+            position: strike.initial_position,
             yaw: strike.yaw,
             pitch: strike.pitch,
             axis_position: Position::default(),
@@ -64,6 +64,28 @@ pub(super) fn launch_strike(
             "model21 Fireball map linkage failed at allocated slot{slot}"
         ));
     }
+    crate::world::effects::sync_position(
+        arena,
+        terrain,
+        slot,
+        strike.initial_position,
+        true,
+        false,
+    )?;
+    crate::world::effects::lighting::admit_source(
+        arena,
+        terrain,
+        slot,
+        strike.initial_position,
+        crate::world::effects::lighting::SourceLight::Fireball,
+    );
+    arena
+        .economy
+        .fireball_projectiles
+        .iter_mut()
+        .find(|projectile| projectile.source_entity_index == slot)
+        .ok_or_else(|| format!("model21 Fireball lost allocated slot{slot}"))?
+        .position = strike.position;
     Ok(
         crate::native_world::Level2EconomyState::apply_creature_fireball_target_feedback(
             &mut arena.entities,
@@ -285,40 +307,12 @@ pub(crate) fn allocate_summoned(
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: crate::native_world::source_target::Context<'_>,
     family: &[u16],
-) {
-    let dead = arena
-        .entities
-        .iter()
-        .filter(|target| target.life < 0 || target.control_flags & 0x400 != 0)
-        .map(|target| target.index)
-        .collect::<std::collections::BTreeSet<_>>();
-    for &slot in family {
-        let Some(row) = arena
-            .entities
-            .get_mut(usize::from(slot))
-            .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL)
-        else {
-            continue;
-        };
-        let mut action = row.action;
-        let mut index = row.record[76] as i8;
-        let mut mode = row.record[77] as i8;
-        let mut relation = word(row, 78);
-        let mut route = crate::native_world::creatures::stage_route::Route {
-            model: SOURCE_MODEL,
-            position: row.position,
-            action: &mut action,
-            index: &mut index,
-            mode: &mut mode,
-            relation: &mut relation,
-        };
-        route.prepare(runtime, |target| dead.contains(&target));
-        row.set_source_action(action);
-        row.record[76] = index as u8;
-        row.record[77] = mode as u8;
-        put(row, 78, relation);
-    }
+) -> Result<(), String> {
+    crate::native_world::creatures::stage_route::prepare_source_pass(
+        arena, runtime, targets, family,
+    )
 }
 
 fn targets(arena: &SourceArena) -> Vec<Target> {
@@ -391,6 +385,7 @@ pub(crate) fn step_row(
         targets: &targets,
         class3,
         model21: &families[usize::from(SOURCE_MODEL)],
+        families,
         runtime,
     };
     let mut effects = super::step(
@@ -412,6 +407,17 @@ pub(crate) fn step_row(
     }
     arena.economy.source_rng.insert(slot, actor_row.entity_rng);
     arena.entities[usize::from(slot)] = actor_row;
+    // Apply the captured linked rows before any callback allocation can reuse
+    // a source address; the snapshots and these writes share one visit.
+    for (linked_slot, flags) in effects.linked_blink_flags.drain(..) {
+        if let Some(row) = arena
+            .entities
+            .get_mut(usize::from(linked_slot))
+            .filter(|row| row.active)
+        {
+            row.set_control_flags((row.control_flags & !0x0600_0000) | flags);
+        }
+    }
     for _ in 0..effects.population_decrements {
         arena.economy.decrement_source_creature_population();
     }
@@ -452,6 +458,7 @@ pub(crate) fn step_row(
                 targets: &targets,
                 class3,
                 model21: &families[usize::from(SOURCE_MODEL)],
+                families,
                 runtime,
             };
             let previous_visual = current.particle_parameter_index;

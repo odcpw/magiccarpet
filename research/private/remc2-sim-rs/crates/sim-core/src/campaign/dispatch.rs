@@ -7,7 +7,7 @@
 
 use super::{
     source_facts::SourceFactKind,
-    spec::{BehaviorKey, BehaviorSelector, CampaignCapabilityRegistry},
+    spec::{BehaviorAvailability, BehaviorKey, BehaviorSelector, CampaignCapabilityRegistry},
 };
 use std::{collections::BTreeSet, sync::LazyLock};
 
@@ -471,7 +471,7 @@ compiled_registry! {
         (Class10Effects, 10, [79]);
     }
     update_only_actions {
-        (BallisticScenery, 2, [21]);
+        (BallisticScenery, 2, [20, 21]);
         (Model9Family, 5, [79]);
         (TerrainStripController, 10, [68, 69]);
         (CaveFeatures, 10, [87, 88, 89, 90, 91, 92, 93]);
@@ -592,6 +592,9 @@ impl StaticBehaviorRegistry {
         declared: &BTreeSet<BehaviorKey>,
     ) -> Result<(), RegistryValidationError> {
         for key in declared {
+            if self.availability(key) == BehaviorAvailability::SourceDisabled {
+                continue;
+            }
             let entry = self
                 .entry(key)
                 .ok_or_else(|| RegistryValidationError::UnknownImplementedKey(key.clone()))?;
@@ -611,6 +614,24 @@ impl StaticBehaviorRegistry {
 impl CampaignCapabilityRegistry for StaticBehaviorRegistry {
     fn contains(&self, key: &BehaviorKey) -> bool {
         self.entry(key).is_some()
+    }
+
+    fn availability(&self, key: &BehaviorKey) -> BehaviorAvailability {
+        if self.entry(key).is_some() {
+            BehaviorAvailability::Enabled
+        } else if key.dispatch_site == DispatchSite::UpdateEntities.id()
+            && matches!(
+                key.selector,
+                BehaviorSelector::ClassAction {
+                    class: 5,
+                    action: 233 | 234
+                }
+            )
+        {
+            BehaviorAvailability::SourceDisabled
+        } else {
+            BehaviorAvailability::Unknown
+        }
     }
 }
 
@@ -1249,6 +1270,55 @@ mod tests {
                 ..
             }) if predecessor == root
         ));
+    }
+
+    #[test]
+    fn multipart_children_are_source_disabled_not_callbacks() {
+        for action in [233, 234] {
+            let key = BehaviorKey {
+                dispatch_site: DispatchSite::UpdateEntities.id(),
+                selector: BehaviorSelector::ClassAction { class: 5, action },
+            };
+            assert_eq!(
+                CAMPAIGN_BEHAVIOR_REGISTRY.availability(&key),
+                BehaviorAvailability::SourceDisabled
+            );
+            assert!(!CAMPAIGN_BEHAVIOR_REGISTRY.contains(&key));
+            assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
+            assert!(
+                CAMPAIGN_BEHAVIOR_REGISTRY
+                    .validate_declared_closure(&BTreeSet::from([key.clone()]))
+                    .is_ok()
+            );
+            let mut wrong_site = key.clone();
+            wrong_site.dispatch_site = DispatchSite::ApplyEvents.id();
+            assert_eq!(
+                CAMPAIGN_BEHAVIOR_REGISTRY.availability(&wrong_site),
+                BehaviorAvailability::Unknown
+            );
+            let mut wrong_class = key;
+            wrong_class.selector = BehaviorSelector::ClassAction { class: 4, action };
+            assert_ne!(
+                CAMPAIGN_BEHAVIOR_REGISTRY.availability(&wrong_class),
+                BehaviorAvailability::SourceDisabled
+            );
+        }
+        let missing = BehaviorKey {
+            dispatch_site: DispatchSite::UpdateEntities.id(),
+            selector: BehaviorSelector::ClassAction {
+                class: 5,
+                action: 222,
+            },
+        };
+        assert_eq!(
+            CAMPAIGN_BEHAVIOR_REGISTRY.availability(&missing),
+            BehaviorAvailability::Unknown
+        );
+        assert!(
+            CAMPAIGN_BEHAVIOR_REGISTRY
+                .validate_declared_closure(&BTreeSet::from([missing]))
+                .is_err()
+        );
     }
 
     #[test]

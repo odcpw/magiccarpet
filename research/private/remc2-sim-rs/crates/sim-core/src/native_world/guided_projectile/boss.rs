@@ -44,12 +44,27 @@ pub(crate) fn construct(
     particles: &[ParticleParameter],
     launch: Launch,
 ) -> Result<Option<u16>, String> {
+    construct_at_address(arena, terrain, particles, launch, None)
+}
+
+fn construct_at_address(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    launch: Launch,
+    position_slot: Option<u16>,
+) -> Result<Option<u16>, String> {
     if matches!(
         launch.product,
         Product::FinalBossFireball | Product::Creature27Fireball
     ) {
         let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
             return Ok(None);
+        };
+        let position = if position_slot == Some(slot) {
+            Position::default()
+        } else {
+            launch.position
         };
         let origin = match launch.product {
             Product::FinalBossFireball => FireballProjectileOrigin::FinalBoss,
@@ -58,7 +73,7 @@ pub(crate) fn construct(
         };
         let payload = Level2FireballProjectileLaunchPayload {
             origin,
-            position: launch.position,
+            position,
             yaw: launch.yaw,
             pitch: launch.pitch,
             axis_position: Position::default(),
@@ -71,21 +86,30 @@ pub(crate) fn construct(
             target_class: launch.target_class,
             target_model: launch.target_model,
         };
-        return arena
+        let slot = arena
             .economy
             .initialize_fireball_projectile(slot, payload, 0)
-            .map(Some)
-            .ok_or_else(|| format!("creature Fireball map linkage failed at slot{slot}"));
+            .ok_or_else(|| format!("creature Fireball map linkage failed at slot{slot}"))?;
+        crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+        crate::world::effects::lighting::admit_source(
+            arena,
+            terrain,
+            slot,
+            position,
+            crate::world::effects::lighting::SourceLight::Fireball,
+        );
+        return Ok(Some(slot));
     }
     let (impact, slot) = match launch.product {
         Product::Lightning => (
             23,
-            lightning::construct(
+            lightning::construct_at_address(
                 arena,
                 terrain,
                 particles,
                 lightning::Product::Ray,
                 launch.position,
+                position_slot,
             )?,
         ),
         Product::Whirlwind | Product::Meteor => {
@@ -156,6 +180,7 @@ pub(crate) fn construct_model27(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
+    targets: crate::native_world::source_target::Context<'_>,
     head_slot: u16,
     target_slot: u16,
     selector: u8,
@@ -174,7 +199,7 @@ pub(crate) fn construct_model27(
         .get(usize::from(head_slot))
         .ok_or("model27 head address is outside source arena")?;
     let (position, owner) = (head.position, head.source_id);
-    let Some(slot) = construct(
+    let Some(slot) = construct_at_address(
         arena,
         terrain,
         particles,
@@ -191,6 +216,7 @@ pub(crate) fn construct_model27(
             effect_life: 0,
             descriptor: None,
         },
+        Some(head_slot),
     )?
     else {
         return Ok(None);
@@ -246,26 +272,10 @@ pub(crate) fn construct_model27(
                 u16::from_le_bytes([head.record[154], head.record[155]]),
             )
         };
+    let target = crate::native_world::source_target::read(arena, targets, target_slot)?
+        .ok_or("model27 target address is outside source arena")?;
     let (target_position, target_class, target_model) =
-        if slot == target_slot && product == Product::Creature27Fireball {
-            let projectile = arena
-                .economy
-                .fireball_projectiles
-                .iter()
-                .find(|row| row.source_entity_index == slot)
-                .ok_or("new model27 Fireball target carrier is absent")?;
-            (
-                projectile.position,
-                projectile.source_class,
-                projectile.source_model,
-            )
-        } else {
-            let target = arena
-                .entities
-                .get(usize::from(target_slot))
-                .ok_or("model27 target address is outside source arena")?;
-            (target.position, target.class, target.model)
-        };
+        (target.position, target.class, target.model);
     let (yaw, pitch) =
         crate::level1_mission::projectile_guidance_angles(head_position, target_position);
     if product == Product::Creature27Fireball {
@@ -293,10 +303,128 @@ pub(crate) fn construct_model27(
         position.z = position.z.wrapping_add(head_fov / 2);
         row.set_position(position);
         row.record[154..156].copy_from_slice(&head_target.to_le_bytes());
-        row.parameter_relation = Some(106);
-        row.record[164..168].copy_from_slice(&107_u32.to_le_bytes());
+        let descriptor = crate::world::effects::MODEL27_GUIDANCE;
+        row.parameter_relation = Some(descriptor.source_index);
+        row.record[164..168]
+            .copy_from_slice(&(u32::from(descriptor.source_index) + 1).to_le_bytes());
         row.record[69] = target_class;
         row.record[70] = target_model;
     }
     Ok(Some(slot))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::source_target;
+    use std::path::PathBuf;
+
+    #[test]
+    fn hidden_fireball_is_retained_by_bare_rebuild_but_reclaimed_by_source_49f90() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let game = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
+            .expect("real Cave4 owner package");
+        let mut original = game.simulation().clone();
+        let particles = original.session.definition.presentation.particles.clone();
+        let live = &mut original.session.state.live;
+        let position = live.core.state.position;
+        let owner = live.core.state.entity_index;
+        let slot = construct(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            Launch {
+                product: Product::FinalBossFireball,
+                position,
+                owner,
+                yaw: 17,
+                pitch: 23,
+                target_class: 3,
+                target_model: 0,
+                target: owner,
+                damage: 800,
+                effect_life: 0,
+                descriptor: None,
+            },
+        )
+        .unwrap()
+        .expect("ordinary Fireball constructor allocates");
+        let projectile = live
+            .economy
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        projectile.life = 7;
+        projectile.active = false;
+        projectile.drawing_disabled = true;
+
+        let mut bare = original.clone();
+        let arena = &mut bare.session.state.live.economy;
+        arena.rebuild_source_free_arena();
+        assert!(
+            arena
+                .economy
+                .fireball_projectiles
+                .iter()
+                .any(|row| row.source_entity_index == slot)
+        );
+        assert!(!arena.economy.free_source_slots().contains(&slot));
+        let retained = source_target::read(arena, source_target::Context::default(), slot)
+            .unwrap()
+            .expect("hidden typed source remains readable");
+        assert_eq!(
+            (
+                retained.class,
+                retained.model,
+                retained.life,
+                retained.position
+            ),
+            (9, 0, 7, position)
+        );
+        assert!(retained.drawing_disabled());
+
+        let live = &mut original.session.state.live;
+        live.economy
+            .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
+            .expect("explicit source 49F90 rebuild");
+        assert!(
+            !live
+                .economy
+                .economy
+                .fireball_projectiles
+                .iter()
+                .any(|row| row.source_entity_index == slot)
+        );
+        assert!(live.economy.economy.free_source_slots().contains(&slot));
+        let retained = source_target::read(&live.economy, source_target::Context::default(), slot)
+            .unwrap()
+            .expect("freed source address retains its bytes");
+        assert_eq!(
+            (
+                retained.class,
+                retained.model,
+                retained.life,
+                retained.position
+            ),
+            (0, 0, 7, position)
+        );
+        assert!(retained.drawing_disabled());
+        let mut lights = std::mem::take(&mut live.economy.dynamic_lighting);
+        crate::world::effects::lighting::after_updates(
+            &mut lights,
+            &live.economy,
+            &mut live.terrain,
+            source_target::Context::default(),
+        )
+        .expect("reclaimed source remains readable by light service");
+        assert!(
+            lights
+                .active_slots()
+                .all(|(_, light)| light.source_entity_index != slot)
+        );
+    }
 }

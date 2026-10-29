@@ -162,6 +162,7 @@ pub(crate) struct SourceAttack {
     pub target: u16,
     pub target_class: u8,
     pub target_model: u8,
+    pub constructor_position: Position,
     pub position: Position,
     pub yaw: i16,
     pub pitch: i16,
@@ -459,6 +460,7 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         target: target.slot,
         target_class: target.class,
         target_model: target.model,
+        constructor_position: actor.row.position,
         position: Position {
             z: actor.row.position.z.wrapping_add(actor.row.array_fov()),
             ..actor.row.position

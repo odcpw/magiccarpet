@@ -198,6 +198,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&super::super::guided_projectile::Targets<'_>>,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<super::super::guided_projectile::StepOutcome, String> {
     if !arena
         .entities
@@ -216,6 +217,7 @@ pub(crate) fn step_projectile(
             pitch_turn: RULES.projectile_pitch_turn,
         },
         targets,
+        context,
     )?;
     if let Some(impact_slot) = outcome.impact_slot {
         let impact_lifetime = arena
@@ -303,6 +305,9 @@ mod tests {
             &particles,
             flyer,
             None,
+            crate::native_world::source_target::Context::from_ordinary(
+                &live.goats, &live.ordinary,
+            ),
         )
         .unwrap();
         let child = visit

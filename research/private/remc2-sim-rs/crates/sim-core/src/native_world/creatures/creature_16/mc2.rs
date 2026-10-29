@@ -142,6 +142,11 @@ pub(crate) fn allocate_summoned(
             "Wyvern Army summon at slot{slot} lost generation-bound origin"
         ));
     }
+    if let Some(parent) = arena.handle(parent_slot).filter(|parent| *parent != handle) {
+        if !arena.bind_creature_parent(handle, parent) {
+            return Err(format!("Wyvern Army summon at slot{slot} lost its parent binding"));
+        }
+    }
     Ok(Some(handle))
 }
 
@@ -176,10 +181,20 @@ pub(crate) fn step_row(
     arena:&mut SourceArena,runtime:&mut RuntimeSnapshot,terrain:&mut SessionTerrain,
     particles:&[ParticleParameter],slot:u16,class3:&[u16],families:&[Vec<u16>;29],
 )->Result<Effects,String> {
-    let targets=targets(arena);
+    let mut targets=targets(arena);
     let class5=families.iter().flatten().copied().collect::<Vec<_>>();
     let mut row=arena.entities.get(usize::from(slot)).filter(|r|r.active&&r.class==5&&r.model==SOURCE_MODEL)
         .ok_or_else(||format!("Wyvern callback lost slot{slot}"))?.clone();
+    let handle = arena.handle(slot).ok_or_else(|| format!("Wyvern lost source slot{slot}"))?;
+    if matches!(row.record[77], 13 | 16)
+        && arena.has_creature_parent_binding(handle)
+        && arena.creature_parent(handle).is_none()
+    {
+        // A delayed Army child must expire when its original caster was
+        // reclaimed, even if a living replacement now occupies that address.
+        let parent_slot = word(&row, 44);
+        targets.retain(|target| target.slot != parent_slot);
+    }
     let mut context=Context {terrain,targets:&targets,class3,family:&families[16],class5:&class5,runtime};
     let effects=super::step(&mut Actor {row:&mut row},&mut context)?;
     let position=row.position;
@@ -262,6 +277,11 @@ fn launch_projectile(
     particles: &[ParticleParameter],
     launch: super::Projectile,
 ) -> Result<Option<u16>, String> {
+    let source_position = arena
+        .entities
+        .get(usize::from(launch.parent))
+        .ok_or("Wyvern projectile parent address is outside the source arena")?
+        .position;
     let replacement_fov = particles
         .get(FIREBALL_PARTICLE)
         .map(|particle| (particle.rotation_speed / 2) as i16)
@@ -271,10 +291,11 @@ fn launch_projectile(
     };
     let replaced = slot == launch.parent;
     let state = projectile_launch_state(launch, slot, replaced, replacement_fov);
+    let initial_position = if replaced { Position::default() } else { source_position };
     let payload =
         crate::native_world::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
             origin: crate::native_world::FireballProjectileOrigin::Wyvern,
-            position: state.position,
+            position: initial_position,
             yaw: state.yaw,
             pitch: state.pitch,
             axis_position: Position::default(),
@@ -293,5 +314,20 @@ fn launch_projectile(
             "Wyvern projectile map linkage failed at slot{slot}"
         ));
     }
+    crate::world::effects::sync_position(arena, terrain, slot, initial_position, true, false)?;
+    crate::world::effects::lighting::admit_source(
+        arena,
+        terrain,
+        slot,
+        initial_position,
+        crate::world::effects::lighting::SourceLight::Fireball,
+    );
+    arena
+        .economy
+        .fireball_projectiles
+        .iter_mut()
+        .find(|projectile| projectile.source_entity_index == slot)
+        .ok_or_else(|| format!("Wyvern Fireball lost allocated slot{slot}"))?
+        .position = state.position;
     Ok(result)
 }

@@ -649,65 +649,94 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
 
 #[test]
 fn ordinary_step_row_materializes_one_cymmerian_class9_model0_attack() {
-    let (mut arena, mut runtime, mut terrain, particles, _parent_slot, _owner_id, _position) =
-        summoned_source_parts();
-    let target = arena
-        .entities
-        .iter()
-        .find(|row| row.active && row.class == 3 && row.model == 0 && row.life > 0)
-        .expect("Mission18 retains a live class3/model0 target")
-        .clone();
-    let slot = mc2::allocate_authored(
-        &mut arena,
-        &mut runtime,
-        &mut terrain,
-        &particles,
-        target.position,
-        RULES.max_life,
-        None,
-        0,
-    )
-    .unwrap()
-    .unwrap();
-    {
-        let row = &mut arena.entities[usize::from(slot)];
-        row.set_source_action(202);
-        row.set_phase(RULES.scan_period);
-        row.record[154..156].copy_from_slice(&target.index.to_le_bytes());
+    for light_enabled in [true, false] {
+        let (mut arena, mut runtime, mut terrain, particles, _parent_slot, _owner_id, _position) =
+            summoned_source_parts();
+        arena.dynamic_lighting_enabled = light_enabled;
+        let target = arena
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.model == 0 && row.life > 0)
+            .expect("Mission18 retains a live class3/model0 target")
+            .clone();
+        let slot = mc2::allocate_authored(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            &particles,
+            target.position,
+            RULES.max_life,
+            None,
+            0,
+        )
+        .unwrap()
+        .unwrap();
+        {
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(202);
+            row.set_phase(RULES.scan_period);
+            row.record[154..156].copy_from_slice(&target.index.to_le_bytes());
+        }
+        let families = family_with_cymmerian(slot);
+        let effects = mc2::step_row(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            &particles,
+            slot,
+            &[target.index],
+            &families,
+        )
+        .unwrap();
+        assert!(
+            effects.attack.is_none(),
+            "the adapter consumes the attack intent"
+        );
+        let projectile = arena
+            .economy
+            .fireball_projectiles()
+            .iter()
+            .find(|projectile| {
+                projectile.origin == crate::native_world::FireballProjectileOrigin::Cymmerian
+            })
+            .expect("action202 publishes a real Fireball carrier");
+        assert_eq!((projectile.source_class, projectile.source_model), (9, 0));
+        assert_eq!(
+            (
+                projectile.target_source_entity_index,
+                projectile.target_class,
+                projectile.target_model
+            ),
+            (target.index, target.class, target.model)
+        );
+        assert_eq!(projectile.source_subspell_index, RULES.projectile_damage);
+        assert_eq!(projectile.control_flags & 0x0008_0000 != 0, light_enabled);
+        let constructor_position = arena.entities[usize::from(slot)].position;
+        let mut launched_position = constructor_position;
+        launched_position.z = launched_position
+            .z
+            .wrapping_add(arena.entities[usize::from(slot)].array_fov());
+        assert_eq!(projectile.position, launched_position);
+        let projectile_slot = projectile.source_entity_index;
+        let linked_lights = arena
+            .dynamic_lighting
+            .active_slots()
+            .filter(|(_, light)| light.linked && light.source_entity_index == projectile_slot)
+            .count();
+        assert_eq!(
+            linked_lights,
+            if light_enabled { 1 } else { 0 },
+            "Night Fireball light admission"
+        );
+        if light_enabled {
+            let (_, light) = arena
+                .dynamic_lighting
+                .active_slots()
+                .find(|(_, light)| light.linked && light.source_entity_index == projectile_slot)
+                .unwrap();
+            assert_eq!(light.position, constructor_position);
+        }
     }
-    let families = family_with_cymmerian(slot);
-    let effects = mc2::step_row(
-        &mut arena,
-        &mut runtime,
-        &mut terrain,
-        &particles,
-        slot,
-        &[target.index],
-        &families,
-    )
-    .unwrap();
-    assert!(
-        effects.attack.is_none(),
-        "the adapter consumes the attack intent"
-    );
-    let projectile = arena
-        .economy
-        .fireball_projectiles()
-        .iter()
-        .find(|projectile| {
-            projectile.origin == crate::native_world::FireballProjectileOrigin::Cymmerian
-        })
-        .expect("action202 publishes a real Fireball carrier");
-    assert_eq!((projectile.source_class, projectile.source_model), (9, 0));
-    assert_eq!(
-        (
-            projectile.target_source_entity_index,
-            projectile.target_class,
-            projectile.target_model
-        ),
-        (target.index, target.class, target.model)
-    );
-    assert_eq!(projectile.source_subspell_index, RULES.projectile_damage);
 }
 
 #[test]

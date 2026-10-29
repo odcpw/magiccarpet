@@ -24,9 +24,10 @@ pub(crate) fn bind_authored(
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: crate::native_world::source_target::Context<'_>,
     slots: &[u16],
-) {
-    super::super::stage_route::prepare_source_pass(arena, runtime, slots);
+) -> Result<(), String> {
+    super::super::stage_route::prepare_source_pass(arena, runtime, targets, slots)
 }
 
 fn route(actor: &Actor, runtime: &RuntimeSnapshot) -> Result<RuntimeStageVariable, String> {

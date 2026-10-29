@@ -6,6 +6,7 @@
 
 pub(crate) mod lighting;
 
+use std::collections::BTreeMap;
 use crate::level_definition::{EffectDefinition, EffectKind};
 use crate::native_world::{
     EntitySnapshot, Level2AuthoredModel76Source, Level2Model76Child, ParticleParameter,
@@ -13,6 +14,21 @@ use crate::native_world::{
 };
 use crate::renderable_map_chain::RenderableMapSeed;
 use crate::{FlightWorld, Position, campaign::source_arena::SourceArena, move_entity};
+
+/// Source descriptor shared by both ordinary model27 projectile births.
+/// The typed Fireball origin selects this rule without a duplicate mutable
+/// pointer; the raw Lightning row retains its source address.
+pub(crate) struct Model27Guidance {
+    pub source_index: u16,
+    pub yaw_turn: i16,
+    pub pitch_turn: i16,
+}
+
+pub(crate) const MODEL27_GUIDANCE: Model27Guidance = Model27Guidance {
+    source_index: 106,
+    yaw_turn: 17,
+    pitch_turn: 113,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DamagePulse {
@@ -37,10 +53,61 @@ pub(crate) struct Visit {
 
 /// Source-global eruption ownership, reset with the arena, never inferred
 /// from presentation or duplicated in the client.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct State {
     pub(crate) eruption: u16,
     pub(crate) eruption_smoke: u16,
+    // Observation provenance only: gameplay state stays in the actual raw
+    // effect row. Generation prevents a reused address inheriting its parent.
+    death_bursts: BTreeMap<u16, (u32, u16)>,
+}
+
+impl State {
+    pub(crate) fn from_globals(eruption: u16, eruption_smoke: u16) -> Self {
+        Self {
+            eruption,
+            eruption_smoke,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn forget_source_slot(&mut self, slot: u16) {
+        self.death_bursts.remove(&slot);
+    }
+
+    pub(crate) fn death_burst_origins(&self) -> &BTreeMap<u16, (u32, u16)> {
+        &self.death_bursts
+    }
+
+    /// A callback can reclaim or replace a burst while this State is
+    /// temporarily borrowed out of SourceArena. Reclaim leaves the generation
+    /// unchanged until the next allocation, so check the free stack too.
+    pub(crate) fn retain_current_generations(&mut self, arena: &SourceArena) {
+        self.death_bursts.retain(|slot, (generation, _)| {
+            arena.economy.slot_generation(*slot) == *generation
+                && !arena.economy.free_source_slots().contains(slot)
+        });
+    }
+}
+
+/// Register only an actual successfully allocated raw 10/1 death product.
+/// The source id is read from that live row after its producer initializes it.
+pub(crate) fn register_death_burst(
+    arena: &mut SourceArena,
+    slot: u16,
+    parent: u16,
+) -> Result<(), String> {
+    let row = arena.entities.get(usize::from(slot))
+        .filter(|row| row.active && (row.class, row.model, row.action) == (10, 1, 1))
+        .ok_or_else(|| format!("death burst {slot} is not a live raw 10/1 product"))?;
+    let id = row.source_id;
+    let generation = arena.economy.slot_generation(slot);
+    if arena.effects.death_bursts.contains_key(&slot) {
+        return Err(format!("death burst {slot} is already registered"));
+    }
+    arena.effects.death_bursts.insert(slot, (generation, parent));
+    arena.economy.record_raw_death_burst_spawn(slot, parent, id);
+    Ok(())
 }
 
 /// The combat adapter owns actor carriers and mailboxes. Effects add only
@@ -507,6 +574,13 @@ pub(crate) fn allocate(
                 true,
                 false,
             )?;
+            lighting::admit_source(
+                arena,
+                terrain,
+                child.source_entity_index,
+                child.position,
+                lighting::SourceLight::Fireball,
+            );
         }
         // AddFireSpheres adds the root after all 25 children. Preserve the
         // actual map head even though its root's low drawing bit hides it.
@@ -674,6 +748,15 @@ pub(crate) fn allocate(
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
     sync_map(arena, terrain, slot)?;
+    let light = match model {
+        0 | 1 => Some(lighting::SourceLight::Impact),
+        6 => Some(lighting::SourceLight::GroundFire),
+        _ => None,
+    };
+    if let Some(light) = light {
+        let position = arena.entities[usize::from(slot)].position;
+        lighting::admit_source(arena, terrain, slot, position, light);
+    }
     Ok(Some(slot))
 }
 
@@ -784,8 +867,25 @@ where
     F: FnMut(&mut SourceArena, DamagePulse) -> Result<u16, String>,
 {
     let source = arena.entities[usize::from(slot)].clone();
-    let (source, visit) = visit_entity(arena, terrain, source, particles, state, apply_damage)?;
+    let generation = arena.economy.slot_generation(slot);
+    let was_live_burst = (source.class, source.model, source.action) == (10, 1, 1)
+        && !source.drawing_disabled();
+    let result = visit_entity(arena, terrain, source, particles, state, apply_damage);
+    state.retain_current_generations(arena);
+    let (source, visit) = result?;
+    let expired = was_live_burst
+        && arena.economy.slot_generation(slot) == generation
+        && (source.class, source.model, source.action) == (10, 1, 1)
+        && source.drawing_disabled();
     commit_entity(arena, terrain, source)?;
+    if arena.economy.slot_generation(slot) != generation {
+        state.forget_source_slot(slot);
+    } else if expired
+        && let Some((registered_generation, parent)) = state.death_bursts.remove(&slot)
+        && registered_generation == generation
+    {
+        arena.economy.record_raw_death_burst_expiry(slot, parent);
+    }
     Ok(visit)
 }
 

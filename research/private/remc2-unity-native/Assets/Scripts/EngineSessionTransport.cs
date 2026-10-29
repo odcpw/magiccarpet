@@ -133,6 +133,7 @@ namespace MagicCarpet.Native
             public string id;
             public string display_name;
             public bool acquired;
+            public string holder_actor;
             public bool selected;
             public sbyte tier;
             public byte unlocked_tier;
@@ -396,6 +397,7 @@ namespace MagicCarpet.Native
             public string spell_id;
             public byte tier;
             public string hand;
+            public string holder_actor;
         }
 
         [Serializable]
@@ -409,6 +411,7 @@ namespace MagicCarpet.Native
         {
             public string spell_id;
             public string hand;
+            public string holder_actor;
         }
 
         [Serializable]

@@ -88,17 +88,20 @@ pub(crate) fn centre(position: Position, model: u8, vertical_offset: i16) -> Pos
     }
 }
 
-fn target_position(arena: &mut SourceArena, slot: u16) -> Result<Position, String> {
-    let raw = arena
-        .entities
-        .get(usize::from(slot))
+fn target_position(
+    arena: &SourceArena,
+    slot: u16,
+    context: super::source_target::Context<'_>,
+) -> Result<Position, String> {
+    let target = super::source_target::read(arena, context, slot)?
         .ok_or("guided projectile target address is outside arena")?;
-    let position = centre(raw.position, raw.model, raw.array_yaw());
-    Ok(
-        area_damage::source_actor(arena, None, slot).map_or(position, |actor| {
-            centre(actor.position, actor.model, actor.shape.vertical_offset)
-        }),
-    )
+    if target.model == 2 {
+        return Ok(target.position);
+    }
+    let shape = target
+        .collision
+        .ok_or_else(|| format!("guided projectile target {slot} lacks current source axes"))?;
+    Ok(centre(target.position, target.model, shape.vertical_offset))
 }
 
 fn aim_at(row: &mut EntitySnapshot, position: Position) {
@@ -195,16 +198,30 @@ pub(super) fn class5_eligible(arena: &SourceArena, slot: u16, owner: u16, ray: b
     })
 }
 
+/// sub_10780 consumes sub_10130 only while it returns 1. Its final call
+/// supplies a coordinate but returns 2, so the last cell of the final search
+/// class is not visited. A negative limit still starts with class zero.
+pub(super) fn collision_search_offsets(pitch: i16) -> Vec<(i8, i8)> {
+    let width = i32::from(pitch) + 255;
+    // my_sign32 is -1 for negative inputs and zero otherwise.
+    let limit = ((width + if width < 0 { 255 } else { 0 }) >> 8).max(0) as u8;
+    let mut offsets = source_search_offsets(limit);
+    offsets.pop();
+    offsets
+}
+
 /// sub_10780: preserve map-chain order, selectors and strict source extents.
-pub(super) fn collision(arena: &mut SourceArena, row: &EntitySnapshot) -> Option<(u16, Position)> {
-    let width = i32::from(row.array_pitch()) + 255;
-    let radius = ((width - width.signum() * 255) >> 8) as u8;
+pub(super) fn collision(
+    arena: &SourceArena,
+    row: &EntitySnapshot,
+    context: super::source_target::Context<'_>,
+) -> Result<Option<(u16, Position)>, String> {
     for slot in source_map_search_slots(
         &arena.economy.map_chains,
         row.position,
-        &source_search_offsets(radius),
+        &collision_search_offsets(row.array_pitch()),
     ) {
-        let Some(actor) = area_damage::source_actor(arena, None, slot) else {
+        let Some(actor) = super::source_target::read(arena, context, slot)? else {
             continue;
         };
         if actor.control_flags & 8 == 0
@@ -215,23 +232,26 @@ pub(super) fn collision(arena: &mut SourceArena, row: &EntitySnapshot) -> Option
         {
             continue;
         }
+        let shape = actor.collision.ok_or_else(|| {
+            format!("projectile collision target {slot} lacks current source axes")
+        })?;
         let dx = i32::from(actor.position.x.wrapping_sub(row.position.x) as i16).abs();
         let dy = i32::from(actor.position.y.wrapping_sub(row.position.y) as i16).abs();
-        let dz = (i32::from(actor.position.z) + i32::from(actor.shape.vertical_offset)
+        let dz = (i32::from(actor.position.z) + i32::from(shape.vertical_offset)
             - i32::from(row.position.z)
             - i32::from(row.array_yaw()))
         .abs();
-        if dx < i32::from(row.array_pitch()) + i32::from(actor.shape.half_width)
-            && dy < i32::from(row.array_roll()) + i32::from(actor.shape.half_depth)
-            && dz < i32::from(row.array_fov()) + i32::from(actor.shape.half_height)
+        if dx < i32::from(row.array_pitch()) + i32::from(shape.half_width)
+            && dy < i32::from(row.array_roll()) + i32::from(shape.half_depth)
+            && dz < i32::from(row.array_fov()) + i32::from(shape.half_height)
         {
-            return Some((
+            return Ok(Some((
                 slot,
-                centre(actor.position, actor.model, actor.shape.vertical_offset),
-            ));
+                centre(actor.position, actor.model, shape.vertical_offset),
+            )));
         }
     }
-    None
+    Ok(None)
 }
 
 /// sub_68490/685D0 use wrapped XY distance despite the source helper's name.
@@ -276,6 +296,7 @@ pub(super) fn acquire_capture(
     arena: &mut SourceArena,
     row: &mut EntitySnapshot,
     targets: &Targets<'_>,
+    context: super::source_target::Context<'_>,
 ) -> Result<bool, String> {
     // sub_68940 rejects other models before consulting the owner or traps.
     if !matches!(row.model, 0 | 2..=5 | 8..=9 | 12 | 22..=23 | 26 | 28 | 30) {
@@ -315,7 +336,7 @@ pub(super) fn acquire_capture(
     }
     if let Some(slot) = selected {
         put(row, 154, slot);
-        aim_at(row, target_position(arena, slot)?);
+        aim_at(row, target_position(arena, slot, context)?);
     }
     Ok(selected.is_some())
 }
@@ -327,20 +348,23 @@ fn acquire(
     row: &mut EntitySnapshot,
     targets: &Targets<'_>,
     outcome: &mut StepOutcome,
+    context: super::source_target::Context<'_>,
 ) -> Result<bool, String> {
-    if acquire_capture(arena, row, targets)? {
+    if acquire_capture(arena, row, targets, context)? {
         return Ok(true);
     }
     let mut best = u32::MAX;
     let mut selected = None;
     for &slot in targets.class3 {
-        let target = &arena.entities[usize::from(slot)];
+        let Some(target) = super::source_target::read(arena, context, slot)? else {
+            continue;
+        };
         if target.source_id == row.source_id || target.control_flags & 0x20 != 0 {
             continue;
         }
         // Literal source compares distance(target.position,target.position)
         // <= owner.word1C. Its self-distance is zero for every unsigned range.
-        let value = score(row, target_position(arena, slot)?);
+        let value = score(row, target_position(arena, slot, context)?);
         if value < best {
             best = value;
             selected = Some(slot);
@@ -351,7 +375,7 @@ fn acquire(
             continue;
         }
         for &slot in slots {
-            let Some(target) = area_damage::source_actor(arena, None, slot) else {
+            let Some(target) = super::source_target::read(arena, context, slot)? else {
                 continue;
             };
             if target.source_id == row.source_id
@@ -359,10 +383,7 @@ fn acquire(
             {
                 continue;
             }
-            let value = score(
-                row,
-                centre(target.position, target.model, target.shape.vertical_offset),
-            );
+            let value = score(row, target_position(arena, slot, context)?);
             if value < best {
                 best = value;
                 selected = Some(slot);
@@ -382,7 +403,7 @@ fn acquire(
                     return Err("guided projectile model22 child chain is cyclic".to_owned());
                 }
                 visited += 1;
-                let value = score(row, target_position(arena, child)?);
+                let value = score(row, target_position(arena, child, context)?);
                 if value < best {
                     best = value;
                     selected = Some(child);
@@ -393,9 +414,9 @@ fn acquire(
     }
     if let Some(slot) = selected {
         put(row, 154, slot);
-        aim_at(row, target_position(arena, slot)?);
-        let identity =
-            area_damage::source_actor(arena, None, slot).map(|actor| (actor.class, actor.model));
+        aim_at(row, target_position(arena, slot, context)?);
+        let identity = super::source_target::read(arena, context, slot)?
+            .map(|actor| (actor.class, actor.model));
         if identity == Some((5, 0)) {
             let target = &mut arena.entities[usize::from(slot)];
             target.font_type_index = 32;
@@ -423,14 +444,15 @@ fn acquire_directional(
     row: &mut EntitySnapshot,
     targets: &Targets<'_>,
     outcome: &mut StepOutcome,
+    context: super::source_target::Context<'_>,
 ) -> Result<bool, String> {
-    if acquire_capture(arena, row, targets)? {
+    if acquire_capture(arena, row, targets, context)? {
         return Ok(true);
     }
     let mut best = u32::MAX;
     let mut selected = None;
     for &slot in targets.class3 {
-        let Some(target) = area_damage::source_actor(arena, None, slot) else {
+        let Some(target) = super::source_target::read(arena, context, slot)? else {
             continue;
         };
         if target.class != 3
@@ -439,7 +461,7 @@ fn acquire_directional(
         {
             continue;
         }
-        let position = centre(target.position, target.model, target.shape.vertical_offset);
+        let position = target_position(arena, slot, context)?;
         let dx = i32::from(target.position.x.wrapping_sub(row.position.x) as i16);
         let dy = i32::from(target.position.y.wrapping_sub(row.position.y) as i16);
         let dz = i32::from(target.position.z) - i32::from(row.position.z);
@@ -473,12 +495,13 @@ fn acquire_alliance(
     arena: &mut SourceArena,
     row: &mut EntitySnapshot,
     targets: &Targets<'_>,
+    context: super::source_target::Context<'_>,
 ) -> Result<bool, String> {
     let mut best = u32::MAX;
     let mut selected = None;
     for slots in targets.class5 {
         for &slot in slots {
-            let Some(actor) = area_damage::source_actor(arena, None, slot) else {
+            let Some(actor) = super::source_target::read(arena, context, slot)? else {
                 continue;
             };
             if actor.source_id == row.source_id {
@@ -494,10 +517,7 @@ fn acquire_alliance(
             if cadence == 0 || !crate::spells::late::alliance::eligible_target(&target) {
                 continue;
             }
-            let value = score(
-                row,
-                centre(actor.position, actor.model, actor.shape.vertical_offset),
-            );
+            let value = score(row, target_position(arena, slot, context)?);
             if value < best {
                 best = value;
                 selected = Some(slot);
@@ -506,7 +526,7 @@ fn acquire_alliance(
     }
     if let Some(slot) = selected {
         put(row, 154, slot);
-        aim_at(row, target_position(arena, slot)?);
+        aim_at(row, target_position(arena, slot, context)?);
     }
     Ok(selected.is_some())
 }
@@ -699,7 +719,13 @@ pub(crate) fn step(
     slot: u16,
     guidance: Guidance,
     targets: Option<&Targets<'_>>,
+    context: super::source_target::Context<'_>,
 ) -> Result<StepOutcome, String> {
+    let context = super::source_target::Context {
+        particles: Some(particles),
+        map_type: Some(terrain.map_type()),
+        ..context
+    };
     let mut row = arena
         .entities
         .get(usize::from(slot))
@@ -727,7 +753,7 @@ pub(crate) fn step(
     let mut outcome = StepOutcome::default();
     let original_target = word(&row, 154);
     if original_target != 0 {
-        aim_at(&mut row, target_position(arena, original_target)?);
+        aim_at(&mut row, target_position(arena, original_target, context)?);
         row.set_yaw(
             row.yaw
                 .wrapping_add(turn_toward(row.yaw, row.source_roll(), guidance.yaw_turn))
@@ -742,10 +768,10 @@ pub(crate) fn step(
         row.set_control_flags(row.control_flags | 2);
         let acquired = if let Some(targets) = targets {
             match row.model {
-                7 | 8 => acquire_directional(arena, &mut row, targets, &mut outcome)?,
-                25 => acquire_alliance(arena, &mut row, targets)?,
-                3 | 4 | 22 | 26 => acquire(arena, &mut row, targets, &mut outcome)?,
-                2 | 5 | 20 | 23 => acquire_capture(arena, &mut row, targets)?,
+                7 | 8 => acquire_directional(arena, &mut row, targets, &mut outcome, context)?,
+                25 => acquire_alliance(arena, &mut row, targets, context)?,
+                3 | 4 | 22 | 26 => acquire(arena, &mut row, targets, &mut outcome, context)?,
+                2 | 5 | 20 | 23 => acquire_capture(arena, &mut row, targets, context)?,
                 _ => false,
             }
         } else {
@@ -766,7 +792,7 @@ pub(crate) fn step(
     row.set_position(position);
     arena.entities[usize::from(slot)] = row.clone();
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    let hit = collision(arena, &row);
+    let hit = collision(arena, &row, context)?;
     let terminal = if let Some((target, position)) = hit {
         if reflect(arena, terrain, slot, target, &mut outcome)? {
             return Ok(outcome);
@@ -899,6 +925,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_collision_search_excludes_final_cell_and_keeps_negative_limit_bounded() {
+        let ordinary = collision_search_offsets(48);
+        assert!(ordinary.contains(&(-1, 0)));
+        assert!(!ordinary.contains(&(2, 2)));
+        assert_eq!(ordinary.len(), 15);
+        assert_eq!(collision_search_offsets(-512), vec![(0, 0), (1, 0), (0, 1)]);
+    }
+
+    #[test]
     fn accepted_mine_collision_without_holder_hides_flyer_without_capturing_zero() {
         let mut simulation = super::super::tests::level_two_campaign_session();
         let particles = simulation.session.definition.presentation.particles.clone();
@@ -988,6 +1023,10 @@ mod tests {
                 pitch_turn: 0,
             },
             None,
+            super::super::source_target::Context {
+                spells: Some(&live.shared_spells),
+                ..super::super::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+            },
         )
         .expect("accepted model78 collision is absorbed");
 

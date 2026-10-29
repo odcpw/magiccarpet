@@ -156,6 +156,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&guided_projectile::Targets<'_>>,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<StepOutcome, String> {
     arena
         .entities
@@ -172,6 +173,7 @@ pub(crate) fn step_projectile(
             pitch_turn: EARTHQUAKE_PROPERTIES.projectile_pitch_turn,
         },
         targets,
+        context,
     )?;
     if let Some(child_slot) = outcome.impact_slot {
         // sub_66160 reads a1x->byte46 after sub_65820. NewEvent may have
@@ -335,6 +337,9 @@ mod tests {
                 &particles,
                 projectile_slot,
                 None,
+                crate::native_world::source_target::Context::from_ordinary(
+                    &live.goats, &live.ordinary,
+                ),
             )
             .unwrap();
             let effect_slot = outcome

@@ -229,6 +229,11 @@ fn emit_flyer(
     input: CastInput,
     properties: SummonArmyProperties,
 ) -> Result<Option<FlyerEmission>, String> {
+    // The raw source parent field is only a slot. Preserve its generation
+    // before NewEvent can allocate or otherwise change the arena.
+    let original_parent = arena
+        .handle(initial_parent_slot)
+        .ok_or("Summon Army caster has no live source handle")?;
     let initial_position = arena
         .entities
         .get(usize::from(initial_parent_slot))
@@ -289,6 +294,13 @@ fn emit_flyer(
         .filter(|row| row.active)
         .cloned()
         .ok_or("Summon Army caster disappeared during flyer construction")?;
+    let caster_handle = if parent_slot == initial_parent_slot {
+        original_parent
+    } else {
+        arena
+            .handle(parent_slot)
+            .ok_or("Summon Army replacement caster has no live source handle")?
+    };
     let selector = family_selector(holder.level_gate, input.map_type, properties)?;
 
     let mut flyer = arena.entities[usize::from(slot)].clone();
@@ -320,6 +332,12 @@ fn emit_flyer(
     put_word(&mut flyer, 162, axis.z as u16);
 
     arena.entities[usize::from(slot)] = flyer;
+    let flyer_handle = arena
+        .handle(slot)
+        .ok_or("Summon Army flyer lost its source handle")?;
+    if !arena.bind_carried_creature_parent(flyer_handle, caster_handle) {
+        return Err("Summon Army flyer lost its caster generation".to_owned());
+    }
     Ok(Some(FlyerEmission {
         event_slot: slot,
         parent_slot,
@@ -477,6 +495,10 @@ pub(crate) fn construct_ring_group(
     }
     let holder_slot = word(&flyer, 42);
     let parent_slot = word(&flyer, 44);
+    let parent_binding = arena
+        .handle(flyer_slot)
+        .and_then(|handle| arena.creature_parent_binding(handle))
+        .filter(|parent| parent.source_slot == parent_slot);
     let owner_id = flyer.source_id;
     let particle = particles
         .get(usize::from(RING_PARTICLE))
@@ -582,6 +604,13 @@ pub(crate) fn construct_ring_group(
         let handle = arena
             .handle(slot)
             .ok_or_else(|| format!("Summon Army ring lost source slot{slot}"))?;
+        if let Some(parent) = parent_binding
+            && !arena.bind_carried_creature_parent(handle, parent)
+        {
+            return Err(format!(
+                "Summon Army ring {slot} lost its caster generation"
+            ));
+        }
         outcome.rings.push(handle);
     }
     Ok(outcome)
@@ -694,6 +723,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&super::guided_projectile::Targets<'_>>,
+    context: super::source_target::Context<'_>,
 ) -> Result<super::guided_projectile::StepOutcome, String> {
     let outcome = super::guided_projectile::step(
         arena,
@@ -705,6 +735,7 @@ pub(crate) fn step_projectile(
             pitch_turn: 0,
         },
         targets,
+        context,
     )?;
     if let Some(first_ring_slot) = outcome.impact_slot {
         propagate_current_flyer_to_ring_chain(arena, slot, first_ring_slot)?;
@@ -769,11 +800,25 @@ where
         stage_mode: SUMMONED_STAGE_MODE,
         remaining_lifetime: SUMMONED_REMAINING_LIFETIME,
     };
+    let parent_binding = arena
+        .handle(slot)
+        .and_then(|handle| arena.creature_parent_binding(handle))
+        .filter(|parent| parent.source_slot == request.parent_slot);
     let Some(creature) = construct_member(arena, runtime, terrain, particles, request)? else {
         return Ok(RingStepOutcome::NoCreatureSlot { member });
     };
     if arena.resolve(creature).is_none() {
         return Err("Summon Army family constructor returned a stale source handle".to_owned());
+    }
+    if let Some(parent) = parent_binding {
+        if !arena.bind_carried_creature_parent(creature, parent) {
+            return Err("Summon Army child lost its caster generation".to_owned());
+        }
+        if request.member == SummonArmyMember::Firefly {
+            super::level2_class5::firefly::inherit_summoned_parent_generation(
+                arena, creature, parent,
+            )?;
+        }
     }
     let expected_kind = match request.member {
         SummonArmyMember::Bee => crate::level_definition::CreatureKind::Bee,
@@ -1263,6 +1308,92 @@ mod tests {
                 assert_eq!(sidecar.parent_entity_index, 6);
                 assert_eq!(sidecar.word_0x2e, SUMMONED_REMAINING_LIFETIME);
                 assert_eq!(sidecar.stage_var2, SUMMONED_STAGE_MODE);
+            }
+        }
+    }
+
+    #[test]
+    fn ring_birth_preserves_caster_generation_when_parent_slot_is_reused() {
+        let source_runtime = campaign_runtime_fixture();
+        for selector in [2_u8, 19, 25, 16] {
+            // 0 keeps the caster, 1 reuses it before impact, and 2 reuses it
+            // after ring creation but before the child is born.
+            for reuse_phase in 0..=2 {
+                let count = usize::from(source_group_size(selector).unwrap());
+                let (mut arena, mut terrain, particles, flyer_slot) =
+                    ring_fixture(count + 3, selector);
+                let parent_slot = arena
+                    .allocate_source_slot_with_terrain(&mut terrain)
+                    .unwrap();
+                let position = arena.entities[usize::from(flyer_slot)].position;
+                let mut parent = super::super::cave_features::new_event(parent_slot, 5, position);
+                parent.class = 3;
+                parent.model = 0;
+                parent.record[67] = 3;
+                parent.set_life(1000);
+                arena.entities[usize::from(parent_slot)] = parent;
+                let parent_handle = arena.handle(parent_slot).unwrap();
+                put_word(
+                    &mut arena.entities[usize::from(flyer_slot)],
+                    44,
+                    parent_slot,
+                );
+                let flyer = arena.handle(flyer_slot).unwrap();
+                assert!(arena.bind_creature_parent(flyer, parent_handle));
+                let replace_parent = |arena: &mut SourceArena, terrain: &mut SessionTerrain| {
+                    arena.economy.release_slot(parent_slot, None);
+                    assert_eq!(
+                        arena.allocate_source_slot_with_terrain(terrain),
+                        Some(parent_slot)
+                    );
+                    let mut replacement =
+                        super::super::cave_features::new_event(parent_slot, 6, position);
+                    replacement.class = 3;
+                    replacement.model = 0;
+                    replacement.record[67] = 3;
+                    replacement.set_life(1000);
+                    arena.entities[usize::from(parent_slot)] = replacement;
+                    assert_ne!(arena.handle(parent_slot).unwrap(), parent_handle);
+                };
+                if reuse_phase == 1 {
+                    replace_parent(&mut arena, &mut terrain);
+                }
+                let group =
+                    construct_ring_group(&mut arena, &mut terrain, &particles, flyer_slot).unwrap();
+                assert!(group.complete());
+                for ring in &group.rings {
+                    assert_eq!(arena.creature_parent_binding(*ring), Some(parent_handle));
+                }
+                if reuse_phase == 2 {
+                    replace_parent(&mut arena, &mut terrain);
+                }
+                let ring = group.rings[0];
+                arena.entities[usize::from(ring.source_slot)].set_life(1);
+                let mut runtime = source_runtime.clone();
+                let RingStepOutcome::Spawned { creature } = step_ring_with_family(
+                    &mut arena,
+                    &mut runtime,
+                    &mut terrain,
+                    &particles,
+                    ring.source_slot,
+                )
+                .unwrap() else {
+                    panic!("selector {selector}, reuse phase {reuse_phase}: child not created");
+                };
+                assert_eq!(arena.creature_parent_binding(creature), Some(parent_handle));
+                assert_eq!(
+                    arena.creature_parent(creature),
+                    (reuse_phase == 0).then_some(parent_handle)
+                );
+                if selector == 19 {
+                    let state = arena
+                        .economy
+                        .authored_fireflies()
+                        .iter()
+                        .find(|state| state.source_entity_index == creature.source_slot)
+                        .unwrap();
+                    assert_eq!(state.parent_generation, parent_handle.generation);
+                }
             }
         }
     }

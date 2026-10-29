@@ -298,6 +298,21 @@ fn construct_request(
             else {
                 return Ok(None);
             };
+            crate::world::effects::sync_position(
+                arena,
+                terrain,
+                projectile_slot,
+                mine.position,
+                true,
+                false,
+            )?;
+            crate::world::effects::lighting::admit_source(
+                arena,
+                terrain,
+                projectile_slot,
+                mine.position,
+                crate::world::effects::lighting::SourceLight::Fireball,
+            );
             arena.economy.prepare_sound(
                 projectile_slot,
                 request.owner_slot,

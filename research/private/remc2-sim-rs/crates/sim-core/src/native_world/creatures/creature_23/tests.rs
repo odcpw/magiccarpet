@@ -276,7 +276,7 @@ fn source_adapter_commits_a_real_ray_runs_its_consumer_and_keeps_failed_birth_si
     );
 
     let outcome =
-        crate::native_world::lightning::step(arena, terrain, &particles, ray_slot, None).unwrap();
+        crate::native_world::lightning::step(arena, terrain, &particles, ray_slot, None, crate::native_world::source_target::Context::default()).unwrap();
     let endpoint = outcome
         .impact_slot
         .expect("the shared Lightning ray consumer commits its endpoint");
@@ -334,6 +334,17 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
         .find(|row| row.active && row.life >= 0 && row.class == 3 && row.model == 0)
         .expect("Mission18 retains a live player")
         .index;
+    assert_eq!(
+        killer_slot,
+        session
+            .session
+            .state
+            .live
+            .shared_spells
+            .local_player
+            .entity_index,
+        "the contact owner is the player read by completion statistics"
+    );
     let identity = session
         .creature_identity_for_source_slot(source_slot)
         .expect("the actual source root census resolves authored model23");
@@ -408,6 +419,20 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
             kills_after > kills_before,
             "prekill credit reaches the player consumer"
         );
+        let population = live.economy.source_creature_population as i32;
+        let expected_percent = if population == 0 {
+            100
+        } else {
+            (kills_after as i32)
+                .wrapping_mul(100)
+                .wrapping_div(population)
+                .clamp(0, 100)
+        };
+        assert_eq!(
+            session.completion_statistics().creatures_killed_percent,
+            expected_percent,
+            "the campaign statistics consumer observes the credited kill"
+        );
         actor.mana
     };
     let sphere_slots_before_death = session
@@ -436,7 +461,7 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
     }
     let death_pass = death_pass.expect("action189 cadence produces and hides model23");
 
-    {
+    let reward_slot = {
         let live = &session.session.state.live;
         let actor = &live.economy.entities[usize::from(source_slot)];
         assert!(
@@ -473,7 +498,8 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
             .expect("model23 death produces a new mana sphere");
         let reward_row = &live.economy.entities[usize::from(reward.source_entity_index)];
         assert_eq!((reward_row.class, reward_row.model), (10, 39));
-    }
+        reward.source_entity_index
+    };
 
     session.step_level2_source_pass(death_pass.wrapping_add(1));
     let live = &session.session.state.live;
@@ -497,6 +523,66 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
             .creature_identity_for_source_slot(source_slot)
             .is_none_or(|identity| identity.handle != root_handle)
     );
+
+    // Isolate the consumer by constructing a second model23 and staging its
+    // already-entered capture state beside the *actual* death sphere. The
+    // source scheduler, rather than a copied sphere or direct leaf call,
+    // performs the pickup and publishes mana to its live actor row.
+    let particles = session.session.definition.presentation.particles.clone();
+    let collector_slot = {
+        let live = &mut session.session.state.live;
+        let reward = live
+            .economy
+            .economy
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.active && sphere.source_entity_index == reward_slot)
+            .copied()
+            .expect("the produced death sphere survives the reclaim pass");
+        assert_eq!(reward.mana, reward_mana);
+        let collector = super::mc2::allocate_authored(
+            &mut live.economy,
+            &mut live.core.runtime,
+            &mut live.terrain,
+            &particles,
+            reward.position,
+            RULES.max_life,
+            None,
+            29,
+        )
+        .unwrap()
+        .expect("the source constructor allocates a collection actor");
+        let row = &mut live.economy.entities[usize::from(collector)];
+        row.set_source_action(187);
+        row.record[70] = 1;
+        row.record[16..20].copy_from_slice(&2_i32.to_le_bytes());
+        row.record[154..156].copy_from_slice(&reward_slot.to_le_bytes());
+        row.position = Position {
+            z: reward.position.z.wrapping_sub(32),
+            ..reward.position
+        };
+        let position = row.position;
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            collector,
+            position,
+            true,
+            false,
+        )
+        .unwrap();
+        collector
+    };
+    session.step_level2_source_pass(death_pass.wrapping_add(2));
+    let live = &session.session.state.live;
+    assert_eq!(
+        live.economy.entities[usize::from(collector_slot)].mana,
+        RULES.initial_mana.wrapping_add(reward_mana),
+        "the scheduled capture consumer absorbs the actual death reward"
+    );
+    assert!(live.economy.economy.spheres().iter().all(|sphere| {
+        sphere.source_entity_index != reward_slot || sphere.pending_delete || !sphere.active
+    }));
 }
 
 #[test]

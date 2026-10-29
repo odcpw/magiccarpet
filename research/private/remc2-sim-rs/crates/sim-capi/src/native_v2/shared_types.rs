@@ -186,6 +186,8 @@ pub const MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED: u8 = 6;
 pub const MC_AUDIO_ACTION_UPDATE_EXISTING: u8 = 7;
 pub const MC_AUDIO_ACTION_END_LOOP: u8 = 8;
 pub const MC_AUDIO_ACTION_SUPPRESS_NO_EXISTING: u8 = 9;
+/// The selected owner-bank record is NULL.WAV; no voice or completion.
+pub const MC_AUDIO_ACTION_SUPPRESS_NULL_SAMPLE: u8 = 10;
 
 pub const MC_ASSET_REF_NONE: u32 = u32::MAX;
 pub const MC_PARAMETER_RECORD_NONE: u16 = u16::MAX;

@@ -743,6 +743,22 @@ fn digest_live_source_arena(arena: &SourceArena) -> CanonicalDigest {
             hasher.update(entity.record_bytes());
         }
         hasher.update(arena.topology().receipt.as_bytes());
+        if !arena.effects.death_burst_origins().is_empty() {
+            hasher.update(b"source-death-burst-provenance-v1");
+            append_len(hasher, arena.effects.death_burst_origins().len());
+            for (&slot, &(generation, parent)) in arena.effects.death_burst_origins() {
+                hasher.update(slot.to_le_bytes());
+                hasher.update(generation.to_le_bytes());
+                hasher.update(parent.to_le_bytes());
+            }
+        }
+        if !arena.dynamic_lighting_enabled
+            || arena.dynamic_lighting != crate::dynamic_lighting::DynamicLightingState::reset()
+        {
+            hasher.update(b"source-dynamic-lighting-v1");
+            hasher.update([u8::from(arena.dynamic_lighting_enabled)]);
+            hasher.update(arena.dynamic_lighting.hash_v1().to_le_bytes());
+        }
     })
 }
 
@@ -1114,6 +1130,7 @@ pub(crate) fn digest_level_exit_sequence(hasher: &mut Sha256, exit: LevelExitSeq
         timer: exit.timer,
         trigger_entity_index: exit.trigger_entity_index,
         portal_entity_index: exit.portal_entity_index,
+        ordinary_exit_route: exit.ordinary_exit_route,
         ..LevelExitSequence::default()
     };
     if exit != legacy_only {
@@ -1129,6 +1146,11 @@ pub(crate) fn digest_level_exit_sequence(hasher: &mut Sha256, exit: LevelExitSeq
             exit.result_code,
         ]);
         hasher.update(exit.camera_fov.to_le_bytes());
+    }
+    if exit.ordinary_exit_route
+        == crate::level_exit::OrdinaryExitRoute::UnfinishedSecretContinuation
+    {
+        hasher.update(b"ordinary-exit-secret-continuation-v1");
     }
 }
 
@@ -1241,6 +1263,34 @@ mod tests {
         );
         assert_eq!(session.campaign_state_hash(), public_hash);
         assert_eq!(session.terrain_hash(), terrain_hash);
+    }
+
+    #[test]
+    fn source_arena_digest_carries_light_pool_and_admission_setting() {
+        let session = level_two_session();
+        let mut arena = session.source_arena().clone();
+        let baseline = digest_live_source_arena(&arena);
+        arena.dynamic_lighting_enabled = false;
+        assert_ne!(digest_live_source_arena(&arena), baseline);
+        arena.dynamic_lighting_enabled = true;
+        assert_eq!(digest_live_source_arena(&arena), baseline);
+        let entity_bytes = arena.entities().to_vec();
+        assert!(
+            arena
+                .dynamic_lighting
+                .admit(
+                    true,
+                    true,
+                    session.state.entity_index,
+                    session.state.position,
+                    128,
+                    1,
+                    false,
+                )
+                .is_some()
+        );
+        assert_eq!(arena.entities(), entity_bytes);
+        assert_ne!(digest_live_source_arena(&arena), baseline);
     }
 
     #[test]

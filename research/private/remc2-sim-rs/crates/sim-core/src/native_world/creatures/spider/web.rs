@@ -133,6 +133,7 @@ pub(crate) fn step(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<WebOutcome, String> {
     guided_projectile::step(
         arena,
@@ -144,5 +145,6 @@ pub(crate) fn step(
             pitch_turn: RULES.web_pitch_turn,
         },
         None,
+        context,
     )
 }

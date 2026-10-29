@@ -106,6 +106,30 @@ pub(crate) fn allocate_summoned(
     Ok(Some(handle))
 }
 
+/// Preserve the caster generation carried by an Army ring, even if the
+/// numeric parent slot was reused before this Firefly was constructed.
+pub(crate) fn inherit_summoned_parent_generation(
+    arena: &mut SourceArena,
+    child: SourceEntityHandle,
+    parent: SourceEntityHandle,
+) -> std::result::Result<(), String> {
+    if arena.resolve(child).is_none() {
+        return Err("Summoned Firefly lost its source generation".to_owned());
+    }
+    let state = arena
+        .economy
+        .authored_fireflies
+        .iter_mut()
+        .find(|state| {
+            state.source_entity_index == child.source_slot
+                && state.stage_var2 == 13
+                && state.parent_entity_index == parent.source_slot
+        })
+        .ok_or("Summoned Firefly lost its parent sidecar")?;
+    state.parent_generation = parent.generation;
+    Ok(())
+}
+
 /// Run action 159's parent-bound StageVar 13, 16 and 17 branches.
 ///
 /// `sub_1E320` first moves a boss-launched child towards its launch target;
@@ -194,7 +218,7 @@ pub(crate) fn step_summoned_stage_slot(
             terrain,
             source_slot,
             source.position,
-            source.drawing_enabled,
+            source.active,
             false,
         )?;
         return Ok(true);
@@ -263,7 +287,7 @@ pub(crate) fn step_summoned_stage_slot(
                 terrain,
                 source_slot,
                 position,
-                false,
+                true,
                 false,
             )?;
             return Ok(true);
@@ -647,6 +671,7 @@ pub(crate) struct FireflyContact {
 pub(crate) struct FireflyFireballLaunch {
     pub(crate) owner_entity_index: u16,
     pub(crate) target_entity_index: u16,
+    pub(crate) constructor_position: Position,
     pub(crate) position: Position,
     pub(crate) target_position: Position,
     pub(crate) yaw: i16,
@@ -1630,6 +1655,7 @@ impl Level2EconomyState {
                             fireball = Some(FireflyFireballLaunch {
                                 owner_entity_index: source.source_entity_index,
                                 target_entity_index: target.entity_index,
+                                constructor_position: angle_origin,
                                 position,
                                 target_position: target.position,
                                 yaw,
@@ -2364,6 +2390,25 @@ mod tests {
             .find(|row| row.source_entity_index == child.source_slot)
             .unwrap();
         assert!(source.active && !source.drawing_enabled);
+        let position = source.position;
+        let tile = ((position.x >> 8) as u8, (position.y >> 8) as u8);
+        assert!(
+            arena
+                .economy
+                .map_chains
+                .entity_chain(tile.0, tile.1)
+                .contains(&child.source_slot)
+        );
+        retire_hidden_summoned_stage_at_source_boundary(&mut arena);
+        arena.economy.reclaim_inactive_slots_at_source_boundary();
+        assert!(arena.resolve(child).is_none());
+        assert!(
+            !arena
+                .economy
+                .map_chains
+                .entity_chain(tile.0, tile.1)
+                .contains(&child.source_slot)
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use super::*;
-use crate::Position;
 use crate::campaign::source_arena::{CreatureRootOrigin, CreatureRuntimeRole};
 use crate::level_definition::CreatureKind;
 use crate::native_world::ParticleParameter;
+use crate::{FlightWorld, Position};
 
 const AUTHORED_RECORD: u16 = 17;
 
@@ -101,6 +101,782 @@ fn legacy_runtime_without_constructor_counters_rejects_before_allocation() {
     assert_eq!(arena.economy.free_slot_count(), before);
 }
 
+fn owner_level23_model27() -> (crate::native_world::Mc2Simulation, u16) {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-ordinary-package-kxk0nb7m/level23")
+        },
+        std::path::PathBuf::from,
+    );
+    let campaign = CampaignSession::open(package, CampaignSelection::ordinary(23).unwrap())
+        .expect("actual Level 23 owner package");
+    let mut session = campaign.simulation().clone();
+    let gate = session
+        .entities()
+        .iter()
+        .find(|row| {
+            row.active && (row.class, row.model, row.action, row.source_id) == (11, 32, 32, 16)
+        })
+        .cloned()
+        .expect("owner record553 is the group16 objective switch");
+    let gate_stage = usize::try_from(gate.level_gate).unwrap();
+    assert!(gate_stage < usize::from(session.runtime().stage_index));
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session.dispatch_events().iter().any(|event| matches!(
+        event,
+        Mc2DispatchEvent::AuthoredGroupActivated { group: 16, .. }
+    )));
+    for objective in 0..session.runtime.objectives.len() {
+        session
+            .runtime
+            .set_level2_objective_stage_selector_for(objective, gate_stage, 2);
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 16, authored_indices, .. }
+                if authored_indices.contains(&560)
+        )),
+        "the owner objective switch must publish its actual model27 record"
+    );
+    let root_slot = session
+        .entities()
+        .iter()
+        .find_map(|row| {
+            let identity = session.creature_identity_for_source_slot(row.index)?;
+            (identity.origin
+                == CreatureRootOrigin::AuthoredRecord {
+                    authored_record: 560,
+                })
+            .then_some(row.index)
+        })
+        .expect("ordinary group production must publish the living model27 root");
+    let live = &session.session.state.live;
+    let root = live.economy.handle(root_slot).unwrap();
+    let chain = multipart::read_chain(&live.economy, root).unwrap();
+    let root_phase = live.economy.entities[usize::from(root_slot)].phase;
+    let head_phases = chain
+        .heads
+        .map(|head| live.economy.entities[usize::from(head.source_slot)].phase);
+    assert_eq!(chain.ordered.len(), 50);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let live = &session.session.state.live;
+    assert_eq!(
+        live.economy.entities[usize::from(root_slot)].phase,
+        root_phase.wrapping_add(1)
+    );
+    for (head, phase) in chain.heads.into_iter().zip(head_phases) {
+        assert_eq!(
+            live.economy.entities[usize::from(head.source_slot)].phase,
+            phase.wrapping_add(1)
+        );
+    }
+    (session, root_slot)
+}
+
+#[test]
+fn owner_level23_objective_gate_produces_model27_for_the_source_scheduler() {
+    let _ = owner_level23_model27();
+}
+
+fn owner_level20_model27() -> (crate::native_world::Mc2Simulation, u16) {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level20");
+    let campaign = CampaignSession::open(package, CampaignSelection::ordinary(20).unwrap())
+        .expect("actual Level 20 owner package");
+    let mut session = campaign.simulation().clone();
+    let gate = session
+        .entities()
+        .iter()
+        .find(|row| {
+            row.active && (row.class, row.model, row.action, row.source_id) == (11, 29, 29, 1)
+        })
+        .expect("owner record327 is its model16-absence switch")
+        .index;
+    let wyverns = session
+        .entities()
+        .iter()
+        .filter(|row| {
+            row.active
+                && row.class == 5
+                && row.model == 16
+                && row.life >= 0
+                && !row.drawing_disabled()
+        })
+        .map(|row| row.index)
+        .collect::<Vec<_>>();
+    assert!(
+        !wyverns.is_empty(),
+        "the actual switch begins with its model16 blocker"
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 1, .. } if *source_slot == gate
+    )));
+    // Controlled near-identical absence input; the countdown, group producer,
+    // allocation and scheduler remain the actual owner-package path.
+    for slot in wyverns {
+        let row = &mut session.session.state.live.economy.entities[usize::from(slot)];
+        row.set_life(-1);
+        row.disable_drawing();
+    }
+    let mut produced = false;
+    for _ in 0..20 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        produced |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 1, authored_indices, .. }
+                if *source_slot == gate && authored_indices.contains(&328)
+        ));
+        if produced {
+            break;
+        }
+    }
+    assert!(
+        produced,
+        "the source countdown must publish actual model27 record328"
+    );
+    let root = session
+        .entities()
+        .iter()
+        .find_map(|row| {
+            let identity = session.creature_identity_for_source_slot(row.index)?;
+            (identity.origin
+                == CreatureRootOrigin::AuthoredRecord {
+                    authored_record: 328,
+                })
+            .then_some(identity.handle)
+        })
+        .expect("ordinary group1 production retains its actual typed root");
+    let chain = multipart::read_chain(&session.session.state.live.economy, root).unwrap();
+    assert_eq!(chain.ordered.len(), 50);
+    (session, root.source_slot)
+}
+
+#[test]
+fn owner_level20_absence_switch_produces_model27_after_wyverns_are_gone() {
+    let _ = owner_level20_model27();
+}
+
+fn owner_level22_model27() -> (crate::native_world::Mc2Simulation, u16) {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level22");
+    let campaign = CampaignSession::open(package, CampaignSelection::ordinary(22).unwrap())
+        .expect("actual Level 22 owner package");
+    let mut session = campaign.simulation().clone();
+    let root_slot = 2;
+    let arena = &session.session.state.live.economy;
+    let root = arena
+        .handle(root_slot)
+        .expect("owner group0 retains its initial root");
+    let chain =
+        multipart::read_chain(arena, root).expect("owner group0 retains its complete chain");
+    let no_bindings = std::collections::BTreeMap::new();
+    let part_identity = arena
+        .creature_runtime_identity(chain.heads[0].source_slot, &no_bindings, &no_bindings)
+        .expect("reset adopted the owner-package head's generation-bound root");
+    assert_eq!(part_identity.root_slot, root_slot);
+    assert_eq!(part_identity.origin, CreatureRootOrigin::InitialPackage);
+    let mut malformed = arena.clone();
+    malformed.clear_raw_creature_origin(root_slot);
+    malformed.entities[usize::from(chain.heads[0].source_slot)].record[54..56].fill(0);
+    assert!(
+        mc2::adopt_imported(&mut malformed).is_err(),
+        "reset must reject a wrong-owner head"
+    );
+    let mut prekill = arena.clone();
+    prekill.clear_raw_creature_origin(root_slot);
+    for part in std::iter::once(root).chain(chain.ordered.iter().copied()) {
+        prekill.entities[usize::from(part.source_slot)].set_source_action(221);
+    }
+    mc2::adopt_imported(&mut prekill).expect("a valid visible prekill chain retains its bindings");
+    assert_eq!(prekill.model27_part_root(chain.heads[0]), Some(root));
+    prekill.entities[usize::from(chain.bodies[0][0].source_slot)].set_source_action(BODY_ACTION);
+    prekill.clear_raw_creature_origin(root_slot);
+    mc2::adopt_imported(&mut prekill)
+        .expect("KillAll can leave body actions unchanged until the root's death callback");
+    prekill.entities[usize::from(chain.bodies[0][0].source_slot)].set_source_action(HEAD_ACTION);
+    prekill.clear_raw_creature_origin(root_slot);
+    assert!(
+        mc2::adopt_imported(&mut prekill).is_err(),
+        "a body slot cannot have a head action even in a KillAll chain"
+    );
+    let root_phase = arena.entities[usize::from(root_slot)].phase;
+    let root_proximity = arena.entities[usize::from(root_slot)].record[61];
+    assert_eq!(
+        root_proximity, 16,
+        "owner Level22 retains its initial proximity countdown"
+    );
+    let head_phases = chain
+        .heads
+        .map(|head| arena.entities[usize::from(head.source_slot)].phase);
+    assert_eq!(chain.ordered.len(), 50);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+        "source scheduler error: {:?}",
+        session.dispatch_events()
+    );
+    let arena = &session.session.state.live.economy;
+    assert_eq!(
+        arena.entities[usize::from(root_slot)].phase,
+        root_phase.wrapping_add(1)
+    );
+    assert_eq!(arena.entities[usize::from(root_slot)].record[61], 15);
+    for (head, phase) in chain.heads.into_iter().zip(head_phases) {
+        assert_eq!(
+            arena.entities[usize::from(head.source_slot)].phase,
+            phase.wrapping_add(1)
+        );
+        assert_eq!(arena.entities[usize::from(head.source_slot)].record[61], 15);
+    }
+    for body in chain.bodies.into_iter().flatten() {
+        assert_eq!(arena.entities[usize::from(body.source_slot)].record[61], 16);
+    }
+    (session, root_slot)
+}
+
+#[test]
+fn owner_level22_initial_multipart_chain_runs_in_the_source_scheduler() {
+    let (session, root_slot) = owner_level22_model27();
+    let arena = &session.session.state.live.economy;
+    let chain = multipart::read_chain(arena, arena.handle(root_slot).unwrap()).unwrap();
+    let presentations = session.campaign_entity_presentations(0).unwrap();
+    let particle = |slot| {
+        presentations
+            .iter()
+            .find(|row| row.entity_index == slot)
+            .map(|row| row.render_parameter_index)
+    };
+    assert_eq!(particle(root_slot), Some(ROOT_PARTICLE));
+    for head in chain.heads {
+        assert_eq!(particle(head.source_slot), Some(HEAD_PARTICLE));
+    }
+    for body in chain.bodies.into_iter().flatten() {
+        assert_eq!(particle(body.source_slot), Some(BODY_PARTICLE));
+    }
+}
+
+fn assert_head_projectiles_reach_scheduled_damage_consumers(
+    base: crate::native_world::Mc2Simulation,
+    root_slot: u16,
+) {
+    use crate::PlayerCommand;
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+
+    for selector in [0, 9] {
+        let mut session = base.clone();
+        let player_slot = session.state.entity_index;
+        let target = session
+            .entities()
+            .iter()
+            .find(|row| {
+                row.active
+                    && row.class == 3
+                    && row.model == 1
+                    && row.life > 0
+                    && !row.drawing_disabled()
+            })
+            .or_else(|| {
+                session
+                    .entities()
+                    .iter()
+                    .find(|row| row.index == player_slot && row.active && row.class == 3)
+            })
+            .cloned()
+            .expect("owner level has a living player or rival target");
+        let target_slot = target.index;
+        let is_player = target_slot == player_slot;
+        let target_life = if is_player {
+            session.session.state.live.player_life
+        } else {
+            target.life
+        };
+        let mut root_position = if is_player {
+            session.session.state.live.core.state.position
+        } else {
+            target.position
+        };
+        root_position.x = root_position.x.wrapping_sub(1024);
+        root_position.z = session.canonical_terrain().ground_height(root_position);
+        session
+            .set_level2_entity_position(root_slot, root_position)
+            .unwrap();
+        if !is_player {
+            let mut player_position = root_position;
+            player_position.y = player_position.y.wrapping_add(3072);
+            session
+                .set_level2_entity_position(player_slot, player_position)
+                .unwrap();
+        }
+        {
+            let arena = &mut session.session.state.live.economy;
+            let root = arena.handle(root_slot).unwrap();
+            let chain = multipart::read_chain(arena, root).unwrap();
+            let row = &mut arena.entities[usize::from(root_slot)];
+            row.set_source_action(217);
+            row.record[76..80].fill(0);
+            // Keep the other source heads in their ordinary dormant regrowth
+            // phase so their shots cannot satisfy this variant's damage test.
+            for other in &chain.heads[1..] {
+                let row = &mut arena.entities[usize::from(other.source_slot)];
+                row.record[74] = 9;
+                row.set_source_dword_10(100);
+            }
+            let head = &mut arena.entities[usize::from(chain.heads[0].source_slot)];
+            head.record[74] = 3;
+            head.record[72] = if selector == 0 { 1 } else { 3 };
+            head.record[154..156].copy_from_slice(&target_slot.to_le_bytes());
+            head.set_actual_speed(192);
+            head.set_entity_rng(0);
+            head.mana_regen = 2;
+            head.record[140..144].copy_from_slice(&2_i32.to_le_bytes());
+            head.set_source_dword_10(2);
+        }
+        let mut saw_projectile = false;
+        let mut saw_damage = false;
+        let mut saw_consumed_life = false;
+        let mut fireball_slot = None;
+        let mut saw_fireball_reclaim = false;
+        for _ in 0..24 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "source scheduler error: {:?}",
+                session.dispatch_events()
+            );
+            let arena = &session.session.state.live.economy;
+            saw_projectile |= if selector == 0 {
+                let projectile = arena
+                    .economy
+                    .fireball_projectiles()
+                    .iter()
+                    .find(|shot| shot.owner_entity_index == root_slot);
+                if let Some(shot) = projectile {
+                    fireball_slot.get_or_insert(shot.source_entity_index);
+                }
+                projectile.is_some()
+            } else {
+                arena.entities.iter().any(|shot| {
+                    shot.active && (shot.class, shot.model) == (9, 9) && shot.source_id == root_slot
+                })
+            };
+            let target_row = &arena.entities[usize::from(target_slot)];
+            let attacker = u16::from_le_bytes([target_row.record[102], target_row.record[103]]);
+            let payload = i32::from_le_bytes(target_row.record[98..102].try_into().unwrap());
+            saw_damage |= attacker == root_slot && payload > 0;
+            saw_damage |= session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::Economy { event: Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, .. }, .. }
+                    if *target_entity_index == target_slot && *attacker_entity_index == root_slot && *damage > 0
+            ));
+            let current_life = if is_player {
+                session.session.state.live.player_life
+            } else {
+                target_row.life
+            };
+            saw_consumed_life |= current_life < target_life;
+            if let Some(slot) = fireball_slot
+                && arena.economy.free_source_slots().contains(&slot)
+            {
+                let residual = &arena.entities[usize::from(slot)];
+                assert_eq!(residual.parameter_relation, Some(106));
+                assert_eq!(
+                    u32::from_le_bytes(residual.record[164..168].try_into().unwrap()),
+                    107
+                );
+                saw_fireball_reclaim = true;
+            }
+            if saw_projectile
+                && saw_damage
+                && saw_consumed_life
+                && (selector != 0 || saw_fireball_reclaim)
+            {
+                break;
+            }
+        }
+        assert!(
+            saw_projectile,
+            "selector {selector} must create its real projectile"
+        );
+        assert!(
+            saw_damage && saw_consumed_life,
+            "selector {selector} must deliver root-attributed damage to the real player or rival and have it consumed"
+        );
+        assert!(
+            selector != 0 || saw_fireball_reclaim,
+            "Fireball's next-pass reclaim must retain descriptor106 in the freed source row"
+        );
+    }
+}
+
+#[test]
+fn owner_model27_head_projectiles_reach_scheduled_damage_consumers() {
+    let (session, root) = owner_level23_model27();
+    assert_head_projectiles_reach_scheduled_damage_consumers(session, root);
+}
+
+#[test]
+fn owner_level22_model27_projectiles_reach_scheduled_damage_consumers() {
+    let (session, root) = owner_level22_model27();
+    assert_head_projectiles_reach_scheduled_damage_consumers(session, root);
+}
+
+#[test]
+fn owner_level22_area_damage_reaches_linked_head_and_root_mailboxes() {
+    use crate::combat::area::{AreaDamage, Shape};
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+    let (mut session, root_slot) = owner_level22_model27();
+    let attacker = session.state.entity_index;
+    let arena = &mut session.session.state.live.economy;
+    let root = arena.handle(root_slot).unwrap();
+    let chain = multipart::read_chain(arena, root).unwrap();
+    let head_slot = chain.heads[0].source_slot;
+    let body_slot = chain.bodies[0][0].source_slot;
+    let head = area_damage::read_arena_actor(arena, head_slot).unwrap();
+    let body = area_damage::read_arena_actor(arena, body_slot).unwrap();
+    assert_eq!(head.damage_mask & 1, 1);
+    assert_eq!(body.damage_mask & 1, 0);
+    let mut position = head.position;
+    position.z = position.z.wrapping_add(head.shape.vertical_offset);
+    let hits = area_damage::apply(
+        arena,
+        None,
+        None,
+        AreaDamage {
+            position,
+            shape: Shape {
+                half_width: 128,
+                half_depth: 128,
+                vertical_offset: 0,
+                half_height: 128,
+            },
+            owner: attacker,
+            payload: 76,
+            selector: (5, 27),
+            mode: 0,
+        },
+    )
+    .unwrap();
+    assert!(hits > 0);
+    let head = &arena.entities[usize::from(head_slot)];
+    assert_eq!(
+        u16::from_le_bytes([head.record[102], head.record[103]]),
+        attacker
+    );
+    let body = &arena.entities[usize::from(body_slot)];
+    assert_eq!(u16::from_le_bytes([body.record[102], body.record[103]]), 0);
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+    );
+    let root = &session.entities()[usize::from(root_slot)];
+    assert_eq!(
+        u16::from_le_bytes([root.record[102], root.record[103]]),
+        attacker
+    );
+    assert!(i32::from_le_bytes(root.record[98..102].try_into().unwrap()) > 0);
+}
+
+#[test]
+fn owner_level20_model27_projectiles_reach_scheduled_damage_consumers() {
+    let (session, root) = owner_level20_model27();
+    assert_head_projectiles_reach_scheduled_damage_consumers(session, root);
+}
+
+fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
+    mut session: crate::native_world::Mc2Simulation,
+    root_slot: u16,
+) {
+    use crate::PlayerCommand;
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
+
+    let attacker = session.state.entity_index;
+    let (root, chain) = {
+        let arena = &mut session.session.state.live.economy;
+        let root = arena.handle(root_slot).unwrap();
+        let chain = multipart::read_chain(arena, root).unwrap();
+        // Start near the end of the real heads' health so the focused test
+        // can exercise the source death lifecycle without playing a mission.
+        for head in chain.heads {
+            arena.entities[usize::from(head.source_slot)].set_life(1);
+            area_damage::contact(arena, None, head.source_slot, 76, attacker).unwrap();
+        }
+        (root, chain)
+    };
+    let mut defeated = false;
+    for _ in 0..64 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        let row = &session.session.state.live.economy.entities[usize::from(root_slot)];
+        if row.record[63] == 0 {
+            defeated = true;
+            break;
+        }
+    }
+    assert!(
+        defeated,
+        "all five damaged heads must complete their source death phases"
+    );
+    area_damage::contact(
+        &mut session.session.state.live.economy,
+        None,
+        root_slot,
+        76,
+        attacker,
+    )
+    .unwrap();
+    let mut hidden = false;
+    let mut reclaimed = false;
+    let mut burst_slot = None;
+    let mut burst_expired = false;
+    for _ in 0..8 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        for event in session.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Economy {
+                    event:
+                        Level2EconomyEvent::DeathBurstSpawned {
+                            source_entity_index,
+                            parent_entity_index,
+                            ..
+                        },
+                    ..
+                } if *parent_entity_index == root_slot => burst_slot = Some(*source_entity_index),
+                Mc2DispatchEvent::Economy {
+                    event:
+                        Level2EconomyEvent::DeathBurstExpired {
+                            source_entity_index,
+                            parent_entity_index,
+                        },
+                    ..
+                } if *parent_entity_index == root_slot
+                    && Some(*source_entity_index) == burst_slot =>
+                {
+                    burst_expired = true;
+                }
+                _ => {}
+            }
+        }
+        let arena = &session.session.state.live.economy;
+        let mut all = std::iter::once(root).chain(chain.ordered.iter().copied());
+        if !hidden {
+            hidden = all.clone().all(|part| {
+                arena.slot_generation(part.source_slot) == part.generation
+                    && arena.entities[usize::from(part.source_slot)].drawing_disabled()
+            });
+            if hidden {
+                let presentations = session.campaign_entity_presentations(0).unwrap();
+                assert!(
+                    all.clone().all(|part| presentations
+                        .iter()
+                        .all(|row| row.entity_index != part.source_slot)),
+                    "hidden family must disappear from the actual presentation consumer in the death pass"
+                );
+            }
+        } else {
+            reclaimed = all.all(|part| {
+                arena.slot_generation(part.source_slot) != part.generation
+                    || arena
+                        .economy
+                        .free_source_slots()
+                        .contains(&part.source_slot)
+            });
+            if reclaimed && burst_expired {
+                break;
+            }
+        }
+    }
+    assert!(
+        hidden,
+        "the source death pass hides every linked slot before reclaim"
+    );
+    assert!(
+        reclaimed,
+        "the following source boundary reclaims every linked slot"
+    );
+    assert!(
+        burst_slot.is_some(),
+        "root death allocates its real class10 burst"
+    );
+    assert!(
+        burst_expired,
+        "the source scheduler consumes that same death burst"
+    );
+}
+
+#[test]
+fn owner_model27_linked_damage_death_and_next_pass_reclaim_all_slots() {
+    let (session, root) = owner_level23_model27();
+    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root);
+}
+
+#[test]
+fn owner_level22_model27_linked_damage_death_and_reclaim_all_slots() {
+    let (session, root) = owner_level22_model27();
+    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root);
+}
+
+#[test]
+fn owner_level22_summoned_feedback_reaches_only_the_human_player_progression() {
+    use crate::PlayerCommand;
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+
+    let (base, root_slot) = owner_level22_model27();
+    for (mode, family, human_parent) in [
+        (16_u8, 19_usize, true),
+        (16, 19, false),
+        (14, 24, true),
+        (14, 24, false),
+    ] {
+        let mut session = base.clone();
+        let player = session.state.entity_index;
+        let actors = session
+            .entities()
+            .iter()
+            .filter(|row| {
+                row.active
+                    && row.class == 5
+                    && row.model != 27
+                    && row.life > 0
+                    && !row.drawing_disabled()
+            })
+            .map(|row| row.index)
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actors.len(),
+            2,
+            "owner Level 22 supplies real non-model27 actors"
+        );
+        let parent_slot = if human_parent { player } else { actors[0] };
+        let attacker = actors[1];
+        let position = session.entities()[usize::from(root_slot)].position;
+        session
+            .set_level2_entity_position(attacker, position)
+            .unwrap();
+        let before = session.session.state.live.shared_spells.spell_experience[family];
+        {
+            let arena = &mut session.session.state.live.economy;
+            let root = arena.handle(root_slot).unwrap();
+            let parent = arena.handle(parent_slot).unwrap();
+            assert!(arena.bind_creature_parent(root, parent));
+            if mode == 14 {
+                arena.entities[usize::from(parent_slot)].record[154..156]
+                    .copy_from_slice(&attacker.to_le_bytes());
+            }
+            let row = &mut arena.entities[usize::from(root_slot)];
+            row.set_source_action(223);
+            row.record[77] = mode;
+            row.record[44..46].copy_from_slice(&parent_slot.to_le_bytes());
+            row.record[50..52].copy_from_slice(&32_i16.to_le_bytes());
+            row.record[52..54].copy_from_slice(&64_i16.to_le_bytes());
+            if mode == 16 {
+                area_damage::contact(arena, None, root_slot, 1, attacker).unwrap();
+            }
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        let live = &session.session.state.live;
+        let after = live.shared_spells.spell_experience[family];
+        assert_eq!(
+            after,
+            before + if human_parent { 1 } else { 0 },
+            "family {family}, human parent {human_parent}"
+        );
+        let player = live
+            .core
+            .players
+            .iter()
+            .find(|row| row.entity_index == player)
+            .unwrap();
+        assert_eq!(player.runtime_spell_experience[family], after);
+    }
+}
+
+#[test]
+fn owner_level20_model27_linked_damage_death_and_reclaim_all_slots() {
+    let (session, root) = owner_level20_model27();
+    assert_linked_damage_death_and_next_pass_reclaim_all_slots(session, root);
+}
+
+#[test]
+fn constructor_rejects_fewer_than_51_free_slots_without_consuming_them() {
+    let mut fixture = fixture();
+    while fixture.arena.economy.free_slot_count() > 50 {
+        fixture
+            .arena
+            .allocate_source_slot_with_terrain(&mut fixture.terrain)
+            .expect("free stack reports an available source slot");
+    }
+    let before = fixture.arena.economy.free_slot_count();
+    assert_eq!(before, 50);
+    assert!(
+        mc2::allocate_authored(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            fixture.position,
+            AUTHORED_RECORD,
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(fixture.arena.economy.free_slot_count(), before);
+}
+
 fn allocate(fixture: &mut Fixture) -> Allocation {
     mc2::allocate_authored(
         &mut fixture.arena,
@@ -182,6 +958,11 @@ fn authored_root_builds_and_advances_five_linked_nine_segment_chains() {
         217
     );
     assert_eq!(
+        &fixture.arena.entities[usize::from(allocation.root.source_slot)].record[54..56],
+        &[0, 0],
+        "NewEvent leaves the root's source word32 clear"
+    );
+    assert_eq!(
         fixture.runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)],
         prior_counter.wrapping_add(1),
         "sub_2AC50 consumes counter27 once for the completed root"
@@ -194,6 +975,10 @@ fn authored_root_builds_and_advances_five_linked_nine_segment_chains() {
         );
         assert_eq!(head.record[60], 1);
         assert_eq!(head.record[61], 250);
+        assert_eq!(
+            u16::from_le_bytes([head.record[54], head.record[55]]),
+            allocation.root.source_slot
+        );
         assert_eq!(head.life, 920 + 460 * (head_index as i32 * 10 + 1));
         assert_eq!(u16::from_le_bytes([head.record[136], head.record[137]]), 16);
         for body_handle in allocation.bodies[head_index] {
@@ -227,6 +1012,8 @@ fn authored_root_builds_and_advances_five_linked_nine_segment_chains() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -269,6 +1056,8 @@ fn authored_root_builds_and_advances_five_linked_nine_segment_chains() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -315,6 +1104,8 @@ fn root_tail_advances_all_heads_but_only_consumes_active_head_damage() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -371,6 +1162,52 @@ fn root_tail_advances_all_heads_but_only_consumes_active_head_damage() {
 }
 
 #[test]
+fn pursuit_reads_the_live_player_position_instead_of_retained_row_bytes() {
+    for (far, phase, expected_action) in [(false, 0, 218), (true, 0, 217), (true, 1, 218)] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let root = &mut fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        root.set_source_action(218);
+        root.set_phase(phase);
+        root.record[154..156].copy_from_slice(&fixture.target.to_le_bytes());
+        let mut player_position = root.position;
+        if far {
+            player_position.x = player_position.x.wrapping_add(10_000);
+        }
+        let targets = crate::native_world::source_target::Context {
+            player: Some((fixture.target, player_position, 1000)),
+            particles: Some(&fixture.particles),
+            ..Default::default()
+        };
+        mc2::step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            targets,
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &fixture.class3,
+            &fixture.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+        )
+        .unwrap();
+        let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        assert_eq!(root.action, expected_action);
+        assert_eq!(
+            u16::from_le_bytes([root.record[154], root.record[155]]),
+            if expected_action == 217 {
+                0
+            } else {
+                fixture.target
+            }
+        );
+    }
+}
+
+#[test]
 fn head_state_zero_reuses_the_previous_heads_source_roll() {
     let mut fixture = fixture();
     let allocation = allocate(&mut fixture);
@@ -387,6 +1224,8 @@ fn head_state_zero_reuses_the_previous_heads_source_roll() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &[],
         &fixture.families,
@@ -400,6 +1239,29 @@ fn head_state_zero_reuses_the_previous_heads_source_roll() {
         1,
         "a zero roll scans the empty target list rather than selecting retreat"
     );
+}
+
+#[test]
+fn head_acceleration_stops_at_both_source_speed_boundaries() {
+    let mut fixture = fixture();
+    let allocation = allocate(&mut fixture);
+    let head = fixture.arena.entities[usize::from(allocation.heads[0].source_slot)].clone();
+    for (speed, acceleration, expected) in [
+        (-192_i16, 16_i16, -192_i16),
+        (192, -16, 192),
+        (-176, 16, -160),
+        (176, 16, 192),
+    ] {
+        let mut row = head.clone();
+        row.record[48..50].copy_from_slice(&1_u16.to_le_bytes());
+        row.record[136..138].copy_from_slice(&acceleration.to_le_bytes());
+        row.set_actual_speed(speed);
+        combat::step_head_steering(&mut row, &fixture.terrain);
+        assert_eq!(
+            row.actual_speed, expected,
+            "speed {speed}, acceleration {acceleration}"
+        );
+    }
 }
 
 #[test]
@@ -418,6 +1280,8 @@ fn stage_attack_transition_updates_the_root_and_linked_heads_in_one_pass() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -465,6 +1329,8 @@ fn authored_point_stage_binds_and_advances_the_real_root() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -476,6 +1342,86 @@ fn authored_point_stage_binds_and_advances_the_real_root() {
     let row = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
     assert_ne!(row.position, position);
     assert_eq!(row.action, 223);
+}
+
+#[test]
+fn actor_follow_mode_attacks_the_followed_actors_current_target() {
+    for (typed, linked) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let victim = fixture
+            .arena
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.model == 1 && row.life >= 0)
+            .expect("owner Level 2 has a rival target")
+            .index;
+        let root_position =
+            fixture.arena.entities[usize::from(allocation.root.source_slot)].position;
+        fixture.arena.entities[usize::from(victim)].set_position(root_position);
+        let leader = if typed {
+            let holder = fixture
+                .arena
+                .allocate_source_slot_with_terrain(&mut fixture.terrain)
+                .unwrap();
+            let bee = crate::native_world::creatures::bee::mc2::allocate_morph(
+                &mut fixture.arena,
+                &mut fixture.terrain,
+                holder,
+                fixture.target,
+                fixture.target,
+                root_position,
+            )
+            .expect("real Day-map Bee constructor");
+            fixture
+                .arena
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|row| row.source_entity_index == bee.source_entity_index)
+                .unwrap()
+                .target_entity_index = linked.then_some(victim);
+            // A stale raw slot must not replace the typed Bee's current target.
+            fixture.arena.entities[usize::from(bee.source_entity_index)].record[154..156]
+                .copy_from_slice(&(if linked { 0_u16 } else { victim }).to_le_bytes());
+            bee.source_entity_index
+        } else {
+            fixture.arena.entities[usize::from(fixture.target)].record[154..156]
+                .copy_from_slice(&(if linked { victim } else { 0_u16 }).to_le_bytes());
+            fixture.target
+        };
+        fixture.runtime.stage_variables[1] = crate::native_world::RuntimeStageVariable {
+            kind: 4,
+            flags: 0,
+            word_2: 0,
+            relation: crate::native_world::RuntimeRelation::LiveEntity(leader),
+        };
+        assert!(fixture.runtime.set_active_stage_variable_count(1));
+        mc2::bind_authored_stage(&mut fixture.arena, &mut fixture.runtime, allocation.root, 1)
+            .unwrap();
+        fixture.arena.entities[usize::from(allocation.root.source_slot)].set_phase(0);
+        mc2::step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &fixture.class3,
+            &fixture.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+        )
+        .unwrap();
+        let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        assert_eq!(root.action, if linked { 218 } else { 223 });
+        assert_eq!(
+            u16::from_le_bytes([root.record[154], root.record[155]]),
+            if linked { victim } else { 0 }
+        );
+    }
 }
 
 #[test]
@@ -515,6 +1461,8 @@ fn summoned_stage_expires_if_its_parent_is_missing_or_reused() {
             &mut fixture.runtime,
             &mut fixture.terrain,
             &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
             allocation.root.source_slot,
             &fixture.class3,
             &fixture.families,
@@ -529,6 +1477,350 @@ fn summoned_stage_expires_if_its_parent_is_missing_or_reused() {
         assert!(
             fixture.arena.economy.free_slot_count() < free_before,
             "expiry allocates its actual source effects"
+        );
+    }
+}
+
+#[test]
+fn regrowing_head_uses_same_pass_fallthrough_and_next_linked_position() {
+    let expected_tail = |root: &crate::native_world::EntitySnapshot, mut body: crate::Position| {
+        // Head zero's pinned Type_D404C words 6/10/12/14.
+        body.z = body.z.wrapping_sub(80);
+        crate::move_entity(
+            &mut body,
+            root.yaw.wrapping_add(9),
+            root.pitch.wrapping_add(1771),
+            30,
+        );
+        body
+    };
+    for (initial, timer) in [(8_u8, 0_i32), (10, 0), (12, 0), (12, 8)] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let head_slot = allocation.heads[0].source_slot;
+        let head = &mut fixture.arena.entities[usize::from(head_slot)];
+        head.record[74] = initial;
+        head.set_source_dword_10(timer);
+        let old_max = head.max_life;
+        mc2::step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &fixture.class3,
+            &fixture.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+        )
+        .unwrap();
+        let head = &fixture.arena.entities[usize::from(head_slot)];
+        match (initial, timer) {
+            (8, _) => assert_eq!((head.record[74], head.source_dword_10()), (9, 99)),
+            (10, _) => {
+                assert_eq!((head.record[74], head.source_dword_10()), (11, 6));
+                assert_eq!(head.source_roll(), 9);
+                let body = fixture.arena.entities[usize::from(allocation.bodies[0][0].source_slot)]
+                    .position;
+                let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
+                assert_eq!(head.position, expected_tail(root, body));
+            }
+            (12, 0) => {
+                assert_eq!((head.record[74], head.source_dword_10()), (12, 1));
+                assert_eq!(
+                    u16::from_le_bytes([head.record[154], head.record[155]]),
+                    allocation.bodies[0][1].source_slot
+                );
+                let body = fixture.arena.entities[usize::from(allocation.bodies[0][1].source_slot)]
+                    .position;
+                let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
+                assert_eq!(head.position, expected_tail(root, body));
+            }
+            (12, 8) => {
+                assert_eq!(head.record[74], 0);
+                assert_eq!(head.max_life, old_max);
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn head_allocation_replacement_clears_later_frozen_target_scans() {
+    for fallback in [false, true] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let chain = multipart::read_chain(&fixture.arena, allocation.root).unwrap();
+        let origin = multipart::pose_head(
+            &fixture.arena.entities[usize::from(allocation.root.source_slot)],
+            1,
+        );
+        let mut position = origin;
+        position.x = position.x.wrapping_add(256);
+        fixture.arena.entities[usize::from(fixture.target)].set_position(position);
+        let first = &mut fixture.arena.entities[usize::from(allocation.heads[0].source_slot)];
+        first.record[74] = 3;
+        first.record[72] = 3;
+        first.record[154..156].copy_from_slice(&fixture.target.to_le_bytes());
+        first.mana_regen = 2;
+        first.record[140..144].copy_from_slice(&2_i32.to_le_bytes());
+        first.set_source_dword_10(2);
+        let second = &mut fixture.arena.entities[usize::from(allocation.heads[1].source_slot)];
+        second.record[74] = 1;
+        second.set_phase(7);
+        second.set_entity_rng(2);
+        second.record[42..44].fill(0);
+        second.set_yaw(crate::level1_mission::projectile_guidance_angles(origin, position).0);
+        if fallback {
+            let replaceable = fixture
+                .arena
+                .entities
+                .iter()
+                .find(|row| row.active && row.class == 2)
+                .expect("owner package retains a scenery row")
+                .index;
+            let row = &mut fixture.arena.entities[usize::from(replaceable)];
+            row.set_control_flags(
+                row.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+            );
+            fixture.arena.rebuild_source_free_arena();
+            while fixture.arena.economy.free_slot_count() != 0 {
+                fixture
+                    .arena
+                    .allocate_source_slot_with_terrain(&mut fixture.terrain)
+                    .unwrap();
+            }
+        }
+        let epoch = fixture.arena.economy.replacement_list_epoch;
+        let effects = combat::step_heads(
+            &mut fixture.arena,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &allocation,
+            &chain,
+            &[fixture.target],
+            epoch,
+            PROPERTIES.head_target_range,
+            PROPERTIES.head_target_half_angle,
+            0,
+        )
+        .unwrap();
+        assert!(
+            !effects.projectile_slots.is_empty(),
+            "the first head actually allocates its projectile"
+        );
+        assert_eq!(
+            fixture.arena.economy.replacement_list_epoch != epoch,
+            fallback
+        );
+        let second = &fixture.arena.entities[usize::from(allocation.heads[1].source_slot)];
+        assert_eq!(second.record[74], if fallback { 1 } else { 2 });
+        assert_eq!(
+            u16::from_le_bytes([second.record[154], second.record[155]]),
+            if fallback { 0 } else { fixture.target }
+        );
+    }
+}
+
+#[test]
+fn newly_acquired_head_target_enters_attack_on_the_next_visit() {
+    let mut fixture = fixture();
+    let allocation = allocate(&mut fixture);
+    let chain = multipart::read_chain(&fixture.arena, allocation.root).unwrap();
+    let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
+    let origin = multipart::pose_head(root, 0);
+    let mut position = origin;
+    position.x = position.x.wrapping_add(256);
+    fixture.arena.entities[usize::from(fixture.target)].set_position(position);
+    let head = &mut fixture.arena.entities[usize::from(allocation.heads[0].source_slot)];
+    head.record[74] = 1;
+    head.set_phase(7);
+    head.set_entity_rng(2); // The second source draw selects the cone scan.
+    head.record[42..44].fill(0);
+    head.set_yaw(crate::level1_mission::projectile_guidance_angles(origin, position).0);
+    let class3 = [fixture.target];
+    for expected in [2, 3] {
+        let list_epoch = fixture.arena.economy.replacement_list_epoch;
+        combat::step_heads(
+            &mut fixture.arena,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &allocation,
+            &chain,
+            &class3,
+            list_epoch,
+            PROPERTIES.head_target_range,
+            PROPERTIES.head_target_half_angle,
+            0,
+        )
+        .unwrap();
+        let head = &fixture.arena.entities[usize::from(allocation.heads[0].source_slot)];
+        assert_eq!(head.record[74], expected);
+        assert_eq!(
+            u16::from_le_bytes([head.record[154], head.record[155]]),
+            fixture.target
+        );
+    }
+}
+
+#[test]
+fn head_target_cone_reads_frozen_membership_after_target_changes() {
+    let mut fixture = fixture();
+    let origin = fixture.position;
+    let row = &mut fixture.arena.entities[usize::from(fixture.target)];
+    let mut position = origin;
+    position.x = position.x.wrapping_add(256);
+    row.set_position(position);
+    row.set_life(0);
+    row.disable_drawing();
+    let heading = crate::level1_mission::projectile_guidance_angles(origin, position).0;
+    let targets = crate::native_world::source_target::Context::default();
+    let select = |class3: &[u16], heading| {
+        combat::choose_target(&fixture.arena, targets, origin, heading, class3, 5120, 100).unwrap()
+    };
+    assert_eq!(select(&[fixture.target], heading), Some(fixture.target));
+    assert_eq!(select(&[], heading), None);
+    assert_eq!(select(&[fixture.target], heading.wrapping_add(1024)), None);
+    assert_eq!(
+        combat::choose_target(
+            &fixture.arena,
+            targets,
+            origin,
+            heading,
+            &[fixture.target],
+            5120,
+            u16::MAX
+        )
+        .unwrap(),
+        None,
+        "source cone is a signed descriptor word"
+    );
+}
+
+#[test]
+fn summoned_target_acquisition_uses_the_frozen_class3_membership() {
+    for listed in [false, true] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let parent = fixture.arena.handle(fixture.target).unwrap();
+        assert!(fixture.arena.bind_creature_parent(allocation.root, parent));
+        let rival = fixture
+            .arena
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.model == 1 && row.life > 0)
+            .expect("owner package has a rival")
+            .index;
+        fixture.arena.entities[usize::from(rival)].set_life(0);
+        let root = &mut fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        root.set_source_action(223);
+        root.set_phase(0);
+        root.record[77] = 16;
+        root.record[44..46].copy_from_slice(&parent.source_slot.to_le_bytes());
+        root.record[50..52].copy_from_slice(&32_i16.to_le_bytes());
+        root.record[154..156].fill(0);
+        let frozen = if listed { vec![rival] } else { vec![] };
+        mc2::step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &frozen,
+            &fixture.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+        )
+        .unwrap();
+        let row = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        assert_eq!(
+            u16::from_le_bytes([row.record[154], row.record[155]]),
+            if listed { rival } else { 0 }
+        );
+    }
+}
+
+#[test]
+fn summoned_and_allied_feedback_runs_before_the_linked_head_tail() {
+    for (mode, trigger, retaliation) in [
+        (16_u8, false, false),
+        (16, true, true),
+        (14, false, false),
+        (14, true, false),
+        (14, true, true),
+    ] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let parent = fixture.arena.handle(fixture.target).unwrap();
+        assert!(fixture.arena.bind_creature_parent(allocation.root, parent));
+        let rival = fixture
+            .arena
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.model == 1 && row.life > 0)
+            .expect("owner package has a rival attacker")
+            .index;
+        let position = fixture.arena.entities[usize::from(allocation.root.source_slot)].position;
+        fixture.arena.entities[usize::from(rival)].set_position(position);
+        if mode == 14 {
+            fixture.arena.entities[usize::from(parent.source_slot)].record[154..156]
+                .copy_from_slice(&(if trigger { rival } else { 0_u16 }).to_le_bytes());
+            fixture.arena.entities[usize::from(parent.source_slot)].record[42..44].fill(0);
+        }
+        let row = &mut fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        row.set_source_action(223);
+        row.record[77] = mode;
+        row.record[44..46].copy_from_slice(&parent.source_slot.to_le_bytes());
+        row.record[50..52].copy_from_slice(&32_i16.to_le_bytes());
+        row.record[52..54].copy_from_slice(&64_i16.to_le_bytes());
+        row.set_phase(0);
+        if retaliation {
+            row.record[98..102].copy_from_slice(&1_i32.to_le_bytes());
+            row.record[102..104].copy_from_slice(&rival.to_le_bytes());
+        }
+        let head = allocation.heads[0].source_slot;
+        let before_phase = fixture.arena.entities[usize::from(head)].phase;
+        let mut awards = Vec::new();
+        let mut feedback = |arena: &crate::campaign::source_arena::SourceArena, owner, family| {
+            awards.push((owner, family, arena.entities[usize::from(head)].phase));
+        };
+        mc2::step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut feedback,
+            allocation.root.source_slot,
+            &fixture.class3,
+            &fixture.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+        )
+        .unwrap();
+        let mut expected = Vec::new();
+        if retaliation {
+            expected.push((parent.source_slot, 19, before_phase));
+        }
+        if mode == 14 && trigger {
+            expected.push((parent.source_slot, 24, before_phase));
+        }
+        assert_eq!(
+            awards, expected,
+            "mode {mode}, trigger {trigger}, retaliation {retaliation}"
+        );
+        assert_eq!(
+            fixture.arena.entities[usize::from(head)].phase,
+            before_phase.wrapping_add(1)
         );
     }
 }
@@ -556,6 +1848,8 @@ fn live_head_uses_the_linked_target_and_emits_a_real_source_projectile() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -589,6 +1883,8 @@ fn live_head_uses_the_linked_target_and_emits_a_real_source_projectile() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -606,6 +1902,121 @@ fn live_head_uses_the_linked_target_and_emits_a_real_source_projectile() {
 }
 
 #[test]
+fn head_projectiles_do_not_report_creation_when_the_source_arena_is_full() {
+    for selector in [0, 9] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let root = &mut fixture.arena.entities[usize::from(allocation.root.source_slot)];
+        root.set_source_action(218);
+        root.record[154..156].copy_from_slice(&fixture.target.to_le_bytes());
+        let head = &mut fixture.arena.entities[usize::from(allocation.heads[0].source_slot)];
+        head.record[74] = 3;
+        head.record[72] = if selector == 0 { 1 } else { 3 };
+        head.record[154..156].copy_from_slice(&fixture.target.to_le_bytes());
+        head.set_actual_speed(192);
+        head.set_entity_rng(0);
+        head.mana_regen = 2;
+        head.record[140..144].copy_from_slice(&2_i32.to_le_bytes());
+        head.set_source_dword_10(2);
+        while fixture.arena.economy.free_slot_count() != 0 {
+            fixture
+                .arena
+                .allocate_source_slot_with_terrain(&mut fixture.terrain)
+                .unwrap();
+        }
+        fixture.arena.finish_source_group();
+        let effects = mc2::step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &fixture.class3,
+            &fixture.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+        )
+        .unwrap();
+        assert!(effects.projectile_slots.is_empty());
+        assert!(effects.sounds.iter().any(|(_, sound)| *sound == 17));
+        assert!(
+            effects
+                .sounds
+                .iter()
+                .all(|(_, sound)| *sound != 15 && *sound != 23)
+        );
+    }
+}
+
+#[test]
+fn projectile_constructor_rereads_a_target_slot_replaced_by_its_own_allocation() {
+    for selector in [0, 9] {
+        let mut fixture = fixture();
+        let allocation = allocate(&mut fixture);
+        let head_slot = allocation.heads[0].source_slot;
+        fixture.arena.entities[usize::from(head_slot)].record[154..156]
+            .copy_from_slice(&fixture.target.to_le_bytes());
+        let target = &mut fixture.arena.entities[usize::from(fixture.target)];
+        target.set_control_flags(
+            target.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+        );
+        fixture.arena.rebuild_source_free_arena();
+        while fixture.arena.economy.free_slot_count() != 0 {
+            fixture
+                .arena
+                .allocate_source_slot_with_terrain(&mut fixture.terrain)
+                .unwrap();
+        }
+        // Inspect the actual frozen fallback cursor on a clone; skip only
+        // earlier replaceable addresses until the target is its next slot.
+        loop {
+            let mut probe = fixture.arena.clone();
+            let next = probe
+                .allocate_source_slot()
+                .expect("target was captured as replaceable");
+            if next == fixture.target {
+                break;
+            }
+            fixture
+                .arena
+                .decrement_replacement_cursor_after_player_contact();
+        }
+        let targets = crate::native_world::source_target::Context {
+            particles: Some(&fixture.particles),
+            ..Default::default()
+        };
+        let slot = crate::native_world::guided_projectile::boss::construct_model27(
+            &mut fixture.arena,
+            &mut fixture.terrain,
+            &fixture.particles,
+            targets,
+            head_slot,
+            fixture.target,
+            selector,
+        )
+        .unwrap()
+        .expect("replacement cursor can allocate its target address");
+        assert_eq!(slot, fixture.target);
+        if selector == 0 {
+            let shot = fixture
+                .arena
+                .economy
+                .fireball_projectiles()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            assert_eq!((shot.target_class, shot.target_model), (9, 0));
+        } else {
+            let shot = &fixture.arena.entities[usize::from(slot)];
+            assert_eq!((shot.record[69], shot.record[70]), (9, 9));
+        }
+    }
+}
+
+#[test]
 fn prekill_counts_once_then_death_hides_the_generation_bound_chain() {
     let mut fixture = fixture();
     let allocation = allocate(&mut fixture);
@@ -617,12 +2028,15 @@ fn prekill_counts_once_then_death_hides_the_generation_bound_chain() {
     let root = &mut fixture.arena.entities[usize::from(allocation.root.source_slot)];
     root.set_source_action(220);
     root.record[40..42].copy_from_slice(&fixture.target.to_le_bytes());
+    root.set_source_player_entity_index(fixture.target);
 
     let prekill = mc2::step_row(
         &mut fixture.arena,
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -654,11 +2068,40 @@ fn prekill_counts_once_then_death_hides_the_generation_bound_chain() {
         );
     }
 
+    let mut full_arena = fixture.arena.clone();
+    let mut full_terrain = fixture.terrain.clone();
+    while full_arena.economy.free_slot_count() != 0 {
+        full_arena
+            .allocate_source_slot_with_terrain(&mut full_terrain)
+            .unwrap();
+    }
+    full_arena.finish_source_group();
+    let burst_count = full_arena.effects.death_burst_origins().len();
+    let failed = combat::kill(
+        &mut full_arena,
+        &mut full_terrain,
+        &fixture.particles,
+        allocation.root,
+    )
+    .unwrap();
+    assert_eq!(failed.secondary_source_effect_slot, None);
+    assert_eq!(full_arena.effects.death_burst_origins().len(), burst_count);
+    assert!(
+        std::iter::once(allocation.root)
+            .chain(allocation.heads)
+            .chain(allocation.bodies.into_iter().flatten())
+            .all(|part| full_arena.entities[usize::from(part.source_slot)].drawing_disabled())
+    );
+
+    let rng_before_death =
+        fixture.arena.entities[usize::from(allocation.root.source_slot)].entity_rng;
     let death = mc2::step_row(
         &mut fixture.arena,
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -668,17 +2111,47 @@ fn prekill_counts_once_then_death_hides_the_generation_bound_chain() {
     )
     .unwrap();
     let outcome = death.death.expect("action221 runs source death products");
+    assert_eq!(
+        outcome.mana_sphere_ids.len(),
+        1,
+        "source's shadowed fraction emits one full-mana sphere"
+    );
+    let sphere = fixture
+        .arena
+        .economy
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.id == outcome.mana_sphere_ids[0])
+        .unwrap();
+    assert_eq!(sphere.mana, 20_000);
+    assert_eq!(sphere.player_entity_index, fixture.target);
+    assert_eq!(
+        fixture.arena.entities[usize::from(allocation.root.source_slot)]
+            .source_player_entity_index(),
+        0
+    );
+    assert_eq!(
+        fixture.arena.entities[usize::from(allocation.root.source_slot)].entity_rng,
+        crate::native_world::level2_next_rng16(rng_before_death)
+    );
     let effect_slot = outcome
         .secondary_source_effect_slot
         .expect("ordinary root death allocates source type10/subtype1");
-    let effect = fixture
-        .arena
-        .economy
-        .death_bursts()
-        .iter()
-        .find(|effect| effect.source_entity_index == effect_slot)
-        .expect("death burst is published to the live economy");
-    assert_eq!(effect.id_entity_index, allocation.root.source_slot);
+    let effect = &fixture.arena.entities[usize::from(effect_slot)];
+    assert!(effect.active);
+    assert_eq!((effect.class, effect.model, effect.action), (10, 1, 1));
+    assert_eq!(effect.source_id, allocation.root.source_slot);
+    assert_eq!(
+        fixture
+            .arena
+            .effects
+            .death_burst_origins()
+            .get(&effect_slot),
+        Some(&(
+            fixture.arena.slot_generation(effect_slot),
+            allocation.root.source_slot
+        ))
+    );
     assert!(!mc2::is_living_root(&fixture.arena, allocation.root));
     assert!(multipart::read_chain(&fixture.arena, allocation.root).is_err());
 }
@@ -694,6 +2167,8 @@ fn prekill_parts_run_their_enabled_death_callbacks_in_the_same_pass() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -710,6 +2185,8 @@ fn prekill_parts_run_their_enabled_death_callbacks_in_the_same_pass() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         first.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -734,6 +2211,8 @@ fn prekill_parts_run_their_enabled_death_callbacks_in_the_same_pass() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         second.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -757,6 +2236,8 @@ fn death_suffix_stops_at_a_reused_part_slot() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         allocation.root.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -789,6 +2270,8 @@ fn death_suffix_stops_at_a_reused_part_slot() {
         &mut fixture.runtime,
         &mut fixture.terrain,
         &fixture.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
         head.source_slot,
         &fixture.class3,
         &fixture.families,
@@ -820,4 +2303,13 @@ fn linked_chain_rejects_a_part_with_the_wrong_root_owner() {
     );
     let error = multipart::read_chain(&fixture.arena, allocation.root).unwrap_err();
     assert!(error.contains("lost body segment 0 for head 0"), "{error}");
+}
+
+#[test]
+fn linked_chain_rejects_root_with_the_old_self_parent_value() {
+    let mut fixture = fixture();
+    let allocation = allocate(&mut fixture);
+    fixture.arena.entities[usize::from(allocation.root.source_slot)].record[54..56]
+        .copy_from_slice(&allocation.root.source_slot.to_le_bytes());
+    assert!(multipart::read_chain(&fixture.arena, allocation.root).is_err());
 }

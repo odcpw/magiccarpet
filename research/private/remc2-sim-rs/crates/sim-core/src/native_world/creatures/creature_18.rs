@@ -147,6 +147,7 @@ pub(crate) struct Target {
     pub position: Position,
     pub yaw: i16,
     pub roll: i16,
+    pub half_width: i16,
     pub previous: u16,
     pub next: u16,
     pub target: u16,
@@ -176,6 +177,7 @@ pub(crate) struct Creature18Context<'a> {
     pub targets: &'a [Target],
     pub class3: &'a [u16],
     pub model18: &'a [u16],
+    pub families: &'a [Vec<u16>],
 }
 
 impl Creature18Context<'_> {
@@ -205,7 +207,9 @@ pub(crate) struct Creature18Effects {
     projectiles: Vec<ProjectileIntent>,
     pub projectile_slots: Vec<u16>,
     pub linked_actions: Vec<(u16, u8)>,
+    pub linked_blink_flags: Vec<(u16, u32)>,
     pub kill_credit: Option<u16>,
+    pub earlier_feedback: Option<(u16, u8)>,
     pub feedback: Option<(u16, u8)>,
     pub population_decrements: u32,
     pub kill: bool,
@@ -413,11 +417,9 @@ fn step_attack(
     }
     match actor.attack_phase {
         0 => {
-            let Some(target) = ctx.target(actor.target).filter(|target| target.alive()) else {
-                actor.target = 0;
-                request_action(actor, 0, 0);
-                return;
-            };
+            // sub_250B0 turns toward the source slot even before its later
+            // phase-one lifetime check; slot zero is the source sentinel.
+            let target = ctx.target(actor.target).unwrap_or_default();
             turn_toward(actor, target.position, RULES.turn_limit);
             if hit == 1 {
                 actor.timer = actor.timer.wrapping_sub(47);
@@ -442,7 +444,9 @@ fn step_attack(
                 return;
             }
             if actor.phase % RULES.source_scan_period == 0 {
-                let Some(target) = ctx.target(actor.target).filter(|target| target.alive()) else {
+                let target = ctx.target(actor.target);
+                let target = stage::alliance_target(actor, ctx, effects, target);
+                let Some(target) = target.filter(|target| target.alive()) else {
                     request_action(actor, 2, 2);
                     return;
                 };
@@ -507,11 +511,7 @@ pub(crate) fn step(
                 if actor.target == 0 {
                     return Some(effects);
                 }
-                let Some(target) = ctx.target(actor.target).filter(|target| target.alive()) else {
-                    actor.target = 0;
-                    request_action(actor, 0, 0);
-                    return Some(effects);
-                };
+                let target = ctx.target(actor.target).unwrap_or_default();
                 if source_distance_3d(actor.position, target.position) < RULES.target_range {
                     turn_toward(actor, target.position, RULES.turn_limit);
                     if random(actor) % 49 == 0 {

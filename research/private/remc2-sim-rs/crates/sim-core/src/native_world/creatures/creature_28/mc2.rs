@@ -252,9 +252,10 @@ pub(crate) fn allocate_authored(
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: crate::native_world::source_target::Context<'_>,
     model_slots: &[u16],
-) {
-    super::stage::prepare_source_pass(arena, runtime, model_slots);
+) -> Result<(), String> {
+    super::stage::prepare_source_pass(arena, runtime, targets, model_slots)
 }
 
 fn targets(arena: &SourceArena) -> Vec<super::Target> {

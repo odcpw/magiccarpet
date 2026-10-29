@@ -303,7 +303,7 @@ fn parse_artifact(value: &Value, label: &str) -> Result<SourceArtifact, String> 
 fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> {
     if bytes.len() < 16
         || bytes.get(..4) != Some(b"MCI3")
-        || !matches!(read_u16(bytes, 4, "feature-input version")?, 1 | 2)
+        || !matches!(read_u16(bytes, 4, "feature-input version")?, 1 | 2 | 3)
         || read_u16(bytes, 6, "feature-input header")? != 16
         || read_u16(bytes, 10, "feature-input encoding")? != 1
         || read_u32(bytes, 12, "feature-input reserved")? != 0
@@ -346,11 +346,9 @@ fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> 
     Ok(selectors)
 }
 
-/// MCI3 v2 retains the finite constructor closure as well as every authored
-/// House, including ordinary activation groups. The v1 collision census is
-/// kept as its original distinct contract. Feature SourceFact v2 additionally
-/// requires every source destruction successor; collision SourceFact v3 binds
-/// Level 2's exact masks for that same construction closure.
+/// MCI3 v2 retains finite constructors and all authored Houses; v3 additionally
+/// retains live reset Houses and their successors. The legacy collision census
+/// and Level 2's separately closed collision profile keep their own contracts.
 fn source_building_successor(selector: u16) -> Result<u16, String> {
     // Nonzero byte_3 rows from the unchanged BLDGPRM.DAT whose complete
     // 304-byte owner identity is pinned in SOURCE_ARTIFACTS.
@@ -388,6 +386,7 @@ fn close_construction_successors(selectors: &mut BTreeSet<u16>) -> Result<(), St
 fn construction_selectors_from_authored(
     authored: &[u8],
     successor_closure: bool,
+    reset_entities: Option<&[u8]>,
 ) -> Result<Vec<u16>, String> {
     let features = crate::level1_mission::parse_authored_features(authored)?;
     let mut selectors = features
@@ -396,6 +395,28 @@ fn construction_selectors_from_authored(
         .filter(|feature| feature.kind == 10 && feature.subtype == 45)
         .map(|feature| feature.parameter_1)
         .collect::<BTreeSet<_>>();
+    if let Some(entities) = reset_entities {
+        let record_bytes = usize::from(read_u16(entities, 6, "reset entity record bytes")?);
+        let count = usize::try_from(read_u32(entities, 8, "reset entity count")?)
+            .map_err(|_| "reset entity count exceeds usize".to_owned())?;
+        if entities.get(..4) != Some(b"MCE1")
+            || read_u16(entities, 4, "reset entity version")? != 1
+            || record_bytes != 176
+            || count != 1000
+            || entities.len() != 12 + count * record_bytes
+        {
+            return Err("reset house selector arena header/extent changed".to_owned());
+        }
+        for row in entities[12..].chunks_exact(record_bytes).skip(1) {
+            if row[2] != 0 && (row[67], row[68]) == (10, 45) {
+                let selector = u16::from(row[74]);
+                if selector >= 76 {
+                    return Err("reset house BUILD selector is outside the source table".to_owned());
+                }
+                selectors.insert(selector);
+            }
+        }
+    }
     let has_settlement = !selectors.is_empty()
         || features
             .iter()
@@ -422,15 +443,24 @@ fn validate_construction_selectors(
     authored: &[u8],
     legacy_selectors: &[u16],
     successor_closure: bool,
+    reset_entities: Option<&[u8]>,
 ) -> Result<(), String> {
     let actual = decode_feature_construction_inputs(bytes)?;
-    if successor_closure && read_u16(bytes, 4, "feature-input version")? != 2 {
-        return Err("source-closed construction profile requires MCI3 v2".to_owned());
+    let version = read_u16(bytes, 4, "feature-input version")?;
+    if successor_closure && !matches!(version, 2 | 3) {
+        return Err("source-closed construction profile requires MCI3 v2 or v3".to_owned());
     }
-    let expected = if read_u16(bytes, 4, "feature-input version")? == 1 {
+    if version == 3 && (!successor_closure || reset_entities.is_none()) {
+        return Err("MCI3 v3 requires reset houses and their source successor closure".to_owned());
+    }
+    let expected = if version == 1 {
         legacy_selectors.to_vec()
     } else {
-        construction_selectors_from_authored(authored, successor_closure)?
+        construction_selectors_from_authored(
+            authored,
+            successor_closure,
+            if version == 3 { reset_entities } else { None },
+        )?
     };
     if actual != expected {
         return Err(
@@ -524,6 +554,17 @@ pub(crate) fn decode_building_parameters(
         result.insert(selector, parameter);
     }
     Ok(result)
+}
+
+fn validate_construction_owner_parameters(inputs: &[u8], owner: &[u8]) -> Result<(), String> {
+    let retained = crate::house::decode_campaign_house_parameters(inputs)?;
+    let parameters = decode_building_parameters(owner)?;
+    for (selector, parameter) in retained {
+        if parameters.get(&selector) != Some(&parameter) {
+            return Err(format!("BUILD {selector} parameter differs from owner BLDGPRM"));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn building_parameter_chain(
@@ -643,7 +684,7 @@ pub(crate) fn validate_source_facts(
         )?;
         if kind != expected.1
             || !(version == 1
-                || (kind == SourceFactKind::FeatureConstructionInputs && version == 2)
+                || (kind == SourceFactKind::FeatureConstructionInputs && matches!(version, 2 | 3))
                 || (kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3)))
             || string(&object["lifetime"], &format!("{label}.lifetime"))?
                 != "immutable-through-session"
@@ -708,24 +749,25 @@ pub(crate) fn validate_source_facts(
             .collect::<Vec<_>>();
         // v1 retains the legacy Day provenance contract. v2 names the bank
         // Level.cpp actually loads for this map, while retaining MCM1 pixels.
-        let expected_paths = if kind == SourceFactKind::FeatureConstructionInputs && version == 2 {
-            &[
-                "CD_Files/DATA/BLDGPRM.DAT",
-                "CD_Files/DATA/BUILD0-0.DAT",
-                "CD_Files/DATA/BUILD0-0.TAB",
-                "CD_Files/DATA/SPELLS.DAT",
-                "CD_Files/DATA/TABLESN.DAT",
-            ][..]
-        } else if kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3) {
-            match context.map_type_id {
-                0 => &["CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"][..],
-                1 => &["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"][..],
-                2 => &["CD_Files/DATA/MSPRC0-0.DAT", "CD_Files/DATA/MSPRC0-0.TAB"][..],
-                _ => return Err(format!("{label} has an unknown map bank")),
-            }
-        } else {
-            expected.3
-        };
+        let expected_paths =
+            if kind == SourceFactKind::FeatureConstructionInputs && matches!(version, 2 | 3) {
+                &[
+                    "CD_Files/DATA/BLDGPRM.DAT",
+                    "CD_Files/DATA/BUILD0-0.DAT",
+                    "CD_Files/DATA/BUILD0-0.TAB",
+                    "CD_Files/DATA/SPELLS.DAT",
+                    "CD_Files/DATA/TABLESN.DAT",
+                ][..]
+            } else if kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3) {
+                match context.map_type_id {
+                    0 => &["CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"][..],
+                    1 => &["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"][..],
+                    2 => &["CD_Files/DATA/MSPRC0-0.DAT", "CD_Files/DATA/MSPRC0-0.TAB"][..],
+                    _ => return Err(format!("{label} has an unknown map bank")),
+                }
+            } else {
+                expected.3
+            };
         if actual_paths != expected_paths {
             return Err(format!("{label} owner artifact set/order differs"));
         }
@@ -755,9 +797,20 @@ pub(crate) fn validate_source_facts(
         .members
         .get("authored-level.bin")
         .ok_or_else(|| "authored construction input member is absent".to_owned())?;
-    let successor_closure = result
+    let construction_fact_version = result
         .iter()
-        .any(|fact| fact.kind == SourceFactKind::FeatureConstructionInputs && fact.version == 2);
+        .find(|fact| fact.kind == SourceFactKind::FeatureConstructionInputs)
+        .map_or(0, |fact| fact.version);
+    let construction_version = read_u16(feature_inputs, 4, "feature-input version")?;
+    if construction_version == 3 && !context.has_building_parameters {
+        return Err("reset-house construction requires the owner BLDGPRM bank".to_owned());
+    }
+    if (construction_fact_version == 3 || construction_version == 3)
+        && construction_fact_version != construction_version
+    {
+        return Err("reset-house SourceFact and construction member versions differ".to_owned());
+    }
+    let successor_closure = matches!(construction_fact_version, 2 | 3);
     let closed_collision = result
         .iter()
         .any(|fact| fact.kind == SourceFactKind::CollisionMask && fact.version == 3);
@@ -766,6 +819,7 @@ pub(crate) fn validate_source_facts(
         authored_inputs,
         &expected_selectors,
         successor_closure,
+        context.members.get("entities.bin").map(Vec::as_slice),
     )?;
     if let Some((collision_bank_bytes, collision_bank_sha256)) = context.collision_bank {
         let collision = context
@@ -814,6 +868,9 @@ pub(crate) fn validate_source_facts(
                 "building parameter owner bytes or qualified objective chain changed".to_owned(),
             );
         }
+        if construction_version == 3 {
+            validate_construction_owner_parameters(feature_inputs, bytes)?;
+        }
     }
     Ok(result)
 }
@@ -859,9 +916,10 @@ mod tests {
             "actual all-group House selectors union the finite Builder closure"
         );
         assert!(selectors.contains(&19) && selectors.contains(&74));
-        super::validate_construction_selectors(&bytes, &authored, &legacy_selectors, false)
+        super::validate_construction_selectors(&bytes, &authored, &legacy_selectors, false, None)
             .unwrap();
-        super::validate_construction_selectors(&old, &authored, &legacy_selectors, false).unwrap();
+        super::validate_construction_selectors(&old, &authored, &legacy_selectors, false, None)
+            .unwrap();
 
         let mut missing = bytes.clone();
         let extent = u32::from_le_bytes(missing[24..28].try_into().unwrap()) as usize;
@@ -869,15 +927,27 @@ mod tests {
         let count = (selectors.len() as u16 - 1).to_le_bytes();
         missing[8..10].copy_from_slice(&count);
         assert!(
-            super::validate_construction_selectors(&missing, &authored, &legacy_selectors, false)
-                .is_err()
+            super::validate_construction_selectors(
+                &missing,
+                &authored,
+                &legacy_selectors,
+                false,
+                None
+            )
+            .is_err()
         );
 
         let mut extra = bytes.clone();
         extra[16..18].copy_from_slice(&0_u16.to_le_bytes());
         assert!(
-            super::validate_construction_selectors(&extra, &authored, &legacy_selectors, false)
-                .is_err()
+            super::validate_construction_selectors(
+                &extra,
+                &authored,
+                &legacy_selectors,
+                false,
+                None
+            )
+            .is_err()
         );
 
         let mut mislabeled = bytes;
@@ -887,10 +957,66 @@ mod tests {
                 &mislabeled,
                 &authored,
                 &legacy_selectors,
-                false
+                false,
+                None
             )
             .is_err(),
             "v1 retains its original exact bank contract"
+        );
+    }
+
+    #[test]
+    fn reset_house_bank_v3_uses_real_live_selectors_and_rejects_a_missing_successor() {
+        let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23")
+            },
+            std::path::PathBuf::from,
+        );
+        let authored = std::fs::read(package.join("authored-level.bin")).unwrap();
+        let entities = std::fs::read(package.join("entities.bin")).unwrap();
+        let bytes = std::fs::read(package.join("feature-construction-inputs.bin")).unwrap();
+        let owner_parameters = std::fs::read(package.join("building-parameters.bin")).unwrap();
+        assert_eq!(super::read_u16(&bytes, 4, "version").unwrap(), 3);
+        super::validate_construction_selectors(&bytes, &authored, &[], true, Some(&entities))
+            .unwrap();
+        super::validate_construction_owner_parameters(&bytes, &owner_parameters).unwrap();
+        assert!(
+            super::validate_construction_selectors(&bytes, &authored, &[], true, None).is_err()
+        );
+        let selectors = super::decode_feature_construction_inputs(&bytes).unwrap();
+        for required in [27, 41, 49, 16] {
+            assert!(
+                selectors.contains(&required),
+                "real reset/successor row {required}"
+            );
+        }
+
+        let mut cursor = 16;
+        let mut removed = None;
+        let mut altered_parameter = bytes.clone();
+        let mut altered = false;
+        for &selector in &selectors {
+            let extent = super::read_u32(&bytes, cursor + 8, "extent").unwrap() as usize;
+            if selector == 27 {
+                altered_parameter[cursor + 2] ^= 1;
+                altered = true;
+            }
+            if selector == 41 {
+                removed = Some(cursor..cursor + 12 + extent);
+                break;
+            }
+            cursor += 12 + extent;
+        }
+        assert!(altered);
+        assert!(super::validate_construction_owner_parameters(&altered_parameter, &owner_parameters).is_err());
+        let mut missing = bytes;
+        missing.drain(removed.expect("real row27's source successor41 is retained"));
+        missing[8..10].copy_from_slice(&(selectors.len() as u16 - 1).to_le_bytes());
+        assert!(
+            super::validate_construction_selectors(&missing, &authored, &[], true, Some(&entities))
+                .is_err()
         );
     }
 

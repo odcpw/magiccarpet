@@ -1256,17 +1256,15 @@ impl Level2EconomyState {
         trail.active
     }
 
-    /// Allocate the authored close command through remc2 `sub_4F900`.
-    pub(crate) fn allocate_terrain_strip_close_trigger(
+    /// Complete remc2 `sub_4F900` after the shared arena has allocated its
+    /// slot, including replacement of a raw or typed live row.
+    pub(crate) fn initialize_terrain_strip_close_trigger(
         &mut self,
+        source_entity_index: u16,
         authored_index: u16,
         position: Position,
-        terrain: &SessionTerrain,
     ) -> Option<terrain_strip::TerrainStripCloseTrigger> {
-        let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
-        let mut position = position;
-        position.z = terrain.ground_height(position);
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
@@ -1289,7 +1287,7 @@ impl Level2EconomyState {
             action: 68,
             max_life: 1,
             life: 1,
-            control_flags: 1,
+            control_flags: 5,
             source_byte_3e: source_entity_index as u8,
             position,
             drawing_enabled: true,
@@ -4557,10 +4555,21 @@ impl Level2EconomyState {
         if self.local_player_entity_index == 0 {
             self.castle.0.first().copied()
         } else {
-            self.castle_for_owner(self.local_player_entity_index).copied().or_else(|| {
-                self.castle.0.iter().filter(|castle| castle.owner_entity_index == self.local_player_entity_index && (castle.level == 0 || !castle.active) && self.slot_generation(castle.source_entity_index) == castle.slot_generation)
-                    .max_by_key(|castle| castle.active).copied()
-            })
+            self.castle_for_owner(self.local_player_entity_index)
+                .copied()
+                .or_else(|| {
+                    self.castle
+                        .0
+                        .iter()
+                        .filter(|castle| {
+                            castle.owner_entity_index == self.local_player_entity_index
+                                && (castle.level == 0 || !castle.active)
+                                && self.slot_generation(castle.source_entity_index)
+                                    == castle.slot_generation
+                        })
+                        .max_by_key(|castle| castle.active)
+                        .copied()
+                })
         }
     }
 
@@ -4576,24 +4585,34 @@ impl Level2EconomyState {
 
     pub(crate) fn castle_entry(&self, slot: u16) -> Option<&Level2CastleState> {
         let generation = self.slot_generation(slot);
-        self.castle.0.iter().find(|castle| castle.source_entity_index == slot && castle.slot_generation == generation)
+        self.castle.0.iter().find(|castle| {
+            castle.source_entity_index == slot && castle.slot_generation == generation
+        })
     }
 
     pub(crate) fn castle_entry_mut(&mut self, slot: u16) -> Option<&mut Level2CastleState> {
         let generation = self.slot_generation(slot);
-        self.castle.0.iter_mut().find(|castle| castle.source_entity_index == slot && castle.slot_generation == generation)
+        self.castle.0.iter_mut().find(|castle| {
+            castle.source_entity_index == slot && castle.slot_generation == generation
+        })
     }
 
     pub(crate) fn live_castles(&self) -> impl Iterator<Item = &Level2CastleState> {
-        self.castle.0.iter().filter(|castle| castle.active && self.slot_generation(castle.source_entity_index) == castle.slot_generation)
+        self.castle.0.iter().filter(|castle| {
+            castle.active
+                && self.slot_generation(castle.source_entity_index) == castle.slot_generation
+        })
     }
 
     pub(crate) fn castle_for_owner(&self, owner: u16) -> Option<&Level2CastleState> {
         let &(owner_generation, slot, root_generation) = self.castle_links.get(&owner)?;
-        if self.slot_generation(owner) != owner_generation || self.slot_generation(slot) != root_generation {
+        if self.slot_generation(owner) != owner_generation
+            || self.slot_generation(slot) != root_generation
+        {
             return None;
         }
-        self.castle_at(slot).filter(|castle| castle.owner_entity_index == owner)
+        self.castle_at(slot)
+            .filter(|castle| castle.owner_entity_index == owner)
     }
 
     pub(crate) fn bind_local_castle_owner(&mut self, owner: u16) {
@@ -4603,7 +4622,8 @@ impl Level2EconomyState {
     pub(super) fn link_castle_owner(&mut self, owner: u16, slot: u16) {
         let owner_generation = self.slot_generation(owner);
         let root_generation = self.slot_generation(slot);
-        self.castle_links.insert(owner, (owner_generation, slot, root_generation));
+        self.castle_links
+            .insert(owner, (owner_generation, slot, root_generation));
     }
 
     #[cfg(test)]
@@ -4612,8 +4632,7 @@ impl Level2EconomyState {
         castle_slot: u16,
         mana: i32,
     ) -> bool {
-        let Some(castle) = self.castle_at_mut(castle_slot)
-        else {
+        let Some(castle) = self.castle_at_mut(castle_slot) else {
             return false;
         };
         // This cfg(test)-only seam stages the complete upstream Castle-mana
@@ -4638,6 +4657,19 @@ impl Level2EconomyState {
     #[must_use]
     pub fn fireball_projectiles(&self) -> &[Level2FireballProjectile] {
         &self.fireball_projectiles
+    }
+
+    /// Publish AddEvent2's linked-light flag to the live typed carrier.
+    pub(crate) fn mark_fireball_light_linked(&mut self, slot: u16) -> bool {
+        let Some(projectile) = self
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        else {
+            return false;
+        };
+        projectile.control_flags |= 0x0008_0000;
+        true
     }
 
     #[must_use]
@@ -5262,12 +5294,20 @@ impl Level2EconomyState {
 
     #[must_use]
     pub fn player_castle_stage(&self) -> u8 {
-        if self.player_castle_entity_index() == 0 { 0 } else { self.player_castle_stage }
+        if self.player_castle_entity_index() == 0 {
+            0
+        } else {
+            self.player_castle_stage
+        }
     }
 
     #[must_use]
     pub fn player_castle_aux_flags(&self) -> u8 {
-        if self.player_castle_entity_index() == 0 { 0 } else { self.player_castle_aux_flags }
+        if self.player_castle_entity_index() == 0 {
+            0
+        } else {
+            self.player_castle_aux_flags
+        }
     }
 
     #[must_use]
@@ -5422,7 +5462,7 @@ impl Level2EconomyState {
                 castle.source_entity_index,
                 castle.source_class,
                 castle.source_model,
-                castle.source_id_entity_index,
+                castle.player_entity_index,
                 castle.mana,
             );
         }
@@ -5467,7 +5507,7 @@ impl Level2EconomyState {
                 sphere.source_entity_index,
                 10,
                 39,
-                sphere.owner_entity_index,
+                sphere.player_entity_index,
                 sphere.mana,
             );
         }
@@ -5554,20 +5594,29 @@ impl Level2EconomyState {
         true
     }
 
-    pub(crate) fn set_castle_stage_coefficient_for_owner(&mut self, owner: u16, level: u8, coefficient: u16) -> bool {
+    pub(crate) fn set_castle_stage_coefficient_for_owner(
+        &mut self,
+        owner: u16,
+        level: u8,
+        coefficient: u16,
+    ) -> bool {
         if owner == 0 || usize::from(level) >= self.castle_stage_coefficients.len() {
             return false;
         }
         let key = (owner, self.slot_generation(owner));
         self.castle_owner_stage_coefficients
-            .entry(key).or_insert(self.castle_stage_coefficients)[usize::from(level)] = coefficient;
+            .entry(key)
+            .or_insert(self.castle_stage_coefficients)[usize::from(level)] = coefficient;
         true
     }
 
     pub(super) fn castle_stage_coefficient_for_owner(&self, owner: u16, level: u8) -> u16 {
-        self.castle_owner_stage_coefficients.get(&(owner, self.slot_generation(owner)))
+        self.castle_owner_stage_coefficients
+            .get(&(owner, self.slot_generation(owner)))
             .unwrap_or(&self.castle_stage_coefficients)
-            .get(usize::from(level)).copied().unwrap_or(256)
+            .get(usize::from(level))
+            .copied()
+            .unwrap_or(256)
     }
 
     /// Bind the raw player `array_0x24E[9 + level]` byte copied to each
@@ -5583,18 +5632,25 @@ impl Level2EconomyState {
         true
     }
 
-    pub(crate) fn set_castle_controller_coefficient_for_owner(&mut self, owner: u16, level: u8, coefficient: u8) -> bool {
+    pub(crate) fn set_castle_controller_coefficient_for_owner(
+        &mut self,
+        owner: u16,
+        level: u8,
+        coefficient: u8,
+    ) -> bool {
         if owner == 0 || usize::from(level) >= self.castle_controller_coefficients.len() {
             return false;
         }
         let key = (owner, self.slot_generation(owner));
         self.castle_owner_controller_coefficients
-            .entry(key).or_insert(self.castle_controller_coefficients)[usize::from(level)] = coefficient;
+            .entry(key)
+            .or_insert(self.castle_controller_coefficients)[usize::from(level)] = coefficient;
         true
     }
 
     pub(super) fn castle_controller_coefficients_for_owner(&self, owner: u16) -> &[u8; 8] {
-        self.castle_owner_controller_coefficients.get(&(owner, self.slot_generation(owner)))
+        self.castle_owner_controller_coefficients
+            .get(&(owner, self.slot_generation(owner)))
             .unwrap_or(&self.castle_controller_coefficients)
     }
 
@@ -5816,6 +5872,7 @@ impl Level2EconomyState {
             expire_hidden_effects!(self.authored_model17);
             expire_hidden_effects!(self.authored_model76);
             expire_hidden_effects!(self.model76_children);
+            expire_hidden_effects!(self.player_death_markers);
         }
         // Castle projectiles are disabled by their source callback and
         // reclaimed only by reclaim_hidden_castle_rows_at_source_boundary at
@@ -5857,6 +5914,22 @@ impl Level2EconomyState {
         // A model-1 burst disabled by its callback remains reserved for the
         // rest of that source pass. The next pass prologue owns its unlink
         // and release through reclaim_death_burst_rows_at_source_boundary.
+        let reclaimed_markers = self
+            .player_death_markers
+            .iter()
+            .filter(|marker| !marker.active)
+            .map(|marker| (marker.source_entity_index, marker.entity_rng))
+            .collect::<Vec<_>>();
+        self.player_death_markers.retain(|marker| marker.active);
+        for (slot, entity_rng) in reclaimed_markers {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_spell_replacements = self
             .spell_replacements
             .iter()
@@ -6449,8 +6522,13 @@ impl Level2EconomyState {
         for (slot, entity_rng) in reclaimed_children {
             self.release_slot(slot, Some(entity_rng));
         }
-        let reclaimed_castles: Vec<_> = self.castle.0.iter().filter(|castle| !castle.active)
-            .map(|castle| (castle.source_entity_index, castle.slot_generation)).collect();
+        let reclaimed_castles: Vec<_> = self
+            .castle
+            .0
+            .iter()
+            .filter(|castle| !castle.active)
+            .map(|castle| (castle.source_entity_index, castle.slot_generation))
+            .collect();
         self.castle.0.retain(|castle| castle.active);
         for (slot, generation) in reclaimed_castles {
             if self.slot_generation(slot) != generation {
@@ -6496,7 +6574,9 @@ impl Level2EconomyState {
         for (&(owner, generation), coefficients) in &self.castle_owner_stage_coefficients {
             hasher.update(owner.to_le_bytes());
             hasher.update(generation.to_le_bytes());
-            for coefficient in coefficients { hasher.update(coefficient.to_le_bytes()); }
+            for coefficient in coefficients {
+                hasher.update(coefficient.to_le_bytes());
+            }
         }
         hasher.update((self.castle_owner_controller_coefficients.len() as u64).to_le_bytes());
         for (&(owner, generation), coefficients) in &self.castle_owner_controller_coefficients {
@@ -6628,6 +6708,10 @@ impl Level2EconomyState {
             hasher.update(marker.life.to_le_bytes());
             hasher.update(marker.particle_parameter_index.to_le_bytes());
             hasher.update([u8::from(marker.active)]);
+            if marker.control_flags != 12 {
+                hasher.update(b"player-death-marker-control-flags-v1");
+                hasher.update(marker.control_flags.to_le_bytes());
+            }
         }
         for replacement in &self.spell_replacements {
             hasher.update(replacement.source_entity_index.to_le_bytes());
@@ -7415,7 +7499,8 @@ impl Level2EconomyState {
         hasher.update(b"authored-dragon-v2");
         for state in &self.authored_dragons {
             hasher.update(state.source_entity_index.to_le_bytes());
-            if state.stage_var2 != 0 || state.parent_entity_index != 0 || state.stage_remaining != 0 {
+            if state.stage_var2 != 0 || state.parent_entity_index != 0 || state.stage_remaining != 0
+            {
                 hasher.update(b"dragon-parent-stage-v1");
                 hasher.update([state.stage_var2]);
                 hasher.update(state.parent_entity_index.to_le_bytes());
@@ -7436,6 +7521,10 @@ impl Level2EconomyState {
             hasher.update(state.render_fov.to_le_bytes());
         }
         for part in &self.authored_dragon_parts {
+            if part.control_flags != 8 {
+                hasher.update(b"dragon-part-control-flags-v1");
+                hasher.update(part.control_flags.to_le_bytes());
+            }
             if part.word_0x24 != 0 {
                 hasher.update(b"dragon-part-killer-v1");
                 hasher.update(part.word_0x24.to_le_bytes());
@@ -7880,7 +7969,9 @@ impl Level2EconomyState {
             hasher.update([1]);
             hasher.update(castle.source_entity_index.to_le_bytes());
             hasher.update(castle.slot_generation.to_le_bytes());
+            hasher.update(castle.owner_slot_generation.to_le_bytes());
             hasher.update(castle.source_id_entity_index.to_le_bytes());
+            hasher.update(castle.player_entity_index.to_le_bytes());
             hasher.update([
                 castle.source_class,
                 castle.source_model,

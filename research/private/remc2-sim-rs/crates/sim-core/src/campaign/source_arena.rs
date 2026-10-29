@@ -134,6 +134,10 @@ pub struct SourceArena {
     pub(crate) entities: Box<[EntitySnapshot]>,
     pub(crate) economy: Level2EconomyState,
     pub(crate) effects: crate::world::effects::State,
+    /// Source AddEvent2 light pool, retained independently of effect callbacks.
+    pub(crate) dynamic_lighting: crate::dynamic_lighting::DynamicLightingState,
+    /// Runtime setting consumed at admission, not at later light service.
+    pub(crate) dynamic_lighting_enabled: bool,
     replacement_slots: Vec<u16>,
     // Producer provenance only; all mutable creature fields remain in entities.
     raw_creature_origins: BTreeMap<u16, (u32, CreatureKind, CreatureRootOrigin)>,
@@ -148,6 +152,8 @@ impl SourceArena {
             entities,
             economy,
             effects: crate::world::effects::State::default(),
+            dynamic_lighting: crate::dynamic_lighting::DynamicLightingState::reset(),
+            dynamic_lighting_enabled: true,
             replacement_slots: Vec::new(),
             raw_creature_origins: BTreeMap::new(),
             raw_creature_parts: BTreeMap::new(),
@@ -165,6 +171,8 @@ impl SourceArena {
     ) -> String {
         let arena = self.economy.reset_hash_with_terrain(terrain);
         if self.effects == crate::world::effects::State::default()
+            && self.dynamic_lighting == crate::dynamic_lighting::DynamicLightingState::reset()
+            && self.dynamic_lighting_enabled
             && self.replacement_slots.is_empty()
             && self.raw_creature_origins.is_empty()
             && self.raw_creature_parts.is_empty()
@@ -177,6 +185,22 @@ impl SourceArena {
         hash.update(arena.as_bytes());
         hash.update(self.effects.eruption.to_le_bytes());
         hash.update(self.effects.eruption_smoke.to_le_bytes());
+        if !self.effects.death_burst_origins().is_empty() {
+            hash.update(b"source-death-burst-provenance-v1");
+            hash.update((self.effects.death_burst_origins().len() as u16).to_le_bytes());
+            for (&slot, &(generation, parent)) in self.effects.death_burst_origins() {
+                hash.update(slot.to_le_bytes());
+                hash.update(generation.to_le_bytes());
+                hash.update(parent.to_le_bytes());
+            }
+        }
+        if self.dynamic_lighting != crate::dynamic_lighting::DynamicLightingState::reset()
+            || !self.dynamic_lighting_enabled
+        {
+            hash.update(b"dynamic-lighting-v1");
+            hash.update(self.dynamic_lighting.hash_v1().to_le_bytes());
+            hash.update([u8::from(self.dynamic_lighting_enabled)]);
+        }
         hash.update((self.replacement_slots.len() as u16).to_le_bytes());
         for slot in &self.replacement_slots {
             hash.update(slot.to_le_bytes());
@@ -251,7 +275,7 @@ impl SourceArena {
                 && row.action != 180
                 && (expected_model != 27
                     || ((216..=223).contains(&row.action)
-                        && raw_word(row, 54) == handle.source_slot)))
+                        && raw_word(row, 54) == 0)))
         {
             return false;
         }
@@ -335,11 +359,37 @@ impl SourceArena {
     }
 
     pub(crate) fn creature_parent(&self, child: SourceEntityHandle) -> Option<SourceEntityHandle> {
+        self.creature_parent_binding(child)
+            .filter(|parent| self.resolve(*parent).is_some())
+    }
+
+    /// Preserve the original caster identity through intermediate flyers and
+    /// rings even after that caster's numeric slot has been reclaimed.
+    pub(crate) fn creature_parent_binding(
+        &self,
+        child: SourceEntityHandle,
+    ) -> Option<SourceEntityHandle> {
         let &(generation, parent) = self.creature_parents.get(&child.source_slot)?;
-        (generation == child.generation
-            && self.resolve(child).is_some()
-            && self.resolve(parent).is_some())
-        .then_some(parent)
+        (generation == child.generation && self.resolve(child).is_some()).then_some(parent)
+    }
+
+    /// Copy an already-observed parent, including a stale generation. Binding
+    /// the current occupant here would let a delayed birth adopt a new caster.
+    pub(crate) fn bind_carried_creature_parent(
+        &mut self,
+        child: SourceEntityHandle,
+        parent: SourceEntityHandle,
+    ) -> bool {
+        if child == parent
+            || parent.source_slot == 0
+            || usize::from(parent.source_slot) >= self.entities.len()
+            || self.resolve(child).is_none()
+        {
+            return false;
+        }
+        self.creature_parents
+            .insert(child.source_slot, (child.generation, parent));
+        true
     }
 
     pub(crate) fn has_creature_parent_binding(&self, child: SourceEntityHandle) -> bool {
@@ -367,13 +417,15 @@ impl SourceArena {
         root: SourceEntityHandle,
         kind: CreatureKind,
     ) -> bool {
+        let killed_chain = matches!(self.resolve(root), Some(SourceEntityView::Imported(row))
+            if row.class == 5 && row.model == 27 && row.action == 221);
         if child.source_slot == root.source_slot
             || !matches!(self.resolve(root), Some(SourceEntityView::Imported(row))
                 if row.class == 5 && row.model == 27 && (216..=223).contains(&row.action))
             || !matches!(self.resolve(child), Some(SourceEntityView::Imported(row))
                 if row.class == 5
                     && row.model == 27
-                    && matches!(row.action, 233 | 234)
+                    && (matches!(row.action, 233 | 234) || (killed_chain && row.action == 221))
                     && row.record[63] < 5
                     && raw_word(row, 54) == root.source_slot
                     && raw_word(row, 30) == root.source_slot
@@ -410,7 +462,7 @@ impl SourceArena {
         if root_row.class != 5
             || root_row.model != 27
             || !(216..=223).contains(&root_row.action)
-            || raw_word(root_row, 54) != root.source_slot
+            || raw_word(root_row, 54) != 0
             || raw_word(root_row, 30) != root.source_slot
             || root_row.source_id != root.source_slot
         {
@@ -566,7 +618,7 @@ impl SourceArena {
             return None;
         }
         if source.model == 27
-            && (raw_word(source, 54) != source.index
+            && (raw_word(source, 54) != 0
                 || raw_word(source, 30) != source.index
                 || source.source_id != source.index)
         {
@@ -760,6 +812,7 @@ impl SourceArena {
             .collect::<Vec<_>>();
         for (slot, position, rng) in hidden {
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
+            self.effects.forget_source_slot(slot);
             self.entities[usize::from(slot)].reclaim_source_row();
             self.economy.release_slot(slot, Some(rng));
             self.raw_creature_origins.remove(&slot);
@@ -784,7 +837,14 @@ impl SourceArena {
         for (slot, position) in hidden_typed {
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
         }
-        crate::world::fields::retire_hidden_wind_projections(self);
+        crate::world::fields::retire_hidden_wind_projections(self, terrain)?;
+        crate::native_world::area_damage::retire_hidden_player_death_markers(self, terrain)?;
+        // Explicit source49F90 reclaims every hidden row before rebuilding
+        // allocation stacks; bare allocator rebuilds keep their own policy.
+        crate::world::effects::lighting::prepare_fireball_reclaim(self, terrain)?;
+        self.economy.reclaim_fireball_rows_at_source_boundary();
+        crate::native_world::terrain_strip::prepare_trigger_reclaim(self, terrain)?;
+        self.economy.reclaim_death_burst_rows_at_source_boundary();
         self.economy.reclaim_inactive_slots_at_source_boundary();
         let retired_origins = self
             .raw_creature_origins
@@ -822,6 +882,7 @@ impl SourceArena {
     fn allocate_source_slot_notifying(&mut self, mut publish: impl FnMut(u16, u16)) -> Option<u16> {
         if self.economy.free_slot_count() != 0 {
             let slot = self.economy.allocate_slot()?;
+            self.effects.forget_source_slot(slot);
             // The free stack owns this address now. A typed constructor can
             // replace its occupant without publishing a raw record; retaining
             // the old active packet would resurrect it when that owner retires.
@@ -866,6 +927,7 @@ impl SourceArena {
             self.entities[usize::from(neighbor)].set_map_links(links.0, links.1);
         }
         publish(tile, self.economy.map_chains.tile_head(tile));
+        self.effects.forget_source_slot(slot);
         self.raw_creature_origins.remove(&slot);
         self.creature_parents.remove(&slot);
         self.clear_raw_creature_part_bindings_for_slot(slot);
@@ -941,6 +1003,13 @@ impl SourceArena {
         )?;
         crate::world::effects::sync_position(self, terrain, slot, position, true, false)
             .expect("ordinary Eruption flyer has a valid fixed map slot");
+        crate::world::effects::lighting::admit_source(
+            self,
+            terrain,
+            slot,
+            position,
+            crate::world::effects::lighting::SourceLight::Fireball,
+        );
         Some(slot)
     }
 
@@ -1770,6 +1839,22 @@ mod tests {
             .clone()
     }
 
+    fn level_two_constructor_session() -> crate::native_world::Mc2Simulation {
+        // MCR1 v2 retains the actual 29 constructor counters. The older
+        // qualification package above intentionally predates that export.
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-1pb-16-level2-full-build-v2")
+            },
+            PathBuf::from,
+        );
+        CampaignSession::open(package, CampaignSelection::LEVEL2)
+            .expect("real Level 2 package with source constructor counters")
+            .simulation()
+            .clone()
+    }
+
     #[test]
     fn level_four_group12_constructs_direct_and_subtype_routed_fireflies() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2150,7 +2235,7 @@ mod tests {
 
     #[test]
     fn summoned_parent_handle_rejects_a_reused_parent_slot() {
-        let session = level_two_session();
+        let session = level_two_constructor_session();
         let mut arena = session.source_arena().clone();
         let mut terrain = session.session.state.live.terrain.clone();
         let mut runtime = session.session.state.live.core.runtime.clone();
@@ -2195,14 +2280,49 @@ mod tests {
         assert_ne!(fresh_parent.generation, parent.generation);
         assert_eq!(arena.creature_parent(child), None);
         assert!(arena.has_creature_parent_binding(child));
+        assert_eq!(arena.creature_parent_binding(child), Some(parent));
         assert!(!arena.bind_creature_parent(child, parent));
+
+        let descendant_slot = crate::native_world::creatures::creature_18::mc2::allocate_authored(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            position,
+            12_000,
+            None,
+            3_018,
+        )
+        .unwrap()
+        .unwrap();
+        let descendant = arena.handle(descendant_slot).unwrap();
+        assert!(arena.bind_carried_creature_parent(
+            descendant,
+            arena.creature_parent_binding(child).unwrap(),
+        ));
+        assert_eq!(arena.creature_parent_binding(descendant), Some(parent));
+        assert_eq!(arena.creature_parent(descendant), None);
+        assert!(arena.has_creature_parent_binding(descendant));
+        assert!(!arena.bind_carried_creature_parent(descendant, descendant));
+
         assert!(arena.bind_creature_parent(child, fresh_parent));
         assert_eq!(arena.creature_parent(child), Some(fresh_parent));
+        assert_eq!(arena.creature_parent(descendant), None);
+        let replacement = arena.entities[usize::from(descendant_slot)].clone();
+        arena.entities[usize::from(descendant_slot)].reclaim_source_row();
+        arena.economy.release_slot(descendant_slot, None);
+        assert_eq!(arena.allocate_source_slot(), Some(descendant_slot));
+        arena.entities[usize::from(descendant_slot)] = replacement;
+        let fresh_descendant = arena.handle(descendant_slot).unwrap();
+        assert_ne!(fresh_descendant, descendant);
+        assert_eq!(arena.creature_parent_binding(descendant), None);
+        assert_eq!(arena.creature_parent_binding(fresh_descendant), None);
+        assert!(!arena.bind_carried_creature_parent(descendant, fresh_parent));
     }
 
     #[test]
     fn authored_models18_21_and26_keep_allocator_generations_in_raw_census() {
-        let session = level_two_session();
+        let session = level_two_constructor_session();
         let mut arena = session.source_arena().clone();
         let mut terrain = session.session.state.live.terrain.clone();
         let mut runtime = session.session.state.live.core.runtime.clone();
@@ -2364,7 +2484,7 @@ mod tests {
         root_row.model = 27;
         root_row.source_id = root_slot;
         root_row.record[30..32].copy_from_slice(&root_slot.to_le_bytes());
-        root_row.record[54..56].copy_from_slice(&root_slot.to_le_bytes());
+        root_row.record[54..56].fill(0);
         root_row.record[56..58].copy_from_slice(&head_slot.to_le_bytes());
         root_row.record[63] = 5;
         root_row.set_source_action(217);
@@ -2392,6 +2512,10 @@ mod tests {
         let body = arena.handle(body_slot).unwrap();
         let origin = CreatureRootOrigin::AuthoredRecord { authored_record: 1 };
         let unbound_hash = arena.reset_hash_with_terrain(&terrain);
+        arena.entities[usize::from(root_slot)].record[54..56]
+            .copy_from_slice(&root_slot.to_le_bytes());
+        assert!(!arena.bind_raw_creature_origin(root, CreatureKind::Creature27, origin));
+        arena.entities[usize::from(root_slot)].record[54..56].fill(0);
         assert!(arena.bind_raw_creature_origin(root, CreatureKind::Creature27, origin));
 
         assert!(arena.bind_raw_creature_part(head, root, CreatureKind::Creature27));

@@ -545,6 +545,7 @@ use world_types::Result;
 pub use world_types::*;
 
 pub(crate) mod area_damage;
+pub(crate) mod source_target;
 mod ballistic_scenery;
 #[path = "campaign/simulation.rs"]
 mod simulation;
@@ -567,6 +568,8 @@ mod countdown_switch;
 pub(crate) mod creatures;
 mod effects;
 mod guided_projectile;
+#[cfg(test)]
+pub(crate) use guided_projectile::boss as test_guided_boss;
 pub(crate) use effects::hidden_slots as hidden_effect_slots;
 mod level2_nyphur;
 pub(crate) mod lightning;
@@ -807,6 +810,10 @@ pub struct Level2SharedSpellResetSession {
     /// compact spell-selector bytes at the unrelated offset 397.
     player_life_regen_cooldown: i32,
 
+    /// Source Type_str_164 word_0x24C_588, omitted from the compact player
+    /// export. It counts down on living, unpaused player-upkeep visits.
+    player_hit_effect_cooldown: i16,
+
     player_entity: EntitySnapshot,
     /// All source player records/entities are retained for the generic
     /// `sub_68FF0` linked-list scan.  The previous seam only kept player 0,
@@ -957,9 +964,13 @@ pub struct Level2SpeedPickupStep {
 pub struct Level2CastleState {
     pub source_entity_index: u16,
     pub(crate) slot_generation: u32,
+    pub(crate) owner_slot_generation: u32,
     /// Source `id_0x1A_26` copied into Castle child records. This is kept
     /// separate from the player/owner relation used by economy arbitration.
     pub source_id_entity_index: u16,
+    /// Source `playerEntityIndex_0x94_148`, used by `sub_61000` for
+    /// mana credit independently of the Castle's owning `id_0x1A_26`.
+    pub player_entity_index: u16,
     pub source_class: u8,
     pub source_model: u8,
     pub source_byte_38: u8,
@@ -1499,6 +1510,8 @@ pub struct Level2PlayerDeathMarker {
     pub byte_38: u8,
     pub max_life: i32,
     pub life: i32,
+    /// NewEvent's collision flag plus the final encounter's mana-chain modes.
+    pub control_flags: u32,
     pub particle_parameter_index: u16,
     pub active: bool,
 }
@@ -2320,6 +2333,8 @@ pub struct AuthoredDragonPart {
     pub root_authored_index: u16,
     pub entity_id: u16,
     pub entity_rng: u16,
+    /// Per-part source flags copied from the root before body construction.
+    pub control_flags: u32,
     pub parent_entity_index: u16,
     pub previous_entity_index: u16,
     pub next_entity_index: u16,
@@ -4018,19 +4033,28 @@ impl NativeWorld {
     pub(crate) fn inspect_campaign_definition(
         definition: &ValidatedCampaignDefinition,
     ) -> Result<NativeWorldInspection> {
-        Self::inspect_campaign_definition_internal(definition, None)
+        Self::inspect_campaign_definition_internal(definition, None, true)
     }
 
     pub(crate) fn inspect_campaign_definition_with_owner_cache(
         definition: &ValidatedCampaignDefinition,
         owner_cache: &Path,
     ) -> Result<NativeWorldInspection> {
-        Self::inspect_campaign_definition_internal(definition, Some(owner_cache))
+        Self::inspect_campaign_definition_internal(definition, Some(owner_cache), true)
+    }
+
+    pub(crate) fn inspect_campaign_definition_with_dynamic_lighting(
+        definition: &ValidatedCampaignDefinition,
+        owner_cache: Option<&Path>,
+        enabled: bool,
+    ) -> Result<NativeWorldInspection> {
+        Self::inspect_campaign_definition_internal(definition, owner_cache, enabled)
     }
 
     fn inspect_campaign_definition_internal(
         definition: &ValidatedCampaignDefinition,
         owner_cache: Option<&Path>,
+        dynamic_lighting_enabled: bool,
     ) -> Result<NativeWorldInspection> {
         let owner_export_package_sha256 =
             definition.owner_export_package_sha256().map_err(|error| {
@@ -4077,9 +4101,9 @@ impl NativeWorld {
             capture_frame: 0,
             vga_resolution_selector,
         };
-        let entities = parse_entities(&entities_bytes)?;
+        let mut entities = parse_entities(&entities_bytes)?;
         let mut terrain_planes = parse_terrain(&terrain_bytes)?;
-        let terrain_rng = if map_type == MapType::Cave
+        let (terrain_rng, dynamic_lighting, linked_flags) = if map_type == MapType::Cave
             && definition
                 .can_generate_cave_startup()
                 .map_err(|error| NativeWorldError::new(error.to_string()))?
@@ -4087,11 +4111,30 @@ impl NativeWorld {
             definition
                 .generate_cave_startup()
                 .map_err(|error| NativeWorldError::new(error.to_string()))?
-                .write_geometry_into(&mut terrain_planes, &entities)
+                .write_geometry_and_lighting_into(
+                    &mut terrain_planes,
+                    &entities,
+                    dynamic_lighting_enabled,
+                )
                 .map_err(NativeWorldError::new)?
         } else {
-            read_u16(&feature_end, 8, "campaign feature-end terrain RNG")?
+            (
+                read_u16(&feature_end, 8, "campaign feature-end terrain RNG")?,
+                crate::dynamic_lighting::DynamicLightingState::reset(),
+                Vec::new(),
+            )
         };
+        for (slot, linked) in linked_flags {
+            let row = entities.get_mut(usize::from(slot)).ok_or_else(|| {
+                NativeWorldError::new(format!("startup light slot {slot} is outside source arena"))
+            })?;
+            let flags = if linked {
+                row.control_flags | 0x0008_0000
+            } else {
+                row.control_flags & !0x0008_0000
+            };
+            row.set_control_flags(flags);
+        }
         let terrain = LegacyTerrain::new(
             terrain_planes.terrain_types.to_vec(),
             terrain_planes.ground_heights.to_vec(),
@@ -4184,6 +4227,8 @@ impl NativeWorld {
             runtime,
             presentation,
             terrain_rng,
+            dynamic_lighting,
+            dynamic_lighting_enabled,
             reset_state,
             authored_level: authored.into_boxed_slice(),
             collision_masks,
@@ -4220,6 +4265,8 @@ impl NativeWorld {
             runtime: common.runtime,
             presentation: common.presentation,
             terrain_rng: common.terrain_rng,
+            dynamic_lighting: crate::dynamic_lighting::DynamicLightingState::reset(),
+            dynamic_lighting_enabled: true,
             reset_state: common.reset_state,
             authored_level: common.authored.into_boxed_slice(),
             collision_masks: common.collision_masks,

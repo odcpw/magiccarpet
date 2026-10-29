@@ -7,7 +7,7 @@
 use crate::{
     campaign::spec::CampaignSelection,
     game_definition::RuntimeFlowDefinition,
-    game_runtime::{CampaignSaveState, RuntimeTransitionError},
+    game_runtime::{CampaignSaveState, RuntimeTransitionError, secret_flow::SecretFlowState},
 };
 use sim_definition::runtime_flow::RuntimeFlowSecretEntry;
 
@@ -153,6 +153,28 @@ pub(crate) fn entry_for(
     }
 
     Some(destination_entry.clone())
+}
+
+/// Resolve the source map's unfinished-secret continuation for an ordinary
+/// parent launch. Both installed package flows and earned progress participate
+/// in the decision; no client-provided result or source setting is accepted.
+#[must_use]
+pub(crate) fn unfinished_parent_continuation(
+    origin_selection: CampaignSelection,
+    parent_flow: &RuntimeFlowDefinition,
+    destination_flow: &RuntimeFlowDefinition,
+    progress: &SecretFlowState,
+) -> Option<RuntimeFlowSecretEntry> {
+    let association = association_for_origin(origin_selection)?;
+    let entry = entry_for(
+        origin_selection,
+        association.destination_level_index(),
+        parent_flow,
+        destination_flow,
+    )?;
+    progress
+        .is_discovered_unfinished(entry.secret_level_id())
+        .then_some(entry)
 }
 
 #[cfg(test)]

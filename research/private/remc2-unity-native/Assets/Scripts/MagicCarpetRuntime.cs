@@ -12422,10 +12422,7 @@ namespace MagicCarpet.Native
             NativeSim.NativeEvent nativeEvent,
             NativeSim.AudioCommand? audioCommand)
         {
-            var explicitNullSound =
-                OwnerAudioPresentation.EventSoundId(
-                    nativeEvent.kind, nativeEvent.code) == 12;
-            if (ownerAudio != null && !explicitNullSound)
+            if (ownerAudio != null)
             {
                 if (gameRuntimeMode)
                     Require(audioCommand.HasValue, "campaign audio event retains its source command");
@@ -14303,7 +14300,7 @@ namespace MagicCarpet.Native
                     selector => hudBitmapTextures[selector],
                     selector => new Vector2Int(hudBitmapDescriptors[selector].runtime_width, hudBitmapDescriptors[selector].runtime_height),
                     playerPreferences?.Held(7) ?? (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)),
-                    out var mark);
+                    out var mark, gameRuntimeEnvironmentCache ?? ownerAssetCache);
                 if (mark != null)
                 {
                     gameRuntimeSpellSelectionRequested = null;

@@ -3023,6 +3023,11 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .find(|holder| holder.model == CASTLE_SPELL_FAMILY)
         .expect("family-2 holder remains authoritative after construction");
     let occupied_mana_cost = occupied_holder.mana_cost;
+    let holder_max_mana = occupied_holder.max_mana;
+    let player_before_recharge = occupied.shared_spells().player_entity().clone();
+    let overlap_before_recharge = occupied
+        .economy()
+        .player_castle_shift_aabb_overlap(&player_before_recharge);
     let mut recharge_turns = 0_u8;
     while recharge_turns < 32 && occupied.shared_spells().caster.mana < occupied_mana_cost {
         occupied.step_outer_turn(PlayerCommand::default(), 0);
@@ -3030,7 +3035,16 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     }
     assert!(
         occupied.shared_spells().caster.mana >= occupied_mana_cost,
-        "ordinary public upkeep must reach the holder cost before recast"
+        "ordinary public upkeep must reach the holder cost before recast: turns={recharge_turns}, cost={occupied_mana_cost}, holder_max={holder_max_mana}, start_mana={}, start_regen={}, start_max={}, start_position={:?}, start_overlap={overlap_before_recharge}, end_mana={}, end_regen={}, end_max={}, end_position={:?}, end_overlap={}",
+        player_before_recharge.mana,
+        player_before_recharge.mana_regen,
+        player_before_recharge.max_mana,
+        player_before_recharge.position,
+        occupied.shared_spells().caster.mana,
+        occupied.shared_spells().player_entity().mana_regen,
+        occupied.shared_spells().player_entity().max_mana,
+        occupied.shared_spells().player_entity().position,
+        occupied.economy().player_castle_shift_aabb_overlap(occupied.shared_spells().player_entity()),
     );
     occupied.step_outer_turn(request, 0);
     let upgrade = occupied

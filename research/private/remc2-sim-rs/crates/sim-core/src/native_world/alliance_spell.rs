@@ -387,6 +387,7 @@ pub(crate) fn step_projectile(
     slot: u16,
     targets: Option<&super::guided_projectile::Targets<'_>>,
     parameters: &[[u8; super::ENTITY_PARAMETER_BYTES]],
+    context: super::source_target::Context<'_>,
 ) -> Result<super::guided_projectile::StepOutcome, String> {
     let row = arena
         .entities
@@ -399,7 +400,7 @@ pub(crate) fn step_projectile(
         })
         .ok_or("Alliance projectile callback needs live class9/model25/action26")?;
     let guidance = guidance_for_projectile(row, parameters)?;
-    super::guided_projectile::step(arena, terrain, particles, slot, guidance, targets)
+    super::guided_projectile::step(arena, terrain, particles, slot, guidance, targets, context)
 }
 
 /// Scheduled class10/model74 terminal consumer. The shared guided collision

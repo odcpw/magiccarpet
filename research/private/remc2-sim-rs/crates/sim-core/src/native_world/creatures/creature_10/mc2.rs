@@ -8,6 +8,16 @@ use crate::campaign::source_arena::SourceArena;
 use crate::native_world::{EntitySnapshot, ParticleParameter, RuntimeSnapshot, SessionTerrain};
 use crate::{FlightWorld, Position};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EncounterAction {
+    Approach(u8),
+    Refresh,
+    KillCreatures { player: u16 },
+}
+
+type ApplyEncounterAction<'a> =
+    dyn FnMut(&mut SourceArena, EncounterAction) -> Result<(), String> + 'a;
+
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
 }
@@ -536,6 +546,7 @@ fn approach_step(
     actor: &mut Actor,
     frame: Frame,
     effects: &mut Effects,
+    apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<bool, String> {
     let flags = actor.subspell_index;
     let mut continue_mana_effects = true;
@@ -580,6 +591,12 @@ fn approach_step(
         }
     } else if flags & 4 != 0 {
         effects.kill_all_creatures = true;
+        apply_world(
+            arena,
+            EncounterAction::KillCreatures {
+                player: frame.player_slot,
+            },
+        )?;
         let old_timer = actor.timer;
         actor.timer = actor.timer.wrapping_sub(1);
         if old_timer < 17 {
@@ -640,6 +657,7 @@ fn approach_step(
         // models39/40/57). The world owner consumes this exact-list intent;
         // neither the player nor the boss is part of that chain.
         effects.approach_creature_mode = Some(creature_mode);
+        apply_world(arena, EncounterAction::Approach(creature_mode))?;
     }
 
     if continue_mana_effects {
@@ -672,33 +690,6 @@ fn approach_step(
     }
 
     Ok(close)
-}
-
-fn apply_kill_all(arena: &mut SourceArena, player_slot: u16) {
-    for row in arena
-        .entities
-        .iter_mut()
-        .filter(|row| row.active && row.class == 5 && row.model < 29 && row.model != SOURCE_MODEL)
-    {
-        put_word(row, 36, player_slot);
-        if row.model == 27 {
-            row.set_source_action(221);
-        } else {
-            row.set_life(-1);
-        }
-    }
-}
-
-fn apply_refresh_creatures(arena: &mut SourceArena) {
-    for row in arena
-        .entities
-        .iter_mut()
-        .filter(|row| row.active && row.class != 0)
-    {
-        row.set_max_life(140);
-        row.set_control_flags(row.control_flags | 0x0000_2000);
-        row.set_life(140);
-    }
 }
 
 /// Exact `sub_4BD00` row defaults. The required feature bit is checked before
@@ -815,6 +806,7 @@ pub(crate) fn step_row(
     particles: &[ParticleParameter],
     slot: u16,
     frame: Frame,
+    apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<Effects, String> {
     let mut row = arena
         .entities
@@ -847,9 +839,28 @@ pub(crate) fn step_row(
         _ => {}
     }
     let mut effects = super::step(&mut actor, frame, particles)?;
+    if effects.kill_all_creatures {
+        apply_world(
+            arena,
+            EncounterAction::KillCreatures {
+                player: frame.player_slot,
+            },
+        )?;
+    }
+    if effects.refresh_creatures {
+        apply_world(arena, EncounterAction::Refresh)?;
+    }
     if effects.request_approach_step {
         effects.request_approach_step = false;
-        if approach_step(arena, runtime, terrain, &mut actor, frame, &mut effects)? {
+        if approach_step(
+            arena,
+            runtime,
+            terrain,
+            &mut actor,
+            frame,
+            &mut effects,
+            apply_world,
+        )? {
             actor.phase = 4;
             actor.subspell_index |= 0x80;
         }
@@ -860,12 +871,6 @@ pub(crate) fn step_row(
     arena.economy.source_rng.insert(slot, rng);
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    if effects.kill_all_creatures {
-        apply_kill_all(arena, frame.player_slot);
-    }
-    if effects.refresh_creatures {
-        apply_refresh_creatures(arena);
-    }
     materialize_summons(arena, runtime, terrain, particles, &mut effects)?;
     materialize_source_effects(arena, runtime, terrain, &mut effects)?;
     if effects.clear_stage_variable_count && !runtime.clear_active_stage_variable_count() {
@@ -893,6 +898,7 @@ pub(crate) fn scheduled_step(
     families: &[Vec<u16>; 29],
     class9: &[u16],
     setting_30: u8,
+    apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<Effects, String> {
     let player = arena
         .entities
@@ -934,7 +940,7 @@ pub(crate) fn scheduled_step(
         frame.close_creature =
             super::protection::apply(arena, terrain, slot, shared_spells, class9)?;
     }
-    let effects = step_row(arena, runtime, terrain, particles, slot, frame)?;
+    let effects = step_row(arena, runtime, terrain, particles, slot, frame, apply_world)?;
     if let Some(pressure) = effects.player_pressure
         && !runtime.set_final_boss_pressure_speed(pressure.speed)
     {
@@ -948,6 +954,13 @@ mod tests {
     use super::super::FINAL_REWARD_PHASE;
     use super::*;
     use crate::campaign::source_arena::SourceArena;
+
+    // These existing checks isolate boss phase/constructor behavior. The
+    // source-time callback/order and actual carrier mutations have separate
+    // regressions; they are not inferred from this phase-only observer.
+    fn ignore_world_action(_: &mut SourceArena, _: EncounterAction) -> Result<(), String> {
+        Ok(())
+    }
 
     struct Source24Fixture {
         arena: SourceArena,
@@ -1114,6 +1127,69 @@ mod tests {
     }
 
     #[test]
+    fn encounter_world_actions_run_in_source_order_before_mana_allocations() {
+        for (timer, mode) in [(17, Some(2)), (16, None)] {
+            let (mut fixture, boss_slot) = boss_fixture();
+            let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
+            boss.set_source_byte_46(1);
+            boss.set_subspell_index(4);
+            boss.set_source_dword_10(timer);
+            let before = fixture.arena.economy.model13_spawned_children().len();
+            let frame = boss_frame(&fixture);
+            let mut observed = Vec::new();
+            step_row(
+                &mut fixture.arena,
+                &mut fixture.runtime,
+                &mut fixture.terrain,
+                &fixture.particles,
+                boss_slot,
+                frame,
+                &mut |arena, action| {
+                    assert_eq!(arena.economy.model13_spawned_children().len(), before);
+                    observed.push(action);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let mut expected = vec![EncounterAction::KillCreatures {
+                player: frame.player_slot,
+            }];
+            if let Some(mode) = mode {
+                expected.push(EncounterAction::Approach(mode));
+            }
+            assert_eq!(observed, expected);
+            assert_eq!(
+                fixture.arena.economy.model13_spawned_children().len(),
+                before + 4
+            );
+        }
+
+        let (mut fixture, boss_slot) = boss_fixture();
+        let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
+        boss.set_source_byte_46(1);
+        boss.set_subspell_index(4);
+        boss.set_source_dword_10(17);
+        let before = fixture.arena.economy.model13_spawned_children().len();
+        let frame = boss_frame(&fixture);
+        assert!(
+            step_row(
+                &mut fixture.arena,
+                &mut fixture.runtime,
+                &mut fixture.terrain,
+                &fixture.particles,
+                boss_slot,
+                frame,
+                &mut |_, _| Err("world action failed".to_owned()),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fixture.arena.economy.model13_spawned_children().len(),
+            before
+        );
+    }
+
+    #[test]
     fn phase_zero_calls_source_approach_in_same_pass_and_spawns_10_14_effects() {
         let (mut fixture, boss_slot) = boss_fixture();
         let boss_position = fixture.arena.entities[usize::from(boss_slot)].position;
@@ -1149,6 +1225,7 @@ mod tests {
             &fixture.particles,
             boss_slot,
             frame,
+            &mut ignore_world_action,
         )
         .unwrap();
 
@@ -1227,6 +1304,7 @@ mod tests {
                 &fixture.particles,
                 boss_slot,
                 frame,
+                &mut ignore_world_action,
             )
             .unwrap();
             let boss = &fixture.arena.entities[usize::from(boss_slot)];
@@ -1248,6 +1326,7 @@ mod tests {
                     &fixture.particles,
                     boss_slot,
                     frame,
+                    &mut ignore_world_action,
                 )
                 .unwrap();
                 assert!(effects.kill_all_creatures);
@@ -1278,6 +1357,7 @@ mod tests {
             &fixture.particles,
             boss_slot,
             frame,
+            &mut ignore_world_action,
         )
         .unwrap();
 
@@ -1345,6 +1425,7 @@ mod tests {
             &fixture.particles,
             boss_slot,
             frame,
+            &mut ignore_world_action,
         )
         .unwrap();
 
@@ -1393,6 +1474,7 @@ mod tests {
             &fixture.particles,
             boss_slot,
             frame,
+            &mut ignore_world_action,
         )
         .unwrap();
 
@@ -1435,6 +1517,7 @@ mod tests {
                     &fixture.particles,
                     boss_slot,
                     frame,
+                    &mut ignore_world_action,
                 )
                 .unwrap();
                 assert!(effects.summons.is_empty());
@@ -1512,6 +1595,7 @@ mod tests {
             &fixture.particles,
             boss_slot,
             frame,
+            &mut ignore_world_action,
         )
         .unwrap();
 
@@ -1547,6 +1631,7 @@ mod tests {
             &fixture.particles,
             boss_slot,
             frame,
+            &mut ignore_world_action,
         )
         .unwrap();
 

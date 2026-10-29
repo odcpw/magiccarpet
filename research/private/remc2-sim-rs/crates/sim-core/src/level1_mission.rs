@@ -13742,6 +13742,7 @@ impl Level1MissionState {
     ) {
         let phase_before = self.exit_sequence_phase;
         let mut sequence = crate::level_exit::LevelExitSequence {
+            ordinary_exit_route: crate::level_exit::OrdinaryExitRoute::CampaignMap,
             active: self.exit_sequence_active,
             complete: self.exit_sequence_complete,
             phase: self.exit_sequence_phase,

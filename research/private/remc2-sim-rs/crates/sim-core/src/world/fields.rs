@@ -42,8 +42,8 @@ pub(crate) struct State {
     pub(crate) authored_model22: Vec<wind::Wind>,
     pub(crate) model22_spawned_children: Vec<wind::Segment>,
     pub(crate) palette: palette::Palette,
-    /// Raw source projections published for spell-created Wind. The parent
-    /// slot distinguishes a root from its linked segments at reclamation.
+    /// Generation-bound Wind slots, including authored rows without raw
+    /// projections. The parent distinguishes a root from its segments.
     wind_projections: std::collections::BTreeMap<u16, (u32, u16)>,
 }
 
@@ -82,12 +82,108 @@ pub(crate) fn construct_spell_wind(
     Ok(Some(root.source_entity_index))
 }
 
-/// Retire only raw projections of the hidden Wind incarnation, immediately
-/// before the typed arena reclaims it at the next UpdateEntities boundary.
-/// A reused slot is never retired on behalf of an older field.
+/// Record the authored constructor's typed slots and publish their map heads.
+pub(crate) fn register_authored_wind(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut crate::native_world::SessionTerrain,
+    parent: u16,
+) {
+    let slots: Vec<u16> = std::iter::once(parent)
+        .chain(
+            arena
+                .economy
+                .fields
+                .model22_spawned_children
+                .iter()
+                .filter(|child| child.parent_entity_index == parent && child.active)
+                .map(|child| child.source_entity_index),
+        )
+        .collect();
+    for slot in slots {
+        let generation = arena.economy.slot_generation(slot);
+        arena
+            .economy
+            .fields
+            .wind_projections
+            .insert(slot, (generation, parent));
+    }
+    let snapshot = capture_wind_links(arena, parent);
+    publish_wind_links(arena, terrain, snapshot);
+}
+
+/// The typed Wind callback moves its slots before returning. Preserve the old
+/// tiles and neighbors so its caller can publish both sides of those moves.
+pub(crate) struct WindLinks(Vec<(u16, u32, u16, u16, u16)>);
+
+pub(crate) fn capture_wind_links(
+    arena: &crate::campaign::source_arena::SourceArena,
+    parent: u16,
+) -> WindLinks {
+    WindLinks(
+        arena
+            .economy
+            .fields
+            .wind_projections
+            .iter()
+            .filter(|(_, (_, owner))| *owner == parent)
+            .map(|(&slot, &(generation, _))| {
+                let chains = &arena.economy.map_chains;
+                (
+                    slot,
+                    generation,
+                    chains.tile_of(slot),
+                    chains.old_map_entity(slot),
+                    chains.next_entity(slot),
+                )
+            })
+            .collect(),
+    )
+}
+
+pub(crate) fn publish_wind_links(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut crate::native_world::SessionTerrain,
+    snapshot: WindLinks,
+) {
+    let mut tiles = std::collections::BTreeSet::new();
+    let mut neighbors = std::collections::BTreeSet::new();
+    for (slot, generation, old_tile, old_previous, old_next) in snapshot.0 {
+        if arena.economy.slot_generation(slot) != generation {
+            continue;
+        }
+        let chains = &arena.economy.map_chains;
+        tiles.extend([old_tile, chains.tile_of(slot)]);
+        neighbors.extend([
+            slot,
+            old_previous,
+            old_next,
+            chains.old_map_entity(slot),
+            chains.next_entity(slot),
+        ]);
+    }
+    for tile in tiles {
+        terrain.disaster_parts().0.entity_indices[usize::from(tile)] =
+            arena.economy.map_chains.tile_head(tile) as i16;
+    }
+    for slot in neighbors.into_iter().filter(|slot| *slot != 0) {
+        let links = (
+            arena.economy.map_chains.old_map_entity(slot),
+            arena.economy.map_chains.next_entity(slot),
+        );
+        let row = &mut arena.entities[usize::from(slot)];
+        if row.active {
+            row.record[26..28].copy_from_slice(&links.0.to_le_bytes());
+            row.record[28..30].copy_from_slice(&links.1.to_le_bytes());
+        }
+    }
+}
+
+/// Unlink hidden Wind rows before the typed arena reclaims them. A reused
+/// generation is never retired on behalf of an older field.
 pub(crate) fn retire_hidden_wind_projections(
     arena: &mut crate::campaign::source_arena::SourceArena,
-) {
+    terrain: &mut crate::native_world::SessionTerrain,
+) -> Result<(), String> {
     let entries: Vec<_> = arena
         .economy
         .fields
@@ -122,6 +218,8 @@ pub(crate) fn retire_hidden_wind_projections(
             continue;
         }
         if hidden == Some(true) {
+            let position = arena.entities[usize::from(slot)].position;
+            crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
             let row = &mut arena.entities[usize::from(slot)];
             let model = if root { 22 } else { 75 };
             if (row.class, row.model) == (10, model) {
@@ -130,6 +228,7 @@ pub(crate) fn retire_hidden_wind_projections(
             arena.economy.fields.wind_projections.remove(&slot);
         }
     }
+    Ok(())
 }
 
 /// Commit the shared projectile's post-constructor writes, and its caller's

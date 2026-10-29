@@ -1,7 +1,7 @@
 {
   "name": "MagicCarpet.Native.Runtime",
   "rootNamespace": "MagicCarpet.Native",
-  "references": [],
+  "references": ["Unity.InputSystem"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

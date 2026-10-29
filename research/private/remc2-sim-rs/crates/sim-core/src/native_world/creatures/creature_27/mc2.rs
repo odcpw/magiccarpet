@@ -3,7 +3,7 @@
 use crate::campaign::source_arena::{CreatureRootOrigin, SourceArena, SourceEntityHandle};
 use crate::level_definition::CreatureKind;
 use crate::native_world::{
-    ENTITY_DRAW_DISABLED_BIT, ParticleParameter, RuntimeSnapshot, SessionTerrain,
+    ENTITY_DRAW_DISABLED_BIT, ParticleParameter, RuntimeSnapshot, SessionTerrain, source_target,
 };
 use crate::{FlightWorld, Position};
 
@@ -81,6 +81,89 @@ fn allocate_part(
         return Err(error);
     }
     Ok(Some(handle))
+}
+
+/// Bind an initial owner-package multipart chain to the actual source-slot
+/// generations. The raw links stay authoritative; this only gives later
+/// callbacks a generation-bound way to recognize each imported part.
+pub(crate) fn adopt_imported(arena: &mut SourceArena) -> Result<(), String> {
+    let roots = arena
+        .entities
+        .iter()
+        .filter(|row| {
+            row.active
+                && row.class == 5
+                && row.model == SOURCE_MODEL
+                && !row.drawing_disabled()
+                && (216..=223).contains(&row.action)
+                // KillAll and PreKill may give children the enabled death
+                // action too. Only roots have their own id/zero owner; a
+                // malformed candidate is rejected below as an orphan.
+                && (row.action != 221
+                    || row.source_id == row.index
+                    || u16::from_le_bytes([row.record[54], row.record[55]]) == 0)
+                && arena.slot_generation(row.index) == 0
+        })
+        .map(|row| row.index)
+        .collect::<Vec<_>>();
+    let root_slots = roots
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut chains = Vec::with_capacity(roots.len());
+    let mut parts = std::collections::BTreeSet::new();
+    for slot in roots {
+        let root = arena
+            .handle(slot)
+            .ok_or_else(|| format!("imported model27 root {slot} has no current source row"))?;
+        let chain = multipart::read_chain(arena, root)?;
+        for part in &chain.ordered {
+            if !parts.insert(part.source_slot) {
+                return Err(format!(
+                    "imported model27 part {} belongs to multiple roots",
+                    part.source_slot
+                ));
+            }
+        }
+        chains.push(chain);
+    }
+    for row in &arena.entities {
+        if row.active
+            && row.class == 5
+            && row.model == SOURCE_MODEL
+            && !row.drawing_disabled()
+            && matches!(row.action, HEAD_ACTION | BODY_ACTION | 221)
+            && arena.slot_generation(row.index) == 0
+            && !parts.contains(&row.index)
+            && !root_slots.contains(&row.index)
+        {
+            return Err(format!(
+                "imported model27 part {} has no valid root chain",
+                row.index
+            ));
+        }
+    }
+    for chain in chains {
+        if !arena.bind_raw_creature_origin(
+            chain.root,
+            CreatureKind::Creature27,
+            CreatureRootOrigin::InitialPackage,
+        ) {
+            return Err(format!(
+                "imported model27 root {} lost its source identity",
+                chain.root.source_slot
+            ));
+        }
+        for part in chain.ordered {
+            if !arena.bind_raw_creature_part(part, chain.root, CreatureKind::Creature27) {
+                return Err(format!(
+                    "imported model27 part {} lost its source identity",
+                    part.source_slot
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ordinary model27 producer corresponding to sub_4D000 after its source
@@ -306,6 +389,8 @@ pub(crate) fn step_row(
     runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
+    targets: source_target::Context<'_>,
+    feedback: &mut dyn FnMut(&SourceArena, u16, u8),
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
@@ -313,6 +398,7 @@ pub(crate) fn step_row(
     attack_cone: u16,
     setting_30: u16,
 ) -> Result<Effects, String> {
+    let list_epoch = arena.economy.replacement_list_epoch;
     let root = arena
         .handle(slot)
         .ok_or_else(|| format!("model27 callback lost root slot{slot}"))?;
@@ -327,7 +413,7 @@ pub(crate) fn step_row(
     // PreKill writes action221 to the whole source chain. Higher slots can
     // run that enabled action in this pass, including already-hidden parts.
     if action == 221 {
-        effects.death = Some(combat::kill(arena, terrain, root)?);
+        effects.death = Some(combat::kill(arena, terrain, particles, root)?);
         return Ok(effects);
     }
     let chain = multipart::read_chain(arena, root)?;
@@ -350,15 +436,15 @@ pub(crate) fn step_row(
         223 => {
             // sub_29930 delegates to sub_1D5D0 before its visual and
             // multipart tail. Mode 10 selects the descriptor's attack action;
-            // modes 0, 11 and 15 have no sub_1D5D0 case.
+            // The other modes take sub_1D5D0's default no-op.
             let mode = arena.entities[usize::from(slot)].record[77];
             match mode {
                 1..=9 | 12..=14 | 16 | 17 => stage::step(
-                    arena, runtime, terrain, particles, root, class3, families, mode,
+                    arena, runtime, terrain, particles, targets, feedback, root, class3, families,
+                    mode,
                 )?,
                 10 => arena.entities[usize::from(slot)].set_source_action(218),
-                0 | 11 | 15 => {}
-                _ => return Err(format!("model27 StageVar mode {mode} is not implemented")),
+                _ => {}
             }
             let mode = arena.entities[usize::from(slot)].record[77];
             combat::set_root_visual(
@@ -431,6 +517,7 @@ pub(crate) fn step_row(
             arena,
             terrain,
             particles,
+            targets,
             root,
             callback_action,
             class3,
@@ -443,6 +530,7 @@ pub(crate) fn step_row(
         arena,
         terrain,
         particles,
+        targets,
         &Allocation {
             root,
             heads: chain.heads,
@@ -450,6 +538,7 @@ pub(crate) fn step_row(
         },
         &chain,
         class3,
+        list_epoch,
         PROPERTIES.head_target_range,
         PROPERTIES.head_target_half_angle,
         setting_30,
@@ -465,14 +554,16 @@ pub(super) fn launch_projectile(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
+    targets: source_target::Context<'_>,
     shot: combat::ProjectileIntent,
 ) -> Result<Option<u16>, String> {
     crate::native_world::guided_projectile::boss::construct_model27(
         arena,
         terrain,
         particles,
+        targets,
         shot.head.source_slot,
-        shot.target.source_slot,
+        shot.target,
         shot.selector,
     )
 }

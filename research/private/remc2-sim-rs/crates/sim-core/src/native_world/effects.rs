@@ -5,6 +5,28 @@
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, SessionTerrain};
 use crate::{Position, campaign::source_arena::SourceArena, world::effects as rules};
 
+impl super::Level2EconomyState {
+    pub(crate) fn record_raw_death_burst_spawn(
+        &mut self,
+        slot: u16,
+        parent: u16,
+        id: u16,
+    ) {
+        self.events.push(super::Level2EconomyEvent::DeathBurstSpawned {
+            source_entity_index: slot,
+            parent_entity_index: parent,
+            id_entity_index: id,
+        });
+    }
+
+    pub(crate) fn record_raw_death_burst_expiry(&mut self, slot: u16, parent: u16) {
+        self.events.push(super::Level2EconomyEvent::DeathBurstExpired {
+            source_entity_index: slot,
+            parent_entity_index: parent,
+        });
+    }
+}
+
 /// The flyer owns guidance/collision; its terminal constructor returns to
 /// SourceArena so raw and typed replaceable rows arbitrate the same NewEvent.
 pub(crate) fn step_projectile(
@@ -12,12 +34,51 @@ pub(crate) fn step_projectile(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
+    context: super::source_target::Context<'_>,
 ) -> Result<super::level2_dynamic_economy::Level2FireballStep, String> {
     use super::level2_dynamic_economy::FireballBirth;
-    let mut step =
-        arena
-            .economy
-            .advance_fireball_projectile_slot(slot, terrain, &arena.entities, true);
+    let bound = arena
+        .economy
+        .fireball_projectiles
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+        .map_or(0, |row| row.target_source_entity_index);
+    let context = super::source_target::Context {
+        particles: Some(particles),
+        map_type: Some(terrain.map_type()),
+        ..context
+    };
+    // Capture each candidate's current fixed-address owner before borrowing
+    // the economy mutably. Only errors for the actual target or visited map
+    // candidates are consumed by the flyer callback.
+    let views = arena
+        .entities
+        .iter()
+        .map(|row| {
+            if row.index == bound || arena.economy.map_chains.is_linked(row.index) {
+                super::source_target::read(arena, context, row.index)
+            } else {
+                Ok(None)
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut step = arena.economy.advance_fireball_projectile_with_views(
+        slot,
+        terrain,
+        &arena.entities,
+        true,
+        Some(&views),
+    )?;
+    if let Some(position) = arena
+        .economy
+        .fireball_projectiles
+        .iter()
+        .find(|row| row.source_entity_index == slot && row.active)
+        .map(|row| row.position)
+    {
+        // Publish both old and new terrain map heads after source movement.
+        rules::sync_position(arena, terrain, slot, position, true, false)?;
+    }
     let Some(birth) = step.pending_birth.take() else {
         return Ok(step);
     };
@@ -79,11 +140,7 @@ pub(crate) fn step_projectile(
             root.pitch = projectile.pitch;
             root.max_life = 30;
             root.life = 30;
-            root.target_entity_index = if step.direct_hit_owner.is_some() {
-                projectile.target_source_entity_index
-            } else {
-                0
-            };
+            root.target_entity_index = step.collision_target.unwrap_or(0);
             arena
                 .economy
                 .source_owner
@@ -104,6 +161,9 @@ pub(crate) fn step_projectile(
                 row.set_subspell_index(projectile.source_subspell_index);
                 row.set_yaw(projectile.yaw);
                 row.set_pitch(projectile.pitch);
+                if let Some(target) = step.collision_target {
+                    row.set_source_word_96(target);
+                }
             }
         }
         child
@@ -120,9 +180,14 @@ pub(crate) fn step_projectile(
         }
         step.live = false;
     }
-    // sub_6D8B0 belongs to the successful actor-impact allocation branch,
-    // not to terrain/lifetime termination or a failed NewEvent attempt.
-    if child.is_none() {
+    // sub_65820 reads word26's holder *after* the impact NewEvent. A
+    // recycled holder address therefore supplies its current model; a zero
+    // holder, failed allocation, or non-actor termination awards nothing.
+    if child.is_some() && step.direct_hit_owner.is_some() && projectile.holder_entity_index != 0 {
+        let holder = super::source_target::read(arena, context, projectile.holder_entity_index)?
+            .ok_or("Fireball holder address is outside source arena")?;
+        step.direct_hit_family = Some(holder.model);
+    } else {
         step.direct_hit_owner = None;
     }
     step.impact_slot = child;
@@ -132,10 +197,7 @@ pub(crate) fn step_projectile(
 /// MCR1 retains the source globals at the same reset boundary as the arena.
 pub(crate) fn reset_state(runtime: &super::RuntimeSnapshot) -> rules::State {
     let (eruption, eruption_smoke) = runtime.effect_globals();
-    rules::State {
-        eruption,
-        eruption_smoke,
-    }
+    rules::State::from_globals(eruption, eruption_smoke)
 }
 
 pub(crate) fn hidden_slots(arena: &SourceArena) -> Vec<(u16, Position)> {
@@ -160,6 +222,8 @@ pub(crate) fn hidden_slots(arena: &SourceArena) -> Vec<(u16, Position)> {
     collect!(arena.economy.model17_spawned_children);
     collect!(arena.economy.authored_model76);
     collect!(arena.economy.model76_children);
+    collect!(arena.economy.player_death_markers);
+    collect!(arena.economy.death_bursts);
     hidden.sort_unstable_by_key(|(slot, _)| *slot);
     hidden
 }
@@ -167,6 +231,21 @@ pub(crate) fn hidden_slots(arena: &SourceArena) -> Vec<(u16, Position)> {
 pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Position, u32)> {
     let mut rows = Vec::new();
     let visible = |active: bool, flags: u32| active && flags & 0x421 == 0;
+    for s in arena
+        .economy
+        .death_bursts
+        .iter()
+        .filter(|s| visible(s.active, s.control_flags))
+    {
+        rows.push((
+            s.source_entity_index,
+            s.id_entity_index,
+            41,
+            0,
+            s.position,
+            s.control_flags,
+        ));
+    }
     for s in arena
         .economy
         .authored_model1
@@ -319,6 +398,27 @@ fn header(
 ) -> Result<EntitySnapshot, String> {
     let (owner, rng, model, action, max_life, life, payload, flags, phase, position, base_particle) =
         match kind {
+            Kind::DeathBurst => {
+                let s = arena
+                    .economy
+                    .death_bursts
+                    .iter()
+                    .find(|s| s.active && s.source_entity_index == slot)
+                    .ok_or("death burst carrier is absent")?;
+                (
+                    s.id_entity_index,
+                    s.entity_rng,
+                    1,
+                    1,
+                    s.max_life as i16,
+                    s.life_ticks,
+                    s.subspell_index,
+                    s.control_flags,
+                    s.source_byte_3e,
+                    s.position,
+                    41,
+                )
+            }
             Kind::AuthoredModel17 => {
                 let s = arena
                     .economy
@@ -628,6 +728,20 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
         };
     }
     match kind {
+        Kind::DeathBurst => {
+            let s = arena
+                .economy
+                .death_bursts
+                .iter_mut()
+                .find(|s| s.source_entity_index == slot)
+                .unwrap();
+            s.entity_rng = row.entity_rng;
+            s.max_life = row.max_life;
+            s.life_ticks = row.life as i16;
+            s.control_flags = row.control_flags;
+            s.position = row.position;
+            s.active = row.active;
+        }
         Kind::AuthoredModel17 => {
             let s = arena
                 .economy
@@ -748,6 +862,16 @@ where
 {
     let generation = arena.economy.slot_generation(slot);
     let row = header(arena, slot, kind, particles)?;
+    let burst_parent = if kind == Kind::DeathBurst {
+        arena
+            .economy
+            .death_bursts
+            .iter()
+            .find(|s| s.source_entity_index == slot && s.active)
+            .map(|s| s.parent_entity_index)
+    } else {
+        None
+    };
     let (row, visit) = rules::visit_entity(arena, terrain, row, particles, state, apply)?;
     if arena.economy.slot_generation(slot) != generation {
         // NewEvent replaced this typed parent during its own callback. The
@@ -755,6 +879,15 @@ where
         rules::commit_entity(arena, terrain, row)?;
     } else {
         store(arena, kind, &row);
+        if row.drawing_disabled() && let Some(parent) = burst_parent {
+            arena.economy.record_raw_death_burst_expiry(slot, parent);
+            // The retained typed carrier remains authoritative while hidden.
+            // Keep its eventual class-zero bytes for fixed-address readers
+            // after the following source reclaim removes that carrier.
+            let mut reclaimed = row.clone();
+            reclaimed.reclaim_source_row();
+            arena.entities[usize::from(slot)] = reclaimed;
+        }
         arena.economy.source_rng.insert(slot, row.entity_rng);
         rules::sync_position(
             arena,

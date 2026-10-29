@@ -8,7 +8,7 @@ use crate::{
     spell_activation::{SpellActivationHolder, SpellCasterState, activate_spell},
 };
 use sim_definition::SemanticId;
-use sim_session::{SpellAvailability, SpellHand, SpellMarkHand, SpellObservation};
+use sim_session::{RuntimeActorId, SpellAvailability, SpellHand, SpellMarkHand, SpellObservation};
 
 struct SpellBinding {
     kind: SpellKind,
@@ -224,7 +224,10 @@ pub(super) fn acquired_holder(
         })
 }
 
-pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObservation> {
+pub(super) fn observe(
+    shared: &Level2SharedSpellResetSession,
+    holder_actor: impl Fn(&EntitySnapshot) -> Option<RuntimeActorId>,
+) -> Vec<SpellObservation> {
     let player = shared.local_player();
     let entity = shared.player_entity();
     let selected = SOURCE_SPELL_INDEX_MAP
@@ -233,7 +236,9 @@ pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObserv
     BINDINGS
         .iter()
         .map(|binding| {
-            let holder = acquired_holder(shared, binding.family);
+            let candidate = acquired_holder(shared, binding.family);
+            let actor = candidate.and_then(&holder_actor);
+            let holder = candidate.filter(|_| actor.is_some());
             let acquired = holder.is_some();
             let hand = match (
                 acquired && player.left_spell_slot_raw == i16::from(binding.family),
@@ -303,6 +308,7 @@ pub(super) fn observe(shared: &Level2SharedSpellResetSession) -> Vec<SpellObserv
                 id: SemanticId::parse(binding.id).expect("static semantic spell ID"),
                 display_name: binding.name.to_owned(),
                 acquired,
+                holder_actor: actor,
                 marked_hand: match player.spell_hand_eligibility[usize::from(binding.family)] {
                     1 => SpellMarkHand::Left,
                     2 => SpellMarkHand::Right,

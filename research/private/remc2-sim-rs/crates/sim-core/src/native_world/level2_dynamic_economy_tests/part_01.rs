@@ -1,4 +1,101 @@
 #[test]
+fn final_castle_loss_hook_precedes_link_and_root_cleanup() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).expect("Level 2 package");
+    let mut session = inspection.level2_reset_session().expect("Level 2 session");
+    let owner = inspection.players()[0].entity_index;
+    let root = session.economy_mut().build_castle(Position::default(), owner).unwrap();
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(root).unwrap();
+        castle.action = 6;
+        castle.life = -1;
+        castle.timer = 3;
+        castle.source_word_2e = 7;
+        castle.source_word_30 = 3;
+    }
+    let reset_free_slots = session.session.baseline.economy.economy.free_slots.clone();
+    let live = &mut session.session.state.live;
+    let mut visited = false;
+    assert!(live.economy.economy.step_castle_action_with_final_loss(
+        root,
+        &mut live.terrain,
+        &reset_free_slots,
+        &mut |economy, castle| {
+            visited = true;
+            assert_eq!(castle.level, 0);
+            assert!(castle.active);
+            assert_eq!((castle.action, castle.life, castle.max_life), (6, -1, CASTLE_STAGE_ONE_LIFE));
+            assert_eq!((castle.timer, castle.source_word_2e, castle.source_word_30), (3, 7, 3));
+            assert_eq!(economy.castle_for_owner(owner).unwrap().source_entity_index, root);
+            assert!(economy.castle_at(root).is_some());
+            assert!(!economy.events().iter().any(|event| matches!(event, Level2EconomyEvent::CastleStageDestroyed { source_entity_index, .. } if *source_entity_index == root)));
+        },
+    ));
+    assert!(visited);
+    assert!(live.economy.economy.castle_for_owner(owner).is_none());
+    assert!(live.economy.economy.castle_at(root).is_none());
+    let retired = live.economy.economy.castle_entry(root).unwrap();
+    assert_eq!((retired.action, retired.life, retired.max_life), (4, -1, CASTLE_STAGE_ONE_LIFE));
+    assert_eq!((retired.timer, retired.source_word_2e, retired.source_word_30), (5, 0, 5));
+    assert!(live.economy.economy.events().iter().any(|event| matches!(event, Level2EconomyEvent::CastleStageDestroyed { source_entity_index, next_level: 0, .. } if *source_entity_index == root)));
+}
+
+#[test]
+fn castle_mana_credit_uses_source_player_relation_and_action4_timing() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).expect("Level 2 package");
+    let mut session = inspection.level2_reset_session().expect("Level 2 session");
+    let owners = [inspection.players()[0].entity_index, inspection.players()[1].entity_index];
+    let first = session.economy_mut().build_castle(Position::default(), owners[0]).unwrap();
+    let second = session.economy_mut().build_castle(Position { x: 0x5000, y: 0x5000, z: 0 }, owners[1]).unwrap();
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(first).unwrap();
+        castle.mana = 1500;
+        castle.action = 5;
+        castle.build_state = 4;
+        castle.player_entity_index = 0;
+        let castle = economy.castle_at_mut(second).unwrap();
+        castle.mana = 2400;
+        castle.player_entity_index = owners[1];
+        economy.refresh_owner_mana_rows();
+    }
+    let rows = session.economy().owner_mana_rows.iter().filter(|row| row.source_entity_index == first || row.source_entity_index == second).copied().collect::<Vec<_>>();
+    assert_eq!(rows.iter().find(|row| row.source_entity_index == first).unwrap().player_entity_index, 0);
+    assert_eq!(rows.iter().find(|row| row.source_entity_index == second).unwrap().player_entity_index, owners[1]);
+    let projected = level2_owner_max_mana_projection(&BTreeMap::new(), &rows);
+    assert_eq!(projected.get(&owners[0]), None);
+    assert_eq!(projected.get(&owners[1]), Some(&2400));
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(first).unwrap();
+        castle.action = 4;
+        castle.timer = 1;
+        castle.control_flags |= 0x10;
+    }
+    assert!(session.economy_mut().step_castle_action(first));
+    assert_eq!(session.economy().castle_at(first).unwrap().player_entity_index, 0);
+    assert!(session.economy_mut().step_castle_action(first));
+    assert_eq!(session.economy().castle_at(first).unwrap().player_entity_index, owners[0]);
+    session.economy_mut().refresh_owner_mana_rows();
+    let rows = session.economy().owner_mana_rows.iter().filter(|row| row.source_entity_index == first || row.source_entity_index == second).copied().collect::<Vec<_>>();
+    let projected = level2_owner_max_mana_projection(&BTreeMap::new(), &rows);
+    assert_eq!(projected.get(&owners[0]), Some(&1500));
+    assert_eq!(projected.get(&owners[1]), Some(&2400));
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(second).unwrap();
+        castle.player_entity_index = 0;
+        castle.life = -1;
+        castle.action = 4;
+        castle.timer = 0;
+    }
+    assert!(session.economy_mut().step_castle_action(second));
+    let lethal = session.economy().castle_at(second).unwrap();
+    assert_eq!(lethal.action, 6);
+    assert_eq!(lethal.player_entity_index, owners[1], "lethal action-4 exit still writes the source relation");
+}
+
+#[test]
 fn castle_construction_uses_each_owners_generation_bound_coefficients() {
     let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).expect("Level 2 package");
     let mut session = inspection.level2_reset_session().expect("Level 2 session");
@@ -27,6 +124,39 @@ fn castle_construction_uses_each_owners_generation_bound_coefficients() {
     assert_eq!(session.economy().castle_stage_coefficient_for_owner(owner_b, 1), 256);
     assert_eq!(session.economy().castle_controller_coefficients_for_owner(owner_b)[1], 1);
     assert_eq!(session.economy().castle_stage_coefficient_for_owner(owner_a, 1), 128);
+}
+
+#[test]
+fn ordinary_level_23_materializes_source_house_27_and_runs_construction() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23"),
+        PathBuf::from,
+    );
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("ordinary Level 23 owner package");
+    let house = campaign.simulation().ordinary().houses().iter()
+        .find(|house| house.entity_index == 1)
+        .copied().expect("actual reset house at source slot 1");
+    assert_eq!((house.building_index, house.action), (27, crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION));
+    assert_eq!((house.parameter.life_mana_scalar, house.parameter.flags, house.parameter.destruction_successor), (138, 8, 41));
+    for selector in [27, 41, 49] {
+        assert!(campaign.simulation().ordinary().house_build_footprints.contains_key(&selector), "real BUILD closure lacks {selector}");
+    }
+    let empty = &campaign.simulation().ordinary().house_build_footprints[&16];
+    assert_eq!((empty.width, empty.height, empty.cells()), (1, 1, &[[0xff, 0xff]][..]), "source BUILD loader doubles dimensions before VGA halves them");
+    campaign.step(PlayerCommand::default(), 0);
+    assert!(campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::House { source_slot: 1, events, .. }
+            if events.iter().any(|event| matches!(event,
+                HouseStepEvent::ConstructionPass { .. } | HouseStepEvent::ConstructionCompleted { .. }
+            ))
+    )), "ordinary source scheduler must run house 27's real BUILD consumer");
+    assert!(!campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::Error { source_slot: 1, .. }
+    )));
 }
 
 #[test]
@@ -67,6 +197,7 @@ fn ordinary_level_23_imports_linked_castles_and_construction_children() {
             ),
             (slot, level, mana, child)
         );
+        assert_eq!(root.player_entity_index, 0, "retain the actual source action-5 mana relation");
         assert!(!session.source_arena().entities[usize::from(slot)].active);
         if child != 0 {
             assert!(economy.castle_children().iter().any(|row| row.active
@@ -77,6 +208,93 @@ fn ordinary_level_23_imports_linked_castles_and_construction_children() {
         }
     }
     assert_eq!(economy.live_castles().count(), expected.len());
+}
+
+#[test]
+fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23"),
+        PathBuf::from,
+    );
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("ordinary Level 23 owner package");
+    let owner = 425;
+    let other_owner = 451;
+    let root_slot = 450;
+    let holder_slot = 428;
+    let other_holder = 454;
+    let players = &campaign.simulation().shared_spells().players;
+    assert_eq!(players.iter().find(|p| p.entity_index == owner).unwrap().enabled_spell_holders[2], holder_slot);
+    assert_eq!(players.iter().find(|p| p.entity_index == other_owner).unwrap().enabled_spell_holders[2], other_holder);
+    let holder = campaign.simulation().shared_spells().pickup(holder_slot).expect("real rival Castle holder");
+    assert!(holder.active && holder.class == 15 && holder.model == 2 && holder.source_spell_parent_entity_index() == owner);
+    let holder_generation = campaign.simulation().economy().slot_generation(holder_slot);
+    assert_eq!(campaign.simulation().economy().castle_for_owner(owner).unwrap().source_entity_index, root_slot);
+    for _ in 0..16 {
+        if campaign.simulation().economy().castle_at(root_slot).is_some_and(|root| root.action == 4) {
+            break;
+        }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4);
+    assert!(campaign.simulation_mut().economy_mut().submit_damage(root_slot, i32::MAX, 424));
+    for _ in 0..16 {
+        campaign.step(PlayerCommand::default(), 0);
+        if campaign.simulation().economy().castle_for_owner(owner).is_none() {
+            break;
+        }
+    }
+    let simulation = campaign.simulation();
+    assert!(simulation.economy().castle_for_owner(owner).is_none());
+    assert!(simulation.economy().castle_for_owner(other_owner).is_some());
+    let players = &simulation.shared_spells().players;
+    assert_eq!(players.iter().find(|p| p.entity_index == owner).unwrap().enabled_spell_holders[2], 0);
+    assert_eq!(players.iter().find(|p| p.entity_index == other_owner).unwrap().enabled_spell_holders[2], other_holder);
+    assert!(simulation.shared_spells().pickup(holder_slot).is_none_or(|holder| !holder.active || holder.control_flags & ENTITY_DRAW_DISABLED_BIT != 0));
+    assert!(simulation.shared_spells().pickup(other_holder).is_some_and(|holder| holder.active && holder.control_flags & ENTITY_DRAW_DISABLED_BIT == 0));
+    campaign.step(PlayerCommand::default(), 0);
+    let simulation = campaign.simulation();
+    assert!(simulation.economy().free_source_slots().contains(&holder_slot)
+        || simulation.economy().slot_generation(holder_slot) != holder_generation,
+        "the hidden holder must cross the next source reclaim boundary");
+}
+
+#[test]
+fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-paj2-source4-campaign-package");
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(5).unwrap(),
+    ).expect("ordinary Level 5 owner package");
+    let owner = 266;
+    let root_slot = 271;
+    let holder_slot = 269;
+    let player = campaign.simulation().shared_spells().players.iter().find(|p| p.entity_index == owner).unwrap();
+    assert_eq!(player.enabled_spell_holders[2], holder_slot);
+    assert!(campaign.simulation().shared_spells().pickup(holder_slot).is_some_and(|holder| holder.active && holder.model == 2 && holder.source_spell_parent_entity_index() == owner));
+    assert_eq!(campaign.simulation().economy().castle_for_owner(owner).unwrap().source_entity_index, root_slot);
+    for _ in 0..128 {
+        if campaign.simulation().economy().castle_at(root_slot).is_some_and(|root| root.action == 4) {
+            break;
+        }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4);
+    assert!(campaign.simulation_mut().economy_mut().submit_damage(root_slot, i32::MAX, 265));
+    for _ in 0..16 {
+        campaign.step(PlayerCommand::default(), 0);
+        if campaign.simulation().economy().castle_for_owner(owner).is_none() {
+            break;
+        }
+    }
+    let simulation = campaign.simulation();
+    assert!(simulation.economy().castle_for_owner(owner).is_none());
+    assert_eq!(simulation.shared_spells().players.iter().find(|p| p.entity_index == owner).unwrap().enabled_spell_holders[2], holder_slot);
+    assert!(simulation.shared_spells().pickup(holder_slot).is_some_and(|holder| holder.active && holder.control_flags & ENTITY_DRAW_DISABLED_BIT == 0));
 }
 
 #[test]

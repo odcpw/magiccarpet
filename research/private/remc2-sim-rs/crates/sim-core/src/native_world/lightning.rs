@@ -3,7 +3,7 @@
 //! remain in the campaign adapter. No second projectile state is retained.
 
 use super::{EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain};
-use super::{area_damage, guided_projectile};
+use super::{guided_projectile, source_target};
 use crate::campaign::source_arena::SourceArena;
 use crate::level_definition::LIGHTNING_PROPERTIES as RULES;
 use crate::{FlightWorld, Position, move_entity};
@@ -58,6 +58,16 @@ pub(crate) fn construct(
     arena: &mut SourceArena, terrain: &mut SessionTerrain,
     particles: &[ParticleParameter], product: Product, position: Position,
 ) -> Result<Option<u16>, String> {
+    construct_at_address(arena, terrain, particles, product, position, None)
+}
+
+/// Some source callers pass a pointer to another arena row's position. When
+/// NewEvent replaces that row, memset clears the pointed-to position first.
+pub(crate) fn construct_at_address(
+    arena: &mut SourceArena, terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter], product: Product, position: Position,
+    position_slot: Option<u16>,
+) -> Result<Option<u16>, String> {
     let (class, model, action, particle, life, parameter) = match product {
         Product::Ray => (9, 9, 9, 216, RULES.ray_range / i32::from(RULES.projectile_speed), 63),
         Product::StormShot => (9, 12, 12, 216, RULES.storm_shot_range / i32::from(RULES.projectile_speed), 60),
@@ -67,6 +77,7 @@ pub(crate) fn construct(
     let particle_row = *particles.get(particle as usize)
         .ok_or_else(|| format!("Lightning requires retained particle{particle}"))?;
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else { return Ok(None); };
+    let position = if position_slot == Some(slot) { Position::default() } else { position };
     let mut row = super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
     row.class = class;
     row.model = model;
@@ -96,6 +107,12 @@ pub(crate) fn construct(
     }
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
+    if matches!(product, Product::Ray | Product::Endpoint) {
+        crate::world::effects::lighting::admit_source(
+            arena, terrain, slot, position,
+            crate::world::effects::lighting::SourceLight::Lightning,
+        );
+    }
     Ok(Some(slot))
 }
 
@@ -230,31 +247,35 @@ fn distance(a: Position, b: Position) -> u32 {
 /// The distinct model9 and model12 branches of67CB0, after68940.
 fn acquire(arena: &mut SourceArena, row: &mut EntitySnapshot,
     targets: &guided_projectile::Targets<'_>, outcome: &mut guided_projectile::StepOutcome,
+    context: source_target::Context<'_>,
 ) -> Result<bool, String> {
-    if guided_projectile::acquire_capture(arena, row, targets)? { return Ok(true); }
+    if guided_projectile::acquire_capture(arena, row, targets, context)? { return Ok(true); }
     let mut best = u32::MAX;
     let mut chosen = None;
     for &slot in targets.class3 {
-        let Some(actor) = area_damage::source_actor(arena, None, slot) else { continue; };
+        let Some(actor) = source_target::read(arena, context, slot)? else { continue; };
         let range = if row.model == 9 { i32::from(row.minimum_speed()).wrapping_mul(row.max_life).max(0) as u32 }
             else { u32::from(targets.owner_target_range) };
         if actor.source_id == row.source_id || actor.control_flags & 0x20 != 0 || distance(actor.position, row.position) > range { continue; }
+        let shape = actor.collision.ok_or_else(|| format!("Lightning target {slot} lacks current source axes"))?;
         let value = guided_projectile::score_with_pitch(row,
-            guided_projectile::centre(actor.position, actor.model, actor.shape.vertical_offset), 113);
+            guided_projectile::centre(actor.position, actor.model, shape.vertical_offset), 113);
         if value < best { best = value; chosen = Some(slot); }
     }
     if row.model == 9 {
         for &slot in targets.class5.iter().flatten() {
-            let Some(actor) = area_damage::source_actor(arena, None, slot) else { continue; };
+            let Some(actor) = source_target::read(arena, context, slot)? else { continue; };
             if actor.source_id == row.source_id || !guided_projectile::class5_eligible(arena, slot, row.source_id, true) { continue; }
+            let shape = actor.collision.ok_or_else(|| format!("Lightning target {slot} lacks current source axes"))?;
             let value = guided_projectile::score_with_pitch(row,
-                guided_projectile::centre(actor.position, actor.model, actor.shape.vertical_offset), 512);
+                guided_projectile::centre(actor.position, actor.model, shape.vertical_offset), 512);
             if value < best { best = value; chosen = Some(slot); }
         }
     }
     if let Some(slot) = chosen {
-        let actor = area_damage::source_actor(arena, None, slot).ok_or("Lightning target disappeared")?;
-        let position = guided_projectile::centre(actor.position, actor.model, actor.shape.vertical_offset);
+        let actor = source_target::read(arena, context, slot)?.ok_or("Lightning target disappeared")?;
+        let shape = actor.collision.ok_or_else(|| format!("Lightning target {slot} lacks current source axes"))?;
+        let position = guided_projectile::centre(actor.position, actor.model, shape.vertical_offset);
         let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(row.position, position);
         put(row, 154, slot); row.set_source_roll(yaw); row.set_fov(pitch);
         if row.model == 12 && (actor.class, actor.model) == (3, 0) { outcome.music_player = Some(slot); }
@@ -265,20 +286,29 @@ fn acquire(arena: &mut SourceArena, row: &mut EntitySnapshot,
 /// The ray's66610 step has no guided turning after its initial acquisition.
 fn ray_advance(arena: &mut SourceArena, terrain: &SessionTerrain, row: &mut EntitySnapshot,
     targets: Option<&guided_projectile::Targets<'_>>, outcome: &mut guided_projectile::StepOutcome,
+    context: source_target::Context<'_>,
 ) -> Result<(), String> {
     let bound_target = word(row, 154);
-    let bound_target_is_live = bound_target != 0 && arena.handle(bound_target).is_some();
-    if !bound_target_is_live && row.control_flags & 2 == 0 {
+    if usize::from(bound_target) >= arena.entities.len() {
+        return Err(format!("Lightning ray target address {bound_target} is outside source arena"));
+    }
+    // sub_66610 compares the fixed address with slot zero. Reclaiming or
+    // reusing a nonzero address does not make that pointer the sentinel.
+    if bound_target == 0 && row.control_flags & 2 == 0 {
         row.set_control_flags(row.control_flags | 2);
-        if let Some(targets) = targets && acquire(arena, row, targets, outcome)? {
+        if let Some(targets) = targets && acquire(arena, row, targets, outcome, context)? {
             row.set_yaw(row.source_roll()); row.set_pitch(row.fov);
         } else { row.set_source_roll(row.yaw); row.set_fov(row.pitch); }
     }
     let mut position = row.position;
     move_entity(&mut position, row.yaw, row.pitch, row.actual_speed);
     row.set_position(position);
-    if let Some((_, position)) = guided_projectile::collision(arena, row) {
-        row.set_position(position); row.disable_drawing();
+    if let Some((target_slot, _)) = guided_projectile::collision(arena, row, context)? {
+        // sub_66610 copies the hit entity's base position, not the raised
+        // collision centre used by guidance. sub_66750 probes again there.
+        let target = source_target::read(arena, context, target_slot)?
+            .ok_or("Lightning collision target disappeared")?;
+        row.set_position(target.position); row.disable_drawing();
     } else if terrain.ground_height(position) > position.z
         || terrain.ceiling_height(position).is_some_and(|z| position.z > z.wrapping_sub(row.array_fov())) {
         row.disable_drawing();
@@ -297,17 +327,18 @@ fn draw(row: &mut EntitySnapshot) -> u16 {
 ///66750's instantaneous ray, visual segments and damage endpoint allocation.
 fn ray(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[ParticleParameter],
     slot: u16, targets: Option<&guided_projectile::Targets<'_>>,
+    context: source_target::Context<'_>,
 ) -> Result<guided_projectile::StepOutcome, String> {
     let mut outcome = guided_projectile::StepOutcome::default();
     let mut row = arena.entities[usize::from(slot)].clone();
     row.set_actual_speed(row.minimum_speed());
     let start = row.position;
     crate::world::effects::sync_position(arena, terrain, slot, start, false, false)?;
-    ray_advance(arena, terrain, &mut row, targets, &mut outcome)?;
+    ray_advance(arena, terrain, &mut row, targets, &mut outcome, context)?;
     let angles = (row.yaw, row.pitch);
     let mut steps = 1;
     while row.control_flags & 0x400 == 0 {
-        ray_advance(arena, terrain, &mut row, targets, &mut outcome)?;
+        ray_advance(arena, terrain, &mut row, targets, &mut outcome, context)?;
         steps += 1;
     }
     row.set_yaw(angles.0); row.set_pitch(angles.1);
@@ -347,7 +378,7 @@ fn ray(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[Parti
     }
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row.clone();
-    let hit = guided_projectile::collision(arena, &row).map(|(slot, _)| slot);
+    let hit = guided_projectile::collision(arena, &row, context)?.map(|(slot, _)| slot);
     let intended_target = word(&row, 154);
     let Some(endpoint) = construct(arena, terrain, particles, Product::Endpoint, position)? else { return Ok(outcome); };
     if let Some(target) = hit {
@@ -385,12 +416,13 @@ fn ray(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[Parti
 ///66FD0's moving storm shot. Failed emitter allocation leaves it retryable.
 fn storm_shot(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[ParticleParameter],
     slot: u16, targets: Option<&guided_projectile::Targets<'_>>,
+    context: source_target::Context<'_>,
 ) -> Result<guided_projectile::StepOutcome, String> {
     let mut outcome = guided_projectile::StepOutcome::default();
     let mut row = arena.entities[usize::from(slot)].clone();
     if word(&row, 154) == 0 && row.control_flags & 2 == 0 {
         row.set_control_flags(row.control_flags | 2);
-        let captured = if let Some(targets) = targets { guided_projectile::acquire_capture(arena, &mut row, targets)? } else { false };
+        let captured = if let Some(targets) = targets { guided_projectile::acquire_capture(arena, &mut row, targets, context)? } else { false };
         if captured {
             row.set_yaw(row.source_roll()); row.set_pitch(row.fov);
             row.set_life(row.life.wrapping_add(32)); row.set_max_life(row.life);
@@ -402,12 +434,13 @@ fn storm_shot(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: 
                 arena.entities[usize::from(paired)].active = false;
                 put(&mut row, 56, 0);
             }
-        } else if let Some(targets) = targets && acquire(arena, &mut row, targets, &mut outcome)? {
+        } else if let Some(targets) = targets && acquire(arena, &mut row, targets, &mut outcome, context)? {
             row.set_yaw(row.source_roll()); row.set_pitch(row.fov);
         } else { row.set_source_roll(row.yaw); row.set_fov(row.pitch); }
-    } else if let Some(target) = area_damage::source_actor(arena, None, word(&row, 154)) {
+    } else if let Some(target) = source_target::read(arena, context, word(&row, 154))? {
+        let shape = target.collision.ok_or("Lightning retained target lacks current source axes")?;
         let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(row.position,
-            guided_projectile::centre(target.position, target.model, target.shape.vertical_offset));
+            guided_projectile::centre(target.position, target.model, shape.vertical_offset));
         row.set_source_roll(yaw); row.set_fov(pitch);
         row.set_yaw(row.yaw.wrapping_add(sub58350_delta(row.yaw, yaw, 5)) & 2047);
         row.set_pitch(row.pitch.wrapping_add(sub58350_delta(row.pitch, pitch, 5)) & 2047);
@@ -418,7 +451,7 @@ fn storm_shot(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: 
     move_entity(&mut position, row.yaw, row.pitch, row.actual_speed); row.set_position(position);
     arena.entities[usize::from(slot)] = row.clone();
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    let hit = guided_projectile::collision(arena, &row);
+    let hit = guided_projectile::collision(arena, &row, context)?;
     let terminal = if let Some((_, position)) = hit { row.set_position(position); true }
         else if terrain.ground_height(position) > position.z { row.set_position(Position { z: terrain.ground_height(position), ..position }); true }
         else if let Some(z) = terrain.ceiling_height(position).map(|z| z.wrapping_sub(row.array_fov())).filter(|&z| position.z > z) { row.set_position(Position { z, ..position }); true }
@@ -513,10 +546,16 @@ where F: FnMut(&mut SourceArena, crate::world::effects::DamagePulse) -> Result<u
 
 pub(crate) fn step(arena: &mut SourceArena, terrain: &mut SessionTerrain,
     particles: &[ParticleParameter], slot: u16, targets: Option<&guided_projectile::Targets<'_>>,
+    context: source_target::Context<'_>,
 ) -> Result<guided_projectile::StepOutcome, String> {
+    let context = source_target::Context {
+        particles: Some(particles),
+        map_type: Some(terrain.map_type()),
+        ..context
+    };
     match (arena.entities[usize::from(slot)].class, arena.entities[usize::from(slot)].action) {
-        (9, 9) => ray(arena, terrain, particles, slot, targets),
-        (9, 12) => storm_shot(arena, terrain, particles, slot, targets),
+        (9, 9) => ray(arena, terrain, particles, slot, targets, context),
+        (9, 12) => storm_shot(arena, terrain, particles, slot, targets, context),
         (9, 14) => {
             let row = &mut arena.entities[usize::from(slot)];
             row.set_life(row.life.wrapping_sub(1));

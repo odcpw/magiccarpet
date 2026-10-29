@@ -143,6 +143,81 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let map_payload: serde_json::Value = serde_json::from_slice(&map_save).unwrap();
     assert!(map_payload.get("initial_global_context").is_none());
     assert!(map_payload.get("global_context_changes").is_none());
+    assert_eq!(
+        map_payload["source_context"],
+        serde_json::to_value(warm).unwrap()
+    );
+
+    let mut cold_map = GameRuntime::<Mc2CampaignBackend>::title(81807).unwrap();
+    let guard = cold_map.identity().guard();
+    let map_identity = resolver
+        .load_replay(&mut cold_map, guard, 81807, &map_save)
+        .unwrap();
+    assert_eq!(resolver.source_global_context(&cold_map).unwrap(), warm);
+    assert_eq!(resolver.save_replay(&cold_map).unwrap(), map_save);
+    let loading = resolver
+        .campaign_menu_command(
+            &mut cold_map,
+            map_identity.guard(),
+            CampaignMenuCommand::StartMission,
+        )
+        .unwrap();
+    resolver
+        .open_pending(&mut cold_map, loading.guard(), 81807)
+        .unwrap();
+    assert_eq!(resolver.source_global_context(&cold_map).unwrap(), warm);
+    let carried = cold_map
+        .session()
+        .unwrap()
+        .backend()
+        .initial_semantic_spell_carry()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(carried).unwrap(),
+        map_payload["semantic_spell_carry"]
+    );
+
+    let mut warm_map = GameRuntime::<Mc2CampaignBackend>::title(81808).unwrap();
+    let guard = warm_map.identity().guard();
+    resolver
+        .load_replay_with_source_context(&mut warm_map, guard, 81808, &map_save, first)
+        .unwrap();
+    assert_eq!(resolver.source_global_context(&warm_map).unwrap(), first);
+
+    let mut altered: serde_json::Value = serde_json::from_slice(&map_save).unwrap();
+    altered["source_context"] = serde_json::to_value(first).unwrap();
+    let mut rejected_map = GameRuntime::<Mc2CampaignBackend>::title(81809).unwrap();
+    let guard = rejected_map.identity().guard();
+    assert!(
+        resolver
+            .load_replay(
+                &mut rejected_map,
+                guard,
+                81809,
+                &serde_json::to_vec(&altered).unwrap()
+            )
+            .is_err()
+    );
+    assert_eq!(rejected_map.identity().mode, RuntimeMode::Title);
+
+    let mut legacy: Mc2CampaignMapSave = serde_json::from_slice(&map_save).unwrap();
+    legacy.source_context = None;
+    legacy.receipt_sha256 = legacy.compute_receipt_sha256();
+    let mut legacy_map = GameRuntime::<Mc2CampaignBackend>::title(81810).unwrap();
+    let guard = legacy_map.identity().guard();
+    resolver
+        .load_replay(
+            &mut legacy_map,
+            guard,
+            81810,
+            &serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        resolver.source_global_context(&legacy_map).unwrap(),
+        GlobalSpecialState::default()
+    );
+
     let loading = resolver
         .campaign_menu_command(&mut loaded, map.guard(), CampaignMenuCommand::StartMission)
         .unwrap();

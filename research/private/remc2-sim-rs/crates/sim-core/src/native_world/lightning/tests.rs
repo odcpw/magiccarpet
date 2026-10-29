@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_world::area_damage;
 use crate::native_world::ENTITY_DRAW_DISABLED_BIT;
 use crate::world::effects::DamagePulse;
 use std::collections::BTreeSet;
@@ -112,7 +113,7 @@ fn lightning_uses_source_turn_kernel_and_ray_accuracy_identity() {
 }
 
 #[test]
-fn family22_ray_reacquires_a_stale_bound_target_only_on_its_first_step() {
+fn family22_ray_keeps_nonzero_fixed_targets_and_acquires_only_from_zero() {
     let (mut session, _, owner_slot) = ready_lightning(2);
     let live = &mut session.session.state.live;
     let target = live
@@ -160,6 +161,17 @@ fn family22_ray_reacquires_a_stale_bound_target_only_on_its_first_step() {
     let stale_slot = (1..u16::try_from(arena.entities.len()).expect("arena fits u16"))
         .find(|&slot| arena.handle(slot).is_none())
         .expect("campaign fixture has an unoccupied source slot");
+    let reclaimed_slot = arena.economy.allocate_slot().expect("source slot for reclaim");
+    {
+        let row = &mut arena.entities[usize::from(reclaimed_slot)];
+        row.active = true;
+        row.class = 3;
+    }
+    assert!(arena.handle(reclaimed_slot).is_some());
+    arena.entities[usize::from(reclaimed_slot)].active = false;
+    arena.entities[usize::from(reclaimed_slot)].class = 0;
+    arena.economy.release_slot(reclaimed_slot, None);
+    assert!(arena.handle(reclaimed_slot).is_none());
     let owner_row = &mut arena.entities[usize::from(owner_slot)];
     owner_row.class = 10;
     owner_row.model = 57;
@@ -199,7 +211,7 @@ fn family22_ray_reacquires_a_stale_bound_target_only_on_its_first_step() {
         owner_target_range: 8192,
     };
     let mut outcome = guided_projectile::StepOutcome::default();
-    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome).unwrap();
+    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).unwrap();
     assert_eq!(
         word(&ray, 154),
         fireball_slot,
@@ -212,17 +224,41 @@ fn family22_ray_reacquires_a_stale_bound_target_only_on_its_first_step() {
     );
 
     put(&mut ray, 154, stale_slot);
-    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome).unwrap();
+    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).unwrap();
+    assert_eq!(word(&ray, 154), stale_slot, "an unused nonzero fixed address remains bound");
+    assert_eq!(ray.control_flags & 2, 0);
+
+    put(&mut ray, 154, reclaimed_slot);
+    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).unwrap();
+    assert_eq!(word(&ray, 154), reclaimed_slot, "reclaim does not turn a fixed address into slot zero");
+    assert_eq!(ray.control_flags & 2, 0);
+
+    assert_eq!(arena.economy.allocate_slot(), Some(reclaimed_slot));
+    {
+        let replacement = &mut arena.entities[usize::from(reclaimed_slot)];
+        replacement.active = true;
+        replacement.class = 3;
+        replacement.disable_drawing();
+    }
+    assert!(arena.handle(reclaimed_slot).is_some());
+    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).unwrap();
+    assert_eq!(word(&ray, 154), reclaimed_slot, "a hidden replacement remains the same fixed address");
+    assert_eq!(ray.control_flags & 2, 0);
+
+    put(&mut ray, 154, 0);
+    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).unwrap();
     assert_eq!(word(&ray, 154), target_slot);
     assert_ne!(ray.control_flags & 2, 0);
 
-    put(&mut ray, 154, stale_slot);
-    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome).unwrap();
+    put(&mut ray, 154, 0);
+    ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).unwrap();
     assert_eq!(
         word(&ray, 154),
-        stale_slot,
+        0,
         "sub_66610 does not retry acquisition after its first attempt"
     );
+    put(&mut ray, 154, u16::MAX);
+    assert!(ray_advance(arena, terrain, &mut ray, Some(&targets), &mut outcome, source_target::Context::default()).is_err());
 }
 
 #[test]
@@ -373,7 +409,7 @@ fn lightning_storm_emitter_uses_one_rng_draw_and_produces_opposite_source_rays()
         .map(|row| row.index)
         .collect::<BTreeSet<_>>();
 
-    let outcome = step(arena, &mut live.terrain, &particles, emitter, None).unwrap();
+    let outcome = step(arena, &mut live.terrain, &particles, emitter, None, source_target::Context::default()).unwrap();
     let expected_rng = seed.wrapping_mul(9377).wrapping_add(9439);
     assert_eq!(
         arena.entities[usize::from(emitter)].entity_rng,
@@ -434,7 +470,7 @@ fn lightning_ray_keeps_segment_rng_and_trails_reach_the_hidden_state() {
         row.set_pitch(0);
     }
     let expected_rng = expected_one_step_ray_rng(seed);
-    let outcome = step(arena, &mut live.terrain, &particles, slot, None).unwrap();
+    let outcome = step(arena, &mut live.terrain, &particles, slot, None, source_target::Context::default()).unwrap();
     assert_eq!(outcome.accuracy, Some((parent, false)));
     assert!(outcome.impact_slot.is_some());
     assert_eq!(arena.entities[usize::from(slot)].entity_rng, expected_rng);
@@ -457,7 +493,7 @@ fn lightning_ray_keeps_segment_rng_and_trails_reach_the_hidden_state() {
         if arena.entities[usize::from(trail)].drawing_disabled() {
             break;
         }
-        step(arena, &mut live.terrain, &particles, trail, None).unwrap();
+        step(arena, &mut live.terrain, &particles, trail, None, source_target::Context::default()).unwrap();
     }
     assert!(arena.entities[usize::from(trail)].drawing_disabled());
     assert!(
@@ -714,6 +750,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
                 row.index as u8,
             )
         });
+    let mut endpoint_damage_phase_checked = false;
     if target_damage_callback_seen
         && let Some((endpoint, generation, initial_phase)) = endpoint_identity
         && live.economy.economy.slot_generation(endpoint) == generation
@@ -723,6 +760,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
             initial_phase.wrapping_add(1),
             "the endpoint receives one scheduler epilogue after its real damage callback"
         );
+        endpoint_damage_phase_checked = true;
     }
 
     let (mut sphere_hidden, mut sphere_reclaimed) =
@@ -743,8 +781,24 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
 
     let mut trace = Vec::new();
     for visit in 0..8 {
+        let endpoint_before = endpoint_identity.and_then(|(endpoint, generation, _)| {
+            let live = &session.session.state.live;
+            let row = live.economy.entities.get(usize::from(endpoint))?;
+            (live.economy.economy.slot_generation(endpoint) == generation
+                && row.active
+                && !row.drawing_disabled())
+                .then_some((endpoint, generation, row.phase))
+        });
         session.step_outer_turn(crate::PlayerCommand::default(), 0);
         let live = &session.session.state.live;
+        if let Some((endpoint, generation, previous_phase)) = endpoint_before
+            && live.economy.economy.slot_generation(endpoint) == generation
+            && let Some(row) = live.economy.entities.get(usize::from(endpoint))
+            && row.active
+        {
+            assert_eq!(row.phase, previous_phase.wrapping_add(1),
+                "each subsequent live endpoint visit receives one scheduler epilogue");
+        }
         let ray_row = &live.economy.entities[usize::from(ray)];
         let target_row = &live.economy.entities[usize::from(target_slot)];
         let errors = session
@@ -825,7 +879,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
             endpoint_reclaimed |= reclaimed;
         }
 
-        if target_damage_callback_seen
+        if target_damage_callback_seen && !endpoint_damage_phase_checked
             && let Some((endpoint, generation, initial_phase)) = endpoint_identity
             && live.economy.economy.slot_generation(endpoint) == generation
         {
@@ -834,6 +888,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
                 initial_phase.wrapping_add(1),
                 "the endpoint receives one scheduler epilogue after its real damage callback"
             );
+            endpoint_damage_phase_checked = true;
         }
 
         if endpoint_identity.is_some()
@@ -852,6 +907,7 @@ fn family22_lightning_fire_keeps_its_bound_target_and_damages_through_the_endpoi
             trace.join("\n")
         )
     });
+    assert!(endpoint_damage_phase_checked, "the first damage callback's phase was checked");
     let live = &session.session.state.live;
     assert!(
         target_damage_queued,

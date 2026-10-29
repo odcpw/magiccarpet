@@ -594,6 +594,9 @@ mod tests {
                         &particles,
                         projectile_slot,
                         None,
+                        crate::native_world::source_target::Context::from_ordinary(
+                            &live.goats, &live.ordinary,
+                        ),
                     )
                     .expect("guided source callback constructs the terminal field")
                 }
@@ -990,8 +993,19 @@ mod tests {
                 .shared_spells
                 .pickup(holder_slot)
                 .expect("cast holder remains in the shared spell authority");
-            let cooldown = u16::from_le_bytes([holder.record[58], holder.record[59]]);
-            assert!(cooldown > 0 && cooldown <= profile.cooldown);
+            // sub_5F7B0 starts the cast in word 0x2e from word 0x30.
+            // The holder's independent word 0x36 only counts down if it was
+            // already nonzero; the cast does not initialise it.
+            assert_eq!(holder.activation_value, profile.cooldown);
+            assert!(
+                holder.active_value > 0
+                    && holder.active_value < i16::try_from(profile.cooldown).unwrap(),
+                "the ordinary holder advances its source active countdown"
+            );
+            assert_eq!(
+                i16::from_le_bytes([holder.record[50], holder.record[51]]),
+                holder.active_value
+            );
 
             let actor_position = session
                 .ordinary
@@ -1278,6 +1292,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&super::guided_projectile::Targets<'_>>,
+    context: super::source_target::Context<'_>,
 ) -> Result<super::guided_projectile::StepOutcome, String> {
     let projectile = arena
         .entities
@@ -1304,6 +1319,7 @@ pub(crate) fn step_projectile(
             pitch_turn: GUIDANCE_TURN,
         },
         targets,
+        context,
     )?;
 
     // sub_66180 may reflect the flyer or reuse its source slot while creating

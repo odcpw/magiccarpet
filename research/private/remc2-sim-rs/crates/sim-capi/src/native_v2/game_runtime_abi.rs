@@ -44,6 +44,52 @@ struct InstalledPackageLocation {
 struct InstalledCampaignInput {
     campaign: Mc2CampaignInputs,
     presentation_cache: Option<std::path::PathBuf>,
+    sound_bank: Option<super::campaign_sound_bank::CampaignSoundBank>,
+}
+
+fn preflight_sound_banks(
+    inputs: &mut [InstalledCampaignInput],
+    resolver: &Mc2RuntimePackageResolver,
+) -> AbiResult<()> {
+    // Validate every candidate before replacing any retained binding. A bad
+    // destination must leave the current session and voice bank intact.
+    let banks = inputs
+        .iter()
+        .map(|input| {
+            let selection = sim_core::campaign::spec::CampaignDefinition::declared_selection(
+                &input.campaign.package_root,
+            )
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            let (owner_hash, campaign_hash) = resolver
+                .installed_audio_identity(selection)
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "sound bank has no exact installed source identity",
+                    )
+                })?;
+            for root in input
+                .campaign
+                .owner_cache
+                .iter()
+                .chain(input.presentation_cache.iter())
+            {
+                if let Some(bank) = super::campaign_sound_bank::CampaignSoundBank::load_if_present(
+                    root,
+                    selection,
+                    owner_hash,
+                    campaign_hash,
+                )? {
+                    return Ok(Some(bank));
+                }
+            }
+            Ok(None)
+        })
+        .collect::<AbiResult<Vec<_>>>()?;
+    for (input, bank) in inputs.iter_mut().zip(banks) {
+        input.sound_bank = bank;
+    }
+    Ok(())
 }
 
 pub(super) struct RuntimeRecord {
@@ -57,6 +103,14 @@ pub(super) struct RuntimeRecord {
     audio: super::campaign_audio_state::CampaignRuntimeAudio,
     completion_transition_receipt: Option<BoundaryTransitionReceipt>,
     closed: bool,
+}
+
+struct CampaignPreferenceRollback {
+    speech_enabled: bool,
+    show_foreign_text: bool,
+    operation_count: usize,
+    dynamic_lighting_enabled: bool,
+    lighting_change_count: usize,
 }
 
 impl RuntimeRecord {
@@ -154,7 +208,7 @@ impl RuntimeRecord {
                 "INVALID_RUNTIME_MODE: preferences step requires playing",
             ));
         }
-        let previous = self.bind_speech_preference(guard)?;
+        let previous = self.bind_campaign_preferences(guard)?;
         let result = self
             .runtime
             .step_player_with_preferences(guard, command)
@@ -171,51 +225,71 @@ impl RuntimeRecord {
                 }
             });
         if let Err(error) = result {
-            self.rollback_speech_preference(previous);
+            self.rollback_campaign_preferences(previous);
             return Err(error);
         }
         self.sync_audio(false)
     }
 
-    fn bind_speech_preference(&mut self, guard: SessionGuard) -> AbiResult<(bool, bool, usize)> {
+    fn bind_campaign_preferences(
+        &mut self,
+        guard: SessionGuard,
+    ) -> AbiResult<CampaignPreferenceRollback> {
         self.session()?.completion_status(guard).map_err(|error| {
             super::game_session_abi::map_campaign_session_error(
                 sim_session::GameSessionError::Guard(error),
             )
         })?;
-        let enabled = self
-            .runtime
-            .identity()
-            .player_preferences
-            .preferences
-            .speech_enabled;
+        let preferences = self.runtime.identity().player_preferences.preferences;
         let show_foreign_text = self.runtime.show_foreign_objective_text();
         let backend = self.session_mut()?.backend_mut();
-        let previous = (
-            backend.speech_enabled(),
-            backend.show_foreign_objective_text(),
-            backend.replay_operation_count(),
-        );
-        backend.set_objective_presentation_preferences(enabled, show_foreign_text);
+        let previous = CampaignPreferenceRollback {
+            speech_enabled: backend.speech_enabled(),
+            show_foreign_text: backend.show_foreign_objective_text(),
+            operation_count: backend.replay_operation_count(),
+            dynamic_lighting_enabled: backend.dynamic_lighting_enabled(),
+            lighting_change_count: backend.dynamic_lighting_change_count(),
+        };
+        backend
+            .set_objective_presentation_preferences(preferences.speech_enabled, show_foreign_text);
+        backend.set_dynamic_lighting_enabled(preferences.dynamic_lighting);
         Ok(previous)
     }
 
-    fn rollback_speech_preference(&mut self, previous: (bool, bool, usize)) {
+    fn rollback_campaign_preferences(&mut self, previous: CampaignPreferenceRollback) {
         if let Some(session) = self.runtime.session_mut() {
             session
                 .backend_mut()
-                .restore_speech_preference_after_rejection(previous.0, previous.1, previous.2);
+                .restore_dynamic_lighting_after_rejection(
+                    previous.dynamic_lighting_enabled,
+                    previous.lighting_change_count,
+                );
+            session
+                .backend_mut()
+                .restore_speech_preference_after_rejection(
+                    previous.speech_enabled,
+                    previous.show_foreign_text,
+                    previous.operation_count,
+                );
         }
     }
 
-    fn reset_audio(&mut self) {
+    fn reset_audio(&mut self) -> AbiResult<()> {
         self.campaign_presentation_dirty = true;
+        self.audio = super::campaign_audio_state::CampaignRuntimeAudio::default();
         if let Some(session) = self.runtime.session() {
-            self.audio.reset(
-                session.backend().campaign_presentation_source(),
-                session.identity().generation,
-            );
+            let campaign = session.backend().campaign_presentation_source();
+            if let Some(bank) = self
+                .installed_inputs
+                .iter()
+                .filter_map(|input| input.sound_bank.as_ref())
+                .find(|bank| bank.selection() == campaign.definition().identity)
+            {
+                self.audio.bind_sound_bank(bank.clone())?;
+            }
+            self.audio.reset(campaign, session.identity().generation);
         }
+        Ok(())
     }
 
     fn sync_audio(&mut self, paused: bool) -> AbiResult<()> {
@@ -276,7 +350,7 @@ impl RuntimeRecord {
                 "PACKAGE_SET_ALREADY_INSTALLED: runtime package authority is immutable until destroy",
             ));
         }
-        let inputs = installed_package_set_inputs(request_json, request_json_len)?;
+        let mut inputs = installed_package_set_inputs(request_json, request_json_len)?;
         let resolver =
             Mc2RuntimePackageResolver::load(inputs.iter().map(|input| input.campaign.clone()))
                 .map_err(|error| {
@@ -285,6 +359,7 @@ impl RuntimeRecord {
                         format!("cannot load installed game runtime package set: {error}"),
                     )
                 })?;
+        preflight_sound_banks(&mut inputs, &resolver)?;
         resolver
             .new_game(
                 &mut self.runtime,
@@ -311,10 +386,11 @@ impl RuntimeRecord {
                 "MISSING_RUNTIME_RESOLVER: loading runtime has no installed package set",
             )
         })?;
+        preflight_sound_banks(&mut self.installed_inputs, resolver)?;
         resolver
             .open_pending(&mut self.runtime, guard, handle)
             .map_err(map_open_level_error)?;
-        self.reset_audio();
+        self.reset_audio()?;
         Ok(())
     }
 
@@ -493,7 +569,7 @@ impl RuntimeRecord {
                 "PACKAGE_SET_ALREADY_INSTALLED: replay load requires a fresh runtime",
             ));
         }
-        let inputs = installed_package_set_inputs(package_set_json, package_set_json_len)?;
+        let mut inputs = installed_package_set_inputs(package_set_json, package_set_json_len)?;
         let resolver =
             Mc2RuntimePackageResolver::load(inputs.iter().map(|input| input.campaign.clone()))
                 .map_err(|error| {
@@ -502,6 +578,7 @@ impl RuntimeRecord {
                         format!("cannot load replay package set: {error}"),
                     )
                 })?;
+        preflight_sound_banks(&mut inputs, &resolver)?;
         let guard = RuntimeGuard {
             runtime_id: handle,
             generation,
@@ -519,7 +596,7 @@ impl RuntimeRecord {
         .map_err(map_replay_save_error)?;
         self.resolver = Some(resolver);
         self.installed_inputs = inputs;
-        self.reset_audio();
+        self.reset_audio()?;
         Ok(())
     }
 
@@ -667,7 +744,7 @@ impl RuntimeRecord {
             .map_err(map_transition_error)?;
         // PauseUnpauseGame_18BB0 ends samples and stops music. CD speech
         // has separate ownership and continues across this edge.
-        self.reset_audio();
+        self.reset_audio()?;
         if let Some(music) = self
             .campaign_presentation
             .as_mut()
@@ -850,6 +927,15 @@ impl RuntimeRecord {
                 "MISSING_RUNTIME_RESOLVER: mission boundary requires installed packages",
             )
         })?;
+        let exit = self
+            .session()?
+            .backend()
+            .campaign_presentation_source()
+            .simulation()
+            .level_exit_sequence();
+        if exit.complete && exit.result_code == 0x1a {
+            preflight_sound_banks(&mut self.installed_inputs, resolver)?;
+        }
         if let Some(receipt) = resolver
             .advance_secret_if_ready(
                 &mut self.runtime,
@@ -870,7 +956,7 @@ impl RuntimeRecord {
                     secret_transition: receipt,
                 });
             self.campaign_presentation = None;
-            self.reset_audio();
+            self.reset_audio()?;
             return Ok(());
         }
         let completion = self
@@ -937,7 +1023,7 @@ impl RuntimeRecord {
                     secret_transition: receipt,
                 });
             self.campaign_presentation = None;
-            self.reset_audio();
+            self.reset_audio()?;
             return Ok(());
         }
         self.resolver
@@ -1247,6 +1333,7 @@ fn installed_package_set_inputs(
             )?;
             Ok(InstalledCampaignInput {
                 campaign,
+                sound_bank: None,
                 presentation_cache: location
                     .presentation_cache_path
                     .filter(|path| !path.is_empty())
@@ -1924,9 +2011,16 @@ pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
                     command,
                 )
                 .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error))?;
+            record
+                .runtime
+                .apply_current_dynamic_lighting_preference(RuntimeGuard {
+                    runtime_id: handle,
+                    generation,
+                })
+                .map_err(map_transition_error)?;
             let after = record.runtime.identity().player_preferences.preferences;
             if before.sound_enabled != after.sound_enabled {
-                record.reset_audio();
+                record.reset_audio()?;
             }
             if before.music_enabled != after.music_enabled {
                 if let Some(music) = record
@@ -2097,6 +2191,66 @@ mod tests {
     };
     use serde_json::Value;
     use std::path::PathBuf;
+
+    #[test]
+    fn runtime_selected_bank_preflight_preserves_old_binding_on_wrong_destination() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let request = serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                {"package_dir": generated.join("mc-bhq8-level1-collision-v5-night"), "owner_cache_path": generated.join("mc-oi68-level1-fullbank-v2-20261029")},
+                {"package_dir": generated.join("mc-level2-vault-successor-closure-20261025"), "owner_cache_path": generated.join("mc-oi68-level2-fullbank-v2-20261029")},
+                {"package_dir": generated.join("level3-day-block32-campaign-recipe-v2"), "owner_cache_path": generated.join("mc-oi68-level3-fullbank-v2-20261029")}
+            ]
+        }).to_string();
+        let mut record = RuntimeRecord::title(9921).unwrap();
+        record
+            .bootstrap_package_set(9921, 1, request.clone(), request.len() as u32)
+            .unwrap();
+        let loading = record.runtime.identity();
+        record.open_level(9921, loading.generation).unwrap();
+        let playing = record.runtime.identity();
+        let before = record.session().unwrap().snapshot();
+        let banks = record
+            .installed_inputs
+            .iter()
+            .map(|input| input.sound_bank.clone())
+            .collect::<Vec<_>>();
+        assert!(banks.iter().all(Option::is_some));
+        assert_eq!(
+            banks[0].as_ref().unwrap().selection(),
+            CampaignSelection::LEVEL1
+        );
+        assert_eq!(
+            banks[1].as_ref().unwrap().selection(),
+            CampaignSelection::LEVEL2
+        );
+        let original_cache = record.installed_inputs[0].campaign.owner_cache.clone();
+        record.installed_inputs[0].campaign.owner_cache =
+            record.installed_inputs[1].campaign.owner_cache.clone();
+        assert!(
+            preflight_sound_banks(
+                &mut record.installed_inputs,
+                record.resolver.as_ref().unwrap(),
+            )
+            .is_err()
+        );
+        assert_eq!(record.runtime.identity(), playing);
+        assert_eq!(record.session().unwrap().snapshot(), before);
+        assert_eq!(
+            record
+                .installed_inputs
+                .iter()
+                .map(|input| input.sound_bank.clone())
+                .collect::<Vec<_>>(),
+            banks
+        );
+        record.installed_inputs[0].campaign.owner_cache = original_cache;
+        record.pause(9921, playing.generation).unwrap();
+        assert!(record.audio.voices.iter().all(Option::is_none));
+        assert!(record.audio.commands.is_empty());
+        assert_eq!(record.installed_inputs[0].sound_bank, banks[0]);
+    }
 
     #[test]
     fn installed_day_environment_and_audio_companion_keep_exact_package_bindings() {
@@ -2810,7 +2964,28 @@ mod tests {
         assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
         assert_eq!(bootstrap_package_set(handle, 1, &packages), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let opened_save =
+            with_runtime(handle, |record| record.save_replay(handle, 3, 1, 0)).unwrap();
+        let opened_history: Value = serde_json::from_slice(&opened_save).unwrap();
+        assert_eq!(opened_history["operations"], serde_json::json!([]));
         assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        let paused_save =
+            with_runtime(handle, |record| record.save_replay(handle, 4, 2, 0)).unwrap();
+        let paused_history: Value = serde_json::from_slice(&paused_save).unwrap();
+        assert_eq!(
+            paused_history["operations"],
+            serde_json::json!([{"operation": "pause"}])
+        );
+        // Pause is already recorded. Preview and rejection must preserve the
+        // entire replay, before one speech command and two paused phases append.
+        let initial_replay_operations = with_runtime(handle, |record| {
+            Ok(record.session()?.backend().replay_operation_count())
+        })
+        .unwrap();
+        assert_eq!(
+            initial_replay_operations,
+            paused_history["operations"].as_array().unwrap().len()
+        );
         let preview = br#"{"operation":"preview_audio","sound_enabled":true,"music_enabled":true,"speech_enabled":false,"sound_volume":127,"music_volume":127}"#;
         assert_eq!(
             mc_game_runtime_preferences_command_json_v1(
@@ -2821,16 +2996,23 @@ mod tests {
             ),
             MC_STATUS_OK
         );
+        let preview_save =
+            with_runtime(handle, |record| record.save_replay(handle, 4, 2, 0)).unwrap();
+        assert_eq!(preview_save, paused_save);
         assert_ne!(
             mc_game_runtime_paused_frame_v1(handle, 4, 2, 1),
             MC_STATUS_OK
         );
-        with_runtime(handle, |record| {
+        let rejected_save = with_runtime(handle, |record| {
             assert!(record.session()?.backend().speech_enabled());
-            assert_eq!(record.session()?.backend().replay_operation_count(), 0);
-            Ok(())
+            assert_eq!(
+                record.session()?.backend().replay_operation_count(),
+                initial_replay_operations
+            );
+            record.save_replay(handle, 4, 2, 0)
         })
         .unwrap();
+        assert_eq!(rejected_save, paused_save);
         for _ in 0..2 {
             assert_eq!(
                 mc_game_runtime_paused_frame_v1(handle, 4, 2, 0),
@@ -2849,6 +3031,16 @@ mod tests {
             record.save_replay(handle, 4, 2, 0)
         })
         .unwrap();
+        let accepted_history: Value = serde_json::from_slice(&save).unwrap();
+        assert_eq!(
+            accepted_history["operations"],
+            serde_json::json!([
+                {"operation": "pause"},
+                {"operation": "speech_preference", "enabled": false},
+                {"operation": "paused_frame"},
+                {"operation": "paused_frame"}
+            ])
+        );
         let mut restored = 0;
         assert_eq!(mc_game_runtime_create_v1(&raw mut restored), MC_STATUS_OK);
         with_runtime_mut(restored, |record| {
@@ -2861,12 +3053,16 @@ mod tests {
             )
         })
         .unwrap();
-        with_runtime(restored, |record| {
+        let restored_save = with_runtime(restored, |record| {
             assert!(!record.session()?.backend().speech_enabled());
-            assert_eq!(record.session()?.backend().replay_operation_count(), 3);
-            Ok(())
+            assert_eq!(
+                record.session()?.backend().replay_operation_count(),
+                initial_replay_operations + 3
+            );
+            record.save_replay(restored, 2, 1, 0)
         })
         .unwrap();
+        assert_eq!(restored_save, save);
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
         assert_eq!(mc_game_runtime_destroy_v1(restored), MC_STATUS_OK);
     }

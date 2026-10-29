@@ -108,7 +108,7 @@ fn mission_four_projectile_collision_produces_existing_web_status_and_contact() 
         .unwrap();
     aim_at_player(&mut arena, &mut terrain, slot, player);
     let phase = arena.entities[usize::from(slot)].phase;
-    let impact = step(&mut arena, &mut terrain, &particles, slot)
+    let impact = step(&mut arena, &mut terrain, &particles, slot, Default::default())
         .unwrap()
         .impact_slot
         .unwrap();
@@ -177,7 +177,7 @@ fn exhausted_impact_allocation_retains_projectile_for_next_visit() {
     arena.economy.exhaust_new_event_capacity_for_test();
     arena.rebuild_source_free_arena();
     assert_eq!(
-        step(&mut arena, &mut terrain, &particles, slot)
+        step(&mut arena, &mut terrain, &particles, slot, Default::default())
             .unwrap()
             .impact_slot,
         None
@@ -249,7 +249,7 @@ fn source_water_contact_hides_even_when_splash_allocation_fails() {
             arena.economy.exhaust_new_event_capacity_for_test();
             arena.rebuild_source_free_arena();
         }
-        let outcome = step(&mut arena, &mut terrain, &particles, slot).unwrap();
+        let outcome = step(&mut arena, &mut terrain, &particles, slot, Default::default()).unwrap();
         assert_eq!(outcome.impact_slot, None);
         assert!(arena.entities[usize::from(slot)].drawing_disabled());
         assert_eq!(arena.entities[usize::from(slot)].position.z, ground);

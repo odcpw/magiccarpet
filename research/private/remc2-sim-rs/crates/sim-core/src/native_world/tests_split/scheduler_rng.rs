@@ -101,6 +101,35 @@ fn source31_authored_model28_scheduled_contact_and_expiry_reclaim() {
         .expect("authored actor remains linked in terrain");
         attacker
     };
+    assert!(
+        slot < player_slot,
+        "the player consumes this earlier contact in the same pass"
+    );
+    let life_before = session.session.state.live.player_life;
+    let mut protected = session.clone();
+    assert!(protected.session.state.live.player_protection_ticks > 0);
+    protected.step_level2_source_pass(0);
+    assert_eq!(protected.session.state.live.player_life, life_before);
+    assert_eq!(protected.session.state.live.player_pending_damage, 0);
+    assert_eq!(protected.session.state.live.player_pending_attacker, 0);
+    assert_eq!(
+        &protected.entities()[usize::from(player_slot)].record[98..104],
+        &[0; 6],
+        "spawn protection clears the complete incoming contact mailbox"
+    );
+    assert!(!protected.economy().events.iter().any(|event| matches!(
+        event,
+        Level2EconomyEvent::DamageApplied {
+            target_entity_index,
+            attacker_entity_index,
+            ..
+        } if *target_entity_index == player_slot && *attacker_entity_index == attacker
+    )));
+
+    // Same authored actor, attack frame and player geometry, after spawn
+    // protection has expired. Source slot 1 precedes the player's slot 582:
+    // the ordinary player callback consumes this hit within this pass.
+    session.session.state.live.player_protection_ticks = 0;
     session.step_level2_source_pass(0);
     let row = &session.entities()[usize::from(slot)];
     assert_eq!(
@@ -111,8 +140,18 @@ fn source31_authored_model28_scheduled_contact_and_expiry_reclaim() {
         row.phase, 1,
         "the common same-pass source tail advances once"
     );
+    assert_eq!(session.session.state.live.player_life, life_before - 37);
     assert_eq!(session.session.state.live.player_pending_damage, 37);
-    assert_eq!(session.session.state.live.player_pending_attacker, attacker);
+    assert_eq!(session.session.state.live.player_pending_attacker, 0);
+    assert!(session.economy().events.iter().any(|event| matches!(
+        event,
+        Level2EconomyEvent::DamageApplied {
+            target_entity_index,
+            attacker_entity_index,
+            damage: 37,
+            lethal: false,
+        } if *target_entity_index == player_slot && *attacker_entity_index == attacker
+    )));
     let player = &session.entities()[usize::from(player_slot)];
     assert_eq!(
         i32::from_le_bytes(player.record[98..102].try_into().unwrap()),
@@ -120,6 +159,11 @@ fn source31_authored_model28_scheduled_contact_and_expiry_reclaim() {
     );
     assert_eq!(
         u16::from_le_bytes(player.record[102..104].try_into().unwrap()),
+        0,
+        "the player's same-pass nonlethal callback clears only the mailbox owner"
+    );
+    assert_eq!(
+        u16::from_le_bytes(player.record[42..44].try_into().unwrap()),
         attacker
     );
 

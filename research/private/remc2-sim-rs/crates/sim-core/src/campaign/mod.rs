@@ -81,8 +81,19 @@ impl CampaignSession {
         package_root: impl AsRef<Path>,
         selection: CampaignSelection,
     ) -> Result<Self, CampaignOpenError> {
+        Self::open_with_dynamic_lighting(package_root, selection, true)
+    }
+
+    /// Bind the source option before startup constructors admit any light.
+    pub fn open_with_dynamic_lighting(
+        package_root: impl AsRef<Path>,
+        selection: CampaignSelection,
+        enabled: bool,
+    ) -> Result<Self, CampaignOpenError> {
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
-            let inspection = NativeWorld::inspect_campaign_definition(definition)?;
+            let inspection = NativeWorld::inspect_campaign_definition_with_dynamic_lighting(
+                definition, None, enabled,
+            )?;
             let simulation = inspection.campaign_reset_session_from_definition(definition)?;
             Ok((inspection, simulation))
         })
@@ -94,6 +105,18 @@ impl CampaignSession {
         package_root: impl AsRef<Path>,
         owner_cache: impl AsRef<Path>,
         selection: CampaignSelection,
+    ) -> Result<Self, CampaignOpenError> {
+        Self::open_with_owner_cache_and_dynamic_lighting(
+            package_root, owner_cache, selection, true,
+        )
+    }
+
+    /// Open with the actual source option and the existing private asset cache.
+    pub fn open_with_owner_cache_and_dynamic_lighting(
+        package_root: impl AsRef<Path>,
+        owner_cache: impl AsRef<Path>,
+        selection: CampaignSelection,
+        enabled: bool,
     ) -> Result<Self, CampaignOpenError> {
         let owner_cache = owner_cache.as_ref();
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
@@ -130,9 +153,13 @@ impl CampaignSession {
                         "material cache does not match the opened campaign package",
                     ));
                 }
-                NativeWorld::inspect_campaign_definition(definition)?
+                NativeWorld::inspect_campaign_definition_with_dynamic_lighting(
+                    definition, None, enabled,
+                )?
             } else {
-                NativeWorld::inspect_campaign_definition_with_owner_cache(definition, owner_cache)?
+                NativeWorld::inspect_campaign_definition_with_dynamic_lighting(
+                    definition, Some(owner_cache), enabled,
+                )?
             };
             let simulation = inspection.campaign_reset_session_from_definition(definition)?;
             Ok((inspection, simulation))
@@ -177,6 +204,12 @@ impl CampaignSession {
 
     pub(crate) fn set_speech_enabled(&mut self, enabled: bool) {
         self.speech_enabled = enabled;
+    }
+
+    /// Source AddEvent2 gates new admissions only. Existing footprints and
+    /// linked lights keep their ordinary subtraction/recompute lifecycle.
+    pub fn set_dynamic_lighting_enabled(&mut self, enabled: bool) {
+        self.simulation.campaign_state_mut().live.economy.dynamic_lighting_enabled = enabled;
     }
 
     pub(crate) fn show_foreign_objective_text(&self) -> bool {

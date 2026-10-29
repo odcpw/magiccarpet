@@ -437,7 +437,10 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     }
     crate::world::effects::sync_position(arena, terrain, projectile_slot, start, true, false)
         .expect("publish guided projectile position");
-    let impact = mc2::step_projectile(arena, terrain, &particles, projectile_slot)
+    let impact = mc2::step_projectile(
+        arena, terrain, &particles, projectile_slot,
+        crate::native_world::source_target::Context::default(),
+    )
         .expect("guided model20 callback advances")
         .impact_slot
         .expect("collision constructs the source Slowing impact");

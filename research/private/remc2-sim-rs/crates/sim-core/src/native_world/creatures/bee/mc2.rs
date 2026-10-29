@@ -131,7 +131,7 @@ pub(crate) fn allocate_summoned(
     let handle = arena
         .handle(slot)
         .ok_or_else(|| format!("Bee Army summon lost generation-bound slot{slot}"))?;
-    if let Some(parent) = arena.handle(parent_slot) {
+    if let Some(parent) = arena.handle(parent_slot).filter(|parent| *parent != handle) {
         if !arena.bind_creature_parent(handle, parent) {
             return Err(format!(
                 "Bee Army summon at slot{slot} lost its parent binding"
@@ -703,6 +703,7 @@ pub(crate) fn step_in_arena(
             let burst = &mut arena.entities[usize::from(burst_slot)];
             burst.source_id = after.entity_id;
             burst.record[30..32].copy_from_slice(&after.entity_id.to_le_bytes());
+            crate::world::effects::register_death_burst(arena, burst_slot, slot)?;
         }
     }
     if effects.expire_effect {

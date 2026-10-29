@@ -2,6 +2,18 @@ use super::*;
 
 struct EmptyRoutes;
 
+struct PointRoute(crate::native_world::creatures::archer::ArcherStageDescriptor);
+
+impl StageRuntime for PointRoute {
+    fn descriptor(&self, index: u8) -> Option<super::super::archer::ArcherStageDescriptor> {
+        (index == 1).then_some(self.0)
+    }
+    fn bind(&mut self, index: u8) -> Option<super::super::archer::ArcherStageDescriptor> {
+        self.descriptor(index)
+    }
+    fn rearm_model_relations(&mut self) {}
+}
+
 impl StageRuntime for EmptyRoutes {
     fn descriptor(&self, _index: u8) -> Option<super::super::archer::ArcherStageDescriptor> {
         None
@@ -91,6 +103,460 @@ fn target(slot: u16) -> Target {
 }
 
 #[test]
+fn summoned_target_scan_compares_source_squared_distances() {
+    let terrain = terrain();
+    let mut parent = target(9);
+    parent.position = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let mut farther = target(12);
+    farther.position = Position {
+        x: 20_100,
+        y: 20_009,
+        z: 0,
+    };
+    let mut closer = target(13);
+    closer.position = Position {
+        x: 20_100,
+        y: 20_000,
+        z: 0,
+    };
+    assert_eq!(
+        crate::legacy_sqrt(super::xy(parent.position, farther.position)),
+        crate::legacy_sqrt(super::xy(parent.position, closer.position))
+    );
+    let targets = [parent, farther, closer];
+    let mut row = actor(175);
+    row.set_phase(8);
+    row.set_control_flags(row.control_flags | 0x800);
+    row.record[77] = 16;
+    put(&mut row, 44, parent.slot);
+    put(&mut row, 50, 40);
+    let mut without_closer = row.clone();
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[12, 13],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(
+        u16::from_le_bytes([row.record[154], row.record[155]]),
+        closer.slot
+    );
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(
+        &mut Actor {
+            row: &mut without_closer,
+        },
+        &mut context,
+    )
+    .unwrap();
+    assert_eq!(
+        u16::from_le_bytes([without_closer.record[154], without_closer.record[155]]),
+        farther.slot
+    );
+}
+
+#[test]
+fn authored_model_route_acquires_only_frozen_family_members() {
+    let terrain = terrain();
+    let descriptor = super::super::archer::ArcherStageDescriptor {
+        kind: 3,
+        flags: 2,
+        next: 0,
+        point: Position::default(),
+        actor: 0,
+        model: 18,
+        scalar: 0,
+    };
+    let mut enemy = target(12);
+    enemy.class = 5;
+    enemy.model = 18;
+    let targets = [enemy];
+    let mut row = actor(175);
+    row.set_phase(8);
+    row.set_control_flags(row.control_flags | 0x800);
+    row.record[76] = 1;
+    row.record[77] = 3;
+    let mut absent = row.clone();
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[18].push(enemy.slot);
+    let mut routes = PointRoute(descriptor);
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[],
+        model21: &[],
+        families: &families,
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(
+        (
+            row.action,
+            row.record[77],
+            u16::from_le_bytes([row.record[154], row.record[155]])
+        ),
+        (170, 10, enemy.slot)
+    );
+    let mut routes = PointRoute(descriptor);
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut absent }, &mut context).unwrap();
+    assert_eq!(
+        (
+            absent.action,
+            absent.record[77],
+            u16::from_le_bytes([absent.record[154], absent.record[155]])
+        ),
+        (175, 3, 0)
+    );
+}
+
+#[test]
+fn authored_point_route_steers_and_hostile_damage_interrupts_it() {
+    let terrain = terrain();
+    let descriptor = super::super::archer::ArcherStageDescriptor {
+        kind: 1,
+        flags: 0,
+        next: 0,
+        point: Position {
+            x: 30_000,
+            y: 20_000,
+            z: 0,
+        },
+        actor: 0,
+        model: 0,
+        scalar: 0,
+    };
+    let enemy = target(12);
+    let mut row = actor(175);
+    row.set_phase(8);
+    row.set_control_flags(row.control_flags | 0x800);
+    row.set_source_roll(777);
+    row.record[76] = 1;
+    row.record[77] = 1;
+    let mut hit = row.clone();
+    hit.record[98..102].copy_from_slice(&50_i32.to_le_bytes());
+    put(&mut hit, 102, enemy.slot);
+    let targets = [enemy];
+    let mut routes = PointRoute(descriptor);
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(
+        row.source_roll(),
+        heading_for_positions(row.position, descriptor.point) as i16
+    );
+    assert_eq!(row.action, 175);
+    let mut routes = PointRoute(descriptor);
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut hit }, &mut context).unwrap();
+    assert_eq!(hit.life, RULES.max_life - 50);
+    assert_eq!(
+        (
+            hit.action,
+            hit.record[77],
+            u16::from_le_bytes([hit.record[154], hit.record[155]])
+        ),
+        (170, 10, enemy.slot)
+    );
+}
+
+#[test]
+fn stage_follow_keeps_hidden_parent_pose_and_hides_after_dead_parent_pose() {
+    let terrain = terrain();
+    let mut parent = target(9);
+    parent.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    parent.yaw = 123;
+    parent.roll = 456;
+    let mut row = actor(175);
+    row.record[77] = 12;
+    put(&mut row, 44, parent.slot);
+    let mut dead_parent = parent;
+    dead_parent.life = -1;
+    let mut dead = row.clone();
+    let targets = [parent];
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[9],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert!(!row.drawing_disabled());
+    assert_eq!(
+        (row.position, row.yaw, row.source_roll()),
+        (parent.position, parent.yaw as i16, parent.roll as i16)
+    );
+    let targets = [dead_parent];
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[9],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    step(&mut Actor { row: &mut dead }, &mut context).unwrap();
+    assert!(dead.drawing_disabled());
+    assert_eq!(
+        (dead.position, dead.yaw, dead.source_roll()),
+        (parent.position, parent.yaw as i16, parent.roll as i16)
+    );
+}
+
+#[test]
+fn alliance_adapter_commits_and_clears_linked_blink_flags() {
+    let package = std::env::var_os("MC_SETTLEMENT_FULL_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-1pb-16-level2-full-build-v2")
+        });
+    let mut simulation = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("owner Level 2 exports constructor counters")
+    .simulation()
+    .clone();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
+    let parent = arena
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0 && row.life > 0)
+        .expect("live owner player");
+    let (parent_slot, position) = (parent.index, parent.position);
+    let actor = mc2::allocate_authored(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        500,
+    )
+    .unwrap()
+    .unwrap();
+    let child = mc2::allocate_authored(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        501,
+    )
+    .unwrap()
+    .unwrap();
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.set_source_action(175);
+        row.set_phase(8);
+        row.record[77] = 14;
+        put(row, 44, parent_slot);
+        put(row, 50, 40);
+        put(row, 52, 40);
+        put(row, 56, child);
+    }
+    let mut expired_arena = arena.clone();
+    let mut expired_terrain = terrain.clone();
+    let mut expired_runtime = runtime.clone();
+    put(&mut expired_arena.entities[usize::from(actor)], 50, 1);
+    let row = &mut expired_arena.entities[usize::from(child)];
+    row.set_control_flags(row.control_flags | 0x0600_0000);
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    mc2::step_row(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        actor,
+        &[parent_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(
+        arena.entities[usize::from(child)].control_flags & 0x0600_0000,
+        0x0400_0000
+    );
+    mc2::step_row(
+        &mut expired_arena,
+        &mut expired_runtime,
+        &mut expired_terrain,
+        &particles,
+        actor,
+        &[parent_slot],
+        &families,
+    )
+    .unwrap();
+    assert_eq!(
+        expired_arena.entities[usize::from(child)].control_flags & 0x0600_0000,
+        0
+    );
+}
+
+#[test]
+fn alliance_stage_follows_parent_target_and_orders_both_feedback_events() {
+    let terrain = terrain();
+    let mut parent = target(9);
+    parent.target = 12;
+    let enemy = target(12);
+    let mut row = actor(175);
+    row.set_phase(1);
+    row.set_control_flags(row.control_flags | 0x800);
+    row.record[77] = 14;
+    put(&mut row, 44, parent.slot);
+    put(&mut row, 50, 40);
+    put(&mut row, 52, 40);
+    row.record[98..102].copy_from_slice(&50_i32.to_le_bytes());
+    put(&mut row, 102, enemy.slot);
+    let mut allied = enemy;
+    allied.parent = parent.slot;
+    allied.stage.mode = 14;
+    let mut rejected = row.clone();
+    rejected.record[98..104].fill(0);
+    let targets = [parent, enemy];
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[9, 12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(row.life, RULES.max_life - 50);
+    assert_eq!(
+        (
+            row.action,
+            u16::from_le_bytes([row.record[154], row.record[155]])
+        ),
+        (170, enemy.slot)
+    );
+    assert_eq!(effects.earlier_feedback, Some((parent.slot, 19)));
+    assert_eq!(effects.feedback, Some((parent.slot, 24)));
+    let targets = [parent, allied];
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[9, 12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    let effects = step(&mut Actor { row: &mut rejected }, &mut context).unwrap();
+    assert_eq!(
+        (
+            rejected.action,
+            u16::from_le_bytes([rejected.record[154], rejected.record[155]])
+        ),
+        (175, 0)
+    );
+    assert_eq!(effects.feedback, None);
+}
+
+#[test]
+fn alliance_attack_counts_down_and_only_fires_at_parent_selected_target() {
+    let terrain = terrain();
+    let mut parent = target(9);
+    parent.target = 12;
+    let enemy = target(12);
+    let mut row = actor(170);
+    row.set_control_flags(row.control_flags | 0x800);
+    row.record[77] = 14;
+    put(&mut row, 44, parent.slot);
+    put(&mut row, 50, 40);
+    put(&mut row, 52, 40);
+    put(&mut row, 154, enemy.slot);
+    let mut rejected = row.clone();
+    let mut rejected_parent = parent;
+    rejected_parent.target = 13;
+    let targets = [parent, enemy];
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[9, 12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(
+        effects.strike.map(|strike| strike.target_slot),
+        Some(enemy.slot)
+    );
+    assert_eq!(u16::from_le_bytes([row.record[50], row.record[51]]), 39);
+    let targets = [rejected_parent, enemy];
+    let mut routes = EmptyRoutes;
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &targets,
+        class3: &[9, 12],
+        model21: &[],
+        families: &[],
+        runtime: &mut routes,
+    };
+    let effects = step(&mut Actor { row: &mut rejected }, &mut context).unwrap();
+    assert_eq!(effects.strike, None);
+    assert_eq!(rejected.action, 169);
+    assert_eq!(
+        u16::from_le_bytes([rejected.record[50], rejected.record[51]]),
+        39
+    );
+}
+
+#[test]
 fn attack_emits_source_strike_for_live_target_and_reclaims_target_loss_to_roam() {
     let terrain = terrain();
     let mut row = actor(170);
@@ -102,6 +568,7 @@ fn attack_emits_source_strike_for_live_target_and_reclaims_target_loss_to_roam()
         targets: &[target],
         class3: &[12],
         model21: &[],
+        families: &[],
         runtime: &mut routes,
     };
     let effects = step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
@@ -120,6 +587,7 @@ fn attack_emits_source_strike_for_live_target_and_reclaims_target_loss_to_roam()
         targets: &[],
         class3: &[],
         model21: &[],
+        families: &[],
         runtime: &mut routes,
     };
     let effects = step(&mut Actor { row: &mut lost }, &mut ctx).unwrap();
@@ -140,6 +608,7 @@ fn source_reset_168_and_171_clear_target_and_restore_record71_before_action169()
             targets: &[],
             class3: &[],
             model21: &[],
+            families: &[],
             runtime: &mut routes,
         };
 
@@ -168,6 +637,7 @@ fn summoned_parent_loss_expires_before_consuming_damage_with_mode_specific_visua
             targets: &[],
             class3: &[],
             model21: &[],
+            families: &[],
             runtime: &mut routes,
         };
         let effects = step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
@@ -191,6 +661,7 @@ fn boss_summon_acquires_live_target_and_dead_launch_hides() {
         targets: &targets,
         class3: &[5, 12],
         model21: &[],
+        families: &[],
         runtime: &mut routes,
     };
     let mut following = actor(175);
@@ -341,6 +812,7 @@ fn jump_states3_through7_apply_velocity_then_subtract_source_gravity() {
         targets: &[],
         class3: &[],
         model21: &[],
+        families: &[],
         runtime: &mut routes,
     };
     for state in 3..=7 {
@@ -399,6 +871,7 @@ fn jump_states0_and1_mark_the_next_movement_hold_with_bit_800() {
             targets: &[],
             class3: &[],
             model21: &[],
+            families: &[],
             runtime: &mut routes,
         };
         let mut effects = Effects::default();
@@ -444,6 +917,10 @@ fn source_fireball_adapter_commits_then_shared_consumer_advances_and_exhaustion_
         target_slot,
         target_class: 3,
         target_model: 0,
+        initial_position: Position {
+            z: position.z.wrapping_sub(200),
+            ..position
+        },
         position,
         target_position,
         yaw,
@@ -452,6 +929,10 @@ fn source_fireball_adapter_commits_then_shared_consumer_advances_and_exhaustion_
     };
     let before = arena.economy.fireball_projectiles().len();
     let (arena, terrain) = (&mut live.economy, &mut live.terrain);
+    terrain.map_type = crate::native_world::MapType::Night;
+    let mut unlit_arena = arena.clone();
+    unlit_arena.dynamic_lighting_enabled = false;
+    let mut unlit_terrain = terrain.clone();
     assert!(super::mc2::launch_strike(arena, terrain, strike).unwrap());
     let projectile = arena
         .economy
@@ -469,6 +950,23 @@ fn source_fireball_adapter_commits_then_shared_consumer_advances_and_exhaustion_
     assert_eq!(projectile.target_source_entity_index, target_slot);
     assert_eq!(projectile.source_subspell_index, RULES.attack_damage as u16);
     assert_eq!(projectile.source_mana, 50);
+    assert!(
+        arena
+            .dynamic_lighting
+            .active_slots()
+            .any(|(_, light)| light.linked
+                && light.source_entity_index == projectile.source_entity_index
+                && light.position == strike.initial_position)
+    );
+    assert!(super::mc2::launch_strike(&mut unlit_arena, &mut unlit_terrain, strike).unwrap());
+    let unlit_projectile = unlit_arena.economy.fireball_projectiles().last().unwrap();
+    assert!(
+        !unlit_arena
+            .dynamic_lighting
+            .active_slots()
+            .any(|(_, light)| light.linked
+                && light.source_entity_index == unlit_projectile.source_entity_index)
+    );
     assert_eq!(
         arena.entities[usize::from(target_slot)].record[58..60],
         100_i16.to_le_bytes()
@@ -577,6 +1075,7 @@ fn source_disabled_action174_is_rejected_instead_of_reporting_an_empty_success()
         targets: &[],
         class3: &[],
         model21: &[],
+        families: &[],
         runtime: &mut routes,
     };
     assert!(step(&mut Actor { row: &mut row }, &mut ctx).is_err());

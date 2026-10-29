@@ -46,16 +46,17 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&super::guided_projectile::Targets<'_>>,
+    context: super::source_target::Context<'_>,
 ) -> Result<super::guided_projectile::StepOutcome, String> {
     match arena
         .entities
         .get(usize::from(slot))
         .map(|row| (row.class, row.model, row.action))
     {
-        Some((9, 23, 24)) => tremor::step_projectile(arena, terrain, particles, slot, targets),
-        Some((9, 5, 5)) => crater::step_projectile(arena, terrain, particles, slot, targets),
-        Some((9, 2, 2)) => earthquake::step_projectile(arena, terrain, particles, slot, targets),
-        Some((9, 4, 4)) => volcano::step_projectile(arena, terrain, particles, slot, targets),
+        Some((9, 23, 24)) => tremor::step_projectile(arena, terrain, particles, slot, targets, context),
+        Some((9, 5, 5)) => crater::step_projectile(arena, terrain, particles, slot, targets, context),
+        Some((9, 2, 2)) => earthquake::step_projectile(arena, terrain, particles, slot, targets, context),
+        Some((9, 4, 4)) => volcano::step_projectile(arena, terrain, particles, slot, targets, context),
         selector => Err(format!("unsupported terrain spell flyer {selector:?}")),
     }
 }

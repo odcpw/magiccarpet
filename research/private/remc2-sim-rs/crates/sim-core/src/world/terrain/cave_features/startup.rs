@@ -46,7 +46,19 @@ impl CaveStartupWorld {
         planes: &mut crate::native_world::TerrainPlanes,
         reset_sources: &[EntitySnapshot],
     ) -> Result<u16, String> {
-        let terrain = self.reset_terrain(reset_sources)?;
+        self.write_geometry_and_lighting_into(planes, reset_sources, true)
+            .map(|(rng, _, _)| rng)
+    }
+
+    /// Publish the footprint together with its removable light history.
+    pub(crate) fn write_geometry_and_lighting_into(
+        &self,
+        planes: &mut crate::native_world::TerrainPlanes,
+        reset_sources: &[EntitySnapshot],
+        lighting_enabled: bool,
+    ) -> Result<(u16, DynamicLightingState, Vec<(u16, bool)>), String> {
+        let (terrain, lighting, linked_flags) =
+            self.reset_terrain_with_lighting(reset_sources, lighting_enabled)?;
         let generated = terrain.planes();
         planes.terrain_types.clone_from(&generated.terrain_types);
         planes.ground_heights.clone_from(&generated.ground_heights);
@@ -55,7 +67,7 @@ impl CaveStartupWorld {
         planes
             .secondary_heights
             .clone_from(&generated.secondary_heights);
-        Ok(terrain.terrain_rng())
+        Ok((terrain.terrain_rng(), lighting, linked_flags))
     }
 
     /// Compose the terrain part of group-zero construction and the first
@@ -70,9 +82,19 @@ impl CaveStartupWorld {
         &self,
         reset_sources: &[EntitySnapshot],
     ) -> Result<SessionTerrain, String> {
+        self.reset_terrain_with_lighting(reset_sources, true)
+            .map(|(terrain, _, _)| terrain)
+    }
+
+    fn reset_terrain_with_lighting(
+        &self,
+        reset_sources: &[EntitySnapshot],
+        lighting_enabled: bool,
+    ) -> Result<(SessionTerrain, DynamicLightingState, Vec<(u16, bool)>), String> {
         let mut terrain = self.terrain.clone();
         let mut arena = self.arena.clone();
-        let mut lighting = DynamicLightingState::reset();
+        arena.dynamic_lighting = DynamicLightingState::reset();
+        arena.dynamic_lighting_enabled = lighting_enabled;
         let mut effect_state = crate::world::effects::State::default();
         // sub_4A1E0 invokes sub_49F90 before group-zero construction. The
         // previous generation pass leaves a LIFO reclaim stack; rebuilding
@@ -84,6 +106,7 @@ impl CaveStartupWorld {
             .filter(|source| source.active)
             .map(|source| (source.index, source.index))
             .collect::<BTreeMap<_, _>>();
+        let mut startup_light_rows = Vec::new();
         let retained = source_order.keys().copied().collect::<BTreeSet<_>>();
         for &row in self.authored.iter().skip(1) {
             if row.activation_group != 0 {
@@ -103,17 +126,6 @@ impl CaveStartupWorld {
                         position,
                         &self.particles,
                     )?;
-                    if let Some(slot) = newborn {
-                        // NewAdd0A00 -> AddEvent2_847D0. The light service owns
-                        // its RNG and footprint; the actual effect row owns life.
-                        if lighting
-                            .admit(true, true, slot, position, 128, 7, true)
-                            .is_some()
-                        {
-                            let source = &mut arena.entities[usize::from(slot)];
-                            source.set_control_flags(source.control_flags | 0x0008_0000);
-                        }
-                    }
                     newborn
                 }
                 (10, 45) => {
@@ -149,6 +161,9 @@ impl CaveStartupWorld {
                     return Err(format!(
                         "ordinary terrain source identity {key} is already bound"
                     ));
+                }
+                if (row.kind, row.subtype) == (10, 0) {
+                    startup_light_rows.push((key, slot));
                 }
             }
         }
@@ -193,13 +208,14 @@ impl CaveStartupWorld {
                 (14, 1, 6) => {
                     terrain_strip::visit_source(&mut arena.entities[slot], &mut terrain);
                 }
-                (14, 2, _) => {
+                (14, 2, 7) => {
                     cave_corridors::visit(&mut arena, &mut terrain, slot as u16);
                 }
                 _ => {}
             }
         }
         let (ground, shading) = terrain.dynamic_lighting_planes();
+        let mut lighting = std::mem::take(&mut arena.dynamic_lighting);
         lighting.service_recompute(
             shading,
             true,
@@ -219,7 +235,26 @@ impl CaveStartupWorld {
                     .expect("u8 terrain interpolation fits i16")
             },
         );
-        Ok(terrain)
+        // Temporary construction addresses differ from imported reset
+        // identities. Preserve the source pointer's live reset address while
+        // retaining its already-applied 25-cell subtraction history.
+        let live_slot_by_temporary = source_order
+            .into_iter()
+            .map(|(live, temporary)| (temporary, live))
+            .collect::<BTreeMap<_, _>>();
+        lighting
+            .remap_linked_sources(|slot| live_slot_by_temporary.get(&slot).copied())
+            .map_err(|slot| format!("startup light slot {slot} has no reset identity"))?;
+        let linked_flags = startup_light_rows
+            .into_iter()
+            .map(|(live, temporary)| {
+                (
+                    live,
+                    arena.entities[usize::from(temporary)].control_flags & 0x0008_0000 != 0,
+                )
+            })
+            .collect();
+        Ok((terrain, lighting, linked_flags))
     }
 
     /// The same geometry consumer used by normal campaign flight.
@@ -425,7 +460,7 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
                         )
                     })?;
                     if let Some(slot) =
-                        cave_corridors::construct(&mut arena, &terrain, position, *properties)
+                        cave_corridors::construct(&mut arena, &mut terrain, position, *properties)
                     {
                         synchronize_links(&mut arena, &mut terrain, slot);
                         allocations += 1;
@@ -760,6 +795,7 @@ mod tests {
 
     #[test]
     fn ordinary_cave_reset_constructs_geometry_before_flight_consumption() {
+        let mut saw_startup_light = false;
         for mission in [4, 6, 8, 12, 15, 16, 21, 24] {
             let relative = if mission == 8 {
                 // This versioned owner export also retains the four ordinary
@@ -881,9 +917,28 @@ mod tests {
             let reset_sources =
                 crate::native_world::parse_entities(package.member("entities.bin").unwrap())
                     .unwrap();
-            let reset = generated
-                .reset_terrain(&reset_sources)
+            let (reset, lights, linked_flags) = generated
+                .reset_terrain_with_lighting(&reset_sources, true)
                 .expect("ordinary terrain callbacks");
+            if lights.active_count() != 0 {
+                saw_startup_light = true;
+                for (_, light) in lights.active_slots() {
+                    let row = &reset_sources[usize::from(light.source_entity_index)];
+                    assert_eq!((row.class, row.model), (10, 0));
+                }
+                let (without_lights, _, disabled_flags) = generated
+                    .reset_terrain_with_lighting(&reset_sources, false)
+                    .expect("ordinary terrain with light option disabled");
+                let mut restored = reset.planes().shading.to_vec();
+                lights.subtract_previous(&mut restored, true);
+                assert_eq!(
+                    restored.as_slice(),
+                    without_lights.planes().shading.as_ref(),
+                    "Mission{mission} retained light history removes its real footprint"
+                );
+                assert!(disabled_flags.iter().all(|(_, linked)| !linked));
+                assert!(linked_flags.iter().any(|(_, linked)| *linked));
+            }
             if mission == 8 {
                 // Pinned remc2, unchanged exporter after its first ordinary
                 // UpdateEntities: four BUILD51 writes advance this RNG.
@@ -954,6 +1009,10 @@ mod tests {
                 reset.terrain_rng()
             );
         }
+        assert!(
+            saw_startup_light,
+            "owner caves must exercise startup lights"
+        );
     }
 
     #[test]

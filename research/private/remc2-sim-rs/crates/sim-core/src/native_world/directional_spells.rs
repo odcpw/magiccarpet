@@ -471,6 +471,7 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     targets: Option<&super::guided_projectile::Targets<'_>>,
+    context: super::source_target::Context<'_>,
 ) -> Result<super::guided_projectile::StepOutcome, String> {
     let guidance = match arena
         .entities
@@ -496,7 +497,7 @@ pub(crate) fn step_projectile(
             return Err("directional guided projectile has a different source selector".to_owned());
         }
     };
-    super::guided_projectile::step(arena, terrain, particles, slot, guidance, targets)
+    super::guided_projectile::step(arena, terrain, particles, slot, guidance, targets, context)
 }
 
 /// Model25 `sub_33E20` and model26 `sub_33E80`. The source fields write the
@@ -575,7 +576,8 @@ fn submit_contacts(
     // player pose/shape for overlap; only a matching live raw class-3 row owns
     // the per-player six-byte mailbox written here.
     let pitch_plus_255 = i32::from(field.array_pitch()) + 255;
-    let radius = (pitch_plus_255 - pitch_plus_255.signum() * 255) >> 8;
+    // my_sign32 is the sign bit (-1 or 0), not Rust's three-way signum.
+    let radius = (pitch_plus_255 - (pitch_plus_255 >> 31) * 255) >> 8;
     if radius < 0 {
         return accepted;
     }
@@ -592,7 +594,6 @@ fn submit_contacts(
                 };
                 if target.class != 3
                     || target.source_id == field.source_id
-                    || !source_selector_matches(field, target.class, target.model)
                     || !source_contact_overlaps_actor(field, target)
                 {
                     continue;
@@ -618,13 +619,6 @@ fn submit_contacts(
         }
     }
     accepted
-}
-
-fn source_selector_matches(field: &EntitySnapshot, class: u8, model: u8) -> bool {
-    let class_selector = field.record[69];
-    let model_selector = field.record[70];
-    class_selector == u8::MAX
-        || (class_selector == class && (model_selector == u8::MAX || model_selector == model))
 }
 
 fn source_contact_overlaps_actor(
@@ -807,6 +801,7 @@ pub(crate) fn consume_actor_mailbox(
     {
         return Ok(DirectionalMailboxOutcome::default());
     }
+    let actor_handle = arena.handle(actor_slot);
 
     let mut outcome = DirectionalMailboxOutcome::default();
     let duel_hit = arena.entities[usize::from(actor_slot)]
@@ -832,52 +827,64 @@ pub(crate) fn consume_actor_mailbox(
         let caster_slot = hit.attacker;
         outcome.steal_consumed = true;
         outcome.steal_attacker_resolved = arena.handle(caster_slot).is_some();
-        let Some(mut thief) = actor(arena, caster_slot) else {
-            return Ok(outcome);
-        };
-        let Some(mut victim) = actor(arena, actor_slot) else {
-            return Ok(outcome);
-        };
-        let thief_castle_slot = castle_slot(arena, castle_slots, caster_slot);
-        let victim_castle_slot = castle_slot(arena, castle_slots, actor_slot);
-        let mut thief_castle = castle_mana(arena, thief_castle_slot);
-        let mut victim_castle = castle_mana(arena, victim_castle_slot);
-        let result = apply_steal_mana(
-            u8::try_from(hit.payload).unwrap_or(u8::MAX),
-            &mut thief,
-            &mut victim,
-            thief_castle.as_mut(),
-            victim_castle.as_mut(),
-        );
-        if let Some(result) = result {
-            set_actor_mana(shared, arena, caster_slot, thief.mana);
-            set_actor_mana(shared, arena, actor_slot, victim.mana);
-            if let (Some(slot), Some(mana)) = (victim_castle_slot, result.target_castle_mana_after)
-            {
-                if !set_castle_mana(arena, slot, mana) {
-                    return Err(format!(
-                        "Steal Mana Castle debit lost current Castle carrier {slot}"
-                    ));
+        if let (Some(mut thief), Some(mut victim)) =
+            (actor(arena, caster_slot), actor(arena, actor_slot))
+        {
+            let thief_castle_slot = castle_slot(arena, castle_slots, caster_slot);
+            let victim_castle_slot = castle_slot(arena, castle_slots, actor_slot);
+            let mut thief_castle = castle_mana(arena, thief_castle_slot);
+            let mut victim_castle = castle_mana(arena, victim_castle_slot);
+            let result = apply_steal_mana(
+                u8::try_from(hit.payload).unwrap_or(u8::MAX),
+                &mut thief,
+                &mut victim,
+                thief_castle.as_mut(),
+                victim_castle.as_mut(),
+            );
+            if let Some(result) = result {
+                set_actor_mana(shared, arena, caster_slot, thief.mana);
+                set_actor_mana(shared, arena, actor_slot, victim.mana);
+                if let (Some(slot), Some(mana)) =
+                    (victim_castle_slot, result.target_castle_mana_after)
+                {
+                    if !set_castle_mana(arena, slot, mana) {
+                        return Err(format!(
+                            "Steal Mana Castle debit lost current Castle carrier {slot}"
+                        ));
+                    }
                 }
-            }
-            if let Some(spawn_castle_slot) = thief_castle_slot {
-                for grant in &result.mana_spheres {
-                    let _ = spawn_steal_mana_sphere(
-                        arena,
-                        terrain,
-                        actor_slot,
-                        spawn_castle_slot,
-                        grant.mana,
-                        grant.player_entity_index,
-                    )?;
+                if let Some(spawn_castle_slot) = thief_castle_slot {
+                    for grant in &result.mana_spheres {
+                        let _ = spawn_steal_mana_sphere(
+                            arena,
+                            terrain,
+                            actor_slot,
+                            spawn_castle_slot,
+                            grant.mana,
+                            grant.player_entity_index,
+                        )?;
+                    }
                 }
+                outcome.steal_mana = Some(StealManaConsumption {
+                    caster_entity_index: caster_slot,
+                    target_entity_index: actor_slot,
+                    result,
+                });
             }
-            outcome.steal_mana = Some(StealManaConsumption {
-                caster_entity_index: caster_slot,
-                target_entity_index: actor_slot,
-                result,
-            });
         }
+    }
+    // Allocation in the Castle conversion may reuse source slots. Never
+    // publish local-player feedback onto a replacement generation.
+    if actor_handle.is_some()
+        && arena.handle(actor_slot) == actor_handle
+        && (outcome.duel_consumed || outcome.steal_consumed)
+    {
+        shared.apply_directional_feedback(
+            &mut arena.entities[usize::from(actor_slot)],
+            outcome.duel_consumed,
+            outcome.steal_consumed,
+            outcome.steal_attacker_resolved,
+        );
     }
     Ok(outcome)
 }
@@ -948,7 +955,7 @@ fn spawn_steal_mana_sphere(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn ready_holder(family: u8, tier: u8) -> (super::super::Mc2Simulation, u16, u16) {
@@ -1054,7 +1061,7 @@ mod tests {
     fn source_probe_eligible_target_position(flyer: &EntitySnapshot, steps: usize) -> Position {
         let forecast = flyer_position_after_source_steps(flyer, steps);
         let width = i32::from(flyer.array_pitch()) + 255;
-        let radius = ((width - width.signum() * 255) >> 8) as u8;
+        let radius = ((width - (width >> 31) * 255) >> 8) as u8;
         let offsets = crate::level1_mission::source_search_offsets(radius);
         // GDB observes the real visit-4 probe at (2,237), while the prior
         // lower-half clamp linked the target at (1,236). Use the probe's own
@@ -1155,6 +1162,14 @@ mod tests {
         fly_projectile_into_target_slot(simulation, projectile_slot, target_slot, 3, particles)
     }
 
+    pub(in crate::native_world) fn staged_steal_mana_impact()
+    -> (super::super::Mc2Simulation, u16, u16, u16) {
+        let (mut simulation, holder, caster) = ready_holder(STEAL_MANA_FAMILY, 0);
+        let projectile = cast(&mut simulation, holder, false);
+        let (target, field) = fly_into_actual_opposing_player(&mut simulation, projectile, caster);
+        (simulation, caster, target, field)
+    }
+
     fn fly_projectile_into_target_slot(
         simulation: &mut super::super::Mc2Simulation,
         projectile_slot: u16,
@@ -1209,6 +1224,10 @@ mod tests {
                 &particles,
                 projectile_slot,
                 Some(&targets),
+                crate::native_world::source_target::Context::from_ordinary(
+                    &live.goats,
+                    &live.ordinary,
+                ),
             )
             .expect("ordinary guided flyer movement");
             let flyer = live.economy.entities[usize::from(projectile_slot)].clone();
@@ -1219,7 +1238,7 @@ mod tests {
                 target_slot,
             );
             let width = i32::from(flyer.array_pitch()) + 255;
-            let radius = ((width - width.signum() * 255) >> 8) as u8;
+            let radius = ((width - (width >> 31) * 255) >> 8) as u8;
             let in_probe_chain = crate::level1_mission::source_map_search_slots(
                 &live.economy.map_chains,
                 flyer.position,
@@ -1461,6 +1480,56 @@ mod tests {
                 let holder = live.shared_spells.pickup(holder_slot).unwrap();
                 assert_eq!(holder.active_value, active_before - 1);
                 assert_eq!(word(holder, 58), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn directional_fields_ignore_other_mode_selectors_and_use_source_radius() {
+        for family in [STEAL_MANA_FAMILY, DUEL_FAMILY] {
+            for narrow in [false, true] {
+                let (mut simulation, holder, caster) = ready_holder(family, 0);
+                let projectile = cast(&mut simulation, holder, false);
+                let (target, field) =
+                    fly_into_actual_opposing_player(&mut simulation, projectile, caster);
+                let live = &mut simulation.session.state.live;
+                deactivate_other_actors(&mut live.economy, &[caster, target]);
+                let actor = area_damage::source_actor(&mut live.economy, None, target).unwrap();
+                let target_position = Position {
+                    x: actor.position.x & 0xff00,
+                    y: actor.position.y & 0xff00,
+                    ..actor.position
+                };
+                live.economy.entities[usize::from(target)].set_position(target_position);
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    target,
+                    target_position,
+                    true,
+                    true,
+                )
+                .unwrap();
+                let row = &mut live.economy.entities[usize::from(field)];
+                row.record[69] = 5;
+                row.record[70] = 29;
+                if narrow {
+                    assert!(actor.shape.half_width > 1);
+                    row.record[88..90].copy_from_slice(&(-1_i16).to_le_bytes());
+                }
+                row.set_position(Position {
+                    z: target_position
+                        .z
+                        .wrapping_add(actor.shape.vertical_offset)
+                        .wrapping_sub(row.array_yaw()),
+                    ..target_position
+                });
+                let outcome = step_field(&mut live.economy, field).unwrap();
+                assert_eq!(
+                    outcome.accepted_target_slots,
+                    [target],
+                    "source mode for family {family}, narrow={narrow}"
+                );
             }
         }
     }
@@ -1867,6 +1936,75 @@ mod tests {
         assert!(missing_result.steal_consumed);
         assert!(!missing_result.steal_attacker_resolved);
         assert!(missing_result.steal_mana.is_none());
+    }
+
+    #[test]
+    fn local_directional_feedback_distinguishes_resolved_and_missing_attackers() {
+        use crate::combat::actors::PlayerEffectLane;
+
+        let (mut resolved, _, local_slot) = ready_holder(STEAL_MANA_FAMILY, 0);
+        let attacker = resolved
+            .session
+            .state
+            .live
+            .shared_spells
+            .players
+            .iter()
+            .find(|player| player.entity_index != local_slot && player.active_player_index >= 0)
+            .expect("owner-data rival player")
+            .entity_index;
+        let missing = (1..u16::try_from(resolved.session.state.live.economy.entities.len())
+            .unwrap())
+            .find(|&slot| resolved.session.state.live.economy.handle(slot).is_none())
+            .expect("a free source address");
+        let mut unresolved = resolved.clone();
+        for (session, attacker) in [(&mut resolved, attacker), (&mut unresolved, missing)] {
+            let live = &mut session.session.state.live;
+            let local = &mut live.economy.entities[usize::from(local_slot)];
+            local.record[58..60].fill(0);
+            assert!(local.submit_player_effect_contact(
+                PlayerEffectLane::StealMana,
+                0,
+                attacker,
+                true
+            ));
+            let outcome = consume_actor_mailbox(
+                &mut live.shared_spells,
+                &mut live.economy,
+                &mut live.terrain,
+                local_slot,
+                &[],
+            )
+            .unwrap();
+            assert!(outcome.steal_consumed);
+            assert_eq!(outcome.steal_attacker_resolved, attacker != missing);
+            assert_eq!(
+                i16::from_le_bytes(
+                    live.economy.entities[usize::from(local_slot)].record[58..60]
+                        .try_into()
+                        .unwrap()
+                ),
+                100
+            );
+        }
+        let accepted = &resolved.session.state.live.shared_spells;
+        let rejected = &unresolved.session.state.live.shared_spells;
+        assert_eq!(
+            (
+                accepted.local_player.hit_frame_time,
+                accepted.player_life_regen_cooldown,
+                accepted.player_hit_effect_cooldown
+            ),
+            (4, 16, 64)
+        );
+        assert_eq!(
+            (
+                rejected.local_player.hit_frame_time,
+                rejected.player_life_regen_cooldown,
+                rejected.player_hit_effect_cooldown
+            ),
+            (0, 0, 0)
+        );
     }
 
     #[test]

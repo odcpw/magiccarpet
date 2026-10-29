@@ -7,6 +7,16 @@ namespace MagicCarpet.Native.Tests
     public sealed class SourceCampaignMenusTests
     {
         [Test]
+        public void SpellPointerUsesSourceGridTierAndWindowCoordinates()
+        {
+            Assert.That(SourceSpellMenu.GridPointer(0), Is.EqualTo(new Vector2(32, 426)));
+            Assert.That(SourceSpellMenu.GridPointer(13), Is.EqualTo(new Vector2(32, 462)));
+            Assert.That(SourceSpellMenu.TierPointer(100, 32, 36, 1), Is.EqualTo(new Vector2(156, 390)));
+            Assert.That(SourceSpellMenu.WindowPointer(new Vector2(32, 426), new Rect(100, 20, 1280, 960),
+                2, 1000), Is.EqualTo(new Vector2(164, 128)));
+        }
+
+        [Test]
         public void SourceMapPathRetainsItsIntegerAsymmetryAndFollowingMoveArrival()
         {
             var path = new SourceMapMotion.Path(10, 3, 0, 0, 2);
@@ -192,15 +202,21 @@ namespace MagicCarpet.Native.Tests
         public void SpellDragUsesCurrentAcquiredHolderAndTierBinding()
         {
             var original = new EngineSessionTransport.SpellObservation {
-                id = "spell.fireball", menu_slot = 3, acquired = true, unlocked_tier = 2
+                id = "spell.fireball", menu_slot = 3, acquired = true, unlocked_tier = 2,
+                holder_actor = "112233"
             };
             var current = new EngineSessionTransport.SpellObservation {
                 id = original.id, menu_slot = original.menu_slot, acquired = true, unlocked_tier = 1,
+                holder_actor = original.holder_actor,
                 menu_artwork = new EngineSessionTransport.SpellMenuArtwork {
                     grid_icon = 97, tier_icons = new ushort[] { 179, 180, 181 }
                 }
             };
             Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.SameAs(current));
+            current.holder_actor = "112234";
+            Assert.That(SourceSpellMenu.CurrentChoice(original, new[] { current }), Is.Null,
+                "a reused holder slot is a different observed incarnation");
+            current.holder_actor = original.holder_actor;
             Assert.That(SourceSpellMenu.HasRequiredBitmaps(new[] { current }, _ => true), Is.True);
             Assert.That(SourceSpellMenu.HasRequiredBitmaps(new[] { current }, selector => selector != 180), Is.False,
                 "a missing retained tier bitmap must not reach the GUI lookup");

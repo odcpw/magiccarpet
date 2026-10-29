@@ -288,8 +288,18 @@ fn meteor_terminal_projectile_uses_existing_model17_damage_and_lifetime_consumer
         false,
     )
     .unwrap();
-    let outcome =
-        step_projectile(&mut live.economy, &mut live.terrain, &particles, slot, None).unwrap();
+    let outcome = step_projectile(
+        &mut live.economy,
+        &mut live.terrain,
+        &particles,
+        slot,
+        None,
+        crate::native_world::source_target::Context {
+            spells: Some(&live.shared_spells),
+            ..crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        },
+    )
+    .unwrap();
     let impact = outcome.impact_slot.unwrap();
     let effect = live
         .economy
@@ -453,6 +463,10 @@ fn meteor_acquires_current_typed_dragon_despite_stale_raw_header() {
         &particles,
         projectile,
         Some(&targets),
+        crate::native_world::source_target::Context {
+            spells: Some(&live.shared_spells),
+            ..crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        },
     )
     .unwrap();
     assert_eq!(outcome.impact_slot, None);
@@ -489,6 +503,10 @@ fn meteor_acquires_current_typed_dragon_despite_stale_raw_header() {
         &particles,
         projectile,
         Some(&targets),
+        crate::native_world::source_target::Context {
+            spells: Some(&live.shared_spells),
+            ..crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        },
     )
     .unwrap();
     assert_eq!(

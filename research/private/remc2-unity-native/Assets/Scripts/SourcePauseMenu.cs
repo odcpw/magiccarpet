@@ -298,11 +298,12 @@ namespace MagicCarpet.Native
             }
             for (var index = 0; index < 17; index++)
             {
-                var supported = index <= 5 || index is 8 or 9 or 10;
+                var supported = index <= 5 || index is 8 or 9 or 10 or 11;
                 var enabled = index switch {
                     0 => prefs.show_help, 1 => prefs.sound_enabled, 2 => prefs.music_enabled,
                     3 => prefs.speech_enabled, 4 => prefs.flight_assistance,
-                    8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows, _ => false
+                    8 => prefs.reflections, 9 => prefs.sky, 10 => prefs.shadows,
+                    11 => prefs.dynamic_lighting, _ => false
                 };
                 var text = language(enabled ? OnText[index] : OffText[index]);
                 var y = 67 + index * 18;
@@ -330,6 +331,7 @@ namespace MagicCarpet.Native
                             case 8: draft.reflections = !draft.reflections; break;
                             case 9: draft.sky = !draft.sky; break;
                             case 10: draft.shadows = !draft.shadows; break;
+                            case 11: draft.dynamic_lighting = !draft.dynamic_lighting; break;
                         }
                     });
                     Event.current.Use();

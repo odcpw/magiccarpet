@@ -623,6 +623,8 @@ pub(super) struct Level2FireballStep {
     pub reflection: Option<super::support_spells::ReboundReflection>,
     pub pending_birth: Option<FireballBirth>,
     pub direct_hit_owner: Option<u16>,
+    pub direct_hit_family: Option<u8>,
+    pub collision_target: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -975,18 +977,42 @@ impl Level2EconomyState {
         imported_entities: &[EntitySnapshot],
         defer_birth: bool,
     ) -> Level2FireballStep {
+        self.advance_fireball_projectile_with_views(
+            source_slot,
+            terrain,
+            imported_entities,
+            defer_birth,
+            None,
+        )
+        .expect("legacy Fireball advance does not use current-address views")
+    }
+
+    pub(super) fn advance_fireball_projectile_with_views(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+        imported_entities: &[EntitySnapshot],
+        defer_birth: bool,
+        views: Option<&[std::result::Result<Option<super::source_target::View>, String>]>,
+    ) -> std::result::Result<Level2FireballStep, String> {
         let guidance_targets = self.fireball_guidance_targets(imported_entities);
-        let collision_targets = self.fireball_collision_targets(imported_entities);
+        let collision_targets = if views.is_none() {
+            self.fireball_collision_targets(imported_entities)
+        } else {
+            Vec::new()
+        };
         let Some(projectile_index) = self.fireball_projectiles.iter().position(|projectile| {
             projectile.active && projectile.source_entity_index == source_slot
         }) else {
-            return Level2FireballStep {
+            return Ok(Level2FireballStep {
                 live: false,
                 impact_slot: None,
                 reflection: None,
                 pending_birth: None,
                 direct_hit_owner: None,
-            };
+                direct_hit_family: None,
+                collision_target: None,
+            });
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
 
@@ -1029,24 +1055,52 @@ impl Level2EconomyState {
                     (113, 113)
                 }
                 FireballProjectileOrigin::FinalBoss => (17, 22),
-                FireballProjectileOrigin::Creature27 => (17, 113),
+                FireballProjectileOrigin::Creature27 => (
+                    crate::world::effects::MODEL27_GUIDANCE.yaw_turn,
+                    crate::world::effects::MODEL27_GUIDANCE.pitch_turn,
+                ),
                 _ => (0, 22),
             };
-            let target_position = guidance_targets
-                .iter()
-                .find(|target| target.source_slot == projectile.target_source_entity_index)
-                .map(|target| target.top_position)
-                .or_else(|| {
-                    imported_entities
-                        .get(usize::from(projectile.target_source_entity_index))
-                        .map(|target| {
-                            super::guided_projectile::centre(
-                                target.position,
-                                target.model,
-                                target.array_yaw(),
+            let target_position = if let Some(views) = views {
+                let target = views
+                    .get(usize::from(projectile.target_source_entity_index))
+                    .ok_or("Fireball target address is outside arena")?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                match target {
+                    Some(target) if target.model == 2 => Some(target.position),
+                    Some(target) => {
+                        let shape = target.collision.ok_or_else(|| {
+                            format!(
+                                "Fireball target {} lacks current source axes",
+                                projectile.target_source_entity_index
                             )
-                        })
-                });
+                        })?;
+                        Some(super::guided_projectile::centre(
+                            target.position,
+                            target.model,
+                            shape.vertical_offset,
+                        ))
+                    }
+                    None => None,
+                }
+            } else {
+                guidance_targets
+                    .iter()
+                    .find(|target| target.source_slot == projectile.target_source_entity_index)
+                    .map(|target| target.top_position)
+                    .or_else(|| {
+                        imported_entities
+                            .get(usize::from(projectile.target_source_entity_index))
+                            .map(|target| {
+                                super::guided_projectile::centre(
+                                    target.position,
+                                    target.model,
+                                    target.array_yaw(),
+                                )
+                            })
+                    })
+            };
             if let Some(target_position) = target_position {
                 (projectile.roll, projectile.fov) =
                     projectile_guidance_angles(projectile.position, target_position);
@@ -1120,7 +1174,12 @@ impl Level2EconomyState {
             )) & 0x07ff;
         }
 
-        let previous = projectile.position;
+        // sub_65820 adjusts the source speed by two toward minSpeed before
+        // moving, including player-launched shots that inherit extra speed.
+        let speed_delta = i32::from(projectile.minimum_speed) - i32::from(projectile.actual_speed);
+        projectile.actual_speed = projectile
+            .actual_speed
+            .wrapping_add((2 * speed_delta.signum()) as i16);
         crate::move_entity(
             &mut projectile.position,
             projectile.yaw,
@@ -1128,38 +1187,90 @@ impl Level2EconomyState {
             projectile.actual_speed,
         );
 
-        let collision_slot = source_map_search_slots(
+        let offsets = if views.is_some() {
+            super::guided_projectile::collision_search_offsets(FIREBALL_COLLISION_HALF_WIDTH)
+        } else {
+            source_search_offsets(1)
+        };
+        let candidates = source_map_search_slots(
             &self.map_chains,
             projectile.position,
-            &source_search_offsets(1),
-        )
-        .into_iter()
-        .find(|candidate_slot| {
-            collision_targets.iter().any(|candidate| {
-                candidate.source_slot == *candidate_slot
-                    && candidate.source_id != projectile.owner_entity_index
-                    && fireball_target_selector_matches(
-                        &projectile,
-                        candidate.class,
-                        candidate.model,
-                    )
-                    && crate::level1_mission::source_entities_overlap(
-                        projectile.position,
-                        FIREBALL_COLLISION_HALF_WIDTH,
-                        FIREBALL_COLLISION_VERTICAL_OFFSET,
-                        FIREBALL_COLLISION_HALF_HEIGHT,
-                        candidate.position,
-                        candidate.half_width,
-                        candidate.vertical_offset,
-                        candidate.half_height,
-                    )
+            &offsets,
+        );
+        let mut current_hit_position = None;
+        let collision_slot = if let Some(views) = views {
+            let mut hit = None;
+            for candidate_slot in candidates {
+                let Some(target) = views
+                    .get(usize::from(candidate_slot))
+                    .ok_or("Fireball map candidate is outside arena")?
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                else {
+                    continue;
+                };
+                if target.control_flags & 8 == 0
+                    || target.source_id == projectile.owner_entity_index
+                    || !fireball_target_selector_matches(&projectile, target.class, target.model)
+                {
+                    continue;
+                }
+                let shape = target.collision.ok_or_else(|| {
+                    format!("Fireball collision target {candidate_slot} lacks current source axes")
+                })?;
+                let dx =
+                    i32::from(target.position.x.wrapping_sub(projectile.position.x) as i16).abs();
+                let dy =
+                    i32::from(target.position.y.wrapping_sub(projectile.position.y) as i16).abs();
+                let dz = (i32::from(target.position.z) + i32::from(shape.vertical_offset)
+                    - i32::from(projectile.position.z)
+                    - i32::from(FIREBALL_COLLISION_VERTICAL_OFFSET))
+                .abs();
+                if dx < i32::from(FIREBALL_COLLISION_HALF_WIDTH) + i32::from(shape.half_width)
+                    && dy < i32::from(FIREBALL_COLLISION_HALF_WIDTH) + i32::from(shape.half_depth)
+                    && dz < i32::from(FIREBALL_COLLISION_HALF_HEIGHT) + i32::from(shape.half_height)
+                {
+                    // sub_65820 temporarily raises the victim by its source
+                    // array.yaw (except model2) before copying its position.
+                    current_hit_position = Some(super::guided_projectile::centre(
+                        target.position,
+                        target.model,
+                        shape.vertical_offset,
+                    ));
+                    hit = Some(candidate_slot);
+                    break;
+                }
+            }
+            hit
+        } else {
+            candidates.into_iter().find(|candidate_slot| {
+                collision_targets.iter().any(|candidate| {
+                    candidate.source_slot == *candidate_slot
+                        && candidate.source_id != projectile.owner_entity_index
+                        && fireball_target_selector_matches(
+                            &projectile,
+                            candidate.class,
+                            candidate.model,
+                        )
+                        && crate::level1_mission::source_entities_overlap(
+                            projectile.position,
+                            FIREBALL_COLLISION_HALF_WIDTH,
+                            FIREBALL_COLLISION_VERTICAL_OFFSET,
+                            FIREBALL_COLLISION_HALF_HEIGHT,
+                            candidate.position,
+                            candidate.half_width,
+                            candidate.vertical_offset,
+                            candidate.half_height,
+                        )
+                })
             })
-        });
+        };
 
         let mut terminal = collision_slot.is_some();
         if let Some(target) = collision_slot
             .and_then(|slot| imported_entities.get(usize::from(slot)))
-            .filter(|target| target.active && target.control_flags & 0x8010 != 0)
+            .filter(|target| target.active && target.control_flags & 0x8010 != 0
+                && (views.is_none() || self.live_arena_cursor_row(target.index).is_none()))
         {
             use crate::spells::support::{
                 ReboundProjectile, ReboundSpread, ReboundTarget, reflect_projectile,
@@ -1205,27 +1316,33 @@ impl Level2EconomyState {
                 self.source_owner.insert(source_slot, reflected.owner);
                 self.source_rng.insert(source_slot, reflected.rng);
                 self.fireball_projectiles[projectile_index] = projectile;
-                self.map_chains
-                    .sync_entity(RenderableMapSeed {
-                        entity_index: source_slot,
-                        active: true,
-                        x: projectile.position.x,
-                        y: projectile.position.y,
-                    })
-                    .expect("live reflected Fireball retains its arena map slot");
-                return Level2FireballStep {
+                if views.is_none() {
+                    self.map_chains
+                        .sync_entity(RenderableMapSeed {
+                            entity_index: source_slot,
+                            active: true,
+                            x: projectile.position.x,
+                            y: projectile.position.y,
+                        })
+                        .expect("live reflected Fireball retains its arena map slot");
+                }
+                return Ok(Level2FireballStep {
                     live: true,
                     impact_slot: None,
                     pending_birth: None,
                     direct_hit_owner: None,
+                    direct_hit_family: None,
+                    collision_target: None,
                     reflection: Some(super::support_spells::ReboundReflection {
                         target_slot: target.index,
                         mana_after,
                     }),
-                };
+                });
             }
         }
-        if let Some(target_slot) = collision_slot
+        if let Some(position) = current_hit_position {
+            projectile.position = position;
+        } else if let Some(target_slot) = collision_slot
             && let Some(target) = collision_targets
                 .iter()
                 .find(|target| target.source_slot == target_slot)
@@ -1233,24 +1350,30 @@ impl Level2EconomyState {
             projectile.position = target.position;
         } else {
             let ground = terrain.ground_height(projectile.position);
-            let cave_limit = terrain
-                .ceiling_height(projectile.position)
-                .map(|ceiling| ceiling.wrapping_sub(FIREBALL_COLLISION_HALF_HEIGHT));
-            if ground > projectile.position.z
-                || cave_limit.is_some_and(|limit| projectile.position.z > limit)
-            {
-                projectile.position = previous;
-                projectile.position.z = cave_limit.unwrap_or(ground);
+            let contact_height = if ground > projectile.position.z {
+                Some(ground)
+            } else {
+                terrain
+                    .ceiling_height(projectile.position)
+                    .map(|ceiling| ceiling.wrapping_sub(FIREBALL_COLLISION_HALF_HEIGHT))
+                    .filter(|limit| projectile.position.z > *limit)
+            };
+            if let Some(height) = contact_height {
+                // sub_65820 retains moved XY and replaces only Z. The floor
+                // branch short-circuits before the cave ceiling branch.
+                projectile.position.z = height;
                 if terrain.material_mask(projectile.position) == 1 {
                     if defer_birth {
                         self.fireball_projectiles[projectile_index] = projectile;
-                        return Level2FireballStep {
+                        return Ok(Level2FireballStep {
                             live: true,
                             impact_slot: None,
                             reflection: None,
                             pending_birth: Some(FireballBirth::Ash),
                             direct_hit_owner: None,
-                        };
+                            direct_hit_family: None,
+                            collision_target: None,
+                        });
                     }
                     if let Some(splash) =
                         self.allocate_authored_model5_water_splash(projectile.position, terrain)
@@ -1268,13 +1391,15 @@ impl Level2EconomyState {
                     projectile.active = false;
                     projectile.drawing_disabled = true;
                     self.fireball_projectiles[projectile_index] = projectile;
-                    return Level2FireballStep {
+                    return Ok(Level2FireballStep {
                         live: false,
                         impact_slot: None,
                         reflection: None,
                         pending_birth: None,
                         direct_hit_owner: None,
-                    };
+                        direct_hit_family: None,
+                        collision_target: None,
+                    });
                 }
                 terminal = true;
             } else {
@@ -1284,30 +1409,36 @@ impl Level2EconomyState {
         }
 
         self.fireball_projectiles[projectile_index] = projectile;
-        let _ = self.map_chains.sync_entity(RenderableMapSeed {
-            entity_index: source_slot,
-            active: true,
-            x: projectile.position.x,
-            y: projectile.position.y,
-        });
+        if views.is_none() {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: projectile.position.x,
+                y: projectile.position.y,
+            });
+        }
         if !terminal {
-            return Level2FireballStep {
+            return Ok(Level2FireballStep {
                 live: true,
                 impact_slot: None,
                 reflection: None,
                 pending_birth: None,
                 direct_hit_owner: None,
-            };
+                direct_hit_family: None,
+                collision_target: None,
+            });
         }
 
         if defer_birth {
-            return Level2FireballStep {
+            return Ok(Level2FireballStep {
                 live: true,
                 impact_slot: None,
                 reflection: None,
                 pending_birth: Some(FireballBirth::Impact),
                 direct_hit_owner: collision_slot.map(|_| projectile.owner_entity_index),
-            };
+                direct_hit_family: None,
+                collision_target: collision_slot,
+            });
         }
         let impact_slot = if projectile.origin == FireballProjectileOrigin::Eruption {
             self.allocate_authored_model17(u16::MAX, projectile.position, terrain)
@@ -1343,7 +1474,7 @@ impl Level2EconomyState {
             projectile.active = false;
             projectile.drawing_disabled = true;
         }
-        Level2FireballStep {
+        Ok(Level2FireballStep {
             live: impact_slot.is_none(),
             impact_slot,
             reflection: None,
@@ -1351,7 +1482,9 @@ impl Level2EconomyState {
             direct_hit_owner: impact_slot
                 .and(collision_slot)
                 .map(|_| projectile.owner_entity_index),
-        }
+            direct_hit_family: None,
+            collision_target: impact_slot.and(collision_slot),
+        })
     }
 
     /// Rebuild the source target-list view consumed by `sub_67CB0`: live
@@ -2189,7 +2322,7 @@ impl Level2EconomyState {
     /// Source `sub_57F20` reclaim for hidden class-9/model-0 Fireballs.  The
     /// callback leaves the disabled row linked for the remainder of the pass;
     /// only this next source boundary unlinks it and returns its slot.
-    pub(super) fn reclaim_fireball_rows_at_source_boundary(&mut self) {
+    pub(crate) fn reclaim_fireball_rows_at_source_boundary(&mut self) {
         let reclaimed = self
             .fireball_projectiles
             .iter()
@@ -2452,6 +2585,7 @@ impl Level2EconomyState {
             byte_38: crate::level1_mission::PLAYER_DEATH_MARKER_BYTE_38,
             max_life: crate::level1_mission::PLAYER_DEATH_MARKER_LIFE,
             life: crate::level1_mission::PLAYER_DEATH_MARKER_LIFE,
+            control_flags: 12,
             particle_parameter_index: crate::level1_mission::PLAYER_DEATH_MARKER_PARTICLE_PARAMETER,
             active: true,
         };
@@ -2549,14 +2683,16 @@ impl Level2EconomyState {
     /// Return model-1 rows disabled by the preceding source pass. The slot is
     /// not reusable during the callback that hid it; the next pass boundary
     /// performs the source `sub_57F20` unlink/release.
-    pub(super) fn reclaim_death_burst_rows_at_source_boundary(&mut self) {
+    pub(crate) fn reclaim_death_burst_rows_at_source_boundary(&mut self) {
         let reclaimed = self
             .death_bursts
             .iter()
-            .filter(|burst| !burst.active)
+            .filter(|burst| !burst.active || burst.control_flags & ENTITY_DRAW_DISABLED_BIT != 0)
             .map(|burst| (burst.source_entity_index, burst.entity_rng))
             .collect::<Vec<_>>();
-        self.death_bursts.retain(|burst| burst.active);
+        self.death_bursts.retain(|burst| {
+            burst.active && burst.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+        });
         for (slot, entity_rng) in reclaimed {
             self.release_slot(slot, Some(entity_rng));
         }
@@ -4847,12 +4983,15 @@ impl Level2EconomyState {
         sync_map: bool,
     ) -> Option<u16> {
         let slot_generation = self.slot_generation(source_entity_index);
+        let owner_slot_generation = self.slot_generation(owner_entity_index);
         self.castle.0.push(Level2CastleState {
             source_entity_index,
             slot_generation,
+            owner_slot_generation,
             // The source Castle root stores the owning player's logical
             // entity id in id_0x1A; the arena slot remains separate.
             source_id_entity_index: owner_entity_index,
+            player_entity_index: if source_constructor { 0 } else { owner_entity_index },
             source_class: 3,
             source_model: 2,
             source_byte_38: 33,
@@ -5022,6 +5161,7 @@ impl Level2EconomyState {
             self.source_owner.insert(slot, owner);
             let castle = self.castle_entry_mut(slot).expect("imported Castle installed");
             castle.source_id_entity_index = root.source_id;
+            castle.player_entity_index = root.source_player_entity_index();
             castle.source_byte_38 = root.record[60];
             castle.source_particle_parameter = word(&root, 94);
             castle.life = root.life;
@@ -6087,9 +6227,29 @@ impl Level2EconomyState {
         terrain: &mut SessionTerrain,
         reset_free_slots: &[u16],
     ) -> bool {
+        self.step_castle_action_with_final_loss(castle_slot, terrain, reset_free_slots, &mut |_, _| {})
+    }
+
+    /// The caller owns player inventory and raw holder rows. Invoke its
+    /// final-loss operation at the source point inside `sub_605E0`, before
+    /// the Castle relation/root are removed and the `sub_5FCA0` tail runs.
+    pub(crate) fn step_castle_action_with_final_loss(
+        &mut self,
+        castle_slot: u16,
+        terrain: &mut SessionTerrain,
+        reset_free_slots: &[u16],
+        on_final_loss: &mut dyn FnMut(&mut Level2EconomyState, Level2CastleState),
+    ) -> bool {
         let Some(snapshot) = self.castle_at(castle_slot).copied() else {
             return false;
         };
+        // EndOfCastleProjectile_5F8F0 writes this relation on every
+        // zero-timer action-4 visit, including lethal and upgrade exits.
+        if snapshot.action == 4 && snapshot.timer == 0 {
+            self.castle_entry_mut(castle_slot)
+                .expect("Castle remains installed")
+                .player_entity_index = snapshot.source_id_entity_index;
+        }
         match snapshot.action {
             5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
                 let source_construction_start = snapshot.level == 0
@@ -6580,7 +6740,9 @@ impl Level2EconomyState {
                         .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
                 let (shift_pitch, shift_roll) = level2_castle_shift_axes(next_level);
                 let recovered_life = if next_level == 0 {
-                    0
+                    // sub_60780 receives number1=0 for stage zero and
+                    // consequently leaves both life fields unchanged.
+                    snapshot.life
                 } else {
                     let deficit = if snapshot.life < 0 {
                         snapshot.life.saturating_neg().min(stage_life / 2)
@@ -6594,11 +6756,10 @@ impl Level2EconomyState {
                     .map(|castle| castle.mana)
                     .unwrap_or_default();
                 let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
-                castle.action = 4;
                 castle.build_state = 0;
                 castle.level = next_level;
                 castle.life = recovered_life;
-                castle.max_life = stage_life;
+                castle.max_life = if next_level == 0 { snapshot.max_life } else { stage_life };
                 castle.mana = remaining_mana;
                 castle.mana_capacity = stage_mana_capacity;
                 castle.construction_slot = 0;
@@ -6628,8 +6789,6 @@ impl Level2EconomyState {
                 castle.shift_roll = shift_roll;
                 castle.shift_yaw = -8_192;
                 castle.shift_fov = 0x4000;
-                castle.source_word_2e = 0;
-                castle.source_word_30 = 0;
                 // `sub_605E0` leaves the source auxiliary array intact;
                 // `sub_5FF50` only walks the lower stage bound, so tail rows
                 // remain source-owned even when the Castle downgrades.
@@ -6642,13 +6801,13 @@ impl Level2EconomyState {
                 castle.auxiliary_player_entity_indices = snapshot.auxiliary_player_entity_indices;
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
-                castle.timer = 5;
                 let destroyed_slot = castle.source_entity_index;
                 let killer = castle.killer_entity_index;
                 let castle_level = castle.level;
                 let owner = castle.owner_entity_index;
                 if castle_level == 0 {
-                    castle.active = false;
+                    let final_castle = *castle;
+                    on_final_loss(self, final_castle);
                 }
                 self.events.push(Level2EconomyEvent::CastleStageDestroyed {
                     source_entity_index: destroyed_slot,
@@ -6668,6 +6827,9 @@ impl Level2EconomyState {
                             self.player_spell_holder_action = 0;
                         }
                     }
+                    self.castle_entry_mut(castle_slot)
+                        .expect("Castle remains installed during final-loss callback")
+                        .active = false;
                     self.events.push(Level2EconomyEvent::CastleDestroyed {
                         source_entity_index: destroyed_slot,
                         killer_entity_index: killer,
@@ -6693,6 +6855,11 @@ impl Level2EconomyState {
                     let downgraded = *self.castle_entry(castle_slot).expect("Castle remains installed");
                     self.spawn_castle_controller_chain(downgraded, next_level, terrain);
                 }
+                // sub_5FCA0 resumes only after sub_605E0 and its final-loss
+                // owner operation have completed.
+                if let Some(castle) = self.castle_entry_mut(castle_slot) {
+                    castle.action = 4;
+                }
                 // `sub_5FCA0` performs a second overflow release and then
                 // runs `sub_5FF50` after `sub_605E0` has rebuilt the lower
                 // stage. Allocation failure here must not roll back the
@@ -6704,6 +6871,7 @@ impl Level2EconomyState {
                     // the post-downgrade timer sentinel 5.
                     castle.source_word_2e = 0;
                     castle.source_word_30 = 5;
+                    castle.timer = 5;
                 }
                 if let Some(castle) = self
                     .castle_entry(castle_slot)

@@ -346,6 +346,7 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, AudioClip> clips = new();
         private readonly Dictionary<int, WaveData> waves = new();
         private readonly Dictionary<int, SoundRow> rows = new();
+        private readonly HashSet<int> nullSamples = new();
         private readonly Dictionary<int, LoopState> loops = new();
         private readonly PositionalVoice[] positionalVoices;
         private readonly AudioSource musicSource;
@@ -353,7 +354,6 @@ namespace MagicCarpet.Native
         private readonly StreamingPcm16 musicStream;
         private readonly Action<ulong, ushort, ulong> voiceCompleted;
         private readonly bool legacyAssetReferences;
-        private readonly bool soundTwelveIsExplicitNull;
         private readonly byte campaignMusicTrack;
         private float fadeAccumulator;
         private float musicFadeAccumulator;
@@ -435,7 +435,6 @@ namespace MagicCarpet.Native
             StreamingPcm16 musicStream,
             Action<ulong, ushort, ulong> voiceCompleted,
             bool legacyAssetReferences = true,
-            bool soundTwelveIsExplicitNull = true,
             byte campaignMusicTrack = 1)
         {
             this.root = root;
@@ -444,7 +443,6 @@ namespace MagicCarpet.Native
             this.musicStream = musicStream;
             this.voiceCompleted = voiceCompleted;
             this.legacyAssetReferences = legacyAssetReferences;
-            this.soundTwelveIsExplicitNull = soundTwelveIsExplicitNull;
             this.campaignMusicTrack = campaignMusicTrack;
             positionalVoices = new PositionalVoice[10];
             for (var index = 0; index < positionalVoices.Length; index++)
@@ -538,6 +536,7 @@ namespace MagicCarpet.Native
                             row.mapping_status == "explicit_null" &&
                             string.IsNullOrEmpty(row.asset_path),
                             "sound ID 12 explicit null");
+                        presentation.nullSamples.Add(row.sound_id);
                         continue;
                     }
                     Require(
@@ -680,7 +679,6 @@ namespace MagicCarpet.Native
                     stream,
                     voiceCompleted,
                     legacyAssetReferences: false,
-                    soundTwelveIsExplicitNull: night,
                     campaignMusicTrack: (byte)track);
                 for (var index = 0; index < descriptor.sound.records.Length; index++)
                 {
@@ -728,6 +726,8 @@ namespace MagicCarpet.Native
                             cave ? "materialized_campaign_Cave" : "materialized_campaign_Day"
                     };
                     presentation.rows.Add(soundId, row);
+                    if (record.filename == "NULL.WAV")
+                        presentation.nullSamples.Add(soundId);
                     if (nightNull)
                         continue;
                     var soundWaveBytes = cache.ReadOutput(component + record.asset_path);
@@ -1224,9 +1224,9 @@ namespace MagicCarpet.Native
             }
             Require(SoundAssetReferenceMatches(soundId, nativeEvent.assetRefIndex),
                 $"sound ID {soundId} descriptor-backed asset reference");
-            if (soundId == 12 && soundTwelveIsExplicitNull) return;
             if (!audioCommand.HasValue)
             {
+                if (nullSamples.Contains(soundId)) return;
                 Suppress(
                     nativeEvent,
                     "missing_audio_command",
@@ -1235,6 +1235,15 @@ namespace MagicCarpet.Native
             }
             var command = audioCommand.Value;
             ValidateAudioCommand(nativeEvent, command, row.play_class, soundId);
+            if (nullSamples.Contains(soundId))
+            {
+                Require(command.action == NativeSim.AudioActionSuppressNullSample &&
+                    command.voiceIndex == NativeSim.AudioVoiceNone,
+                    $"sound ID {soundId} selected NULL sample owns no native voice");
+                return;
+            }
+            Require(command.action != NativeSim.AudioActionSuppressNullSample,
+                $"sound ID {soundId} playable selected sample cannot be suppressed as NULL");
             if (row.play_class == "loop")
             {
                 PrepareLoop(nativeEvent, command, row);

@@ -1806,7 +1806,27 @@ fn completion_receipt_sha256(
 }
 
 impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
-    /// Apply the current speech option at the same guarded pre-gate boundary
+    /// Apply a successfully committed source-global preference without exposing
+    /// paused gameplay mutation. The backend records its exact replay boundary.
+    pub fn apply_current_dynamic_lighting_preference(
+        &mut self,
+        guard: RuntimeGuard,
+    ) -> Result<(), RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        let enabled = self
+            .identity()
+            .player_preferences
+            .preferences
+            .dynamic_lighting;
+        if let RuntimeState::Playing { session, .. } = &mut self.state {
+            session.backend_mut().set_dynamic_lighting_enabled(enabled);
+        }
+        Ok(())
+    }
+
+    /// Apply current source options at the same guarded pre-gate boundary
     /// as a paused frame, without exposing paused gameplay mutation.
     pub fn paused_campaign_frame(
         &mut self,
@@ -1848,6 +1868,11 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
             .preferences
             .speech_enabled;
         let show_foreign_text = self.show_foreign_objective_text();
+        let dynamic_lighting = self
+            .identity()
+            .player_preferences
+            .preferences
+            .dynamic_lighting;
         let RuntimeState::Playing {
             session,
             paused: true,
@@ -1863,13 +1888,21 @@ impl GameRuntime<crate::campaign::backend::Mc2CampaignBackend> {
             session.backend().speech_enabled(),
             session.backend().show_foreign_objective_text(),
             session.backend().replay_operation_count(),
+            session.backend().dynamic_lighting_enabled(),
+            session.backend().dynamic_lighting_change_count(),
         );
         session
             .backend_mut()
             .set_objective_presentation_preferences(enabled, show_foreign_text);
+        session
+            .backend_mut()
+            .set_dynamic_lighting_enabled(dynamic_lighting);
         if let Err(error) =
             session.paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
         {
+            session
+                .backend_mut()
+                .restore_dynamic_lighting_after_rejection(previous.3, previous.4);
             session
                 .backend_mut()
                 .restore_speech_preference_after_rejection(previous.0, previous.1, previous.2);

@@ -331,6 +331,7 @@ impl Stream {
         Mc2RuntimePackageResolver::load(packages.into_iter().map(|input| Mc2CampaignInputs {
             package_root: input.package,
             owner_cache: input.owner_cache,
+            dynamic_lighting_enabled: true,
         }))
         .map_err(|error| StreamError::new(error.code.as_str(), error))
     }

@@ -348,6 +348,9 @@ fn wyvern_mission18_record172_constructs_and_launches_one_descriptor61_fireball(
             .map(|row| row.index)
             .collect()
     });
+    let control_arena = arena.clone();
+    let control_runtime = runtime.clone();
+    let control_terrain = terrain.clone();
     let outcome = mc2::step_row(
         &mut arena,
         &mut runtime,
@@ -380,6 +383,58 @@ fn wyvern_mission18_record172_constructs_and_launches_one_descriptor61_fireball(
     assert_eq!(projectile.target_source_entity_index, target_slot);
     assert_eq!(projectile.source_subspell_index, RULES.projectile_payload);
     assert_eq!(projectile.source_mana, RULES.projectile_damage);
+    assert_ne!(projectile.control_flags & 0x0008_0000, 0);
+    let light = arena
+        .dynamic_lighting
+        .active_slots()
+        .find(|(_, light)| light.source_entity_index == projectile.source_entity_index)
+        .map(|(_, light)| light)
+        .expect("real Night Fireball constructor admits its linked light");
+    assert_eq!(
+        light.position, position,
+        "admission precedes the muzzle lift"
+    );
+    assert_eq!(
+        (light.intensity, light.jitter_range, light.life_scaled),
+        (128, 1, false)
+    );
+
+    // Identical real source attack with a disabled option or occupied finite
+    // light pool: only light admission is suppressed, never the projectile.
+    for (enabled, full_pool) in [(false, false), (true, true)] {
+        let mut arena = control_arena.clone();
+        let mut runtime = control_runtime.clone();
+        let mut terrain = control_terrain.clone();
+        arena.dynamic_lighting_enabled = enabled;
+        if full_pool {
+            for _ in 0..crate::dynamic_lighting::DYNAMIC_LIGHT_CAPACITY {
+                assert!(
+                    arena
+                        .dynamic_lighting
+                        .admit(true, true, slot, position, 128, 1, false,)
+                        .is_some()
+                );
+            }
+        }
+        let lights_before = arena.dynamic_lighting.active_count();
+        let outcome = mc2::step_row(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            &particles,
+            slot,
+            &class3,
+            &families,
+        )
+        .unwrap();
+        assert!(outcome.projectile.is_some());
+        assert_eq!(arena.economy.fireball_projectiles().len(), before + 1);
+        let projectile = arena.economy.fireball_projectiles().last().unwrap();
+        assert_eq!(projectile.control_flags & 0x0008_0000, 0);
+        assert_eq!(projectile.source_mana, RULES.projectile_damage);
+        assert_eq!(projectile.target_source_entity_index, target_slot);
+        assert_eq!(arena.dynamic_lighting.active_count(), lights_before);
+    }
 }
 
 #[test]
@@ -582,6 +637,76 @@ fn army_ring_allocates_a_real_summoned_wyvern_with_holder_provenance() {
         identity.origin,
         crate::campaign::source_arena::CreatureRootOrigin::SummonedSpell { holder_slot }
     );
+}
+
+#[test]
+fn summoned_wyvern_expires_when_the_original_parent_slot_is_reused() {
+    let (mut arena, mut runtime, mut terrain, particles, parent_slot, feature) =
+        mission_eighteen_source_parts();
+    let parent = arena.handle(parent_slot).unwrap();
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let child = mc2::allocate_summoned(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        position,
+        parent_slot,
+        parent_slot,
+        parent_slot,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(arena.creature_parent(child), Some(parent));
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[16].push(child.source_slot);
+
+    let mut living_arena = arena.clone();
+    let mut living_runtime = runtime.clone();
+    let mut living_terrain = terrain.clone();
+    let living = mc2::step_row(
+        &mut living_arena,
+        &mut living_runtime,
+        &mut living_terrain,
+        &particles,
+        child.source_slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(!living.expire);
+    let living_row = &living_arena.entities[usize::from(child.source_slot)];
+    assert!(!living_row.drawing_disabled());
+    assert!(u16::from_le_bytes(living_row.record[50..52].try_into().unwrap()) < 250);
+
+    let replacement = arena.entities[usize::from(parent_slot)].clone();
+    arena.entities[usize::from(parent_slot)].reclaim_source_row();
+    arena.economy.release_slot(parent_slot, None);
+    assert_eq!(arena.allocate_source_slot(), Some(parent_slot));
+    arena.entities[usize::from(parent_slot)] = replacement;
+    assert_ne!(arena.handle(parent_slot).unwrap(), parent);
+    assert_eq!(arena.creature_parent(child), None);
+    assert_eq!(arena.creature_parent_binding(child), Some(parent));
+    let expired = mc2::step_row(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        child.source_slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(expired.expire && expired.summon_expire);
+    assert!(arena.entities[usize::from(child.source_slot)].drawing_disabled());
+    assert!(
+        arena.resolve(child).is_some(),
+        "expiry retains this generation until the next boundary"
+    );
+    arena
+        .rebuild_source_arena_with_terrain(&mut terrain, &[])
+        .unwrap();
+    assert!(arena.resolve(child).is_none());
 }
 
 #[test]

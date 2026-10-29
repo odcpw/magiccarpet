@@ -149,7 +149,7 @@ fn wind_projection_cleanup_does_not_retire_a_reused_generation() {
     live.economy.economy.claim_raw_replacement_slot(slot);
     assert_ne!(live.economy.economy.slot_generation(slot), old_generation);
     assert!(live.economy.entities[usize::from(slot)].active);
-    super::retire_hidden_wind_projections(&mut live.economy);
+    super::retire_hidden_wind_projections(&mut live.economy, &mut live.terrain).unwrap();
     assert!(
         live.economy.entities[usize::from(slot)].active,
         "the old field must not retire the new occupant at the same address"
@@ -204,6 +204,10 @@ fn hidden_wind_waits_for_source_rebuild_not_bare_allocation() {
             .iter()
             .all(|slot| live.economy.map_chains.is_linked(*slot))
     );
+    let tiles: Vec<_> = std::iter::once(root)
+        .chain(children.iter().copied())
+        .map(|slot| live.economy.map_chains.tile_of(slot))
+        .collect();
 
     // sub_4A1E0 explicitly calls sub_49F90, unlike ordinary NewEvent.
     live.economy
@@ -215,6 +219,116 @@ fn hidden_wind_waits_for_source_rebuild_not_bare_allocation() {
         assert!(!live.economy.entities[usize::from(slot)].active);
         assert!(!live.economy.map_chains.is_linked(slot));
     }
+    for tile in tiles {
+        assert_eq!(
+            live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+            live.economy.map_chains.tile_head(tile),
+            "source rebuild publishes the reclaimed tile head"
+        );
+    }
+}
+
+#[test]
+fn authored_wind_rebuild_publishes_typed_chain_reclaim() {
+    let mut session = campaign();
+    let root = session
+        .allocate_level2_authored_model22(110)
+        .unwrap()
+        .source_entity_index;
+    let live = &mut session.session.state.live;
+    let slots: Vec<_> = std::iter::once(root)
+        .chain(
+            live.economy
+                .economy
+                .fields
+                .model22_spawned_children
+                .iter()
+                .filter(|child| child.parent_entity_index == root)
+                .map(|child| child.source_entity_index),
+        )
+        .collect();
+    assert_eq!(slots.len(), 12);
+    let tiles: Vec<_> = slots
+        .iter()
+        .map(|slot| live.economy.map_chains.tile_of(*slot))
+        .collect();
+    for &tile in &tiles {
+        assert_eq!(
+            live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+            live.economy.map_chains.tile_head(tile)
+        );
+    }
+    live.economy
+        .economy
+        .fields
+        .authored_model22
+        .iter_mut()
+        .find(|wind| wind.source_entity_index == root)
+        .unwrap()
+        .life = 0;
+    assert!(
+        live.economy
+            .economy
+            .step_authored_model22_slot(root, &live.terrain)
+    );
+    live.economy
+        .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
+        .unwrap();
+    for slot in slots {
+        assert!(!live.economy.map_chains.is_linked(slot));
+    }
+    for tile in tiles {
+        assert_eq!(
+            live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+            live.economy.map_chains.tile_head(tile)
+        );
+    }
+}
+
+#[test]
+fn scheduled_authored_wind_publishes_old_and_new_map_heads() {
+    let mut session = campaign();
+    let root = session
+        .allocate_level2_authored_model22(110)
+        .unwrap()
+        .source_entity_index;
+    let slots: Vec<_> = std::iter::once(root)
+        .chain(
+            session
+                .economy
+                .model22_spawned_children()
+                .iter()
+                .filter(|child| child.parent_entity_index == root)
+                .map(|child| child.source_entity_index),
+        )
+        .collect();
+    let mut crossed = false;
+    for _ in 0..4 {
+        let before: Vec<_> = slots
+            .iter()
+            .map(|slot| session.economy.map_chains.tile_of(*slot))
+            .collect();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "Wind scheduling must not roll back on a dispatch error"
+        );
+        let live = &session.session.state.live;
+        for (&slot, &old_tile) in slots.iter().zip(&before) {
+            let new_tile = live.economy.map_chains.tile_of(slot);
+            crossed |= old_tile != new_tile;
+            for tile in [old_tile, new_tile] {
+                assert_eq!(
+                    live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+                    live.economy.map_chains.tile_head(tile)
+                );
+            }
+        }
+    }
+    assert!(crossed, "scheduled wind must cross a tile during the check");
 }
 
 #[test]
@@ -541,6 +655,324 @@ fn transport_uses_facing_and_destination_and_life_one_hides_before_contact() {
         (0, true, before)
     );
     assert_eq!(outcome.sounds, [(120, 20)]);
+}
+
+#[test]
+fn transport_uses_distinct_y_extent_and_unwrapped_vertical_distance() {
+    let (mut body, mut state) = player();
+    state.yaw = 0;
+    body.set_source_overlap_half_extents(2, 10);
+    let mut source = new_event(
+        120,
+        0,
+        Position {
+            y: state.position.y.wrapping_sub(29),
+            ..state.position
+        },
+    );
+    source.set_source_overlap_half_extents(2, 20);
+    source.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
+    source.record[158..160].copy_from_slice(&30_000_u16.to_le_bytes());
+    source.record[160..162].copy_from_slice(&40_000_u16.to_le_bytes());
+
+    let mut edge_source = source.clone();
+    let mut edge_body = body.clone();
+    let mut edge_state = state.clone();
+    edge_source.set_position(Position {
+        y: edge_source.position.y.wrapping_sub(1),
+        ..edge_source.position
+    });
+    assert!(
+        !transport::step(
+            &mut edge_source,
+            &mut edge_body,
+            &mut edge_state,
+            &Ground,
+            384,
+            0
+        )
+        .transported
+    );
+    assert!(transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0).transported);
+
+    let (mut body, mut state) = player();
+    state.yaw = 0;
+    state.position.z = i16::MIN;
+    body.set_position(state.position);
+    let mut source = new_event(
+        121,
+        0,
+        Position {
+            z: i16::MAX,
+            y: state.position.y.wrapping_sub(1),
+            ..state.position
+        },
+    );
+    source.set_source_overlap_half_extents(256, 256);
+    source.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
+    assert!(!transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0).transported);
+}
+
+#[test]
+fn transport_visits_each_player_before_finishing_its_single_lifetime_tick() {
+    let (body, state) = player();
+    let mut source = new_event(
+        120,
+        0,
+        Position {
+            y: state.position.y.wrapping_sub(1),
+            ..state.position
+        },
+    );
+    source.set_source_overlap_half_extents(256, 256);
+    source.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
+    source.record[158..160].copy_from_slice(&30_000_u16.to_le_bytes());
+    source.record[160..162].copy_from_slice(&40_000_u16.to_le_bytes());
+    source.set_life(2);
+    let original_height = source.position.z;
+    let (mut outcome, visit_players) = transport::begin(&mut source);
+    assert!(visit_players);
+    assert_eq!(source.life, 1, "one source callback decrements life once");
+    let mut local = body.clone();
+    let mut rival = body.clone();
+    let mut facing_away = body;
+    assert!(
+        transport::visit_player(
+            &mut source,
+            &mut local,
+            state.position,
+            0,
+            &Ground,
+            384,
+            true,
+            &mut outcome
+        )
+        .is_some()
+    );
+    assert!(
+        transport::visit_player(
+            &mut source,
+            &mut rival,
+            state.position,
+            0,
+            &Ground,
+            384,
+            false,
+            &mut outcome
+        )
+        .is_some()
+    );
+    assert!(
+        transport::visit_player(
+            &mut source,
+            &mut facing_away,
+            state.position,
+            170,
+            &Ground,
+            384,
+            false,
+            &mut outcome
+        )
+        .is_none()
+    );
+    assert_eq!(rival.position, local.position);
+    assert_eq!(facing_away.position, state.position);
+    assert_eq!(
+        source.position.z, original_height,
+        "the source height changes only after all visits"
+    );
+    assert_eq!(outcome.sounds, [(120, 21), (120, 22), (120, 22)]);
+    assert_eq!(
+        outcome.palette,
+        Some(super::PaletteRequest { mode: 6, count: 0 })
+    );
+    transport::finish(&mut source, &Ground);
+    assert_eq!(source.position.z, 0);
+}
+
+#[test]
+fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() {
+    let level = std::env::var("MC_TRANSPORT_LEVEL").map_or(15, |value| {
+        value.parse().expect("transport level is a number")
+    });
+    let package = std::env::var_os("MC_TRANSPORT_PACKAGE").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261024-b/level15")
+        },
+        std::path::PathBuf::from,
+    );
+    let base = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(level).unwrap(),
+    )
+    .expect("retained ordinary package loads")
+    .simulation()
+    .clone();
+    let source = base
+        .economy
+        .entities
+        .iter()
+        .find(|row| {
+            row.active && (row.class, row.model, row.action) == (10, 34, 36) && row.life == 0
+        })
+        .expect("owner-authored reset contains a persistent transport")
+        .clone();
+    let mut destination = transport::destination(&source);
+    let parameter = source
+        .parameter_relation
+        .and_then(|index| {
+            base.session
+                .definition
+                .presentation
+                .entity_parameters
+                .get(usize::from(index))
+        })
+        .expect("retained transport has its source parameter relation");
+    destination.z = base
+        .canonical_terrain()
+        .ground_height(destination)
+        .wrapping_add(i16::from_le_bytes([parameter[12], parameter[13]]));
+    let contact = Position {
+        y: source.position.y.wrapping_add(1),
+        ..source.position
+    };
+    let heading = crate::heading_for_positions(contact, source.position) as i16;
+    let ballistic = if level == 17 {
+        let row = base
+            .economy
+            .entities
+            .iter()
+            .find(|row| row.active && (row.class, row.model, row.action) == (2, 7, 20))
+            .expect("retained Level 17 contains its source ballistic action20");
+        Some((
+            row.index,
+            row.phase,
+            base.economy.map_chains.tile_of(row.index),
+        ))
+    } else {
+        None
+    };
+    let rival = base
+        .core
+        .players
+        .iter()
+        .take(usize::from(base.core.runtime.player_count))
+        .find(|player| player.is_ai && player.active_player_index >= 0 && player.entity_index != 0)
+        .map(|player| player.entity_index);
+    if base.core.runtime.player_count > 1 {
+        assert!(
+            rival.is_some(),
+            "multi-wizard source package has a participating rival"
+        );
+    }
+    for (facing, expected_transport) in [(heading, true), ((heading + 1024) & 2047, false)] {
+        let mut session = base.clone();
+        let player_slot;
+        {
+            let live = &mut session.session.state.live;
+            player_slot = live.core.state.entity_index;
+            live.core.state.position = contact;
+            live.core.state.yaw = facing;
+            live.core.state.actual_speed = 0;
+            live.core.state.target_speed = 0;
+            let body = &mut live.economy.entities[usize::from(player_slot)];
+            body.set_position(contact);
+            body.set_yaw(facing);
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                player_slot,
+                contact,
+                true,
+                false,
+            )
+            .unwrap();
+            if let Some(rival_slot) = rival {
+                let rival_body = &mut live.economy.entities[usize::from(rival_slot)];
+                assert!(
+                    rival_body.active,
+                    "retained rival has an active source body"
+                );
+                rival_body.set_position(contact);
+                rival_body.set_yaw(facing);
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    rival_slot,
+                    contact,
+                    true,
+                    false,
+                )
+                .unwrap();
+            }
+        }
+        session
+            .set_level2_entity_position(player_slot, contact)
+            .unwrap();
+        let old_tile = session.economy.map_chains.tile_of(player_slot);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "scheduled transport must not roll back: {:?}",
+            session.dispatch_events()
+        );
+        let live = &session.session.state.live;
+        if let Some((slot, before_phase, old_tile)) = ballistic {
+            let row = &live.economy.entities[usize::from(slot)];
+            assert!(row.active, "action20 survives its ordinary source pass");
+            assert_eq!((row.class, row.model, row.action), (2, 7, 20));
+            assert_eq!(
+                row.phase,
+                before_phase.wrapping_add(1),
+                "enabled action20 advances its source tail"
+            );
+            for tile in [old_tile, live.economy.map_chains.tile_of(slot)] {
+                assert_eq!(
+                    live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+                    live.economy.map_chains.tile_head(tile)
+                );
+            }
+        }
+        let actual = live.core.state.position;
+        let near = |a: u16, b: u16| i32::from(a.wrapping_sub(b) as i16).abs() < 256;
+        assert_eq!(
+            near(actual.x, destination.x) && near(actual.y, destination.y),
+            expected_transport,
+            "forward-facing contact must be the real transport gate"
+        );
+        if expected_transport {
+            assert_eq!(
+                transport::destination(&live.economy.entities[usize::from(source.index)]).z,
+                destination.z
+            );
+        } else {
+            assert!(near(actual.x, contact.x) && near(actual.y, contact.y));
+        }
+        if let Some(rival_slot) = rival {
+            let rival_position = live.economy.entities[usize::from(rival_slot)].position;
+            assert_eq!(
+                near(rival_position.x, destination.x) && near(rival_position.y, destination.y),
+                expected_transport,
+                "the same scheduled source visits the rival wizard"
+            );
+            if !expected_transport {
+                assert!(near(rival_position.x, contact.x) && near(rival_position.y, contact.y));
+            }
+        }
+        let player_slot = live.core.state.entity_index;
+        let new_tile = live.economy.map_chains.tile_of(player_slot);
+        assert!(live.economy.map_chains.is_linked(player_slot));
+        for tile in [old_tile, new_tile] {
+            assert_eq!(
+                live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+                live.economy.map_chains.tile_head(tile)
+            );
+        }
+    }
 }
 
 #[test]

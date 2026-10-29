@@ -104,6 +104,28 @@ pub(crate) fn step(
     destination_clearance: i16,
     local_player_color: u8,
 ) -> Outcome {
+    let (mut outcome, visit_players) = begin(source);
+    if !visit_players {
+        return outcome;
+    }
+    if let Some(target) = visit_player(
+        source,
+        player_body,
+        player.position,
+        player.yaw,
+        terrain,
+        destination_clearance,
+        player.player_color_index == local_player_color,
+        &mut outcome,
+    ) {
+        player.position = target;
+    }
+    finish(source, terrain);
+    outcome
+}
+
+/// The lifetime and loop sound are applied once before the source player scan.
+pub(crate) fn begin(source: &mut EntitySnapshot) -> (Outcome, bool) {
     let mut outcome = Outcome::default();
     if source.control_flags & 2 == 0 {
         source.set_control_flags(source.control_flags | 2);
@@ -115,42 +137,62 @@ pub(crate) fn step(
         if life == 1 {
             source.disable_drawing();
             outcome.sounds.push((source.index, 20));
-            return outcome;
+            return (outcome, false);
         }
     }
-    let overlap = crate::level1_mission::source_entities_overlap(
-        source.position,
-        source.array_pitch(),
-        source.array_yaw(),
-        source.array_fov(),
-        player.position,
-        player_body.array_pitch(),
-        player_body.array_yaw(),
-        player_body.array_fov(),
-    );
+    (outcome, true)
+}
+
+/// Visit one participating player in source order. Returns the new position
+/// so the caller can update its player carrier and map links immediately.
+pub(crate) fn visit_player(
+    source: &mut EntitySnapshot,
+    player_body: &mut EntitySnapshot,
+    player_position: Position,
+    player_yaw: i16,
+    terrain: &impl FlightWorld,
+    destination_clearance: i16,
+    is_local: bool,
+    outcome: &mut Outcome,
+) -> Option<Position> {
+    // sub_10630 wraps each horizontal difference to i16, but promotes the
+    // vertical offsets before subtraction and uses independent X/Y extents.
+    let dx = i32::from(player_position.x.wrapping_sub(source.position.x) as i16).abs();
+    let dy = i32::from(player_position.y.wrapping_sub(source.position.y) as i16).abs();
+    let dz = (i32::from(source.position.z) + i32::from(source.array_yaw())
+        - i32::from(player_position.z)
+        - i32::from(player_body.array_yaw()))
+    .abs();
+    let overlap = dx < i32::from(source.array_pitch()) + i32::from(player_body.array_pitch())
+        && dy < i32::from(source.array_roll()) + i32::from(player_body.array_roll())
+        && dz < i32::from(source.array_fov()) + i32::from(player_body.array_fov());
     if overlap {
-        let heading = heading_for_positions(player.position, source.position) as i16;
+        let heading = heading_for_positions(player_position, source.position) as i16;
         let difference =
-            (i32::from(player.yaw) - i32::from(heading) + 1024).rem_euclid(2048) - 1024;
+            (i32::from(player_yaw) - i32::from(heading) + 1024).rem_euclid(2048) - 1024;
         if difference.unsigned_abs() < 170 {
             let mut target = destination(source);
             target.z = terrain
                 .ground_height(target)
                 .wrapping_add(destination_clearance);
             set_destination(source, target);
-            player.position = target;
             player_body.set_position(target);
             outcome.transported = true;
             outcome.sounds.push((source.index, 22));
-            if player.player_color_index == local_player_color {
+            if is_local {
                 outcome.palette = Some(PaletteRequest { mode: 6, count: 0 });
             }
+            return Some(target);
         }
     }
+    None
+}
+
+/// Source updates the transport's own height after all player visits.
+pub(crate) fn finish(source: &mut EntitySnapshot, terrain: &impl FlightWorld) {
     let mut position = source.position;
     position.z = terrain.ground_height(position);
     source.set_position(position);
-    outcome
 }
 
 /// sub_35530 has no ordinary constructor. A valid parent slot is sufficient;

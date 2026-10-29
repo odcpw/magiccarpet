@@ -247,6 +247,19 @@ pub(super) struct Level2NyphurCommonUpkeep {
     watcom_rand_state: u32,
 }
 
+/// One source visit suspended after its Castle-protection prefix. The token
+/// moves into the continuation so that the prefix cannot run twice.
+pub(super) struct NyphurDirectionalPrelude {
+    source_slot: u16,
+    protected: bool,
+}
+
+impl NyphurDirectionalPrelude {
+    pub(super) fn admitted(&self) -> bool {
+        !self.protected
+    }
+}
+
 /// Source `sub_12A70` state made available to the next AI leaves and to
 /// deterministic Rust tests.  The arrays retain their source widths and
 /// ordering; no local-player projection is used for AI-owned values.
@@ -1504,15 +1517,16 @@ impl Level2NyphurCommonUpkeep {
         self.return_value
     }
 
-    fn step(
+    /// Run the source upkeep prefix through the Castle protection decision.
+    /// The caller may consume directional lanes only after this returns an
+    /// admitted token, and must resume the same source visit exactly once.
+    fn begin_directional_upkeep(
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
-        terrain: &SessionTerrain,
-        presentation: &PresentationSelectors,
-        move_speed_flag: u8,
-        active_level_color_index: u8,
-    ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
+        castle_projection: Option<&EntitySnapshot>,
+        occupied_typed_slots: &[u16],
+    ) -> Result<NyphurDirectionalPrelude> {
         let entity_index = entities
             .iter()
             .position(|entity| entity.index == source_slot)
@@ -1522,14 +1536,13 @@ impl Level2NyphurCommonUpkeep {
                 "Level 2 Nyphur common source slot changed",
             ));
         }
-        let mut source_entity = entities[entity_index].clone();
+        let source_entity = &entities[entity_index];
 
-        // sub_15EE0 runs before every other common-upkeep write and retains
-        // the last model-0 source encountered in dword_38519, the rebuilt
-        // class-3 linked list. Pool order is not source order.
         self.source_list_model_zero = level2_nyphur_class3_source_order(entities)
             .into_iter()
-            .filter(|index| entities[usize::from(*index)].model == 0)
+            .filter(|index| {
+                entities[usize::from(*index)].model == 0 && !occupied_typed_slots.contains(index)
+            })
             .last();
         if self.word_0x1a2 < 0 {
             self.word_0x1a2 = self.word_0x1a2.wrapping_add(1);
@@ -1562,21 +1575,60 @@ impl Level2NyphurCommonUpkeep {
                 }
             }
         }
-
-        let castle = (self.castle_entity_index != 0)
-            .then(|| entities.get(usize::from(self.castle_entity_index)))
-            .flatten();
+        let castle = castle_projection.or_else(|| {
+            (self.castle_entity_index != 0)
+                .then(|| entities.get(usize::from(self.castle_entity_index)))
+                .flatten()
+        });
         let castle_overlaps =
-            castle.is_some_and(|castle| level2_nyphur_strict_overlap(&source_entity, castle));
+            castle.is_some_and(|castle| level2_nyphur_strict_overlap(source_entity, castle));
         self.high_upkeep = castle_overlaps || source_entity.control_flags & 0x1000 != 0;
         if castle_overlaps {
             self.word_0x159 = 2;
         }
-        if self.word_0x159 != 0 {
+        let protected = self.word_0x159 != 0;
+        if protected {
             entities[entity_index].clear_source_upkeep_mailbox();
             self.source_mailbox = [0; 36];
             self.word_0x159 = self.word_0x159.wrapping_sub(1);
-        } else {
+        }
+        Ok(NyphurDirectionalPrelude {
+            source_slot,
+            protected,
+        })
+    }
+
+    fn step(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
+        move_speed_flag: u8,
+        active_level_color_index: u8,
+        prelude: Option<NyphurDirectionalPrelude>,
+    ) -> Result<Level2NyphurCommonUpkeepSnapshot> {
+        let prelude = match prelude {
+            Some(prelude) if prelude.source_slot == source_slot => prelude,
+            Some(_) => {
+                return Err(NativeWorldError::new(
+                    "Nyphur directional prelude slot changed",
+                ));
+            }
+            None => self.begin_directional_upkeep(source_slot, entities, None, &[])?,
+        };
+        let entity_index = entities
+            .iter()
+            .position(|entity| entity.index == source_slot)
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur common source row is absent"))?;
+        if source_slot != self.source_slot {
+            return Err(NativeWorldError::new(
+                "Level 2 Nyphur common source slot changed",
+            ));
+        }
+        let mut source_entity = entities[entity_index].clone();
+
+        if !prelude.protected {
             let relation_live = source_entity.source_word_96() == 0
                 || entities
                     .get(usize::from(source_entity.source_word_96()))
@@ -2130,7 +2182,7 @@ fn level2_nyphur_project_castle_root(entity: &mut EntitySnapshot, castle: Level2
     entity.record[132..136].fill(0);
     entity.record[140..148].fill(0);
     entity.record[148..152].copy_from_slice(&castle.mana.to_le_bytes());
-    entity.record[152..154].fill(0);
+    entity.record[152..154].copy_from_slice(&castle.player_entity_index.to_le_bytes());
 }
 
 /// Project one live typed Castle defender into the rebuilt class-3 list used
@@ -2824,6 +2876,16 @@ impl Level2NyphurDispatcher {
         self.common_upkeep.mana_regen = mana_regen;
     }
 
+    /// Keep the AI's compact A4 projection in sync with `sub_605E0`.
+    pub(super) fn apply_final_castle_loss(&mut self, owner: u16, remove_spell: bool) {
+        if self.common_upkeep.source_slot == owner {
+            self.common_upkeep.castle_entity_index = 0;
+            if remove_spell {
+                self.common_upkeep.spell_holder_indices[2] = 0;
+            }
+        }
+    }
+
     /// Keep direct spell writes visible to the next ordinary AI upkeep.
     /// Life and mana are retained here as well as in the numeric source row.
     pub(super) fn sync_spell_target_resources(&mut self, source: &EntitySnapshot) -> bool {
@@ -2866,6 +2928,97 @@ impl Level2NyphurDispatcher {
         true
     }
 
+    /// Publish `sub_5EFA0` / `sub_61050` victim feedback after the typed
+    /// effect lanes are consumed, even when the effect itself cannot bind.
+    pub(super) fn apply_directional_feedback(
+        &mut self,
+        actor: &mut EntitySnapshot,
+        duel_consumed: bool,
+        steal_consumed: bool,
+        steal_attacker_resolved: bool,
+    ) -> bool {
+        if !actor.active || actor.index != self.common_upkeep.source_slot || actor.class != 3 {
+            return false;
+        }
+        if duel_consumed || (steal_consumed && steal_attacker_resolved) {
+            self.common_upkeep.player_hit_frame_time = 4;
+            self.common_upkeep.dword_0x18d = 16;
+            self.common_upkeep.word_0x24c = 64;
+        }
+        if duel_consumed || steal_consumed {
+            actor.apply_source_sub_5ef70();
+        }
+        true
+    }
+
+    fn refresh_castle_link(
+        &mut self,
+        source_slot: u16,
+        castles: &[Level2CastleState],
+        players: &[PlayerSnapshot],
+    ) {
+        self.common_upkeep.castle_entity_index = players
+            .iter()
+            .find(|player| player.entity_index == source_slot)
+            .and_then(|player| {
+                let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
+                castles.iter().find(|castle| {
+                    castle.active
+                        && castle.owner_entity_index == source_slot
+                        && castle.source_entity_index == slot
+                })
+            })
+            .map_or(0, |castle| castle.source_entity_index);
+    }
+
+    /// Perform the exact source prefix before an ordinary Nyphur visit. The
+    /// caller resumes with this token after any admitted directional hit.
+    pub(super) fn prepare_directional_upkeep(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        castles: &[Level2CastleState],
+        players: &[PlayerSnapshot],
+        occupied_typed_slots: &[u16],
+    ) -> Result<NyphurDirectionalPrelude> {
+        if occupied_typed_slots.contains(&source_slot) {
+            return Err(NativeWorldError::new(
+                "Nyphur directional source slot belongs to a typed occupant",
+            ));
+        }
+        entities
+            .iter()
+            .position(|entity| entity.index == source_slot && entity.active && entity.class == 3)
+            .ok_or_else(|| NativeWorldError::new("Nyphur directional source row is absent"))?;
+        self.refresh_castle_link(source_slot, castles, players);
+        let castle_projection = if let Some(castle) = castles.iter().copied().find(|castle| {
+            castle.active && castle.source_entity_index == self.common_upkeep.castle_entity_index
+        }) {
+            let slot = usize::from(castle.source_entity_index);
+            let entity = entities.get(slot).ok_or_else(|| {
+                NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier source slot is outside the entity arena",
+                )
+            })?;
+            if entity.index != castle.source_entity_index || entity.active {
+                return Err(NativeWorldError::new(
+                    "Level 2 Nyphur Castle carrier collides with a live entity row",
+                ));
+            }
+            let mut projected = entity.clone();
+            level2_nyphur_project_castle_root(&mut projected, castle);
+            Some(projected)
+        } else {
+            None
+        };
+        self.common_upkeep.begin_directional_upkeep(
+            source_slot,
+            entities,
+            castle_projection.as_ref(),
+            occupied_typed_slots,
+        )
+    }
+
     /// Execute the production `sub_12910` carrier. The selected state is
     /// latched after the common callback, exactly where the source switch
     /// reads it; source case zero invokes the tail twice even if the first
@@ -2887,22 +3040,12 @@ impl Level2NyphurDispatcher {
         presentation: &PresentationSelectors,
         move_speed_flag: u8,
         active_level_color_index: u8,
+        prelude: Option<NyphurDirectionalPrelude>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
         // Castle construction/destruction changes A4 after reset. The
         // composition layer supplies generation-validated current roots,
         // including enemies used by the ordinary target selectors below.
-        self.common_upkeep.castle_entity_index = players
-            .iter()
-            .find(|player| player.entity_index == source_slot)
-            .and_then(|player| {
-                let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
-                castles.iter().find(|castle| {
-                    castle.active
-                        && castle.owner_entity_index == source_slot
-                        && castle.source_entity_index == slot
-                })
-            })
-            .map_or(0, |castle| castle.source_entity_index);
+        self.refresh_castle_link(source_slot, castles, players);
         let mut seen_spheres = BTreeSet::new();
         let mut seen_projected_slots = BTreeSet::new();
         let mut projected_entities = entities.to_vec();
@@ -3051,6 +3194,7 @@ impl Level2NyphurDispatcher {
                 presentation,
                 move_speed_flag,
                 active_level_color_index,
+                prelude,
             );
             if result.is_ok() {
                 // `sub_135C0` writes the selected model-39 row's
@@ -3088,6 +3232,7 @@ impl Level2NyphurDispatcher {
             presentation,
             move_speed_flag,
             active_level_color_index,
+            prelude,
         )
     }
 
@@ -3101,6 +3246,7 @@ impl Level2NyphurDispatcher {
         presentation: &PresentationSelectors,
         move_speed_flag: u8,
         active_level_color_index: u8,
+        prelude: Option<NyphurDirectionalPrelude>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
         let snapshot = self.common_upkeep.step(
             source_slot,
@@ -3109,6 +3255,7 @@ impl Level2NyphurDispatcher {
             presentation,
             move_speed_flag,
             active_level_color_index,
+            prelude,
         )?;
         // `sub_12910` reads byte 0x1C1 only after `sub_12A70` returns. The
         // source-state latch therefore belongs between the common callback

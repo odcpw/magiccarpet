@@ -219,15 +219,17 @@ class PlayerLauncherTests(unittest.TestCase):
 
     def campaign_resources(self):
         generated = self.root.parent / "generated"
-        for name in ("mc-bhq8-level1-collision-v5-night", "level2-day-block32-campaign-v2",
-                     "level3-day-block32-campaign-recipe-v2"):
+        for name in ("mc-bhq8-level1-collision-v5-night", "mc-level2-vault-successor-closure-20261025",
+                     "level3-day-block32-campaign-recipe-v2", "mc-bhq6-ordinary-20261025-zclu5fjj/level4"):
             package = generated / name
             package.mkdir(parents=True, exist_ok=True)
             # Only argument routing is under test; Rust owns content validation.
             (package / "manifest.json").write_text("{}")
         for name in ("mc2-level1-night-cache-v2",
-                     "level2-day-spell-owner-cache-v3/components/material",
-                     "level3-day-spell-owner-cache-v3/components/material"):
+                     "mc-b9s2-cursor-level1-20261029", "mc-b9s2-cursor-level2-vault-20261029",
+                     "mc-b9s2-cursor-level3-20261029", "mc-b9s2-cursor-level4-20261029",
+                     "level2-vault-successor-owner-cache-20261025",
+                     "level3-day-spell-owner-cache-audio-v4", "mc-shared-source-map-motion-20261026"):
             (generated / name).mkdir(parents=True, exist_ok=True)
         return generated
 
@@ -259,7 +261,7 @@ class PlayerLauncherTests(unittest.TestCase):
                 result = self.campaign(*options)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = json.loads(result.stdout.splitlines()[-1])
-                self.assertEqual(arguments.count("-mc-runtime-package"), 3)
+                self.assertEqual(arguments.count("-mc-runtime-package"), 4)
                 self.assertEqual("-mc-runtime-menu" in arguments, menu)
                 self.assertNotIn("-mc-runtime-replay-load", arguments)
                 self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1],

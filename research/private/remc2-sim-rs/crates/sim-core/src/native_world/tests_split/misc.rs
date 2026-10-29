@@ -1509,6 +1509,40 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
                 true,
             );
             assert_eq!(collision.direct_hit_owner, Some(player));
+            // Exercise the same actual cast and collision with and without
+            // source word26. The successful Fire Spheres allocation carries
+            // an experience award only when the holder address is nonzero.
+            for holder_present in [true, false] {
+                let mut control = arena.clone();
+                let mut control_terrain = terrain.clone();
+                if !holder_present {
+                    control
+                        .economy
+                        .fireball_projectiles
+                        .iter_mut()
+                        .find(|row| row.source_entity_index == flyer.source_entity_index)
+                        .unwrap()
+                        .holder_entity_index = 0;
+                }
+                let hit = crate::native_world::effects::step_projectile(
+                    &mut control,
+                    &mut control_terrain,
+                    &session.session.definition.presentation.particles,
+                    flyer.source_entity_index,
+                    crate::native_world::source_target::Context {
+                        spells: Some(&session.session.state.live.shared_spells),
+                        ..crate::native_world::source_target::Context::from_ordinary(
+                            &session.session.state.live.goats,
+                            &session.session.state.live.ordinary,
+                        )
+                    },
+                )
+                .unwrap();
+                assert!(hit.impact_slot.is_some(), "actual actor impact allocates");
+                assert!(hit.collision_target.is_some(), "the target is an actor");
+                assert_eq!(hit.direct_hit_owner, holder_present.then_some(player));
+                assert_eq!(hit.direct_hit_family, holder_present.then_some(0));
+            }
             // AddFireSpheres needs 26 actual arena rows. Failed allocation
             // must retain the flyer and return no XP award to its dispatcher.
             arena.economy.free_slots.truncate(25);
@@ -1518,6 +1552,13 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
                 &mut terrain,
                 &session.session.definition.presentation.particles,
                 flyer.source_entity_index,
+                crate::native_world::source_target::Context {
+                    spells: Some(&session.session.state.live.shared_spells),
+                    ..crate::native_world::source_target::Context::from_ordinary(
+                        &session.session.state.live.goats,
+                        &session.session.state.live.ordinary,
+                    )
+                },
             )
             .unwrap();
             assert!(failed.live);

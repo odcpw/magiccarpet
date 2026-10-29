@@ -3167,6 +3167,99 @@ fn level_two_owner_mana_projection_matches_source_filters_and_reset() {
 }
 
 #[test]
+fn level_two_sphere_capacity_follows_current_credit_relation_at_source_boundary() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection.level2_reset_session().expect("Level 2 session");
+    let first_owner = inspection.players()[0].entity_index;
+    let second_owner = inspection.players()[1].entity_index;
+    assert_ne!(first_owner, second_owner);
+    let mana = 17;
+    let sphere_slot = session
+        .economy_mut()
+        .spawn_mana_sphere_from_death(
+            first_owner,
+            Position::default(),
+            0,
+            0x5678,
+            mana,
+            first_owner,
+        )
+        .expect("ordinary death sphere") as u16;
+    let mut economy = session.economy_mut();
+    economy.rebuild_owner_mana_projection_at_source_boundary();
+    economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
+    let first_before = economy
+        .owner_max_mana
+        .get(&first_owner)
+        .copied()
+        .unwrap_or(0);
+    let second_before = economy
+        .owner_max_mana
+        .get(&second_owner)
+        .copied()
+        .unwrap_or(0);
+    let global = economy.owner_mana_global();
+    let sphere = economy
+        .spheres
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == sphere_slot)
+        .unwrap();
+    assert_eq!(sphere.owner_entity_index, first_owner);
+    sphere.player_entity_index = second_owner;
+    economy.refresh_owner_mana_rows();
+    assert_eq!(
+        economy.owner_max_mana.get(&first_owner),
+        Some(&first_before),
+        "the current source pass retains its published capacity"
+    );
+    economy.rebuild_owner_mana_projection_at_source_boundary();
+    economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
+    assert_eq!(
+        economy
+            .owner_max_mana
+            .get(&first_owner)
+            .copied()
+            .unwrap_or(0),
+        first_before - mana
+    );
+    assert_eq!(
+        economy.owner_max_mana.get(&second_owner),
+        Some(&(second_before + mana))
+    );
+    assert_eq!(economy.owner_mana_global(), global);
+
+    // The same active sphere with a neutral credit relation contributes to
+    // the global count, but neither owner's capacity.
+    let sphere = economy
+        .spheres
+        .iter_mut()
+        .find(|sphere| sphere.source_entity_index == sphere_slot)
+        .unwrap();
+    assert_eq!(sphere.owner_entity_index, first_owner);
+    sphere.player_entity_index = 0;
+    economy.rebuild_owner_mana_projection_at_source_boundary();
+    economy.rebuild_owner_max_mana_projection(&BTreeMap::new());
+    assert_eq!(
+        economy
+            .owner_max_mana
+            .get(&first_owner)
+            .copied()
+            .unwrap_or(0),
+        first_before - mana
+    );
+    assert_eq!(
+        economy
+            .owner_max_mana
+            .get(&second_owner)
+            .copied()
+            .unwrap_or(0),
+        second_before
+    );
+    assert_eq!(economy.owner_mana_global(), global);
+}
+
+#[test]
 fn level_two_house_possession_reaches_castle_projection_at_next_source_boundary() {
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");

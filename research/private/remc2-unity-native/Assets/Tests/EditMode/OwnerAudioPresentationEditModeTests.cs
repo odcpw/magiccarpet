@@ -83,8 +83,10 @@ namespace MagicCarpet.Native.Tests
             var root = new GameObject("Secret Night full sound bank");
             try
             {
+                var completions = 0;
                 using var audio = OwnerAudioPresentation.LoadCampaignEnvironment(
-                    cache, NativeSim.CampaignSelection.Create(32, 31, 1), root.transform);
+                    cache, NativeSim.CampaignSelection.Create(32, 31, 1), root.transform,
+                    (_, _, _) => completions++);
                 Assert.That(audio.QualificationSoundCount, Is.EqualTo(64));
                 Assert.That(audio.QualificationHasSound(32), Is.True);
                 var sound = new NativeSim.NativeEvent {
@@ -110,6 +112,34 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(audio.QualificationPositionalPlayStarts(32), Is.EqualTo(0));
                 audio.Consume(sound, command, false);
                 Assert.That(audio.QualificationPositionalPlayStarts(32), Is.EqualTo(1));
+                var falseNull = command;
+                falseNull.action = NativeSim.AudioActionSuppressNullSample;
+                falseNull.voiceIndex = NativeSim.AudioVoiceNone;
+                Assert.Throws<InvalidDataException>(() => audio.Consume(sound, falseNull));
+
+                // Bank1 record7 is a real NULL.WAV row, distinct from the
+                // historical special-case record12. Its sidecar stays bound
+                // to the event, but it owns no voice or completion callback.
+                var nullSound = sound;
+                nullSound.sequence = 2;
+                nullSound.code = 7;
+                nullSound.assetRefIndex = 7;
+                var nullCommand = command;
+                nullCommand.eventSequence = 2;
+                nullCommand.soundId = 7;
+                nullCommand.assetRefIndex = 7;
+                nullCommand.action = NativeSim.AudioActionSuppressNullSample;
+                nullCommand.voiceIndex = NativeSim.AudioVoiceNone;
+                var wrongVoice = nullCommand;
+                wrongVoice.voiceIndex = 0;
+                Assert.Throws<InvalidDataException>(() => audio.Consume(nullSound, wrongVoice));
+                var wrongAction = nullCommand;
+                wrongAction.action = NativeSim.AudioActionStart;
+                Assert.Throws<InvalidDataException>(() => audio.Consume(nullSound, wrongAction));
+                audio.Consume(nullSound, nullCommand);
+                audio.Tick(0);
+                Assert.That(audio.QualificationPositionalPlayStarts(7), Is.EqualTo(0));
+                Assert.That(completions, Is.EqualTo(0));
                 Assert.That(audio.HadSuppressedUnknown, Is.False);
             }
             finally { UnityEngine.Object.DestroyImmediate(root); }

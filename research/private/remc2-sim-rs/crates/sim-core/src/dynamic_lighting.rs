@@ -118,6 +118,23 @@ impl DynamicLightingState {
             .filter(|(_, slot)| slot.active)
     }
 
+    /// Rebind source pointers after a startup arena is mapped to its live
+    /// fixed addresses, retaining the already-applied light history.
+    pub(crate) fn remap_linked_sources(
+        &mut self,
+        mut resolve: impl FnMut(u16) -> Option<u16>,
+    ) -> Result<(), u16> {
+        for slot in self
+            .slots
+            .iter_mut()
+            .filter(|slot| slot.active && slot.linked)
+        {
+            let old = slot.source_entity_index;
+            slot.source_entity_index = resolve(old).ok_or(old)?;
+        }
+        Ok(())
+    }
+
     /// Source `AddEvent2_847D0`: admission alone is option-gated. Existing
     /// records continue to be serviced while Night/Cave remains active.
     pub fn admit(

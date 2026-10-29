@@ -157,6 +157,8 @@ fn target(
         right_spell,
         target: word(row, 154),
         next: word(row, 56),
+        parent: word(row, 44),
+        stage_mode: row.record[77],
         link: word(row, 54),
         attacker: word(row, 42),
         killer: word(row, 40),
@@ -610,6 +612,14 @@ pub(crate) fn step_row(
     };
 
     apply_peer_updates(arena, &effects);
+    for (handle, flags) in &effects.linked_blink_flags {
+        if arena.resolve(*handle).is_some()
+            && let Some(row) = arena.entities.get_mut(usize::from(handle.source_slot))
+            && row.active
+        {
+            row.set_control_flags((row.control_flags & !0x0600_0000) | *flags);
+        }
+    }
     if let Some(killer) = effects.kill_credit.take() {
         arena.economy.record_authored_creature_kill(killer);
     }
@@ -624,16 +634,19 @@ pub(crate) fn step_row(
     }
     let position = arena.entities[usize::from(slot)].position;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    if effects.stage_mana_expiry {
-        let yaw = arena.entities[usize::from(slot)].yaw;
-        super::super::creature_24::mc2::spawn_mana(arena, terrain, slot, position, yaw, 10, 73)?;
-        super::super::creature_24::mc2::spawn_mana(arena, terrain, slot, position, yaw, 10, 0)?;
+    if let Some(summoned) = effects.stage_expiry {
+        super::super::creature_24::mc2::expire(arena, terrain, particles, slot, summoned)?;
+        // sub_293B0 runs after the source expiry allocations, including when
+        // one allocation reused the callback's fixed source address.
+        super::generic_tail(&mut Actor {
+            row: &mut arena.entities[usize::from(slot)],
+            handle,
+        });
     }
     if effects.stage_hide {
         if arena.entities[usize::from(slot)].active {
             arena.entities[usize::from(slot)].disable_drawing();
         }
-        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
     }
     if effects.kill {
         super::super::creature_24::mc2::kill(arena, terrain, particles, slot)?;
@@ -642,12 +655,13 @@ pub(crate) fn step_row(
     // an observation carrier for the scheduler, without asking it to replay a
     // score, drain, linked write, population change, hide, or terminal call.
     effects.peer_updates.clear();
+    effects.linked_blink_flags.clear();
     effects.mana_drain = None;
     effects.spell_theft = None;
     effects.kill = false;
     effects.population_decrements = 0;
     effects.stage_hide = false;
-    effects.stage_mana_expiry = false;
+    effects.stage_expiry = None;
     Ok(effects)
 }
 
@@ -663,10 +677,12 @@ pub(crate) fn bind_source(
 pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    targets: crate::native_world::source_target::Context<'_>,
     model_slots: &[u16],
-) {
-    super::super::stage_route::prepare_source_pass(arena, runtime, model_slots);
+) -> Result<(), String> {
+    super::super::stage_route::prepare_source_pass(arena, runtime, targets, model_slots)?;
     sync_detached_holder_projections(arena);
+    Ok(())
 }
 
 /// Ordinary authored model26 producer. Exhaustion leaves the constructor

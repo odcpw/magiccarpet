@@ -10,6 +10,8 @@ use crate::campaign::source_arena::{CreatureRootOrigin, SourceArena, SourceEntit
 use crate::goat::GoatPlayerTarget;
 
 pub(crate) const DRAGON_MODEL: u8 = 0;
+/// NewEvent's source flags, copied from the root into every body row.
+const DRAGON_CONSTRUCTOR_FLAGS: u32 = 8;
 pub(crate) const DRAGON_ROAM_ACTION: u8 = 1;
 pub(crate) const DRAGON_ATTACK_ACTION: u8 = 2;
 pub(crate) const DRAGON_LINK_ACTION: u8 = 3;
@@ -440,10 +442,108 @@ pub(crate) fn step_boss_stage_slot(
         terrain,
         slot,
         source.position,
-        source.drawing_enabled,
+        source.active,
         false,
     )?;
     Ok(true)
+}
+
+/// Publish the final fixed-address bytes before the source boundary releases
+/// hidden typed roots and bodies. Later body callbacks may still read a
+/// reclaimed predecessor's position and yaw even though its class is zero.
+pub(crate) fn prepare_retiring_dragon_rows(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+) -> std::result::Result<(), String> {
+    let roots = arena
+        .economy
+        .authored_class5
+        .iter()
+        .filter(|source| {
+            source.active
+                && source.model == DRAGON_MODEL
+                && !source.drawing_enabled
+                && arena.economy.authored_dragons.iter().any(|state| {
+                    state.source_entity_index == source.source_entity_index
+                        && matches!(state.stage_var2, 16 | 17)
+                })
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let parts = arena
+        .economy
+        .authored_dragon_parts
+        .iter()
+        .filter(|part| part.active && !part.drawing_enabled)
+        .copied()
+        .collect::<Vec<_>>();
+    for source in roots {
+        let slot = source.source_entity_index;
+        let flags = arena
+            .economy
+            .authored_dragons
+            .iter()
+            .find(|state| state.source_entity_index == slot)
+            .map_or(0, |state| state.control_flags)
+            | 0x400;
+        let owner = arena.economy.source_owner(slot);
+        crate::world::effects::sync_position(arena, terrain, slot, source.position, false, false)?;
+        let row = arena
+            .entities
+            .get_mut(usize::from(slot))
+            .ok_or_else(|| format!("retiring Dragon root {slot} is outside the source arena"))?;
+        row.reclaim_source_row();
+        row.model = source.model;
+        row.record[68] = source.model;
+        row.source_id = owner;
+        row.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        row.set_source_action(source.action);
+        row.set_position(source.position);
+        row.set_yaw(source.yaw);
+        row.pitch = source.pitch;
+        row.record[34..36].copy_from_slice(&source.pitch.to_le_bytes());
+        row.set_source_roll(source.roll);
+        row.set_fov(source.fov);
+        row.set_life(source.life);
+        row.set_max_life(source.max_life);
+        row.set_mana(source.mana);
+        row.set_subspell_index(source.subspell_index);
+        row.set_entity_rng(source.entity_rng);
+        row.set_control_flags(flags);
+        row.set_phase(source.source_byte_3e);
+    }
+    for part in parts {
+        let slot = part.source_entity_index;
+        crate::world::effects::sync_position(arena, terrain, slot, part.position, false, false)?;
+        let row = arena
+            .entities
+            .get_mut(usize::from(slot))
+            .ok_or_else(|| format!("retiring Dragon part {slot} is outside the source arena"))?;
+        row.reclaim_source_row();
+        row.model = part.model;
+        row.record[68] = part.model;
+        row.source_id = part.entity_id;
+        row.record[30..32].copy_from_slice(&part.entity_id.to_le_bytes());
+        row.set_source_action(part.action);
+        row.set_position(part.position);
+        row.set_yaw(part.yaw);
+        row.pitch = part.pitch;
+        row.record[34..36].copy_from_slice(&part.pitch.to_le_bytes());
+        row.set_source_roll(part.roll);
+        row.set_fov(part.fov);
+        row.set_life(part.life);
+        row.set_max_life(part.max_life);
+        row.set_mana(part.mana);
+        row.set_subspell_index(part.subspell_index);
+        row.set_entity_rng(part.entity_rng);
+        row.set_control_flags(part.control_flags);
+        row.set_phase(part.source_byte_3e);
+        row.record[54..56].copy_from_slice(&part.previous_entity_index.to_le_bytes());
+        row.record[56..58].copy_from_slice(&part.next_entity_index.to_le_bytes());
+        row.record[58..60].copy_from_slice(&part.word_0x36.to_le_bytes());
+        row.record[61] = part.source_byte_39;
+    }
+    Ok(())
 }
 
 pub(crate) fn retire_hidden_boss_dragons_at_source_boundary(arena: &mut SourceArena) {
@@ -461,6 +561,14 @@ pub(crate) fn retire_hidden_boss_dragons_at_source_boundary(arena: &mut SourceAr
             && hidden.contains(&row.source_entity_index)
     }) {
         source.active = false;
+    }
+    for part in arena
+        .economy
+        .authored_dragon_parts
+        .iter_mut()
+        .filter(|part| part.active && !part.drawing_enabled)
+    {
+        part.active = false;
     }
 }
 
@@ -509,11 +617,20 @@ pub(crate) struct DragonLifecycleStep {
 pub(crate) struct DragonFireballLaunch {
     pub(crate) owner_entity_index: u16,
     pub(crate) target_entity_index: u16,
+    pub(crate) constructor_position: Position,
     pub(crate) position: Position,
     pub(crate) target_position: Position,
     pub(crate) yaw: i16,
     pub(crate) pitch: i16,
     pub(crate) payload: u16,
+}
+
+/// Current occupant of the fixed predecessor address read by sub_1B6B0.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DragonPredecessor {
+    pub(crate) class: u8,
+    pub(crate) position: Position,
+    pub(crate) yaw: i16,
 }
 
 impl Level2EconomyState {
@@ -696,6 +813,7 @@ impl Level2EconomyState {
                 root_authored_index: source.authored_index,
                 entity_id: source_entity_index,
                 entity_rng,
+                control_flags: DRAGON_CONSTRUCTOR_FLAGS,
                 // The body row is a raw root copy. `sub_4B240` uses
                 // word_0x32/word_0x34 for the chain and leaves the copied
                 // parentId at the root's NewEvent default of zero.
@@ -783,7 +901,7 @@ impl Level2EconomyState {
             stage_remaining: 0,
             linked_entity_index: 0,
             word_0x36: 96,
-            control_flags: 8,
+            control_flags: DRAGON_CONSTRUCTOR_FLAGS,
             font_type_index: 0,
             dodge_remaining: 0,
             render_yaw: DRAGON_RENDER_ROTATION / 2,
@@ -970,6 +1088,7 @@ impl Level2EconomyState {
                         fireball = Some(DragonFireballLaunch {
                             owner_entity_index: source.source_entity_index,
                             target_entity_index: target.entity_index,
+                            constructor_position: source.position,
                             position: launch_position,
                             target_position: target.position,
                             yaw,
@@ -1248,6 +1367,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         terrain: &SessionTerrain,
+        predecessor: DragonPredecessor,
     ) -> bool {
         let Some(part_index) = self.authored_dragon_parts.iter().position(|part| {
             part.active && part.source_entity_index == source_slot && part.model == DRAGON_MODEL
@@ -1276,7 +1396,7 @@ impl Level2EconomyState {
                     part.position,
                 );
                 part.drawing_enabled = false;
-                part.active = false;
+                part.control_flags |= ENTITY_DRAW_DISABLED_BIT;
                 self.source_rng.insert(source_slot, part.entity_rng);
                 self.authored_dragon_parts[part_index] = part;
             }
@@ -1285,39 +1405,19 @@ impl Level2EconomyState {
         if part.action != DRAGON_PART_ACTION {
             return false;
         }
-        let previous_slot = self.authored_dragon_parts[part_index].previous_entity_index;
-        let previous_position = self
-            .authored_class5
-            .iter()
-            .find(|root| {
-                root.active
-                    && root.model == DRAGON_MODEL
-                    && root.source_entity_index == previous_slot
-            })
-            .map(|root| root.position)
-            .or_else(|| {
-                self.authored_dragon_parts
-                    .iter()
-                    .find(|part| {
-                        part.active
-                            && part.model == DRAGON_MODEL
-                            && part.source_entity_index == previous_slot
-                    })
-                    .map(|part| part.position)
-            });
-
         let part = &mut self.authored_dragon_parts[part_index];
-        let Some(previous_position) = previous_position else {
+        if predecessor.class != 5 {
             part.drawing_enabled = false;
-            part.active = false;
-            return true;
-        };
+            part.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
         if part.source_byte_39 != 0 {
-            let (yaw, pitch) =
-                crate::level1_mission::projectile_guidance_angles(part.position, previous_position);
+            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                part.position,
+                predecessor.position,
+            );
             part.yaw = yaw;
             part.pitch = pitch;
-            let mut position = previous_position;
+            let mut position = predecessor.position;
             crate::move_entity(&mut position, yaw, pitch, part.word_0x36.wrapping_neg());
             part.position = position;
             if part.pending_word_0x62 != 0 {
@@ -1329,13 +1429,14 @@ impl Level2EconomyState {
                 part.word_0x26 = 0;
             }
         } else if part.source_byte_3e & 3 == 0 {
-            part.position = previous_position;
+            part.position = predecessor.position;
+            part.yaw = predecessor.yaw;
         }
         self.source_rng.insert(source_slot, part.entity_rng);
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
-                active: part.drawing_enabled,
+                active: part.active,
                 x: part.position.x,
                 y: part.position.y,
             })
@@ -1793,11 +1894,182 @@ mod lightning_consumer_tests {
             root.active && !root.drawing_enabled,
             "root remains for its same-pass tail"
         );
+        let tile = ((root.position.x >> 8) as u8, (root.position.y >> 8) as u8);
+        assert!(
+            arena
+                .economy
+                .map_chains
+                .entity_chain(tile.0, tile.1)
+                .contains(&slot)
+        );
+        let final_root_position = root.position;
+        let final_root_yaw = root.yaw;
+        prepare_retiring_dragon_rows(&mut arena, &mut terrain).unwrap();
         retire_hidden_boss_dragons_at_source_boundary(&mut arena);
         arena
             .rebuild_source_arena_with_terrain(&mut terrain, &[])
             .unwrap();
         assert!(arena.resolve(handle).is_none());
+        assert_eq!(
+            arena.entities[usize::from(slot)].position,
+            final_root_position
+        );
+        assert_eq!(arena.entities[usize::from(slot)].yaw, final_root_yaw);
+        assert!(
+            !arena
+                .economy
+                .map_chains
+                .entity_chain(tile.0, tile.1)
+                .contains(&slot)
+        );
+        let mut predecessor_slot = slot;
+        let mut parts = Vec::new();
+        for _ in 0..DRAGON_PART_COUNT {
+            let part = arena
+                .economy
+                .authored_dragon_parts()
+                .iter()
+                .find(|part| part.active && part.previous_entity_index == predecessor_slot)
+                .expect("boss Dragon has the complete linked part chain");
+            let part_slot = part.source_entity_index;
+            parts.push(arena.handle(part_slot).unwrap());
+            predecessor_slot = part_slot;
+        }
+        let flags_hash_before = arena.economy.reset_hash();
+        arena
+            .economy
+            .authored_dragon_parts
+            .iter_mut()
+            .find(|part| part.source_entity_index == parts[0].source_slot)
+            .unwrap()
+            .control_flags ^= 0x0010_0000;
+        assert_ne!(
+            arena.economy.reset_hash(),
+            flags_hash_before,
+            "per-part flags affect future-state hash"
+        );
+        arena
+            .economy
+            .authored_dragon_parts
+            .iter_mut()
+            .find(|part| part.source_entity_index == parts[0].source_slot)
+            .unwrap()
+            .control_flags ^= 0x0010_0000;
+        assert_eq!(arena.economy.reset_hash(), flags_hash_before);
+        for (index, part_handle) in parts.iter().copied().enumerate() {
+            let previous_slot = if index == 0 {
+                slot
+            } else {
+                parts[index - 1].source_slot
+            };
+            let predecessor = &arena.entities[usize::from(previous_slot)];
+            let missing = DragonPredecessor {
+                class: predecessor.class,
+                position: predecessor.position,
+                yaw: predecessor.yaw,
+            };
+            assert_ne!(missing.class, 5, "preceding generation has been reclaimed");
+            let part = arena
+                .economy
+                .authored_dragon_parts
+                .iter_mut()
+                .find(|part| part.source_entity_index == part_handle.source_slot)
+                .unwrap();
+            part.source_byte_39 = 1;
+            part.pending_word_0x62 = parent_slot;
+            part.pending_damage = 23;
+            let old_life = part.life;
+            assert!(arena.economy.step_authored_dragon_part_slot(
+                part_handle.source_slot,
+                &terrain,
+                missing
+            ));
+            let part = arena
+                .economy
+                .authored_dragon_parts()
+                .iter()
+                .find(|part| part.source_entity_index == part_handle.source_slot)
+                .unwrap();
+            assert!(part.active && !part.drawing_enabled);
+            assert_ne!(part.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+            assert_ne!(
+                crate::native_world::area_damage::read_arena_actor(&arena, part_handle.source_slot)
+                    .unwrap()
+                    .control_flags
+                    & ENTITY_DRAW_DISABLED_BIT,
+                0
+            );
+            assert_eq!(
+                (part.life, part.word_0x26, part.pending_word_0x62),
+                (old_life - 23, parent_slot, 0)
+            );
+            let part_position = part.position;
+            let part_yaw = part.yaw;
+            let part_tile = ((part_position.x >> 8) as u8, (part_position.y >> 8) as u8);
+            assert!(
+                arena
+                    .economy
+                    .map_chains
+                    .entity_chain(part_tile.0, part_tile.1)
+                    .contains(&part_handle.source_slot)
+            );
+            if let Some(next) = parts.get(index + 1) {
+                let next_part = arena
+                    .economy
+                    .authored_dragon_parts
+                    .iter_mut()
+                    .find(|part| part.source_entity_index == next.source_slot)
+                    .unwrap();
+                next_part.source_byte_39 = 0;
+                next_part.source_byte_3e = 0;
+                let hidden_predecessor = DragonPredecessor {
+                    class: 5,
+                    position: part_position,
+                    yaw: part_yaw,
+                };
+                assert!(arena.economy.step_authored_dragon_part_slot(
+                    next.source_slot,
+                    &terrain,
+                    hidden_predecessor
+                ));
+                let next_part = arena
+                    .economy
+                    .authored_dragon_parts()
+                    .iter()
+                    .find(|part| part.source_entity_index == next.source_slot)
+                    .unwrap();
+                assert!(
+                    next_part.active && next_part.drawing_enabled,
+                    "hidden predecessor stays class5 in the same pass"
+                );
+                assert_eq!(next_part.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+                assert_eq!(
+                    (next_part.position, next_part.yaw),
+                    (part_position, part_yaw)
+                );
+            }
+            prepare_retiring_dragon_rows(&mut arena, &mut terrain).unwrap();
+            retire_hidden_boss_dragons_at_source_boundary(&mut arena);
+            arena
+                .rebuild_source_arena_with_terrain(&mut terrain, &[])
+                .unwrap();
+            assert!(arena.resolve(part_handle).is_none());
+            assert_eq!(
+                arena.entities[usize::from(part_handle.source_slot)].position,
+                part_position
+            );
+            assert_eq!(
+                arena.entities[usize::from(part_handle.source_slot)].yaw,
+                part_yaw
+            );
+            assert!(
+                !arena
+                    .economy
+                    .map_chains
+                    .entity_chain(part_tile.0, part_tile.1)
+                    .contains(&part_handle.source_slot)
+            );
+        }
         assert!(
             allocate_boss_summoned(
                 &mut arena,

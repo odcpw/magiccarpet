@@ -240,7 +240,7 @@ pub(crate) fn allocate_summoned(
             "Cymmerian Army summon at slot{slot} lost generation-bound origin"
         ));
     }
-    if let Some(parent) = arena.handle(parent_slot) {
+    if let Some(parent) = arena.handle(parent_slot).filter(|parent| *parent != handle) {
         if !arena.bind_creature_parent(handle, parent) {
             return Err(format!(
                 "Cymmerian Army summon at slot{slot} lost its parent binding"
@@ -261,7 +261,7 @@ fn launch_attack(
     let payload =
         crate::native_world::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
             origin: crate::native_world::FireballProjectileOrigin::Cymmerian,
-            position: attack.position,
+            position: attack.constructor_position,
             yaw: attack.yaw,
             pitch: attack.pitch,
             axis_position: Position::default(),
@@ -283,6 +283,28 @@ fn launch_attack(
             "Cymmerian Fireball map linkage failed at allocated slot{slot}"
         ));
     }
+    crate::world::effects::sync_position(
+        arena,
+        terrain,
+        slot,
+        attack.constructor_position,
+        true,
+        false,
+    )?;
+    crate::world::effects::lighting::admit_source(
+        arena,
+        terrain,
+        slot,
+        attack.constructor_position,
+        crate::world::effects::lighting::SourceLight::Fireball,
+    );
+    arena
+        .economy
+        .fireball_projectiles
+        .iter_mut()
+        .find(|projectile| projectile.active && projectile.source_entity_index == slot)
+        .ok_or_else(|| format!("Cymmerian Fireball lost allocated slot{slot}"))?
+        .position = attack.position;
     let _ = crate::native_world::Level2EconomyState::apply_creature_fireball_target_feedback(
         &mut arena.entities,
         attack.target,

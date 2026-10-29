@@ -36,7 +36,31 @@ pub(crate) const fn hides_objective_textbox(menu: u8) -> bool {
     matches!(menu, 3 | 7 | 9..=14)
 }
 
+/// `MouseAndKeysEvents_17A00` calls `ProcessKeyboardPresses_17190` only
+/// from these source menu branches. The keyboard handler itself requires
+/// an empty retained local player action slot before reading held O.
+pub(crate) const fn admits_keyboard_input(menu: u8, player_action: Option<i8>) -> bool {
+    matches!(menu, 0 | 1 | 4 | 5 | 6 | 7 | 8) && matches!(player_action, Some(0))
+}
+
 /// `sub_1A7A0_fly_asistant` excludes spells and chat, not the map.
 pub(crate) const fn suppresses_flight_assistance(menu: u8) -> bool {
     matches!(menu, 3 | 5 | 8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admits_keyboard_input;
+
+    #[test]
+    fn objective_keyboard_branches_require_an_empty_source_action_slot() {
+        for menu in [0, 1, 4, 5, 6, 7, 8] {
+            assert!(admits_keyboard_input(menu, Some(0)), "menu {menu}");
+            assert!(!admits_keyboard_input(menu, Some(27)), "menu {menu}");
+            assert!(!admits_keyboard_input(menu, None), "menu {menu}");
+        }
+        for menu in [2, 3, 9, 10, 11, 12, 13, 14, 15] {
+            assert!(!admits_keyboard_input(menu, Some(0)), "menu {menu}");
+        }
+    }
 }
