@@ -119,8 +119,15 @@ namespace MagicCarpet.Native
         [DataContract]
         private sealed class CampaignAudioProfileNullableFields
         {
-            [DataMember(Name = "sky", IsRequired = true)]
-            public string sky;
+            private string skyValue;
+            public bool hasSky;
+
+            [DataMember(Name = "sky")]
+            public string sky
+            {
+                get => skyValue;
+                set { skyValue = value; hasSky = true; }
+            }
         }
 
         [DataContract]
@@ -608,7 +615,7 @@ namespace MagicCarpet.Native
                 "qualified campaign Day/Cave/Night owner cache and destination");
             var component = ordinaryDayAggregate ? "components/audio/" : "";
             var descriptor = DecodeCampaignAudioDescriptor(
-                cache.ReadOutput(component + "audio/descriptor.json"));
+                cache.ReadOutput(component + "audio/descriptor.json"), isEnvironment);
             Require(
                 descriptor != null &&
                 (descriptor.schema == audioSchema ||
@@ -1654,7 +1661,8 @@ namespace MagicCarpet.Native
                 audio.spec_commit == environment.spec_commit;
         }
 
-        private static CampaignDayAudioDescriptor DecodeCampaignAudioDescriptor(byte[] bytes)
+        private static CampaignDayAudioDescriptor DecodeCampaignAudioDescriptor(
+            byte[] bytes, bool requireEnvironmentSky)
         {
             Require(bytes != null && bytes.Length > 0,
                 "campaign audio descriptor bytes");
@@ -1668,7 +1676,9 @@ namespace MagicCarpet.Native
                 descriptor != null && descriptor.profile != null && descriptor.music != null &&
                 descriptor.music.records != null && descriptor.sound != null &&
                 descriptor.sound.records != null && nullableFields != null &&
-                nullableFields.profile != null && nullableFields.music != null &&
+                nullableFields.profile != null &&
+                (!requireEnvironmentSky || nullableFields.profile.hasSky) &&
+                nullableFields.music != null &&
                 nullableFields.sound != null &&
                 nullableFields.music.records != null &&
                 nullableFields.sound.records != null &&
