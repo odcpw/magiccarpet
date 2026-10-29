@@ -328,11 +328,20 @@ mod tests {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             session
-                .economy()
-                .authored_model32()
+                .dispatch_events()
                 .iter()
-                .any(|source| { source.authored_index == 206 && source.fired }),
-            "the real objective switch fires before the objective phase"
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "second source pass failed: {:?}",
+            session.dispatch_events()
+        );
+        let gate = &session.entities()[76];
+        assert_eq!(
+            (gate.class, gate.model, gate.action, gate.level_gate),
+            (11, 32, 32, 1)
+        );
+        assert!(
+            gate.active && gate.drawing_disabled(),
+            "the imported stage-1 switch fires before the objective phase"
         );
         assert_eq!(
             session.runtime().objectives[owner].done,
@@ -349,6 +358,14 @@ mod tests {
         session.state.position.x = point.0;
         session.state.position.y = point.1;
         session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "third source pass failed: {:?}",
+            session.dispatch_events()
+        );
         assert_eq!(session.runtime().objectives[owner].stage_selectors[0], 2);
         assert_eq!(
             session.runtime().objective_presentation_phase,
