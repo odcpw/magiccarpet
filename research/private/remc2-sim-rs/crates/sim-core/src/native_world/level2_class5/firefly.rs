@@ -3243,6 +3243,9 @@ mod tests {
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level7");
         let mut session = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
             .expect("real Night7 owner package opens").simulation().clone();
+        // Direct entry has no Fireball holder. Exercise the ordinary campaign
+        // carry constructor with a previously learned Fireball before play.
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
         // The ordinary source pass adopts the package's real Fireflies and
         // retains their source identities before the impact visits one.
         session.step_outer_turn(crate::PlayerCommand::default(), 0);
@@ -3280,6 +3283,63 @@ mod tests {
         );
         assert!(order.contains(&slot), "the real map chain contains the Firefly");
 
+        // Observe the same real terminal through the source scheduler and
+        // presentation, independently of the direct impact controls below.
+        let mut boundary = session.clone();
+        *boundary.source_arena_mut() = arena.clone();
+        *boundary.canonical_terrain_mut() = terrain.clone();
+        boundary.source_arena_mut().entities[usize::from(impact_slot)].subspell_index =
+            crate::spells::late::alliance::SOURCE_RULES[0].damage;
+        let effect_handle = boundary.source_arena().handle(impact_slot).unwrap();
+        assert!(!boundary.source_arena().economy.map_chains.is_linked(impact_slot));
+        boundary.step_level2_source_pass(0);
+        assert!(!boundary.dispatch_events().iter().any(|event|
+            matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "scheduled Alliance terminal: {:?}", boundary.dispatch_events());
+        assert!(boundary.source_arena().resolve(effect_handle).is_some());
+        assert!(boundary.source_arena().entities[usize::from(impact_slot)].drawing_disabled());
+        assert!(!boundary.campaign_entity_presentations(0).unwrap().iter()
+            .any(|row| row.entity_index == impact_slot),
+            "the hidden Alliance terminal is absent from the real presentation consumer");
+        assert_eq!(boundary.source_arena().creature_parent_binding(child), Some(parent_handle));
+        boundary.step_level2_source_pass(1);
+        assert!(!boundary.dispatch_events().iter().any(|event|
+            matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "Alliance terminal reclaim: {:?}", boundary.dispatch_events());
+        assert!(boundary.source_arena().resolve(effect_handle).is_none(),
+            "the following source boundary reclaims the original terminal generation");
+        if boundary.source_arena().handle(impact_slot).is_none() {
+            assert!(!boundary.source_arena().economy.map_chains.is_linked(impact_slot));
+        }
+        assert!(boundary.source_arena().resolve(child).is_some(),
+            "terminal reclaim must not reclaim the allied Firefly");
+        let mut saw_blink = false;
+        for pass in 2..6 {
+            let state = boundary.source_arena().economy.authored_fireflies.iter()
+                .find(|state| state.source_entity_index == slot).unwrap();
+            assert_eq!(state.stage_var2, 14);
+            let flags = state.control_flags;
+            let presentation = boundary.campaign_entity_presentations(0).unwrap().into_iter()
+                .find(|row| row.entity_index == slot)
+                .expect("the allied Firefly reaches actual presentation");
+            assert_eq!(presentation.control_flags, flags,
+                "presentation must use the current typed Firefly flags");
+            assert_eq!(flags & 0x0080_0000, 0, "this owner Firefly has no source mode gate");
+            if flags & 0x0600_0000 != 0 {
+                assert_eq!(crate::campaign::sprite_render::source_sprite_pixel_mode(
+                    presentation.pixel_mode, flags, 0,
+                ), presentation.pixel_mode,
+                    "without the source gate Alliance blink bits retain the base pixel mode");
+                saw_blink = true;
+                break;
+            }
+            boundary.step_level2_source_pass(pass);
+            assert!(!boundary.dispatch_events().iter().any(|event|
+                matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+                "Alliance Firefly presentation visit: {:?}", boundary.dispatch_events());
+        }
+        assert!(saw_blink, "the actual allied Firefly must reach a blink phase");
+
         // The exact same impact must reject Army and boss parent-bound modes.
         for mode in [13, 16, 17] {
             let mut excluded = arena.clone();
@@ -3291,6 +3351,7 @@ mod tests {
                 .find(|row| row.source_entity_index == slot).unwrap().stage_var2, mode);
         }
 
+        let before_impact = arena.clone();
         let impact = crate::native_world::alliance_spell::step_impact(&mut arena, impact_slot, &order).unwrap();
         assert!(impact.affected_entities.contains(&slot), "the scheduled impact takes over the actual typed Firefly");
         assert_eq!(arena.creature_parent_binding(child), Some(parent_handle));
@@ -3308,6 +3369,81 @@ mod tests {
         let rival = arena.entities.iter().find(|row|
             row.active && row.class == 3 && row.model == 1 && row.life > 0)
             .expect("ordinary Night7 package has a live opposing wizard").index;
+
+        // Run real player Fireball acquisition against the same owner-data
+        // Firefly after the real Alliance terminal binds either player.
+        for allied_owner in [parent, rival] {
+            let mut controlled = before_impact.clone();
+            let effect = &mut controlled.entities[usize::from(impact_slot)];
+            effect.source_id = allied_owner;
+            effect.record[30..32].copy_from_slice(&allied_owner.to_le_bytes());
+            effect.subspell_index = crate::spells::late::alliance::SOURCE_RULES[0].damage;
+            let control_impact = crate::native_world::alliance_spell::step_impact(
+                &mut controlled, impact_slot, &order,
+            ).unwrap();
+            assert!(control_impact.affected_entities.contains(&slot));
+            let expected_parent = controlled.handle(allied_owner).unwrap();
+            assert_eq!(controlled.creature_parent_binding(child), Some(expected_parent));
+
+            let mut firing = session.clone();
+            *firing.source_arena_mut() = controlled;
+            *firing.canonical_terrain_mut() = terrain.clone();
+            assert_ne!(firing.shared_spells().local_player.enabled_spell_holders[0], 0,
+                "the owner player must have a real Fireball holder");
+            let targets = firing.economy().fireball_guidance_targets(&firing.source_arena().entities)
+                .expect("live Fireball target census");
+            let firefly = targets.iter().find(|target| target.source_slot == slot)
+                .copied().expect("the actual Firefly is in the source target list");
+            assert_ne!(firefly.source_id, parent);
+            assert_eq!((firefly.stage_mode, firefly.parent_entity_index), (14, allied_owner));
+            assert_eq!(firefly.can_be_acquired_by(parent), allied_owner != parent);
+
+            let mut player_position = firefly.top_position;
+            player_position.x = player_position.x.wrapping_sub(4096);
+            player_position.z = firing.canonical_terrain().ground_height(player_position);
+            firing.set_level2_entity_position(parent, player_position).unwrap();
+            let mut launch = player_position;
+            let direction = firing.shared_spells().player_entity.control_flags & 0x0300;
+            let hand_yaw = if direction & 0x0100 != 0 {
+                Some(firing.state.yaw.wrapping_sub(512))
+            } else if direction & 0x0200 != 0 {
+                Some(firing.state.yaw.wrapping_add(512))
+            } else { None };
+            if let Some(yaw) = hand_yaw {
+                crate::move_entity(&mut launch, yaw, 0, 256);
+                if firing.canonical_terrain().ground_height(launch) > launch.z {
+                    launch = player_position;
+                }
+            }
+            launch.z = launch.z.wrapping_add(firing.state.entity_fov);
+            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, firefly.top_position);
+            let command = crate::PlayerCommand {
+                opcode: 6, argument_1: 0, flags: 0x40,
+                argument_6: yaw.wrapping_sub(firing.state.yaw).cast_unsigned(),
+                argument_8: pitch.wrapping_sub(firing.state.display_pitch).cast_unsigned(),
+                ..crate::PlayerCommand::default()
+            };
+            let mut observed = None;
+            for visit in 0..4 {
+                firing.step_outer_turn(if visit == 0 { command } else { crate::PlayerCommand::default() }, 0);
+                assert!(!firing.dispatch_events().iter().any(|event|
+                    matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+                    "real player Fireball source pass: {:?}", firing.dispatch_events());
+                observed = firing.economy().fireball_projectiles().iter().find(|shot|
+                    shot.active && shot.owner_entity_index == parent
+                        && shot.origin == crate::native_world::FireballProjectileOrigin::PlayerSpell
+                        && shot.acquisition_attempted).copied();
+                if observed.is_some() { break; }
+            }
+            let shot = observed.expect("ordinary player holder creates and schedules a Fireball");
+            if allied_owner == parent {
+                assert_ne!(shot.target_source_entity_index, slot,
+                    "a player Fireball must not acquire that player's allied Firefly");
+            } else {
+                assert_eq!(shot.target_source_entity_index, slot,
+                    "the same real Firefly allied to the rival remains an eligible target");
+            }
+        }
         let mut aiming = arena.clone();
         aiming.entities[usize::from(parent)].record[154..156].copy_from_slice(&rival.to_le_bytes());
         let mut accepted = aiming.clone();
