@@ -1123,6 +1123,71 @@ fn constructor_rejects_fewer_than_51_free_slots_without_consuming_them() {
         .is_none()
     );
     assert_eq!(fixture.arena.economy.free_slot_count(), before);
+
+    // The source reserves all 51 free slots before constructing the chain,
+    // so a consistent free stack cannot exhaust midway. Inject that allocator
+    // failure to exercise the source's otherwise unreachable partial cleanup.
+    let (mut session, _) = owner_level22_model27();
+    let particles = session.session.definition.presentation.particles.to_vec();
+    let live = &mut session.session.state.live;
+    let free_before = live.economy.economy.free_source_slots().to_vec();
+    let position = live.core.state.position;
+    mc2::fail_part_allocation_after(Some(17));
+    let result = mc2::allocate_authored(
+        &mut live.economy,
+        &mut live.core.runtime,
+        &mut live.terrain,
+        &particles,
+        position,
+        AUTHORED_RECORD,
+    );
+    mc2::fail_part_allocation_after(None);
+    assert!(result.unwrap().is_none());
+    let free_after = live.economy.economy.free_source_slots();
+    let allocated = free_before
+        .iter()
+        .copied()
+        .filter(|slot| !free_after.contains(slot))
+        .map(|slot| {
+            live.economy
+                .handle(slot)
+                .expect("partial row is still live")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(allocated.len(), 18, "root and 17 parts were allocated");
+    assert!(allocated.iter().all(|part| {
+        let row = &live.economy.entities[usize::from(part.source_slot)];
+        row.class == 5 && row.model == SOURCE_MODEL && row.drawing_disabled()
+    }));
+    let presentations = session.campaign_entity_presentations(0).unwrap();
+    assert!(allocated.iter().all(|part| {
+        presentations
+            .iter()
+            .all(|row| row.entity_index != part.source_slot)
+    }));
+
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !session
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "source scheduler error after partial allocation: {:?}",
+        session.dispatch_events()
+    );
+    let arena = &session.session.state.live.economy;
+    for part in allocated {
+        assert!(
+            arena.slot_generation(part.source_slot) != part.generation
+                || arena
+                    .economy
+                    .free_source_slots()
+                    .contains(&part.source_slot),
+            "partial model27 slot {} must be reclaimed at the next source boundary",
+            part.source_slot
+        );
+        assert_eq!(arena.model27_part_root(part), None);
+    }
 }
 
 fn allocate(fixture: &mut Fixture) -> Allocation {

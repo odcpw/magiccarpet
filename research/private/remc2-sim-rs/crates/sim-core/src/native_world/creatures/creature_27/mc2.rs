@@ -13,6 +13,16 @@ use super::{
 };
 use super::{combat, multipart, stage};
 
+#[cfg(test)]
+thread_local! {
+    static PART_ALLOCATIONS_BEFORE_FAILURE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_part_allocation_after(successful_parts: Option<usize>) {
+    PART_ALLOCATIONS_BEFORE_FAILURE.with(|remaining| remaining.set(successful_parts));
+}
+
 fn put_link(
     arena: &mut SourceArena,
     previous: SourceEntityHandle,
@@ -47,6 +57,17 @@ fn allocate_part(
     action: u8,
     position: Position,
 ) -> Result<Option<SourceEntityHandle>, String> {
+    #[cfg(test)]
+    if PART_ALLOCATIONS_BEFORE_FAILURE.with(|remaining| match remaining.get() {
+        Some(0) => true,
+        Some(count) => {
+            remaining.set(Some(count - 1));
+            false
+        }
+        None => false,
+    }) {
+        return Ok(None);
+    }
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
