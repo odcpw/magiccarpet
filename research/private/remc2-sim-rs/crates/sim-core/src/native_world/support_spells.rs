@@ -2,7 +2,10 @@
 
 use super::{EntitySnapshot, Level2SharedSpellResetSession, RenderableMapSeed, SessionTerrain};
 use crate::campaign::{source_arena::SourceArena, state::CanonicalRuntimeState};
-use crate::spell_activation::{level2_set_spell_profile, support_spell_rule};
+use crate::spell_activation::{
+    BeyondSightState, InvisibleSpecialWrite, InvisibleState, ShieldState, level2_applied_tier,
+    level2_set_spell_profile, support_spell_rule,
+};
 use crate::spells::support::{
     SupportSpellHolder, SupportSpellPlayer, SupportSpellSound, SupportSpellStep, TeleportCastles,
 };
@@ -252,6 +255,146 @@ pub(super) fn step_holder(
     Some(result)
 }
 
+/// These kernels borrow their pulse state from the current holder/player
+/// records. A rival never selects or overwrites the local player's lifecycle.
+enum StatusProjection {
+    Shield(ShieldState),
+    Invisible(InvisibleState),
+    BeyondSight(BeyondSightState),
+}
+
+fn step_status_holder(
+    holder: &mut EntitySnapshot,
+    parent: Option<&mut EntitySnapshot>,
+    castle_mana: Option<i32>,
+    beyond_sight_experience: i32,
+) -> Result<
+    (
+        SupportSpellStep,
+        StatusProjection,
+        Option<InvisibleSpecialWrite>,
+    ),
+    String,
+> {
+    let tier = level2_applied_tier(holder.level_gate)
+        .ok_or_else(|| format!("status holder {} has a negative tier", holder.index))?;
+    let parent_slot = parent.as_ref().map_or(0, |row| row.index);
+    let life = parent.as_ref().map_or(0, |row| row.life);
+    let mana = parent.as_ref().map_or(0, |row| row.mana);
+    let regen = parent.as_ref().map_or(0, |row| row.mana_regen);
+    let flags = parent.as_ref().map_or(0, |row| row.control_flags);
+    macro_rules! hydrate {
+        ($state:expr) => {{
+            let mut state = $state.ok_or("status holder has an invalid source tier")?;
+            state.action = holder.action;
+            state.active_value = holder.active_value;
+            state.activation_value = holder.activation_value.cast_signed();
+            state.mana_cost = holder.max_mana;
+            state.parent_mana_regen = regen;
+            state.countdown = i16::from_le_bytes([holder.record[58], holder.record[59]]);
+            state
+        }};
+    }
+    let (projection, active, countdown, next_regen, next_flags, cleanup, award, special) =
+        match holder.model {
+            6 => {
+                let mut state = hydrate!(ShieldState::new(
+                    tier,
+                    holder.index,
+                    parent_slot,
+                    mana,
+                    life
+                ));
+                state.parent_status_flags = flags;
+                let step = state.step();
+                (
+                    StatusProjection::Shield(state),
+                    state.active_value,
+                    state.countdown,
+                    state.parent_mana_regen,
+                    state.parent_status_flags,
+                    step.cleanup_requested,
+                    0,
+                    None,
+                )
+            }
+            11 => {
+                let mut state = hydrate!(InvisibleState::new(
+                    tier,
+                    holder.index,
+                    parent_slot,
+                    mana,
+                    life
+                ));
+                state.mana_regen_requirement = holder.mana_regen;
+                state.parent_status_flags = flags;
+                state.spell_status_flags = holder.control_flags;
+                let step = state.step(castle_mana);
+                holder.set_control_flags(state.spell_status_flags);
+                (
+                    StatusProjection::Invisible(state),
+                    state.active_value,
+                    state.countdown,
+                    state.parent_mana_regen,
+                    state.parent_status_flags,
+                    step.cleanup_requested,
+                    step.experience_awarded,
+                    step.special_state_write,
+                )
+            }
+            12 => {
+                let mut state = hydrate!(BeyondSightState::new(
+                    tier,
+                    holder.index,
+                    parent_slot,
+                    mana,
+                    life
+                ));
+                state.mana_regen_requirement = holder.mana_regen;
+                state.experience_awarded = beyond_sight_experience;
+                let step = state.step_after_experience_award(castle_mana, beyond_sight_experience);
+                (
+                    StatusProjection::BeyondSight(state),
+                    state.active_value,
+                    state.countdown,
+                    state.parent_mana_regen,
+                    flags,
+                    step.cleanup_requested,
+                    0,
+                    None,
+                )
+            }
+            _ => return Err("status callback received a different spell family".to_owned()),
+        };
+    holder.active_value = active;
+    holder.record[50..52].copy_from_slice(&active.to_le_bytes());
+    holder.record[58..60].copy_from_slice(&countdown.to_le_bytes());
+    if let Some(parent) = parent {
+        parent.set_mana_regen(next_regen);
+        parent.set_control_flags(next_flags);
+    }
+    if cleanup {
+        let queued = holder.source_word_2c();
+        if let Some(tier) = queued
+            .checked_sub(1)
+            .and_then(|tier| u8::try_from(tier).ok())
+            && let Some(profile) = level2_set_spell_profile(holder.model, tier)
+        {
+            holder.apply_nyphur_spell_profile(profile, tier);
+            holder.set_source_word_2c(0);
+        }
+    }
+    Ok((
+        SupportSpellStep {
+            award_experience: award != 0,
+            cleanup,
+            ..SupportSpellStep::default()
+        },
+        projection,
+        special,
+    ))
+}
+
 /// Compose the authoritative holder/player write with existing numeric arena,
 /// flight and presentation consumers. Spell decisions remain in support::step.
 pub(super) fn step_source_slot(
@@ -259,13 +402,13 @@ pub(super) fn step_source_slot(
     arena: &mut SourceArena,
     core: &mut CanonicalRuntimeState,
     source_slot: u16,
-) -> Result<(), String> {
+) -> Result<Option<(u16, bool)>, String> {
     let mut holder = shared
         .pickup(source_slot)
         .filter(|holder| {
             holder.active
                 && holder.class == 15
-                && matches!(holder.model, 5 | 8 | 10)
+                && matches!(holder.model, 5 | 6 | 8 | 10 | 11 | 12)
                 && holder.action == holder.model * 3
         })
         .cloned()
@@ -276,6 +419,7 @@ pub(super) fn step_source_slot(
         .get(usize::from(parent_slot))
         .filter(|parent| parent_slot != 0 && parent.active && parent.class == 3)
         .cloned();
+    let parent_feedback = parent.as_ref().map(|_| parent_slot);
     let player_color = shared
         .players
         .iter()
@@ -295,32 +439,110 @@ pub(super) fn step_source_slot(
         if color >= castles.positions.len() {
             continue;
         }
-        let local_castle = arena.economy.castle().filter(|castle| {
-            castle.active
-                && castle.owner_entity_index == player.entity_index
-                && arena.economy.player_castle_entity_index() == castle.source_entity_index
-        });
-        let imported_slot = u16::from_le_bytes([player.record[42], player.record[43]]);
-        let imported_castle = arena
-            .entities
-            .get(usize::from(imported_slot))
-            .filter(|castle| imported_slot != 0 && castle.active);
-        let castle = local_castle
-            .map(|castle| (castle.position, castle.mana))
-            .or_else(|| imported_castle.map(|castle| (castle.position, castle.mana)));
+        let castle = arena
+            .economy
+            .castle_for_owner(player.entity_index)
+            .map(|castle| (castle.position, castle.mana));
         castles.positions[color] = castle.map(|(position, _)| position);
         if player.entity_index == parent_slot {
             castle_mana = castle.map(|(_, mana)| mana);
         }
     }
-    let result = step_holder(
-        &mut holder,
-        parent.as_mut(),
-        castle_mana,
-        player_color,
-        &castles,
-    )
-    .ok_or_else(|| format!("support spell holder {source_slot} has invalid family/tier"))?;
+    // Source6B310 publishes XP before 68D50. Refresh the actual holder
+    // afterwards so a threshold's queued SetSpell survives this pulse.
+    let beyond_sight_experience = i32::from(
+        holder.model == 12
+            && holder.active_value > 0
+            && holder.active_value == holder.activation_value.cast_signed()
+            && parent
+                .as_ref()
+                .is_some_and(|row| (row.class, row.model) == (3, 0)),
+    );
+    if beyond_sight_experience != 0 {
+        shared.award_spell_experience(parent_slot, 12, beyond_sight_experience);
+        shared.publish_spell_progression_family(
+            &mut core.players,
+            core.context.spell_fire.as_mut(),
+            parent_slot,
+            12,
+        );
+        holder = shared
+            .pickup(source_slot)
+            .cloned()
+            .ok_or("Beyond Sight award lost its holder")?;
+    }
+    let (result, status) = if matches!(holder.model, 6 | 11 | 12) {
+        let (step, state, special) = step_status_holder(
+            &mut holder,
+            parent.as_mut(),
+            castle_mana,
+            beyond_sight_experience,
+        )?;
+        if let Some(write) = special {
+            if write.clear_protection {
+                shared.global_special_state.protection_ticks = 0;
+            }
+            shared.global_special_state.visibility_mode = write.visibility_mode;
+        }
+        (step, Some(state))
+    } else {
+        (
+            step_holder(
+                &mut holder,
+                parent.as_mut(),
+                castle_mana,
+                player_color,
+                &castles,
+            )
+            .ok_or_else(|| format!("support spell holder {source_slot} has invalid family/tier"))?,
+            None,
+        )
+    };
+    if parent_slot == core.state.entity_index {
+        macro_rules! current_profile {
+            ($state:ident) => {
+                $state.tier = level2_applied_tier(holder.level_gate)
+                    .ok_or("status cleanup left a negative tier")?;
+                $state.active_value = holder.active_value;
+                $state.activation_value = holder.activation_value.cast_signed();
+                $state.mana_cost = holder.max_mana;
+                $state.cleanup_requested = false;
+            };
+        }
+        match status {
+            Some(StatusProjection::Shield(mut state)) => {
+                current_profile!(state);
+                state.experience_awarded = shared
+                    .shield
+                    .filter(|old| old.holder_entity_index == source_slot)
+                    .map_or(0, |old| old.experience_awarded);
+                shared.shield = Some(state);
+            }
+            Some(StatusProjection::Invisible(mut state)) => {
+                current_profile!(state);
+                state.mana_regen_requirement = holder.mana_regen;
+                state.experience_awarded = state.experience_awarded.wrapping_add(
+                    shared
+                        .invisible
+                        .filter(|old| old.holder_entity_index == source_slot)
+                        .map_or(0, |old| old.experience_awarded),
+                );
+                shared.invisible = Some(state);
+            }
+            Some(StatusProjection::BeyondSight(mut state)) => {
+                current_profile!(state);
+                state.mana_regen_requirement = holder.mana_regen;
+                state.experience_awarded = state.experience_awarded.wrapping_add(
+                    shared
+                        .beyond_sight
+                        .filter(|old| old.holder_entity_index == source_slot)
+                        .map_or(0, |old| old.experience_awarded),
+                );
+                shared.beyond_sight = Some(state);
+            }
+            None => {}
+        }
+    }
     if let Some(parent) = parent {
         shared.sync_player_entity_from_authority(&parent);
         arena.entities[usize::from(parent_slot)] = parent.clone();
@@ -353,7 +575,14 @@ pub(super) fn step_source_slot(
             }
         }
         if result.award_experience && parent.class == 3 && parent.model == 0 {
+            // XP can queue SetSpell on this same live holder. Publish the
+            // callback first, then retain those source-visible queue writes.
+            shared.sync_pickup_from_authority(&holder);
             shared.award_spell_experience(parent_slot, holder.model, 1);
+            holder = shared
+                .pickup(source_slot)
+                .cloned()
+                .ok_or("support spell award lost its holder")?;
         }
         for player in core
             .players
@@ -428,7 +657,7 @@ pub(super) fn step_source_slot(
             arena.entities[usize::from(source_slot)].clone_from(holder);
         }
     }
-    Ok(())
+    Ok(parent_feedback.map(|owner| (owner, result.stop_player)))
 }
 
 #[cfg(test)]
@@ -840,6 +1069,127 @@ mod tests {
                 assert_eq!(
                     caches.invisible.unwrap().parent_status_flags,
                     parent.control_flags
+                );
+            }
+        }
+
+        // Real imported rival holders exercise the same adapter with a
+        // controlled fresh pulse and its otherwise identical unaffordable
+        // pulse. The ordinary campaign checks cover their scheduler route.
+        let ordinary_root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+            || root.join("mc-bhq6-ordinary-20261025-zclu5fjj"),
+            PathBuf::from,
+        );
+        let status_base = crate::campaign::CampaignSession::open(
+            ordinary_root.join("level18"),
+            crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+        )
+        .expect("real Mission18 rival holders")
+        .simulation()
+        .clone();
+        for family in [6_u8, 11, 12] {
+            for affordable in [true, false] {
+                let mut session = status_base.clone();
+                let live = &mut session.session.state.live;
+                let rival = live
+                    .shared_spells
+                    .players
+                    .iter()
+                    .find(|player| player.is_ai)
+                    .unwrap();
+                let owner = rival.entity_index;
+                let slot = rival.enabled_spell_holders[usize::from(family)];
+                let mut holder = live.shared_spells.pickup(slot).unwrap().clone();
+                assert_eq!((holder.class, holder.model), (15, family));
+                let profile = level2_set_spell_profile(family, 0).unwrap();
+                holder.apply_nyphur_spell_profile(profile, 0);
+                holder.set_source_action(family * 3);
+                holder.active_value = holder.activation_value.cast_signed();
+                holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                holder.record[58..60].copy_from_slice(&64_i16.to_le_bytes());
+                if !affordable {
+                    holder.set_source_word_2c(2);
+                }
+                let cost = holder.max_mana;
+                live.shared_spells.sync_pickup_from_authority(&holder);
+                live.economy.entities[usize::from(slot)] = holder.clone();
+                let parent = &mut live.economy.entities[usize::from(owner)];
+                parent.set_mana(if affordable { cost } else { cost - 1 });
+                parent.set_mana_regen(100);
+                let castle = live
+                    .economy
+                    .economy
+                    .build_castle_at(Position::default(), Position::default(), owner, false, true)
+                    .unwrap();
+                assert!(
+                    live.economy
+                        .economy
+                        .set_castle_mana_prerequisite_for_test(castle, 50_000)
+                );
+                let local_before = (
+                    live.shared_spells.shield,
+                    live.shared_spells.invisible,
+                    live.shared_spells.beyond_sight,
+                );
+                let experience_before = live
+                    .shared_spells
+                    .players
+                    .iter()
+                    .find(|player| player.entity_index == owner)
+                    .unwrap()
+                    .runtime_spell_experience;
+                let feedback = step_source_slot(
+                    &mut live.shared_spells,
+                    &mut live.economy,
+                    &mut live.core,
+                    slot,
+                )
+                .unwrap();
+                assert_eq!(feedback, Some((owner, false)));
+                let current = live.shared_spells.pickup(slot).unwrap();
+                if affordable {
+                    assert_eq!(current.active_value, holder.active_value - 1);
+                    assert!(live.economy.entities[usize::from(owner)].mana_regen <= 0);
+                    if family == 6 {
+                        assert_ne!(
+                            live.economy.entities[usize::from(owner)].control_flags
+                                & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+                            0
+                        );
+                    } else if family == 11 {
+                        assert_ne!(
+                            current.control_flags & crate::spell_activation::INVISIBLE_STATUS_BIT,
+                            0
+                        );
+                    }
+                } else {
+                    assert_eq!(current.active_value, 0);
+                    assert_eq!(current.source_word_2c(), 0);
+                    assert_eq!(
+                        current.level_gate, 1,
+                        "expiry applies the actual queued profile"
+                    );
+                }
+                assert_eq!(current.record[50..52], current.active_value.to_le_bytes());
+                assert_eq!(current.record[58..60], 63_i16.to_le_bytes());
+                assert_eq!(
+                    (
+                        live.shared_spells.shield,
+                        live.shared_spells.invisible,
+                        live.shared_spells.beyond_sight
+                    ),
+                    local_before,
+                    "a rival pulse cannot replace the local lifecycle projection"
+                );
+                assert_eq!(
+                    live.shared_spells
+                        .players
+                        .iter()
+                        .find(|player| player.entity_index == owner)
+                        .unwrap()
+                        .runtime_spell_experience,
+                    experience_before,
+                    "sub6D8B0 awards source class3/model0 only"
                 );
             }
         }

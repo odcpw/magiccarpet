@@ -1077,8 +1077,14 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
 
     let bee_slot =
         allocate_typed_morph_shadow(&mut arena, &mut terrain, parent_slot, position, parent_slot);
+    let bee_handle = arena.handle(bee_slot).unwrap();
+    let original_parent = arena.handle(center_slot).unwrap();
+    let allied_parent = arena.handle(parent_slot).unwrap();
+    assert!(arena.bind_creature_parent(bee_handle, original_parent));
     let impact = run_alliance_impact(&mut arena, &mut terrain, bee_slot, center_slot, parent_slot);
     assert_eq!(impact.affected_entities, vec![bee_slot]);
+    assert_eq!(arena.creature_parent_binding(bee_handle), Some(allied_parent),
+        "the actual Alliance impact takes over the live Bee's parent generation");
     let raw = &arena.entities[usize::from(bee_slot)];
     assert!(!raw.active, "the retained Bee row is only a source shadow");
     assert_eq!(raw.action, 18);
@@ -1091,6 +1097,32 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
     assert_eq!(u16::from_le_bytes([raw.record[50], raw.record[51]]), 40);
     assert_eq!(u16::from_le_bytes([raw.record[52], raw.record[53]]), 40);
     assert_eq!(u16::from_le_bytes([raw.record[154], raw.record[155]]), 0);
+
+    for parent_reused in [false, true] {
+        let mut control = session.clone();
+        let mut controlled_arena = arena.clone();
+        let mut controlled_terrain = terrain.clone();
+        if parent_reused {
+            controlled_arena.economy.release_slot(parent_slot, None);
+            assert_eq!(controlled_arena.allocate_source_slot_with_terrain(&mut controlled_terrain), Some(parent_slot));
+            let mut replacement = crate::native_world::cave_features::new_event(parent_slot, 5, position);
+            replacement.class = 3;
+            replacement.model = 0;
+            replacement.record[67] = 3;
+            replacement.set_life(1_000);
+            controlled_arena.entities[usize::from(parent_slot)] = replacement;
+            assert_ne!(controlled_arena.handle(parent_slot), Some(allied_parent));
+        }
+        *control.source_arena_mut() = controlled_arena;
+        *control.canonical_terrain_mut() = controlled_terrain;
+        for _ in 0..2 {
+            control.step_outer_turn(crate::PlayerCommand::default(), 0);
+        }
+        let current = control.source_arena().bee_creatures().iter()
+            .find(|row| row.active && row.source_entity_index == bee_slot).unwrap();
+        assert_eq!(current.stage_var2, if parent_reused { 10 } else { 14 },
+            "Alliance follows the original parent generation");
+    }
 
     *session.source_arena_mut() = arena;
     *session.canonical_terrain_mut() = terrain;
@@ -1149,6 +1181,9 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         position,
         wrong_source_id,
     );
+    let rejected_handle = arena.handle(rejected_slot).unwrap();
+    let retained_parent = arena.handle(rejected_center_slot).unwrap();
+    assert!(arena.bind_creature_parent(rejected_handle, retained_parent));
     arena
         .economy
         .bee_creatures
@@ -1164,6 +1199,8 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
         parent_slot,
     );
     assert_eq!(rejected_impact.affected_entities, vec![rejected_slot]);
+    assert_eq!(arena.creature_parent_binding(rejected_handle), Some(retained_parent),
+        "a stale raw shadow cannot take over the typed Bee's parent");
     *session.source_arena_mut() = arena;
     *session.canonical_terrain_mut() = terrain;
     session.step_outer_turn(crate::PlayerCommand::default(), 0);

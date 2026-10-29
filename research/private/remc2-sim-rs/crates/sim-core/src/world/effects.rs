@@ -500,7 +500,7 @@ pub(crate) fn allocate(
     allocate_inner(arena, terrain, definition, position, particles, None)
 }
 
-/// Construct an impact or radial explosion from a source entity's position
+/// Construct an impact, radial explosion or ash from a source entity's position
 /// address. NewEvent can reuse that same address and zero it before the
 /// constructor maps the child or admits its light.
 pub(crate) fn allocate_from_source_position(
@@ -513,10 +513,10 @@ pub(crate) fn allocate_from_source_position(
 ) -> Result<Option<u16>, String> {
     if !matches!(
         definition.kind(),
-        EffectKind::Impact | EffectKind::RadialExplosion
+        EffectKind::Impact | EffectKind::RadialExplosion | EffectKind::Ash
     ) {
         return Err(
-            "source-position effect constructor only supports impact and radial explosion"
+            "source-position effect constructor only supports impact, radial explosion and ash"
                 .to_owned(),
         );
     }
@@ -582,7 +582,7 @@ pub(crate) fn hide_birth_replacement(
     }
     if newborn == Some(source_slot) {
         let row = &mut arena.entities[usize::from(source_slot)];
-        if !row.active || row.class != 10 || !matches!(row.model, 0 | 1) {
+        if !row.active || row.class != 10 || !matches!(row.model, 0 | 1 | 5) {
             return Err(format!(
                 "effect newborn at {source_slot} changed before source hide"
             ));

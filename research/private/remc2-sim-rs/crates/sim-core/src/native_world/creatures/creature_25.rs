@@ -64,29 +64,35 @@ pub(crate) struct Target {
     pub source_id: u16,
     pub class: u8,
     pub model: u8,
-    pub action: u8,
     pub life: i32,
     pub flags: u32,
     pub position: Position,
-    pub yaw: i16,
-    pub roll: i16,
-    pub pitch_extent: i16,
-    pub roll_extent: i16,
-    pub fov_extent: i16,
-    pub attacker: u16,
-    pub target: u16,
-    pub stage_index: u8,
-    pub stage_mode: u8,
-    pub parent: u16,
-    pub stage_relation: u16,
-    pub killer: u16,
-    pub next: u16,
+    pub yaw: Option<i16>,
+    pub roll: Option<i16>,
+    pub pitch_extent: Option<i16>,
+    pub roll_extent: Option<i16>,
+    pub attacker: Option<u16>,
+    pub target: Option<u16>,
+    pub stage_index: Option<u8>,
+    pub stage_mode: Option<u8>,
+    pub parent: Option<u16>,
+    pub stage_relation: Option<u16>,
+    pub next: Option<u16>,
     pub castle_slot: u16,
 }
 
 impl Target {
     fn living(self) -> bool {
         self.life >= 0 && self.flags & ENTITY_DRAW_DISABLED_BIT == 0
+    }
+
+    fn required<T>(self, value: Option<T>, field: &str) -> Result<T, String> {
+        value.ok_or_else(|| {
+            format!(
+                "Cymmerian source target {} lacks current {field}",
+                self.slot
+            )
+        })
     }
 }
 
@@ -143,10 +149,27 @@ pub(crate) struct Context<'a> {
     pub class3: &'a [u16],
     /// Frozen model25 membership used by the source same-model avoidance scan.
     pub model25: &'a [u16],
+    pub reader: Option<(
+        &'a crate::campaign::source_arena::SourceArena,
+        crate::native_world::source_target::Context<'a>,
+    )>,
+    pub read_error: std::cell::Cell<Option<u16>>,
 }
 
 impl Context<'_> {
     fn target(&self, slot: u16) -> Option<Target> {
+        if slot == 0 {
+            return None;
+        }
+        if let Some((arena, context)) = self.reader {
+            return match mc2::target_at(arena, context, slot) {
+                Ok(target) => target,
+                Err(_) => {
+                    self.read_error.set(Some(slot));
+                    None
+                }
+            };
+        }
         (slot != 0)
             .then(|| {
                 self.targets
@@ -224,7 +247,7 @@ fn distance(a: Position, b: Position) -> u32 {
     ))
 }
 
-fn consume(actor: &mut Actor<'_>, ctx: &Context<'_>) -> u8 {
+fn consume(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<u8, String> {
     let mut damage = i32::from_le_bytes(
         actor.row.record[98..102]
             .try_into()
@@ -241,18 +264,20 @@ fn consume(actor: &mut Actor<'_>, ctx: &Context<'_>) -> u8 {
     // `sub_28860`, `sub_1BF90`, and `sub_1C310` all compare the linked child
     // chain's life before committing the parent result.
     let mut next = actor.word(56);
-    for _ in 0..ctx.targets.len() {
+    for _ in 0..1000 {
         let Some(child) = ctx.target(next) else { break };
-        if crate::combat::actors::inherit_linked_life(
-            &mut life,
-            &mut attacker,
-            child.life,
-            child.attacker,
-        ) {
+        if child.life < life
+            && crate::combat::actors::inherit_linked_life(
+                &mut life,
+                &mut attacker,
+                child.life,
+                child.required(child.attacker, "attacker")?,
+            )
+        {
             hit = 1;
             break;
         }
-        next = child.next;
+        next = child.required(child.next, "linked child")?;
     }
 
     actor.row.set_life(life);
@@ -261,9 +286,9 @@ fn consume(actor: &mut Actor<'_>, ctx: &Context<'_>) -> u8 {
     actor.put(42, attacker);
     if life < 0 {
         actor.put(40, attacker);
-        2
+        Ok(2)
     } else {
-        hit
+        Ok(hit)
     }
 }
 
@@ -365,10 +390,10 @@ fn nearest_target(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
     let mut best = None;
     let mut shortest = u32::MAX;
     for target in ctx
-        .targets
+        .class3
         .iter()
-        .copied()
-        .filter(|target| target.slot != actor.row.index && target.flags & 0x20 == 0)
+        .filter_map(|slot| ctx.target(*slot))
+        .filter(|target| target.flags & 0x20 == 0)
     {
         let distance = xy_squared(actor.row.position, target.position);
         if distance <= range_squared
@@ -385,16 +410,16 @@ fn nearest_target(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
     best
 }
 
-fn seek(actor: &mut Actor<'_>, ctx: &Context<'_>) {
-    match consume(actor, ctx) {
+fn seek(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<(), String> {
+    match consume(actor, ctx)? {
         2 => {
             actor.set_action(204);
-            return;
+            return Ok(());
         }
         1 => {
             actor.set_target(actor.word(42));
             actor.set_action(202);
-            return;
+            return Ok(());
         }
         _ => {}
     }
@@ -408,17 +433,18 @@ fn seek(actor: &mut Actor<'_>, ctx: &Context<'_>) {
             actor.set_action(202);
         }
     }
+    Ok(())
 }
 
-fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
-    match consume(actor, ctx) {
+fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> Result<(), String> {
+    match consume(actor, ctx)? {
         2 => {
             actor.set_action(204);
-            return;
+            return Ok(());
         }
         1 => {
             actor.set_target(actor.word(42));
-            return;
+            return Ok(());
         }
         _ => {}
     }
@@ -426,9 +452,9 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     let target = ctx
         .target(actor.target())
         .filter(|target| target.living() && target.flags & 0x400 == 0);
-    let Some(target) = stage::alliance_target(actor, ctx, effects, target) else {
-        actor.set_action(203);
-        return;
+    let Some(target) = stage::alliance_target(actor, ctx, effects, target)? else {
+        actor.set_action(201);
+        return Ok(());
     };
     if actor.row.phase & 3 == 0 {
         actor
@@ -452,11 +478,11 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         }
     }
     if actor.row.phase % scan_period(actor) != 0 {
-        return;
+        return Ok(());
     }
     if distance(actor.row.position, target.position) >= target_range(actor) {
-        actor.set_action(203);
-        return;
+        actor.set_action(201);
+        return Ok(());
     }
     let (yaw, pitch) =
         crate::level1_mission::projectile_guidance_angles(actor.row.position, target.position);
@@ -475,19 +501,22 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         pitch,
         parameter: SOURCE_PROJECTILE_DAMAGE,
     });
+    Ok(())
 }
 
-fn actor_collision(actor: &Actor<'_>, target: Target) -> bool {
+fn actor_collision(actor: &Actor<'_>, target: Target) -> Result<bool, String> {
     let x = i32::from(target.position.x.wrapping_sub(actor.row.position.x) as i16).abs();
     let y = i32::from(target.position.y.wrapping_sub(actor.row.position.y) as i16).abs();
-    x < i32::from(actor.row.array_pitch()) + i32::from(target.pitch_extent)
-        && y < i32::from(actor.row.array_roll()) + i32::from(target.roll_extent)
+    Ok(x < i32::from(actor.row.array_pitch())
+        + i32::from(target.required(target.pitch_extent, "collision width")?)
+        && y < i32::from(actor.row.array_roll())
+            + i32::from(target.required(target.roll_extent, "collision depth")?))
 }
 
-fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
+fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> Result<(), String> {
     let mut result = 0;
     if !matches!(actor.state(), 1 | 2) {
-        let hit = consume(actor, ctx);
+        let hit = consume(actor, ctx)?;
         if hit == 2 {
             result = 2;
         } else if hit == 1 {
@@ -503,7 +532,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     }
     if result == 2 {
         actor.set_action(204);
-        return;
+        return Ok(());
     }
 
     let previous_state = actor.state();
@@ -558,7 +587,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         5 => {
             let Some(player) = ctx.target(actor.target()) else {
                 actor.set_state(3);
-                return;
+                return Ok(());
             };
             let castle = ctx
                 .target(player.castle_slot)
@@ -570,7 +599,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
                         .set_source_roll(
                             heading_for_positions(actor.row.position, castle.position) as i16,
                         );
-                    if actor_collision(actor, castle) {
+                    if actor_collision(actor, castle)? {
                         actor.set_state(6);
                     }
                 }
@@ -584,13 +613,13 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
             }
             let Some(player) = ctx.target(actor.target()) else {
                 actor.set_state(3);
-                return;
+                return Ok(());
             };
             if let Some(castle) = ctx
                 .target(player.castle_slot)
                 .filter(|target| target.living())
             {
-                if actor_collision(actor, castle) {
+                if actor_collision(actor, castle)? {
                     effects.castle_hit = Some(CastleHit {
                         player_slot: player.slot,
                         castle_slot: castle.slot,
@@ -635,6 +664,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         actor.row.set_actual_speed(minimum.saturating_add(bonus));
         effects.speed_changed = true;
     }
+    Ok(())
 }
 
 /// Runs one source callback. The ordinary scheduler still owns action enable
@@ -642,9 +672,9 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
 pub(crate) fn step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<Effects, String> {
     let mut effects = Effects::default();
     match actor.row.action {
-        200 => special(actor, ctx, &mut effects),
-        201 => seek(actor, ctx),
-        202 => pursue(actor, ctx, &mut effects),
+        200 => special(actor, ctx, &mut effects)?,
+        201 => seek(actor, ctx)?,
+        202 => pursue(actor, ctx, &mut effects)?,
         203 => {
             actor.set_action(201);
             if actor.row.life < 0 {

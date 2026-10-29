@@ -13,6 +13,8 @@ use crate::native_world::{
 pub(crate) enum Product {
     FinalBossFireball,
     Creature27Fireball,
+    FireflyFireball,
+    DragonFireball,
     Lightning,
     Whirlwind,
     Meteor,
@@ -56,7 +58,10 @@ fn construct_at_address(
 ) -> Result<Option<u16>, String> {
     if matches!(
         launch.product,
-        Product::FinalBossFireball | Product::Creature27Fireball
+        Product::FinalBossFireball
+            | Product::Creature27Fireball
+            | Product::FireflyFireball
+            | Product::DragonFireball
     ) {
         let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
             return Ok(None);
@@ -69,6 +74,8 @@ fn construct_at_address(
         let origin = match launch.product {
             Product::FinalBossFireball => FireballProjectileOrigin::FinalBoss,
             Product::Creature27Fireball => FireballProjectileOrigin::Creature27,
+            Product::FireflyFireball => FireballProjectileOrigin::Firefly,
+            Product::DragonFireball => FireballProjectileOrigin::Dragon,
             _ => unreachable!(),
         };
         let payload = Level2FireballProjectileLaunchPayload {
@@ -152,7 +159,10 @@ fn construct_at_address(
             )?;
             (impact, Some(slot))
         }
-        Product::FinalBossFireball | Product::Creature27Fireball => unreachable!(),
+        Product::FinalBossFireball
+        | Product::Creature27Fireball
+        | Product::FireflyFireball
+        | Product::DragonFireball => unreachable!(),
     };
     let Some(slot) = slot else { return Ok(None) };
     let row = &mut arena.entities[usize::from(slot)];
@@ -171,6 +181,94 @@ fn construct_at_address(
         row.parameter_relation = Some(descriptor);
         row.record[164..168].copy_from_slice(&(u32::from(descriptor) + 1).to_le_bytes());
     }
+    Ok(Some(slot))
+}
+
+/// `sub_1CC20`: a Firefly or Dragon launches one 9/0 from the current
+/// shooter address. The caller owns the successful target-side `sub_5EF70`.
+pub(crate) fn construct_creature_fireball(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    targets: crate::native_world::source_target::Context<'_>,
+    shooter_slot: u16,
+    target_slot: u16,
+    origin: FireballProjectileOrigin,
+) -> Result<Option<u16>, String> {
+    let product = match origin {
+        FireballProjectileOrigin::Firefly => Product::FireflyFireball,
+        FireballProjectileOrigin::Dragon => Product::DragonFireball,
+        _ => return Err(format!("unsupported 1CC20 Fireball origin {origin:?}")),
+    };
+    let targets = crate::native_world::source_target::Context {
+        particles: Some(particles),
+        map_type: Some(terrain.map_type()),
+        ..targets
+    };
+    let shooter = crate::native_world::source_target::read(arena, targets, shooter_slot)?
+        .ok_or("1CC20 shooter address is outside source arena")?;
+    let Some(slot) = construct_at_address(
+        arena,
+        terrain,
+        particles,
+        Launch {
+            product,
+            position: shooter.position,
+            owner: shooter.source_id,
+            yaw: 0,
+            pitch: 0,
+            target_class: u8::MAX,
+            target_model: u8::MAX,
+            target: 0,
+            damage: 500,
+            effect_life: 0,
+            descriptor: None,
+        },
+        Some(shooter_slot),
+    )?
+    else {
+        return Ok(None);
+    };
+    if slot == shooter_slot {
+        // NewEvent replaced the current source pointer; its default id is
+        // its own slot, before sub_1CC20 copies that same current id.
+        let projectile = arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .ok_or("new 1CC20 Fireball carrier is absent")?;
+        projectile.owner_entity_index = slot;
+        arena.economy.source_owner.insert(slot, slot);
+    }
+    let shooter = crate::native_world::source_target::read(arena, targets, shooter_slot)?
+        .ok_or("1CC20 current shooter address is outside source arena")?;
+    let target = crate::native_world::source_target::read(arena, targets, target_slot)?
+        .ok_or("1CC20 target address is outside source arena")?;
+    let fov = shooter
+        .collision
+        .ok_or("1CC20 current shooter has no source collision axes")?
+        .half_height;
+    let bound = shooter
+        .relations
+        .target
+        .ok_or("1CC20 current shooter has no source word96")?;
+    let (yaw, pitch) =
+        crate::level1_mission::projectile_guidance_angles(shooter.position, target.position);
+    let projectile = arena
+        .economy
+        .fireball_projectiles
+        .iter_mut()
+        .find(|row| row.source_entity_index == slot)
+        .ok_or("new 1CC20 Fireball carrier is absent")?;
+    projectile.owner_entity_index = shooter.source_id;
+    projectile.position.z = projectile.position.z.wrapping_add(fov);
+    projectile.yaw = yaw;
+    projectile.pitch = pitch;
+    projectile.target_source_entity_index = bound;
+    projectile.target_class = target.class;
+    projectile.target_model = target.model;
+    arena.economy.source_owner.insert(slot, shooter.source_id);
     Ok(Some(slot))
 }
 
@@ -316,9 +414,292 @@ pub(crate) fn construct_model27(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FlightWorld;
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::native_world::source_target;
     use std::path::PathBuf;
+
+    #[test]
+    fn firefly_1cc20_uses_the_current_target_and_real_allocator() {
+        use crate::level_definition::EffectKind;
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let game = CampaignSession::open(package, CampaignSelection::LEVEL2)
+            .expect("real Level2 owner package");
+        let mut session = game.simulation().clone();
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let arena = &mut live.economy;
+        let terrain = &mut live.terrain;
+        let shooter_slot = arena
+            .economy
+            .authored_fireflies
+            .iter()
+            .find(|row| {
+                arena.economy.authored_class5.iter().any(|actor| {
+                    actor.active && actor.source_entity_index == row.source_entity_index
+                })
+            })
+            .expect("qualified Level2 retains a live Firefly")
+            .source_entity_index;
+        let target_slot = live.core.state.entity_index;
+        arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == shooter_slot)
+            .unwrap()
+            .word_0x96_150 = target_slot;
+        let context = source_target::Context {
+            player: Some((target_slot, live.core.state.position, live.player_life)),
+            particles: Some(&particles),
+            map_type: Some(terrain.map_type()),
+            ..Default::default()
+        };
+        let shooter = source_target::read(arena, context, shooter_slot)
+            .unwrap()
+            .unwrap();
+        let target = source_target::read(arena, context, target_slot)
+            .unwrap()
+            .unwrap();
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(shooter.position, target.position);
+        let mut full = arena.clone();
+        let mut full_terrain = terrain.clone();
+        while full.economy.free_slot_count() != 0 {
+            full.allocate_source_slot_with_terrain(&mut full_terrain)
+                .unwrap();
+        }
+        full.finish_source_group();
+        let before = full.economy.fireball_projectiles.len();
+        let lights = full.dynamic_lighting.active_count();
+        assert_eq!(
+            construct_creature_fireball(
+                &mut full,
+                &mut full_terrain,
+                &particles,
+                context,
+                shooter_slot,
+                target_slot,
+                FireballProjectileOrigin::Firefly,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(full.economy.fireball_projectiles.len(), before);
+        assert_eq!(full.dynamic_lighting.active_count(), lights);
+
+        let slot = construct_creature_fireball(
+            arena,
+            terrain,
+            &particles,
+            context,
+            shooter_slot,
+            target_slot,
+            FireballProjectileOrigin::Firefly,
+        )
+        .unwrap()
+        .expect("ordinary Firefly constructor allocates");
+        let shot = arena
+            .economy
+            .fireball_projectiles
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(shot.owner_entity_index, shooter.source_id);
+        assert_eq!((shot.yaw, shot.pitch), (yaw, pitch));
+        assert_eq!(shot.target_source_entity_index, target_slot);
+        assert_eq!(
+            (shot.target_class, shot.target_model),
+            (target.class, target.model)
+        );
+        assert_eq!(shot.source_subspell_index, 500);
+        assert_eq!(
+            shot.position.z,
+            shooter
+                .position
+                .z
+                .wrapping_add(shooter.collision.unwrap().half_height)
+        );
+        assert!(arena.economy.map_chains.is_linked(slot));
+
+        // A real replaceable 10/0 target is captured by the frozen fallback;
+        // the NewEvent result occupies that same target address.
+        let replaceable = crate::world::effects::allocate(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(EffectKind::Impact),
+            target.position,
+            &particles,
+        )
+        .unwrap()
+        .expect("real replaceable impact target");
+        arena
+            .economy
+            .authored_class5
+            .iter_mut()
+            .find(|row| row.source_entity_index == shooter_slot)
+            .unwrap()
+            .word_0x96_150 = replaceable;
+        arena.rebuild_source_free_arena();
+        while arena.economy.free_slot_count() != 0 {
+            arena.allocate_source_slot_with_terrain(terrain).unwrap();
+        }
+        loop {
+            let mut probe = arena.clone();
+            let mut probe_terrain = terrain.clone();
+            let candidate = probe
+                .allocate_source_slot_with_terrain(&mut probe_terrain)
+                .expect("frozen cursor reaches the effect target");
+            if candidate == replaceable {
+                break;
+            }
+            assert_eq!(
+                arena.allocate_source_slot_with_terrain(terrain),
+                Some(candidate)
+            );
+        }
+        let reused = construct_creature_fireball(
+            arena,
+            terrain,
+            &particles,
+            context,
+            shooter_slot,
+            replaceable,
+            FireballProjectileOrigin::Firefly,
+        )
+        .unwrap()
+        .expect("frozen fallback allocates the target address");
+        assert_eq!(reused, replaceable);
+        let shot = arena
+            .economy
+            .fireball_projectiles
+            .iter()
+            .find(|row| row.source_entity_index == reused)
+            .unwrap();
+        assert_eq!((shot.target_class, shot.target_model), (9, 0));
+        assert_eq!(shot.target_source_entity_index, replaceable);
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(shooter.position, shooter.position);
+        assert_eq!((shot.yaw, shot.pitch), (yaw, pitch));
+    }
+
+    #[test]
+    fn water_fireball_hides_the_current_address_after_full_pool_birth() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let game = CampaignSession::open(package, CampaignSelection::LEVEL2)
+            .expect("real Level2 owner package");
+        let mut session = game.simulation().clone();
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let arena = &mut live.economy;
+        let terrain = &mut live.terrain;
+        let mut position = live.core.state.position;
+        assert_eq!(
+            terrain.material_mask(position),
+            1,
+            "qualified starting water"
+        );
+        position.z = terrain.ground_height(position).wrapping_sub(1);
+        let slot = construct(
+            arena,
+            terrain,
+            &particles,
+            Launch {
+                product: Product::Creature27Fireball,
+                position,
+                owner: live.core.state.entity_index,
+                yaw: 73,
+                pitch: 31,
+                // No active source class zero can intercept the water hit.
+                target_class: 0,
+                target_model: 0,
+                target: 0,
+                damage: 850,
+                effect_life: 0,
+                descriptor: None,
+            },
+        )
+        .unwrap()
+        .expect("real Fireball constructor allocates");
+        let previous = arena.handle(slot).unwrap();
+        let projectile = arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        projectile.control_flags |= crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        projectile.actual_speed = 0;
+        projectile.minimum_speed = 0;
+        projectile.acquisition_attempted = true;
+        arena.rebuild_source_free_arena();
+        arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap()
+            .control_flags &= !crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        while arena.economy.free_slot_count() != 0 {
+            arena.allocate_source_slot_with_terrain(terrain).unwrap();
+        }
+        loop {
+            let mut probe = arena.clone();
+            let mut probe_terrain = terrain.clone();
+            let candidate = probe
+                .allocate_source_slot_with_terrain(&mut probe_terrain)
+                .expect("frozen cursor reaches the projectile address");
+            if candidate == slot {
+                break;
+            }
+            assert_eq!(
+                arena.allocate_source_slot_with_terrain(terrain),
+                Some(candidate)
+            );
+        }
+
+        let mut exhausted = arena.clone();
+        let mut exhausted_terrain = terrain.clone();
+        exhausted.finish_source_group();
+        let failed = crate::native_world::effects::step_projectile(
+            &mut exhausted,
+            &mut exhausted_terrain,
+            &particles,
+            slot,
+            source_target::Context::default(),
+        )
+        .expect("water callback tolerates a full source arena");
+        assert_eq!(failed.impact_slot, None);
+        assert!(!failed.live);
+        assert!(
+            exhausted.economy.fireball_projectiles.iter().any(|row| {
+                row.source_entity_index == slot && !row.active && row.drawing_disabled
+            })
+        );
+        assert!(!exhausted.economy.free_source_slots().contains(&slot));
+
+        let step = crate::native_world::effects::step_projectile(
+            arena,
+            terrain,
+            &particles,
+            slot,
+            source_target::Context::default(),
+        )
+        .expect("water callback uses the real frozen source allocator");
+        assert_eq!(step.impact_slot, Some(slot));
+        assert!(!step.live);
+        assert!(arena.resolve(previous).is_none());
+        let splash = &arena.entities[usize::from(slot)];
+        assert_eq!((splash.class, splash.model, splash.action), (10, 5, 5));
+        assert_eq!(splash.position, Position::default());
+        assert_eq!(splash.source_id, slot);
+        assert!(splash.drawing_disabled());
+        assert!(arena.economy.map_chains.is_linked(slot));
+        assert_eq!(terrain.planes().entity_indices[0], slot as i16);
+    }
 
     #[test]
     fn fireball_impact_reads_the_reused_source_address_after_allocation() {

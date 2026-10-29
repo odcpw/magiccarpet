@@ -5685,10 +5685,18 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
         .map(|row| row.source_entity_index)
         .collect::<BTreeSet<_>>();
     let splash_slots_before = session
-        .economy()
-        .authored_model5_water_splashes()
+        .source_arena()
+        .entities
         .iter()
-        .map(|row| row.source_entity_index)
+        .filter(|row| row.active && (row.class, row.model) == (10, 5))
+        .map(|row| row.index)
+        .collect::<BTreeSet<_>>();
+    let raw_impacts_before = session
+        .source_arena()
+        .entities
+        .iter()
+        .filter(|row| row.active && (row.class, row.model) == (10, 0))
+        .map(|row| row.index)
         .collect::<BTreeSet<_>>();
 
     session.step_outer_turn(
@@ -5733,14 +5741,21 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
             .iter()
             .all(|row| impact_slots_before.contains(&row.source_entity_index))
     );
+    assert!(session.source_arena().entities.iter().all(|row| {
+        !row.active || (row.class, row.model) != (10, 0) || raw_impacts_before.contains(&row.index)
+    }));
     let splash = session
-        .economy()
-        .authored_model5_water_splashes()
+        .source_arena()
+        .entities
         .iter()
-        .find(|row| !splash_slots_before.contains(&row.source_entity_index))
-        .copied()
+        .find(|row| {
+            row.active
+                && (row.class, row.model, row.action) == (10, 5, 5)
+                && !splash_slots_before.contains(&row.index)
+        })
         .expect("qualified type-0 water constructs the model-5 splash");
-    assert_eq!(splash.entity_id, session.state.entity_index);
+    assert_eq!(splash.source_id, session.state.entity_index);
+    assert!(session.economy().map_chains().is_linked(splash.index));
 
     let cast_events = &session.shared_spells().activation_events()[events_before..];
     assert!(cast_events.iter().any(|event| matches!(

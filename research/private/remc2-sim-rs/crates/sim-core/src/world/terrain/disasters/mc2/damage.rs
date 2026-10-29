@@ -128,7 +128,7 @@ fn award_experience(
     let Some(owner) = arena.entities.get(usize::from(damage.owner)) else {
         return Err("terrain experience owner is outside the source arena".into());
     };
-    if owner.class != 3 || owner.model != 0 {
+    if arena.economy.has_live_typed_slot(damage.owner) || owner.class != 3 || owner.model != 0 {
         return Ok(DamageResult {
             hits: count,
             experience: None,
@@ -147,4 +147,95 @@ fn award_experience(
         hits: count,
         experience: Some((damage.owner, family)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terrain_experience_uses_current_owner_slot_and_reward_policy() {
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+            },
+            std::path::PathBuf::from,
+        );
+        let mut simulation = crate::campaign::CampaignSession::open(
+            package,
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .expect("retained Level 2 campaign")
+        .simulation()
+        .clone();
+        let live = &mut simulation.session.state.live;
+        let owner = live.core.state.entity_index;
+        let position = live.core.state.position;
+        let damage = AreaDamage {
+            source_slot: owner,
+            position,
+            owner,
+            payload: 1,
+            half_width: 1,
+            half_depth: 1,
+            vertical_offset: 0,
+            half_height: 1,
+            experience_spell: Some(18),
+        };
+        let before = live.shared_spells.spell_experience()[18];
+        let result = award_experience(
+            &live.economy,
+            Some(&mut live.shared_spells),
+            true,
+            damage,
+            2,
+        )
+        .unwrap();
+        assert_eq!((result.hits, result.experience), (2, Some((owner, 18))));
+        assert_eq!(live.shared_spells.spell_experience()[18], before + 2);
+
+        live.shared_spells
+            .set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
+        let enabled = live.shared_spells.mission_rewards().allows_experience();
+        let result = award_experience(
+            &live.economy,
+            Some(&mut live.shared_spells),
+            enabled,
+            damage,
+            2,
+        )
+        .unwrap();
+        assert_eq!((result.hits, result.experience), (2, None));
+        assert_eq!(live.shared_spells.spell_experience()[18], before + 2);
+
+        live.shared_spells
+            .set_mission_rewards(crate::campaign::rewards::MissionRewards::Enabled);
+        // Controlled stale-projection state: the actual typed Smoke13 carrier
+        // takes this numeric slot while the old player source row remains.
+        // This checks owner resolution, not an authored gameplay encounter.
+        assert_eq!(
+            live.economy
+                .economy
+                .initialize_model13_smoke_child(owner, position, 25),
+            Some(owner)
+        );
+        assert_eq!(
+            (
+                live.economy.entities[usize::from(owner)].class,
+                live.economy.entities[usize::from(owner)].model
+            ),
+            (3, 0)
+        );
+        let result = award_experience(
+            &live.economy,
+            Some(&mut live.shared_spells),
+            true,
+            damage,
+            2,
+        )
+        .unwrap();
+        assert_eq!((result.hits, result.experience), (2, None));
+        assert_eq!(live.shared_spells.spell_experience()[18], before + 2);
+    }
 }

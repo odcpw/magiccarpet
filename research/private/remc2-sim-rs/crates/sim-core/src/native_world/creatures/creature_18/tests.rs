@@ -471,6 +471,9 @@ fn constructor_binds_source18_properties_and_first_callback_enters_patrol() {
 
 #[test]
 fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_none() {
+    use crate::PlayerCommand;
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+
     let mut simulation = crate::native_world::tests::level_two_campaign_session();
     let particles = simulation
         .session
@@ -583,6 +586,11 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
     }
 
     let actor_position = actor.position;
+    let shot_handles = effects
+        .projectile_slots
+        .iter()
+        .map(|&slot| arena.handle(slot).expect("emitted source generation"))
+        .collect::<Vec<_>>();
     let source_slot = effects.projectile_slots[0];
     let consumer = {
         let (economy, entities) = (&mut arena.economy, &arena.entities);
@@ -593,25 +601,169 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
         "the shared source fireball consumer must advance the emitted shot"
     );
 
-    let second = add_creature(arena, terrain, &particles, actor_position, 146);
+    // Keep the no-target actor at the same position in a separate clone, so
+    // it cannot collide with the original fan during the later scheduler run.
+    let mut lost_arena = arena.clone();
+    let mut lost_runtime = runtime.clone();
+    let mut lost_terrain = terrain.clone();
+    let second = add_creature(
+        &mut lost_arena,
+        &mut lost_terrain,
+        &particles,
+        actor_position,
+        146,
+    );
     {
-        let actor = &mut arena.entities[usize::from(second)];
+        let actor = &mut lost_arena.entities[usize::from(second)];
         actor.set_phase(RULES.source_scan_period);
         actor.set_source_dword_10(10);
         actor.record[74] = 1;
         put(actor, 154, 0);
     }
-    let classes = class3_slots(arena);
-    let families = model_slots(arena);
-    let before_lost_target = arena.economy.fireball_projectiles().len();
+    let classes = class3_slots(&lost_arena);
+    let families = model_slots(&lost_arena);
+    let before_lost_target = lost_arena.economy.fireball_projectiles().len();
     let outcome = mc2::step_row(
-        arena, runtime, terrain, &particles, second, &classes, &families,
+        &mut lost_arena,
+        &mut lost_runtime,
+        &mut lost_terrain,
+        &particles,
+        second,
+        &classes,
+        &families,
     )
     .expect("lost-target callback returns to behavior");
     assert!(outcome.projectile_slots.is_empty());
     assert_eq!(
-        arena.economy.fireball_projectiles().len(),
+        lost_arena.economy.fireball_projectiles().len(),
         before_lost_target
+    );
+    // Let the source attack leave its firing phase on the next callback, so
+    // only the original five shots can satisfy this consumer check.
+    arena.entities[usize::from(actor_slot)].set_source_dword_10(1);
+
+    // Continue the emitted fan through the ordinary scheduler. Both cases
+    // use the same unprotected player; only the negative moves that player
+    // out of reach after launch. This is a controlled consumer check, not a
+    // substitute for the owner-produced acquisition path below.
+    assert_eq!(target_slot, simulation.state.entity_index);
+    simulation.session.state.live.player_protection_ticks = 0;
+    let original_life = simulation.session.state.live.player_life;
+    let mut distant = simulation.clone();
+    let mut distant_position = target_position;
+    distant_position.x = distant_position.x.wrapping_add(0x6000);
+    distant
+        .set_level2_entity_position(target_slot, distant_position)
+        .unwrap();
+    let mut saw_impact = false;
+    let mut saw_damage = false;
+    let mut saw_reclaim = false;
+    let mut distant_damage = false;
+    let mut impact_observation = None;
+    let mut near_receipts = Vec::new();
+    let mut distant_receipts = Vec::new();
+    for _ in 0..24 {
+        crate::native_world::area_damage::start_effect_damage_trace(target_slot);
+        simulation.step_outer_turn(PlayerCommand::default(), 0);
+        near_receipts.extend(
+            crate::native_world::area_damage::take_effect_damage_trace()
+                .into_iter()
+                .filter(|receipt| receipt.pulse.owner == actor_slot),
+        );
+        crate::native_world::area_damage::start_effect_damage_trace(target_slot);
+        distant.step_outer_turn(PlayerCommand::default(), 0);
+        distant_receipts.extend(
+            crate::native_world::area_damage::take_effect_damage_trace()
+                .into_iter()
+                .filter(|receipt| receipt.pulse.owner == actor_slot),
+        );
+        assert!(
+            !simulation
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "near-case scheduler error: {:?}",
+            simulation.dispatch_events()
+        );
+        assert!(
+            !distant
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "distant-case scheduler error: {:?}",
+            distant.dispatch_events()
+        );
+        let arena = &simulation.session.state.live.economy;
+        if let Some(row) = arena
+            .entities
+            .iter()
+            .find(|row| row.active && (row.class, row.model, row.source_id) == (10, 0, actor_slot))
+        {
+            saw_impact |=
+                put_word(row, 154) == target_slot && row.subspell_index == RULES.projectile_damage;
+            impact_observation = Some((
+                row.index,
+                row.position,
+                put_word(row, 154),
+                row.subspell_index,
+                (row.control_flags, row.record[69], row.record[70]),
+                (row.life, row.phase, row.source_dword_10()),
+                (row.array_pitch(), row.array_yaw(), row.array_fov()),
+                arena.entities[usize::from(target_slot)].position,
+                crate::native_world::area_damage::read_arena_actor(arena, target_slot),
+            ));
+        }
+        let target = &arena.entities[usize::from(target_slot)];
+        let pending = i32::from_le_bytes(target.record[98..102].try_into().unwrap());
+        saw_damage |= pending > 0 && put_word(target, 102) == actor_slot;
+        saw_damage |= simulation.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Economy { event: Level2EconomyEvent::DamageApplied {
+                target_entity_index, attacker_entity_index, damage, ..
+            }, .. } if *target_entity_index == target_slot && *attacker_entity_index == actor_slot && *damage > 0
+        ));
+        saw_reclaim |= shot_handles.iter().any(|&handle| {
+            arena
+                .economy
+                .free_source_slots()
+                .contains(&handle.source_slot)
+                && arena.resolve(handle).is_none()
+        });
+        let distant_target = &distant.entities()[usize::from(target_slot)];
+        let distant_pending =
+            i32::from_le_bytes(distant_target.record[98..102].try_into().unwrap());
+        distant_damage |= distant_pending > 0 && put_word(distant_target, 102) == actor_slot;
+        distant_damage |= distant.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Economy { event: Level2EconomyEvent::DamageApplied {
+                target_entity_index, attacker_entity_index, damage, ..
+            }, .. } if *target_entity_index == target_slot && *attacker_entity_index == actor_slot && *damage > 0
+        ));
+        if saw_impact
+            && saw_damage
+            && saw_reclaim
+            && simulation.session.state.live.player_life < original_life
+        {
+            break;
+        }
+    }
+    assert!(
+        saw_impact,
+        "an emitted model18 shot must create its target-bound impact: {impact_observation:?}; callbacks={near_receipts:?}"
+    );
+    assert!(
+        saw_damage,
+        "the impact must deliver source-attributed damage: {impact_observation:?}; callbacks={near_receipts:?}"
+    );
+    assert!(
+        simulation.session.state.live.player_life < original_life,
+        "the player must consume that damage"
+    );
+    assert!(
+        saw_reclaim,
+        "an emitted shot must reach the following-pass generation-safe reclaim"
+    );
+    assert!(
+        !distant_damage,
+        "the same fan must not damage the player moved out of reach: {distant_receipts:?}"
     );
 }
 
@@ -1119,6 +1271,52 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         acquired,
         "authored model18 must acquire the nearby player through its normal source callback: {:?}",
         session.dispatch_events()
+    );
+
+    // Continue the same owner-produced actor with no action, target, timer,
+    // or RNG edits. Its source callback decides when tracking becomes attack
+    // and the shared scheduler advances any higher-slot newborns in that pass.
+    let mut entered_attack = false;
+    let mut emitted = false;
+    for _ in 0..256 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "owner model18 scheduler error: {:?}",
+            session.dispatch_events()
+        );
+        entered_attack |= session.entities()[usize::from(slot)].action == 146;
+        emitted |= session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .fireball_projectiles()
+            .iter()
+            .any(|shot| {
+                shot.origin == crate::native_world::FireballProjectileOrigin::Creature18
+                    && shot.owner_entity_index == slot
+                    && shot.target_source_entity_index == player
+                    && shot.source_subspell_index == RULES.projectile_damage
+            });
+        if emitted {
+            break;
+        }
+    }
+    let actor = &session.entities()[usize::from(slot)];
+    assert!(
+        entered_attack && emitted,
+        "owner model18 must naturally enter attack and emit a target-bound fireball: slot={slot} action={} phase={} attack_phase={} timer={} rng={} target={}",
+        actor.action,
+        actor.phase,
+        actor.record[74],
+        actor.source_dword_10(),
+        actor.entity_rng,
+        put_word(actor, 154)
     );
 }
 

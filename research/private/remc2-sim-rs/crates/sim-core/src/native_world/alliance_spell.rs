@@ -427,11 +427,43 @@ pub(crate) fn step_impact(
             "Alliance terminal handler needs a visible live class10/model74 effect".to_owned(),
         );
     }
+    // Alliance assigns its parent when the terminal takes over the creature,
+    // rather than at the creature's original construction. Observe that live
+    // address now so a later reuse cannot prolong the new Alliance binding.
+    let parent = arena.handle(effect.source_id);
     let impact = rules::impact(&mut arena.entities, effect_slot, map_order);
     if !arena.entities[usize::from(effect_slot)].drawing_disabled() {
         return Err(
             "Alliance model74 terminal was not consumed by the current impact kernel".to_owned(),
         );
+    }
+    if let Some(parent) = parent {
+        for &slot in &impact.affected_entities {
+            // A typed occupant may have rejected an obsolete compatibility
+            // row's control write. Do not change that occupant's parent when
+            // its current source identity differs from the affected shadow.
+            let current = super::area_damage::read_arena_actor(arena, slot);
+            let exact_occupant = arena.entities.get(usize::from(slot)).is_some_and(|row| {
+                row.index == slot
+                    && current.is_some_and(|actor| {
+                        (row.source_id, row.class, row.model)
+                            == (actor.source_id, actor.class, actor.model)
+                    })
+            });
+            if exact_occupant
+                && let Some(child) = arena.handle(slot)
+                && (!matches!(
+                    arena.resolve(child),
+                    Some(crate::campaign::source_arena::SourceEntityView::Dynamic(
+                        super::Level2DynamicArenaKind::BeeCreature
+                    ))
+                ) || super::creatures::bee::mc2::alliance_shadow_matches_current_bee(
+                    arena, slot,
+                ))
+            {
+                arena.bind_creature_parent(child, parent);
+            }
+        }
     }
     for &(sound_entity, sound) in &impact.sounds {
         arena

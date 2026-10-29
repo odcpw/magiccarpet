@@ -198,7 +198,8 @@ fn ordinary_mission18_schedules_every_imported_rival_through_dispatch_and_tail()
     }
     session.step_level2_source_pass(0);
     let live = &session.session.state.live;
-    assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+        "ordinary rival holder dispatch failed: {:?}", session.dispatch_events());
     assert!(live.economy.entities.iter().any(|row| {
         row.active && (row.class, row.model, row.action) == (9, 7, 7)
             && row.source_id == caster
@@ -245,7 +246,7 @@ fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
     // delegates to this same owner-bound operation before falling.
     live.nyphur_dispatcher.step_dying_tether(
         &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(),
-        &live.core.players, live.core.state.entity_index, caster, caster_position,
+        &mut live.player_life, &live.core.players, live.core.state.entity_index, caster, caster_position,
     ).expect("real rival tether carriers resolve");
     assert_eq!(live.economy.entities[usize::from(target)].life, 5_000 - i32::from(life_regen) - 2);
     assert_eq!(live.economy.entities[usize::from(target)].mana, (500 - mana_regen - 8).max(0));
@@ -254,10 +255,150 @@ fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
     live.economy.entities[usize::from(holder)].active_value = 0;
     live.nyphur_dispatcher.step_dying_tether(
         &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(),
-        &live.core.players, live.core.state.entity_index, caster, caster_position,
+        &mut live.player_life, &live.core.players, live.core.state.entity_index, caster, caster_position,
     ).unwrap();
     assert!(!live.nyphur_dispatcher.get(caster_handle).unwrap().has_duel_target());
     assert_eq!(live.nyphur_dispatcher.get(target_handle).unwrap().duel_tether(), target_binding_before);
+
+    // The same source tether can hit the real local player. Its damage must
+    // reach the session life consumer as well as the numeric actor row.
+    let local = live.core.state.entity_index;
+    let local_regen = live.shared_spells.player_life_regen as i16;
+    let local_mana_regen = live.economy.entities[usize::from(local)].mana_regen;
+    let row = &mut live.economy.entities[usize::from(local)];
+    row.set_position(target_position);
+    row.set_life(5_000);
+    row.set_mana(500);
+    live.shared_spells.sync_player_entity_from_authority(row);
+    live.player_life = 5_000;
+    live.economy.entities[usize::from(holder)].active_value = 1;
+    assert!(live.nyphur_dispatcher.get_mut(caster_handle).unwrap().install_duel_tether(
+        crate::spells::directional::DuelTetherBinding {
+            caster_entity_index: caster, target_entity_index: local, holder_entity_index: holder,
+            tier: 2, prior_distance: 1_024,
+        },
+    ));
+    live.nyphur_dispatcher.step_dying_tether(
+        &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(),
+        &mut live.player_life, &live.core.players, local, caster, caster_position,
+    ).unwrap();
+    let expected_life = 5_000 - i32::from(local_regen) - 2;
+    let expected_mana = (500 - local_mana_regen - 8).max(0);
+    assert_eq!(live.economy.entities[usize::from(local)].life, expected_life);
+    assert_eq!(live.shared_spells.player_entity.life, expected_life);
+    assert_eq!(live.player_life, expected_life);
+    assert_eq!(live.shared_spells.player_mana, expected_mana);
+    assert_eq!(live.shared_spells.caster.mana, expected_mana);
+    if let Some(fire) = live.core.context.spell_fire.as_ref() {
+        assert_eq!(fire.caster.mana, expected_mana);
+    }
+}
+
+#[test]
+fn ordinary_mission23_rival_lethal_contact_selects_dying_action_on_same_visit() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual ordinary Mission 23 package").simulation().clone();
+    let owner = 425_u16;
+    let handle = session.session.state.live.economy.handle(owner).unwrap();
+    let attacker = session.session.state.live.core.state.entity_index;
+    {
+        let live = &mut session.session.state.live;
+        let mut position = live.economy.entities[usize::from(owner)].position;
+        // Move the actual actor away from its Castle; protection is allowed
+        // to expire through normal source visits, never bypassed in the test.
+        position.x = position.x.wrapping_add(0x5000);
+        crate::world::effects::sync_position(
+            &mut live.economy, &mut live.terrain, owner, position, true, false,
+        ).unwrap();
+        live.economy.entities[usize::from(owner)].set_position(position);
+    }
+    let mut admitted = false;
+    for _ in 0..256 {
+        session.step_level2_source_pass(0);
+        let live = &session.session.state.live;
+        assert_eq!(live.economy.handle(owner), Some(handle));
+        assert!(live.economy.entities[usize::from(owner)].life >= 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let common = &live.nyphur_dispatcher.get(handle).unwrap().common_upkeep;
+        if common.word_0x159 == 0 && !common.high_upkeep {
+            admitted = true;
+            break;
+        }
+    }
+    assert!(admitted, "ordinary source visits expire the rival's protection away from its Castle");
+    let (victim_color, score_before) = {
+        let live = &session.session.state.live;
+        let victim = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+        let killer = live.core.players.iter().find(|player| player.entity_index == attacker).unwrap();
+        let color = usize::from(victim.player_color_index());
+        (color, killer.source_kill_scores().expect("actual killer source score matrix")[color])
+    };
+    {
+        let live = &mut session.session.state.live;
+        // This is the real shared contact producer after its target was
+        // selected; no projectile flight or natural aim is claimed here.
+        crate::native_world::area_damage::contact(
+            &mut live.economy, None, owner, u16::MAX, attacker,
+        ).expect("real source contact writes the rival's damage mailbox");
+        assert_eq!(live.economy.entities[usize::from(owner)].source_upkeep_word_62(), attacker);
+    }
+    session.step_level2_source_pass(0);
+    let live = &session.session.state.live;
+    let actor = &live.economy.entities[usize::from(owner)];
+    assert_eq!(live.economy.handle(owner), Some(handle));
+    assert!(actor.life < 0, "lethal damage reaches the numeric source life on the consuming visit");
+    assert_eq!(actor.action, 2, "sub_12A70 selects the dying callback on the same visit");
+    assert_eq!(u16::from_le_bytes([actor.record[40], actor.record[41]]), attacker);
+    {
+        // Bound the fall after the real lethal contact. Death, the shortened
+        // banishment countdown and Castle revival remain scheduler visits.
+        let live = &mut session.session.state.live;
+        let actor = &live.economy.entities[usize::from(owner)];
+        let parameter = actor.parameter_relation.expect("rival collision parameter");
+        let offset = &session.session.definition.presentation.entity_parameters[usize::from(parameter)][12..14];
+        let mut position = actor.position;
+        position.z = live.terrain.ground_height(position)
+            .wrapping_add(i16::from_le_bytes([offset[0], offset[1]]));
+        live.economy.entities[usize::from(owner)].set_position(position);
+        live.economy.entities[usize::from(owner)].set_source_word_2c(0);
+        crate::world::effects::sync_position(
+            &mut live.economy, &mut live.terrain, owner, position, true, false,
+        ).unwrap();
+    }
+    session.step_level2_source_pass(0);
+    assert_eq!(session.session.state.live.economy.entities[usize::from(owner)].action, 3);
+    {
+        let live = &session.session.state.live;
+        let killer = live.core.players.iter().find(|player| player.entity_index == attacker).unwrap();
+        let shared_killer = live.shared_spells.players().iter().find(|player| player.entity_index == attacker).unwrap();
+        let expected = score_before.wrapping_add(1);
+        assert_eq!(killer.source_kill_scores().unwrap()[victim_color], expected);
+        assert_eq!(shared_killer.source_kill_scores().unwrap()[victim_color], expected);
+    }
+    session.session.state.live.economy.entities[usize::from(owner)].set_source_dword_10(1);
+    session.session.state.live.nyphur_dispatcher.get_mut(handle).unwrap()
+        .common_upkeep.move_boost = 37;
+    session.step_level2_source_pass(0);
+    assert_eq!(
+        session.session.state.live.nyphur_dispatcher.get(handle).unwrap()
+            .common_upkeep.move_boost,
+        0,
+        "the banished visit clears this owner's retained recoil before revival",
+    );
+    session.step_level2_source_pass(0);
+    let live = &session.session.state.live;
+    assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    assert_eq!(live.economy.handle(owner), Some(handle));
+    assert_eq!(live.economy.entities[usize::from(owner)].action, 1);
+    assert_eq!(live.economy.entities[usize::from(owner)].life, 10_000);
+    let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+    assert!(live.nyphur_dispatcher.bound_live_holder(handle, player, &live.economy, 0).is_some());
 }
 
 #[test]
@@ -4677,13 +4818,20 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
     });
     let mut trace = Vec::new();
     for turn in 0..16 {
+        let target_before = session.session.state.live.economy.entities[usize::from(target)].clone();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let live = &session.session.state.live;
         let target_row = &live.economy.entities[usize::from(target)];
         trace.push(format!(
-            "turn={turn} flyer={:?} target_mana={} xp={} errors={:?}",
+            "turn={turn} flyer={:?} target_before_mana={} target_before_regen={} target_before_lane={:?} target_after_mana={} target_after_regen={} target_after_max={} target_after_lane={:?} xp={} events={:?}",
             live.economy.entities[usize::from(projectile)],
+            target_before.mana,
+            target_before.mana_regen,
+            target_before.pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana),
             target_row.mana,
+            target_row.mana_regen,
+            target_row.max_mana,
+            target_row.pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana),
             live.shared_spells.spell_experience[13],
             session.dispatch_events()
         ));
@@ -4696,7 +4844,8 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
         if live.shared_spells.spell_experience[13] > experience_before {
             assert!(
                 target_row.mana < 7_000,
-                "actual recipient paid the tier-zero transfer"
+                "actual recipient paid the tier-zero transfer:\n{}",
+                trace.join("\n")
             );
             return;
         }

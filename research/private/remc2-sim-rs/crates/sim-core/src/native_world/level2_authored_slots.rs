@@ -792,6 +792,25 @@ impl Level2EconomyState {
         &self.authored_trees
     }
 
+    /// Apply terrain burial only to the current typed occupant of this slot.
+    pub(crate) fn hide_tree_for_terrain(&mut self, slot: u16, owner: u16) -> bool {
+        if !self
+            .live_arena_cursor_row(slot)
+            .is_some_and(|row| row.kind == Level2DynamicArenaKind::AuthoredTree)
+        {
+            return false;
+        }
+        let Some(tree) = self
+            .authored_trees
+            .iter_mut()
+            .find(|tree| tree.active && tree.source_entity_index == slot)
+        else {
+            return false;
+        };
+        crate::world::scenery::trees::hide_tree(tree, owner);
+        true
+    }
+
     #[must_use]
     pub fn authored_model32(&self) -> &[Level2AuthoredModel32Source] {
         &self.authored_model32
@@ -3381,6 +3400,9 @@ impl Level2EconomyState {
             shift_rot_x: 0,
             shift_rot_y: 0,
             yaw: 0,
+            pitch: 0,
+            target_source_entity_index: 0,
+            source_byte_46: 0,
             position,
             phase: source_entity_index as u8,
             active: true,
@@ -6191,10 +6213,21 @@ impl Level2EconomyState {
         let reclaimed_trees = self
             .authored_trees
             .iter()
-            .filter(|source| !source.active)
+            .filter(|source| {
+                !source.active
+                    || (at_source_boundary
+                        && (!source.drawing_enabled
+                            || source.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG
+                                != 0))
+            })
             .map(|source| (source.source_entity_index, source.entity_rng))
             .collect::<Vec<_>>();
-        self.authored_trees.retain(|source| source.active);
+        self.authored_trees.retain(|source| {
+            source.active
+                && (!at_source_boundary
+                    || (source.drawing_enabled
+                        && source.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG == 0))
+        });
         for (slot, entity_rng) in reclaimed_trees {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
@@ -7311,6 +7344,12 @@ impl Level2EconomyState {
             hasher.update([u8::from(child.active)]);
         }
         for source in &self.authored_model17 {
+            if source.pitch != 0 || source.target_source_entity_index != 0 || source.source_byte_46 != 0 {
+                hasher.update(b"model17-impact-payload-v1");
+                hasher.update(source.pitch.to_le_bytes());
+                hasher.update(source.target_source_entity_index.to_le_bytes());
+                hasher.update([source.source_byte_46]);
+            }
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_id.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());

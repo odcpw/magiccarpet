@@ -48,34 +48,47 @@ impl<'a> Context<'a> {
         Self::new(goats, &ordinary.houses, &ordinary.villagers)
     }
 
-    fn external(self, slot: u16) -> Option<crate::level1_mission::Level1SourceEntityView> {
-        self.goats
+    fn external(self, slot: u16) -> Option<View> {
+        if let Some(row) = self.goats.and_then(|family| {
+            family
+                .goats()
+                .iter()
+                .find(|row| row.active && row.entity_index == slot)
+        }) {
+            let mut view = View::external(super::goat_source_entity_view(row));
+            view.yaw = Some(row.yaw);
+            view.roll = Some(row.roll);
+            view.relations.parent = Some(row.parent_entity_index);
+            view.relations.stage_mode = Some(row.stage_var_2 as u8);
+            view.relations.stage_index = Some(row.stage_var_1 as u8);
+            view.relations.stage_relation = Some(row.stage_target);
+            return Some(view);
+        }
+        if let Some(row) = self.houses.and_then(|family| {
+            family
+                .houses()
+                .iter()
+                .find(|row| row.source_retained() && row.entity_index == slot)
+        }) {
+            return Some(View::external(super::house_source_entity_view(row)));
+        }
+        self.villagers
             .and_then(|family| {
                 family
-                    .goats()
+                    .villagers()
                     .iter()
-                    .find(|row| row.active && row.entity_index == slot)
+                    .find(|row| row.source_retained() && row.entity_index == slot)
             })
-            .map(super::goat_source_entity_view)
-            .or_else(|| {
-                self.houses
-                    .and_then(|family| {
-                        family
-                            .houses()
-                            .iter()
-                            .find(|row| row.source_retained() && row.entity_index == slot)
-                    })
-                    .map(super::house_source_entity_view)
-            })
-            .or_else(|| {
-                self.villagers
-                    .and_then(|family| {
-                        family
-                            .villagers()
-                            .iter()
-                            .find(|row| row.source_retained() && row.entity_index == slot)
-                    })
-                    .map(super::villager_source_entity_view)
+            .map(|row| {
+                let mut view = View::external(super::villager_source_entity_view(row));
+                view.yaw = Some(row.yaw);
+                view.roll = Some(row.roll);
+                view.relations.parent = Some(row.stage.parent);
+                view.relations.stage_mode = Some(row.stage_var_2 as u8);
+                view.relations.stage_index = Some(row.stage_var_1 as u8);
+                view.relations.stage_relation = Some(row.stage.relation);
+                view.relations.next = Some(row.linked_entity_index);
+                view
             })
     }
 
@@ -97,6 +110,10 @@ pub(crate) struct Relations {
     pub(crate) attacker: Option<u16>,
     pub(crate) parent: Option<u16>,
     pub(crate) stage_mode: Option<u8>,
+    pub(crate) stage_index: Option<u8>,
+    pub(crate) stage_relation: Option<u16>,
+    /// Source word0x34 child chain, distinct from word0x32 peer following.
+    pub(crate) next: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,6 +157,9 @@ impl View {
                 attacker: Some(row.word_26()),
                 parent: Some(row.source_spell_parent_entity_index()),
                 stage_mode: Some(row.record[77]),
+                stage_index: Some(row.record[76]),
+                stage_relation: Some(u16::from_le_bytes([row.record[78], row.record[79]])),
+                next: Some(u16::from_le_bytes([row.record[56], row.record[57]])),
             },
             collision: Some(Shape {
                 half_width: row.array_pitch(),
@@ -226,7 +246,16 @@ pub(crate) fn read(
                 _ => false,
             }
         {
-            return Ok(Some(View::external(external)));
+            let mut external = external;
+            if let Some(state) = arena
+                .economy
+                .authored_class5_runtime
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+            {
+                external.relations.next = Some(state.linked_head);
+            }
+            return Ok(Some(external));
         }
         return dynamic(arena, context, slot, cursor.kind).map(Some);
     }
@@ -264,7 +293,7 @@ pub(crate) fn read(
         && let Some(external) = context.external(slot)
         && (raw.class, raw.model) == (external.class, external.model)
     {
-        View::external(external)
+        external
     } else {
         View::raw(raw)
     };
@@ -293,6 +322,7 @@ fn dynamic(
     if matches!(
         kind,
         Kind::ManaSphere
+            | Kind::AuthoredTree
             | Kind::CastleRoot
             | Kind::CastleAuxiliary
             | Kind::BeeCreature
@@ -605,15 +635,25 @@ fn dynamic(
             row.life,
             row.control_flags
         ),
-        Kind::AuthoredModel17 => carrier!(
-            economy.authored_model17,
-            row,
-            row.source_class,
-            row.model,
-            row.entity_id,
-            row.life,
-            row.control_flags
-        ),
+        Kind::AuthoredModel17 => {
+            let row = economy
+                .authored_model17
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("target slot {slot} lost current {kind:?} carrier"))?;
+            let mut view = carrier!(
+                economy.authored_model17,
+                row,
+                row.source_class,
+                row.model,
+                row.entity_id,
+                row.life,
+                row.control_flags
+            );
+            view.yaw = Some(row.yaw);
+            view.relations.target = Some(row.target_source_entity_index);
+            view
+        }
         Kind::Model17SpawnedChild => carrier!(
             economy.model17_spawned_children,
             row,
@@ -659,15 +699,6 @@ fn dynamic(
         ),
         Kind::AuthoredClass5ArcherChild => carrier!(
             economy.authored_class5_archer_children,
-            row,
-            row.source_class,
-            row.model,
-            row.entity_id,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
-        Kind::AuthoredTree => carrier!(
-            economy.authored_trees,
             row,
             row.source_class,
             row.model,
@@ -749,6 +780,11 @@ fn dynamic(
         attacker: current_relations.attacker.or(view.relations.attacker),
         parent: current_relations.parent.or(view.relations.parent),
         stage_mode: current_relations.stage_mode.or(view.relations.stage_mode),
+        stage_index: current_relations.stage_index.or(view.relations.stage_index),
+        stage_relation: current_relations
+            .stage_relation
+            .or(view.relations.stage_relation),
+        next: current_relations.next.or(view.relations.next),
     };
     Ok(view)
 }
@@ -831,6 +867,9 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
                 attacker: Some(row.damage_attacker_entity_index),
                 parent: Some(row.parent_entity_index),
                 stage_mode: Some(row.stage_var2),
+                stage_index: Some(row.stage_var1),
+                stage_relation: Some(row.stage_relation),
+                next: Some(row.linked_child_entity_index),
             })
             .unwrap_or_default(),
         Kind::AuthoredClass5 => {
@@ -845,12 +884,22 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
                 })
                 .unwrap_or_default();
             if let Some(state) = economy
+                .authored_class5_runtime
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+            {
+                relation.next = Some(state.linked_head);
+            }
+            if let Some(state) = economy
                 .authored_class5_archer
                 .iter()
                 .find(|row| row.source_entity_index == slot)
             {
                 relation.parent = Some(state.stage.parent);
                 relation.stage_mode = Some(state.stage.mode);
+                relation.stage_index = Some(state.stage.index);
+                relation.stage_relation = Some(state.stage.relation);
+                relation.next = Some(state.word_0x34);
             } else if let Some(state) = economy
                 .authored_fireflies
                 .iter()
@@ -858,6 +907,7 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
             {
                 relation.parent = Some(state.parent_entity_index);
                 relation.stage_mode = Some(state.stage_var2);
+                relation.stage_index = Some(state.stage_var1);
             } else if let Some(state) = economy
                 .authored_dragons
                 .iter()
@@ -865,6 +915,12 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
             {
                 relation.parent = Some(state.parent_entity_index);
                 relation.stage_mode = Some(state.stage_var2);
+            } else if let Some(state) = economy
+                .authored_class5_model3
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+            {
+                relation.next = Some(state.word_0x34);
             }
             relation
         }
@@ -875,8 +931,34 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
             .map(|row| Relations {
                 target: Some(row.target_entity_index),
                 attacker: Some(row.current_attacker),
-                parent: Some(row.parent_house_entity_index),
+                parent: Some(row.stage.parent),
                 stage_mode: Some(row.stage_var_2 as u8),
+                stage_index: Some(row.stage_var_1 as u8),
+                stage_relation: Some(row.stage.relation),
+                next: Some(row.linked_entity_index),
+            })
+            .unwrap_or_default(),
+        Kind::AuthoredDragonPart => economy
+            .authored_dragon_parts
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| Relations {
+                attacker: Some(row.word_0x26),
+                parent: Some(row.parent_entity_index),
+                next: Some(row.next_entity_index),
+                ..Relations::default()
+            })
+            .unwrap_or_default(),
+        Kind::AuthoredClass5Model3Child => economy
+            .authored_class5_model3_children
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| Relations {
+                target: Some(row.word_0x96),
+                attacker: Some(row.word_0x26),
+                parent: Some(row.parent_entity_index),
+                next: Some(row.word_0x34),
+                ..Relations::default()
             })
             .unwrap_or_default(),
         Kind::FireballProjectile => economy
@@ -886,6 +968,18 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
             .map(|row| Relations {
                 target: Some(row.target_source_entity_index),
                 attacker: Some(row.holder_entity_index),
+                ..Relations::default()
+            })
+            .unwrap_or_default(),
+        Kind::AuthoredClass5ArcherChild => economy
+            .authored_class5_archer_children
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| Relations {
+                target: Some(row.word_0x96),
+                attacker: Some(row.word_0x26),
+                parent: Some(row.parent_entity_index),
+                next: Some(row.word_0x34),
                 ..Relations::default()
             })
             .unwrap_or_default(),
@@ -938,6 +1032,9 @@ mod tests {
         raw.set_life(-400);
         raw.set_control_flags(0x400);
         raw.record[154..156].copy_from_slice(&944_u16.to_le_bytes());
+        raw.record[76] = 71;
+        raw.record[78..80].copy_from_slice(&988_u16.to_le_bytes());
+        raw.record[56..58].copy_from_slice(&977_u16.to_le_bytes());
         let current = arena
             .economy
             .bee_creatures
@@ -948,6 +1045,9 @@ mod tests {
         current.damage_attacker_entity_index = 222;
         current.parent_entity_index = 333;
         current.stage_var2 = 14;
+        current.stage_var1 = 6;
+        current.stage_relation = 444;
+        current.linked_child_entity_index = 555;
 
         let target = read(&arena, Context::default(), slot).unwrap().unwrap();
         assert_eq!((target.class, target.model), (bee.source_class, bee.model));
@@ -961,6 +1061,9 @@ mod tests {
                 attacker: Some(222),
                 parent: Some(333),
                 stage_mode: Some(14),
+                stage_index: Some(6),
+                stage_relation: Some(444),
+                next: Some(555),
             }
         );
 
@@ -974,6 +1077,34 @@ mod tests {
         assert_eq!((target.class, target.model, target.life), (9, 9, -400));
         assert!(target.drawing_disabled());
         assert_eq!(target.relations.target, Some(944));
+        assert_eq!(target.relations.stage_index, Some(71));
+        assert_eq!(target.relations.stage_relation, Some(988));
+        assert_eq!(target.relations.next, Some(977));
+
+        let live = &session.session.state.live;
+        let goat = live
+            .goats
+            .goats()
+            .iter()
+            .find(|goat| goat.active)
+            .expect("ordinary Level2 Goat");
+        let raw = &mut arena.entities[usize::from(goat.entity_index)];
+        raw.record[76] = (goat.stage_var_1 as u8).wrapping_add(1);
+        raw.record[78..80].copy_from_slice(&goat.stage_target.wrapping_add(1).to_le_bytes());
+        raw.set_yaw(goat.yaw.wrapping_add(1));
+        raw.set_source_roll(goat.roll.wrapping_add(1));
+        let target = read(
+            &arena,
+            Context::from_ordinary(&live.goats, &live.ordinary),
+            goat.entity_index,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(target.yaw, Some(goat.yaw));
+        assert_eq!(target.roll, Some(goat.roll));
+        assert_eq!(target.relations.stage_index, Some(goat.stage_var_1 as u8));
+        assert_eq!(target.relations.stage_relation, Some(goat.stage_target));
+        assert_eq!(target.relations.parent, Some(goat.parent_entity_index));
 
         // Castle model3 defenders are castle_children, whereas model15
         // auxiliaries use the separate castle_defenders collection.
@@ -993,6 +1124,7 @@ mod tests {
         raw.class = 9;
         raw.model = 9;
         raw.set_life(-400);
+        raw.record[76] = 88;
         let context = Context {
             particles: Some(&session.session.definition.presentation.particles),
             map_type: Some(super::super::MapType::Day),
@@ -1009,6 +1141,11 @@ mod tests {
         assert_eq!(target.position, defender.position);
         assert!(target.collision.is_some());
 
+        assert_eq!(
+            target.relations.stage_index, None,
+            "an unavailable typed stage never inherits an old raw byte"
+        );
+
         arena
             .economy
             .castle_children
@@ -1020,6 +1157,52 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((target.class, target.model, target.life), (9, 9, -400));
+
+        // A House birth retains its provenance after a StageVar/Alliance
+        // parent changes. Only the actual source parent belongs in this view.
+        let live = &mut session.session.state.live;
+        let parent = live.core.state.entity_index;
+        let resident_slot = live
+            .economy
+            .allocate_house_resident(
+                10,
+                0,
+                crate::level1_mission::HouseResidentRequest {
+                    position,
+                    model: 13,
+                    action: 105,
+                    attacker_entity_index: 0,
+                },
+                &mut live.terrain,
+            )
+            .expect("ordinary Villager constructor");
+        live.economy
+            .economy
+            .house_residents
+            .iter_mut()
+            .find(|row| row.source_entity_index == resident_slot)
+            .unwrap()
+            .stage
+            .parent = parent;
+        live.economy.entities[usize::from(resident_slot)].record[44..46]
+            .copy_from_slice(&900_u16.to_le_bytes());
+        let target = read(&live.economy, Context::default(), resident_slot)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.relations.parent, Some(parent));
+        let resident = live
+            .economy
+            .economy
+            .house_residents
+            .iter_mut()
+            .find(|row| row.source_entity_index == resident_slot)
+            .unwrap();
+        assert_eq!(resident.parent_house_entity_index, 10);
+        resident.stage.parent = 0;
+        let target = read(&live.economy, Context::default(), resident_slot)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.relations.parent, Some(0));
     }
 
     #[test]

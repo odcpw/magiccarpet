@@ -884,7 +884,10 @@ where
                     && source.mana == 0
                     && source.max_mana == 0
                     && source.word_0x96_150 == 0
-                    && arena.economy.source_owner(creature.source_slot) == request.owner_id
+                    // sub_3A5B0 writes id_0x1A from the ring; NewEvent's
+                    // separate playerEntityIndex_0x94 remains zero.
+                    && sidecar.entity_id == request.owner_id
+                    && arena.economy.source_owner(creature.source_slot) == 0
                     && sidecar.authored_index.is_none()
                     && sidecar.stage_var2 == request.stage_mode
                     && sidecar.parent_entity_index == request.parent_slot

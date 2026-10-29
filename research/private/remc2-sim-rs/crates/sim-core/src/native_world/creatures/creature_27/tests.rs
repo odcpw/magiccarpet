@@ -409,6 +409,7 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
     use crate::PlayerCommand;
     use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
 
+    let mut failures = Vec::new();
     for selector in [0, 9] {
         let mut session = base.clone();
         let player_slot = session.state.entity_index;
@@ -477,11 +478,12 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
         };
         let mut saw_projectile = false;
         let mut saw_impact = false;
-        let mut impact_observation = None;
+        let mut impact_observations = Vec::new();
         let mut saw_damage = false;
         let mut saw_consumed_life = false;
         let mut fireball_slot = None;
         let mut saw_fireball_reclaim = false;
+        crate::native_world::area_damage::start_effect_damage_trace(target_slot);
         for _ in 0..24 {
             let head = &mut session.session.state.live.economy.entities[usize::from(head_slot)];
             if head.record[74] == 3 && head.record[72] == 1 && head.actual_speed == 192 {
@@ -522,11 +524,27 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
                         == (10, impact_model, root_slot)
             }) {
                 saw_impact = true;
-                impact_observation = Some((
+                impact_observations.push((
                     effect.index,
                     effect.position,
                     u16::from_le_bytes([effect.record[154], effect.record[155]]),
                     target_row.position,
+                    (effect.control_flags, effect.record[69], effect.record[70]),
+                    (
+                        effect.life,
+                        effect.phase,
+                        effect.source_dword_10(),
+                        effect.subspell_index,
+                    ),
+                    (effect.array_pitch(), effect.array_yaw(), effect.array_fov()),
+                    crate::native_world::area_damage::read_arena_actor(arena, target_slot),
+                    (
+                        arena.economy.map_chains.tile_of(target_slot),
+                        arena
+                            .economy
+                            .map_chains
+                            .tile_head(arena.economy.map_chains.tile_of(target_slot)),
+                    ),
                 ));
             }
             let attacker = u16::from_le_bytes([target_row.record[102], target_row.record[103]]);
@@ -562,28 +580,25 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
                 break;
             }
         }
-        assert!(
-            saw_projectile,
-            "selector {selector} must create its real projectile"
-        );
-        assert!(
-            saw_impact,
-            "selector {selector} must allocate its root-attributed class10 impact"
-        );
-        assert!(
-            saw_damage && saw_consumed_life,
-            "selector {selector} must deliver root-attributed damage to target {target_slot} \
+        let callback_observations = crate::native_world::area_damage::take_effect_damage_trace();
+        if !saw_projectile
+            || !saw_impact
+            || !saw_damage
+            || !saw_consumed_life
+            || (selector == 0 && !saw_fireball_reclaim)
+        {
+            failures.push(format!(
+                "selector {selector}: projectile={saw_projectile}, root-attributed impact={saw_impact}, \
+             fireball reclaim={saw_fireball_reclaim}; must deliver root-attributed damage to target {target_slot} \
              (player={is_player}, original life={target_life}, \
              damage observed={saw_damage}, life consumed={saw_consumed_life}, \
-             impact(slot, position, target, target position)={impact_observation:?}); \
-             final target={:?}",
-            session.entities().get(usize::from(target_slot))
-        );
-        assert!(
-            selector != 0 || saw_fireball_reclaim,
-            "Fireball's next-pass reclaim must retain descriptor106 in the freed source row"
-        );
+             impacts(slot, position, target, target position, flags/selectors, life/phase/age/payload, axes, target actor, target tile/head)={impact_observations:?}); \
+             callback observations={callback_observations:?}; final target={:?}",
+                session.entities().get(usize::from(target_slot))
+            ));
+        }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -668,6 +683,7 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     root_slot: u16,
 ) {
     use crate::PlayerCommand;
+    use crate::campaign::schedule::ScheduleReceipt;
     use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
 
     let attacker = session.state.entity_index;
@@ -717,6 +733,8 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     let mut burst_slot = None;
     let mut burst_expired = false;
     let mut death_passes = Vec::new();
+    let mut death_events = Vec::new();
+    let mut death_schedule = Vec::new();
     for _ in 0..8 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
@@ -727,7 +745,23 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
             "source scheduler error: {:?}",
             session.dispatch_events()
         );
+        death_schedule.extend(
+            session
+                .cf10_production_schedule_receipts()
+                .into_iter()
+                .filter(|receipt| {
+                    matches!(receipt,
+                    ScheduleReceipt::SlotResolved { slot, .. }
+                    | ScheduleReceipt::CallbackCompleted { slot, .. }
+                    | ScheduleReceipt::EpilogueCompleted { slot, .. }
+                    | ScheduleReceipt::CleanupCompleted { slot, .. }
+                    if *slot == root_slot || *slot == chain.heads[0].source_slot)
+                }),
+        );
         for event in session.dispatch_events() {
+            if matches!(event, Mc2DispatchEvent::AuthoredGroupActivated { .. }) {
+                death_events.push(format!("{event:?}"));
+            }
             match event {
                 Mc2DispatchEvent::Economy {
                     event:
@@ -756,7 +790,15 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
         let arena = &session.session.state.live.economy;
         let mut all = std::iter::once(root).chain(chain.ordered.iter().copied());
         death_passes.push((
-            arena.entities[usize::from(root_slot)].action,
+            (
+                arena.entities[usize::from(root_slot)].active,
+                arena.entities[usize::from(root_slot)].class,
+                arena.entities[usize::from(root_slot)].model,
+                arena.entities[usize::from(root_slot)].action,
+                arena.entities[usize::from(root_slot)].control_flags,
+                arena.slot_generation(root_slot),
+                arena.economy.free_source_slots().contains(&root_slot),
+            ),
             all.clone()
                 .filter(|part| {
                     arena.slot_generation(part.source_slot) == part.generation
@@ -803,7 +845,9 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     assert!(
         hidden,
         "the source death pass hides every linked slot before reclaim; \
-         per outer turn (root action, hidden, reclaimed): {death_passes:?}"
+         per outer turn (root state, hidden, reclaimed): {death_passes:?}; \
+         authored groups during death: {death_events:?}; \
+         root/first-head schedule: {death_schedule:?}"
     );
     assert!(
         reclaimed,

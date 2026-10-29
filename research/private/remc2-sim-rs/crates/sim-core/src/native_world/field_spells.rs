@@ -1349,7 +1349,10 @@ mod tests {
                         .model22_spawned_children()
                         .iter()
                         .filter(|child| child.active && child.parent_entity_index == impact_slot)
-                        .map(|child| child.source_entity_index)
+                        .map(|child| {
+                            let slot = child.source_entity_index;
+                            (slot, session.economy.economy.slot_generation(slot))
+                        })
                         .collect::<Vec<_>>();
                     let byte_3e_before = session
                         .economy
@@ -1489,9 +1492,19 @@ mod tests {
                         !root.active || (root.class, root.model) != (10, 22),
                         "following source boundary retires the raw Wind root as well"
                     );
-                    for child in children {
-                        assert!(!session.economy.map_chains.is_linked(child));
+                    for (child, generation) in children {
                         let raw = &session.economy.entities[usize::from(child)];
+                        assert!(
+                            !session.economy.map_chains.is_linked(child),
+                            "Wind child slot {child}: original generation {generation}, current generation {}, raw active={} selector={}/{}/{} position={:?}, typed={:?}",
+                            session.economy.economy.slot_generation(child),
+                            raw.active,
+                            raw.class,
+                            raw.model,
+                            raw.action,
+                            raw.position,
+                            session.economy.economy.live_arena_cursor_row(child),
+                        );
                         assert!(
                             !raw.active || (raw.class, raw.model) != (10, 75),
                             "following source boundary retires linked raw Wind rows"
@@ -1505,7 +1518,7 @@ mod tests {
     #[test]
     fn authored_wind_reaches_scheduled_smoke_carriers_and_reclaims_links() {
         use crate::PlayerCommand;
-        use crate::native_world::{Mc2DispatchEvent, NativeWorld};
+        use crate::native_world::Mc2DispatchEvent;
 
         let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
             || {
@@ -1514,13 +1527,21 @@ mod tests {
             },
             std::path::PathBuf::from,
         );
-        let mut session = NativeWorld::inspect_level2_with_owner_cache(
-            crate::native_world::tests::level_two_fixture_path(),
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+            },
+            std::path::PathBuf::from,
+        );
+        let mut session = crate::campaign::CampaignSession::open_with_owner_cache(
+            package,
             cache,
+            crate::campaign::spec::CampaignSelection::LEVEL2,
         )
-        .expect("retained Level 2 package and owner cache")
-        .level2_reset_session()
-        .expect("Level 2 source session");
+        .expect("retained Level 2 campaign and owner cache")
+        .simulation()
+        .clone();
         let wind = session
             .allocate_level2_authored_model22(110)
             .expect("authored Wind");

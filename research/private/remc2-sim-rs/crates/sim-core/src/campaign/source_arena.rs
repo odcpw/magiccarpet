@@ -845,6 +845,7 @@ impl SourceArena {
         self.economy.reclaim_fireball_rows_at_source_boundary();
         crate::native_world::terrain_strip::prepare_trigger_reclaim(self, terrain)?;
         self.economy.reclaim_death_burst_rows_at_source_boundary();
+        crate::world::scenery::trees::prepare_reclaim(self, terrain)?;
         self.economy.reclaim_inactive_slots_at_source_boundary();
         let retired_origins = self
             .raw_creature_origins

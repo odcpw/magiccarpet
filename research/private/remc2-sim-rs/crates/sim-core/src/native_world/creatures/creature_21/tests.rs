@@ -649,6 +649,105 @@ fn summoned_parent_loss_expires_before_consuming_damage_with_mode_specific_visua
 }
 
 #[test]
+fn summoned_model21_expires_when_bound_parent_generation_is_reused() {
+    let package = std::env::var_os("MC_SETTLEMENT_FULL_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-1pb-16-level2-full-build-v2")
+        });
+    let mut simulation = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("owner Level 2 exports constructor counters")
+    .simulation()
+    .clone();
+    let particles = simulation
+        .session
+        .definition
+        .presentation
+        .particles
+        .to_vec();
+    let live = &mut simulation.session.state.live;
+    let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
+    let parent_row = arena
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 3 && row.model == 0 && row.life > 0)
+        .expect("owner session has a living parent");
+    let (parent_slot, position) = (parent_row.index, parent_row.position);
+    let parent = arena.handle(parent_slot).unwrap();
+    let slot = mc2::allocate_summoned(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        position,
+        parent_slot,
+        parent_slot,
+        parent_slot,
+    )
+    .unwrap()
+    .expect("model21 source allocation");
+    let child = arena.handle(slot).unwrap();
+    assert!(arena.bind_carried_creature_parent(child, parent));
+    arena.entities[usize::from(slot)].record[77] = 16;
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[21].push(slot);
+
+    let mut living_arena = arena.clone();
+    let mut living_runtime = runtime.clone();
+    let mut living_terrain = terrain.clone();
+    let living = mc2::step_row(
+        &mut living_arena,
+        &mut living_runtime,
+        &mut living_terrain,
+        &particles,
+        slot,
+        &[parent_slot],
+        &families,
+    )
+    .unwrap();
+    assert!(!living.expire);
+    assert!(!living_arena.entities[usize::from(slot)].drawing_disabled());
+    assert_eq!(living_arena.creature_parent(child), Some(parent));
+
+    let replacement = arena.entities[usize::from(parent_slot)].clone();
+    arena.entities[usize::from(parent_slot)].reclaim_source_row();
+    arena.economy.release_slot(parent_slot, None);
+    assert_eq!(arena.allocate_source_slot(), Some(parent_slot));
+    arena.entities[usize::from(parent_slot)] = replacement;
+    assert_ne!(arena.handle(parent_slot).unwrap(), parent);
+    assert_eq!(arena.creature_parent_binding(child), Some(parent));
+    assert!(arena.creature_parent(child).is_none());
+    let expired = mc2::step_row(
+        arena,
+        runtime,
+        terrain,
+        &particles,
+        slot,
+        &[parent_slot],
+        &families,
+    )
+    .unwrap();
+    assert!(expired.expire);
+    assert!(
+        !expired.summon_expire,
+        "source mode16 only emits its common expiry effect"
+    );
+    assert!(arena.entities[usize::from(slot)].drawing_disabled());
+    assert!(
+        arena.resolve(child).is_some(),
+        "hidden child remains until the next source boundary"
+    );
+    arena
+        .rebuild_source_arena_with_terrain(terrain, &[])
+        .unwrap();
+    assert!(arena.resolve(child).is_none());
+}
+
+#[test]
 fn boss_summon_acquires_live_target_and_dead_launch_hides() {
     let terrain = terrain();
     let mut parent = target(5);

@@ -202,7 +202,7 @@ pub(crate) fn update_shared_stage_variables(
 fn has_source_route(source: &EntitySnapshot) -> bool {
     source.active
         && source.class == 5
-        && (matches!(source.model, 3 | 9 | 17 | 18 | 21 | 26 | 28)
+        && (matches!(source.model, 3 | 9 | 17 | 18 | 21 | 25 | 26 | 28)
             || (source.model == 27 && (216..=223).contains(&source.action)))
 }
 

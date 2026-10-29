@@ -356,7 +356,28 @@ fn peer_cones_differ_for_stationary_and_roaming_and_zero_proximity_skips_both_sc
 
 #[test]
 fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass() {
-    let mut simulation = crate::native_world::tests::level_two_campaign_session();
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+        },
+        std::path::PathBuf::from,
+    );
+    let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/level2-day-owner-cache/components/gameplay")
+        },
+        std::path::PathBuf::from,
+    );
+    let mut simulation = crate::campaign::CampaignSession::open_with_owner_cache(
+        package,
+        cache,
+        crate::campaign::spec::CampaignSelection::LEVEL2,
+    )
+    .expect("qualified Level 2 campaign and matching owner cache")
+    .simulation()
+    .clone();
     let particles = simulation
         .session
         .definition
@@ -397,6 +418,11 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
         actor.set_control_flags(actor.control_flags | 0x800);
         put(actor, 154, target_slot);
     }
+    // Preserve this same source attack for the ordinary scheduler after the
+    // existing direct producer and impact controls below.
+    let mut scheduled = simulation.clone();
+    let live = &mut simulation.session.state.live;
+    let (arena, runtime, terrain) = (&mut live.economy, &mut live.core.runtime, &mut live.terrain);
     let classes = class3_slots(arena);
     let families = model_slots(arena);
     let effects = mc2::step_row(
@@ -438,12 +464,15 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     crate::world::effects::sync_position(arena, terrain, projectile_slot, start, true, false)
         .expect("publish guided projectile position");
     let impact = mc2::step_projectile(
-        arena, terrain, &particles, projectile_slot,
+        arena,
+        terrain,
+        &particles,
+        projectile_slot,
         crate::native_world::source_target::Context::default(),
     )
-        .expect("guided model20 callback advances")
-        .impact_slot
-        .expect("collision constructs the source Slowing impact");
+    .expect("guided model20 callback advances")
+    .impact_slot
+    .expect("collision constructs the source Slowing impact");
     assert_eq!(
         (
             arena.entities[usize::from(impact)].class,
@@ -483,6 +512,113 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
         .expect("following source boundary reclaims the hidden projectile");
     assert!(!arena.entities[usize::from(projectile_slot)].active);
     assert!(!arena.entities[usize::from(impact)].active);
+
+    // Drive the same prepared source attack through the ordinary numeric
+    // scheduler and into the actual player FlightState. The aim adjustment
+    // makes this a controlled collision check, not a gameplay encounter.
+    assert_eq!(
+        scheduled.session.state.live.core.state.entity_index,
+        target_slot
+    );
+    scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        !scheduled
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "model17 scheduled attack failed: {:?}",
+        scheduled.dispatch_events()
+    );
+    let projectile_handle = {
+        let live = &mut scheduled.session.state.live;
+        let projectile = live
+            .economy
+            .entities
+            .iter()
+            .find(|row| {
+                row.active
+                    && (row.class, row.model, row.action) == (9, 20, 21)
+                    && row.source_id == actor_slot
+            })
+            .expect("scheduled model17 attack creates the actual guided projectile")
+            .index;
+        let target = live.core.state.position;
+        let mut start = target;
+        start.x = if target.x & 0xff >= 106 {
+            target.x.wrapping_sub(500)
+        } else {
+            target.x.wrapping_add(500)
+        };
+        let yaw = heading_for_positions(start, target) as i16;
+        let row = &mut live.economy.entities[usize::from(projectile)];
+        row.set_position(start);
+        row.set_yaw(yaw);
+        row.set_pitch(0);
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            projectile,
+            start,
+            true,
+            false,
+        )
+        .expect("publish the actual projectile map position");
+        live.economy.entities[usize::from(actor_slot)].set_source_action(136);
+        (projectile, live.economy.economy.slot_generation(projectile))
+    };
+    let mut impact_slot = None;
+    for _ in 0..4 {
+        scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !scheduled
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "model17 scheduled impact failed: {:?}",
+            scheduled.dispatch_events()
+        );
+        let live = &scheduled.session.state.live;
+        if let Some(row) = live.economy.entities.iter().find(|row| {
+            row.active
+                && (row.class, row.model, row.action) == (10, 65, 70)
+                && put_word(row, 154) == target_slot
+        }) {
+            impact_slot = Some((row.index, live.economy.economy.slot_generation(row.index)));
+        }
+        if live.core.state.speed_modifier != 0 {
+            break;
+        }
+    }
+    assert!(
+        impact_slot.is_some(),
+        "ordinary collision produces the scheduled status65 row"
+    );
+    assert_eq!(scheduled.session.state.live.core.state.speed_modifier, 1);
+    let impact_slot = impact_slot.unwrap();
+    for _ in 0..12 {
+        scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            !scheduled
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
+    }
+    let live = &scheduled.session.state.live;
+    assert_eq!(
+        (
+            live.core.state.speed_modifier,
+            live.core.state.speed_modifier_counter
+        ),
+        (0, 0)
+    );
+    for (slot, generation) in [projectile_handle, impact_slot] {
+        let row = &live.economy.entities[usize::from(slot)];
+        assert!(
+            !row.active || live.economy.economy.slot_generation(slot) != generation,
+            "source projectile and impact are reclaimed or their addresses reused"
+        );
+    }
 }
 
 #[test]

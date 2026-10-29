@@ -378,8 +378,21 @@ pub(crate) fn step_row(
         .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model21 callback lost slot{slot}"))?
         .clone();
+    let parent_slot = word(&row, 44);
+    let stale_parent = arena.handle(slot).is_some_and(|child| {
+        arena.has_creature_parent_binding(child)
+            && arena
+                .creature_parent(child)
+                .is_none_or(|parent| parent.source_slot != parent_slot)
+    });
     let mut actor_row = row;
-    let targets = targets(arena);
+    let mut targets = targets(arena);
+    if stale_parent {
+        // A source-parent word names an address; the producer's binding names
+        // the occupant that created this child. Preserve unbound authored
+        // routes while preventing a replacement from extending that lifetime.
+        targets.retain(|target| target.slot != parent_slot);
+    }
     let mut context = Context {
         terrain,
         targets: &targets,

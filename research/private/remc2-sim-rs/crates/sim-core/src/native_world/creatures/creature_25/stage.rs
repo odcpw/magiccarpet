@@ -34,7 +34,7 @@ fn step_point_or_guard(
     let away = (i32::from(actor.row.position.x as i16) - i32::from(point.x as i16)).abs() > 3072
         || (i32::from(actor.row.position.y as i16) - i32::from(point.y as i16)).abs() > 3072;
     let seek_point = mode == 1 || away;
-    match super::consume(actor, ctx) {
+    match super::consume(actor, ctx)? {
         0 => {
             if seek_point || RULES.behavior_flags & 2 == 0 {
                 super::move_actor(actor, ctx);
@@ -153,7 +153,7 @@ fn alliance_blink(
     ctx: &Context<'_>,
     effects: &mut super::Effects,
     clear: bool,
-) {
+) -> Result<(), String> {
     let remaining = word(actor.row, 50) as i16;
     let duration = word(actor.row, 52) as i16;
     let phase = if clear {
@@ -178,13 +178,14 @@ fn alliance_blink(
         .row
         .set_control_flags((actor.row.control_flags & !0x0600_0000) | flags);
     let mut child = word(actor.row, 56);
-    for _ in 0..ctx.targets.len() {
+    for _ in 0..1000 {
         let Some(linked) = ctx.target(child) else {
             break;
         };
         effects.linked_blink_flags.push((linked.slot, flags));
-        child = linked.next;
+        child = linked.required(linked.next, "linked child")?;
     }
+    Ok(())
 }
 
 /// The attack callback invokes sub_1ED30 independently of the stage callback.
@@ -193,26 +194,32 @@ pub(super) fn alliance_target(
     ctx: &Context<'_>,
     effects: &mut super::Effects,
     target: Option<super::Target>,
-) -> Option<super::Target> {
+) -> Result<Option<super::Target>, String> {
     if actor.row.record[77] != 14 {
-        return target;
+        return Ok(target);
     }
-    alliance_blink(actor, ctx, effects, false);
+    alliance_blink(actor, ctx, effects, false)?;
     let remaining = word(actor.row, 50).wrapping_sub(1);
     put(actor.row, 50, remaining);
     if (remaining as i16) <= 0 {
-        return None;
+        return Ok(None);
     }
     let Some(parent) = ctx.target(word(actor.row, 44)) else {
-        return target;
+        return Ok(target);
     };
-    let target = target?;
-    let selected = if parent.target != 0 {
-        parent.target
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let parent_target = parent.required(parent.target, "target")?;
+    let selected = if parent_target != 0 {
+        parent_target
     } else {
-        parent.attacker
+        parent.required(parent.attacker, "attacker")?
     };
-    (target.slot != parent.slot && (selected == 0 || selected == target.slot)).then_some(target)
+    Ok(
+        (target.slot != parent.slot && (selected == 0 || selected == target.slot))
+            .then_some(target),
+    )
 }
 
 fn step_alliance(
@@ -220,27 +227,29 @@ fn step_alliance(
     ctx: &Context<'_>,
     parent_current: bool,
     effects: &mut super::Effects,
-) {
+) -> Result<(), String> {
     let remaining = word(actor.row, 50).wrapping_sub(1);
     put(actor.row, 50, remaining);
     let parent_slot = word(actor.row, 44);
     if (remaining as i16) > 0 {
-        alliance_blink(actor, ctx, effects, false);
+        alliance_blink(actor, ctx, effects, false)?;
     }
-    let parent = ctx
-        .target(parent_slot)
-        .filter(|parent| parent_current && parent.life > 0 && (remaining as i16) > 0);
+    let parent = if parent_current && (remaining as i16) > 0 {
+        ctx.target(parent_slot).filter(|parent| parent.life > 0)
+    } else {
+        None
+    };
     let Some(parent) = parent else {
         actor.row.record[77] = 10;
         actor.set_target(0);
         put(actor.row, 44, 0);
         actor.row.record[76] = word(actor.row, 78) as u8;
-        alliance_blink(actor, ctx, effects, true);
-        return;
+        alliance_blink(actor, ctx, effects, true)?;
+        return Ok(());
     };
     let saved_target = actor.target();
     actor.set_target(parent_slot);
-    let hit = super::consume(actor, ctx);
+    let hit = super::consume(actor, ctx)?;
     if hit == 2 {
         put(actor.row, 50, 1);
     } else {
@@ -286,10 +295,11 @@ fn step_alliance(
             }
         }
     }
-    let selected = if parent.target != 0 {
-        parent.target
+    let parent_target = parent.required(parent.target, "target")?;
+    let selected = if parent_target != 0 {
+        parent_target
     } else {
-        parent.attacker
+        parent.required(parent.attacker, "attacker")?
     };
     actor.set_target(if selected != 0 {
         selected
@@ -297,7 +307,8 @@ fn step_alliance(
         saved_target
     });
     if let Some(target) = ctx.target(actor.target()) {
-        if (target.parent == parent_slot && target.stage_mode == 14)
+        if (target.required(target.parent, "parent")? == parent_slot
+            && target.required(target.stage_mode, "stage mode")? == 14)
             || target.life <= 0
             || target.flags & 0x400 != 0
         {
@@ -309,6 +320,7 @@ fn step_alliance(
             effects.feedback = Some((parent_slot, 24));
         }
     }
+    Ok(())
 }
 
 /// Consume the reachable Army sub_28F50 -> sub_1D5D0(200) -> sub_1E580
@@ -334,7 +346,7 @@ pub(crate) fn step_action_207(
     if matches!(mode, 6..=9) {
         // sub_1D880/sub_1D8A0 both enter sub_1E1C0. Its mailbox
         // and linked-life comparison precede movement and hit reactions.
-        match super::consume(actor, ctx) {
+        match super::consume(actor, ctx)? {
             0 if RULES.behavior_flags & 2 == 0 => {
                 super::move_actor(actor, ctx);
                 if actor.row.phase & 15 == 0 && actor.row.control_flags & 0x40000 == 0 {
@@ -383,20 +395,31 @@ pub(crate) fn step_action_207(
         return Ok(None);
     }
     if mode == 12 {
-        let parent = ctx.target(word(actor.row, 44)).filter(|_| parent_current);
+        let parent = if parent_current {
+            ctx.target(word(actor.row, 44))
+        } else {
+            None
+        };
         if parent.is_none_or(|parent| parent.life < 0) {
             actor.row.disable_drawing();
         }
-        let parent = parent.unwrap_or_default();
-        let mut position = parent.position;
-        position.z = position.z.saturating_sub(512);
-        actor.row.set_position(position);
-        actor.row.set_yaw(parent.yaw);
-        actor.row.set_source_roll(parent.roll);
+        if let Some(parent) = parent {
+            let mut position = parent.position;
+            position.z = (i32::from(position.z) - 512).max(0) as i16;
+            actor.row.set_position(position);
+            actor.row.set_yaw(parent.required(parent.yaw, "yaw")?);
+            actor
+                .row
+                .set_source_roll(parent.required(parent.roll, "roll")?);
+        } else {
+            actor.row.set_position(crate::Position::default());
+            actor.row.set_yaw(0);
+            actor.row.set_source_roll(0);
+        }
         return Ok(None);
     }
     if mode == 14 {
-        step_alliance(actor, ctx, parent_current, effects);
+        step_alliance(actor, ctx, parent_current, effects)?;
         return Ok(None);
     }
     if mode == 17 {
@@ -425,11 +448,13 @@ pub(crate) fn step_action_207(
     }
 
     let parent_slot = word(actor.row, 44);
-    let parent = ctx.target(parent_slot).filter(|parent| {
-        parent_current
-            && parent.life >= 0
-            && parent.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
-    });
+    let parent = if parent_current {
+        ctx.target(parent_slot).filter(|parent| {
+            parent.life >= 0 && parent.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
+        })
+    } else {
+        None
+    };
     if parent.is_none() {
         put(actor.row, 50, 0);
     } else if mode == 13 {
@@ -468,7 +493,7 @@ pub(crate) fn step_action_207(
     if target.is_none() {
         actor.set_target(parent_slot);
     }
-    let hit = super::consume(actor, ctx);
+    let hit = super::consume(actor, ctx)?;
     if hit == 2 {
         put(actor.row, 50, 1);
     } else {
@@ -482,6 +507,7 @@ pub(crate) fn step_action_207(
             {
                 actor.set_target(attacker);
                 actor.set_action(202);
+                effects.feedback = Some((parent_slot, 19));
             }
         } else if actor.row.phase & 7 == 0 {
             if actor.row.control_flags & 0x40000 == 0 {
@@ -515,7 +541,7 @@ pub(crate) fn step_action_207(
     }
     if let Some(target) = target {
         if actor.row.phase & 7 == 0
-            && super::distance(actor.row.position, target.position) < RULES.target_range
+            && super::distance(actor.row.position, target.position) < super::target_range(actor)
         {
             actor.set_action(202);
         }
@@ -541,7 +567,7 @@ fn step_follow_leader_target(
     let descriptor = runtime
         .descriptor(index)
         .ok_or_else(|| format!("Cymmerian StageVar {index} is absent"))?;
-    let hit = super::consume(actor, ctx);
+    let hit = super::consume(actor, ctx)?;
     let mut leader = None;
     if hit == 0 {
         super::move_actor(actor, ctx);
@@ -549,12 +575,15 @@ fn step_follow_leader_target(
             if descriptor.flags & 2 != 0 {
                 let mut relation = word(actor.row, 78);
                 if relation == 0 && descriptor.flags & 1 != 0 {
-                    relation = ctx
-                        .model25
-                        .iter()
-                        .filter_map(|slot| ctx.target(*slot))
-                        .find(|peer| peer.stage_index == index && peer.stage_relation != 0)
-                        .map_or(0, |peer| peer.stage_relation);
+                    for peer in ctx.model25.iter().filter_map(|slot| ctx.target(*slot)) {
+                        if peer.required(peer.stage_index, "stage index")? == index {
+                            let candidate = peer.required(peer.stage_relation, "stage relation")?;
+                            if candidate != 0 {
+                                relation = candidate;
+                                break;
+                            }
+                        }
+                    }
                 }
                 if relation == 0 {
                     relation = families
@@ -599,7 +628,8 @@ fn step_follow_leader_target(
                         actor.row.position,
                     ) as i16);
                 }
-                let extent = i32::from(actor.row.array_pitch()) + i32::from(target.pitch_extent);
+                let extent = i32::from(actor.row.array_pitch())
+                    + i32::from(target.required(target.pitch_extent, "collision width")?);
                 if i32::from(target.position.x).abs_diff(i32::from(actor.row.position.x))
                     < extent.max(0) as u32
                     && i32::from(target.position.y).abs_diff(i32::from(actor.row.position.y))
@@ -655,15 +685,20 @@ fn step_follow_leader_target(
             ctx.target(descriptor.actor)
         }
         .or(leader);
-        let selected = leader.and_then(|leader| {
+        let selected = if let Some(leader) = leader {
             if mode == 3 {
                 Some(leader)
             } else {
-                (leader.target != 0xae02)
-                    .then(|| ctx.target(leader.target))
-                    .flatten()
+                let slot = leader.required(leader.target, "target")?;
+                if slot != 0xae02 {
+                    ctx.target(slot)
+                } else {
+                    None
+                }
             }
-        });
+        } else {
+            None
+        };
         if let Some(target) = selected
             && super::distance(actor.row.position, target.position) <= super::target_range(actor)
         {
@@ -715,42 +750,4 @@ pub(crate) fn reset_to_special(actor: &mut Actor<'_>) {
     actor.row.record[76..80].fill(0);
     actor.row.set_source_action(200);
     actor.row.record[74] = 3;
-}
-
-pub(crate) fn prepare_source_pass(
-    arena: &mut SourceArena,
-    runtime: &mut RuntimeSnapshot,
-    slots: &[u16],
-) {
-    let dead = super::mc2::targets_in_arena(arena)
-        .into_iter()
-        .filter(|target| target.life < 0 || target.flags & 0x400 != 0)
-        .map(|target| target.slot)
-        .collect::<std::collections::BTreeSet<_>>();
-    for &slot in slots {
-        let Some(row) = arena
-            .entities
-            .get_mut(usize::from(slot))
-            .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL)
-        else {
-            continue;
-        };
-        let mut action = row.action;
-        let mut index = row.record[76] as i8;
-        let mut mode = row.record[77] as i8;
-        let mut relation = u16::from_le_bytes([row.record[78], row.record[79]]);
-        let mut route = super::super::stage_route::Route {
-            model: SOURCE_MODEL,
-            position: row.position,
-            action: &mut action,
-            index: &mut index,
-            mode: &mut mode,
-            relation: &mut relation,
-        };
-        route.prepare(runtime, |target| dead.contains(&target));
-        row.set_source_action(action);
-        row.record[76] = index as u8;
-        row.record[77] = mode as u8;
-        put(row, 78, relation);
-    }
 }

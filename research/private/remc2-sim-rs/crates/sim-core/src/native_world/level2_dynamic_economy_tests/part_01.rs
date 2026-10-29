@@ -4612,6 +4612,35 @@ fn level_two_castle_four_passes_collect_a_disabled_sphere_once() {
         .expect("disabled sphere remains allocated until source-boundary reclaim");
     assert!(sphere.pending_delete);
     assert_ne!(sphere.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+
+    // The current source player relation, not the sphere's earlier owner,
+    // controls which Castle may collect it after a relation change.
+    let foreign = session
+        .economy_mut()
+        .spawn_mana_sphere_from_death(51, castle_position, 0, 0x7778, 300, 111)
+        .expect("sphere with a changed rival relation");
+    let owned = session
+        .economy_mut()
+        .spawn_mana_sphere_from_death(51, castle_position, 0, 0x7779, 700, 112)
+        .expect("sphere with a changed local relation");
+    {
+        let mut economy = session.economy_mut();
+        economy.spheres.iter_mut().find(|sphere| sphere.id == foreign)
+            .unwrap().player_entity_index = 112;
+        economy.spheres.iter_mut().find(|sphere| sphere.id == owned)
+            .unwrap().player_entity_index = 111;
+        economy.castle.as_mut().expect("action-4 Castle").phase = 0;
+        economy.begin_turn();
+        assert!(economy.step_castle_action(castle_slot));
+    }
+    assert_eq!(session.economy().castle().unwrap().mana, 1_200);
+    assert!(session.economy().events().iter().any(|event| matches!(event,
+        Level2EconomyEvent::ManaSphereCollected { sphere_id, mana: 700, .. } if *sphere_id == owned
+    )));
+    assert!(!session.economy().spheres().iter()
+        .find(|sphere| sphere.id == foreign).unwrap().pending_delete);
+    assert!(session.economy().spheres().iter()
+        .find(|sphere| sphere.id == owned).unwrap().pending_delete);
 }
 
 #[test]

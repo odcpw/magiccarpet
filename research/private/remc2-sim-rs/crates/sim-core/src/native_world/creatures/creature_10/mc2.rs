@@ -182,6 +182,9 @@ fn materialize_model21_summon(
     if parent.source_id != request.owner {
         return Err("final encounter model21 owner differs from its boss parent".to_owned());
     }
+    let parent_handle = arena
+        .handle(parent_slot)
+        .ok_or("final encounter model21 parent lost its source generation")?;
 
     let Some(slot) = crate::native_world::creatures::creature_21::mc2::allocate_summoned(
         arena,
@@ -220,6 +223,14 @@ fn materialize_model21_summon(
     }
     if let Some(roll) = request.roll {
         row.set_source_roll(roll);
+    }
+    let child_handle = arena
+        .handle(slot)
+        .ok_or("final encounter model21 child lost its source generation")?;
+    if !arena.bind_carried_creature_parent(child_handle, parent_handle) {
+        return Err(
+            "final encounter model21 could not carry its boss parent generation".to_owned(),
+        );
     }
     Ok(request.success_sound)
 }
@@ -288,6 +299,9 @@ fn materialize_model25_summon(
     let (parent_slot, player_slot, stage, timer, speed) =
         validate_stage_child_request(&request, 207)?;
     summon_parent_and_player(arena, &request)?;
+    let parent_handle = arena
+        .handle(parent_slot)
+        .ok_or("final encounter model25 parent lost its source generation")?;
 
     // The family allocator owns the real source sub_4CE00 constructor,
     // model25 counter, RNG, map link, and failure behavior. Its Army-specific
@@ -306,11 +320,10 @@ fn materialize_model25_summon(
         return Ok(None);
     };
     let slot = handle.source_slot;
-    let parent_handle = arena
-        .handle(parent_slot)
-        .ok_or("final encounter model25 parent lost its source generation")?;
-    if !arena.bind_creature_parent(handle, parent_handle) {
-        return Err("final encounter model25 could not bind its live parent".to_owned());
+    if !arena.bind_carried_creature_parent(handle, parent_handle) {
+        return Err(
+            "final encounter model25 could not carry its boss parent generation".to_owned(),
+        );
     }
     let row = arena
         .entities
@@ -323,7 +336,7 @@ fn materialize_model25_summon(
     row.record[77] = stage;
     put_word(row, 44, parent_slot);
     put_word(row, 50, timer);
-    put_word(row, 150, player_slot);
+    put_word(row, 154, player_slot);
     row.set_actual_speed(speed);
     if let Some(yaw) = request.yaw {
         row.set_yaw(yaw);
@@ -361,6 +374,9 @@ fn materialize_firefly_summon(
     let (parent_slot, player_slot, stage, timer, speed) =
         validate_stage_child_request(&request, 159)?;
     summon_parent_and_player(arena, &request)?;
+    let parent_handle = arena
+        .handle(parent_slot)
+        .ok_or("final encounter Firefly parent lost its source generation")?;
 
     // Firefly's canonical allocator performs sub_4C6B0's typed root
     // construction, constructor counter/RNG, and map publication. The boss
@@ -399,7 +415,6 @@ fn materialize_firefly_summon(
     if let Some(roll) = request.roll {
         source.roll = roll;
     }
-    let parent_generation = arena.slot_generation(parent_slot);
     let state = arena
         .economy
         .authored_fireflies
@@ -407,7 +422,7 @@ fn materialize_firefly_summon(
         .find(|state| state.source_entity_index == slot)
         .ok_or_else(|| format!("final encounter Firefly runtime lost slot{slot}"))?;
     state.parent_entity_index = parent_slot;
-    state.parent_generation = parent_generation;
+    state.parent_generation = parent_handle.generation;
     state.word_0x2e = timer;
     state.stage_var1 = 0;
     state.stage_var2 = stage;
@@ -421,6 +436,11 @@ fn materialize_firefly_summon(
         return Err(format!(
             "final encounter Firefly child at slot{slot} lost boss generation origin"
         ));
+    }
+    if !arena.bind_carried_creature_parent(handle, parent_handle) {
+        return Err(
+            "final encounter Firefly could not carry its boss parent generation".to_owned(),
+        );
     }
     Ok(request.success_sound)
 }
@@ -1456,6 +1476,12 @@ mod tests {
         assert_eq!(child.actual_speed, 320);
         assert_eq!(child.yaw, 317);
         assert_eq!(child.source_roll(), 317);
+        assert_eq!(
+            fixture
+                .arena
+                .creature_parent(fixture.arena.handle(child.index).unwrap()),
+            fixture.arena.handle(boss_slot),
+        );
         assert_eq!(
             child.source_id,
             fixture.arena.entities[usize::from(boss_slot)].source_id

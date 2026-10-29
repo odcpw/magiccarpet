@@ -276,6 +276,8 @@ fn meteor_terminal_projectile_uses_existing_model17_damage_and_lifetime_consumer
     };
     let row = &mut live.economy.entities[usize::from(slot)];
     row.set_position(position);
+    row.set_yaw(231);
+    row.set_pitch(37);
     row.set_actual_speed(0);
     put(row, 136, 0);
     row.set_life(0);
@@ -307,6 +309,18 @@ fn meteor_terminal_projectile_uses_existing_model17_damage_and_lifetime_consumer
         .iter()
         .find(|row| row.source_entity_index == impact)
         .unwrap();
+    let projectile = &live.economy.entities[usize::from(slot)];
+    assert_eq!(
+        (effect.yaw, effect.pitch, effect.source_byte_46, effect.target_source_entity_index),
+        (projectile.yaw, projectile.pitch, projectile.record[74], 0),
+        "the live typed impact retains the post-allocation source payload"
+    );
+    let current = super::super::source_target::read(
+        &live.economy,
+        super::super::source_target::Context::default(),
+        impact,
+    ).unwrap().unwrap();
+    assert_eq!((current.yaw, current.relations.target), (Some(effect.yaw), Some(0)));
     assert_eq!(
         (
             effect.entity_id,
@@ -385,6 +399,64 @@ fn meteor_terminal_projectile_uses_existing_model17_damage_and_lifetime_consumer
             & ENTITY_DRAW_DISABLED_BIT
             != 0
     );
+}
+
+#[test]
+fn eruption_impact_retains_current_payload_and_self_replacement_reads_new_row() {
+    for replace_self in [false, true] {
+        let (mut session, holder, parent) = ready_holder();
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let mut position = Position { x: 0x4000, y: 0x5000, z: 0 };
+        position.z = live.terrain.ground_height(position).wrapping_add(2048);
+        let slot = live.economy.spawn_eruption_projectile(
+            &mut live.terrain, position, 231, position, parent, holder,
+        ).expect("ordinary volcano eruption creates its flyer");
+        let flyer = live.economy.economy.fireball_projectiles.iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot).unwrap();
+        flyer.life = 0;
+        flyer.actual_speed = 0;
+        flyer.minimum_speed = 0;
+        flyer.acquisition_attempted = true;
+        flyer.yaw = 231;
+        flyer.pitch = 37;
+        flyer.roll = 231;
+        flyer.fov = 37;
+        flyer.source_subspell_index = 211;
+        if replace_self {
+            flyer.control_flags |= crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+            live.economy.rebuild_source_free_arena();
+            while live.economy.economy.free_slot_count() != 0 {
+                live.economy.allocate_source_slot_with_terrain(&mut live.terrain).unwrap();
+            }
+            loop {
+                let mut probe = live.economy.clone();
+                let mut probe_terrain = live.terrain.clone();
+                let candidate = probe.allocate_source_slot_with_terrain(&mut probe_terrain)
+                    .expect("frozen source cursor reaches the eruption flyer");
+                if candidate == slot { break; }
+                assert_eq!(live.economy.allocate_source_slot_with_terrain(&mut live.terrain), Some(candidate));
+            }
+        }
+        let outcome = super::super::effects::step_projectile(
+            &mut live.economy, &mut live.terrain, &particles, slot,
+            super::super::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+        ).unwrap();
+        let impact = outcome.impact_slot.expect("ordinary terminal impact allocates");
+        assert_eq!(impact == slot, replace_self);
+        let effect = live.economy.economy.authored_model17.iter()
+            .find(|row| row.active && row.source_entity_index == impact).unwrap();
+        if replace_self {
+            assert_eq!((effect.entity_id, effect.yaw, effect.pitch, effect.subspell_index), (slot, 0, 0, 3000));
+            assert_eq!(effect.position, Position::default());
+            assert_ne!(effect.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        } else {
+            assert_eq!((effect.entity_id, effect.yaw, effect.pitch, effect.subspell_index), (parent, 231, 37, 211));
+            assert_eq!(effect.position, position);
+            assert_eq!(effect.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        }
+        assert_eq!((effect.target_source_entity_index, effect.source_byte_46), (0, 0));
+    }
 }
 
 #[test]

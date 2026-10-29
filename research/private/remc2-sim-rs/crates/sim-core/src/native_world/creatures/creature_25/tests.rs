@@ -14,6 +14,17 @@ fn target(slot: u16, class: u8, model: u8, position: Position) -> Target {
         model,
         life: 1000,
         position,
+        yaw: Some(0),
+        roll: Some(0),
+        pitch_extent: Some(0),
+        roll_extent: Some(0),
+        attacker: Some(0),
+        target: Some(0),
+        stage_index: Some(0),
+        stage_mode: Some(0),
+        parent: Some(0),
+        stage_relation: Some(0),
+        next: Some(0),
         ..Target::default()
     }
 }
@@ -56,9 +67,23 @@ fn summoned_source_parts() -> (
     u16,
     Position,
 ) {
+    source_parts(18)
+}
+
+fn source_parts(
+    mission: u8,
+) -> (
+    crate::campaign::source_arena::SourceArena,
+    crate::native_world::RuntimeSnapshot,
+    SessionTerrain,
+    Vec<crate::native_world::ParticleParameter>,
+    u16,
+    u16,
+    Position,
+) {
     let package = crate::campaign::spec::DecodedCampaignPackage::decode(
-        mission_eighteen_root().join("level18"),
-        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+        mission_eighteen_root().join(format!("level{mission}")),
+        crate::campaign::spec::CampaignSelection::ordinary(u16::from(mission)).unwrap(),
     )
     .expect("decode owner-data Mission 18 package");
     let entities = crate::native_world::parse_entities(package.member("entities.bin").unwrap())
@@ -161,7 +186,8 @@ fn ordinary_seek_acquires_a_live_target_and_moves_to_action202() {
         y: 20_000,
         z: 400,
     };
-    let targets = [target(42, 3, 0, position)];
+    // The source scans the frozen class-3 chain, not every nearby entity.
+    let targets = [target(41, 5, 18, position), target(42, 3, 0, position)];
     let class3 = [42];
     let mut row = cymmerian(201, position);
     let mut context = Context {
@@ -169,6 +195,8 @@ fn ordinary_seek_acquires_a_live_target_and_moves_to_action202() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -202,6 +230,8 @@ fn ordinary_seek_keeps_searching_when_no_target_is_in_source_range() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -221,7 +251,7 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
     let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
     for (offset, expected_action) in [(0_u16, 202), (RULES.target_range as u16 + 100, 207)] {
         let mut leader = target(42, 5, 18, position);
-        leader.target = 43;
+        leader.target = Some(43);
         let enemy = target(
             43,
             3,
@@ -241,6 +271,8 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
             targets: &targets,
             class3: &[43],
             model25: &[],
+            reader: None,
+            read_error: std::cell::Cell::new(None),
         };
         assert_eq!(
             stage::step_action_207(
@@ -276,6 +308,8 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
             targets: &[],
             class3: &[],
             model25: &[],
+            reader: None,
+            read_error: std::cell::Cell::new(None),
         };
         stage::step_action_207(
             &mut Actor { row: &mut row },
@@ -305,6 +339,8 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
                 targets: &targets,
                 class3: &[],
                 model25: &[],
+                reader: None,
+                read_error: std::cell::Cell::new(None),
             };
             let mut row = cymmerian(207, position);
             row.record[77] = mode;
@@ -340,6 +376,8 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
             targets: &targets,
             class3: &[],
             model25: &[],
+            reader: None,
+            read_error: std::cell::Cell::new(None),
         };
         let mut row = cymmerian(207, raised);
         row.parameter_relation = Some(descriptor);
@@ -377,6 +415,8 @@ fn stage_follow_modes_choose_leader_only_when_requested() {
         targets: &[leader],
         class3: &[],
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
     for (mode, action, expected_target) in [(3, 202, 42), (4, 207, 0), (5, 207, 0)] {
         let mut row = cymmerian(207, position);
@@ -394,6 +434,73 @@ fn stage_follow_modes_choose_leader_only_when_requested() {
         .unwrap();
         assert_eq!((row.action, word(&row, 154)), (action, expected_target));
     }
+    let mut unreadable_leader = leader;
+    unreadable_leader.target = None;
+    let context = Context {
+        terrain,
+        targets: &[unreadable_leader],
+        class3: &[],
+        model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
+    };
+    let mut row = cymmerian(207, position);
+    row.record[76] = 1;
+    row.record[77] = 4;
+    row.set_phase(8);
+    let error = stage::step_action_207(
+        &mut Actor { row: &mut row },
+        &context,
+        &runtime,
+        &families,
+        true,
+        &mut Effects::default(),
+    )
+    .unwrap_err();
+    assert!(error.contains("target 42 lacks current target"));
+}
+
+#[test]
+fn stage_guard_acquires_only_visible_class3_on_scan_cadence() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let position = session.state.position;
+    let terrain = session.canonical_terrain();
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    runtime.stage_variables[1].relation = crate::native_world::RuntimeRelation::AxisScalar(
+        u32::from(position.x) | (u32::from(position.y) << 16),
+    );
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    for (hidden, phase, expected) in [(false, 20, 202), (true, 20, 207), (false, 19, 207)] {
+        let mut enemy = target(42, 3, 0, position);
+        if hidden {
+            enemy.flags |= 0x20;
+        }
+        let targets = [enemy];
+        let context = Context {
+            terrain,
+            targets: &targets,
+            class3: &[42],
+            model25: &[],
+            reader: None,
+            read_error: std::cell::Cell::new(None),
+        };
+        let mut row = cymmerian(207, position);
+        row.record[76] = 1;
+        row.record[77] = 2;
+        row.set_phase(phase);
+        row.set_yaw(crate::heading_for_positions(position, position) as i16);
+        stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            &runtime,
+            &families,
+            true,
+            &mut Effects::default(),
+        )
+        .unwrap();
+        assert_eq!(row.action, expected);
+        assert_eq!(word(&row, 154), if expected == 202 { 42 } else { 0 });
+    }
 }
 
 #[test]
@@ -407,6 +514,8 @@ fn stage_default_preserves_actor_but_attack_mode_selects_source_action() {
         targets: &[],
         class3: &[],
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
     for (mode, action) in [(0, 207), (11, 207), (15, 207), (10, 202)] {
         let mut row = cymmerian(207, position);
@@ -437,13 +546,15 @@ fn stage_morph_tracks_current_parent_and_hides_without_it() {
     let runtime = &session.session.state.live.core.runtime;
     let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
     let mut parent = target(42, 3, 0, Position { z: 900, ..position });
-    parent.yaw = 123;
-    parent.roll = 321;
+    parent.yaw = Some(123);
+    parent.roll = Some(321);
     let context = Context {
         terrain,
         targets: &[parent],
         class3: &[],
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
     for current in [true, false] {
         let mut row = cymmerian(207, position);
@@ -468,6 +579,28 @@ fn stage_morph_tracks_current_parent_and_hides_without_it() {
             assert_ne!(row.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
         }
     }
+    parent.position.z = 200;
+    let context = Context {
+        terrain,
+        targets: &[parent],
+        class3: &[],
+        model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
+    };
+    let mut row = cymmerian(207, position);
+    row.record[77] = 12;
+    put(&mut row, 44, 42);
+    stage::step_action_207(
+        &mut Actor { row: &mut row },
+        &context,
+        runtime,
+        &families,
+        true,
+        &mut Effects::default(),
+    )
+    .unwrap();
+    assert_eq!(row.position.z, 0);
 }
 
 #[test]
@@ -478,7 +611,7 @@ fn alliance_attacks_parent_target_then_expires_on_parent_loss() {
     let runtime = &session.session.state.live.core.runtime;
     let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
     let mut parent = target(42, 3, 0, position);
-    parent.target = 43;
+    parent.target = Some(43);
     let enemy = target(43, 5, 18, position);
     let targets = [parent, enemy];
     let context = Context {
@@ -486,6 +619,8 @@ fn alliance_attacks_parent_target_then_expires_on_parent_loss() {
         targets: &targets,
         class3: &[],
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
     for current in [true, false] {
         let mut row = cymmerian(207, position);
@@ -531,6 +666,8 @@ fn ordinary_seek_waits_for_descriptor92_scan_cadence() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -564,6 +701,8 @@ fn split_body_uses_descriptor95_scan_period_and_target_range() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -594,6 +733,8 @@ fn ordinary_pursuit_requests_one_class9_model0_projectile_for_live_target() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -634,12 +775,15 @@ fn ordinary_pursuit_drops_a_target_outside_descriptor92_range() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
 
     assert!(effects.attack.is_none());
-    assert_eq!(row.action, 203);
+    // sub_1C310 returns to base+1 directly when the target is out of range.
+    assert_eq!(row.action, 201);
 }
 
 #[test]
@@ -655,6 +799,8 @@ fn ordinary_subspell_counter_and_state_timer_follow_source_fields() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -676,6 +822,8 @@ fn ordinary_death_callback_requests_three_children_before_parent_kill() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
@@ -696,6 +844,8 @@ fn action206_is_rejected_because_the_pinned_source_has_no_handler() {
         targets: &targets,
         class3: &class3,
         model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
     };
 
     let error = step(&mut Actor { row: &mut row }, &mut context).unwrap_err();
@@ -813,9 +963,134 @@ fn summoned_cymmerian_rejects_reused_parent_slot_and_hides() {
         child.source_slot,
         &[],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     assert!(arena.entities[usize::from(child.source_slot)].drawing_disabled());
+}
+
+#[test]
+fn authored_cymmerian_alliance_impact_rebinds_parent_and_rejects_reuse() {
+    let package = crate::campaign::spec::DecodedCampaignPackage::decode(
+        mission_eighteen_root().join("level10"),
+        crate::campaign::spec::CampaignSelection::ordinary(10).unwrap(),
+    )
+    .expect("decode real Mission 10 authored records");
+    let feature = crate::level1_mission::parse_authored_features(package.authored_bytes())
+        .unwrap()
+        .into_iter()
+        .find(|row| row.kind == 5 && row.subtype == 25)
+        .expect("Mission 10 contains an authored Cymmerian");
+    let (mut arena, mut runtime, mut terrain, particles, parent_slot, _, _) = source_parts(10);
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let slot = mc2::allocate_authored(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        position,
+        RULES.max_life,
+        None,
+        feature.index,
+    )
+    .unwrap()
+    .expect("authored Cymmerian allocation");
+    let child = arena.handle(slot).unwrap();
+    let parent = arena.handle(parent_slot).unwrap();
+    // The same authored body visits the real source route prepass. Its
+    // target relation survives a live player and clears when that carrier dies.
+    for dead in [false, true] {
+        let mut route_arena = arena.clone();
+        let mut route_runtime = runtime.clone();
+        let row = &mut route_arena.entities[usize::from(slot)];
+        row.set_source_action(207);
+        row.record[76] = 1;
+        row.record[77] = 3;
+        put(row, 78, parent_slot);
+        route_arena.entities[usize::from(parent_slot)].set_life(if dead { -1 } else { 1000 });
+        route_runtime.stage_variables[1].kind = 3;
+        route_runtime.stage_variables[1].flags = 2;
+        route_runtime.stage_variables[1].relation =
+            crate::native_world::RuntimeRelation::AxisScalar(3);
+        mc2::prepare_source_pass(
+            &mut route_arena,
+            &mut route_runtime,
+            &[slot],
+            crate::native_world::source_target::Context::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            word(&route_arena.entities[usize::from(slot)], 78),
+            if dead { 0 } else { parent_slot }
+        );
+    }
+    let old_parent = arena
+        .entities
+        .iter()
+        .find(|row| {
+            row.active
+                && row.index != 0
+                && row.index != parent_slot
+                && row.index != slot
+                && arena.handle(row.index).is_some()
+        })
+        .and_then(|row| arena.handle(row.index))
+        .expect("owner package has a prior live source parent");
+    assert!(arena.bind_creature_parent(child, old_parent));
+    let impact_slot =
+        crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain)
+            .expect("allocate Alliance's real impact carrier");
+    let impact = &mut arena.entities[usize::from(impact_slot)];
+    impact.source_id = parent_slot;
+    impact.record[30..32].copy_from_slice(&parent_slot.to_le_bytes());
+    impact.record[74] = 32;
+    impact.subspell_index = 40;
+    impact.record[154..156].copy_from_slice(&slot.to_le_bytes());
+    let outcome =
+        crate::native_world::alliance_spell::step_impact(&mut arena, impact_slot, &[slot]).unwrap();
+    assert_eq!(outcome.affected_entities, vec![slot]);
+    assert_eq!(arena.creature_parent(child), Some(parent));
+    assert_eq!(arena.entities[usize::from(slot)].record[77], 14);
+    arena.entities[usize::from(slot)].set_phase(1);
+    let families = family_with_cymmerian(slot);
+    mc2::step_row(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        slot,
+        &[parent_slot],
+        &families,
+        crate::native_world::source_target::Context::default(),
+    )
+    .unwrap();
+    assert_eq!(word(&arena.entities[usize::from(slot)], 50), 39);
+    assert_eq!(arena.entities[usize::from(slot)].record[77], 14);
+
+    arena.economy.release_slot(parent_slot, None);
+    assert_eq!(
+        arena.allocate_source_slot_with_terrain(&mut terrain),
+        Some(parent_slot)
+    );
+    let mut replacement = crate::native_world::cave_features::new_event(parent_slot, 5, position);
+    replacement.class = 3;
+    replacement.record[67] = 3;
+    replacement.set_life(1000);
+    arena.entities[usize::from(parent_slot)] = replacement;
+    assert_ne!(arena.handle(parent_slot), Some(parent));
+    mc2::step_row(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        slot,
+        &[parent_slot],
+        &families,
+        crate::native_world::source_target::Context::default(),
+    )
+    .unwrap();
+    assert_eq!(arena.entities[usize::from(slot)].record[77], 10);
+    assert_eq!(word(&arena.entities[usize::from(slot)], 44), 0);
 }
 
 #[test]
@@ -849,6 +1124,7 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
         slot,
         &[parent_slot],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     assert!(
@@ -874,6 +1150,7 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
         slot,
         &[parent_slot],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     assert!(
@@ -939,6 +1216,7 @@ fn ordinary_step_row_materializes_one_cymmerian_class9_model0_attack() {
             slot,
             &[target.index],
             &families,
+            crate::native_world::source_target::Context::default(),
         )
         .unwrap();
         assert!(
@@ -1030,6 +1308,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         parent_slot,
         &[],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     assert_eq!(exhausted.entities[usize::from(parent_slot)].action, 205);
@@ -1075,6 +1354,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         parent_slot,
         &[],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     assert!(replaced.resolve(original).is_none());
@@ -1114,6 +1394,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         parent_slot,
         &[],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
 
@@ -1211,6 +1492,7 @@ fn special_castle_contact_commits_damage_inside_cymmerian_adapter() {
         slot,
         &[player_slot],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     let after = arena.economy.castle().expect("Castle remains live");
@@ -1235,6 +1517,7 @@ fn special_castle_contact_commits_damage_inside_cymmerian_adapter() {
         slot,
         &[player_slot],
         &families,
+        crate::native_world::source_target::Context::default(),
     )
     .unwrap();
     assert_eq!(

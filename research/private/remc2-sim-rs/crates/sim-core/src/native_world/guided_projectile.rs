@@ -904,7 +904,12 @@ pub(crate) fn step(
     {
         effect.entity_id = current.source_id;
         effect.yaw = current.yaw;
+        effect.pitch = current.pitch;
+        if let Some(target) = hit_slot {
+            effect.target_source_entity_index = target;
+        }
         effect.subspell_index = current.subspell_index;
+        effect.source_byte_46 = current.record[74];
     }
     crate::world::fields::sync_wind_impact(arena, impact_slot);
     arena.entities[usize::from(slot)].disable_drawing();

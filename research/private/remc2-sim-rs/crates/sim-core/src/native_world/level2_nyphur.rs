@@ -1635,6 +1635,12 @@ impl Level2NyphurCommonUpkeep {
                 .copy_from_slice(entities[entity_index].source_upkeep_mailbox());
             source_entity = entities[entity_index].clone();
             if self.return_value == 2 {
+                // sub_5EFA0 writes life and shield mana directly to the
+                // source actor; sub_12A70 then selects action 2 before its
+                // early return. Publish those writes on this same visit.
+                entities[entity_index].set_life(self.life);
+                entities[entity_index].set_mana(self.mana);
+                entities[entity_index].set_source_action(2);
                 return Ok(self.snapshot(source_entity.phase));
             }
         }
@@ -2742,12 +2748,45 @@ pub(crate) struct RivalWizardRoster {
 }
 
 impl RivalWizardRoster {
+    /// Source sub_5E310 credits the player named by the grounded victim's
+    /// word_0x24, indexed by this rival's actual player color.
+    pub(crate) fn credit_grounded_death(
+        &self,
+        owner: SourceEntityHandle,
+        arena: &SourceArena,
+        players: &mut [PlayerSnapshot],
+        shared: &mut super::Level2SharedSpellResetSession,
+    ) -> bool {
+        if self.get(owner).is_none() || arena.handle(owner.source_slot) != Some(owner) {
+            return false;
+        }
+        let Some(victim) = players.iter().find(|player| player.is_ai && player.entity_index == owner.source_slot) else {
+            return false;
+        };
+        let color = usize::from(victim.player_color_index());
+        let killer = arena.entities[usize::from(owner.source_slot)].word_24();
+        if color >= 8 || killer == 0 || !arena.entities.get(usize::from(killer))
+            .is_some_and(|row| row.class == 3 && matches!(row.model, 0 | 1))
+        {
+            return false;
+        }
+        let Some(player) = players.iter_mut().find(|player| player.entity_index == killer) else {
+            return false;
+        };
+        if !player.increment_kill_score_for_color(color) {
+            return false;
+        }
+        let _ = shared.increment_player_kill_score(killer, color);
+        true
+    }
+
     /// Run the dying actor's source Duel consumer on its own live carriers.
     pub(crate) fn step_dying_tether(
         &mut self,
         arena: &mut SourceArena,
         shared: &mut super::Level2SharedSpellResetSession,
         fire: Option<&mut crate::SpellFireContext>,
+        local_life: &mut i32,
         players: &[PlayerSnapshot],
         local_owner: u16,
         source_slot: u16,
@@ -2812,6 +2851,7 @@ impl RivalWizardRoster {
             }
             shared.sync_player_entity_from_authority(row);
             if target.entity_index == local_owner {
+                *local_life = target.life;
                 shared.player_mana = target.mana;
                 shared.caster.mana = target.mana;
                 shared.sync_typed_spell_parent_caches_from_player_entity();
@@ -3354,6 +3394,21 @@ impl Level2NyphurDispatcher {
         self.common_upkeep.mana_regen = mana_regen;
     }
 
+    /// Source A4 inputs to this owner's `GetScroll_69DB0` Speed holder.
+    pub(super) const fn speed_holder_inputs(&self) -> (i16, i16) {
+        (self.common_upkeep.speed, self.common_upkeep.word_0xe_14)
+    }
+
+    /// Publish the holder's target speed to the same owner's A4 carrier.
+    pub(super) const fn apply_holder_target_speed(&mut self, speed: i16) {
+        self.common_upkeep.speed = speed;
+    }
+
+    /// `sub_5E7C0` clears recoil on every banished-player visit.
+    pub(super) const fn clear_banished_recoil(&mut self) {
+        self.common_upkeep.move_boost = 0;
+    }
+
     /// Keep the AI's compact A4 projection in sync with `sub_605E0`.
     pub(super) fn apply_final_castle_loss(&mut self, owner: u16, remove_spell: bool) {
         if self.common_upkeep.source_slot == owner {
@@ -3372,6 +3427,26 @@ impl Level2NyphurDispatcher {
         }
         self.common_upkeep.life = source.life;
         self.common_upkeep.mana = source.mana;
+        true
+    }
+
+    /// Publish a support holder's parent writes before the next AI visit.
+    /// The caller resolves the current generation and passes the callback's
+    /// explicit stop result, rather than inferring it from a spell family.
+    pub(super) fn sync_support_parent_resources(
+        &mut self,
+        source: &EntitySnapshot,
+        stop_player: bool,
+    ) -> bool {
+        if !self.sync_spell_target_resources(source) {
+            return false;
+        }
+        self.common_upkeep.max_life = source.max_life;
+        self.common_upkeep.max_mana = source.max_mana;
+        self.common_upkeep.mana_regen = source.mana_regen;
+        if stop_player {
+            self.common_upkeep.speed = 0;
+        }
         true
     }
 

@@ -397,9 +397,18 @@ mod authored_spell_family_tests {
                 let pickup = shared.pickup_mut(slot).unwrap();
                 pickup.phase = 1;
                 pickup.record[66] = 1;
-                assert!(shared.step_level2_spell_acquisition_with_economy(
-                    &mut economy, 0, shared.player_entity.index, position, &terrain,
-                ).unwrap().is_none());
+                assert!(
+                    shared
+                        .step_level2_spell_acquisition_with_economy(
+                            &mut economy,
+                            0,
+                            shared.player_entity.index,
+                            position,
+                            &terrain,
+                        )
+                        .unwrap()
+                        .is_none()
+                );
                 assert_eq!(shared.local_player.enabled_spell_holders[0], 0);
                 let pickup = shared.pickup_mut(slot).unwrap();
                 pickup.phase = 0;
@@ -622,6 +631,48 @@ impl Level2SharedSpellResetSession {
         self.acquisitions = acquisitions.into_boxed_slice();
     }
 
+    /// A direct-start rival holder can later return to ordinary acquisition.
+    /// Register that real source's lifecycle without selecting its owner as
+    /// the local player or manufacturing an authored pickup identity.
+    pub(super) fn prepare_source_acquisition(&mut self, source_slot: u16) -> Result<()> {
+        let source = self.pickup(source_slot).cloned().ok_or_else(|| {
+            NativeWorldError::new(format!("acquisition source {source_slot} is absent"))
+        })?;
+        if source.class != 15 || source.model >= 26 {
+            return Err(NativeWorldError::new(format!(
+                "source {source_slot} is not a spell pickup"
+            )));
+        }
+        if self
+            .acquisitions
+            .iter()
+            .any(|state| state.family == source.model)
+        {
+            return Ok(());
+        }
+        if ![
+            PhysicalSpellActionRole::OrdinaryPickup,
+            PhysicalSpellActionRole::PersistentPickup,
+        ]
+        .into_iter()
+        .any(|role| physical_spell_action(source.model, role) == Some(source.action))
+        {
+            return Err(NativeWorldError::new(format!(
+                "source {source_slot} is not an ordinary or persistent spell pickup"
+            )));
+        }
+        let owner = self
+            .players
+            .iter()
+            .find(|player| player.entity_index == source.source_spell_parent_entity_index())
+            .unwrap_or(&self.local_player);
+        let state = Self::acquisition_from_source(&source, owner);
+        let mut rows = std::mem::take(&mut self.acquisitions).into_vec();
+        rows.push(state);
+        self.acquisitions = rows.into_boxed_slice();
+        Ok(())
+    }
+
     /// Starting/carry holders never visit sub_68FF0, but their active callbacks
     /// need the same cold lifecycle that ordinary acquisition installs.
     pub(crate) fn bind_cold_holder_lifecycle(
@@ -629,6 +680,9 @@ impl Level2SharedSpellResetSession {
         source: &EntitySnapshot,
         player: &PlayerSnapshot,
     ) {
+        if player.entity_index != self.player_entity.index {
+            return;
+        }
         let parent = &self.player_entity;
         let tier = source.level_gate.cast_unsigned();
         match source.model {
@@ -1478,11 +1532,15 @@ impl Level2SharedSpellResetSession {
         mut actor: EntitySnapshot,
         castle_position: Position,
     ) -> Result<(EntitySnapshot, Vec<EntitySnapshot>)> {
-        let owner_index = self.players.iter().position(|player| {
-            player.is_ai && player.entity_index == actor.index
-        }).ok_or_else(|| NativeWorldError::new("Castle revival rival player row is absent"))?;
+        let owner_index = self
+            .players
+            .iter()
+            .position(|player| player.is_ai && player.entity_index == actor.index)
+            .ok_or_else(|| NativeWorldError::new("Castle revival rival player row is absent"))?;
         if !actor.active || actor.life >= 0 || actor.class != 3 || actor.model != 1 {
-            return Err(NativeWorldError::new("Castle revival requires the existing dead rival actor"));
+            return Err(NativeWorldError::new(
+                "Castle revival requires the existing dead rival actor",
+            ));
         }
         actor.set_source_action(1);
         actor.set_control_flags(actor.control_flags & !0x20);
@@ -1506,13 +1564,18 @@ impl Level2SharedSpellResetSession {
         self.players[owner_index] = player.clone();
         let mut holders = Vec::new();
         for family in 0..PLAYER_SPELL_COUNT {
-            if player.enabled_spell_holders[family] == 0 { continue; }
-            let Some(source) = economy.allocate_starting_spell_holder(family as u8, castle_position) else {
+            if player.enabled_spell_holders[family] == 0 {
+                continue;
+            }
+            let Some(source) =
+                economy.allocate_starting_spell_holder(family as u8, castle_position)
+            else {
                 player.set_enabled_spell_holder_index(family, 0);
                 continue;
             };
             let stage = Self::castle_stage_for_owner(economy, actor.index);
-            let profile = self.physical_spell_profile(family as u8, 0, actor.index, stage)
+            let profile = self
+                .physical_spell_profile(family as u8, 0, actor.index, stage)
                 .ok_or_else(|| NativeWorldError::new("rival starting holder profile is absent"))?;
             let holder = Self::starting_spell_holder(source, actor.index, 0, profile);
             player.set_enabled_spell_holder_index(family, holder.index);
@@ -1526,18 +1589,28 @@ impl Level2SharedSpellResetSession {
         for holder in &mut holders {
             let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
             let stage = Self::castle_stage_for_owner(economy, actor.index);
-            let profile = self.physical_spell_profile(holder.model, tier, actor.index, stage)
+            let profile = self
+                .physical_spell_profile(holder.model, tier, actor.index, stage)
                 .ok_or_else(|| NativeWorldError::new("rival selected holder profile is absent"))?;
             holder.apply_nyphur_spell_profile(profile, tier);
-            holder.set_map_links(economy.map_chains.old_map_entity(holder.index), economy.map_chains.next_entity(holder.index));
+            holder.set_map_links(
+                economy.map_chains.old_map_entity(holder.index),
+                economy.map_chains.next_entity(holder.index),
+            );
             self.register_starting_acquisition(holder, &player);
-            if let Some(existing) = self.pickup_mut(holder.index) { *existing = holder.clone(); }
-            else { self.dynamic_pickups.push(holder.clone()); }
+            if let Some(existing) = self.pickup_mut(holder.index) {
+                *existing = holder.clone();
+            } else {
+                self.dynamic_pickups.push(holder.clone());
+            }
         }
         let relation = 4 + 4 * usize::from(player.player_color_index());
         for other in &mut self.players {
-            if self.player_entities.iter().any(|entity| entity.index == other.entity_index
-                && entity.source_id != actor.source_id && matches!(entity.model, 0 | 1)) {
+            if self.player_entities.iter().any(|entity| {
+                entity.index == other.entity_index
+                    && entity.source_id != actor.source_id
+                    && matches!(entity.model, 0 | 1)
+            }) {
                 other.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
             }
         }
@@ -3598,7 +3671,7 @@ impl Level2SharedSpellResetSession {
         // payload until cleanup. Read that post-branch projection before
         // seeding a typed active lifecycle so it cannot jump tiers early.
         let active_holder_projection = self.pickup(outcome.source_slot).cloned();
-        if family == 6 {
+        if family == 6 && outcome.parent_entity_index == self.player_entity.index {
             let parent = self
                 .player_entities
                 .get(owner_index)
@@ -3617,7 +3690,7 @@ impl Level2SharedSpellResetSession {
             shield.parent_status_flags = parent.control_flags;
             self.shield = Some(shield);
             self.sync_shield_projection();
-        } else if family == 11 {
+        } else if family == 11 && outcome.parent_entity_index == self.player_entity.index {
             let parent = self
                 .player_entities
                 .get(owner_index)
@@ -3636,7 +3709,9 @@ impl Level2SharedSpellResetSession {
             invisible.parent_status_flags = parent.control_flags;
             self.invisible = Some(invisible);
             self.sync_invisible_projection();
-        } else if family == BEYOND_SIGHT_FAMILY {
+        } else if family == BEYOND_SIGHT_FAMILY
+            && outcome.parent_entity_index == self.player_entity.index
+        {
             let parent = self
                 .player_entities
                 .get(owner_index)
@@ -4052,6 +4127,7 @@ impl Level2SharedSpellResetSession {
         terrain: &SessionTerrain,
         source_player_order: &[usize],
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        self.prepare_source_acquisition(source_slot)?;
         let family_index = self
             .acquisitions
             .iter()

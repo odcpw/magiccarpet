@@ -133,14 +133,19 @@ pub(crate) fn prepare_fireball_reclaim(
         row.record[69] = projectile.target_class;
         row.record[70] = projectile.target_model;
         row.record[154..156].copy_from_slice(&projectile.target_source_entity_index.to_le_bytes());
-        if projectile.origin == crate::native_world::FireballProjectileOrigin::Creature27 {
-            // sub_2A7F0 binds descriptor 106. The typed origin drives its
-            // guidance while live; retain the source pointer on reclaim so a
-            // later fixed-address read observes the same residual bytes.
-            let descriptor = crate::world::effects::MODEL27_GUIDANCE;
-            row.parameter_relation = Some(descriptor.source_index);
-            row.record[164..168]
-                .copy_from_slice(&(u32::from(descriptor.source_index) + 1).to_le_bytes());
+        let descriptor = match projectile.origin {
+            crate::native_world::FireballProjectileOrigin::Creature27 => {
+                Some(crate::world::effects::MODEL27_GUIDANCE.source_index)
+            }
+            crate::native_world::FireballProjectileOrigin::Firefly
+            | crate::native_world::FireballProjectileOrigin::Dragon => Some(65),
+            _ => None,
+        };
+        if let Some(descriptor) = descriptor {
+            // The origin drives live guidance; retain its source descriptor
+            // in the current address after the typed carrier is reclaimed.
+            row.parameter_relation = Some(descriptor);
+            row.record[164..168].copy_from_slice(&(u32::from(descriptor) + 1).to_le_bytes());
         }
     }
     Ok(())

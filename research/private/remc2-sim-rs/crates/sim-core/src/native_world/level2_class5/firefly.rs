@@ -130,6 +130,12 @@ pub(crate) fn inherit_summoned_parent_generation(
     Ok(())
 }
 
+#[derive(Default)]
+pub(crate) struct FireflyStageStep {
+    pub(crate) retained_for_epilogue: bool,
+    pub(crate) spell_feedback: Option<(u16, u8)>,
+}
+
 /// Run action 159's parent-bound StageVar 13, 16 and 17 branches.
 ///
 /// `sub_1E320` first moves a boss-launched child towards its launch target;
@@ -145,7 +151,8 @@ pub(crate) fn step_summoned_stage_slot(
     frozen_model19_slots: &[u16],
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
-) -> std::result::Result<bool, String> {
+    target_context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<FireflyStageStep, String> {
     let Some(source_index) = arena.economy.authored_class5.iter().position(|source| {
         source.active
             && source.drawing_enabled
@@ -153,7 +160,7 @@ pub(crate) fn step_summoned_stage_slot(
             && source.model == FIREFLY_MODEL
             && source.action == FIREFLY_STAGE_ACTION
     }) else {
-        return Ok(false);
+        return Ok(FireflyStageStep::default());
     };
     let Some(state_index) = arena
         .economy
@@ -183,9 +190,9 @@ pub(crate) fn step_summoned_stage_slot(
             source.drawing_enabled = false;
         } else {
             // Unlike sub_1E580, sub_1E320 accepts a target with zero life.
-            let target = arena
-                .entities
-                .get(usize::from(source.word_0x96_150))
+            let target = crate::native_world::source_target::read(
+                arena, target_context, source.word_0x96_150,
+            )?
                 .filter(|row| {
                     source.word_0x96_150 != 0
                         && row.active
@@ -221,20 +228,17 @@ pub(crate) fn step_summoned_stage_slot(
             source.active,
             false,
         )?;
-        return Ok(true);
+        return Ok(FireflyStageStep { retained_for_epilogue: true, spell_feedback: None });
     }
 
     let parent_slot = state.parent_entity_index;
-    let parent = arena
-        .entities
-        .get(usize::from(parent_slot))
-        .filter(|parent| {
-            parent_slot != 0
-                && arena.slot_generation(parent_slot) == state.parent_generation
-                && parent.active
-                && parent.life >= 0
-                && !parent.drawing_disabled()
-        })
+    let parent =
+        if parent_slot != 0 && arena.slot_generation(parent_slot) == state.parent_generation {
+            crate::native_world::source_target::read(arena, target_context, parent_slot)?
+        } else {
+            None
+        }
+        .filter(|parent| parent.active && parent.life >= 0 && !parent.drawing_disabled())
         .map(|parent| FireflyStageTarget {
             source_id: parent.source_id,
             position: firefly_stage_position(parent_slot, parent.position, players),
@@ -290,15 +294,15 @@ pub(crate) fn step_summoned_stage_slot(
                 true,
                 false,
             )?;
-            return Ok(true);
+            return Ok(FireflyStageStep { retained_for_epilogue: true, spell_feedback: None });
         }
-        return Ok(false);
+        return Ok(FireflyStageStep::default());
     }
     let parent = parent.ok_or_else(|| {
         format!("summoned Firefly slot {source_slot} lost its parent before expiry")
     })?;
 
-    let mut target = firefly_live_stage_target(arena, source.word_0x96_150, players);
+    let mut target = firefly_live_stage_target(arena, target_context, source.word_0x96_150, players)?;
     if target.is_none() {
         source.word_0x96_150 = 0;
         if source.source_byte_3e & 7 == 0 {
@@ -308,7 +312,8 @@ pub(crate) fn step_summoned_stage_slot(
                 parent,
                 pass_start_class3_slots,
                 players,
-            );
+                target_context,
+            )?;
             source.word_0x96_150 = target.map_or(0, |(slot, _)| slot);
         }
     }
@@ -321,8 +326,73 @@ pub(crate) fn step_summoned_stage_slot(
         },
         |(_, target)| target.position,
     );
-    if step_firefly_motion(&mut source, &mut state, terrain) {
-        arena.economy.decrement_source_creature_population();
+    // sub_1E700 consumes the damage mailbox only after the parent's timer
+    // and expiry check. A lethal hit shortens the stage lifetime; it does not
+    // enter the ordinary creature PreKill/Kill actions.
+    let runtime_index = arena.economy.authored_class5_runtime.iter()
+        .position(|runtime| runtime.source_entity_index == source_slot)
+        .ok_or_else(|| format!("summoned Firefly slot {source_slot} has no class-5 runtime"))?;
+    let attacker = source.pending_word_0x62;
+    let mut damaged = attacker != 0;
+    if damaged {
+        let damage = arena.economy.authored_class5_runtime[runtime_index].pending_damage;
+        source.life = source.life.wrapping_sub(damage);
+        source.word_0x26 = attacker;
+        source.pending_word_0x62 = 0;
+        arena.economy.authored_class5_runtime[runtime_index].pending_damage = 0;
+        arena.economy.events.push(Level2EconomyEvent::DamageApplied {
+            target_entity_index: source_slot,
+            attacker_entity_index: attacker,
+            damage,
+            lethal: source.life < 0,
+        });
+    } else {
+        source.word_0x26 = 0;
+    }
+    let mut child = arena.economy.authored_class5_runtime[runtime_index].linked_head;
+    let mut remaining_links = arena.entities.len();
+    while child != 0 {
+        if remaining_links == 0 {
+            return Err(format!("summoned Firefly slot {source_slot} has a cyclic child chain"));
+        }
+        remaining_links -= 1;
+        let Some(view) = crate::native_world::source_target::read(arena, target_context, child)? else {
+            break;
+        };
+        if !view.active {
+            break;
+        }
+        if view.life < source.life {
+            source.life = view.life;
+            source.word_0x26 = view.relations.attacker.ok_or_else(|| {
+                format!("summoned Firefly child {child} has no current attacker")
+            })?;
+            damaged = true;
+            break;
+        }
+        child = view.relations.next.ok_or_else(|| {
+            format!("summoned Firefly child {child} has no current child link")
+        })?;
+    }
+    let mut spell_feedback = None;
+    if source.life < 0 {
+        source.word_0x24 = source.word_0x26;
+        state.word_0x2e = 1;
+    } else {
+        if step_firefly_motion(&mut source, &mut state, terrain) {
+            arena.economy.decrement_source_creature_population();
+        }
+        if damaged {
+            let attacker = source.word_0x26;
+            let same_family = arena.economy.authored_class5.iter().any(|peer| {
+                peer.active && peer.source_entity_index == attacker && peer.model == FIREFLY_MODEL
+            });
+            if !same_family && attacker != parent_slot {
+                source.word_0x96_150 = attacker;
+                source.action = FIREFLY_ATTACK_ACTION;
+                spell_feedback = Some((parent_slot, 19));
+            }
+        }
     }
 
     if !acquired_target {
@@ -330,7 +400,7 @@ pub(crate) fn step_summoned_stage_slot(
         state.word_0x2e = state.word_0x2e.wrapping_sub(4);
     }
 
-    if source.source_byte_3e & 7 == 0 {
+    if !damaged && source.life >= 0 && source.source_byte_3e & 7 == 0 {
         if !state.movement_blocked {
             source.roll = i16::try_from(crate::heading_for_positions(
                 source.position,
@@ -344,8 +414,6 @@ pub(crate) fn step_summoned_stage_slot(
         if let Some(peer) = frozen_model19_slots.iter().find_map(|peer_slot| {
             arena.economy.authored_class5.iter().find(|peer| {
                 peer.active
-                    && peer.drawing_enabled
-                    && peer.life >= 0
                     && peer.model == FIREFLY_MODEL
                     && peer.source_entity_index == *peer_slot
                     && peer.source_entity_index != source_slot
@@ -378,10 +446,9 @@ pub(crate) fn step_summoned_stage_slot(
 
     if acquired_target
         && source.source_byte_3e & 7 == 0
-        && let Some((target_slot, target)) = target
+        && let Some((_, target)) = target
         && firefly_distance_3d(source.position, target.position) < FIREFLY_RANGE.into()
     {
-        source.word_0x96_150 = target_slot;
         source.action = FIREFLY_ATTACK_ACTION;
     }
 
@@ -399,7 +466,7 @@ pub(crate) fn step_summoned_stage_slot(
         source.active,
         false,
     )?;
-    Ok(source.active)
+    Ok(FireflyStageStep { retained_for_epilogue: source.active, spell_feedback })
 }
 
 /// Let the normal source-boundary reclaimer release Fireflies hidden during
@@ -455,17 +522,20 @@ fn firefly_stage_position(
 
 fn firefly_live_stage_target(
     arena: &SourceArena,
+    context: crate::native_world::source_target::Context<'_>,
     target_slot: u16,
     players: &[GoatPlayerTarget],
-) -> Option<(u16, FireflyStageTarget)> {
-    let row = arena.entities.get(usize::from(target_slot))?;
-    (target_slot != 0 && row.active && row.life > 0 && !row.drawing_disabled()).then_some((
+) -> std::result::Result<Option<(u16, FireflyStageTarget)>, String> {
+    let Some(row) = crate::native_world::source_target::read(arena, context, target_slot)? else {
+        return Ok(None);
+    };
+    Ok((target_slot != 0 && row.active && row.life > 0 && !row.drawing_disabled()).then_some((
         target_slot,
         FireflyStageTarget {
             source_id: row.source_id,
             position: firefly_stage_position(target_slot, row.position, players),
         },
-    ))
+    )))
 }
 
 fn nearest_firefly_stage_target(
@@ -474,11 +544,12 @@ fn nearest_firefly_stage_target(
     parent: FireflyStageTarget,
     pass_start_class3_slots: &[u16],
     players: &[GoatPlayerTarget],
-) -> Option<(u16, FireflyStageTarget)> {
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<Option<(u16, FireflyStageTarget)>, String> {
     let mut nearest = None;
     let mut nearest_distance = u32::MAX;
     for target_slot in pass_start_class3_slots {
-        let Some(row) = arena.entities.get(usize::from(*target_slot)) else {
+        let Some(row) = crate::native_world::source_target::read(arena, context, *target_slot)? else {
             continue;
         };
         if row.class != 3
@@ -501,7 +572,7 @@ fn nearest_firefly_stage_target(
             ));
         }
     }
-    nearest
+    Ok(nearest)
 }
 
 const FIREFLY_DESCRIPTOR_CADENCE: u8 = 35;
@@ -666,6 +737,8 @@ pub(crate) fn adopt_imported_fireflies(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FireflyAttackTarget {
     pub(crate) entity_index: u16,
+    pub(crate) class: u8,
+    pub(crate) model: u8,
     pub(crate) position: Position,
     pub(crate) yaw: i16,
     pub(crate) live: bool,
@@ -690,6 +763,8 @@ pub(crate) struct FireflyContact {
 pub(crate) struct FireflyFireballLaunch {
     pub(crate) owner_entity_index: u16,
     pub(crate) target_entity_index: u16,
+    pub(crate) target_class: u8,
+    pub(crate) target_model: u8,
     pub(crate) constructor_position: Position,
     pub(crate) position: Position,
     pub(crate) target_position: Position,
@@ -989,6 +1064,12 @@ impl Level2EconomyState {
         let mut source = self.authored_class5[source_index];
         let mut runtime = self.authored_class5_runtime[runtime_index];
         let mut firefly = self.authored_fireflies[firefly_index];
+
+        // Parent-bound stage actions own their distinct damage/expiry order;
+        // mode 17 does not consume the mailbox at all.
+        if source.action == FIREFLY_STAGE_ACTION && matches!(firefly.stage_var2, 13 | 16 | 17) {
+            return Ok(FireflyLifecycleStep::default());
+        }
 
         if source.pending_word_0x62 != 0
             && !matches!(source.action, FIREFLY_PRE_KILL_ACTION | FIREFLY_KILL_ACTION)
@@ -1708,8 +1789,10 @@ impl Level2EconomyState {
                             let mut position = angle_origin;
                             position.z = position.z.wrapping_add(FIREFLY_SHIFT_Y);
                             fireball = Some(FireflyFireballLaunch {
-                                owner_entity_index: source.source_entity_index,
+                                owner_entity_index: state.entity_id,
                                 target_entity_index: target.entity_index,
+                                target_class: target.class,
+                                target_model: target.model,
                                 constructor_position: angle_origin,
                                 position,
                                 target_position: target.position,
@@ -1767,7 +1850,7 @@ impl Level2EconomyState {
                     {
                         contact = Some(FireflyContact {
                             target_entity_index: target.entity_index,
-                            attacker_entity_index: source.source_entity_index,
+                            attacker_entity_index: state.entity_id,
                             damage: i32::from(source.subspell_index),
                         });
                         source.byte_0x46_70 = 9;
@@ -2358,8 +2441,9 @@ mod tests {
             .unwrap();
         source.source_byte_3e = 1;
         assert!(
-            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles, Default::default())
                 .unwrap()
+                .retained_for_epilogue
         );
         let state = arena
             .economy
@@ -2378,8 +2462,9 @@ mod tests {
                 .drawing_enabled
         );
         assert!(
-            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles, Default::default())
                 .unwrap()
+                .retained_for_epilogue
         );
         assert!(
             !arena
@@ -2434,6 +2519,102 @@ mod tests {
             .unwrap()
             .entity_id ^= 1;
         assert_ne!(arena.reset_hash_with_terrain(&terrain), other_id.reset_hash_with_terrain(&terrain));
+
+        // Use the actual summoned carrier and scheduled stage entry: hostile
+        // and parent hits differ only in the attacker, and fatal damage must
+        // expire through StageVar 13 rather than the ordinary death action.
+        for (attacker, damage, hostile) in [(parent, 5, false), (112, 5, true), (112, FIREFLY_LIFE + 1, true)] {
+            let mut hit = arena.clone();
+            let mut world = terrain.clone();
+            let slot = child.source_slot;
+            let row = hit.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            row.source_byte_3e = 1;
+            row.pending_word_0x62 = attacker;
+            hit.economy.authored_class5_runtime.iter_mut()
+                .find(|runtime| runtime.source_entity_index == slot).unwrap()
+                .pending_damage = damage;
+            let lifecycle = step_lifecycle_in_arena(&mut hit, &mut world, particles, slot, &[]).unwrap();
+            assert!(!lifecycle.handled, "StageVar consumes its own mailbox after its timer");
+            let outcome = step_summoned_stage_slot(&mut hit, slot, &[], &[], &[], &mut world, particles, Default::default()).unwrap();
+            assert!(outcome.retained_for_epilogue);
+            let row = hit.economy.authored_class5.iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!(row.pending_word_0x62, 0);
+            assert_eq!(row.life, FIREFLY_LIFE - damage);
+            assert!(row.active && row.drawing_enabled && hit.resolve(child).is_some());
+            if damage > FIREFLY_LIFE {
+                assert_eq!(row.action, FIREFLY_STAGE_ACTION);
+                assert_eq!(outcome.spell_feedback, None);
+                let state = hit.economy.authored_fireflies.iter()
+                    .find(|state| state.source_entity_index == slot).unwrap();
+                assert!((state.word_0x2e as i16) <= 0);
+                let expiry = step_summoned_stage_slot(&mut hit, slot, &[], &[], &[], &mut world, particles, Default::default()).unwrap();
+                assert!(expiry.retained_for_epilogue && hit.resolve(child).is_some());
+                assert!(!hit.economy.authored_class5.iter()
+                    .find(|row| row.source_entity_index == slot).unwrap().drawing_enabled);
+                retire_hidden_summoned_stage_at_source_boundary(&mut hit, &mut world).unwrap();
+                hit.economy.reclaim_inactive_slots_at_source_boundary();
+                assert!(hit.resolve(child).is_none());
+            } else if hostile {
+                assert_eq!(row.action, FIREFLY_ATTACK_ACTION);
+                assert_eq!(outcome.spell_feedback, Some((parent, 19)));
+            } else {
+                assert_eq!(row.action, FIREFLY_STAGE_ACTION);
+                assert_eq!(outcome.spell_feedback, None);
+            }
+        }
+        for child_life in [FIREFLY_LIFE - 1, FIREFLY_LIFE] {
+            let mut linked = arena.clone();
+            let mut world = terrain.clone();
+            let mut child_runtime = runtime.clone();
+            let sibling = allocate_summoned(&mut linked, &mut child_runtime, &mut world, particles,
+                session.state.position, parent, parent, parent).unwrap().unwrap();
+            let row = linked.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == sibling.source_slot).unwrap();
+            row.life = child_life;
+            row.word_0x26 = 112;
+            linked.economy.authored_class5_runtime.iter_mut()
+                .find(|row| row.source_entity_index == child.source_slot).unwrap()
+                .linked_head = sibling.source_slot;
+            linked.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == child.source_slot).unwrap()
+                .source_byte_3e = 1;
+            let outcome = step_summoned_stage_slot(&mut linked, child.source_slot, &[], &[], &[],
+                &mut world, particles, Default::default()).unwrap();
+            let root = linked.economy.authored_class5.iter()
+                .find(|row| row.source_entity_index == child.source_slot).unwrap();
+            assert_eq!(root.life, child_life);
+            assert_eq!(outcome.spell_feedback, (child_life < FIREFLY_LIFE).then_some((parent, 19)));
+        }
+        let mut separation_rolls = Vec::new();
+        for other_id in [parent, parent.wrapping_add(1)] {
+            let mut nearby = arena.clone();
+            let mut world = terrain.clone();
+            let mut peer_runtime = runtime.clone();
+            let peer_position = Position { x: session.state.position.x.wrapping_add(40),
+                y: session.state.position.y.wrapping_add(60), z: session.state.position.z };
+            let peer = allocate_summoned(&mut nearby, &mut peer_runtime, &mut world, particles,
+                peer_position, parent, other_id, parent).unwrap().unwrap();
+            let peer_row = nearby.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == peer.source_slot).unwrap();
+            peer_row.drawing_enabled = false;
+            peer_row.life = -1;
+            let root = nearby.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == child.source_slot).unwrap();
+            root.source_byte_3e = 8;
+            let outcome = step_summoned_stage_slot(&mut nearby, child.source_slot, &[], &[],
+                &[peer.source_slot], &mut world, particles, Default::default()).unwrap();
+            assert!(outcome.retained_for_epilogue);
+            let root = nearby.economy.authored_class5.iter()
+                .find(|row| row.source_entity_index == child.source_slot).unwrap();
+            if other_id != parent {
+                assert_eq!(i32::from(root.roll), crate::heading_for_positions(peer_position, root.position));
+            }
+            separation_rolls.push(root.roll);
+        }
+        assert_ne!(separation_rolls[0], separation_rolls[1],
+            "a hidden same-pass peer repels only a different source ID");
 
         // Exercise the actual phase-zero death consumer, with and without
         // source burst suppression. This is a bounded death-state control;
@@ -2501,9 +2682,11 @@ mod tests {
                 &[],
                 &[],
                 &mut terrain,
-                particles
+                particles,
+                Default::default()
             )
             .unwrap()
+            .retained_for_epilogue
         );
         let source = arena
             .economy
@@ -2563,6 +2746,7 @@ mod tests {
         source.word_0x96_150 = parent;
         source.actual_speed = 24;
         source.source_byte_3e = 1;
+        source.pending_word_0x62 = parent;
         let state = arena
             .economy
             .authored_fireflies
@@ -2571,9 +2755,13 @@ mod tests {
             .unwrap();
         state.stage_var2 = 17;
 
+        assert!(!step_lifecycle_in_arena(&mut arena, &mut terrain, particles, slot, &[])
+            .unwrap().handled, "launch mode leaves the mailbox for its later stage");
+
         assert!(
-            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles, Default::default())
                 .unwrap()
+                .retained_for_epilogue
         );
         let source = arena
             .economy
@@ -2591,10 +2779,38 @@ mod tests {
             (state.stage_var2, state.word_0x2e, source.actual_speed),
             (16, 250, 76)
         );
+        assert_eq!(source.pending_word_0x62, parent);
+
+        // A boss-style parent can itself be a typed arena carrier. Its live
+        // life/visibility, rather than the retained raw row at that address,
+        // controls the child's scheduled parent-loss expiry.
+        for parent_alive in [true, false] {
+            let mut typed = arena.clone();
+            let mut world = terrain.clone();
+            let mut parent_runtime = runtime.clone();
+            let live_parent = allocate_summoned(&mut typed, &mut parent_runtime, &mut world,
+                particles, session.state.position, parent, parent, parent).unwrap().unwrap();
+            let row = typed.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == live_parent.source_slot).unwrap();
+            row.life = if parent_alive { FIREFLY_LIFE } else { -1 };
+            typed.entities[usize::from(live_parent.source_slot)].set_life(if parent_alive { -1 } else { FIREFLY_LIFE });
+            let state = typed.economy.authored_fireflies.iter_mut()
+                .find(|state| state.source_entity_index == slot).unwrap();
+            state.parent_entity_index = live_parent.source_slot;
+            state.parent_generation = live_parent.generation;
+            state.stage_var2 = 16;
+            let outcome = step_summoned_stage_slot(&mut typed, slot, &[], &[], &[], &mut world,
+                particles, Default::default()).unwrap();
+            assert!(outcome.retained_for_epilogue);
+            let child = typed.economy.authored_class5.iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!(child.drawing_enabled, parent_alive);
+        }
 
         assert!(
-            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles, Default::default())
                 .unwrap()
+                .retained_for_epilogue
         );
         let state = arena
             .economy
@@ -2609,8 +2825,9 @@ mod tests {
 
         arena.entities[usize::from(parent)].disable_drawing();
         assert!(
-            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles)
+            step_summoned_stage_slot(&mut arena, slot, &[], &[], &[], &mut terrain, particles, Default::default())
                 .unwrap()
+                .retained_for_epilogue
         );
         let source = arena
             .economy

@@ -93,11 +93,25 @@ pub(crate) fn step_projectile(
         && projectile.origin == super::FireballProjectileOrigin::Eruption
     {
         arena.allocate_source_slot_with_terrain(terrain).map(|id| {
-            let mut row =
-                arena
-                    .economy
-                    .initialize_authored_model17(id, u16::MAX, projectile.position);
-            row.entity_id = projectile.owner_entity_index;
+            // The source passes &projectile.position into NewEvent. If that
+            // allocation replaces the flyer itself, the pointer now sees the
+            // freshly cleared constructor row before AddMeteor copies it.
+            let position = if id == slot { Position::default() } else { projectile.position };
+            let mut row = arena.economy.initialize_authored_model17(id, u16::MAX, position);
+            if id != slot {
+                row.entity_id = projectile.owner_entity_index;
+                row.yaw = projectile.yaw;
+                row.pitch = projectile.pitch;
+                row.subspell_index = projectile.source_subspell_index;
+                // Eruption's NewEvent/SummonFireball_4D2E0 leaves byte46 zero.
+            }
+            if let Some(target) = step.collision_target {
+                row.target_source_entity_index = target;
+            }
+            if id == slot {
+                // The final DisableEntityDrawing04 acts on the same address.
+                row.control_flags |= 0x400;
+            }
             *arena
                 .economy
                 .authored_model17
@@ -116,7 +130,10 @@ pub(crate) fn step_projectile(
             crate::level_definition::EffectKind::Impact
         };
         let definition = sim_definition::adapter::mc2_effect_definition(kind);
-        let child = if kind == crate::level_definition::EffectKind::Impact {
+        let child = if matches!(
+            kind,
+            crate::level_definition::EffectKind::Impact | crate::level_definition::EffectKind::Ash
+        ) {
             rules::allocate_from_source_position(
                 arena,
                 terrain,
@@ -163,17 +180,21 @@ pub(crate) fn step_projectile(
             let row = &mut arena.entities[usize::from(id)];
             // NewEvent may reuse the projectile's frozen address. In that
             // case the source pointer now reads the initialized impact row.
-            let (owner, subspell, yaw, pitch) =
-                if id == slot && kind == crate::level_definition::EffectKind::Impact {
-                    (row.source_id, row.subspell_index, row.yaw, row.pitch)
-                } else {
-                    (
-                        projectile.owner_entity_index,
-                        projectile.source_subspell_index,
-                        projectile.yaw,
-                        projectile.pitch,
-                    )
-                };
+            let (owner, subspell, yaw, pitch) = if id == slot
+                && matches!(
+                    kind,
+                    crate::level_definition::EffectKind::Impact
+                        | crate::level_definition::EffectKind::Ash
+                ) {
+                (row.source_id, row.subspell_index, row.yaw, row.pitch)
+            } else {
+                (
+                    projectile.owner_entity_index,
+                    projectile.source_subspell_index,
+                    projectile.yaw,
+                    projectile.pitch,
+                )
+            };
             row.source_id = owner;
             row.record[30..32].copy_from_slice(&row.source_id.to_le_bytes());
             if birth == FireballBirth::Impact {
@@ -192,7 +213,7 @@ pub(crate) fn step_projectile(
         && projectile.origin != super::FireballProjectileOrigin::Eruption
         && projectile.source_model != 28;
     if child.is_some() || birth == FireballBirth::Ash {
-        if impact_replaced_source {
+        if impact_replaced_source || (birth == FireballBirth::Ash && child == Some(slot)) {
             rules::hide_birth_replacement(arena, slot, child)?;
         } else if let Some(parent) = arena
             .economy
@@ -210,6 +231,7 @@ pub(crate) fn step_projectile(
     // holder, failed allocation, or non-actor termination awards nothing.
     if child.is_some()
         && !impact_replaced_source
+        && !(projectile.origin == super::FireballProjectileOrigin::Eruption && child == Some(slot))
         && step.direct_hit_owner.is_some()
         && projectile.holder_entity_index != 0
     {

@@ -465,6 +465,15 @@ fn exact_source_bee_row(arena: &SourceArena, source: BeeCreatureRuntime) -> bool
         })
 }
 
+/// Whether the current typed Bee can consume an Alliance write to its
+/// retained source row. The impact adapter uses the same identity rule when
+/// binding the new parent generation.
+pub(crate) fn alliance_shadow_matches_current_bee(arena: &SourceArena, slot: u16) -> bool {
+    arena.economy.bee_creatures.iter()
+        .find(|source| source.active && source.source_entity_index == slot)
+        .is_some_and(|source| exact_source_bee_row(arena, *source))
+}
+
 /// Import the source Alliance control write before the ordinary typed Bee
 /// callback. StageVar2=14 with StageVar1=0 is the kernel's exact transition.
 fn import_source_alliance_control(arena: &mut SourceArena, slot: u16) {
@@ -565,15 +574,19 @@ pub(crate) fn step_in_arena(
         .ok_or_else(|| format!("Bee source slot {slot} is absent"))?;
     let source_generation = arena.slot_generation(slot);
     let before = arena.economy.bee_creatures[index];
-    if matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
-        && before.stage_var2 == 13
-        && arena.handle(slot).is_none_or(|child| {
+    let child = arena.handle(slot);
+    let generation_bound_stage = (matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
+        && before.stage_var2 == 13)
+        || (before.stage_var2 == 14
+            && child.is_some_and(|child| arena.has_creature_parent_binding(child)));
+    if generation_bound_stage
+        && child.is_none_or(|child| {
             arena
                 .creature_parent(child)
                 .is_none_or(|parent| parent.source_slot != before.parent_entity_index)
         })
     {
-        // A recycled numeric slot is not the parent this Army child followed.
+        // A recycled numeric slot is not this Army or Alliance parent.
         rows.retain(|row| row.slot != before.parent_entity_index);
     }
     let stage = runtime.descriptor(before.stage_var1);

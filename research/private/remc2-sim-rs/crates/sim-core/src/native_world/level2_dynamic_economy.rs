@@ -203,6 +203,11 @@ impl Level2EconomyState {
         true
     }
 
+    /// Whether a typed carrier currently owns this numeric source slot.
+    pub(crate) fn has_live_typed_slot(&self, slot: u16) -> bool {
+        self.live_arena_cursor_row(slot).is_some()
+    }
+
     /// Resolve a current typed actor before consulting the common source row.
     /// The supplied row owns descriptor/word30 fields which these carriers do
     /// not duplicate. Family-owned movement, RNG and flags override it here.
@@ -1012,6 +1017,8 @@ impl Level2EconomyState {
             acquisition_attempted: !matches!(
                 payload.origin,
                 FireballProjectileOrigin::PlayerSpell
+                    | FireballProjectileOrigin::Firefly
+                    | FireballProjectileOrigin::Dragon
                     | FireballProjectileOrigin::Wyvern
                     | FireballProjectileOrigin::Creature18
                     | FireballProjectileOrigin::Creature21
@@ -1091,9 +1098,7 @@ impl Level2EconomyState {
     ) -> bool {
         let Some(target) = imported_entities
             .get_mut(usize::from(target_entity_index))
-            .filter(|target| {
-                target.active && target.life >= 0 && target.class == 3 && target.model == 0
-            })
+            .filter(|target| target.index != 0 && target.class == 3 && target.model == 0)
         else {
             return false;
         };
@@ -1203,15 +1208,43 @@ impl Level2EconomyState {
             FireballProjectileOrigin::Firefly
                 | FireballProjectileOrigin::Dragon
                 | FireballProjectileOrigin::Worm
-        ) {
-            if let Some(target) =
-                imported_entities.get(usize::from(projectile.target_source_entity_index))
-                && target.active
-                && target.life >= 0
-                && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-            {
-                let (_, desired_pitch) =
-                    projectile_guidance_angles(projectile.position, target.position);
+        ) && projectile.target_source_entity_index != 0
+        {
+            let target_position = if let Some(views) = views {
+                let target = views
+                    .get(usize::from(projectile.target_source_entity_index))
+                    .ok_or("Fireball target address is outside arena")?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                match target {
+                    Some(target) if target.model == 2 => Some(target.position),
+                    Some(target) => {
+                        let shape = target.collision.ok_or_else(|| {
+                            format!(
+                                "Fireball target {} lacks current source axes",
+                                projectile.target_source_entity_index
+                            )
+                        })?;
+                        Some(super::guided_projectile::centre(
+                            target.position,
+                            target.model,
+                            shape.vertical_offset,
+                        ))
+                    }
+                    None => None,
+                }
+            } else {
+                imported_entities
+                    .get(usize::from(projectile.target_source_entity_index))
+                    .filter(|target| {
+                        target.active
+                            && target.life >= 0
+                            && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                    })
+                    .map(|target| target.position)
+            };
+            if let Some(position) = target_position {
+                let (_, desired_pitch) = projectile_guidance_angles(projectile.position, position);
                 projectile.roll = projectile.yaw;
                 projectile.fov = desired_pitch;
                 projectile.pitch = projectile.pitch.wrapping_add(turn_toward(

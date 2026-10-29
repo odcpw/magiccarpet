@@ -4735,11 +4735,15 @@ impl NativeWorldInspection {
                     && holder.source_spell_parent_entity_index()
                         == shared.local_player().entity_index
             });
+        // Imported rival Castles need the same BUILD bank even when the
+        // local inventory and authored pickups contain no Castle spell.
+        let has_imported_castle = session.economy().live_castles().next().is_some();
         if (definition
             .level_definition()
             .spell_kinds()
             .any(|kind| kind == SpellKind::Castle)
-            || has_starting_castle)
+            || has_starting_castle
+            || has_imported_castle)
             && !session.economy().has_castle_stage_footprint(1)
         {
             for (stage, footprint) in campaign_castle_stage_footprints()? {

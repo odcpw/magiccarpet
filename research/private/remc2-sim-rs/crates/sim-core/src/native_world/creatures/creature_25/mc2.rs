@@ -16,91 +16,39 @@ fn put(row: &mut EntitySnapshot, at: usize, value: u16) {
     row.record[at..at + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn targets_in_arena(arena: &SourceArena) -> Vec<Target> {
-    let mut targets = arena
-        .entities
-        .iter()
-        .filter(|row| row.active && row.class != 0 && row.index != 0)
-        .map(|row| {
-            let castle_slot = arena
+pub(super) fn target_at(
+    arena: &SourceArena,
+    context: crate::native_world::source_target::Context<'_>,
+    slot: u16,
+) -> Result<Option<Target>, String> {
+    use crate::native_world::source_target;
+    Ok(
+        source_target::read(arena, context, slot)?.map(|view| Target {
+            slot,
+            source_id: view.source_id,
+            class: view.class,
+            model: view.model,
+            life: view.life,
+            flags: view.control_flags,
+            position: view.position,
+            yaw: view.yaw,
+            roll: view.roll,
+            pitch_extent: view.collision.map(|shape| shape.half_width),
+            roll_extent: view.collision.map(|shape| shape.half_depth),
+            attacker: view.relations.attacker,
+            target: view.relations.target,
+            stage_index: view.relations.stage_index,
+            stage_mode: view.relations.stage_mode,
+            parent: view.relations.parent,
+            stage_relation: view.relations.stage_relation,
+            next: view.relations.next,
+            castle_slot: arena
                 .economy
-                .castle_for_owner(row.index)
-                .map_or(0, |castle| castle.source_entity_index);
-            Target {
-                slot: row.index,
-                source_id: row.source_id,
-                class: row.class,
-                model: row.model,
-                action: row.action,
-                life: row.life,
-                flags: row.control_flags,
-                position: row.position,
-                yaw: row.yaw,
-                roll: row.source_roll(),
-                pitch_extent: row.array_pitch(),
-                roll_extent: row.array_roll(),
-                fov_extent: row.array_fov(),
-                attacker: word(row, 42),
-                target: word(row, 154),
-                stage_index: row.record[76],
-                stage_mode: row.record[77],
-                parent: word(row, 44),
-                stage_relation: word(row, 78),
-                killer: word(row, 40),
-                next: word(row, 56),
-                castle_slot,
-            }
-        })
-        .collect::<Vec<_>>();
-    for source in arena
-        .economy
-        .authored_class5()
-        .iter()
-        .filter(|row| row.active)
-    {
-        targets.retain(|row| row.slot != source.source_entity_index);
-        targets.push(Target {
-            slot: source.source_entity_index,
-            source_id: arena.economy.source_owner(source.source_entity_index),
-            class: 5,
-            model: source.model,
-            action: source.action,
-            life: source.life,
-            flags: if source.drawing_enabled {
-                0
-            } else {
-                crate::native_world::ENTITY_DRAW_DISABLED_BIT
-            },
-            position: source.position,
-            yaw: source.yaw,
-            pitch_extent: source.shift_rot_x,
-            roll_extent: source.shift_rot_y,
-            attacker: source.word_0x26,
-            target: source.word_0x96_150,
+                .castle_for_owner(slot)
+                .map_or(0, |castle| castle.source_entity_index),
             ..Target::default()
-        });
-    }
-    for castle in arena.economy.live_castles() {
-        targets.retain(|target| target.slot != castle.source_entity_index);
-        targets.push(Target {
-            slot: castle.source_entity_index,
-            source_id: castle.source_id_entity_index,
-            class: castle.source_class,
-            model: castle.source_model,
-            action: castle.action,
-            life: castle.life,
-            flags: castle.control_flags,
-            position: castle.position,
-            pitch_extent: castle.shift_pitch,
-            roll_extent: castle.shift_roll,
-            fov_extent: castle.shift_fov,
-            attacker: castle.pending_attacker_entity_index,
-            killer: castle.killer_entity_index,
-            ..Target::default()
-        });
-    }
-    targets.sort_unstable_by_key(|target| target.slot);
-    targets
+        }),
+    )
 }
 
 pub(crate) fn construct_row(
@@ -127,8 +75,9 @@ pub(crate) fn prepare_source_pass(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
     slots: &[u16],
-) {
-    super::stage::prepare_source_pass(arena, runtime, slots);
+    target_context: crate::native_world::source_target::Context<'_>,
+) -> Result<(), String> {
+    super::super::stage_route::prepare_source_pass(arena, runtime, target_context, slots)
 }
 
 /// Ordinary `sub_4CE00` authored producer. A failed allocation leaves the
@@ -466,8 +415,8 @@ pub(crate) fn step_row(
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
+    target_context: crate::native_world::source_target::Context<'_>,
 ) -> Result<Effects, String> {
-    let snapshots = targets_in_arena(arena);
     let mut row = arena
         .entities
         .get(usize::from(slot))
@@ -489,9 +438,11 @@ pub(crate) fn step_row(
     });
     let mut context = Context {
         terrain,
-        targets: &snapshots,
+        targets: &[],
         class3,
         model25: &families[usize::from(SOURCE_MODEL)],
+        reader: Some((arena, target_context)),
+        read_error: std::cell::Cell::new(None),
     };
     let mut effects = super::step(&mut Actor { row: &mut row }, &mut context)?;
     let stage_expiry = if effects.stage_callback {
@@ -507,6 +458,11 @@ pub(crate) fn step_row(
     } else {
         None
     };
+    if let Some(slot) = context.read_error.get() {
+        return Err(format!(
+            "Cymmerian cannot read current source target slot{slot}"
+        ));
+    }
     drop(context);
     let position = row.position;
     if let Some(visual) = effects.visual {

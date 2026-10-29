@@ -186,6 +186,13 @@ fn read_arena_bounty(arena: &SourceArena, slot: u16) -> Result<(i32, u16), Strin
     smoke_bounty!(economy.model59_smoke_children);
     smoke_bounty!(economy.model13_spawned_children);
     if let Some(row) = economy
+        .authored_trees
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Ok((row.pending_damage, row.owner_entity_index));
+    }
+    if let Some(row) = economy
         .spheres
         .iter()
         .find(|row| row.active && row.source_entity_index == slot)
@@ -374,6 +381,7 @@ pub(crate) fn read_arena_life(arena: &SourceArena, slot: u16) -> Option<i32> {
     row_life!(economy.castle_defenders);
     row_life!(economy.bee_creatures);
     row_life!(economy.house_residents);
+    row_life!(economy.authored_trees);
     row_life!(economy.model59_smoke_children);
     row_life!(economy.model13_spawned_children);
     row_life!(economy.authored_dragon_parts);
@@ -569,6 +577,26 @@ pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> 
         return None;
     }
     let economy = &arena.economy;
+    if let Some(row) = economy
+        .authored_trees
+        .iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(Actor {
+            source_id: row.entity_id,
+            class: row.source_class,
+            model: row.model,
+            position: row.position,
+            shape: shape(row.pitch, row.roll, row.yaw, row.fov),
+            damage_mask: row.source_byte_38,
+            control_flags: row.control_flags
+                | if row.drawing_enabled {
+                    0
+                } else {
+                    ENTITY_DRAW_DISABLED_BIT
+                },
+        });
+    }
     if let Some(row) = economy
         .spheres
         .iter()
@@ -1101,6 +1129,36 @@ pub(crate) fn capture_effect_lists(
 
 /// Adapt the same live actor carriers to the distinct 10C80/11400 policies.
 /// No effect-owned victim mirror or second damage mailbox is introduced.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct EffectDamageReceipt {
+    pub(crate) source_slot: Option<u16>,
+    pub(crate) pulse: crate::world::effects::DamagePulse,
+    pub(crate) target_slot: u16,
+    pub(crate) target: Option<crate::combat::area::Actor>,
+    pub(crate) target_in_scanned_cells: bool,
+    pub(crate) mailbox_before: Option<(i32, u16)>,
+    pub(crate) mailbox_after: Option<(i32, u16)>,
+    pub(crate) hit_count: Option<u16>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static EFFECT_DAMAGE_TRACE: std::cell::RefCell<Option<(u16, Vec<EffectDamageReceipt>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record actual effect callbacks on the current test thread until taken.
+#[cfg(test)]
+pub(crate) fn start_effect_damage_trace(target_slot: u16) {
+    EFFECT_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((target_slot, Vec::new())));
+}
+
+#[cfg(test)]
+pub(crate) fn take_effect_damage_trace() -> Vec<EffectDamageReceipt> {
+    EFFECT_DAMAGE_TRACE.with(|trace| trace.borrow_mut().take().map_or_else(Vec::new, |v| v.1))
+}
+
 pub(crate) fn apply_effect(
     arena: &mut SourceArena,
     actors: Option<ActorDomains<'_>>,
@@ -1109,18 +1167,71 @@ pub(crate) fn apply_effect(
     lists: &EffectLists,
     request: crate::world::effects::DamagePulse,
 ) -> Result<u16, String> {
-    crate::world::effects::apply_damage(
-        &mut EffectTargets {
-            targets: ArenaTargets {
-                arena,
-                actors,
-                player,
-            },
-            masks,
-            lists,
+    let mut world = EffectTargets {
+        targets: ArenaTargets {
+            arena,
+            actors,
+            player,
         },
-        request,
-    )
+        masks,
+        lists,
+    };
+    #[cfg(test)]
+    let receipt = EFFECT_DAMAGE_TRACE.with(|trace| {
+        let trace = trace.borrow();
+        let (target_slot, _) = trace.as_ref()?;
+        let target_slot = *target_slot;
+        let mut matching_sources = world
+            .targets
+            .arena
+            .entities
+            .iter()
+            .filter(|row| {
+                row.active
+                    && (row.class, row.model) == (10, 0)
+                    && row.source_id == request.owner
+                    && row.position == request.position
+            })
+            .map(|row| row.index);
+        let first_source = matching_sources.next();
+        let source_slot = if matching_sources.next().is_none() {
+            first_source
+        } else {
+            None
+        };
+        let center_x = (i32::from(request.position.x) + 128) / 256;
+        let center_y = (i32::from(request.position.y) + 128) / 256;
+        let radius = (i32::from(request.half_width) + 255) / 256;
+        let target_in_scanned_cells = (-radius..=radius).any(|y| {
+            (-radius..=radius).any(|x| {
+                world
+                    .cell_slots((center_x + x) as u8, (center_y + y) as u8)
+                    .contains(&target_slot)
+            })
+        });
+        Some(EffectDamageReceipt {
+            source_slot,
+            pulse: request,
+            target_slot,
+            target: world.actor(target_slot),
+            target_in_scanned_cells,
+            mailbox_before: read_arena_bounty(world.targets.arena, target_slot).ok(),
+            mailbox_after: None,
+            hit_count: None,
+        })
+    });
+    let result = crate::world::effects::apply_damage(&mut world, request);
+    #[cfg(test)]
+    if let Some(mut receipt) = receipt {
+        receipt.mailbox_after = read_arena_bounty(world.targets.arena, receipt.target_slot).ok();
+        receipt.hit_count = result.as_ref().ok().copied();
+        EFFECT_DAMAGE_TRACE.with(|trace| {
+            if let Some((_, receipts)) = trace.borrow_mut().as_mut() {
+                receipts.push(receipt);
+            }
+        });
+    }
+    result
 }
 
 struct EffectTargets<'arena, 'actors, 'assets> {
@@ -1419,6 +1530,13 @@ impl ArenaTargets<'_, '_> {
         }
         smoke_bounty!(economy.model59_smoke_children);
         smoke_bounty!(economy.model13_spawned_children);
+        if let Some(row) = economy
+            .authored_trees
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            return Ok(edit(&mut row.pending_damage, &mut row.owner_entity_index));
+        }
         if let Some(row) = economy
             .spheres
             .iter_mut()
@@ -1905,6 +2023,60 @@ mod tests {
             (-70_000, u16::MAX)
         );
         assert!(replace_source_bounty(&mut arena, None, u16::MAX, 1, 2).is_err());
+
+        let tree = arena
+            .economy
+            .allocate_authored_tree(u16::MAX, session.state.position)
+            .expect("source Tree constructor");
+        let raw = &mut arena.entities[usize::from(tree.source_entity_index)];
+        raw.set_position(Position::default());
+        raw.set_life(-400);
+        raw.set_control_flags(0);
+        raw.record[98..102].copy_from_slice(&123_i32.to_le_bytes());
+        let shadow = raw.record.clone();
+        let current =
+            source_actor(&mut arena, None, tree.source_entity_index).expect("current Tree actor");
+        assert_eq!(
+            current.shape,
+            shape(tree.pitch, tree.roll, tree.yaw, tree.fov)
+        );
+        assert_eq!(current.damage_mask, tree.source_byte_38);
+        assert_eq!(
+            source_life(&arena, None, tree.source_entity_index),
+            Some(tree.life)
+        );
+        let request = AreaDamage {
+            position: tree.position,
+            shape: shape(64, 64, tree.yaw, tree.fov),
+            owner: session.state.entity_index,
+            payload: 400,
+            selector: (tree.source_class, tree.model),
+            mode: 0,
+        };
+        assert!(apply(&mut arena, None, None, request).unwrap() != 0);
+        assert_eq!(
+            source_bounty(&arena, None, tree.source_entity_index).unwrap(),
+            (400, session.state.entity_index)
+        );
+        assert_eq!(
+            arena.entities[usize::from(tree.source_entity_index)].record,
+            shadow
+        );
+        replace_source_bounty(&mut arena, None, tree.source_entity_index, 0, 0).unwrap();
+        apply(
+            &mut arena,
+            None,
+            None,
+            AreaDamage {
+                owner: tree.entity_id,
+                ..request
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            source_bounty(&arena, None, tree.source_entity_index).unwrap(),
+            (0, 0)
+        );
     }
 
     #[test]

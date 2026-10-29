@@ -2013,6 +2013,11 @@ pub struct Level2AuthoredModel17Source {
     pub shift_rot_x: i16,
     pub shift_rot_y: i16,
     pub yaw: i16,
+    /// Impact orientation and collision target copied by sub_65820.
+    pub pitch: i16,
+    pub target_source_entity_index: u16,
+    /// Source byte_0x46, copied after impact allocation.
+    pub source_byte_46: u8,
     pub position: Position,
     pub phase: u8,
     pub active: bool,
