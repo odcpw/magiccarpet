@@ -321,8 +321,22 @@ mod tests {
                     y: ((tile >> 8) << 8) as u16,
                     z: 0,
                 })
-                .find(|position| live.terrain.material_mask(*position) != 1)
-                .expect("qualified Level 2 terrain has a dry cell");
+                .find(|position| {
+                    let x = usize::from(position.x >> 8);
+                    let y = usize::from(position.y >> 8);
+                    (2..=253).contains(&x)
+                        && (2..=253).contains(&y)
+                        && live.terrain.material_mask(*position) != 1
+                        && (-2_isize..=2).all(|dx| {
+                            (-2_isize..=2).all(|dy| {
+                                let index =
+                                    (x as isize + dx) as usize + 256 * (y as isize + dy) as usize;
+                                live.terrain.planes().angles[index] & 15 != 0
+                                    && live.terrain.planes().ground_heights[index] > 4
+                            })
+                        })
+                })
+                .expect("qualified Level 2 terrain has elevated dry ground for the ring");
             impact_position.z = live.terrain.ground_height(impact_position).wrapping_sub(1);
             let impact_probe_position = {
                 let flyer = &mut live.economy.entities[usize::from(projectile_slot)];
@@ -386,6 +400,81 @@ mod tests {
                     expected_lifetime,
                 )
             );
+
+            if tier == 0 {
+                // Follow the real impact controller through the scheduler:
+                // model15 moves and allocates model11, which lowers the same
+                // ground queried by flight. This is controlled impact
+                // placement on retained owner terrain, not a playthrough.
+                let baseline = live.terrain.clone();
+                let existing_rings = live
+                    .economy
+                    .entities
+                    .iter()
+                    .filter(|row| row.active && (row.class, row.model) == (10, 11))
+                    .map(|row| (row.index, live.economy.economy.slot_generation(row.index)))
+                    .collect::<std::collections::BTreeSet<_>>();
+                simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(
+                    !simulation.dispatch_events().iter().any(|event| matches!(
+                        event,
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
+                    )),
+                    "scheduled Earthquake must not roll back: {:?}",
+                    simulation.dispatch_events()
+                );
+                let live = &simulation.session.state.live;
+                let ring = live
+                    .economy
+                    .entities
+                    .iter()
+                    .find(|row| {
+                        row.active
+                            && (row.class, row.model, row.action) == (10, 11, 11)
+                            && row.source_id == projectile.source_id
+                            && u16::from_le_bytes([row.record[42], row.record[43]]) == 15
+                            && !existing_rings.contains(&(
+                                row.index,
+                                live.economy.economy.slot_generation(row.index),
+                            ))
+                    })
+                    .expect("scheduled Earthquake creates its real lowering ring");
+                let center = ring.position;
+                let mut changed = None;
+                for _ in 0..4 {
+                    let live = &simulation.session.state.live;
+                    let x = i32::from(center.x >> 8);
+                    let y = i32::from(center.y >> 8);
+                    changed = (-3_i32..=3)
+                        .flat_map(|dx| (-3_i32..=3).map(move |dy| (dx, dy)))
+                        .find_map(|(dx, dy)| {
+                            let point = Position {
+                                x: ((x + dx) as u8 as u16) << 8,
+                                y: ((y + dy) as u8 as u16) << 8,
+                                z: 0,
+                            };
+                            let before = baseline.ground_height(point);
+                            let after = live.terrain.ground_height(point);
+                            (after != before).then_some((point, before, after))
+                        });
+                    if changed.is_some() {
+                        break;
+                    }
+                    simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+                    assert!(
+                        !simulation.dispatch_events().iter().any(|event| matches!(
+                            event,
+                            crate::native_world::Mc2DispatchEvent::Error { .. }
+                        )),
+                        "scheduled Earthquake ring must not roll back: {:?}",
+                        simulation.dispatch_events()
+                    );
+                }
+                assert!(
+                    changed.is_some(),
+                    "lowering ring changes live flight ground height"
+                );
+            }
         }
     }
 

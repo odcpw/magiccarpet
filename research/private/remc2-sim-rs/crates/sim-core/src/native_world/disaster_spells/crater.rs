@@ -293,6 +293,9 @@ mod tests {
             u32::from_le_bytes(source.record[164..168].try_into().unwrap()),
             61
         );
+        let real_owner = source.source_id;
+        let mut scheduled = session.clone();
+        let live = &mut session.session.state.live;
 
         let mut position = (0..65536_u32)
             .map(|tile| Position {
@@ -332,9 +335,7 @@ mod tests {
             &particles,
             flyer,
             None,
-            crate::native_world::source_target::Context::from_ordinary(
-                &live.goats, &live.ordinary,
-            ),
+            crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
         )
         .unwrap();
         let child_slot = outcome
@@ -348,5 +349,146 @@ mod tests {
         assert_eq!(child.record[74], current_flyer_byte46);
         assert_eq!(child.subspell_index, MUTATED_DAMAGE);
         assert_eq!(child.source_id, MUTATED_OWNER);
+
+        // The same flyer on retained water follows the source splash path,
+        // without producing a terrain-lowering ring.
+        let mut water_case = scheduled.clone();
+        let water = &mut water_case.session.state.live;
+        let mut water_point = (0..65536_u32)
+            .map(|tile| Position {
+                x: ((tile & 255) << 8) as u16,
+                y: ((tile >> 8) << 8) as u16,
+                z: 0,
+            })
+            .find(|point| water.terrain.material_mask(*point) == 1)
+            .expect("retained Level2 terrain has water");
+        water_point.z = water.terrain.ground_height(water_point).wrapping_sub(1);
+        let source = &mut water.economy.entities[usize::from(flyer)];
+        source.set_position(water_point);
+        source.set_actual_speed(0);
+        source.record[136..138].copy_from_slice(&0_i16.to_le_bytes());
+        crate::world::effects::sync_position(
+            &mut water.economy,
+            &mut water.terrain,
+            flyer,
+            water_point,
+            true,
+            false,
+        )
+        .unwrap();
+        let water_impact = step_projectile(
+            &mut water.economy,
+            &mut water.terrain,
+            &particles,
+            flyer,
+            None,
+            crate::native_world::source_target::Context::from_ordinary(
+                &water.goats,
+                &water.ordinary,
+            ),
+        )
+        .unwrap();
+        assert!(water_impact.impact_slot.is_none());
+        assert!(water.economy.entities[usize::from(flyer)].drawing_disabled());
+
+        // Keep the source-owner branch separate from the payload mutation
+        // control above, then follow the real impact into its scheduled
+        // model11 callback and the flight world's current ground height.
+        let live = &mut scheduled.session.state.live;
+        let mut point = (0..65536_u32)
+            .map(|tile| Position {
+                x: ((tile & 255) << 8) as u16,
+                y: ((tile >> 8) << 8) as u16,
+                z: 0,
+            })
+            .find(|point| {
+                let x = usize::from(point.x >> 8);
+                let y = usize::from(point.y >> 8);
+                (2..=253).contains(&x)
+                    && (2..=253).contains(&y)
+                    && live.terrain.material_mask(*point) != 1
+                    && (-2_isize..=2).all(|dx| {
+                        (-2_isize..=2).all(|dy| {
+                            let index =
+                                (x as isize + dx) as usize + 256 * (y as isize + dy) as usize;
+                            live.terrain.planes().angles[index] & 15 != 0
+                                && live.terrain.planes().ground_heights[index] > 4
+                        })
+                    })
+            })
+            .expect("retained Level2 terrain has elevated dry ground");
+        point.z = live.terrain.ground_height(point).wrapping_sub(1);
+        let source = &mut live.economy.entities[usize::from(flyer)];
+        source.set_position(point);
+        source.set_actual_speed(0);
+        source.record[136..138].copy_from_slice(&0_i16.to_le_bytes());
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            flyer,
+            point,
+            true,
+            false,
+        )
+        .unwrap();
+        let outcome = step_projectile(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            flyer,
+            None,
+            crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+        )
+        .unwrap();
+        let ring_slot = outcome
+            .impact_slot
+            .expect("dry Crater impact creates its ring");
+        let ring = &live.economy.entities[usize::from(ring_slot)];
+        assert_eq!(
+            (ring.class, ring.model, ring.action, ring.source_id),
+            (10, 11, 11, real_owner)
+        );
+        let handle = live.economy.handle(ring_slot).unwrap();
+        let center = ring.position;
+        let phase = ring.phase;
+        let baseline = live.terrain.clone();
+        let mut lowered = false;
+        // The source ring advances its radius once every three phases.
+        for visit in 0..3 {
+            scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(
+                !scheduled.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                )),
+                "scheduled Crater ring must not roll back: {:?}",
+                scheduled.dispatch_events()
+            );
+            let live = &scheduled.session.state.live;
+            let ring = &live.economy.entities[usize::from(ring_slot)];
+            if visit == 0 {
+                assert_eq!(
+                    live.economy.economy.slot_generation(ring_slot),
+                    handle.generation
+                );
+                assert_eq!(ring.phase, phase.wrapping_add(1));
+            }
+            let x = i32::from(center.x >> 8);
+            let y = i32::from(center.y >> 8);
+            lowered |= (-3_i32..=3)
+                .flat_map(|dx| (-3_i32..=3).map(move |dy| (dx, dy)))
+                .any(|(dx, dy)| {
+                    let point = Position {
+                        x: ((x + dx) as u8 as u16) << 8,
+                        y: ((y + dy) as u8 as u16) << 8,
+                        z: 0,
+                    };
+                    live.terrain.ground_height(point) < baseline.ground_height(point)
+                });
+            if lowered {
+                break;
+            }
+        }
+        assert!(lowered, "Crater ring lowers the live flight ground");
     }
 }

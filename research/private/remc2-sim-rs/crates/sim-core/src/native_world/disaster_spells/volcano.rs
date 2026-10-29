@@ -358,6 +358,90 @@ mod tests {
             assert_eq!((row.record[74], row.max_life, row.life), (0, 7, 17));
             assert_eq!(row.subspell_index, RULES.tiers[0].damage);
             assert_eq!(row.source_id, projectile.source_id);
+            if water {
+                // Follow this actual water-impact controller through its
+                // source lifetime on retained Level2 terrain. An eruption
+                // and the changed flight floor are authoritative consumers;
+                // the placement and scheduler steps are controlled test input.
+                let baseline = live.terrain.clone();
+                let handle = live.economy.handle(child).unwrap();
+                let initial_phase = row.phase;
+                let center = row.position;
+                let existing_eruptions = live
+                    .economy
+                    .entities
+                    .iter()
+                    .filter(|row| row.active && (row.class, row.model) == (10, 18))
+                    .map(|row| (row.index, live.economy.economy.slot_generation(row.index)))
+                    .collect::<std::collections::BTreeSet<_>>();
+                let mut changed_ground = false;
+                let mut saw_eruption = false;
+                let mut hidden = false;
+                // Life17 reaches phase2, then the following source visit
+                // hides it; one more outer turn performs ordinary reclaim.
+                for visit in 0..=18 {
+                    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+                    assert!(
+                        !session.dispatch_events().iter().any(|event| matches!(
+                            event,
+                            crate::native_world::Mc2DispatchEvent::Error { .. }
+                        )),
+                        "scheduled Volcano must not roll back: {:?}",
+                        session.dispatch_events()
+                    );
+                    let live = &session.session.state.live;
+                    let root = &live.economy.entities[usize::from(child)];
+                    if visit == 0 {
+                        assert_eq!(root.phase, initial_phase.wrapping_add(1));
+                    }
+                    saw_eruption |= live.economy.entities.iter().any(|row| {
+                        row.active
+                            && (row.class, row.model) == (10, 18)
+                            && row.source_id == projectile.source_id
+                            && !existing_eruptions.contains(&(
+                                row.index,
+                                live.economy.economy.slot_generation(row.index),
+                            ))
+                    });
+                    let x = i32::from(center.x >> 8);
+                    let y = i32::from(center.y >> 8);
+                    changed_ground |= (-8_i32..=8)
+                        .flat_map(|dx| (-8_i32..=8).map(move |dy| (dx, dy)))
+                        .any(|(dx, dy)| {
+                            let point = Position {
+                                x: ((x + dx) as u8 as u16) << 8,
+                                y: ((y + dy) as u8 as u16) << 8,
+                                z: 0,
+                            };
+                            live.terrain.ground_height(point) != baseline.ground_height(point)
+                        });
+                    if root.active && root.drawing_disabled() {
+                        hidden = true;
+                        break;
+                    }
+                }
+                assert!(changed_ground, "Volcano changes live flight ground height");
+                assert!(
+                    saw_eruption,
+                    "Volcano creates its source eruption descendant"
+                );
+                assert!(hidden, "Volcano hides after its source lifetime");
+                session.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(
+                    !session.dispatch_events().iter().any(|event| matches!(
+                        event,
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
+                    )),
+                    "Volcano reclaim must not roll back: {:?}",
+                    session.dispatch_events()
+                );
+                let arena = &session.session.state.live.economy;
+                assert!(
+                    !arena.entities[usize::from(child)].active
+                        || arena.economy.slot_generation(child) != handle.generation,
+                    "hidden Volcano is reclaimed at the next source boundary"
+                );
+            }
         }
     }
 }
