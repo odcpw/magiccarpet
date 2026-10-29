@@ -1694,6 +1694,11 @@ pub struct Level2Model13SpawnedChild {
     pub entity_index: i16,
     pub subtype: u8,
     pub yaw: i16,
+    /// Mutable source `word_0x30`, used as Wind's movement heading.
+    pub source_word_30: u16,
+    /// The ordinary source contact mailbox at dword 0x5E and word 0x62.
+    pub pending_damage: i32,
+    pub pending_attacker_entity_index: u16,
     pub control_flags: u32,
     pub position: Position,
     pub phase: u8,
@@ -1854,6 +1859,11 @@ pub struct Level2Model59SmokeChild {
     pub dword_0x10: i32,
     pub particle_index: u16,
     pub yaw: i16,
+    /// Mutable source `word_0x30`, used as Wind's movement heading.
+    pub source_word_30: u16,
+    /// The ordinary source contact mailbox at dword 0x5E and word 0x62.
+    pub pending_damage: i32,
+    pub pending_attacker_entity_index: u16,
     pub control_flags: u32,
     pub position: Position,
     pub phase: u8,
@@ -2277,6 +2287,8 @@ pub struct Level2AuthoredClass5RuntimeState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredFireflyRuntime {
     pub source_entity_index: u16,
+    /// Source `id_0x1A`; distinct from the player/mana owner at word 0x94.
+    pub entity_id: u16,
     /// Authored record identity, absent for imported and summoned Fireflies.
     pub authored_index: Option<u16>,
     /// Source parentId word (compact source record offset 44).
@@ -2304,6 +2316,8 @@ pub struct AuthoredFireflyRuntime {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AuthoredDragonRuntime {
     pub source_entity_index: u16,
+    /// Source `id_0x1A`, independent of the player/mana owner at word 0x94.
+    pub entity_id: u16,
     pub stage_var2: u8,
     pub parent_entity_index: u16,
     pub parent_generation: u32,

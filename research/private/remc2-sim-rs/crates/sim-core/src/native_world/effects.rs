@@ -717,6 +717,9 @@ fn header(
             row.set_source_dword_10(s.dword_0x10);
             row.set_actual_speed(s.actual_speed);
             row.set_yaw(s.yaw);
+            row.set_source_word_30(s.source_word_30);
+            row.record[98..102].copy_from_slice(&s.pending_damage.to_le_bytes());
+            row.record[102..104].copy_from_slice(&s.pending_attacker_entity_index.to_le_bytes());
             row.record[138..140].copy_from_slice(&s.max_speed.to_le_bytes());
             row.particle_parameter_index = Some(s.particle_index);
             row.record[94..96].copy_from_slice(&s.particle_index.to_le_bytes());
@@ -733,6 +736,9 @@ fn header(
             row.set_source_dword_10(s.dword_0x10);
             row.set_actual_speed(s.actual_speed);
             row.set_yaw(s.yaw);
+            row.set_source_word_30(s.source_word_30);
+            row.record[98..102].copy_from_slice(&s.pending_damage.to_le_bytes());
+            row.record[102..104].copy_from_slice(&s.pending_attacker_entity_index.to_le_bytes());
             row.record[138..140].copy_from_slice(&s.max_speed.to_le_bytes());
             row.particle_parameter_index = Some(s.particle_index);
             row.record[94..96].copy_from_slice(&s.particle_index.to_le_bytes());
@@ -854,6 +860,10 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
                 .unwrap();
             common!(s);
             s.dword_0x10 = row.source_dword_10();
+            s.yaw = row.yaw;
+            s.source_word_30 = row.source_word_30();
+            s.pending_damage = row.source_wind_spell_payload();
+            s.pending_attacker_entity_index = row.source_wind_spell_owner();
             s.actual_speed = row.actual_speed;
             s.max_speed = i16::from_le_bytes(row.record[138..140].try_into().unwrap());
             s.particle_index = row.particle_parameter_index.unwrap_or(9);
@@ -868,6 +878,10 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
                 .unwrap();
             common!(s);
             s.dword_0x10 = row.source_dword_10();
+            s.yaw = row.yaw;
+            s.source_word_30 = row.source_word_30();
+            s.pending_damage = row.source_wind_spell_payload();
+            s.pending_attacker_entity_index = row.source_wind_spell_owner();
             s.actual_speed = row.actual_speed;
             s.max_speed = i16::from_le_bytes(row.record[138..140].try_into().unwrap());
             s.particle_index = row.particle_parameter_index.unwrap_or(67);

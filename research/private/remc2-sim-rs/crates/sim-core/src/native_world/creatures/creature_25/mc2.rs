@@ -17,14 +17,14 @@ fn put(row: &mut EntitySnapshot, at: usize, value: u16) {
 }
 
 pub(crate) fn targets_in_arena(arena: &SourceArena) -> Vec<Target> {
-    let castle = arena.economy.castle();
     let mut targets = arena
         .entities
         .iter()
         .filter(|row| row.active && row.class != 0 && row.index != 0)
         .map(|row| {
-            let castle_slot = castle
-                .filter(|castle| castle.owner_entity_index == row.index)
+            let castle_slot = arena
+                .economy
+                .castle_for_owner(row.index)
                 .map_or(0, |castle| castle.source_entity_index);
             Target {
                 slot: row.index,
@@ -36,12 +36,15 @@ pub(crate) fn targets_in_arena(arena: &SourceArena) -> Vec<Target> {
                 flags: row.control_flags,
                 position: row.position,
                 yaw: row.yaw,
+                roll: row.source_roll(),
                 pitch_extent: row.array_pitch(),
                 roll_extent: row.array_roll(),
                 fov_extent: row.array_fov(),
                 attacker: word(row, 42),
                 target: word(row, 154),
                 stage_index: row.record[76],
+                stage_mode: row.record[77],
+                parent: word(row, 44),
                 stage_relation: word(row, 78),
                 killer: word(row, 40),
                 next: word(row, 56),
@@ -77,12 +80,8 @@ pub(crate) fn targets_in_arena(arena: &SourceArena) -> Vec<Target> {
             ..Target::default()
         });
     }
-    if let Some(castle) = castle.filter(|castle| {
-        castle.active
-            && !targets
-                .iter()
-                .any(|target| target.slot == castle.source_entity_index)
-    }) {
+    for castle in arena.economy.live_castles() {
+        targets.retain(|target| target.slot != castle.source_entity_index);
         targets.push(Target {
             slot: castle.source_entity_index,
             source_id: castle.source_id_entity_index,
@@ -503,6 +502,7 @@ pub(crate) fn step_row(
             runtime,
             families,
             parent_current,
+            &mut effects,
         )?
     } else {
         None
@@ -520,6 +520,15 @@ pub(crate) fn step_row(
     row.record[66] = row.phase;
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
+    for (linked_slot, flags) in &effects.linked_blink_flags {
+        if let Some(linked) = arena
+            .entities
+            .get_mut(usize::from(*linked_slot))
+            .filter(|row| row.active)
+        {
+            linked.set_control_flags((linked.control_flags & !0x0600_0000) | *flags);
+        }
+    }
 
     if !effects.split {
         for _ in 0..effects.population_increments {

@@ -88,7 +88,7 @@ pub(crate) fn allocate_summoned(
     runtime_state.parent_entity_index = parent_slot;
     runtime_state.parent_generation = parent_generation;
     runtime_state.word_0x2e = 250;
-    arena.economy.source_owner.insert(slot, owner_id);
+    runtime_state.entity_id = owner_id;
 
     crate::world::effects::sync_position(arena, terrain, slot, source_position, true, false)?;
     let handle = arena
@@ -349,8 +349,9 @@ pub(crate) fn step_summoned_stage_slot(
                     && peer.model == FIREFLY_MODEL
                     && peer.source_entity_index == *peer_slot
                     && peer.source_entity_index != source_slot
-                    && arena.economy.source_owner(*peer_slot)
-                        != arena.economy.source_owner(source_slot)
+                    && arena.economy.authored_fireflies.iter().any(|other| {
+                        other.source_entity_index == *peer_slot && other.entity_id != state.entity_id
+                    })
                     && (i32::from(
                         peer.position
                             .x
@@ -404,7 +405,10 @@ pub(crate) fn step_summoned_stage_slot(
 /// Let the normal source-boundary reclaimer release Fireflies hidden during
 /// the preceding action callback. This is called immediately before that
 /// reclaimer so the row survives its same-pass scheduler tail.
-pub(crate) fn retire_hidden_summoned_stage_at_source_boundary(arena: &mut SourceArena) {
+pub(crate) fn retire_hidden_summoned_stage_at_source_boundary(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+) -> std::result::Result<(), String> {
     let hidden_slots = arena
         .economy
         .authored_fireflies
@@ -412,14 +416,24 @@ pub(crate) fn retire_hidden_summoned_stage_at_source_boundary(arena: &mut Source
         .filter(|state| matches!(state.stage_var2, 13 | 16 | 17))
         .map(|state| state.source_entity_index)
         .collect::<std::collections::BTreeSet<_>>();
-    for source in arena.economy.authored_class5.iter_mut().filter(|source| {
+    let hidden = arena.economy.authored_class5.iter().filter(|source| {
         source.active
             && source.model == FIREFLY_MODEL
             && !source.drawing_enabled
-            && hidden_slots.contains(&source.source_entity_index)
-    }) {
-        source.active = false;
+            && (source.action == FIREFLY_KILL_ACTION
+                || hidden_slots.contains(&source.source_entity_index))
+    }).map(|source| (source.source_entity_index, source.position)).collect::<Vec<_>>();
+    for (slot, position) in hidden {
+        // Publish the unlink to the terrain head and neighbouring records
+        // before the economy releases this address for a future NewEvent.
+        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
+        if let Some(source) = arena.economy.authored_class5.iter_mut()
+            .find(|source| source.active && source.source_entity_index == slot && source.model == FIREFLY_MODEL)
+        {
+            source.active = false;
+        }
     }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,6 +636,7 @@ pub(crate) fn adopt_imported_fireflies(
             .authored_fireflies
             .push(AuthoredFireflyRuntime {
                 source_entity_index: row.index,
+                entity_id: row.source_id,
                 authored_index: None,
                 linked_entity_index: row.word_32(),
                 control_flags: row.control_flags,
@@ -637,6 +652,10 @@ pub(crate) fn adopt_imported_fireflies(
                 word_0x2e: word(50),
             });
         arena.economy.source_rng.insert(row.index, row.entity_rng);
+        arena
+            .economy
+            .source_owner
+            .insert(row.index, row.source_player_entity_index());
         let old = &mut arena.entities[usize::from(row.index)];
         old.active = false;
         old.record[2] = 0;
@@ -691,6 +710,63 @@ pub(crate) struct FireflyLifecycleStep {
     pub(crate) handled: bool,
     pub(crate) retained_for_epilogue: bool,
     pub(crate) pre_kill_credit: Option<u16>,
+    death_due: bool,
+}
+
+/// Run the family lifecycle against the current source address. The death
+/// constructors can replace that address, so allocation and the final hide
+/// must share the SourceArena rather than an economy-only free stack.
+pub(crate) fn step_lifecycle_in_arena(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    source_slot: u16,
+    players: &[GoatPlayerTarget],
+) -> std::result::Result<FireflyLifecycleStep, String> {
+    let result = arena.economy.step_authored_firefly_lifecycle_slot(source_slot, players, terrain)?;
+    if !result.death_due {
+        return Ok(result);
+    }
+    let original = arena.handle(source_slot)
+        .ok_or_else(|| format!("Firefly death lost source handle at {source_slot}"))?;
+    let source = *arena.economy.authored_class5.iter()
+        .find(|source| source.active && source.source_entity_index == source_slot && source.model == FIREFLY_MODEL)
+        .ok_or_else(|| format!("Firefly death lost typed source at {source_slot}"))?;
+    if source.mana > 0 {
+        let rng = level2_next_rng16(source.entity_rng);
+        arena.economy.authored_class5.iter_mut()
+            .find(|row| row.active && row.source_entity_index == source_slot)
+            .expect("the source was read above").entity_rng = rng;
+        arena.economy.source_rng.insert(source_slot, rng);
+        let owner = arena.economy.source_owner(source_slot);
+        crate::world::effects::spawn_death_mana_sphere(
+            arena, terrain, source_slot, source.position, source.yaw, source.mana, owner,
+        )?;
+        crate::world::effects::clear_replacement_mana_owner(arena, source_slot)?;
+        arena.economy.source_owner.insert(source_slot, 0);
+    }
+    let current = crate::native_world::source_target::read(
+        arena, crate::native_world::source_target::Context::default(), source_slot,
+    )?.ok_or_else(|| format!("Firefly death lost current source address {source_slot}"))?;
+    let burst = if current.control_flags & 0x10_0000 == 0 {
+        crate::world::effects::spawn_death_burst(
+            arena, terrain, particles, source_slot, current.position, current.source_id,
+        )?
+    } else { None };
+    if !crate::world::effects::hide_birth_replacement(arena, source_slot, burst)? {
+        if arena.resolve(original).is_none() {
+            return Err(format!("Firefly death cannot hide replacement at source slot {source_slot}"));
+        }
+        arena.economy.authored_class5.iter_mut()
+            .find(|row| row.active && row.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Firefly death lost typed source at {source_slot}"))?
+            .drawing_enabled = false;
+        arena.economy.authored_fireflies.iter_mut()
+            .find(|row| row.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Firefly death lost state at {source_slot}"))?
+            .control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    }
+    Ok(result)
 }
 
 impl Level2EconomyState {
@@ -832,6 +908,7 @@ impl Level2EconomyState {
             });
         self.authored_fireflies.push(AuthoredFireflyRuntime {
             source_entity_index,
+            entity_id: source_entity_index,
             authored_index,
             linked_entity_index: 0,
             control_flags: 8,
@@ -892,7 +969,7 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         players: &[GoatPlayerTarget],
-        terrain: &SessionTerrain,
+        _terrain: &SessionTerrain,
     ) -> std::result::Result<FireflyLifecycleStep, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.source_entity_index == source_slot && source.model == FIREFLY_MODEL
@@ -913,7 +990,9 @@ impl Level2EconomyState {
         let mut runtime = self.authored_class5_runtime[runtime_index];
         let mut firefly = self.authored_fireflies[firefly_index];
 
-        if source.pending_word_0x62 != 0 {
+        if source.pending_word_0x62 != 0
+            && !matches!(source.action, FIREFLY_PRE_KILL_ACTION | FIREFLY_KILL_ACTION)
+        {
             let prior_action = source.action;
             let guard_hit = prior_action == FIREFLY_STAGE_ACTION && firefly.stage_var2 == 2;
             let attacker = source.pending_word_0x62;
@@ -985,6 +1064,7 @@ impl Level2EconomyState {
                 handled: true,
                 retained_for_epilogue: true,
                 pre_kill_credit: None,
+                death_due: false,
             });
         }
 
@@ -1001,6 +1081,7 @@ impl Level2EconomyState {
                 handled: true,
                 retained_for_epilogue: true,
                 pre_kill_credit: None,
+                death_due: false,
             });
         }
         if source.action == FIREFLY_PRE_KILL_ACTION {
@@ -1011,43 +1092,17 @@ impl Level2EconomyState {
                 handled: true,
                 retained_for_epilogue: true,
                 pre_kill_credit,
+                death_due: false,
             });
         }
         if source.action != FIREFLY_KILL_ACTION {
             return Ok(FireflyLifecycleStep::default());
         }
-        if source.source_byte_3e & 7 == 0 {
-            if source.mana > 0 {
-                source.entity_rng = level2_next_rng16(source.entity_rng);
-                let owner = self.source_owner(source_slot);
-                let _ = self.spawn_mana_sphere_from_death(
-                    source_slot,
-                    source.position,
-                    source.yaw,
-                    source.entity_rng,
-                    source.mana,
-                    owner,
-                    terrain,
-                );
-            }
-            if firefly.control_flags & 0x0010_0000 == 0 {
-                let _ = self.spawn_death_burst_from_death_with_id(
-                    source_slot,
-                    source_slot,
-                    source.position,
-                );
-            }
-            source.drawing_enabled = false;
-            source.active = false;
-            firefly.control_flags |= ENTITY_DRAW_DISABLED_BIT;
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_class5[source_index] = source;
-            self.authored_fireflies[firefly_index] = firefly;
-        }
         Ok(FireflyLifecycleStep {
             handled: true,
             retained_for_epilogue: true,
             pre_kill_credit: None,
+            death_due: source.source_byte_3e & 7 == 0,
         })
     }
 
@@ -2357,6 +2412,73 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        let state = arena
+            .economy
+            .authored_fireflies()
+            .iter()
+            .find(|state| state.source_entity_index == child.source_slot)
+            .unwrap();
+        assert_eq!(state.entity_id, parent);
+        assert_eq!(arena.economy.source_owner(child.source_slot), 0);
+        let current = crate::native_world::source_target::read(
+            &arena,
+            crate::native_world::source_target::Context::default(),
+            child.source_slot,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(current.source_id, parent, "the actual target reader sees the summon ID");
+        let mut other_id = arena.clone();
+        other_id.economy.authored_fireflies.iter_mut()
+            .find(|state| state.source_entity_index == child.source_slot)
+            .unwrap()
+            .entity_id ^= 1;
+        assert_ne!(arena.reset_hash_with_terrain(&terrain), other_id.reset_hash_with_terrain(&terrain));
+
+        // Exercise the actual phase-zero death consumer, with and without
+        // source burst suppression. This is a bounded death-state control;
+        // the public cast regression covers ordinary production separately.
+        for suppressed in [false, true] {
+            let mut dying = arena.clone();
+            let mut world = terrain.clone();
+            let slot = child.source_slot;
+            let row = dying.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            row.action = FIREFLY_KILL_ACTION;
+            row.source_byte_3e = 0;
+            row.life = -1;
+            row.pending_word_0x62 = parent;
+            let position = row.position;
+            let state = dying.economy.authored_fireflies.iter_mut()
+                .find(|state| state.source_entity_index == slot).unwrap();
+            if suppressed { state.control_flags |= 0x10_0000; }
+            let death = step_lifecycle_in_arena(&mut dying, &mut world, particles, slot, &[]).unwrap();
+            assert!(death.handled && death.retained_for_epilogue);
+            let root = dying.economy.authored_class5().iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            assert!(root.active && !root.drawing_enabled && dying.resolve(child).is_some());
+            assert_eq!(root.pending_word_0x62, parent, "KillEntity does not consume a later mailbox");
+            let burst = dying.economy.events().iter().find_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    source_entity_index, parent_entity_index, id_entity_index,
+                } if *parent_entity_index == slot => Some((*source_entity_index, *id_entity_index)),
+                _ => None,
+            });
+            if suppressed {
+                assert!(burst.is_none());
+            } else {
+                let (burst_slot, burst_id) = burst.expect("ordinary Firefly death publishes its actual burst");
+                assert_eq!(burst_id, parent);
+                let row = &dying.entities[usize::from(burst_slot)];
+                assert_eq!((row.class, row.model, row.action), (10, 1, 1));
+            }
+            let tile = ((position.y >> 8) << 8) | (position.x >> 8);
+            retire_hidden_summoned_stage_at_source_boundary(&mut dying, &mut world).unwrap();
+            dying.economy.reclaim_inactive_slots_at_source_boundary();
+            assert!(dying.resolve(child).is_none());
+            assert!(!dying.economy.map_chains.entity_chain(tile as u8, (tile >> 8) as u8).contains(&slot));
+            assert_eq!(world.planes().entity_indices[usize::from(tile)], dying.economy.map_chains.tile_head(tile) as i16);
+        }
         let old_parent = arena.handle(parent).unwrap();
         arena.economy.release_slot(parent, None);
         assert_eq!(
@@ -2399,7 +2521,7 @@ mod tests {
                 .entity_chain(tile.0, tile.1)
                 .contains(&child.source_slot)
         );
-        retire_hidden_summoned_stage_at_source_boundary(&mut arena);
+        retire_hidden_summoned_stage_at_source_boundary(&mut arena, &mut terrain).unwrap();
         arena.economy.reclaim_inactive_slots_at_source_boundary();
         assert!(arena.resolve(child).is_none());
         assert!(
@@ -2500,7 +2622,7 @@ mod tests {
             source.active && !source.drawing_enabled,
             "hidden row remains for its same-pass tail"
         );
-        retire_hidden_summoned_stage_at_source_boundary(&mut arena);
+        retire_hidden_summoned_stage_at_source_boundary(&mut arena, &mut terrain).unwrap();
         arena
             .rebuild_source_arena_with_terrain(&mut terrain, &[])
             .unwrap();

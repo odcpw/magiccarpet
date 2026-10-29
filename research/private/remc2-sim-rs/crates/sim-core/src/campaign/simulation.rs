@@ -109,24 +109,7 @@ fn publish_family_spell_progression(
     owner: u16,
     family: u8,
 ) {
-    if let Some(source) = shared
-        .players
-        .iter()
-        .find(|player| player.entity_index == owner)
-    {
-        for player in players
-            .iter_mut()
-            .filter(|player| player.entity_index == owner)
-        {
-            player.sync_spell_progression_family_from(source, usize::from(family));
-        }
-    }
-    if let Some(fire) = fire
-        && fire.caster.entity_index == owner
-    {
-        fire.spell_experience[usize::from(family)] = shared.spell_experience[usize::from(family)];
-        fire.spell_levels[usize::from(family)] = shared.spell_levels[usize::from(family)];
-    }
+    shared.publish_spell_progression_family(players, fire, owner, family);
 }
 
 /// Typed payload selected from the fixed numeric source slot at visit time.
@@ -984,7 +967,10 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 economy.reclaim_hidden_trader_rows_at_source_boundary();
                 economy.reclaim_hidden_goat_rows_at_source_boundary();
                 economy.reclaim_hidden_worm_rows_at_source_boundary();
-                level2_class5::firefly::retire_hidden_summoned_stage_at_source_boundary(economy);
+                level2_class5::firefly::retire_hidden_summoned_stage_at_source_boundary(
+                    economy,
+                    &mut live.terrain,
+                )?;
                 level2_class5::dragon::prepare_retiring_dragon_rows(economy, &mut live.terrain)?;
                 level2_class5::dragon::retire_hidden_boss_dragons_at_source_boundary(economy);
                 crate::world::fields::retire_hidden_wind_projections(economy, &mut live.terrain)?;
@@ -2018,7 +2004,10 @@ impl Mc2Simulation {
             player,
             level2_class5::archer::player_target_ticks(&live.economy, player),
         )];
-        for (_, ai) in live.nyphur_dispatcher.iter() {
+        for (handle, ai) in live.nyphur_dispatcher.iter() {
+            if live.economy.handle(handle.source_slot) != Some(handle) {
+                continue;
+            }
             let state = ai.common_upkeep(0);
             alerts.push((state.source_slot, state.word_0x248 as u16));
         }
@@ -3399,14 +3388,14 @@ impl Mc2Simulation {
             outcome.clear_player_aux
         } else if matches!(family, Some(13 | 14)) {
             let duel_target_active = if family == Some(14) {
-                if parent_slot != live.core.state.entity_index {
-                    return Err(format!(
-                        "Duel holder {source_slot} has nonlocal caster {parent_slot} without an authoritative FlightState tether"
-                    ));
+                if parent_slot == live.core.state.entity_index {
+                    Some(live.core.state.tether_target_index != 0)
+                } else {
+                    live.nyphur_dispatcher.get_in_arena(&live.economy, parent_slot)
+                        .map(|dispatcher| dispatcher.has_duel_target())
                 }
-                live.core.state.tether_target_index != 0
             } else {
-                false
+                None
             };
             crate::native_world::directional_spells::step_holder(
                 &mut live.shared_spells,
@@ -14228,7 +14217,7 @@ impl Mc2Simulation {
                             row.model,
                             PhysicalSpellActionRole::OrdinaryPickup,
                         ) == Some(row.action)
-                        || (matches!(row.model, 5 | 7 | 8 | 9 | 10 | 19 | 25)
+                        || (matches!(row.model, 5 | 7 | 8 | 9 | 10 | 13 | 14 | 19 | 25)
                             && physical_spell_action(
                                 row.model,
                                 PhysicalSpellActionRole::PersistentPickup,
@@ -16053,6 +16042,13 @@ impl Mc2Simulation {
                     &mut live.core.state,
                     binding,
                 );
+            } else {
+                let caster = live.nyphur_dispatcher
+                    .get_mut_in_arena(&live.economy, binding.caster_entity_index)
+                    .ok_or_else(|| format!("Duel caster {} has no current source carrier", binding.caster_entity_index))?;
+                if !caster.install_duel_tether(binding) {
+                    return Err(format!("Duel caster {} rejected its source tether", binding.caster_entity_index));
+                }
             }
         }
         if let Some(consumption) = &outcome.steal_mana {
@@ -16997,6 +16993,7 @@ impl Mc2Simulation {
                         player: &mut live.core.state,
                         players: &mut live.core.players,
                         progression: &mut live.shared_spells,
+                        fire: live.core.context.spell_fire.as_mut(),
                         parameters: &self.session.definition.presentation.entity_parameters,
                     },
                     source_slot,
@@ -18258,13 +18255,15 @@ impl Mc2Simulation {
                 }
                 let frozen_model0_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::dragon::DRAGON_MODEL)];
-                let terrain = &self.session.state.live.terrain;
-                let lifecycle = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .step_authored_dragon_lifecycle_slot(source_slot, terrain)?;
+                let lifecycle = {
+                    let live = &mut self.session.state.live;
+                    level2_class5::dragon::step_lifecycle_in_arena(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                    )?
+                };
                 if lifecycle.handled {
                     if let Some(killer_entity_index) = lifecycle.pre_kill_credit {
                         let qualifying_killer = killer_entity_index != source_slot
@@ -18447,13 +18446,16 @@ impl Mc2Simulation {
                     .find(|source| source.source_entity_index == source_slot)
                     .map(|source| (source.action, source.word_0x96_150))
                     .ok_or_else(|| format!("Firefly source slot {source_slot} is absent"))?;
-                let terrain = &self.session.state.live.terrain;
-                let lifecycle = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .step_authored_firefly_lifecycle_slot(source_slot, goat_players, terrain)?;
+                let lifecycle = {
+                    let live = &mut self.session.state.live;
+                    level2_class5::firefly::step_lifecycle_in_arena(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        goat_players,
+                    )?
+                };
                 if lifecycle.handled {
                     if let Some(killer_entity_index) = lifecycle.pre_kill_credit {
                         let qualifying_killer = killer_entity_index != source_slot
@@ -18526,6 +18528,7 @@ impl Mc2Simulation {
                     }
                     return Ok(());
                 }
+                let terrain = &self.session.state.live.terrain;
                 let frozen_model19_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::firefly::FIREFLY_MODEL)];
                 let attack_target = self.firefly_attack_target(target_entity_index);
@@ -18824,6 +18827,15 @@ impl Mc2Simulation {
                         self.activate_level2_authored_spell_group(pass, source_slot, target_group);
                     }
                 }
+                if matches!(row.kind, Level2DynamicArenaKind::SpellPickup | Level2DynamicArenaKind::SpellReplacement)
+                    && let Some(family) = self.session.state.live.economy.entities.get(usize::from(source_slot))
+                        .filter(|holder| holder.active && holder.class == 15)
+                        .map(|holder| usize::from(holder.model))
+                    && self.rival_holder_owner(source_slot, family).is_some()
+                {
+                    self.refresh_imported_spell_source_projection(source_slot)
+                        .map_err(|error| error.to_string())?;
+                }
                 let starting_family = matches!(
                     row.kind,
                     Level2DynamicArenaKind::SpellPickup | Level2DynamicArenaKind::SpellReplacement
@@ -19052,6 +19064,11 @@ impl Mc2Simulation {
                 ExistingHandler::NyphurPlayer | ExistingHandler::PlayerFlight,
                 SourceRoute::Nyphur,
             ) => {
+                let target_handle = self.session.state.live.economy.handle(source_slot)
+                    .ok_or_else(|| format!("Nyphur source slot {source_slot} lost its generation"))?;
+                if self.session.state.live.nyphur_dispatcher.get(target_handle).is_none() {
+                    return Err(format!("rival source slot {source_slot} has no owner-bound player dispatcher"));
+                }
                 let action =
                     self.session.state.live.economy.entities[usize::from(source_slot)].action;
                 if action == 2 {
@@ -19062,15 +19079,6 @@ impl Mc2Simulation {
                     self.step_level2_nyphur_banished_action(source_slot)?;
                     return Ok(());
                 }
-                let target_handle = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .handle(source_slot)
-                    .ok_or_else(|| {
-                        format!("Nyphur source slot {source_slot} lost its generation")
-                    })?;
                 let prelude = {
                     let live = &mut self.session.state.live;
                     let player = live.core.players.iter()
@@ -23403,10 +23411,10 @@ impl Mc2Simulation {
             };
             let target = area_damage::source_actor(
                 &mut live.economy,
-                Some(area_damage::ActorDomains::new(
-                    &mut live.goats,
-                    &mut live.ordinary,
-                )),
+                Some(
+                    area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                        .with_particles(&self.session.definition.presentation.particles),
+                ),
                 slot,
             );
             if parent.control_flags & ENTITY_DRAW_DISABLED_BIT != 0 {
@@ -24471,8 +24479,23 @@ impl Mc2Simulation {
                     }
                 };
                 let live = &mut self.session.state.live;
-                live.economy
-                    .step_authored_dragon_part_slot(source_slot, &live.terrain, predecessor)
+                match level2_class5::dragon::step_part_in_arena(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    source_slot,
+                    predecessor,
+                ) {
+                    Ok(retained) => retained,
+                    Err(message) => {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error {
+                            pass,
+                            source_slot,
+                            message,
+                        });
+                        false
+                    }
+                }
             }
             Level2DynamicArenaKind::AuthoredClass5Model3Child => {
                 let predecessor_fallback = self
@@ -25799,7 +25822,15 @@ impl Mc2Simulation {
                 player.position,
             )
         };
-        let mut position = burst_position;
+        // sub_5E310 runs its owner's tether before the falling step.
+        let mut position = {
+            let live = &mut self.session.state.live;
+            live.nyphur_dispatcher.step_dying_tether(
+                &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(), &live.core.players,
+                live.core.state.entity_index, source_slot, burst_position,
+            )?
+        };
+        let dying_burst_position = position;
         position.z = position.z.wrapping_add(old_fall_velocity);
         let next_fall_velocity = old_fall_velocity.wrapping_sub(2).clamp(-256, 0);
         let ground = self
@@ -25819,7 +25850,7 @@ impl Mc2Simulation {
         let _ = self.session.state.live.economy.spawn_player_dying_burst(
             source_slot,
             source_id,
-            burst_position,
+            dying_burst_position,
         );
 
         if position.z != ground {
@@ -26911,15 +26942,18 @@ mod tests {
 
     #[test]
     fn source24_boss_constructor_requires_its_declared_target_stage() {
-        let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
             || {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+                std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+                    || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
+                    |root| std::path::PathBuf::from(root).join("level25"),
+                )
             },
             std::path::PathBuf::from,
         );
         let campaign = CampaignSession::open(
-            root.join("level25"),
+            package,
             CampaignSelection::ordinary(25).unwrap(),
         )
         .expect("actual source24 owner package opens");
@@ -26986,6 +27020,78 @@ mod tests {
                 .level2_class5_activated
                 .contains(&379)
         );
+
+        // A bounded producer/consumer control uses the actual group28 data
+        // and ordinary building damage mailboxes. It does not claim the
+        // preceding mission waves or a public spell/playthrough result.
+        let mut production = campaign;
+        let owner = production.simulation().state.entity_index;
+        production.simulation_mut().consume_authored_group(0, owner, 28)
+            .expect("actual group28 constructs the final BUILD68 chain");
+        let initial = production.simulation().ordinary().houses().iter()
+            .find(|house| house.active && house.building_index == 68)
+            .expect("actual authored373 constructed BUILD68").entity_index;
+        assert_eq!(production.simulation().session.state.live.core.runtime
+            .registered_protection_slot(), Some(initial));
+        assert_eq!(&production.simulation().session.state.live.core.runtime.bytes()[190..192],
+            &initial.to_le_bytes());
+        for selector in [68, 69, 72, 73] {
+            let slot = production.simulation().ordinary().houses().iter()
+                .find(|house| house.active && house.building_index == selector)
+                .unwrap_or_else(|| panic!("real BUILD successor{selector} is absent"))
+                .entity_index;
+            for _ in 0..=crate::house::AUTHORED_HOUSE_CONSTRUCTION_VISITS + 2 {
+                if production.simulation().ordinary().houses().iter().any(|house|
+                    house.entity_index == slot && house.active
+                        && house.action == crate::house::HOUSE_LIVE_ACTION) {
+                    break;
+                }
+                production.step(PlayerCommand::default(), 0);
+                let errors = production.simulation().dispatch_events().iter()
+                    .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+                    .collect::<Vec<_>>();
+                assert!(errors.is_empty(), "BUILD{selector} construction errors: {errors:?}");
+            }
+            let house = production.simulation().ordinary().houses().iter()
+                .find(|house| house.entity_index == slot).copied().unwrap();
+            assert_eq!(house.action, crate::house::HOUSE_LIVE_ACTION,
+                "BUILD{selector} must finish its ordinary construction");
+            let attempts = u32::try_from(house.life.max(0)).unwrap() / u32::from(u16::MAX) + 3;
+            for _ in 0..attempts {
+                if !production.simulation().ordinary().houses().iter().any(|house|
+                    house.entity_index == slot && house.active) {
+                    break;
+                }
+                let live = &mut production.simulation_mut().session.state.live;
+                if live.ordinary.houses().iter().any(|house| house.entity_index == slot
+                    && house.active && house.action == crate::house::HOUSE_LIVE_ACTION) {
+                    assert!(live.ordinary.houses.submit_source_damage(slot, u16::MAX, owner));
+                }
+                production.step(PlayerCommand::default(), 0);
+                let errors = production.simulation().dispatch_events().iter()
+                    .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+                    .collect::<Vec<_>>();
+                assert!(errors.is_empty(), "BUILD{selector} removal errors: {errors:?}");
+            }
+            assert!(!production.simulation().ordinary().houses().iter()
+                .any(|house| house.entity_index == slot && house.active),
+                "BUILD{selector} must remove through its scheduled damage consumer");
+        }
+        let live = &production.simulation().session.state.live;
+        assert!(live.level2_class5_activated.contains(&379),
+            "real BUILD73 demolition must publish group29 record379");
+        let boss = live.economy.entities.iter().find(|row|
+            row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
+            .expect("group29 produced its actual live boss").index;
+        let phase = live.economy.entities[usize::from(boss)].phase;
+        production.step(PlayerCommand::default(), 0);
+        let errors = production.simulation().dispatch_events().iter()
+            .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+            .collect::<Vec<_>>();
+        assert!(errors.is_empty(), "ordinary boss scheduler errors: {errors:?}");
+        let live = &production.simulation().session.state.live;
+        assert_eq!(live.economy.entities[usize::from(boss)].phase, phase.wrapping_add(1));
+        assert_eq!(live.core.runtime.final_boss_active_counter(), Some(1));
     }
 
     #[test]
@@ -27401,6 +27507,41 @@ mod tests {
                     fire.caster.mana = army_tier.mana_cost;
                 }
             }
+            // The same acquired/carried holder must reject either missing
+            // source prerequisite at its actual scheduled callback.
+            for low_castle in [false, true] {
+                let mut denied = campaign.clone();
+                if low_castle {
+                    assert!(denied.simulation_mut().economy_mut()
+                        .set_castle_mana_prerequisite_for_test(castle, army_tier.castle_mana_required - 1));
+                } else {
+                    let live = &mut denied.simulation_mut().session.state.live;
+                    let mana = army_tier.mana_cost - 1;
+                    for row in &mut live.shared_spells.player_entities {
+                        if row.index == player { row.set_mana(mana); row.set_mana_regen(0); }
+                    }
+                    live.shared_spells.player_entity.set_mana(mana);
+                    live.shared_spells.player_entity.set_mana_regen(0);
+                    live.shared_spells.caster.mana = mana;
+                    live.shared_spells.player_mana = mana;
+                    live.economy.entities[usize::from(player)].set_mana(mana);
+                    if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = mana; }
+                }
+                for turn in 0..3 {
+                    denied.step(if turn == 0 { PlayerCommand {
+                        opcode: 6, argument_1: 19, flags: 0x40, ..PlayerCommand::default()
+                    }} else { PlayerCommand::default() }, 0);
+                    let current = denied.simulation();
+                    assert!(!current.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                        "Army admission control dispatch: {:?}", current.dispatch_events());
+                    assert!(!current.session.state.live.economy.entities.iter().any(|row| {
+                        row.active && (row.class, row.model, row.action) == (9, 24, 25)
+                            && u16::from_le_bytes([row.record[42], row.record[43]]) == holder
+                    }), "the insufficient {} cannot launch an Army flyer", if low_castle { "Castle" } else { "caster" });
+                }
+                assert_eq!(denied.simulation().shared_spells().pickup(holder).unwrap().active_value, 0,
+                    "an unadmitted Army pulse clears the holder cooldown");
+            }
             if level == 2 {
                 // Isolate actual contact evidence from the lifetime case:
                 // move the real player near the real owner-data rival, not a
@@ -27478,10 +27619,15 @@ mod tests {
             let mut summoned = BTreeSet::new();
             let mut saw_summoned_upkeep = false;
             let mut summoned_handles = BTreeMap::new();
+            let mut last_firefly_visits = BTreeMap::new();
             let mut expired_creatures = BTreeSet::new();
             let mut saw_creature_reclaim = false;
+            // The player arms an earlier holder after its cursor visit, so
+            // that holder's first pulse occurs on the next source pass.
+            let first_pulse_turn = if holder < player { 1 } else { 0 };
+            let recast_turn = first_pulse_turn + 1;
             for turn in 0..if check_expiry { 360 } else { 80 } {
-                if turn == 1 {
+                if turn == recast_turn {
                     // Restore an affordable mana balance so the second cast
                     // is rejected by the active holder, not by low mana.
                     let live = &mut campaign.simulation_mut().session.state.live;
@@ -27503,7 +27649,7 @@ mod tests {
                     }
                 }
                 campaign.step(
-                    if turn <= 1 {
+                    if turn == 0 || turn == recast_turn {
                         PlayerCommand {
                             opcode: 6,
                             argument_1: 19,
@@ -27537,17 +27683,17 @@ mod tests {
                             "the real Army flyer carries the acquiring player's generation"
                         );
                         let holder_row = session.shared_spells().pickup(holder).unwrap();
-                        if turn == 0 {
+                        if turn == first_pulse_turn {
                             assert_eq!(holder_row.activation_value, army_tier.cooldown);
                             saw_cooldown = holder_row.active_value
                                 == (army_tier.cooldown as i16).wrapping_sub(1);
                         }
-                        if turn == 1 {
+                        if turn == recast_turn {
                             saw_recast_rejected = holder_row.active_value
                                 == (army_tier.cooldown as i16).wrapping_sub(2);
                         }
                         let caster = &session.shared_spells().player_entity;
-                        saw_paid_cast |= caster.mana < army_tier.mana_cost || caster.mana_regen < 0;
+                        saw_paid_cast |= caster.mana == 0 || caster.mana_regen == -army_tier.mana_cost;
                     }
                     if row.active
                         && (row.class, row.model, row.action) == (10, 72, 79)
@@ -27606,6 +27752,18 @@ mod tests {
                 if check_expiry {
                     for (&slot, &handle) in &summoned_handles {
                         let original_is_live = arena.resolve(handle).is_some();
+                        if model == 19 && original_is_live
+                            && let Some(source) = arena.economy.authored_class5().iter()
+                                .find(|source| source.active && source.source_entity_index == slot)
+                            && let Some(state) = arena.economy.authored_fireflies().iter()
+                                .find(|state| state.source_entity_index == slot)
+                        {
+                            let visits = last_firefly_visits.entry(slot).or_insert_with(Vec::new);
+                            visits.push((turn, source.action, source.life, source.drawing_enabled,
+                                state.stage_var2, state.word_0x2e as i16, source.source_byte_3e,
+                                source.word_0x96_150));
+                            if visits.len() > 8 { visits.remove(0); }
+                        }
                         let expired = match model {
                             2 => arena.economy.deferred_bee_reclaims.contains(&slot)
                                 && arena.economy.bee_creatures.iter().any(|bee| {
@@ -27726,7 +27884,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 assert!(
                     expired_creatures.len() == expected_count,
-                    "every real summoned model {model} reaches its hidden expiry tail: expired={expired_creatures:?}, parent=(live={}, life={}, hidden={}), children={child_state:?}",
+                    "every real summoned model {model} reaches its hidden expiry tail: expired={expired_creatures:?}, parent=(live={}, life={}, hidden={}), children={child_state:?}, last_firefly_visits={last_firefly_visits:?}",
                     arena.resolve(player_handle).is_some(),
                     parent.life,
                     parent.drawing_disabled(),
@@ -33861,6 +34019,10 @@ mod tests {
             .find(|part| part.entity_id == damaged_dragon_slot && part.source_byte_3e & 7 == 0)
             .copied()
             .expect("the sixteen Dragon phases include an immediate action-5 cadence");
+        let immediate_body_handle = live.economy.handle(immediate_body_death.source_entity_index)
+            .expect("the real body generation is live before its kill visit");
+        let dying_root_handle = live.economy.handle(damaged_dragon_slot)
+            .expect("the real Dragon root generation is live before pre-kill");
         let root_phase_before_pre_kill = pre_kill_root.source_byte_3e;
         step(&mut campaign);
         let live = &campaign.simulation().session.state.live;
@@ -33893,12 +34055,14 @@ mod tests {
                 true,
                 root_phase_before_pre_kill.wrapping_add(1),
                 level2_class5::dragon::DRAGON_KILL_ACTION,
-                false,
+                true,
                 false,
                 immediate_body_death.source_byte_3e.wrapping_add(1),
             ),
             "PreKill changes the linked body before its later numeric action-5 visit"
         );
+        assert!(live.economy.resolve(immediate_body_handle).is_some(),
+            "the hidden body stays allocated through its same-pass epilogue");
         assert_eq!(
             live.economy
                 .economy
@@ -33952,7 +34116,11 @@ mod tests {
             .iter()
             .find(|source| source.source_entity_index == damaged_dragon_slot)
             .expect("hidden Dragon root remains allocated through its kill epilogue");
-        assert!(!hidden_root.active && !hidden_root.drawing_enabled);
+        assert!(hidden_root.active && !hidden_root.drawing_enabled);
+        assert!(live.economy.resolve(dying_root_handle).is_some(),
+            "the hidden root stays allocated through its same-pass epilogue");
+        assert!(live.economy.resolve(immediate_body_handle).is_none(),
+            "the previous hidden body generation is reclaimed at the next boundary");
         assert!(live.economy.economy.events().iter().any(|event| matches!(
             event,
             Level2EconomyEvent::ManaSphereSpawned {
@@ -33995,6 +34163,8 @@ mod tests {
             step(&mut campaign);
         }
         let live = &campaign.simulation().session.state.live;
+        assert!(live.economy.resolve(dying_root_handle).is_none(),
+            "the hidden root generation is reclaimed at a following boundary");
         assert!(
             live.economy
                 .economy

@@ -639,6 +639,7 @@ mod tests {
                                 player: &mut live.core.state,
                                 players: &mut live.core.players,
                                 progression: &mut live.shared_spells,
+                                fire: live.core.context.spell_fire.as_mut(),
                                 parameters,
                             },
                             impact,
@@ -816,9 +817,18 @@ mod tests {
         use crate::PlayerCommand;
         use crate::native_world::{Mc2DispatchEvent, NativeWorld};
 
-        let inspection =
-            NativeWorld::inspect_level2(crate::native_world::tests::level_two_fixture_path())
-                .expect("qualified Level 2 native fixture");
+        let gameplay_cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/level2-day-owner-cache/components/gameplay")
+            },
+            std::path::PathBuf::from,
+        );
+        let inspection = NativeWorld::inspect_level2_with_owner_cache(
+            crate::native_world::tests::level_two_fixture_path(),
+            gameplay_cache,
+        )
+        .expect("qualified Level 2 native fixture and owner gameplay cache");
         let base = inspection
             .level2_reset_session()
             .expect("ordinary Level 2 reset session");
@@ -1490,6 +1500,269 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn authored_wind_reaches_scheduled_smoke_carriers_and_reclaims_links() {
+        use crate::PlayerCommand;
+        use crate::native_world::{Mc2DispatchEvent, NativeWorld};
+
+        let cache = std::env::var_os("MC_LEVEL2_GAMEPLAY_CACHE_V5").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/level2-day-owner-cache/components/gameplay")
+            },
+            std::path::PathBuf::from,
+        );
+        let mut session = NativeWorld::inspect_level2_with_owner_cache(
+            crate::native_world::tests::level_two_fixture_path(),
+            cache,
+        )
+        .expect("retained Level 2 package and owner cache")
+        .level2_reset_session()
+        .expect("Level 2 source session");
+        let wind = session
+            .allocate_level2_authored_model22(110)
+            .expect("authored Wind");
+        let eruption = session
+            .allocate_level2_authored_model13(365)
+            .expect("authored eruption");
+        let seed = (1_u16..=u16::MAX)
+            .find(|seed| seed.wrapping_mul(9_377).wrapping_add(9_439) % 0x9d >= 79)
+            .expect("source eruption can emit smoke");
+        {
+            let live = &mut session.session.state.live;
+            let parent = live
+                .economy
+                .economy
+                .authored_model13
+                .iter_mut()
+                .find(|row| row.source_entity_index == eruption.source_entity_index)
+                .expect("authored eruption stays live");
+            parent.position = wind.position;
+            parent.life = 2;
+            parent.entity_rng = seed;
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                eruption.source_entity_index,
+                wind.position,
+                true,
+                false,
+            )
+            .expect("eruption retains its map head");
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "eruption visit must not roll back: {:?}",
+            session.dispatch_events()
+        );
+        let smoke14 = session
+            .economy()
+            .model13_spawned_children()
+            .iter()
+            .find(|row| row.active && row.parent_entity_index == eruption.source_entity_index)
+            .expect("scheduled eruption produces source smoke14")
+            .source_entity_index;
+        let current = *session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|row| row.source_entity_index == wind.source_entity_index)
+            .expect("authored Wind remains live");
+        let smoke13;
+        {
+            let live = &mut session.session.state.live;
+            smoke13 = live
+                .economy
+                .allocate_smoke13_with_terrain(current.axis_position, &mut live.terrain)
+                .expect("source smoke13 constructor");
+            let a = live
+                .economy
+                .economy
+                .model59_smoke_children
+                .iter_mut()
+                .find(|row| row.source_entity_index == smoke13)
+                .unwrap();
+            a.control_flags |= 0x1000_0000;
+            a.source_word_30 = 1_536;
+            let b = live
+                .economy
+                .economy
+                .model13_spawned_children
+                .iter_mut()
+                .find(|row| row.source_entity_index == smoke14)
+                .unwrap();
+            b.position = current.axis_position;
+            b.control_flags |= 0x1000_0000;
+            b.source_word_30 = 1_536;
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                smoke14,
+                current.axis_position,
+                true,
+                false,
+            )
+            .expect("smoke14 keeps its source map head");
+        }
+        let before13 = session
+            .economy()
+            .model59_smoke_children()
+            .iter()
+            .find(|row| row.source_entity_index == smoke13)
+            .unwrap()
+            .position;
+        let before14 = session
+            .economy()
+            .model13_spawned_children()
+            .iter()
+            .find(|row| row.source_entity_index == smoke14)
+            .unwrap()
+            .position;
+        let excluded_before = session
+            .economy()
+            .authored_model13()
+            .iter()
+            .find(|row| row.source_entity_index == eruption.source_entity_index)
+            .unwrap()
+            .position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Wind smoke contact must not roll back: {:?}",
+            session.dispatch_events()
+        );
+        let a = session
+            .economy()
+            .model59_smoke_children()
+            .iter()
+            .find(|row| row.source_entity_index == smoke13)
+            .expect("smoke13 remains allocated");
+        let b = session
+            .economy()
+            .model13_spawned_children()
+            .iter()
+            .find(|row| row.source_entity_index == smoke14)
+            .expect("smoke14 remains allocated");
+        for (position, before, flags, damage, owner) in [
+            (
+                a.position,
+                before13,
+                a.control_flags,
+                a.pending_damage,
+                a.pending_attacker_entity_index,
+            ),
+            (
+                b.position,
+                before14,
+                b.control_flags,
+                b.pending_damage,
+                b.pending_attacker_entity_index,
+            ),
+        ] {
+            assert_ne!(position, before, "Wind moves the actual smoke carrier");
+            assert_ne!(flags & 0x800, 0, "Wind marks its forced-motion visit");
+            assert_eq!(
+                (damage, owner),
+                (i32::from(current.subspell_index), current.entity_id)
+            );
+        }
+        let excluded = session
+            .economy()
+            .authored_model13()
+            .iter()
+            .find(|row| row.source_entity_index == eruption.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (excluded.position.x, excluded.position.y),
+            (excluded_before.x, excluded_before.y),
+            "source model19 remains excluded"
+        );
+        let phase = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|row| row.source_entity_index == wind.source_entity_index)
+            .unwrap()
+            .phase;
+        session
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .fields
+            .authored_model22
+            .iter_mut()
+            .find(|row| row.source_entity_index == wind.source_entity_index)
+            .unwrap()
+            .life = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let hidden = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|row| row.source_entity_index == wind.source_entity_index)
+            .unwrap();
+        assert_ne!(hidden.control_flags & 0x400, 0);
+        assert_eq!(hidden.phase, phase.wrapping_add(1));
+        assert_eq!(
+            session
+                .economy()
+                .model59_smoke_children()
+                .iter()
+                .find(|row| row.source_entity_index == smoke13)
+                .unwrap()
+                .control_flags
+                & 0x1000_0800,
+            0
+        );
+        assert_eq!(
+            session
+                .economy()
+                .model13_spawned_children()
+                .iter()
+                .find(|row| row.source_entity_index == smoke14)
+                .unwrap()
+                .control_flags
+                & 0x1000_0800,
+            0
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        assert!(
+            session
+                .economy()
+                .authored_model22()
+                .iter()
+                .all(|row| row.source_entity_index != wind.source_entity_index)
+        );
+        assert!(
+            session
+                .economy()
+                .model22_spawned_children()
+                .iter()
+                .all(|row| row.parent_entity_index != wind.source_entity_index || !row.active)
+        );
     }
 }
 

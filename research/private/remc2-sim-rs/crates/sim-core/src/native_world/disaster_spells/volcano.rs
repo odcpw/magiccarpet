@@ -254,14 +254,13 @@ pub(crate) fn construct_effect(
             (projectile.class, projectile.model, projectile.action)
         ));
     }
-    let position = projectile.position;
-    let owner = projectile.source_id;
-    let Some(slot) = crate::world::terrain::disasters::mc2::volcano::construct_owned(
-        arena, terrain, position, owner,
-    ) else {
-        return Ok(None);
-    };
-    Ok(Some(slot))
+    // sub_65820 copies the current flyer's owner only after the source
+    // constructor returns, including if allocation reused its address.
+    Ok(crate::world::terrain::disasters::mc2::volcano::construct(
+        arena,
+        terrain,
+        projectile.position,
+    ))
 }
 
 #[cfg(test)]
@@ -301,6 +300,19 @@ mod tests {
             )
             .unwrap()
             .unwrap();
+            let projectile = live.economy.entities[usize::from(flyer)].clone();
+            if !water {
+                let mut bare_arena = live.economy.clone();
+                let mut bare_terrain = live.terrain.clone();
+                let bare_slot = construct_effect(&mut bare_arena, &mut bare_terrain, &projectile)
+                    .unwrap()
+                    .expect("source Volcano constructor allocates its default row");
+                let bare = &bare_arena.entities[usize::from(bare_slot)];
+                assert_eq!((bare.source_id, bare.subspell_index), (bare_slot, 2_000));
+                let mut unrelated = projectile.clone();
+                unrelated.set_source_action(5);
+                assert!(construct_effect(&mut bare_arena, &mut bare_terrain, &unrelated).is_err());
+            }
             // Pin both dry and water cells: source model4 creates its real
             // Volcano on either, instead of entering the generic water splash.
             // This tests the impact boundary, not acquisition or human playability.
@@ -333,7 +345,8 @@ mod tests {
                 flyer,
                 None,
                 crate::native_world::source_target::Context::from_ordinary(
-                    &live.goats, &live.ordinary,
+                    &live.goats,
+                    &live.ordinary,
                 ),
             )
             .unwrap();
@@ -344,6 +357,7 @@ mod tests {
             assert_eq!((row.class, row.model, row.action), (10, 9, 9));
             assert_eq!((row.record[74], row.max_life, row.life), (0, 7, 17));
             assert_eq!(row.subspell_index, RULES.tiers[0].damage);
+            assert_eq!(row.source_id, projectile.source_id);
         }
     }
 }

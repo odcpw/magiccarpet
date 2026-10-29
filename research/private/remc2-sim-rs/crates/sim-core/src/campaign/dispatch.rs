@@ -482,7 +482,9 @@ compiled_registry! {
         (TerrainStripController, 14, [6, 7]);
         (SpellHolderAndPickup, 15, [12, 13]);
         (DirectionalSpellProjectile, 9, [7, 8]);
-        (SpellHolderAndPickup, 15, [39, 42]);
+        // 6B5D0/6B830 delegate to ordinary acquisition692A0;
+        // 6B5F0/6B850 delegate to persistent acquisition69250.
+        (SpellHolderAndPickup, 15, [39, 40, 41, 42, 43, 44]);
     }
     constructors {
         (TreeLifecycle, 2, [0]);
@@ -963,7 +965,11 @@ mod tests {
             (10, &[94][..], "class10-effects"),
             (9, &[7, 8][..], "directional-spell-projectile"),
             (10, &[25, 26][..], "class10-effects"),
-            (15, &[39, 42][..], "spell-holder-and-pickup-family"),
+            (
+                15,
+                &[39, 40, 41, 42, 43, 44][..],
+                "spell-holder-and-pickup-family",
+            ),
             (10, &[96][..], "cave-spell"),
             (
                 11,

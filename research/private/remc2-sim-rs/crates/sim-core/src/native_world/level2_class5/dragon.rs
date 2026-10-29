@@ -144,7 +144,7 @@ pub(crate) fn allocate_boss_summoned(
     state.parent_entity_index = parent.source_slot;
     state.parent_generation = parent.generation;
     state.stage_remaining = 250;
-    arena.economy.source_owner.insert(slot, owner_id);
+    state.entity_id = owner_id;
     if !arena.bind_dynamic_creature_origin(
         handle,
         crate::level_definition::CreatureKind::Dragon,
@@ -359,13 +359,15 @@ pub(crate) fn step_boss_stage_slot(
                             apply_dragon_wander(&mut source);
                         }
                     }
-                    let owner = arena.economy.source_owner(slot);
+                    let entity_id = state.entity_id;
                     if let Some(peer) = frozen_model0_slots.iter().find_map(|peer_slot| {
                         arena.economy.authored_class5.iter().find(|peer| {
                             peer.active
                                 && peer.model == DRAGON_MODEL
                                 && peer.source_entity_index == *peer_slot
-                                && arena.economy.source_owner(*peer_slot) != owner
+                                && arena.economy.authored_dragons.iter().any(|other| {
+                                    other.source_entity_index == *peer_slot && other.entity_id != entity_id
+                                })
                                 && i32::from(
                                     peer.position
                                         .x
@@ -463,10 +465,10 @@ pub(crate) fn prepare_retiring_dragon_rows(
             source.active
                 && source.model == DRAGON_MODEL
                 && !source.drawing_enabled
-                && arena.economy.authored_dragons.iter().any(|state| {
+                && (source.action == DRAGON_KILL_ACTION || arena.economy.authored_dragons.iter().any(|state| {
                     state.source_entity_index == source.source_entity_index
                         && matches!(state.stage_var2, 16 | 17)
-                })
+                }))
         })
         .copied()
         .collect::<Vec<_>>();
@@ -486,6 +488,9 @@ pub(crate) fn prepare_retiring_dragon_rows(
             .find(|state| state.source_entity_index == slot)
             .map_or(0, |state| state.control_flags)
             | 0x400;
+        let entity_id = arena.economy.authored_dragons.iter()
+            .find(|state| state.source_entity_index == slot)
+            .map_or(slot, |state| state.entity_id);
         let owner = arena.economy.source_owner(slot);
         crate::world::effects::sync_position(arena, terrain, slot, source.position, false, false)?;
         let row = arena
@@ -495,8 +500,9 @@ pub(crate) fn prepare_retiring_dragon_rows(
         row.reclaim_source_row();
         row.model = source.model;
         row.record[68] = source.model;
-        row.source_id = owner;
-        row.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        row.source_id = entity_id;
+        row.record[30..32].copy_from_slice(&entity_id.to_le_bytes());
+        row.set_source_player_entity_index(owner);
         row.set_source_action(source.action);
         row.set_position(source.position);
         row.set_yaw(source.yaw);
@@ -558,7 +564,7 @@ pub(crate) fn retire_hidden_boss_dragons_at_source_boundary(arena: &mut SourceAr
         row.active
             && row.model == DRAGON_MODEL
             && !row.drawing_enabled
-            && hidden.contains(&row.source_entity_index)
+            && (row.action == DRAGON_KILL_ACTION || hidden.contains(&row.source_entity_index))
     }) {
         source.active = false;
     }
@@ -611,6 +617,7 @@ pub(crate) struct DragonLifecycleStep {
     pub(crate) handled: bool,
     pub(crate) retained_for_epilogue: bool,
     pub(crate) pre_kill_credit: Option<u16>,
+    death_due: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -633,6 +640,107 @@ pub(crate) struct DragonPredecessor {
     pub(crate) yaw: i16,
 }
 
+fn kill_current_dragon(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    slot: u16,
+    is_part: bool,
+) -> std::result::Result<(), String> {
+    let original = arena.handle(slot)
+        .ok_or_else(|| format!("Dragon death lost source handle at {slot}"))?;
+    let (position, yaw, mana, rng) = if is_part {
+        let part = arena.economy.authored_dragon_parts.iter()
+            .find(|part| part.active && part.source_entity_index == slot)
+            .ok_or_else(|| format!("Dragon death lost part at {slot}"))?;
+        (part.position, part.yaw, part.mana, part.entity_rng)
+    } else {
+        let root = arena.economy.authored_class5.iter()
+            .find(|root| root.active && root.source_entity_index == slot && root.model == DRAGON_MODEL)
+            .ok_or_else(|| format!("Dragon death lost root at {slot}"))?;
+        (root.position, root.yaw, root.mana, root.entity_rng)
+    };
+    if mana > 0 {
+        let rng = level2_next_rng16(rng);
+        if is_part {
+            arena.economy.authored_dragon_parts.iter_mut()
+                .find(|part| part.active && part.source_entity_index == slot)
+                .expect("the part was read above").entity_rng = rng;
+        } else {
+            arena.economy.authored_class5.iter_mut()
+                .find(|root| root.active && root.source_entity_index == slot)
+                .expect("the root was read above").entity_rng = rng;
+        }
+        arena.economy.source_rng.insert(slot, rng);
+        let owner = arena.economy.source_owner(slot);
+        crate::world::effects::spawn_death_mana_sphere(
+            arena, terrain, slot, position, yaw, mana, owner,
+        )?;
+        crate::world::effects::clear_replacement_mana_owner(arena, slot)?;
+        arena.economy.source_owner.insert(slot, 0);
+    }
+    let current = crate::native_world::source_target::read(
+        arena, crate::native_world::source_target::Context::default(), slot,
+    )?.ok_or_else(|| format!("Dragon death lost current source address {slot}"))?;
+    let burst = if current.control_flags & 0x10_0000 == 0 {
+        crate::world::effects::spawn_death_burst(
+            arena, terrain, particles, slot, current.position, current.source_id,
+        )?
+    } else { None };
+    if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+        if arena.resolve(original).is_none() {
+            return Err(format!("Dragon death cannot hide replacement at source slot {slot}"));
+        }
+        if is_part {
+            let part = arena.economy.authored_dragon_parts.iter_mut()
+                .find(|part| part.active && part.source_entity_index == slot)
+                .ok_or_else(|| format!("Dragon death lost part at {slot}"))?;
+            part.drawing_enabled = false;
+            part.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        } else {
+            arena.economy.authored_class5.iter_mut()
+                .find(|root| root.active && root.source_entity_index == slot)
+                .ok_or_else(|| format!("Dragon death lost root at {slot}"))?
+                .drawing_enabled = false;
+            arena.economy.authored_dragons.iter_mut()
+                .find(|state| state.source_entity_index == slot)
+                .ok_or_else(|| format!("Dragon death lost root state at {slot}"))?
+                .control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn step_lifecycle_in_arena(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    source_slot: u16,
+) -> std::result::Result<DragonLifecycleStep, String> {
+    let result = arena.economy.step_authored_dragon_lifecycle_slot(source_slot, terrain)?;
+    if result.death_due { kill_current_dragon(arena, terrain, particles, source_slot, false)?; }
+    Ok(result)
+}
+
+pub(crate) fn step_part_in_arena(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    source_slot: u16,
+    predecessor: DragonPredecessor,
+) -> std::result::Result<bool, String> {
+    let death_due = arena.economy.authored_dragon_parts.iter().any(|part| {
+        part.active && part.source_entity_index == source_slot
+            && part.action == DRAGON_KILL_ACTION && part.source_byte_3e & 7 == 0
+    });
+    if death_due {
+        kill_current_dragon(arena, terrain, particles, source_slot, true)?;
+        Ok(true)
+    } else {
+        Ok(arena.economy.step_authored_dragon_part_slot(source_slot, terrain, predecessor))
+    }
+}
+
 impl Level2EconomyState {
     /// Run the generic action-4/action-5 creature lifecycle for one Dragon
     /// root. `PreKillEntity_1C890` changes every linked body row to action 5
@@ -641,7 +749,7 @@ impl Level2EconomyState {
     pub(crate) fn step_authored_dragon_lifecycle_slot(
         &mut self,
         source_slot: u16,
-        terrain: &SessionTerrain,
+        _terrain: &SessionTerrain,
     ) -> std::result::Result<DragonLifecycleStep, String> {
         let Some(source_index) = self.authored_class5.iter().position(|source| {
             source.active
@@ -655,7 +763,7 @@ impl Level2EconomyState {
             .iter()
             .position(|runtime| runtime.source_entity_index == source_slot)
             .ok_or_else(|| format!("Dragon source slot {source_slot} has no class-5 runtime"))?;
-        let dragon_index = self
+        let _dragon_index = self
             .authored_dragons
             .iter()
             .position(|state| state.source_entity_index == source_slot)
@@ -687,41 +795,18 @@ impl Level2EconomyState {
                 handled: true,
                 retained_for_epilogue: true,
                 pre_kill_credit,
+                death_due: false,
             });
         }
         if source.action != DRAGON_KILL_ACTION {
             return Ok(DragonLifecycleStep::default());
         }
 
-        if source.source_byte_3e & 7 == 0 {
-            if source.mana > 0 {
-                source.entity_rng = level2_next_rng16(source.entity_rng);
-                let owner = self.source_owner(source_slot);
-                let _ = self.spawn_mana_sphere_from_death(
-                    source_slot,
-                    source.position,
-                    source.yaw,
-                    source.entity_rng,
-                    source.mana,
-                    owner,
-                    terrain,
-                );
-            }
-            let _ = self.spawn_death_burst_from_death_with_id(
-                source_slot,
-                source_slot,
-                source.position,
-            );
-            source.drawing_enabled = false;
-            source.active = false;
-            self.authored_dragons[dragon_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_class5[source_index] = source;
-        }
         Ok(DragonLifecycleStep {
             handled: true,
             retained_for_epilogue: true,
             pre_kill_credit: None,
+            death_due: source.source_byte_3e & 7 == 0,
         })
     }
 
@@ -895,6 +980,7 @@ impl Level2EconomyState {
             });
         self.authored_dragons.push(AuthoredDragonRuntime {
             source_entity_index,
+            entity_id: source_entity_index,
             stage_var2: 0,
             parent_entity_index: 0,
             parent_generation: 0,
@@ -1376,30 +1462,7 @@ impl Level2EconomyState {
         };
         let mut part = self.authored_dragon_parts[part_index];
         if part.action == DRAGON_KILL_ACTION {
-            if part.source_byte_3e & 7 == 0 {
-                if part.mana > 0 {
-                    part.entity_rng = level2_next_rng16(part.entity_rng);
-                    let owner = self.source_owner(source_slot);
-                    let _ = self.spawn_mana_sphere_from_death(
-                        source_slot,
-                        part.position,
-                        part.yaw,
-                        part.entity_rng,
-                        part.mana,
-                        owner,
-                        terrain,
-                    );
-                }
-                let _ = self.spawn_death_burst_from_death_with_id(
-                    source_slot,
-                    part.entity_id,
-                    part.position,
-                );
-                part.drawing_enabled = false;
-                part.control_flags |= ENTITY_DRAW_DISABLED_BIT;
-                self.source_rng.insert(source_slot, part.entity_rng);
-                self.authored_dragon_parts[part_index] = part;
-            }
+            // The source-arena wrapper owns phase-zero constructors and hide.
             return true;
         }
         if part.action != DRAGON_PART_ACTION {
@@ -1808,6 +1871,18 @@ mod lightning_consumer_tests {
         .unwrap()
         .expect("real Dragon has capacity");
         let slot = handle.source_slot;
+        let state = arena.economy.authored_dragons.iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!(state.entity_id, parent_slot);
+        assert_eq!(arena.economy.source_owner(slot), 0);
+        let current = crate::native_world::source_target::read(
+            &arena, crate::native_world::source_target::Context::default(), slot,
+        ).unwrap().unwrap();
+        assert_eq!(current.source_id, parent_slot, "boss root keeps the boss ID");
+        let mut other_id = arena.clone();
+        other_id.economy.authored_dragons.iter_mut()
+            .find(|row| row.source_entity_index == slot).unwrap().entity_id ^= 1;
+        assert_ne!(arena.reset_hash_with_terrain(&terrain), other_id.reset_hash_with_terrain(&terrain));
         assert_eq!(
             arena
                 .economy
@@ -1817,6 +1892,70 @@ mod lightning_consumer_tests {
                 .count(),
             DRAGON_PART_COUNT
         );
+        let part_slot = arena.economy.authored_dragon_parts.iter()
+            .find(|part| part.active && part.entity_id == slot).unwrap().source_entity_index;
+        for (is_part, suppressed) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut dying = arena.clone();
+            let mut world = terrain.clone();
+            let death_slot = if is_part { part_slot } else { slot };
+            let old_handle = dying.handle(death_slot).unwrap();
+            let events_before = dying.economy.events().len();
+            let (position, expected_mana) = if is_part {
+                let part = dying.economy.authored_dragon_parts.iter_mut()
+                    .find(|part| part.source_entity_index == death_slot).unwrap();
+                part.action = DRAGON_KILL_ACTION;
+                part.source_byte_3e = 0;
+                if suppressed { part.control_flags |= 0x10_0000; }
+                (part.position, part.mana)
+            } else {
+                let root = dying.economy.authored_class5.iter_mut()
+                    .find(|root| root.source_entity_index == death_slot).unwrap();
+                root.action = DRAGON_KILL_ACTION;
+                root.source_byte_3e = 0;
+                let position = root.position;
+                let mana = root.mana;
+                if suppressed {
+                    dying.economy.authored_dragons.iter_mut()
+                        .find(|state| state.source_entity_index == death_slot).unwrap().control_flags |= 0x10_0000;
+                }
+                (position, mana)
+            };
+            if is_part {
+                assert!(step_part_in_arena(
+                    &mut dying, &mut world, particles, death_slot,
+                    DragonPredecessor { class: 5, position, yaw: 0 },
+                ).unwrap());
+                assert!(dying.economy.authored_dragon_parts.iter().any(|part|
+                    part.source_entity_index == death_slot && part.active && !part.drawing_enabled));
+            } else {
+                let result = step_lifecycle_in_arena(&mut dying, &mut world, particles, death_slot).unwrap();
+                assert!(result.handled && result.retained_for_epilogue);
+                assert!(dying.economy.authored_class5.iter().any(|root|
+                    root.source_entity_index == death_slot && root.active && !root.drawing_enabled));
+            }
+            assert!(dying.resolve(old_handle).is_some(), "death stays allocated through the source tail");
+            assert!(dying.economy.events().iter().skip(events_before).any(|event| matches!(
+                event, crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                    source_entity_index, mana, ..
+                } if *source_entity_index == death_slot && *mana == expected_mana
+            )), "Dragon death converts its real mana at the source address");
+            let burst_id = dying.economy.events().iter().find_map(|event| match event {
+                crate::native_world::Level2EconomyEvent::DeathBurstSpawned {
+                    parent_entity_index, id_entity_index, ..
+                } if *parent_entity_index == death_slot => Some(*id_entity_index),
+                _ => None,
+            });
+            if suppressed { assert!(burst_id.is_none()); } else {
+                assert_eq!(burst_id, Some(if is_part { slot } else { parent_slot }));
+            }
+            let tile = ((position.y >> 8) << 8) | (position.x >> 8);
+            prepare_retiring_dragon_rows(&mut dying, &mut world).unwrap();
+            retire_hidden_boss_dragons_at_source_boundary(&mut dying);
+            dying.economy.reclaim_inactive_slots_at_source_boundary();
+            assert!(dying.resolve(old_handle).is_none());
+            assert!(!dying.economy.map_chains.entity_chain(tile as u8, (tile >> 8) as u8).contains(&death_slot));
+            assert_eq!(world.planes().entity_indices[usize::from(tile)], dying.economy.map_chains.tile_head(tile) as i16);
+        }
         let source = arena
             .economy
             .authored_class5

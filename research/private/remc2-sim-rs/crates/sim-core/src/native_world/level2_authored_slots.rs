@@ -375,6 +375,8 @@ impl Level2EconomyState {
         // stored control dword carries byte[2] & 2. This owner-local scan does
         // not claim authority over Level 2 rows outside this economy arena.
         visit_flagged_rows!(self.spheres, ManaSphere);
+        visit_flagged_rows!(self.fireball_projectiles, FireballProjectile);
+        visit_flagged_rows!(self.castle_projectiles, CastleProjectile);
         visit_flagged_rows!(self.death_bursts, DeathBurst);
         visit_flagged_rows!(self.authored_model1, AuthoredModel1);
         visit_flagged_rows!(self.model59_smoke_children, Model59SmokeChild);
@@ -395,6 +397,7 @@ impl Level2EconomyState {
             // `NewEvent` overwrites the fixed source record at this slot.
             self.possession_guidance_stale_records.remove(&slot);
             self.source_phase_sidecars.remove(&slot);
+            self.source_owner.remove(&slot);
             let generation = self.slot_generations.entry(slot).or_default();
             *generation = generation.wrapping_add(1);
             return Some(slot);
@@ -449,6 +452,18 @@ impl Level2EconomyState {
                 self.castle_defenders.remove(index);
             }
             Level2DynamicArenaKind::ManaSphere => remove_flagged_row!(self.spheres),
+            Level2DynamicArenaKind::FireballProjectile => {
+                remove_flagged_row!(self.fireball_projectiles);
+            }
+            Level2DynamicArenaKind::CastleProjectile => {
+                remove_flagged_row!(self.castle_projectiles);
+            }
+            Level2DynamicArenaKind::PossessionProjectile => {
+                remove_flagged_row!(self.possession_projectiles);
+            }
+            Level2DynamicArenaKind::PossessionEffect => {
+                remove_flagged_row!(self.possession_effects);
+            }
             Level2DynamicArenaKind::DeathBurst => remove_flagged_row!(self.death_bursts),
             Level2DynamicArenaKind::AuthoredModel1 => remove_flagged_row!(self.authored_model1),
             Level2DynamicArenaKind::Model59SmokeChild => {
@@ -480,6 +495,7 @@ impl Level2EconomyState {
         });
         self.slot_rng.remove(&slot);
         self.source_rng.remove(&slot);
+        self.source_owner.remove(&slot);
         let generation = self.slot_generations.entry(slot).or_default();
         *generation = generation.wrapping_add(1);
         // The fallback branch zeroes every rebuilt model/class list head.
@@ -514,6 +530,7 @@ impl Level2EconomyState {
         self.converted_skeleton_origins.remove(&slot);
         self.possession_guidance_stale_records.remove(&slot);
         self.source_phase_sidecars.remove(&slot);
+        self.source_owner.remove(&slot);
         self.map_chains.set_map_entity_unlink(slot);
         self.slot_rng.remove(&slot);
         self.source_rng.remove(&slot);
@@ -2028,6 +2045,9 @@ impl Level2EconomyState {
         self.model59_smoke_children.push(Level2Model59SmokeChild {
             source_entity_index,
             entity_rng,
+            source_word_30: 0,
+            pending_damage: 0,
+            pending_attacker_entity_index: 0,
             source_class: 10,
             model: 13,
             action: 13,
@@ -3059,13 +3079,13 @@ impl Level2EconomyState {
         position: Position,
         yaw: i16,
     ) -> Option<u16> {
-        let source_entity_index = self.allocate_slot()?;
         // SetParticleSmoke3C first advances the process-global RNG for the
-        // child's life, then SetSmoke4 advances the newly allocated row's
-        // own RNG for its actual speed.
+        // child's life, even if NewEvent cannot allocate; SetSmoke4 then
+        // advances a successfully allocated row's own RNG for its speed.
         self.global_rng = level2_next_rng32(self.global_rng);
         let max_life =
-            i16::try_from(self.global_rng as u16 % 0x21 + 28).expect("model-13 child life fits");
+            i16::try_from(self.global_rng % 0x21 + 28).expect("model-13 child life fits");
+        let source_entity_index = self.allocate_slot()?;
         let entity_rng = level2_next_rng16(self.new_event_rng(source_entity_index));
         let actual_speed =
             i16::try_from(entity_rng % 0x35 + 51).expect("model-13 child speed fits");
@@ -3087,8 +3107,17 @@ impl Level2EconomyState {
             .push(Level2Model13SpawnedChild {
                 source_entity_index,
                 entity_rng,
+                source_word_30: 0,
+                pending_damage: 0,
+                pending_attacker_entity_index: 0,
                 parent_entity_index,
-                parent_entity_id,
+                parent_entity_id: if parent_entity_index == 0 {
+                    // A direct SetParticleSmoke3C call leaves NewEvent's id.
+                    source_entity_index
+                } else {
+                    // The model19 eruption callback explicitly copies its id.
+                    parent_entity_id
+                },
                 source_class: 10,
                 model: 14,
                 action: 14,
@@ -5122,6 +5151,29 @@ impl Level2EconomyState {
         slots.into_iter().collect()
     }
 
+    /// Hidden flyers still occupy their fixed address until the following
+    /// cleanup. A frozen NewEvent cursor can overwrite that current carrier.
+    pub(crate) fn retained_projectile_kind(&self, slot: u16) -> Option<Level2DynamicArenaKind> {
+        if self.free_slots.contains(&slot) {
+            return None;
+        }
+        macro_rules! retained {
+            ($rows:expr, $kind:ident) => {
+                if $rows
+                    .iter()
+                    .any(|row| row.source_entity_index == slot && !row.active)
+                {
+                    return Some(Level2DynamicArenaKind::$kind);
+                }
+            };
+        }
+        retained!(self.fireball_projectiles, FireballProjectile);
+        retained!(self.castle_projectiles, CastleProjectile);
+        retained!(self.possession_projectiles, PossessionProjectile);
+        retained!(self.possession_effects, PossessionEffect);
+        None
+    }
+
     #[must_use]
     pub(super) fn live_arena_cursor_rows(&self) -> Vec<Level2DynamicArenaCursorRow> {
         let mut rows = BTreeMap::new();
@@ -7087,6 +7139,15 @@ impl Level2EconomyState {
             hasher.update(b"level2-model59-smoke-child-v1");
             for child in &self.model59_smoke_children {
                 hasher.update(child.source_entity_index.to_le_bytes());
+                if child.source_word_30 != 0
+                    || child.pending_damage != 0
+                    || child.pending_attacker_entity_index != 0
+                {
+                    hasher.update(b"smoke13-wind-mailbox-v1");
+                    hasher.update(child.source_word_30.to_le_bytes());
+                    hasher.update(child.pending_damage.to_le_bytes());
+                    hasher.update(child.pending_attacker_entity_index.to_le_bytes());
+                }
                 hasher.update(child.entity_rng.to_le_bytes());
                 hasher.update([
                     child.source_class,
@@ -7175,6 +7236,15 @@ impl Level2EconomyState {
         }
         for child in &self.model13_spawned_children {
             hasher.update(child.source_entity_index.to_le_bytes());
+            if child.source_word_30 != 0
+                || child.pending_damage != 0
+                || child.pending_attacker_entity_index != 0
+            {
+                hasher.update(b"smoke14-wind-mailbox-v1");
+                hasher.update(child.source_word_30.to_le_bytes());
+                hasher.update(child.pending_damage.to_le_bytes());
+                hasher.update(child.pending_attacker_entity_index.to_le_bytes());
+            }
             hasher.update(child.entity_rng.to_le_bytes());
             hasher.update(child.parent_entity_index.to_le_bytes());
             hasher.update(child.parent_entity_id.to_le_bytes());
@@ -7527,6 +7597,10 @@ impl Level2EconomyState {
         hasher.update(b"authored-firefly-stage-v1");
         for state in &self.authored_fireflies {
             hasher.update(state.source_entity_index.to_le_bytes());
+            if state.entity_id != state.source_entity_index {
+                hasher.update(b"firefly-source-id-v1");
+                hasher.update(state.entity_id.to_le_bytes());
+            }
             hasher.update(state.linked_entity_index.to_le_bytes());
             hasher.update(state.control_flags.to_le_bytes());
             hasher.update([state.byte_0x38, state.xtype]);
@@ -7553,6 +7627,10 @@ impl Level2EconomyState {
         hasher.update(b"authored-dragon-v2");
         for state in &self.authored_dragons {
             hasher.update(state.source_entity_index.to_le_bytes());
+            if state.entity_id != state.source_entity_index {
+                hasher.update(b"dragon-source-id-v1");
+                hasher.update(state.entity_id.to_le_bytes());
+            }
             if state.stage_var2 != 0 || state.parent_entity_index != 0 || state.stage_remaining != 0
             {
                 hasher.update(b"dragon-parent-stage-v1");
@@ -8237,6 +8315,46 @@ mod source_effect_allocator_tests {
             .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
         let session = CampaignSession::open(path, CampaignSelection::LEVEL2).unwrap();
         session.simulation().source_arena().clone()
+    }
+
+    #[test]
+    fn smoke14_constructor_advances_global_rng_before_allocation() {
+        let mut economy = arena().economy;
+        economy.global_rng = 0x1234_5678;
+        let expected_rng = level2_next_rng32(economy.global_rng);
+        let mut exhausted = economy.clone();
+        exhausted.exhaust_new_event_capacity_for_test();
+        let count = exhausted.model13_spawned_children.len();
+        assert_eq!(
+            exhausted.allocate_model13_spawned_child(0, 0, Position::default(), 0),
+            None
+        );
+        assert_eq!(exhausted.global_rng, expected_rng);
+        assert_eq!(exhausted.model13_spawned_children.len(), count);
+
+        let slot = economy
+            .allocate_model13_spawned_child(0, 0, Position::default(), 0)
+            .expect("ordinary SetParticleSmoke3C has a free source slot");
+        let row = economy
+            .model13_spawned_children
+            .iter()
+            .find(|child| child.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(economy.global_rng, expected_rng);
+        assert_eq!(row.parent_entity_id, slot);
+        assert_eq!(row.max_life, (expected_rng % 33 + 28) as i16);
+
+        let emitter_slot = 77;
+        let emitted = economy
+            .allocate_model13_spawned_child(emitter_slot, 123, Position::default(), 512)
+            .expect("eruption emits another smoke14 child");
+        let row = economy
+            .model13_spawned_children
+            .iter()
+            .find(|child| child.source_entity_index == emitted)
+            .unwrap();
+        assert_eq!(row.parent_entity_id, 123);
+        assert_eq!(row.yaw, 512);
     }
 
     #[test]

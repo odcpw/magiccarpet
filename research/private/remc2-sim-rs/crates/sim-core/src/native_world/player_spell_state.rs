@@ -26,6 +26,35 @@ impl GlobalSpecialState {
 }
 
 impl Level2SharedSpellResetSession {
+    /// Publish a source award at the same boundary as its authoritative
+    /// progression change, before later callbacks read core or fire state.
+    pub(crate) fn publish_spell_progression_family(
+        &self,
+        players: &mut [PlayerSnapshot],
+        fire: Option<&mut SpellFireContext>,
+        owner: u16,
+        family: u8,
+    ) {
+        if let Some(source) = self
+            .players
+            .iter()
+            .find(|player| player.entity_index == owner)
+        {
+            for player in players
+                .iter_mut()
+                .filter(|player| player.entity_index == owner)
+            {
+                player.sync_spell_progression_family_from(source, usize::from(family));
+            }
+        }
+        if let Some(fire) = fire
+            && fire.caster.entity_index == owner
+        {
+            fire.spell_experience[usize::from(family)] = self.spell_experience[usize::from(family)];
+            fire.spell_levels[usize::from(family)] = self.spell_levels[usize::from(family)];
+        }
+    }
+
     /// Source A4 feedback for accepted damage, Duel and resolved Steal.
     pub(super) fn set_player_hit_feedback(&mut self) {
         self.set_player_hit_frame_time(4);

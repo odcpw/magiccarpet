@@ -568,15 +568,25 @@ fn dynamic(
             row.life,
             row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
         ),
-        Kind::Model13SpawnedChild => carrier!(
-            economy.model13_spawned_children,
-            row,
-            row.source_class,
-            row.model,
-            row.parent_entity_id,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
+        Kind::Model13SpawnedChild => {
+            let mut view = carrier!(
+                economy.model13_spawned_children,
+                row,
+                row.source_class,
+                row.model,
+                row.parent_entity_id,
+                row.life,
+                row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
+            );
+            let row = economy
+                .model13_spawned_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .expect("the current smoke14 carrier was just read");
+            view.yaw = Some(row.yaw);
+            view.collision = context.particle_shape(row.particle_index);
+            view
+        }
         Kind::AuthoredModel6 => carrier!(
             economy.authored_model6,
             row,
@@ -683,15 +693,25 @@ fn dynamic(
             row.life,
             row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
         ),
-        Kind::Model59SmokeChild => carrier!(
-            economy.model59_smoke_children,
-            row,
-            row.source_class,
-            row.model,
-            slot,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
+        Kind::Model59SmokeChild => {
+            let mut view = carrier!(
+                economy.model59_smoke_children,
+                row,
+                row.source_class,
+                row.model,
+                slot,
+                row.life,
+                row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
+            );
+            let row = economy
+                .model59_smoke_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .expect("the current smoke13 carrier was just read");
+            view.yaw = Some(row.yaw);
+            view.collision = context.particle_shape(row.particle_index);
+            view
+        }
         Kind::AuthoredModel53 => carrier!(
             economy.authored_model53,
             row,

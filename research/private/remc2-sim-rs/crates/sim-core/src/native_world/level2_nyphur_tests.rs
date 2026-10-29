@@ -155,6 +155,179 @@ fn ordinary_mission18_schedules_every_imported_rival_through_dispatch_and_tail()
             "ordinary rival {owner} reaches the source tail in its mode's source order"
         );
     }
+
+    // Use the actual first rival and its imported Duel holder. Invoke the
+    // real AI activation helper with controlled resources, then let the
+    // ordinary source cursor deliver the holder callback. This does not
+    // claim that the AI autonomously selected Duel in this fixture.
+    let caster = 92;
+    let holder = 106;
+    {
+        let live = &mut session.session.state.live;
+        let player = live.core.players.iter()
+            .find(|player| player.entity_index == caster).unwrap();
+        assert_eq!(player.enabled_spell_holders[14], holder);
+        let raw_holder = &live.economy.entities[usize::from(holder)];
+        assert_eq!((raw_holder.class, raw_holder.model, raw_holder.action), (15, 14, 42));
+        assert_eq!(raw_holder.source_spell_parent_entity_index(), caster);
+        let castle = if let Some(root) = live.economy.castle_for_owner(caster) {
+            root.source_entity_index
+        } else {
+            live.economy.economy.build_castle_at(
+                Position::default(), Position::default(), caster, false, true,
+            ).expect("ordinary rival Castle constructor")
+        };
+        assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(castle, 20_000));
+        let caster_row = &mut live.economy.entities[usize::from(caster)];
+        caster_row.max_mana = 20_000;
+        caster_row.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());
+        caster_row.set_mana(20_000);
+        let caster_model = caster_row.model;
+        let mut flags = caster_row.control_flags;
+        let handle = live.economy.handle(caster).unwrap();
+        let rival = live.nyphur_dispatcher.get_mut(handle).unwrap();
+        rival.common_upkeep.max_mana = 20_000;
+        rival.common_upkeep.mana = 20_000;
+        rival.common_upkeep.spell_enabled[14] = 0;
+        assert!(rival.common_upkeep.step_sub_14e10(
+            14, caster_model, &mut flags, &mut live.economy.entities,
+        ), "actual rival AI activation accepts the Duel holder");
+        live.economy.entities[usize::from(caster)].set_control_flags(flags);
+        let source = &live.economy.entities[usize::from(holder)];
+        assert_eq!(source.active_value, source.activation_value as i16);
+    }
+    session.step_level2_source_pass(0);
+    let live = &session.session.state.live;
+    assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    assert!(live.economy.entities.iter().any(|row| {
+        row.active && (row.class, row.model, row.action) == (9, 7, 7)
+            && row.source_id == caster
+            && u16::from_le_bytes([row.record[42], row.record[43]]) == holder
+    }), "the scheduled real rival holder creates its Duel flyer");
+}
+
+#[test]
+fn ordinary_mission23_dying_rival_tether_uses_its_own_target_and_holder() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual ordinary Mission 23 package").simulation().clone();
+    let live = &mut session.session.state.live;
+    let caster = 425_u16;
+    let target = 451_u16;
+    let caster_handle = live.economy.handle(caster).unwrap();
+    let target_handle = live.economy.handle(target).unwrap();
+    let holder = live.core.players.iter().find(|player| player.entity_index == caster)
+        .unwrap().enabled_spell_holders[14];
+    assert_eq!(holder, 440);
+    let caster_position = live.economy.entities[usize::from(caster)].position;
+    let target_position = Position { x: caster_position.x.wrapping_add(1_024), ..caster_position };
+    live.economy.entities[usize::from(target)].set_position(target_position);
+    live.economy.entities[usize::from(target)].set_life(5_000);
+    live.economy.entities[usize::from(target)].set_mana(500);
+    live.economy.entities[usize::from(holder)].active_value = 1;
+    live.economy.entities[usize::from(holder)].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+    let mana_regen = live.economy.entities[usize::from(target)].mana_regen;
+    let life_regen = live.nyphur_dispatcher.get(target_handle).unwrap()
+        .common_upkeep(live.economy.entities[usize::from(target)].phase).life_regen;
+    assert!(live.nyphur_dispatcher.get_mut(caster_handle).unwrap().install_duel_tether(
+        crate::spells::directional::DuelTetherBinding {
+            caster_entity_index: caster, target_entity_index: target, holder_entity_index: holder,
+            tier: 2, prior_distance: 1_024,
+        },
+    ));
+    let target_binding_before = live.nyphur_dispatcher.get(target_handle).unwrap().duel_tether();
+    // Controlled binding on the actual owner data; the scheduled dying path
+    // delegates to this same owner-bound operation before falling.
+    live.nyphur_dispatcher.step_dying_tether(
+        &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(),
+        &live.core.players, live.core.state.entity_index, caster, caster_position,
+    ).expect("real rival tether carriers resolve");
+    assert_eq!(live.economy.entities[usize::from(target)].life, 5_000 - i32::from(life_regen) - 2);
+    assert_eq!(live.economy.entities[usize::from(target)].mana, (500 - mana_regen - 8).max(0));
+    assert_eq!(live.nyphur_dispatcher.get(target_handle).unwrap().duel_tether(), target_binding_before);
+    assert!(live.nyphur_dispatcher.get(caster_handle).unwrap().has_duel_target());
+    live.economy.entities[usize::from(holder)].active_value = 0;
+    live.nyphur_dispatcher.step_dying_tether(
+        &mut live.economy, &mut live.shared_spells, live.core.context.spell_fire.as_mut(),
+        &live.core.players, live.core.state.entity_index, caster, caster_position,
+    ).unwrap();
+    assert!(!live.nyphur_dispatcher.get(caster_handle).unwrap().has_duel_target());
+    assert_eq!(live.nyphur_dispatcher.get(target_handle).unwrap().duel_tether(), target_binding_before);
+}
+
+#[test]
+fn ordinary_mission23_rival_grounded_death_rebuilds_its_own_castle_holders() {
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual ordinary Mission 23 package").simulation().clone();
+    let owner = 425_u16;
+    let other = 451_u16;
+    let handle = session.session.state.live.economy.handle(owner).unwrap();
+    let before = session.players().iter().find(|player| player.entity_index == owner).unwrap().enabled_spell_holders;
+    let other_before = session.players().iter().find(|player| player.entity_index == other).unwrap().enabled_spell_holders;
+    assert_eq!(session.economy().castle_for_owner(owner).unwrap().source_entity_index, 450);
+    {
+        // Controlled entry into the real grounded dying callback; this test
+        // verifies death→banishment→revival, not the preceding lethal hit.
+        let live = &mut session.session.state.live;
+        let row = &live.economy.entities[usize::from(owner)];
+        let parameter = row.parameter_relation.expect("actual rival collision parameters");
+        let offset = &session.session.definition.presentation.entity_parameters[usize::from(parameter)][12..14];
+        let mut position = row.position;
+        position.z = live.terrain.ground_height(position).wrapping_add(i16::from_le_bytes([offset[0], offset[1]]));
+        let row = &mut live.economy.entities[usize::from(owner)];
+        row.set_position(position);
+        row.set_life(-1);
+        row.set_source_action(2);
+        row.set_source_word_2c(0);
+        crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, position, true, false).unwrap();
+    }
+    session.step_level2_source_pass(0);
+    {
+        let live = &mut session.session.state.live;
+        assert_eq!(live.economy.entities[usize::from(owner)].action, 3);
+        assert_eq!(live.economy.handle(owner), Some(handle));
+        assert_eq!(live.economy.entities[usize::from(owner)].source_dword_10(), 1_200);
+        assert!(live.nyphur_dispatcher.get_mut(handle).unwrap().install_duel_tether(
+            crate::spells::directional::DuelTetherBinding {
+                caster_entity_index: owner, target_entity_index: other,
+                holder_entity_index: before[14], tier: 0, prior_distance: 1_024,
+            },
+        ));
+        // Bound the test after the actual death callback; source countdown
+        // and the timer-zero revival still run through normal scheduling.
+        live.economy.entities[usize::from(owner)].set_source_dword_10(1);
+    }
+    session.step_level2_source_pass(0);
+    assert_eq!(session.session.state.live.economy.entities[usize::from(owner)].source_dword_10(), 0);
+    session.step_level2_source_pass(0);
+    let live = &session.session.state.live;
+    let actor = &live.economy.entities[usize::from(owner)];
+    assert_eq!(live.economy.handle(owner), Some(handle));
+    assert_eq!((actor.action, actor.life, actor.max_life), (1, 10_000, 10_000));
+    assert!(!live.nyphur_dispatcher.get(handle).unwrap().has_duel_target(), "source revival clears the old caster target");
+    let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+    for (family, old_slot) in before.into_iter().enumerate() {
+        if old_slot != 0 {
+            let holder = live.nyphur_dispatcher.bound_live_holder(handle, player, &live.economy, family)
+                .expect("revival constructed and bound the actual owner's holder");
+            assert_ne!(holder.source_slot, old_slot, "released pickup remains a separate source row");
+        }
+    }
+    let other_player = live.core.players.iter().find(|player| player.entity_index == other).unwrap();
+    assert_eq!(other_player.enabled_spell_holders[0], other_before[0]);
+    let other_handle = live.economy.handle(other).unwrap();
+    assert_eq!(live.nyphur_dispatcher.bound_live_holder(other_handle, other_player, &live.economy, 0).unwrap().source_slot, other_before[0]);
 }
 
 // Earlier fixtures assumed the first cadence always selected a creature.
@@ -4356,7 +4529,9 @@ fn carried_steal_input_schedules_flyer_and_transfers_from_real_nyphur() {
                 true,
             )
             .expect("real local Castle constructor");
-        live.economy.economy.castle_at_mut(castle).unwrap().mana = 20_000;
+        // Stage the full Castle prerequisite: the default stage-one 8,500
+        // capacity would otherwise release this mana before the hand cast.
+        assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(castle, 20_000));
         let parent = &mut live.economy.entities[usize::from(caster)];
         parent.max_mana = 20_000;
         parent.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());

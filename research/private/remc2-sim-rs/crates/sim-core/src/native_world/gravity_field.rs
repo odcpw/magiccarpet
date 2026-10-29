@@ -21,6 +21,7 @@ pub(crate) struct Context<'a> {
     pub(crate) player: &'a mut FlightState,
     pub(crate) players: &'a mut [PlayerSnapshot],
     pub(crate) progression: &'a mut Level2SharedSpellResetSession,
+    pub(crate) fire: Option<&'a mut crate::SpellFireContext>,
     pub(crate) parameters: &'a [[u8; ENTITY_PARAMETER_BYTES]],
 }
 
@@ -62,16 +63,31 @@ fn targets(arena: &SourceArena, position: Position) -> Vec<u16> {
 }
 
 fn award(context: &mut Context<'_>, award: gravity::SpellExperienceAward) {
-    if context
-        .progression
-        .players()
-        .iter()
-        .any(|player| player.entity_index == award.owner_source_id)
+    let owner = award.owner_source_id;
+    if owner != 0
+        && context.arena.economy.live_arena_cursor_row(owner).is_none()
+        && context
+            .arena
+            .entities
+            .get(usize::from(owner))
+            .is_some_and(|row| (row.class, row.model) == (3, 0))
+        && context.progression.mission_rewards().allows_experience()
+        && context
+            .progression
+            .players()
+            .iter()
+            .any(|player| player.entity_index == owner)
     {
         context.progression.award_spell_experience(
             award.owner_source_id,
             award.family,
             award.amount,
+        );
+        context.progression.publish_spell_progression_family(
+            context.players,
+            context.fire.as_deref_mut(),
+            award.owner_source_id,
+            award.family,
         );
     }
 }
@@ -284,8 +300,42 @@ mod tests {
         source.record[30..32].copy_from_slice(&owner.to_le_bytes());
         source.set_source_action(gravity::ACTION_SHRINK);
         source.record[74] = 0;
-        gravity::step(&mut live.economy, well, &mut live.terrain);
-
+        let experience_before = live.shared_spells.spell_experience()[20];
+        step(
+            &mut Context {
+                arena: &mut live.economy,
+                terrain: &mut live.terrain,
+                goats: &mut live.goats,
+                ordinary: &mut live.ordinary,
+                player: &mut live.core.state,
+                players: &mut live.core.players,
+                progression: &mut live.shared_spells,
+                fire: live.core.context.spell_fire.as_mut(),
+                parameters: &session.session.definition.presentation.entity_parameters,
+            },
+            well,
+        )
+        .unwrap();
+        let experience = live.shared_spells.spell_experience()[20];
+        assert_eq!(experience, experience_before + 2);
+        assert_eq!(
+            live.core
+                .players
+                .iter()
+                .find(|p| p.entity_index == owner)
+                .unwrap()
+                .runtime_spell_experience[20],
+            experience
+        );
+        assert_eq!(
+            live.core
+                .context
+                .spell_fire
+                .as_ref()
+                .expect("local spell-fire consumer")
+                .spell_experience[20],
+            experience
+        );
         let rival_state = live.economy.economy.castle_at(rival).unwrap();
         assert_eq!(
             (
@@ -298,6 +348,87 @@ mod tests {
         let local_state = live.economy.economy.castle_at(local).unwrap();
         assert_eq!(local_state.control_flags & 0x0010_0000, 0);
         assert_eq!(local_state.pending_damage, 0);
+
+        // Repeat the same overlapping Castle capture under the real mission
+        // reward suppression policy; motion and contact still occur.
+        live.shared_spells
+            .set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
+        live.economy.entities[usize::from(well)].record[74] = 0;
+        step(
+            &mut Context {
+                arena: &mut live.economy,
+                terrain: &mut live.terrain,
+                goats: &mut live.goats,
+                ordinary: &mut live.ordinary,
+                player: &mut live.core.state,
+                players: &mut live.core.players,
+                progression: &mut live.shared_spells,
+                fire: live.core.context.spell_fire.as_mut(),
+                parameters: &session.session.definition.presentation.entity_parameters,
+            },
+            well,
+        )
+        .unwrap();
+        assert_eq!(live.shared_spells.spell_experience()[20], experience);
+        assert_eq!(
+            live.core
+                .players
+                .iter()
+                .find(|p| p.entity_index == owner)
+                .unwrap()
+                .runtime_spell_experience[20],
+            experience
+        );
+        assert_eq!(
+            live.core
+                .context
+                .spell_fire
+                .as_ref()
+                .unwrap()
+                .spell_experience[20],
+            experience
+        );
+
+        let rival_state = live.economy.economy.castle_at(rival).unwrap();
+        assert_eq!(
+            (
+                rival_state.pending_damage,
+                rival_state.pending_attacker_entity_index
+            ),
+            (1500, owner)
+        );
+
+        // A retained player record alone must not award a reclaimed source ID.
+        live.shared_spells
+            .set_mission_rewards(crate::campaign::rewards::MissionRewards::Enabled);
+        let owner_row = live.economy.entities[usize::from(owner)].clone();
+        live.economy.entities[usize::from(owner)].reclaim_source_row();
+        live.economy.entities[usize::from(well)].record[74] = 0;
+        step(
+            &mut Context {
+                arena: &mut live.economy,
+                terrain: &mut live.terrain,
+                goats: &mut live.goats,
+                ordinary: &mut live.ordinary,
+                player: &mut live.core.state,
+                players: &mut live.core.players,
+                progression: &mut live.shared_spells,
+                fire: live.core.context.spell_fire.as_mut(),
+                parameters: &session.session.definition.presentation.entity_parameters,
+            },
+            well,
+        )
+        .unwrap();
+        assert_eq!(live.shared_spells.spell_experience()[20], experience);
+        assert_eq!(
+            live.economy
+                .economy
+                .castle_at(rival)
+                .unwrap()
+                .pending_damage,
+            2250
+        );
+        live.economy.entities[usize::from(owner)] = owner_row;
 
         live.economy.entities[usize::from(well)].record[74] = 2;
         gravity::step(&mut live.economy, well, &mut live.terrain);
@@ -323,7 +454,11 @@ mod tests {
             .find(|house| house.source_retained() && house.life >= 0)
             .expect("ordinary live House fixture");
         let original_flags = house.control_flags;
-        live.ordinary.houses.house_mut(house.entity_index).unwrap().control_flags |= 0x0010_0000;
+        live.ordinary
+            .houses
+            .house_mut(house.entity_index)
+            .unwrap()
+            .control_flags |= 0x0010_0000;
         let well = gravity::construct(
             &mut live.economy,
             &mut live.terrain,
@@ -346,6 +481,7 @@ mod tests {
                 player: &mut live.core.state,
                 players: &mut live.core.players,
                 progression: &mut live.shared_spells,
+                fire: live.core.context.spell_fire.as_mut(),
                 parameters: &session.session.definition.presentation.entity_parameters,
             },
             well,
@@ -513,11 +649,22 @@ fn pull_actors(context: &mut Context<'_>, slot: u16) -> Result<(), String> {
             )),
             target_slot,
         )?;
+        let action = if let Some(current) = context.arena.economy.live_arena_cursor_row(target_slot)
+        {
+            context
+                .arena
+                .economy
+                .live_arena_class_action(target_slot, current.kind)
+                .ok_or("gravity typed target has no authoritative action carrier")?
+                .1
+        } else {
+            raw.action
+        };
         let actor = gravity::Actor {
             source_id: target.source_id,
             class: target.class,
             model: target.model,
-            action: raw.action,
+            action,
             control_flags: wind_actor.flags,
             position: wind_actor.position,
             vertical_state: parameters.map_or(0, |p| i16::from_le_bytes([p[14], p[15]])),

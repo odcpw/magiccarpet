@@ -454,7 +454,7 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
                 .set_level2_entity_position(player_slot, player_position)
                 .unwrap();
         }
-        {
+        let head_slot = {
             let arena = &mut session.session.state.live.economy;
             let root = arena.handle(root_slot).unwrap();
             let chain = multipart::read_chain(arena, root).unwrap();
@@ -470,21 +470,25 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
             }
             let head = &mut arena.entities[usize::from(chain.heads[0].source_slot)];
             head.record[74] = 3;
-            head.record[72] = if selector == 0 { 1 } else { 3 };
+            head.record[72] = 0;
             head.record[154..156].copy_from_slice(&target_slot.to_le_bytes());
-            head.set_actual_speed(192);
-            head.set_entity_rng(0);
-            head.mana_regen = 2;
-            head.record[140..144].copy_from_slice(&2_i32.to_le_bytes());
-            head.set_source_dword_10(2);
-        }
+            head.set_actual_speed(0);
+            chain.heads[0].source_slot
+        };
         let mut saw_projectile = false;
         let mut saw_impact = false;
+        let mut impact_observation = None;
         let mut saw_damage = false;
         let mut saw_consumed_life = false;
         let mut fireball_slot = None;
         let mut saw_fireball_reclaim = false;
         for _ in 0..24 {
+            let head = &mut session.session.state.live.economy.entities[usize::from(head_slot)];
+            if head.record[74] == 3 && head.record[72] == 1 && head.actual_speed == 192 {
+                // The head first advances RNG for its source roll, then
+                // advances it again to choose the attack variant.
+                head.set_entity_rng(if selector == 0 { 0 } else { 6 });
+            }
             session.step_outer_turn(PlayerCommand::default(), 0);
             assert!(
                 !session
@@ -512,11 +516,19 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
             };
             let target_row = &arena.entities[usize::from(target_slot)];
             let impact_model = if selector == 0 { 0 } else { 23 };
-            saw_impact |= arena.entities.iter().any(|effect| {
+            if let Some(effect) = arena.entities.iter().find(|effect| {
                 effect.active
                     && (effect.class, effect.model, effect.source_id)
                         == (10, impact_model, root_slot)
-            });
+            }) {
+                saw_impact = true;
+                impact_observation = Some((
+                    effect.index,
+                    effect.position,
+                    u16::from_le_bytes([effect.record[154], effect.record[155]]),
+                    target_row.position,
+                ));
+            }
             let attacker = u16::from_le_bytes([target_row.record[102], target_row.record[103]]);
             let payload = i32::from_le_bytes(target_row.record[98..102].try_into().unwrap());
             saw_damage |= attacker == root_slot && payload > 0;
@@ -560,7 +572,12 @@ fn assert_head_projectiles_reach_scheduled_damage_consumers(
         );
         assert!(
             saw_damage && saw_consumed_life,
-            "selector {selector} must deliver root-attributed damage to the real player or rival and have it consumed"
+            "selector {selector} must deliver root-attributed damage to target {target_slot} \
+             (player={is_player}, original life={target_life}, \
+             damage observed={saw_damage}, life consumed={saw_consumed_life}, \
+             impact(slot, position, target, target position)={impact_observation:?}); \
+             final target={:?}",
+            session.entities().get(usize::from(target_slot))
         );
         assert!(
             selector != 0 || saw_fireball_reclaim,
@@ -699,6 +716,7 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     let mut reclaimed = false;
     let mut burst_slot = None;
     let mut burst_expired = false;
+    let mut death_passes = Vec::new();
     for _ in 0..8 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
@@ -737,6 +755,24 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
         }
         let arena = &session.session.state.live.economy;
         let mut all = std::iter::once(root).chain(chain.ordered.iter().copied());
+        death_passes.push((
+            arena.entities[usize::from(root_slot)].action,
+            all.clone()
+                .filter(|part| {
+                    arena.slot_generation(part.source_slot) == part.generation
+                        && arena.entities[usize::from(part.source_slot)].drawing_disabled()
+                })
+                .count(),
+            all.clone()
+                .filter(|part| {
+                    arena.slot_generation(part.source_slot) != part.generation
+                        || arena
+                            .economy
+                            .free_source_slots()
+                            .contains(&part.source_slot)
+                })
+                .count(),
+        ));
         if !hidden {
             hidden = all.clone().all(|part| {
                 arena.slot_generation(part.source_slot) == part.generation
@@ -766,7 +802,8 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     }
     assert!(
         hidden,
-        "the source death pass hides every linked slot before reclaim"
+        "the source death pass hides every linked slot before reclaim; \
+         per outer turn (root action, hidden, reclaimed): {death_passes:?}"
     );
     assert!(
         reclaimed,

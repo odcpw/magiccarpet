@@ -321,6 +321,138 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn fireball_impact_reads_the_reused_source_address_after_allocation() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let game = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
+            .expect("real Cave4 owner package");
+        let mut session = game.simulation().clone();
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let arena = &mut live.economy;
+        let terrain = &mut live.terrain;
+        let position = Position {
+            x: 0x2000,
+            y: 0x3000,
+            z: 10_000,
+        };
+        arena.dynamic_lighting_enabled = true;
+        let slot = construct(
+            arena,
+            terrain,
+            &particles,
+            Launch {
+                product: Product::Creature27Fireball,
+                position,
+                owner: live.core.state.entity_index,
+                yaw: 73,
+                pitch: 31,
+                target_class: u8::MAX,
+                target_model: u8::MAX,
+                target: 0,
+                damage: 850,
+                effect_life: 0,
+                descriptor: None,
+            },
+        )
+        .unwrap()
+        .expect("real Fireball constructor allocates");
+        assert_eq!(
+            arena
+                .dynamic_lighting
+                .active_slots()
+                .filter(|(_, light)| light.linked && light.source_entity_index == slot)
+                .count(),
+            1
+        );
+        let previous = arena.handle(slot).unwrap();
+        let projectile = arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        projectile.control_flags |= crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        projectile.life = -1;
+        projectile.actual_speed = 0;
+        projectile.minimum_speed = 0;
+        projectile.acquisition_attempted = true;
+        arena.rebuild_source_free_arena();
+        // The frozen candidate remains after its current occupant changes
+        // flags, as in a later allocation within the same source pass.
+        arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap()
+            .control_flags &= !crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        while arena.economy.free_slot_count() != 0 {
+            arena
+                .allocate_source_slot_with_terrain(terrain)
+                .expect("consume a real free-stack slot");
+        }
+        loop {
+            let mut probe = arena.clone();
+            let mut probe_terrain = terrain.clone();
+            let candidate = probe
+                .allocate_source_slot_with_terrain(&mut probe_terrain)
+                .expect("frozen cursor reaches the projectile address");
+            if candidate == slot {
+                break;
+            }
+            assert_eq!(
+                arena.allocate_source_slot_with_terrain(terrain),
+                Some(candidate)
+            );
+        }
+        arena.dynamic_lighting_enabled = true;
+        let step = crate::native_world::effects::step_projectile(
+            arena,
+            terrain,
+            &particles,
+            slot,
+            source_target::Context::default(),
+        )
+        .expect("the real terminal Fireball callback completes");
+        assert_eq!(step.impact_slot, Some(slot));
+        assert!(!step.live);
+        assert!(arena.resolve(previous).is_none());
+        let impact = &arena.entities[usize::from(slot)];
+        assert_eq!((impact.class, impact.model, impact.action), (10, 0, 0));
+        assert_eq!(impact.position, Position::default());
+        assert_eq!(impact.source_id, slot);
+        assert_eq!((impact.yaw, impact.pitch), (0, 0));
+        assert!(impact.drawing_disabled());
+        assert!(arena.economy.map_chains.is_linked(slot));
+        assert_eq!(terrain.planes().entity_indices[0], slot as i16);
+        assert_eq!(
+            arena
+                .dynamic_lighting
+                .active_slots()
+                .filter(|(_, light)| light.linked && light.source_entity_index == slot)
+                .count(),
+            2,
+            "NewEvent preserves the old fixed-address light and admits the impact light"
+        );
+        assert!(step.direct_hit_owner.is_none());
+        let mut lighting = std::mem::take(&mut arena.dynamic_lighting);
+        crate::world::effects::lighting::after_updates(
+            &mut lighting,
+            arena,
+            terrain,
+            source_target::Context::default(),
+        )
+        .expect("ordinary lighting service reads the current hidden impact");
+        assert!(
+            !lighting
+                .active_slots()
+                .any(|(_, light)| { light.linked && light.source_entity_index == slot })
+        );
+        arena.dynamic_lighting = lighting;
+    }
+
+    #[test]
     fn hidden_fireball_is_retained_by_bare_rebuild_but_reclaimed_by_source_49f90() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");

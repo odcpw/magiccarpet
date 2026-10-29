@@ -248,7 +248,8 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
                 &context,
                 &runtime,
                 &families,
-                true
+                true,
+                &mut Effects::default(),
             )
             .unwrap(),
             None
@@ -276,12 +277,22 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
             class3: &[],
             model25: &[],
         };
-        stage::step_action_207(&mut Actor { row: &mut row }, &context, &runtime, &families, true)
-            .unwrap();
+        stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            &runtime,
+            &families,
+            true,
+            &mut Effects::default(),
+        )
+        .unwrap();
         let next_rng = level2_next_rng16(old_rng);
         assert_eq!(row.action, 207);
         assert_eq!(row.entity_rng, next_rng);
-        assert_eq!(row.source_roll(), old_roll.wrapping_add((next_rng % 113 + 142) as i16) & 2047);
+        assert_eq!(
+            row.source_roll(),
+            old_roll.wrapping_add((next_rng % 113 + 142) as i16) & 2047
+        );
 
         for (attacker_model, damage, action, next_mode) in [
             (18, 100, 202, 10),
@@ -300,7 +311,12 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
             row.record[98..102].copy_from_slice(&damage.to_le_bytes());
             row.record[102..104].copy_from_slice(&42_u16.to_le_bytes());
             stage::step_action_207(
-                &mut Actor { row: &mut row }, &context, &runtime, &families, true,
+                &mut Actor { row: &mut row },
+                &context,
+                &runtime,
+                &families,
+                true,
+                &mut Effects::default(),
             )
             .unwrap();
             assert_eq!((row.action, row.record[77]), (action, next_mode));
@@ -313,20 +329,188 @@ fn authored_follow_leader_attacks_only_its_in_range_target() {
     }
 
     let ground = terrain.ground_height(position);
-    let raised = Position { z: ground + 512, ..position };
+    let raised = Position {
+        z: ground + 512,
+        ..position
+    };
     for (descriptor, expected_z) in [(DESCRIPTOR, ground + 480), (SPLIT_DESCRIPTOR, ground + 256)] {
         let targets = [target(42, SOURCE_CLASS, 18, raised)];
-        let context = Context { terrain, targets: &targets, class3: &[], model25: &[] };
+        let context = Context {
+            terrain,
+            targets: &targets,
+            class3: &[],
+            model25: &[],
+        };
         let mut row = cymmerian(207, raised);
         row.parameter_relation = Some(descriptor);
         row.record[77] = 8;
         row.record[98..102].copy_from_slice(&100_i32.to_le_bytes());
         row.record[102..104].copy_from_slice(&42_u16.to_le_bytes());
         stage::step_action_207(
-            &mut Actor { row: &mut row }, &context, &runtime, &families, true,
+            &mut Actor { row: &mut row },
+            &context,
+            &runtime,
+            &families,
+            true,
+            &mut Effects::default(),
         )
         .unwrap();
-        assert_eq!(row.position.z, expected_z, "hit uses its current descriptor's descent");
+        assert_eq!(
+            row.position.z, expected_z,
+            "hit uses its current descriptor's descent"
+        );
+    }
+}
+
+#[test]
+fn stage_follow_modes_choose_leader_only_when_requested() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let terrain = session.canonical_terrain();
+    let position = session.state.position;
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    runtime.stage_variables[1].flags = 0;
+    runtime.stage_variables[1].relation = crate::native_world::RuntimeRelation::LiveEntity(42);
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let leader = target(42, 5, 18, position);
+    let context = Context {
+        terrain,
+        targets: &[leader],
+        class3: &[],
+        model25: &[],
+    };
+    for (mode, action, expected_target) in [(3, 202, 42), (4, 207, 0), (5, 207, 0)] {
+        let mut row = cymmerian(207, position);
+        row.record[76] = 1;
+        row.record[77] = mode;
+        row.set_phase(8);
+        stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            &runtime,
+            &families,
+            true,
+            &mut Effects::default(),
+        )
+        .unwrap();
+        assert_eq!((row.action, word(&row, 154)), (action, expected_target));
+    }
+}
+
+#[test]
+fn stage_default_preserves_actor_but_attack_mode_selects_source_action() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let position = session.state.position;
+    let runtime = &session.session.state.live.core.runtime;
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let context = Context {
+        terrain: session.canonical_terrain(),
+        targets: &[],
+        class3: &[],
+        model25: &[],
+    };
+    for (mode, action) in [(0, 207), (11, 207), (15, 207), (10, 202)] {
+        let mut row = cymmerian(207, position);
+        row.record[77] = mode;
+        put(&mut row, 154, 42);
+        let rng = row.entity_rng;
+        stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            runtime,
+            &families,
+            true,
+            &mut Effects::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            (row.action, row.record[77], word(&row, 154), row.entity_rng),
+            (action, mode, 42, rng)
+        );
+    }
+}
+
+#[test]
+fn stage_morph_tracks_current_parent_and_hides_without_it() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let terrain = session.canonical_terrain();
+    let position = session.state.position;
+    let runtime = &session.session.state.live.core.runtime;
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let mut parent = target(42, 3, 0, Position { z: 900, ..position });
+    parent.yaw = 123;
+    parent.roll = 321;
+    let context = Context {
+        terrain,
+        targets: &[parent],
+        class3: &[],
+        model25: &[],
+    };
+    for current in [true, false] {
+        let mut row = cymmerian(207, position);
+        row.record[77] = 12;
+        put(&mut row, 44, 42);
+        stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            runtime,
+            &families,
+            current,
+            &mut Effects::default(),
+        )
+        .unwrap();
+        if current {
+            assert_eq!(
+                (row.position.z, row.yaw, row.source_roll()),
+                (388, 123, 321)
+            );
+            assert_eq!(row.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        } else {
+            assert_ne!(row.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        }
+    }
+}
+
+#[test]
+fn alliance_attacks_parent_target_then_expires_on_parent_loss() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let terrain = session.canonical_terrain();
+    let position = session.state.position;
+    let runtime = &session.session.state.live.core.runtime;
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let mut parent = target(42, 3, 0, position);
+    parent.target = 43;
+    let enemy = target(43, 5, 18, position);
+    let targets = [parent, enemy];
+    let context = Context {
+        terrain,
+        targets: &targets,
+        class3: &[],
+        model25: &[],
+    };
+    for current in [true, false] {
+        let mut row = cymmerian(207, position);
+        row.record[77] = 14;
+        put(&mut row, 44, 42);
+        put(&mut row, 50, 40);
+        put(&mut row, 52, 60);
+        put(&mut row, 78, 3);
+        let mut effects = Effects::default();
+        stage::step_action_207(
+            &mut Actor { row: &mut row },
+            &context,
+            runtime,
+            &families,
+            current,
+            &mut effects,
+        )
+        .unwrap();
+        if current {
+            assert_eq!((row.action, word(&row, 154), word(&row, 50)), (202, 43, 39));
+            assert_eq!(effects.feedback, Some((42, 24)));
+        } else {
+            assert_eq!((row.record[77], row.record[76], word(&row, 44)), (10, 3, 0));
+            assert_eq!(effects.feedback, None);
+        }
     }
 }
 
@@ -871,9 +1055,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     let mut replaced_runtime = runtime.clone();
     let mut replaced_terrain = terrain.clone();
     for row in &mut replaced.entities {
-        row.set_control_flags(
-            row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
-        );
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
     }
     assert!(replaced.economy.typed_replacement_candidate().is_none());
     let parent = &mut replaced.entities[usize::from(parent_slot)];
@@ -902,7 +1084,10 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         .iter()
         .find(|sphere| sphere.active && sphere.source_entity_index == parent_slot)
         .expect("mana conversion replaced the dying source at its actual address");
-    assert_eq!(sphere.action, 205, "the split tail writes the current source address");
+    assert_eq!(
+        sphere.action, 205,
+        "the split tail writes the current source address"
+    );
     assert_eq!(sphere.owner_entity_index, 0);
     assert!(
         !replaced.economy.events().iter().any(|event| matches!(

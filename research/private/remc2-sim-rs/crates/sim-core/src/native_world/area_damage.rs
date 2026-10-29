@@ -21,6 +21,7 @@ pub(crate) struct ActorDomains<'a> {
     goats: &'a mut GoatFamily,
     houses: &'a mut HouseFamily,
     villagers: &'a mut VillagerFamily,
+    particles: Option<&'a [super::ParticleParameter]>,
 }
 
 impl<'a> ActorDomains<'a> {
@@ -32,7 +33,13 @@ impl<'a> ActorDomains<'a> {
             goats,
             houses: &mut ordinary.houses,
             villagers: &mut ordinary.villagers,
+            particles: None,
         }
+    }
+
+    pub(crate) fn with_particles(mut self, particles: &'a [super::ParticleParameter]) -> Self {
+        self.particles = Some(particles);
+        self
     }
 
     pub(crate) fn reborrow(&mut self) -> ActorDomains<'_> {
@@ -40,6 +47,7 @@ impl<'a> ActorDomains<'a> {
             goats: &mut *self.goats,
             houses: &mut *self.houses,
             villagers: &mut *self.villagers,
+            particles: self.particles,
         }
     }
 
@@ -165,6 +173,18 @@ pub(crate) fn replace_source_bounty(
 /// materializing a missing model9 sidecar or changing any carrier state.
 fn read_arena_bounty(arena: &SourceArena, slot: u16) -> Result<(i32, u16), String> {
     let economy = &arena.economy;
+    macro_rules! smoke_bounty {
+        ($rows:expr) => {
+            if let Some(row) = $rows
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+            {
+                return Ok((row.pending_damage, row.pending_attacker_entity_index));
+            }
+        };
+    }
+    smoke_bounty!(economy.model59_smoke_children);
+    smoke_bounty!(economy.model13_spawned_children);
     if let Some(row) = economy
         .spheres
         .iter()
@@ -354,6 +374,8 @@ pub(crate) fn read_arena_life(arena: &SourceArena, slot: u16) -> Option<i32> {
     row_life!(economy.castle_defenders);
     row_life!(economy.bee_creatures);
     row_life!(economy.house_residents);
+    row_life!(economy.model59_smoke_children);
+    row_life!(economy.model13_spawned_children);
     row_life!(economy.authored_dragon_parts);
     row_life!(economy.authored_class5_model3_children);
     row_life!(economy.authored_class5);
@@ -756,7 +778,11 @@ pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> 
             shape(row.shift_rot_x, row.shift_rot_x, offset, row.shift_rot_y)
         };
         return Some(Actor {
-            source_id: archer.map_or(slot, |state| state.entity_id),
+            source_id: archer
+                .map(|state| state.entity_id)
+                .or_else(|| firefly.map(|state| state.entity_id))
+                .or_else(|| dragon.map(|state| state.entity_id))
+                .unwrap_or(slot),
             class: 5,
             model: row.model,
             position: row.position,
@@ -1236,6 +1262,30 @@ impl AreaWorld for ArenaTargets<'_, '_> {
             return None;
         }
         let economy = &self.arena.economy;
+        // SetSmoke4 leaves byte38 zero. Wind still contacts these rows; its
+        // geometry comes from the current particle, not the old raw occupant.
+        if let Some(current) = economy.live_arena_cursor_row(slot)
+            && matches!(
+                current.kind,
+                super::Level2DynamicArenaKind::Model59SmokeChild
+                    | super::Level2DynamicArenaKind::Model13SpawnedChild
+            )
+        {
+            let context = super::source_target::Context {
+                particles: self.actors.as_ref().and_then(|actors| actors.particles),
+                ..Default::default()
+            };
+            let view = super::source_target::read(self.arena, context, slot).ok()??;
+            return Some(Actor {
+                source_id: view.source_id,
+                class: view.class,
+                model: view.model,
+                position: view.position,
+                shape: view.collision?,
+                damage_mask: 0,
+                control_flags: view.control_flags,
+            });
+        }
         if let Some(actors) = self.actors.as_ref()
             && let Some(view) = actors.source_view(slot)
         {
@@ -1354,6 +1404,21 @@ impl ArenaTargets<'_, '_> {
         edit: impl FnOnce(&mut i32, &mut u16) -> R,
     ) -> Result<R, String> {
         let economy = &mut self.arena.economy;
+        macro_rules! smoke_bounty {
+            ($rows:expr) => {
+                if let Some(row) = $rows
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                {
+                    return Ok(edit(
+                        &mut row.pending_damage,
+                        &mut row.pending_attacker_entity_index,
+                    ));
+                }
+            };
+        }
+        smoke_bounty!(economy.model59_smoke_children);
+        smoke_bounty!(economy.model13_spawned_children);
         if let Some(row) = economy
             .spheres
             .iter_mut()

@@ -160,12 +160,26 @@ fn level_two_direct_arena_cursor_matches_census_through_reclaim_and_reuse() {
             | crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. }
             if *slot == scheduled_slot
     )));
+    let hidden = scheduled
+        .economy()
+        .spheres()
+        .iter()
+        .find(|sphere| sphere.source_entity_index == scheduled_slot)
+        .expect("the terminal class10 visit retains its hidden row through this pass");
+    assert!(hidden.pending_delete);
+    assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert_eq!(
+        hidden.phase, scheduled_slot as u8,
+        "invalid selector has no phase tail"
+    );
+    let hidden_generation = scheduled.economy().slot_generation(scheduled_slot);
+    scheduled.step_outer_turn(PlayerCommand::default(), 0);
     assert!(
-        !scheduled
-            .economy()
-            .spheres()
-            .iter()
-            .any(|sphere| sphere.source_entity_index == scheduled_slot)
+        !scheduled.economy().spheres().iter().any(|sphere| {
+            sphere.source_entity_index == scheduled_slot
+                && scheduled.economy().slot_generation(scheduled_slot) == hidden_generation
+        }),
+        "the following class10 boundary reclaims this generation; later births may reuse its address"
     );
 }
 

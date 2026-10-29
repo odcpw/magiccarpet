@@ -1390,7 +1390,6 @@ impl Level2NyphurCommonUpkeep {
         &mut self,
         source: &mut EntitySnapshot,
         previous_relation_live: bool,
-        contact_target: Option<(u16, Position)>,
         attacker_target: Option<(Position, bool)>,
         move_speed_flag: u8,
         active_level_color_index: u8,
@@ -1405,22 +1404,6 @@ impl Level2NyphurCommonUpkeep {
             source.action = 2;
             source.record[73] = 2;
             return self.return_value;
-        }
-
-        let contact_word = source.source_upkeep_word_7a();
-        if contact_word != 0 {
-            if let Some((target_index, target_position)) = contact_target {
-                self.contact_target_entity = Some(target_index);
-                self.contact_distance =
-                    level2_nyphur_source_distance_3d(source.position, target_position);
-                self.contact_word_0x14a =
-                    i16::from_le_bytes([source.record[122], source.record[123]]);
-            }
-            source.record[126..128].fill(0);
-            self.player_hit_frame_time = 4;
-            self.dword_0x18d = 16;
-            self.word_0x24c = 64;
-            source.apply_source_sub_5ef70();
         }
 
         // SetPaletteModification_5C830 is gated by the source global flag and
@@ -1621,6 +1604,14 @@ impl Level2NyphurCommonUpkeep {
         let mut source_entity = entities[entity_index].clone();
 
         if !prelude.protected {
+            // The Duel lane belongs to the attacker, not this recipient's
+            // A4. The shared mailbox boundary must route it before upkeep;
+            // refuse an unconsumed lane instead of mutating the wrong owner.
+            if self.life >= 0 && source_entity.source_upkeep_word_7a() != 0 {
+                return Err(NativeWorldError::new(
+                    "rival Duel contact must pass through the directional mailbox boundary",
+                ));
+            }
             let relation_live = source_entity.source_word_96() == 0
                 || entities
                     .get(usize::from(source_entity.source_word_96()))
@@ -1629,10 +1620,6 @@ impl Level2NyphurCommonUpkeep {
                             && target.control_flags & 0x0400 == 0
                             && level2_nyphur_source_identity_matches(&source_entity, target)
                     });
-            let contact_target = entities
-                .get(usize::from(source_entity.source_upkeep_word_7a()))
-                .filter(|_| source_entity.source_upkeep_word_7a() != 0)
-                .map(|target| (target.index, target.position));
             let attacker_target = entities
                 .get(usize::from(source_entity.source_upkeep_word_62()))
                 .filter(|_| source_entity.source_upkeep_word_62() != 0)
@@ -1640,7 +1627,6 @@ impl Level2NyphurCommonUpkeep {
             self.return_value = self.step_sub_5efa0(
                 &mut entities[entity_index],
                 relation_live,
-                contact_target,
                 attacker_target,
                 move_speed_flag,
                 active_level_color_index,
@@ -2756,6 +2742,87 @@ pub(crate) struct RivalWizardRoster {
 }
 
 impl RivalWizardRoster {
+    /// Run the dying actor's source Duel consumer on its own live carriers.
+    pub(crate) fn step_dying_tether(
+        &mut self,
+        arena: &mut SourceArena,
+        shared: &mut super::Level2SharedSpellResetSession,
+        fire: Option<&mut crate::SpellFireContext>,
+        players: &[PlayerSnapshot],
+        local_owner: u16,
+        source_slot: u16,
+        predicted: Position,
+    ) -> std::result::Result<Position, String> {
+        let handle = arena.handle(source_slot)
+            .ok_or_else(|| format!("dying rival {source_slot} has no current source handle"))?;
+        let caster = &arena.entities[usize::from(source_slot)];
+        if caster.control_flags & 0x800 != 0 {
+            let flags = caster.control_flags & !0x800;
+            arena.entities[usize::from(source_slot)].set_control_flags(flags);
+            return Ok(predicted);
+        }
+        let Some(binding) = self.get(handle).and_then(|dispatcher| dispatcher.duel_tether()) else {
+            return Ok(predicted);
+        };
+        let caster = &arena.entities[usize::from(source_slot)];
+        let holder_active_value = players.iter()
+            .find(|player| player.entity_index == source_slot && player.is_ai)
+            .and_then(|player| self.bound_live_holder(handle, player, arena, 14))
+            .filter(|holder| holder.source_slot == binding.holder_entity_index)
+            .map(|holder| arena.entities[usize::from(holder.source_slot)].active_value);
+        let target_handle = arena.handle(binding.target_entity_index);
+        let target = arena.entities.get(usize::from(binding.target_entity_index))
+            .filter(|row| target_handle.is_some() && row.active && row.class == 3 && matches!(row.model, 0 | 1))
+            .map(|row| {
+                let life_regen = if row.index == local_owner {
+                    shared.player_life_regen as i16
+                } else {
+                    self.get_in_arena(arena, row.index)
+                        .ok_or_else(|| format!("Duel target {} has no current player upkeep carrier", row.index))?
+                        .common_upkeep(row.phase).life_regen
+                };
+                Ok::<_, String>(crate::TetherTarget {
+                    entity_index: row.index, position: row.position, life: row.life,
+                    mana: row.mana, mana_regen: row.mana_regen, life_regen,
+                })
+            }).transpose()?;
+        let outcome = crate::spells::directional::duel::step_tether(
+            crate::spells::directional::duel::DuelTetherStepInput {
+                binding, caster_position: caster.position, predicted_position: predicted,
+                caster_yaw: caster.yaw, caster_pitch: caster.pitch,
+                caster_minimum_speed: caster.minimum_speed(), holder_active_value, target,
+            },
+        )?;
+        arena.entities[usize::from(source_slot)].set_yaw(outcome.caster_yaw);
+        if outcome.clear_binding {
+            if let Some(dispatcher) = self.get_mut(handle) {
+                dispatcher.clear_duel_tether();
+            }
+        }
+        if let Some(target) = outcome.target
+            && arena.handle(target.entity_index) == target_handle
+            && let Some(row) = arena.entities.get_mut(usize::from(target.entity_index))
+        {
+            row.set_life(target.life);
+            row.set_mana(target.mana);
+            if let Some(target_handle) = target_handle
+                && let Some(dispatcher) = self.get_mut(target_handle)
+            {
+                dispatcher.sync_spell_target_resources(row);
+            }
+            shared.sync_player_entity_from_authority(row);
+            if target.entity_index == local_owner {
+                shared.player_mana = target.mana;
+                shared.caster.mana = target.mana;
+                shared.sync_typed_spell_parent_caches_from_player_entity();
+                if let Some(fire) = fire {
+                    fire.caster.mana = target.mana;
+                }
+            }
+        }
+        Ok(outcome.predicted_position)
+    }
+
     #[cfg(test)]
     fn as_mut(&mut self) -> Option<&mut Level2NyphurDispatcher> {
         self.entries.get_mut(&112).map(|entry| &mut entry.dispatcher)
@@ -3057,6 +3124,8 @@ impl RivalWizardRoster {
         common.move_boost = 0;
         common.yaw_0x1e_30 = 0;
         common.fov_0x22_34 = 0;
+        // sub_5C950 clears the old caster relation on the reused actor.
+        common.contact_target_entity = None;
         common.life = actor.life;
         common.max_life = actor.max_life;
         common.mana = actor.mana;
@@ -3155,6 +3224,47 @@ impl std::ops::DerefMut for RivalWizardRoster {
 }
 
 impl Level2NyphurDispatcher {
+    pub(super) fn has_duel_target(&self) -> bool {
+        self.common_upkeep.contact_target_entity.is_some_and(|slot| slot != 0)
+    }
+
+    /// The source Duel relation is owned by the caster's Type_str_164, not
+    /// by the recipient or the local player's FlightState.
+    pub(super) fn install_duel_tether(
+        &mut self,
+        binding: crate::spells::directional::DuelTetherBinding,
+    ) -> bool {
+        if binding.caster_entity_index != self.common_upkeep.source_slot
+            || binding.target_entity_index == 0
+            || crate::spells::directional::duel::tether_rule(binding.tier).is_none()
+        {
+            return false;
+        }
+        let Ok(prior_distance) = u32::try_from(binding.prior_distance) else { return false };
+        self.common_upkeep.contact_target_entity = Some(binding.target_entity_index);
+        self.common_upkeep.contact_distance = prior_distance;
+        self.common_upkeep.contact_word_0x14a = i16::from(binding.tier);
+        true
+    }
+
+    pub(super) fn duel_tether(&self) -> Option<crate::spells::directional::DuelTetherBinding> {
+        let common = &self.common_upkeep;
+        let target = common.contact_target_entity?;
+        let tier = u8::try_from(common.contact_word_0x14a).ok()?;
+        crate::spells::directional::duel::tether_rule(tier)?;
+        Some(crate::spells::directional::DuelTetherBinding {
+            caster_entity_index: common.source_slot,
+            target_entity_index: target,
+            holder_entity_index: common.source_spell_holder_slot(14).unwrap_or(0),
+            tier,
+            prior_distance: i32::try_from(common.contact_distance).ok()?,
+        })
+    }
+
+    pub(super) fn clear_duel_tether(&mut self) {
+        self.common_upkeep.contact_target_entity = None;
+    }
+
     fn from_source_player(
         player: &PlayerSnapshot,
         entity: &EntitySnapshot,

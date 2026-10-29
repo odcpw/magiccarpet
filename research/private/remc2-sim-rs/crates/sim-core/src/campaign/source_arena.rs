@@ -903,7 +903,8 @@ impl SourceArena {
             .economy
             .live_arena_slots()
             .into_iter()
-            .find_map(|(id, kind)| (id == slot).then_some(kind));
+            .find_map(|(id, kind)| (id == slot).then_some(kind))
+            .or_else(|| self.economy.retained_projectile_kind(slot));
         let tile = self.economy.map_chains.tile_of(slot);
         let neighbors = [
             self.economy.map_chains.old_map_entity(slot),

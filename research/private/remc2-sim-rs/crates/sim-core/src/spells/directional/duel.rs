@@ -28,6 +28,100 @@ pub struct DuelTetherBinding {
     pub prior_distance: i32,
 }
 
+/// Source state needed by `sub_5DE30` for this caster's own tether.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DuelTetherStepInput {
+    pub binding: DuelTetherBinding,
+    pub caster_position: Position,
+    pub predicted_position: Position,
+    pub caster_yaw: i16,
+    pub caster_pitch: i16,
+    pub caster_minimum_speed: i16,
+    pub holder_active_value: Option<i16>,
+    pub target: Option<crate::TetherTarget>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DuelTetherStepOutcome {
+    pub predicted_position: Position,
+    pub caster_yaw: i16,
+    pub target: Option<crate::TetherTarget>,
+    pub clear_binding: bool,
+}
+
+/// Apply the ordinary source tether body without borrowing another player's
+/// flight state. The caller supplies the generation-checked owner carriers
+/// and commits the returned movement and resource writes in source order.
+pub(crate) fn step_tether(input: DuelTetherStepInput) -> Result<DuelTetherStepOutcome, String> {
+    let mut result = DuelTetherStepOutcome {
+        predicted_position: input.predicted_position,
+        caster_yaw: input.caster_yaw,
+        target: input.target,
+        clear_binding: false,
+    };
+    if input.binding.target_entity_index == 0 || input.target.is_none() {
+        return Ok(result);
+    }
+    let mut target = input.target.expect("target presence checked above");
+    if target.entity_index != input.binding.target_entity_index {
+        return Err("Duel target does not match the caster's source relation".to_owned());
+    }
+    let rule = tether_rule(input.binding.tier)
+        .ok_or_else(|| format!("Duel tether has invalid tier {}", input.binding.tier))?;
+    let distance = crate::distance_3d_wrapped(input.caster_position, target.position);
+    if input.binding.holder_entity_index == 0
+        || !input.holder_active_value.is_some_and(|value| value != 0)
+        || distance >= u32::from(rule.range)
+        || target.life < 0
+    {
+        result.clear_binding = true;
+        return Ok(result);
+    }
+
+    // Source v12 is 3 * minSpeed / 2. Its signed word is the divisor
+    // input, unlike the local-player constant used by the flight adapter.
+    let limit = (3 * i32::from(input.caster_minimum_speed) / 2) as i16;
+    if limit <= 0 || limit > 1_024 {
+        return Err(format!(
+            "Duel caster has invalid tether speed limit {limit}"
+        ));
+    }
+    let denominator = 1_024 / i32::from(limit);
+    let raw_speed = i32::try_from(distance)
+        .unwrap_or(i32::MAX)
+        .wrapping_sub(input.binding.prior_distance)
+        / denominator;
+    let speed = crate::wrapping_i16(i64::from(raw_speed)).clamp(-limit, limit);
+    let heading = i16::try_from(crate::heading_for_positions(
+        input.caster_position,
+        target.position,
+    ))
+    .expect("source heading fits the 11-bit angle");
+    result.caster_yaw = crate::wrap_angle(
+        i32::from(input.caster_yaw)
+            + i32::from(crate::turn_toward(input.caster_yaw, heading, 0x82)),
+    );
+    crate::move_entity(
+        &mut result.predicted_position,
+        heading,
+        input.caster_pitch,
+        speed,
+    );
+    if rule.drains_life {
+        target.life = target
+            .life
+            .wrapping_sub(i32::from(target.life_regen).wrapping_add(2));
+    }
+    if rule.drains_mana {
+        target.mana = target
+            .mana
+            .wrapping_sub(target.mana_regen.wrapping_add(8))
+            .max(0);
+    }
+    result.target = Some(target);
+    Ok(result)
+}
+
 #[must_use]
 pub fn tether_rule(tier: u8) -> Option<DuelTetherRule> {
     let Some(row) = DUEL_TIERS.get(tier as usize) else {
@@ -145,6 +239,157 @@ mod tests {
                 tier: 2,
                 prior_distance: 3_000,
             }
+        );
+    }
+
+    #[test]
+    fn caster_owned_tether_matches_flight_math_and_source_clear_gates() {
+        let target = crate::TetherTarget {
+            entity_index: 207,
+            position: Position {
+                x: 4_000,
+                y: 2_000,
+                z: 200,
+            },
+            life: 100,
+            mana: 50,
+            mana_regen: 10,
+            life_regen: 3,
+        };
+        let binding = DuelTetherBinding {
+            caster_entity_index: 111,
+            target_entity_index: target.entity_index,
+            holder_entity_index: 13,
+            tier: 2,
+            prior_distance: 1_024,
+        };
+        let input = DuelTetherStepInput {
+            binding,
+            caster_position: Position {
+                x: 1_000,
+                y: 1_000,
+                z: 100,
+            },
+            predicted_position: Position {
+                x: 1_050,
+                y: 1_100,
+                z: 100,
+            },
+            caster_yaw: 300,
+            caster_pitch: 32,
+            caster_minimum_speed: crate::PLAYER_MIN_SPEED,
+            holder_active_value: Some(10),
+            target: Some(target),
+        };
+        let actual = step_tether(input).unwrap();
+        let mut flight = crate::FlightState {
+            yaw: input.caster_yaw,
+            display_pitch: input.caster_pitch,
+            tether_target_index: binding.target_entity_index,
+            tether_holder_index: binding.holder_entity_index,
+            tether_prior_distance: binding.prior_distance,
+            tether_tier: u16::from(binding.tier),
+            ..Default::default()
+        };
+        let mut expected_position = input.predicted_position;
+        let mut context = crate::TetherContext {
+            holder: Some(crate::SpellHolder {
+                entity_index: binding.holder_entity_index,
+                active_value: 10,
+            }),
+            target: Some(target),
+        };
+        crate::apply_tether(
+            &mut flight,
+            input.caster_position,
+            &mut expected_position,
+            &mut context,
+        );
+        assert!(!actual.clear_binding);
+        assert_eq!(actual.predicted_position, expected_position);
+        assert_eq!(actual.caster_yaw, flight.yaw);
+        assert_eq!(actual.target, context.target);
+        assert_eq!(actual.target.unwrap().life, 95);
+        assert_eq!(actual.target.unwrap().mana, 32);
+
+        let slower = step_tether(DuelTetherStepInput {
+            caster_minimum_speed: 64,
+            ..input
+        })
+        .unwrap();
+        let mut slower_position = input.predicted_position;
+        let heading = crate::heading_for_positions(input.caster_position, target.position) as i16;
+        crate::move_entity(&mut slower_position, heading, input.caster_pitch, 96);
+        assert_eq!(slower.predicted_position, slower_position);
+
+        for holder in [None, Some(0)] {
+            let out = step_tether(DuelTetherStepInput {
+                holder_active_value: holder,
+                ..input
+            })
+            .unwrap();
+            assert!(out.clear_binding);
+            assert_eq!(out.target, Some(target));
+            assert_eq!(out.predicted_position, input.predicted_position);
+        }
+        let dead = crate::TetherTarget { life: -1, ..target };
+        assert!(
+            step_tether(DuelTetherStepInput {
+                target: Some(dead),
+                ..input
+            })
+            .unwrap()
+            .clear_binding
+        );
+        let distant = crate::TetherTarget {
+            position: Position {
+                x: 20_000,
+                ..target.position
+            },
+            ..target
+        };
+        assert!(
+            step_tether(DuelTetherStepInput {
+                target: Some(distant),
+                ..input
+            })
+            .unwrap()
+            .clear_binding
+        );
+        let missing = step_tether(DuelTetherStepInput {
+            target: None,
+            ..input
+        })
+        .unwrap();
+        assert!(!missing.clear_binding);
+        assert_eq!(missing.predicted_position, input.predicted_position);
+        let sentinel = step_tether(DuelTetherStepInput {
+            binding: DuelTetherBinding {
+                target_entity_index: 0,
+                ..binding
+            },
+            ..input
+        })
+        .unwrap();
+        assert!(!sentinel.clear_binding);
+        assert_eq!(sentinel.predicted_position, input.predicted_position);
+        let wrong = crate::TetherTarget {
+            entity_index: 208,
+            ..target
+        };
+        assert!(
+            step_tether(DuelTetherStepInput {
+                target: Some(wrong),
+                ..input
+            })
+            .is_err()
+        );
+        assert!(
+            step_tether(DuelTetherStepInput {
+                caster_minimum_speed: 0,
+                ..input
+            })
+            .is_err()
         );
     }
 }

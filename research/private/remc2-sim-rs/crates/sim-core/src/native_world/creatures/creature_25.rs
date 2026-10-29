@@ -69,12 +69,15 @@ pub(crate) struct Target {
     pub flags: u32,
     pub position: Position,
     pub yaw: i16,
+    pub roll: i16,
     pub pitch_extent: i16,
     pub roll_extent: i16,
     pub fov_extent: i16,
     pub attacker: u16,
     pub target: u16,
     pub stage_index: u8,
+    pub stage_mode: u8,
+    pub parent: u16,
     pub stage_relation: u16,
     pub killer: u16,
     pub next: u16,
@@ -196,6 +199,9 @@ pub(crate) struct Effects {
     pub speed_changed: bool,
     pub population_increments: u32,
     pub population_decrements: u32,
+    pub linked_blink_flags: Vec<(u16, u32)>,
+    pub feedback: Option<(u16, u8)>,
+    pub earlier_feedback: Option<(u16, u8)>,
 }
 
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
@@ -417,10 +423,10 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         _ => {}
     }
     move_actor(actor, ctx);
-    let Some(target) = ctx
+    let target = ctx
         .target(actor.target())
-        .filter(|target| target.living() && target.flags & 0x400 == 0)
-    else {
+        .filter(|target| target.living() && target.flags & 0x400 == 0);
+    let Some(target) = stage::alliance_target(actor, ctx, effects, target) else {
         actor.set_action(203);
         return;
     };

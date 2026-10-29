@@ -212,6 +212,34 @@ impl Level2EconomyState {
         mut base: crate::world::fields::wind::Actor,
     ) -> Option<crate::world::fields::wind::Actor> {
         if let Some(actor) = self
+            .model59_smoke_children
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = actor.source_class;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags | if actor.drawing_enabled { 0 } else { 0x400 };
+            base.move_heading = actor.source_word_30 as i16;
+            return Some(base);
+        }
+        if let Some(actor) = self
+            .model13_spawned_children
+            .iter()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            base.position = actor.position;
+            base.class = actor.source_class;
+            base.model = actor.model;
+            base.yaw = actor.yaw;
+            base.rng = actor.entity_rng;
+            base.flags = actor.control_flags | if actor.drawing_enabled { 0 } else { 0x400 };
+            base.move_heading = actor.source_word_30 as i16;
+            return Some(base);
+        }
+        if let Some(actor) = self
             .bee_creatures
             .iter()
             .find(|s| s.active && s.source_entity_index == slot)
@@ -327,6 +355,26 @@ impl Level2EconomyState {
         motion: crate::world::fields::wind::Motion,
     ) -> bool {
         if let Some(actor) = self
+            .model59_smoke_children
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
+            actor.source_word_30 = motion.actor.move_heading as u16;
+        } else if let Some(actor) = self
+            .model13_spawned_children
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.position = motion.actor.position;
+            actor.yaw = motion.actor.yaw;
+            actor.entity_rng = motion.actor.rng;
+            actor.control_flags = motion.actor.flags;
+            actor.source_word_30 = motion.actor.move_heading as u16;
+        } else if let Some(actor) = self
             .bee_creatures
             .iter_mut()
             .find(|s| s.active && s.source_entity_index == slot)
@@ -428,7 +476,19 @@ impl Level2EconomyState {
 
     pub(crate) fn clear_wind_flags(&mut self, slot: u16) -> bool {
         let clear = crate::world::fields::wind::clear_flags;
-        if let Some(actor) = self.castle_at_mut(slot) {
+        if let Some(actor) = self
+            .model59_smoke_children
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self
+            .model13_spawned_children
+            .iter_mut()
+            .find(|s| s.active && s.source_entity_index == slot)
+        {
+            actor.control_flags = clear(actor.control_flags);
+        } else if let Some(actor) = self.castle_at_mut(slot) {
             actor.control_flags = clear(actor.control_flags);
         } else if let Some(actor) = self
             .castle_defenders

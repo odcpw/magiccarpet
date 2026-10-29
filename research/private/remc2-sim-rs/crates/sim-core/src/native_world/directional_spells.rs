@@ -39,8 +39,9 @@ const FIELD_LIFETIME: i32 = 8;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DirectionalCastInput {
     pub projectile: CastInput,
-    /// The existing local A4 tether relation (`FlightState.tether_target_index`).
-    pub duel_target_active: bool,
+    /// The caster's own A4 word146 when its current carrier is available.
+    /// Idle, unadmitted and early Duel pulses do not read this source word.
+    pub duel_target_active: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -148,9 +149,16 @@ pub(crate) fn step_holder(
                         .castle_mana
                         .is_some_and(|mana| mana >= holder.mana_regen))
                 && (!fresh || parent.mana >= holder.max_mana);
-            let duel_late_abort = family == DUEL_FAMILY
+            let duel_late_abort = if admitted
+                && family == DUEL_FAMILY
                 && holder.active_value <= holder.activation_value as i16 - 28
-                && !input.duel_target_active;
+            {
+                !input.duel_target_active.ok_or_else(|| {
+                    format!("Duel holder {slot} needs caster {parent_slot}'s current A4 target")
+                })?
+            } else {
+                false
+            };
             if admitted && !duel_late_abort {
                 if fresh {
                     outcome.projectile = construct_projectile(
@@ -1032,7 +1040,7 @@ pub(super) mod tests {
                     castle_mana: Some(i32::MAX),
                     ..Default::default()
                 },
-                duel_target_active,
+                duel_target_active: Some(duel_target_active),
             },
         )
         .expect("ordinary directional holder step");
@@ -1440,6 +1448,61 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn duel_holder_reads_caster_target_only_for_an_admitted_late_pulse() {
+        for (phase, target, admitted, expected, spawns) in [
+            ("idle", None, true, Some(0), false),
+            ("fresh", None, true, Some(194), true),
+            ("early", None, true, Some(167), false),
+            ("late", None, true, None, false),
+            ("late", Some(false), true, Some(0), false),
+            ("late", Some(true), true, Some(166), false),
+            ("late", None, false, Some(0), false),
+        ] {
+            let (mut simulation, holder_slot, parent_slot) = ready_holder(DUEL_FAMILY, 0);
+            let particles = simulation.session.definition.presentation.particles.clone();
+            let live = &mut simulation.session.state.live;
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            assert_eq!(holder.activation_value, 195);
+            holder.active_value = match phase {
+                "idle" => 0,
+                "fresh" => 195,
+                "early" => 168,
+                "late" => 167,
+                _ => unreachable!(),
+            };
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            if !admitted {
+                live.economy.entities[usize::from(parent_slot)].set_mana(-1);
+            }
+            let outcome = step_holder(
+                &mut live.shared_spells,
+                &mut live.economy,
+                &mut live.terrain,
+                &particles,
+                holder_slot,
+                DirectionalCastInput {
+                    projectile: CastInput {
+                        castle_mana: Some(i32::MAX),
+                        ..Default::default()
+                    },
+                    duel_target_active: target,
+                },
+            );
+            if let Some(expected) = expected {
+                let outcome = outcome.expect("source phase has the authority it needs");
+                assert_eq!(outcome.projectile.is_some(), spawns, "{phase}");
+                assert_eq!(
+                    live.shared_spells.pickup(holder_slot).unwrap().active_value,
+                    expected,
+                    "{phase} target={target:?} admitted={admitted}"
+                );
+            } else {
+                assert!(outcome.is_err(), "the admitted late pulse needs caster A4");
+            }
+        }
+    }
+
+    #[test]
     fn missing_or_replaced_parent_does_not_cast_but_holder_timers_advance() {
         for family in [STEAL_MANA_FAMILY, DUEL_FAMILY] {
             for replaced in [false, true] {
@@ -1468,7 +1531,7 @@ pub(super) mod tests {
                             castle_mana: Some(i32::MAX),
                             ..Default::default()
                         },
-                        duel_target_active: false,
+                        duel_target_active: None,
                     },
                 )
                 .unwrap();
@@ -1716,6 +1779,8 @@ pub(super) mod tests {
             .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
             .unwrap();
         assert_eq!(live.economy.entities[usize::from(field_slot)].class, 0);
+
+
     }
 
     #[test]
@@ -1867,6 +1932,54 @@ pub(super) mod tests {
             .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
             .unwrap();
         assert_eq!(live.economy.entities[usize::from(field_slot)].class, 0);
+        // Repeat the actual holder -> flyer -> field -> mailbox path with
+        // the qualified rival as caster and the real local actor as target.
+        // Its A4 state belongs to the rival's generation-bound dispatcher.
+        let (mut simulation, holder_slot, local_slot) = ready_holder(DUEL_FAMILY, 0);
+        let caster_slot = {
+            let live = &mut simulation.session.state.live;
+            let caster_slot = live.shared_spells.players.iter()
+                .find(|player| player.entity_index != local_slot && player.is_ai)
+                .expect("qualified rival player")
+                .entity_index;
+            assert!(live.nyphur_dispatcher.get_in_arena(&live.economy, caster_slot).is_some());
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.record[44..46].copy_from_slice(&caster_slot.to_le_bytes());
+            let caster = &mut live.economy.entities[usize::from(caster_slot)];
+            caster.set_life(100);
+            caster.max_mana = 10_000;
+            caster.record[144..148].copy_from_slice(&10_000_i32.to_le_bytes());
+            caster.set_mana(10_000);
+            let player = live.shared_spells.players.iter_mut()
+                .find(|player| player.entity_index == caster_slot).unwrap();
+            player.enabled_spell_holders[usize::from(DUEL_FAMILY)] = holder_slot;
+            caster_slot
+        };
+        let projectile = cast(&mut simulation, holder_slot, false);
+        let (target_slot, field_slot) =
+            fly_into_actual_opposing_player(&mut simulation, projectile, caster_slot);
+        assert_eq!(target_slot, local_slot);
+        let live = &mut simulation.session.state.live;
+        deactivate_other_actors(&mut live.economy, &[caster_slot, target_slot]);
+        let field = step_field(&mut live.economy, field_slot).unwrap();
+        assert_eq!(field.accepted_target_slots, [target_slot]);
+        let binding = consume_actor_mailbox(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            target_slot,
+            &[],
+        ).unwrap().duel.expect("rival contact produces a caster binding");
+        assert_eq!(
+            (binding.caster_entity_index, binding.target_entity_index, binding.holder_entity_index),
+            (caster_slot, target_slot, holder_slot)
+        );
+        let rival = live.nyphur_dispatcher.get_mut_in_arena(&live.economy, caster_slot)
+            .expect("current rival generation owns its A4 carrier");
+        assert!(rival.install_duel_tether(binding));
+        assert!(rival.has_duel_target());
+        assert_eq!(rival.duel_tether().unwrap().target_entity_index, target_slot);
+        assert_eq!(live.core.state.tether_target_index, 0, "rival link does not overwrite local A4");
     }
 
     #[test]
