@@ -1535,7 +1535,8 @@ def build_environment_closure(
     block16 = "BLOCK16" if map_id == 0 else f"BL16{display_letter}0-0"
     sprite_prefix = "M" if resolution == 1 else "H"
     paths = select_realm_assets(map_id, resolution, 32, flags)
-    paths.extend((f"DATA/{block16}.DAT", "DATA/FONT1.DAT", "DATA/FONT1.TAB"))
+    paths.extend((f"DATA/{block16}.DAT", "DATA/FONT1.DAT", "DATA/FONT1.TAB",
+                  "DATA/POINTERS.DAT", "DATA/POINTERS.TAB"))
     if map_id == 0:
         paths.append("DATA/GTD2.DAT")
     # LevelInit selects an owner sound bank by the package's actual map type,

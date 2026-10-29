@@ -434,6 +434,20 @@ def build(owner_root: Path, package: Path, catalog_path: Path, output: Path, cod
                 row["mask_path"] = emit(f"bitmaps/{bank.lower()}/{selector:03d}.mask.u8", mask, "source_opaque_coverage_u8", asset)["path"]
             bitmaps.append(row)
         bitmap_banks.append({"bank": bank, "bitmaps": bitmaps})
+    # LevelInit selects the hardware POINTERS bank independently of MSPR.
+    cursor_selector = (1, 9, 10)[profile["map_type"]["id"]]
+    cursor_asset = f"owner_data:DATA/POINTERS.DAT#{cursor_selector}"
+    pointer_records = codecs.bitmap_records(sources["DATA/POINTERS.TAB"])
+    pixels, mask, width, height, _ = codecs.decode_bitmap(
+        raw("POINTERS"), pointer_records, cursor_selector,
+        entries.get(cursor_asset, {}), proven_bitmap, "POINTERS")
+    cursor = {
+        "selector": cursor_selector, "width": width, "height": height,
+        "indices_path": emit(f"cursor/pointers/{cursor_selector:03d}.indices.u8", pixels,
+                             "indexed_bitmap_u8", cursor_asset)["path"],
+        "mask_path": emit(f"cursor/pointers/{cursor_selector:03d}.mask.u8", mask,
+                          "source_opaque_coverage_u8", cursor_asset)["path"],
+    }
     descriptor = {
         "schema": DESCRIPTOR_SCHEMA, "profile": profile,
         "palette": {"path": palette_row["path"], "rgb8_path": rgb["path"]},
@@ -444,6 +458,7 @@ def build(owner_root: Path, package: Path, catalog_path: Path, output: Path, cod
         "sky": None if sky_row is None else {"path": sky_row["path"], "width": 256, "height": 256},
         "day_exit_tables": None if exit_tables is None else {"path": exit_tables["path"]},
         "tmaps": {"bank": profile["tmaps"], "textures": textures}, "bitmap_banks": bitmap_banks,
+        "cursor": cursor,
     }
     emit("materials/descriptor.json", canonical(descriptor), "canonical_environment_material_descriptor", "owner_data:DATA/" + profile["tables"] + ".DAT")
     emit("materials/closure.json", canonical(closure), "canonical_environment_asset_closure", "owner_data:DATA/" + profile["tmaps"] + ".DAT")
@@ -552,5 +567,21 @@ def validate(root: Path) -> dict[str, Any]:
             mask = payload(row["mask_path"])
             if len(pixels) != row["width"] * row["height"] or len(mask) != len(pixels) or max(mask) > 1:
                 raise EnvironmentMaterialError("environment bitmap extent/coverage differs")
+    cursor = descriptor.get("cursor")
+    if cursor is None and "owner_data:DATA/POINTERS.DAT" in source_ids:
+        raise EnvironmentMaterialError("retained pointer bank has no cursor binding")
+    if cursor is not None:
+        selector = (1, 9, 10)[map_id]
+        asset = f"owner_data:DATA/POINTERS.DAT#{selector}"
+        if (cursor.get("selector") != selector or cursor.get("width", 0) <= 0
+                or cursor.get("height", 0) <= 0):
+            raise EnvironmentMaterialError("environment pointer selector/extent differs")
+        extent = cursor["width"] * cursor["height"]
+        for key, suffix in (("indices_path", "indices"), ("mask_path", "mask")):
+            path = f"cursor/pointers/{selector:03d}.{suffix}.u8"
+            if cursor.get(key) != path or by_path.get(path, {}).get("source_asset_ids") != [asset] or len(payload(path)) != extent:
+                raise EnvironmentMaterialError("environment pointer source/extent differs")
+        if max(payload(cursor["mask_path"])) > 1:
+            raise EnvironmentMaterialError("environment pointer coverage differs")
     _validate_environment_audio(root, profile, by_path, source_rows)
     return manifest

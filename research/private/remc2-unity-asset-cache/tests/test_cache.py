@@ -94,6 +94,39 @@ class InstalledLanguageTests(unittest.TestCase):
 
 
 class EnvironmentMaterialTests(unittest.TestCase):
+    def test_real_night_pointer_binding_rejects_wrong_source_selector(self):
+        environment = cache.environment_importer()
+        source = cache.GENERATED / "mc-b9s2-cursor-level1-20261029"
+        manifest = environment.validate(source)
+        descriptor = json.loads((source / "materials/descriptor.json").read_bytes())
+        cursor = descriptor["cursor"]
+        self.assertEqual((cursor["selector"], cursor["width"], cursor["height"]), (9, 12, 13))
+        indices = (source / cursor["indices_path"]).read_bytes()
+        mask = (source / cursor["mask_path"]).read_bytes()
+        records = cache.bitmap_records((cache.DEFAULT_OWNER / "DATA/POINTERS.TAB").read_bytes())
+        offset, width, height = records[9]
+        expected, expected_mask, _ = cache.materialize_indexed_rle(
+            (cache.DEFAULT_OWNER / "DATA/POINTERS.DAT").read_bytes(), offset, width, height)
+        self.assertEqual((indices, mask), (expected, expected_mask))
+
+        # Rehash the otherwise intact cache: a Day pointer selector cannot be
+        # accepted as the Night source even when all checksums are consistent.
+        with tempfile.TemporaryDirectory(prefix="mc-pointer-selector-") as temporary:
+            root = Path(temporary) / "cache"
+            shutil.copytree(source, root)
+            descriptor["cursor"]["selector"] = 1
+            payload = environment.canonical(descriptor)
+            (root / "materials/descriptor.json").write_bytes(payload)
+            row = next(row for row in manifest["outputs"] if row["path"] == "materials/descriptor.json")
+            row["sha256"] = environment.digest(payload)
+            row["bytes"] = len(payload)
+            manifest["cache_content_sha256"] = environment.content_identity(manifest["outputs"])
+            manifest.pop("manifest_payload_sha256")
+            manifest["manifest_payload_sha256"] = environment.digest(environment.canonical(manifest))
+            (root / "manifest.json").write_bytes(environment.canonical(manifest))
+            with self.assertRaisesRegex(environment.EnvironmentMaterialError, "pointer selector/extent"):
+                environment.validate(root)
+
     def test_real_secret_environment_audio_binds_complete_selected_banks(self):
         environment = cache.environment_importer()
         for source, bank, expected in [(31, 1, (32, "SPIDER.WAV")),
