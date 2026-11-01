@@ -2726,6 +2726,9 @@ pub struct Level2EconomyState {
 
     pub(crate) owner_max_mana: BTreeMap<u16, i32>,
 
+    /// Source A4 int32 at0x150, distinct from the last60F00 capacity sum.
+    owner_base_max_mana: BTreeMap<u16, i32>,
+
     owner_mana_rows: Vec<Level2OwnerManaRow>,
 
     owner_mana_aggregate: BTreeMap<u16, i32>,

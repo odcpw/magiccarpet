@@ -197,6 +197,34 @@ fn castle_mana_cost(base: i32, tier: u8, stage: Option<i32>, destroyed: bool) ->
 }
 
 impl Mc2LiveState {
+    /// `sub_60F00` writes each wizard's maxMana before the ordered entity
+    /// callbacks. Claim, transport and deposit only move counted mana; this
+    /// publication neither grants current mana nor performs regeneration.
+    pub(crate) fn publish_source_mana_capacities(&mut self) {
+        for player in &self.core.players {
+            let slot = player.entity_index;
+            let Some(&capacity) = self.economy.owner_max_mana.get(&slot) else { continue };
+            let Some(handle) = self.economy.handle(slot) else { continue };
+            let Some(actor) = self.economy.entities.get_mut(usize::from(slot))
+                .filter(|actor| actor.active && actor.class == 3 && matches!(actor.model, 0 | 1))
+            else { continue };
+            actor.max_mana = capacity;
+            actor.mana_cost = capacity;
+            actor.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            for projected in self.shared_spells.player_entities.iter_mut()
+                .chain(std::iter::once(&mut self.shared_spells.player_entity))
+                .filter(|projected| projected.index == slot)
+            {
+                projected.max_mana = capacity;
+                projected.mana_cost = capacity;
+                projected.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            }
+            if let Some(dispatcher) = self.nyphur_dispatcher.get_mut(handle) {
+                dispatcher.publish_source_mana_capacity(capacity);
+            }
+        }
+    }
+
     /// Project only generation-validated Castle links into the compact A4
     /// records read by player and rival spell consumers.
     pub(crate) fn sync_castle_player_relations(&mut self) {
@@ -345,13 +373,17 @@ impl Mc2LiveState {
         let crate::campaign::source_arena::SourceArena {
             economy, entities, ..
         } = arena;
+        let prior_defenders = economy.castle_children().iter()
+            .filter(|child| child.active && child.source_class == 3 && child.model == 3)
+            .map(|child| (child.source_entity_index, economy.slot_generation(child.source_entity_index)))
+            .collect::<BTreeSet<_>>();
         let mut consumer = CastlePlayerConsumer {
             entities,
             shared_spells,
             core,
             nyphur_dispatcher,
         };
-        economy.step_castle_action_with_site(
+        let live = economy.step_castle_action_with_site(
             castle_slot,
             terrain,
             reset_free_slots,
@@ -359,7 +391,22 @@ impl Mc2LiveState {
             &mut |economy, castle| {
                 consumer.final_loss(economy, castle, remove_rival_castle_spell, final_profile);
             },
-        )
+        );
+        // 5FF50 uses NewEvent for each replacement collector. The economy
+        // owns its typed constructor, while this join owns the raw record:
+        // retire only a newly allocated generation's old raw shadow before
+        // a later numeric callback can mistake it for another live actor.
+        let newborn_defenders = economy.castle_children().iter()
+            .filter(|child| child.active && child.source_class == 3 && child.model == 3)
+            .filter(|child| !prior_defenders.contains(&(
+                child.source_entity_index, economy.slot_generation(child.source_entity_index),
+            )))
+            .map(|child| child.source_entity_index)
+            .collect::<Vec<_>>();
+        for slot in newborn_defenders {
+            arena.retire_previous_source_projection(slot);
+        }
+        live
     }
 
     /// sub60780 forces a cold SetSpell while retaining W; sub6D8B0 uses

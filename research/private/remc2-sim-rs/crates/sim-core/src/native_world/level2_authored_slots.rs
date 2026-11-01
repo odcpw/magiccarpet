@@ -163,6 +163,7 @@ impl Level2EconomyState {
 
             owner_class,
             owner_max_mana,
+            owner_base_max_mana: baseline_owner_max_mana,
 
             owner_mana_rows,
 
@@ -5899,6 +5900,33 @@ impl Level2EconomyState {
             level2_owner_max_mana_projection(reset_owner_max_mana, &self.owner_mana_rows);
     }
 
+    /// Ordinary MC2 AddPlayer5C950 initializes maxMana1000, then copies it
+    /// to A4[0x150] before the first60F00 census. Captured entity maxMana
+    /// may already include owned rows and cannot serve as this reset value.
+    /// Generic from_parts inputs retain their explicit bases unless this
+    /// source adapter binds an actual wizard from the owner player roster.
+    pub(crate) fn bind_source_wizard_mana_bases(
+        &mut self,
+        players: &[PlayerSnapshot],
+        entities: &[EntitySnapshot],
+    ) {
+        for player in players {
+            if entities.get(usize::from(player.entity_index)).is_some_and(|actor| {
+                actor.active && actor.index == player.entity_index
+                    && actor.class == 3 && matches!(actor.model, 0 | 1)
+            }) {
+                self.owner_base_max_mana.insert(player.entity_index, 1_000);
+            }
+        }
+        self.rebuild_source_owner_max_mana_projection();
+    }
+
+    pub(crate) fn rebuild_source_owner_max_mana_projection(&mut self) {
+        self.owner_max_mana = level2_owner_max_mana_projection(
+            &self.owner_base_max_mana, &self.owner_mana_rows,
+        );
+    }
+
     #[must_use]
     pub fn owner_mana_aggregate(&self, owner_entity_index: u16) -> i32 {
         self.owner_mana_aggregate
@@ -7001,6 +7029,11 @@ impl Level2EconomyState {
         for (owner, max_mana) in &self.owner_max_mana {
             hasher.update(owner.to_le_bytes());
             hasher.update(max_mana.to_le_bytes());
+        }
+        hasher.update(b"source-owner-base-max-mana-v1");
+        for (owner, base) in &self.owner_base_max_mana {
+            hasher.update(owner.to_le_bytes());
+            hasher.update(base.to_le_bytes());
         }
         for row in &self.owner_mana_rows {
             hasher.update(row.source_entity_index.to_le_bytes());

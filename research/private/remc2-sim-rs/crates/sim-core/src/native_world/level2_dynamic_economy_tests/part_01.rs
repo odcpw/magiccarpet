@@ -1,4 +1,373 @@
 #[test]
+fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
+    use crate::campaign::spec::CampaignSelection;
+
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-paj2-source4-campaign-package");
+    let selection = CampaignSelection::ordinary(5).unwrap();
+    let mut campaign = crate::campaign::CampaignSession::open(package, selection)
+        .expect("ordinary Level 5 owner package");
+    // Source4 starts after the opening missions and its human reset row has
+    // no direct starting holders. Declare only ordinary carried progression;
+    // this does not grant mana, a Castle, damage or a sphere.
+    campaign.simulation_mut().apply_carried_spell_families(&[0, 1, 2], Some(0))
+        .expect("declared opening-spell carry materializes the actual owner holders");
+    let player = campaign.simulation().state.entity_index;
+    let rival = 266_u16;
+    let rival_root = campaign.simulation().economy().castle_for_owner(rival)
+        .expect("the other actual owner starts with a Castle").source_entity_index;
+    let rival_handle = campaign.simulation().source_arena().handle(rival_root).unwrap();
+    let initial_player_max = campaign.simulation().shared_spells().player_entity().max_mana;
+    let initial_rival_max = campaign.simulation().entities()[usize::from(rival)].max_mana;
+    assert_eq!((initial_player_max, initial_rival_max), (1_000, 1_000));
+    let goat = campaign.simulation().goats().iter().find(|goat| goat.active && goat.entity_index == 94)
+        .expect("the actual ordinary reset Goat 94").clone();
+    assert_eq!((goat.life, goat.mana), (600, 300));
+
+    // Controlled travel and aim start the ordinary public Castle producer.
+    // Its holder, flyer, root and construction remain source-scheduled.
+    let mut launch = Position { x: goat.position.x.wrapping_add(2_304),
+        y: goat.position.y.wrapping_add(4_096), z: 0 };
+    launch.z = campaign.simulation().canonical_terrain().ground_height(launch).wrapping_add(512);
+    campaign.simulation_mut().set_level2_entity_position(player, launch).unwrap();
+    campaign.simulation_mut().set_level2_player_aim_for_test(0, 0);
+    let castle_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 2).unwrap() as i8;
+    campaign.step(PlayerCommand { opcode: 6, argument_1: castle_ui, flags: 0x40,
+        ..PlayerCommand::default() }, 0);
+    let mut saw_castle_flyer = campaign.simulation().economy().castle_projectiles().iter()
+        .any(|row| row.owner_entity_index == player);
+    for _ in 0..512 {
+        if campaign.simulation().economy().castle_for_owner(player)
+            .is_some_and(|castle| castle.action == 4 && castle.level == 1) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+        assert!(campaign.simulation().dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        saw_castle_flyer |= campaign.simulation().economy().castle_projectiles().iter()
+            .any(|row| row.owner_entity_index == player);
+    }
+    assert!(saw_castle_flyer, "public Castle cast must allocate its real flyer");
+    let root = *campaign.simulation().economy().castle_for_owner(player)
+        .filter(|castle| castle.action == 4 && castle.level == 1)
+        .expect("public Castle flyer must finish the actual owner's stage-one root");
+    let root_handle = campaign.simulation().source_arena().handle(root.source_entity_index).unwrap();
+    assert_eq!(campaign.simulation().source_arena().handle(rival_root), Some(rival_handle));
+    eprintln!("earned-mana public Castle: owner={player} root={} position={:?} rival={rival} rival_root={rival_root}", root.source_entity_index, root.position);
+
+    // Reposition only the real player for each public Fireball. Goat life,
+    // damage, movement, phase and death are never assigned by this check.
+    let goat_slot = goat.entity_index;
+    let fire_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 0).unwrap() as i8;
+    let fire_holder = campaign.simulation().shared_spells().local_player().enabled_spell_holders[0];
+    let events_before = campaign.simulation().economy().events().len();
+    let mut shots = 0;
+    let mut saw_fireball = false;
+    let mut saw_goat_damage = false;
+    let mut saw_player_goat_attacker = false;
+    let mut saw_goat_impact = false;
+    let mut reward_slot = None;
+    for _ in 0..16 {
+        for _ in 0..64 {
+            let sim = campaign.simulation();
+            let holder = sim.shared_spells().pickup(fire_holder).unwrap();
+            if holder.active_value == 0 && sim.shared_spells().player_entity().mana >= holder.max_mana { break; }
+            campaign.step(PlayerCommand::default(), 0);
+        }
+        let Some(current) = campaign.simulation().goats().iter()
+            .find(|row| row.entity_index == goat_slot && row.active).cloned() else { break; };
+        if current.life < 0 { break; }
+        let holder = campaign.simulation().shared_spells().pickup(fire_holder).unwrap();
+        assert!(holder.active_value == 0 && campaign.simulation().shared_spells().player_entity().mana >= holder.max_mana,
+            "the normal owner must be ready to pay for its public Fireball");
+        let position = Position { x: current.position.x.wrapping_add(256),
+            y: current.position.y.wrapping_add(384),
+            z: current.position.z.wrapping_sub(campaign.simulation().state.entity_fov) };
+        campaign.simulation_mut().set_level2_entity_position(player, position).unwrap();
+        campaign.simulation_mut().set_level2_player_aim_for_test(0, 0);
+        campaign.step(PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40,
+            ..PlayerCommand::default() }, 0);
+        shots += 1;
+        for _ in 0..24 {
+            let sim = campaign.simulation();
+            saw_fireball |= sim.economy().fireball_projectiles().iter()
+                .any(|row| row.owner_entity_index == player);
+            saw_goat_impact |= sim.entities().iter().any(|row| row.active
+                && row.class == 10 && row.model == 0 && row.source_id == player
+                && row.source_word_96() == goat_slot);
+            saw_goat_damage |= sim.goats().iter().find(|row| row.entity_index == goat_slot)
+                .is_some_and(|row| row.life < 600);
+            saw_player_goat_attacker |= sim.goats().iter().find(|row| row.entity_index == goat_slot)
+                .is_some_and(|row| (row.pending_damage > 0 && row.pending_attacker == player as i16)
+                    || row.current_attacker == player as i16 || row.kill_credit_entity == player as i16);
+            reward_slot = sim.economy().events()[events_before..].iter().find_map(|event| match event {
+                Level2EconomyEvent::ManaSphereSpawned { source_entity_index, sphere_id, mana: 300, .. }
+                    if *source_entity_index == goat_slot => u16::try_from(*sphere_id).ok(),
+                _ => None,
+            });
+            if reward_slot.is_some() || sim.goats().iter().find(|row| row.entity_index == goat_slot)
+                .is_some_and(|row| row.life < 0) { break; }
+            campaign.step(PlayerCommand::default(), 0);
+        }
+        if reward_slot.is_some() || campaign.simulation().goats().iter()
+            .find(|row| row.entity_index == goat_slot).is_some_and(|row| row.life < 0) { break; }
+    }
+    assert!(shots > 0 && saw_fireball && saw_goat_impact && saw_goat_damage && saw_player_goat_attacker,
+        "the real Goat must receive a public Fireball target impact and the actual player's damage relation");
+    for _ in 0..32 {
+        let sim = campaign.simulation();
+        reward_slot = reward_slot.or_else(|| sim.economy().events()[events_before..].iter().find_map(|event| match event {
+            Level2EconomyEvent::ManaSphereSpawned { source_entity_index, sphere_id, mana: 300, .. }
+                if *source_entity_index == goat_slot => u16::try_from(*sphere_id).ok(),
+            _ => None,
+        }));
+        if reward_slot.is_some() { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    let reward_slot = reward_slot.expect("actual Fireball damage and scheduled Goat death must produce its 300-mana sphere");
+    let reward_event_start = campaign.simulation().economy().events().iter().rposition(|event| matches!(event,
+        Level2EconomyEvent::ManaSphereSpawned { source_entity_index, sphere_id, mana: 300, .. }
+            if *source_entity_index == goat_slot && *sphere_id == u32::from(reward_slot)))
+        .expect("the death receipt bounds this sphere generation's event history");
+    let reward_handle = campaign.simulation().source_arena().handle(reward_slot).unwrap();
+    for _ in 0..128 {
+        let sphere = campaign.simulation().economy().spheres().iter()
+            .find(|row| row.source_entity_index == reward_slot && row.active && !row.pending_delete)
+            .expect("real death sphere remains available for ordinary Possession");
+        if sphere.velocity_x == 0 && sphere.velocity_y == 0 && sphere.vertical_velocity == 0 { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    assert_eq!(campaign.simulation().source_arena().handle(reward_slot), Some(reward_handle));
+    let sphere = *campaign.simulation().economy().spheres().iter()
+        .find(|row| row.source_entity_index == reward_slot && row.active && !row.pending_delete)
+        .expect("real death sphere remains live");
+    assert_eq!((sphere.owner_entity_index, sphere.player_entity_index, sphere.mana), (0, 0, 300));
+    eprintln!("earned-mana Goat death: goat={goat_slot} shots={shots} sphere={reward_slot} position={:?} mana={} generation={reward_handle:?}", sphere.position, sphere.mana);
+    let capacity_before = campaign.simulation().shared_spells().player_entity().max_mana;
+    let castle_mana_before = campaign.simulation().economy().castle_for_owner(player).unwrap().mana;
+    let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 1).unwrap() as i8;
+    let possession_holder = campaign.simulation().shared_spells().local_player().enabled_spell_holders[1];
+    for _ in 0..64 {
+        let sim = campaign.simulation();
+        let holder = sim.shared_spells().pickup(possession_holder).unwrap();
+        if holder.active_value == 0 && sim.shared_spells().player_entity().mana >= holder.max_mana { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    let sim = campaign.simulation();
+    let holder = sim.shared_spells().pickup(possession_holder).unwrap();
+    assert!(holder.active_value == 0 && sim.shared_spells().player_entity().mana >= holder.max_mana,
+        "the real owner must afford its public Possession holder");
+    let target = campaign.simulation().possession_guidance_target_top_for_test(reward_slot).unwrap();
+    let mut approach = Position { x: target.x.wrapping_sub(768), y: target.y, z: target.z.wrapping_add(512) };
+    approach.z = approach.z.max(campaign.simulation().canonical_terrain().ground_height(approach).wrapping_add(256));
+    campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(approach, target);
+    campaign.simulation_mut().set_level2_player_aim_for_test(yaw, pitch);
+    campaign.step(PlayerCommand { opcode: 6, argument_1: possession_ui, flags: 0x40,
+        ..PlayerCommand::default() }, 0);
+    let mut saw_possession_flyer = false;
+    let mut saw_possession_effect = false;
+    let mut saw_claim = false;
+    let mut possession_flyer_handle = None;
+    let mut possession_effect_handle = None;
+    for _ in 0..64 {
+        let sim = campaign.simulation();
+        if let Some(row) = sim.economy().possession_projectiles().iter().find(|row| row.source_id_entity_index == player) {
+            saw_possession_flyer = true;
+            possession_flyer_handle = possession_flyer_handle.or_else(|| sim.source_arena().handle(row.source_entity_index));
+        }
+        if let Some(row) = sim.economy().possession_effects().iter().find(|row| row.source_id_entity_index == player
+            && possession_flyer_handle.is_some_and(|handle| handle.source_slot == row.projectile_entity_index)) {
+            saw_possession_effect = true;
+            possession_effect_handle = possession_effect_handle.or_else(|| sim.source_arena().handle(row.source_entity_index));
+        }
+        saw_claim |= sim.economy().events()[events_before..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                if *sphere_id == u32::from(reward_slot) && *owner_entity_index == player));
+        if saw_claim { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    assert!(saw_possession_flyer && saw_possession_effect && saw_claim,
+        "the real public Possession flyer/effect must claim this exact death sphere");
+    let possession_flyer_handle = possession_flyer_handle.expect("actual Possession flyer generation");
+    let possession_effect_handle = possession_effect_handle.expect("actual Possession effect generation");
+    assert_eq!(campaign.simulation().source_arena().handle(reward_slot), Some(reward_handle));
+    assert!(campaign.simulation().economy().spheres().iter().any(|row| {
+        row.source_entity_index == reward_slot && row.active
+            && row.owner_entity_index == player && row.player_entity_index == player
+    }), "the claimed generation must carry the actual player's source relations");
+    eprintln!("earned-mana public claim: root={} sphere={} owner={player}", root.source_entity_index, reward_slot);
+    let mut collected = None;
+    let mut deposited = false;
+    let mut saw_capacity = false;
+    let mut collector_trace = Vec::new();
+    let mut reward_retirement_event_end = None;
+    for turn in 0..512 {
+        let sim = campaign.simulation();
+        let original_live = sim.source_arena().handle(reward_slot) == Some(reward_handle);
+        if !original_live && reward_retirement_event_end.is_none() {
+            reward_retirement_event_end = Some(sim.economy().events().len());
+        }
+        if matches!(turn, 0 | 1 | 7 | 31 | 127 | 511) {
+            collector_trace.push((turn,
+                sim.economy().castle_for_owner(player).map(|row|
+                    (row.source_entity_index, row.position, row.level, row.phase, row.mana, row.defender_slots)),
+                sim.economy().spheres().iter().find(|row| row.source_entity_index == reward_slot).map(|row|
+                    (row.position, row.velocity_x, row.velocity_y, row.vertical_velocity, row.player_entity_index,
+                        row.assigned_defender_slot, row.pending_delete, row.control_flags)),
+                sim.economy().castle_children().iter().filter(|row| row.source_class == 3 && row.model == 3)
+                    .map(|row| (row.source_entity_index, row.owner_entity_index, row.id_entity_index,
+                        row.position, row.action, row.source_byte_3e, row.target_sphere_slot, row.mana, row.life))
+                    .collect::<Vec<_>>(),
+                sim.shared_spells().player_entity().max_mana));
+            eprintln!("earned-mana collector snapshot: {:#?}", collector_trace.last().unwrap());
+        }
+        if original_live {
+            assert!(sim.economy().owner_mana_rows.iter().filter(|row| row.source_entity_index == reward_slot)
+                .all(|row| row.player_entity_index != rival),
+                "the actual claimed sphere generation must never enter the other owner's census");
+        }
+        saw_capacity |= sim.shared_spells().player_entity().max_mana >= capacity_before + sphere.mana;
+        let collection_end = reward_retirement_event_end.unwrap_or_else(|| sim.economy().events().len());
+        for event in &sim.economy().events()[reward_event_start..collection_end] {
+            match event {
+                Level2EconomyEvent::CastleDefenderCollectedSphere { sphere_id, defender_slot, mana }
+                    if *sphere_id == u32::from(reward_slot) && *mana == sphere.mana
+                        && sim.economy().castle_children().iter().any(|row| row.source_entity_index == *defender_slot
+                            && row.source_class == 3 && row.model == 3 && row.id_entity_index == player) => collected = Some(*defender_slot),
+                _ => {}
+            }
+        }
+        deposited |= sim.economy().events()[reward_event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+                if Some(*defender_slot) == collected && *castle_id == root.source_entity_index && *mana == sphere.mana));
+        if deposited && saw_capacity && sim.source_arena().handle(reward_slot) != Some(reward_handle)
+            && sim.source_arena().handle(possession_flyer_handle.source_slot) != Some(possession_flyer_handle)
+            && sim.source_arena().handle(possession_effect_handle.source_slot) != Some(possession_effect_handle) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+        assert!(campaign.simulation().dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert!(collected.is_some() && deposited,
+        "the actual owned collector must deliver this sphere to its Castle: claim_position={:?}, trace={collector_trace:#?}, matching_events={:?}",
+        sphere.position, campaign.simulation().economy().events()[reward_event_start..].iter().filter(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereClaimed { .. } | Level2EconomyEvent::ManaSphereCollected { .. }
+                | Level2EconomyEvent::CastleDefenderCollectedSphere { .. } | Level2EconomyEvent::CastleDefenderArrived { .. }))
+            .collect::<Vec<_>>());
+    assert!(saw_capacity, "the source owner census must expose the earned mana as capacity");
+    assert_ne!(campaign.simulation().source_arena().handle(reward_slot), Some(reward_handle),
+        "the collected sphere's original generation must cross ordinary reclaim");
+    assert_ne!(campaign.simulation().source_arena().handle(possession_flyer_handle.source_slot), Some(possession_flyer_handle),
+        "the actual Possession flyer generation must cross ordinary reclaim");
+    assert_ne!(campaign.simulation().source_arena().handle(possession_effect_handle.source_slot), Some(possession_effect_handle),
+        "the actual Possession effect generation must cross ordinary reclaim");
+    assert_eq!(campaign.simulation().source_arena().handle(root.source_entity_index), Some(root_handle));
+    assert_eq!(campaign.simulation().source_arena().handle(rival_root), Some(rival_handle));
+    assert_eq!(campaign.simulation().economy().castle_for_owner(rival).unwrap().source_entity_index, rival_root);
+    let economy = campaign.simulation().economy();
+    assert_eq!(economy.castle_for_owner(player).unwrap().mana, castle_mana_before + sphere.mana,
+        "the actual owned Castle receives this one sphere once");
+    let reward_retirement_event_end = reward_retirement_event_end
+        .expect("the original sphere generation crosses an observed source boundary");
+    eprintln!("earned-mana original sphere event interval: {:?}",
+        economy.events()[reward_event_start..reward_retirement_event_end].iter().filter(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereSpawned { sphere_id, .. }
+                | Level2EconomyEvent::ManaSphereClaimed { sphere_id, .. }
+                | Level2EconomyEvent::CastleDefenderCollectedSphere { sphere_id, .. }
+                if *sphere_id == u32::from(reward_slot))).collect::<Vec<_>>());
+    assert_eq!(economy.events()[reward_event_start..reward_retirement_event_end].iter().filter(|event| matches!(event,
+        Level2EconomyEvent::CastleDefenderCollectedSphere { sphere_id, .. }
+            if *sphere_id == u32::from(reward_slot))).count(), 1,
+        "the original sphere generation must be collected exactly once");
+    assert_eq!(economy.events()[reward_event_start..].iter().filter(|event| matches!(event,
+        Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+            if Some(*defender_slot) == collected && *castle_id == root.source_entity_index && *mana == sphere.mana)).count(), 1,
+        "the owned collector must deposit this payload exactly once");
+    let live = &campaign.simulation().session.state.live;
+    if let Some(row) = economy.owner_mana_rows.iter().find(|row| row.source_entity_index == reward_slot) {
+        let replacement = campaign.simulation().source_arena().handle(reward_slot)
+            .expect("an owner-mana row at the retired slot must belong to a live replacement");
+        assert_ne!(replacement, reward_handle, "a retired sphere generation cannot retain owner credit");
+        let raw = &live.economy.entities[usize::from(reward_slot)];
+        assert_eq!((row.source_class, row.source_model, row.player_entity_index, row.mana),
+            (raw.class, raw.model, raw.source_player_entity_index(), raw.mana),
+            "a reused slot's census must describe its current physical occupant");
+    }
+    assert_eq!(live.economy.entities[usize::from(player)].max_mana,
+        economy.owner_max_mana_capacity(player), "the actual player uses the source census");
+    assert_eq!(live.economy.entities[usize::from(rival)].max_mana,
+        economy.owner_max_mana_capacity(rival), "the other actual owner uses its own source census");
+    for (owner, baseline) in [(player, initial_player_max), (rival, initial_rival_max)] {
+        let expected = economy.owner_mana_rows.iter()
+            .filter(|row| row.active && row.player_entity_index == owner)
+            .fold(baseline, |total, row| total.saturating_add(row.mana));
+        assert_eq!(economy.owner_max_mana_capacity(owner), expected,
+            "each owner receives its current source rows exactly once: owner={owner}");
+    }
+
+    // Capacity is not current mana. Refill through the ordinary in-Castle
+    // source upkeep, then spend the actually earned excess on a public cast.
+    let root_position = campaign.simulation().economy().castle_for_owner(player).unwrap().position;
+    let inside = Position { z: root_position.z.wrapping_add(512), ..root_position };
+    campaign.simulation_mut().set_level2_entity_position(player, inside).unwrap();
+    for _ in 0..128 {
+        if campaign.simulation().shared_spells().player_entity().mana > initial_player_max { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    let before = campaign.simulation().shared_spells().player_entity().clone();
+    assert!(before.mana > initial_player_max, "normal source regeneration must reach earned capacity");
+    let hud = campaign.simulation().day_hud_for(selection).expect("actual campaign HUD observation");
+    assert_eq!((hud.local_player_mana, hud.local_player_max_mana), (before.mana, before.max_mana));
+    let fire_holder_state = campaign.simulation().shared_spells().pickup(fire_holder).unwrap();
+    let fire_cost = fire_holder_state.max_mana;
+    assert!(fire_holder_state.active_value == 0 && fire_cost > 0 && before.mana >= fire_cost,
+        "the actual physical Fireball holder must be cold and affordable");
+    assert!(before.mana_regen >= 0, "the owner must not carry an unrelated pending charge");
+    let existing_flyers = campaign.simulation().economy().fireball_projectiles().iter()
+        .filter_map(|row| campaign.simulation().source_arena().handle(row.source_entity_index))
+        .collect::<Vec<_>>();
+    campaign.simulation_mut().set_level2_player_aim_for_test(0, 0);
+    campaign.step(PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40,
+        ..PlayerCommand::default() }, 0);
+    let after = campaign.simulation().shared_spells().player_entity().clone();
+    assert_eq!(after.mana_regen, -fire_cost,
+        "the fresh Fireball holder must charge its physical price to actual parent upkeep");
+    let fresh_flyer = campaign.simulation().economy().fireball_projectiles().iter()
+        .filter(|row| row.active && row.owner_entity_index == player)
+        .filter_map(|row| campaign.simulation().source_arena().handle(row.source_entity_index))
+        .find(|handle| !existing_flyers.contains(handle))
+        .expect("the paid public cast must produce a fresh active owner flyer generation");
+    let hud = campaign.simulation().day_hud_for(selection).expect("HUD after public spend");
+    assert_eq!((hud.local_player_mana, hud.local_player_max_mana), (after.mana, after.max_mana));
+    campaign.step(PlayerCommand::default(), 0);
+    let player_handle = campaign.simulation().source_arena().handle(player).unwrap();
+    let (before_upkeep, after_upkeep) = campaign.simulation().cf10_production_schedule_receipts().into_iter()
+        .find_map(|receipt| match receipt {
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                slot, original, current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+            } if slot == player => {
+                let before = original.observed_player_resources()?;
+                let after = selector.observed_player_resources()?;
+                (before.0 == player_handle && before.2 == -fire_cost).then_some((before, after))
+            }
+            _ => None,
+        }).expect("the actual player callback must consume this holder's pending charge");
+    assert_eq!(after_upkeep.0, player_handle);
+    assert_eq!(after_upkeep.1, before_upkeep.1.wrapping_add(before_upkeep.2).clamp(0, before_upkeep.3),
+        "the scheduled player consumes the actual pending cost before ordinary regeneration");
+    let debited = campaign.simulation().shared_spells().player_entity().clone();
+    let hud = campaign.simulation().day_hud_for(selection).expect("HUD after source mana debit");
+    assert_eq!((hud.local_player_mana, hud.local_player_max_mana), (debited.mana, debited.max_mana));
+    for _ in 0..128 {
+        let sim = campaign.simulation();
+        if sim.shared_spells().pickup(fire_holder).unwrap().active_value == 0
+            && sim.source_arena().handle(fresh_flyer.source_slot) != Some(fresh_flyer) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+        assert!(campaign.simulation().dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert_eq!(campaign.simulation().shared_spells().pickup(fire_holder).unwrap().active_value, 0,
+        "the real paid holder must expire through its ordinary callbacks");
+    assert_ne!(campaign.simulation().source_arena().handle(fresh_flyer.source_slot), Some(fresh_flyer),
+        "the paid Fireball generation must cross normal source reclaim");
+}
+
+#[test]
 fn final_castle_loss_hook_precedes_link_and_root_cleanup() {
     let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).expect("Level 2 package");
     let mut session = inspection.level2_reset_session().expect("Level 2 session");
@@ -440,9 +809,13 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     let below_capacity = 0_i32;
     let owner_handle = campaign.simulation().source_arena().handle(owner).unwrap();
     {
-        // Control the actual owner resource carriers below sub_13B00's
-        // physical-holder capacity gate before destroying its real Castle.
+        // This existing refusal control starts with an explicitly depleted
+        // Castle as well as zero source base/current mana. Otherwise the
+        // real destruction sphere retains its 5,000 owned mana and the new
+        // source census correctly makes the 1,000-price holder affordable.
         let live = &mut campaign.simulation_mut().session.state.live;
+        live.economy.economy.castle_at_mut(root_slot).unwrap().mana = 0;
+        live.economy.economy.owner_base_max_mana.insert(owner, below_capacity);
         let actor = &mut live.economy.entities[usize::from(owner)];
         actor.max_mana = below_capacity;
         actor.record[144..148].copy_from_slice(&below_capacity.to_le_bytes());
@@ -520,6 +893,7 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
         // 20,000 capacity and balance so the actual holder's 1,000/4,000
         // source gates can run without inventing a decision or Castle.
         let live = &mut campaign.simulation_mut().session.state.live;
+        live.economy.economy.owner_base_max_mana.insert(owner, 20_000);
         let actor = &mut live.economy.entities[usize::from(owner)];
         actor.max_mana = 20_000;
         actor.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());
@@ -656,6 +1030,32 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     assert!(built, "the actual seed must finish construction and reach Castle action4");
     assert!(saw_following_holder_visit, "the retained holder must reach a following source visit");
     let construction_child = construction_child.expect("the rebuilt Castle must create a real construction child");
+    if campaign.simulation().source_arena().handle(construction_child.source_slot) == Some(construction_child) {
+        eprintln!("first-stage construction child before following reclaim: {:?}",
+            campaign.simulation().economy().castle_children().iter().find(|row| row.source_entity_index == construction_child.source_slot)
+                .map(|row| (row.model, row.action, row.active, row.control_flags, row.source_byte_3e)));
+    }
+    for _ in 0..16 {
+        if campaign.simulation().source_arena().handle(construction_child.source_slot) != Some(construction_child) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+        if campaign.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })) {
+            let sim = campaign.simulation();
+            let arena = &sim.session.state.live.economy;
+            let occupants = sim.economy().castle_children().iter()
+                .filter(|child| child.active && (child.source_class, child.model) == (3, 3))
+                .map(|child| {
+                    let slot = child.source_entity_index;
+                    let raw = &arena.entities[usize::from(slot)];
+                    (slot, child.parent_entity_index, child.owner_entity_index, child.id_entity_index,
+                        raw.active, raw.class, raw.model, raw.action, raw.source_id, raw.control_flags,
+                        arena.handle(slot), arena.economy.live_arena_cursor_row(slot))
+                }).collect::<Vec<_>>();
+            eprintln!("first-stage child failure: typed defender/current raw/arena occupants={occupants:?}");
+        }
+        assert!(campaign.simulation().dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "first-stage child following-pass dispatch errors: {:?}", campaign.simulation().dispatch_events().iter()
+                .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. })).collect::<Vec<_>>());
+    }
     assert_ne!(campaign.simulation().source_arena().handle(construction_child.source_slot),
         Some(construction_child), "the real construction child must reach source reclamation");
 
@@ -665,6 +1065,7 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     let mut low_capacity = before_completion.expect("the real first-stage construction was observed");
     {
         let live = &mut low_capacity.simulation_mut().session.state.live;
+        live.economy.economy.owner_base_max_mana.insert(owner, 0);
         let actor = &mut live.economy.entities[usize::from(owner)];
         actor.max_mana = 0;
         actor.record[144..148].copy_from_slice(&0_i32.to_le_bytes());
@@ -813,8 +1214,18 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
             previous_holder_state = Some(holder_state);
         }
         saw_queued_tier_zero |= holder.active_value > 0 && holder.source_word_2c() == 1;
-        saw_queued_tier_applied |= saw_queued_tier_zero && holder.active_value == 0
-            && holder.source_word_2c() == 0 && holder.level_gate == 0;
+        if saw_queued_tier_zero && holder.active_value == 0
+            && holder.source_word_2c() == 0 && holder.level_gate == 0 {
+            let profile = live.source_spell_profile(2, 0, owner)
+                .expect("the first released holder has a current-stage source profile");
+            let raw = &live.economy.entities[usize::from(holder_slot)];
+            assert_eq!((holder.max_mana, holder.mana, holder.mana_regen),
+                (profile.max_mana, profile.mana, profile.mana_regen));
+            assert_eq!((raw.level_gate, raw.max_mana, raw.mana, raw.mana_regen),
+                (holder.level_gate, holder.max_mana, holder.mana, holder.mana_regen),
+                "the original cast releases into its source-queued profile");
+            saw_queued_tier_applied = true;
+        }
         if let Some(actual) = sim.economy().castle_projectiles().iter().find(|projectile| {
             projectile.owner_entity_index == owner && projectile.holder_entity_index == holder_slot
         }) {
@@ -845,7 +1256,9 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
                     "the source parent charge must reach the rival AI carrier");
                 paid = true;
             }
-            flyer = Some(actual.source_entity_index);
+            if flyer.is_none() {
+                flyer = sim.source_arena().handle(actual.source_entity_index);
+            }
         }
         assert_eq!(sim.source_arena().handle(root.source_entity_index), Some(seed_handle),
             "the upgrade must keep the actual root generation");
@@ -891,6 +1304,17 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
         campaign.step(PlayerCommand::default(), 0);
         assert!(campaign.simulation().dispatch_events().iter()
             .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let sim = campaign.simulation();
+        let holder = sim.shared_spells().pickup(holder_slot).unwrap();
+        let actor = &sim.session.state.live.economy.entities[usize::from(owner)];
+        let current_root = sim.economy().castle_for_owner(owner).unwrap();
+        eprintln!("upgrade following-reclaim visit: root=(action={},build={},timer={},word30={}) holder=(tier={},W={},duration={},queue={}) actor=(mana={},regen={}) mode={} flyers={:?}",
+            current_root.action, current_root.build_state, current_root.timer, current_root.source_word_30,
+            holder.level_gate, holder.active_value, holder.activation_value, holder.source_word_2c(),
+            actor.mana, actor.mana_regen, sim.session.state.live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte(),
+            sim.economy().castle_projectiles().iter().filter(|row| row.owner_entity_index == owner)
+                .map(|row| (row.source_entity_index, sim.source_arena().handle(row.source_entity_index), row.active, row.holder_entity_index))
+                .collect::<Vec<_>>());
     }
     assert_ne!(campaign.simulation().source_arena().handle(child.source_slot), Some(child),
         "the higher-stage construction child must cross source reclaim");
@@ -902,7 +1326,15 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
         "the completed owned root must remain in the presentation map chain");
     let final_holder = final_sim.shared_spells().pickup(holder_slot).unwrap();
     assert_eq!(final_holder.source_spell_parent_entity_index(), owner);
-    assert_eq!(final_holder.active_value, 0, "the completed upgrade clears its source holder");
+    if final_holder.active_value != 0 {
+        let actor = &final_sim.session.state.live.economy.entities[usize::from(owner)];
+        eprintln!("upgrade final active holder: root=(action={},build={},timer={},word30={}) tier={} W={} duration={} queue={} actor=(mana={},regen={}) flyers={:?}",
+            final_root.action, final_root.build_state, final_root.timer, final_root.source_word_30,
+            final_holder.level_gate, final_holder.active_value, final_holder.activation_value, final_holder.source_word_2c(),
+            actor.mana, actor.mana_regen, final_sim.economy().castle_projectiles().iter().filter(|row| row.owner_entity_index == owner)
+                .map(|row| (row.source_entity_index, final_sim.source_arena().handle(row.source_entity_index), row.active, row.holder_entity_index))
+                .collect::<Vec<_>>());
+    }
     let final_live = &final_sim.session.state.live;
     let final_raw = &final_live.economy.entities[usize::from(holder_slot)];
     let final_profile = final_live.source_spell_profile(2, final_holder.level_gate as u8, owner)
@@ -917,6 +1349,24 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     assert_eq!((final_raw.level_gate, final_raw.max_mana, final_raw.mana, final_raw.mana_regen),
         (final_holder.level_gate, final_holder.max_mana, final_holder.mana, final_holder.mana_regen),
         "the source arena and shared holder agree after the upgrade");
+    if final_holder.active_value != 0 {
+        // The now-correct census can let the still-scheduled rival cast
+        // again while the first upgrade's child crosses the reclaim prepass.
+        // Accept this only when the actual second flyer and its full current
+        // physical price prove a new source activation, not a stale W.
+        assert_eq!(final_holder.active_value, final_holder.activation_value as i16 - 1,
+            "an active final holder must be the fresh source activation");
+        let first_flyer = flyer.expect("the first upgrade flyer retained its generation identity");
+        let second = final_sim.economy().castle_projectiles().iter()
+            .filter(|row| row.active && row.owner_entity_index == owner && row.holder_entity_index == holder_slot
+                && row.target_castle_slot == root.source_entity_index)
+            .filter_map(|row| final_sim.source_arena().handle(row.source_entity_index))
+            .find(|handle| *handle != first_flyer)
+            .expect("the active holder must have a different real owned Castle flyer generation");
+        assert_ne!(second, first_flyer);
+        assert_eq!(final_live.economy.entities[usize::from(owner)].mana_regen, -final_profile.max_mana,
+            "the second source activation must queue its actual current-stage price");
+    }
 }
 
 #[test]

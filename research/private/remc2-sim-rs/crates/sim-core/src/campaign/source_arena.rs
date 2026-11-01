@@ -898,18 +898,22 @@ impl SourceArena {
         })
     }
 
+    /// Finish NewEvent's retirement of an already allocated address. Typed
+    /// constructors retain their new carrier while the prior generation's
+    /// raw packet and projections must not survive the allocation boundary.
+    pub(crate) fn retire_previous_source_projection(&mut self, slot: u16) {
+        self.effects.forget_source_slot(slot);
+        self.entities[usize::from(slot)].reclaim_source_row();
+        crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
+        self.raw_creature_origins.remove(&slot);
+        self.creature_parents.remove(&slot);
+        self.clear_raw_creature_part_bindings_for_slot(slot);
+    }
+
     fn allocate_source_slot_notifying(&mut self, mut publish: impl FnMut(u16, u16)) -> Option<u16> {
         if self.economy.free_slot_count() != 0 {
             let slot = self.economy.allocate_slot()?;
-            self.effects.forget_source_slot(slot);
-            // The free stack owns this address now. A typed constructor can
-            // replace its occupant without publishing a raw record; retaining
-            // the old active packet would resurrect it when that owner retires.
-            self.entities[usize::from(slot)].reclaim_source_row();
-            crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
-            self.raw_creature_origins.remove(&slot);
-            self.creature_parents.remove(&slot);
-            self.clear_raw_creature_part_bindings_for_slot(slot);
+            self.retire_previous_source_projection(slot);
             return Some(slot);
         }
         let dynamic = self

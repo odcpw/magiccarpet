@@ -1517,18 +1517,26 @@ fn level_two_castle_defender_sphere_target_consumes_through_outer_dispatch() {
     assert!(sphere.active);
     assert_eq!(sphere.control_flags & 0x40, 0);
 
-    // `sub_106C0` is strict.  Place a size-0 sphere exactly at the
-    // defender's X boundary (13 + 272); equality must not consume it.
+    // `sub_106C0` is strict. Read the actual death constructor's particle
+    // axes: its pitch is28, not the old visual-size assumption13. Equality
+    // at sphere.pitch + defender.pitch must not consume it.
     let (mut session, _, _, defender_slot, holder_position) = setup();
-    let boundary_position = Position {
-        x: holder_position.x.wrapping_add(13 + 272),
-        ..holder_position
-    };
     let sphere_id = session
         .economy_mut()
-        .spawn_mana_sphere_from_death(77, boundary_position, 0, 0x1234, 1, 111)
+        .spawn_mana_sphere_from_death(77, holder_position, 0, 0x1234, 1, 111)
         .expect("boundary sphere");
     let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+    {
+        let mut economy = session.economy_mut();
+        let sphere = economy.spheres.iter_mut().find(|row| row.source_entity_index == sphere_slot)
+            .expect("actual boundary sphere");
+        let boundary = sphere.collision_pitch + LEVEL2_CASTLE_DEFENDER_COLLISION_HALF_WIDTH;
+        sphere.position.x = holder_position.x.wrapping_add_signed(boundary);
+        assert!(!level2_castle_defender_sphere_overlap(holder_position, sphere));
+        let mut inside = *sphere;
+        inside.position.x = inside.position.x.wrapping_sub(1);
+        assert!(level2_castle_defender_sphere_overlap(holder_position, &inside));
+    }
     session
         .economy_mut()
         .castle_children

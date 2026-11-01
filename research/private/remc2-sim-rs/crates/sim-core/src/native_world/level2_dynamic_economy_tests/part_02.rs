@@ -3336,6 +3336,21 @@ fn level_two_owner_mana_projection_matches_source_filters_and_reset() {
     let mut session = inspection
         .level2_reset_session()
         .expect("owner aggregate session");
+    // Helper-only controlled census rows above: a repeated scan must restart
+    // from the separate base, never from its previously published aggregate.
+    let mut controlled = session.economy().clone();
+    controlled.owner_base_max_mana = baseline.clone();
+    controlled.owner_mana_rows = rows;
+    controlled.rebuild_source_owner_max_mana_projection();
+    assert_eq!(controlled.owner_max_mana_capacity(111), 190);
+    controlled.rebuild_source_owner_max_mana_projection();
+    assert_eq!(controlled.owner_max_mana_capacity(111), 190);
+    controlled.owner_max_mana.insert(111, 9_000);
+    controlled.rebuild_source_owner_max_mana_projection();
+    assert_eq!(controlled.owner_max_mana_capacity(111), 190);
+    controlled.bind_source_wizard_mana_bases(inspection.players(), inspection.entities());
+    assert_eq!(controlled.owner_max_mana_capacity(111), 1_090);
+    assert_eq!(controlled.owner_max_mana_capacity(222), 50, "explicit non-roster base remains unchanged");
     assert_eq!(session.economy().owner_mana_global(), 12_835);
     assert_eq!(session.economy().owner_mana_aggregate(111), 0);
     let baseline_hash = session.economy().reset_hash();

@@ -3798,6 +3798,12 @@ impl Level2NyphurDispatcher {
         true
     }
 
+    /// The pass-wide 60F00 census precedes upkeep. It changes capacity only;
+    /// the ordered wizard callback still applies the prior pending mana rate.
+    pub(crate) fn publish_source_mana_capacity(&mut self, capacity: i32) {
+        self.common_upkeep.max_mana = capacity;
+    }
+
     /// Publish a support holder's parent writes before the next AI visit.
     /// The caller resolves the current generation and passes the callback's
     /// explicit stop result, rather than inferring it from a spell family.

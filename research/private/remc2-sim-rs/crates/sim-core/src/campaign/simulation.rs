@@ -850,7 +850,7 @@ impl Level2ResolvedSourcePlan {
     }
 
     #[cfg(test)]
-    fn observed_player_resources(
+    pub(crate) fn observed_player_resources(
         &self,
     ) -> Option<(crate::campaign::source_arena::SourceEntityHandle, i32, i32, i32)> {
         match self {
@@ -1012,21 +1012,6 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 {
                     let economy = &mut self.owner.session.state.live.economy;
                     economy.rebuild_possession_guidance_source_slots();
-                    economy.economy.rebuild_owner_mana_projection_at_source_boundary(
-                        &economy.entities,
-                    );
-                    economy.rebuild_settlement_mana_rows(
-                        self.owner.session.state.live.ordinary.houses(),
-                    );
-                    let reset_owner_max_mana = self
-                        .owner
-                        .session
-                        .baseline
-                        .economy
-                        .economy
-                        .owner_max_mana
-                        .clone();
-                    economy.rebuild_owner_max_mana_projection(&reset_owner_max_mana);
 
                     self.pass_start_class5_model_slots = economy.rebuilt_class5_model_slots();
                     let mut class9 = BTreeSet::new();
@@ -1419,6 +1404,15 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         self.goat_begin_events.entry(0).or_default().push(event);
                     }
                 }
+                // Source159E0 observes the prior capacity.60F00 follows all
+                // stage/threat/cave preparation and precedes the numeric walk.
+                let live = &mut self.owner.session.state.live;
+                live.economy.economy.rebuild_owner_mana_projection_at_source_boundary(
+                    &live.economy.entities,
+                );
+                live.economy.rebuild_settlement_mana_rows(live.ordinary.houses());
+                live.economy.rebuild_source_owner_max_mana_projection();
+                live.publish_source_mana_capacities();
             }
             PassPhase::PostDispatch => {
                 self.owner.session.state.live.goats.finish_source_turn();

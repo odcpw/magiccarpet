@@ -3902,20 +3902,18 @@ impl Level2EconomyState {
             return true;
         }
 
-        // Source `sub_35FB0` resolves word_0x96 through the raw entity table
-        // before dispatching the holder-specific lift. Castle class3/model3
-        // keeps its fixed 32-unit step; creature class5/model23 uses its raw
-        // word_0x2C value at record bytes 48..50. A stale raw slot must not
-        // be rescued by a matching typed sidecar.
+        // TransformArcherToMana35940 reads the current occupant at word96. Castle3/3
+        // collectors own a typed arena row with an inactive raw shadow;
+        // creature5/23 instead owns its raw word2c lift step. Never let an
+        // old sidecar or raw shadow override a different current occupant.
         let defender_attracted = self.spheres[sphere_index].control_flags & 0x40 != 0;
         if defender_attracted {
             let defender_slot = self.spheres[sphere_index].assigned_defender_slot;
-            let holder = (defender_slot != 0)
-                .then(|| entities.get(usize::from(defender_slot)))
-                .flatten()
-                .filter(|entity| entity.active && entity.index == defender_slot);
-            let holder = holder.and_then(|entity| match (entity.class, entity.model) {
-                (3, 3) => self
+            let current = self.live_arena_cursor_row(defender_slot);
+            let holder = if defender_slot == 0 {
+                None
+            } else if current.is_some_and(|row| row.kind == Level2DynamicArenaKind::CastleDefender) {
+                self
                     .castle_children
                     .iter()
                     .find(|child| {
@@ -3924,13 +3922,17 @@ impl Level2EconomyState {
                             && child.source_class == 3
                             && child.model == 3
                     })
-                    .map(|child| (child.position, 32_i16)),
-                (5, 23) => Some((
-                    entity.position,
-                    i16::from_le_bytes([entity.record[48], entity.record[49]]),
-                )),
-                _ => None,
-            });
+                    .map(|child| (child.position, 32_i16))
+            } else if current.is_none() {
+                entities.get(usize::from(defender_slot))
+                    .filter(|entity| entity.active && entity.index == defender_slot)
+                    .and_then(|entity| match (entity.class, entity.model) {
+                        (3, 3) => Some((entity.position, 32_i16)),
+                        (5, 23) => Some((entity.position,
+                            i16::from_le_bytes([entity.record[48], entity.record[49]]))),
+                        _ => None,
+                    })
+            } else { None };
             let mut position_changed = false;
             if let Some((holder_position, lift_step)) = holder {
                 let sphere = &mut self.spheres[sphere_index];

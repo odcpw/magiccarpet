@@ -4948,6 +4948,7 @@ impl NativeWorldInspection {
             self.runtime.constructor_counters(),
         )?;
         economy.bind_local_castle_owner(local_player.entity_index);
+        economy.bind_source_wizard_mana_bases(&self.players, &self.entities);
         let mut shared_spells = Level2SharedSpellResetSession::from_campaign_parts(
             &self.entities,
             &self.players,
@@ -5075,6 +5076,7 @@ impl NativeWorldInspection {
             self.runtime.constructor_counters(),
         )?;
         economy.bind_local_castle_owner(self.players[0].entity_index);
+        economy.bind_source_wizard_mana_bases(&self.players, &self.entities);
         let wizard = mission
             .wizard_map_settings()
             .first()
