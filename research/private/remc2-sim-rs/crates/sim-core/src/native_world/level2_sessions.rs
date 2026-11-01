@@ -2965,6 +2965,31 @@ impl Level2SharedSpellResetSession {
     /// Replace every shared projection of one imported holder from the
     /// authoritative source-arena row after the player-death release writes.
     pub(super) fn sync_released_holder(&mut self, source: &EntitySnapshot) {
+        // sub_5E310 advances a released holder to its ordinary pickup action.
+        // Its old typed lifecycle must no longer authorize a C ABI activation
+        // that would write the held action/resources back over that source row.
+        // Retire only the cache: the source drop flags, A4 and RNG stay intact.
+        let remains_held = |family: u8, parent: u16| {
+            source.active
+                && source.class == 15
+                && source.model == family
+                && physical_spell_action(family, PhysicalSpellActionRole::Active)
+                    == Some(source.action)
+                && source.source_spell_parent_entity_index() == parent
+                && self.local_player.enabled_spell_holders[usize::from(family)] == source.index
+        };
+        self.shield = self.shield.filter(|state| {
+            state.holder_entity_index != source.index
+                || remains_held(SHIELD_FAMILY, state.parent_entity_index)
+        });
+        self.invisible = self.invisible.filter(|state| {
+            state.holder_entity_index != source.index
+                || remains_held(INVISIBLE_FAMILY, state.parent_entity_index)
+        });
+        self.beyond_sight = self.beyond_sight.filter(|state| {
+            state.holder_entity_index != source.index
+                || remains_held(BEYOND_SIGHT_FAMILY, state.parent_entity_index)
+        });
         for entity in self
             .pickups
             .iter_mut()

@@ -360,6 +360,42 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
     assert!(simulation.economy().free_source_slots().contains(&holder_slot)
         || simulation.economy().slot_generation(holder_slot) != holder_generation,
         "the hidden holder must cross the next source reclaim boundary");
+
+    // Check both the generation-bound relation and the AI's actual A4
+    // carrier, whose family-2 entry is consumed by sub_146c0 decisions.
+    // Keep the other rival as a positive control and run ordinary source
+    // visits; no holder, Castle, target or AI outcome is injected.
+    let live = &simulation.session.state.live;
+    let owner_handle = live.economy.handle(owner).expect("source22 rival remains live");
+    let other_handle = live.economy.handle(other_owner).expect("other rival remains live");
+    let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+    let other_player = live.core.players.iter().find(|player| player.entity_index == other_owner).unwrap();
+    assert!(live.nyphur_dispatcher.bound_live_holder(owner_handle, player, &live.economy, 2).is_none(),
+        "the affected rival's real family-2 lookup must reject the removed holder");
+    assert_eq!(live.nyphur_dispatcher.bound_live_holder(other_handle, other_player, &live.economy, 2)
+        .map(|holder| holder.source_slot), Some(other_holder),
+        "the unrelated rival retains its real family-2 lookup");
+    let owner_ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+    let other_ai = live.nyphur_dispatcher.get(other_handle).unwrap().common_upkeep(0);
+    assert_eq!((owner_ai.castle_entity_index, owner_ai.spell_holder_indices[2]), (0, 0));
+    assert_eq!((other_ai.castle_entity_index, other_ai.spell_holder_indices[2]), (476, other_holder));
+    let mut saw_owner_visit = false;
+    for _ in 0..8 {
+        campaign.step(PlayerCommand::default(), 0);
+        let simulation = campaign.simulation();
+        assert!(simulation.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        saw_owner_visit |= simulation.nyphur_dispatch_traces().iter().any(|trace| trace.source_slot == owner);
+        let live = &simulation.session.state.live;
+        assert_eq!(live.economy.handle(owner), Some(owner_handle));
+        let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+        assert_eq!(player.enabled_spell_holders[2], 0);
+        assert!(live.nyphur_dispatcher.bound_live_holder(owner_handle, player, &live.economy, 2).is_none());
+        assert!(live.economy.economy.castle_for_owner(owner).is_none());
+        let owner_ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+        assert_eq!((owner_ai.castle_entity_index, owner_ai.spell_holder_indices[2]), (0, 0),
+            "ordinary AI visits must not reconstruct the lost Castle relation or holder");
+    }
+    assert!(saw_owner_visit, "the affected real rival must reach its ordinary AI consumer");
 }
 
 #[test]

@@ -557,6 +557,323 @@ fn ordinary_player_death_advances_its_dropped_speed_holder() {
 }
 
 #[test]
+fn acquired_invisible_real_bee_death_drops_holder_and_rejects_stale_activation() {
+    let mut session = level_two_campaign_session();
+    let player = session.state.entity_index;
+    session
+        .set_level2_selected_objective_stage_state(2)
+        .unwrap();
+    fire_level_two_model32_group(&mut session, 21);
+    let reward = authored_status_reward_prerequisite(&mut session, INVISIBLE_FAMILY);
+    session
+        .set_level2_entity_position(player, reward.position)
+        .unwrap();
+    for _ in 0..4 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        if session.shared_spells().local_player().enabled_spell_holders[11] != 0 {
+            break;
+        }
+    }
+    let holder_slot = session.shared_spells().local_player().enabled_spell_holders[11];
+    assert_eq!(
+        holder_slot, reward.source_entity_index,
+        "ordinary authored Invisible acquisition"
+    );
+    let holder_handle = session.source_arena().handle(holder_slot).unwrap();
+    let player_handle = session.source_arena().handle(player).unwrap();
+
+    // The imported player has 100 source protection visits. Let those expire
+    // normally before the finite spell and before the real contact.
+    let mut safe = reward.position;
+    safe.x = safe.x.wrapping_add(0x6000);
+    safe.z = session
+        .canonical_terrain()
+        .ground_height(safe)
+        .wrapping_add(1024);
+    session.set_level2_entity_position(player, safe).unwrap();
+    for _ in 0..104 {
+        if session.session.state.live.player_protection_ticks == 0 {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0);
+    assert!(session.player_life > 0);
+
+    let castle = session
+        .economy_mut()
+        .build_castle_at(
+            Position::default(),
+            Position::default(),
+            player,
+            false,
+            true,
+        )
+        .expect("real Castle constructor for the source spell gate");
+    {
+        let mut economy = session.economy_mut();
+        let root = economy.castle_at_mut(castle).unwrap();
+        root.level = 1;
+        root.action = 5;
+        root.build_state = 3;
+        assert!(economy.step_castle_action(castle));
+        assert_eq!(
+            (
+                economy.castle_at(castle).unwrap().level,
+                economy.castle_at(castle).unwrap().mana_capacity
+            ),
+            (2, 18_000)
+        );
+        assert!(economy.set_castle_mana_prerequisite_for_test(castle, 5_000));
+    }
+    session
+        .shared_spells_mut()
+        .set_local_player_mana_for_test(5_000);
+    session.economy.entities[usize::from(player)].set_mana(5_000);
+    if let Some(fire) = session.context.spell_fire.as_mut() {
+        fire.caster.mana = 5_000;
+    }
+
+    // The real Bee chooses the actual player through its awareness/cadence;
+    // neither the actor action nor its target is written by this test.
+    let mut engagement = Vec::new();
+    for _ in 0..256 {
+        let bee = session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
+            .copied()
+            .expect("real group-21 Bee");
+        if bee.action == 18 && bee.target_entity_index == Some(player) {
+            break;
+        }
+        engagement.push((bee.action, bee.target_entity_index, bee.source_byte_3e));
+        let mut approach = bee.position;
+        crate::move_entity(&mut approach, bee.yaw, 0, 2048);
+        session
+            .set_level2_entity_position(player, approach)
+            .unwrap();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let bee = session
+        .economy()
+        .bee_creatures()
+        .iter()
+        .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
+        .copied()
+        .expect("real Bee remains available");
+    assert!(
+        bee.action == 18 && bee.target_entity_index == Some(player),
+        "ordinary Bee target selection: {engagement:?}, Bee={bee:?}"
+    );
+    let bee_handle = session
+        .source_arena()
+        .handle(bee.source_entity_index)
+        .unwrap();
+
+    // Declare a positive pre-injured entry below the actual 200-point Bee
+    // contact. This stages health only; the source Bee owns the lethal hit,
+    // damage mailbox, attacker, dying action and grounded holder release.
+    {
+        let live = &mut session.session.state.live;
+        live.player_life = 1;
+        live.economy.entities[usize::from(player)].set_life(1);
+        live.shared_spells.set_player_entity_life(1);
+    }
+    assert_eq!(session.entities()[usize::from(player)].life, 1);
+    let local = session
+        .players()
+        .iter()
+        .find(|row| row.entity_index == player)
+        .unwrap();
+    let fire_flag = if local.left_spell_slot == INVISIBLE_FAMILY {
+        0x10
+    } else if local.right_spell_slot == INVISIBLE_FAMILY {
+        0x20
+    } else {
+        panic!("acquisition must assign the actual Invisible hand")
+    };
+    session.step_outer_turn(
+        PlayerCommand {
+            flags: fire_flag,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    for _ in 0..2 {
+        let holder = session.shared_spells().pickup(holder_slot).unwrap();
+        if holder.active_value > 0 && holder.control_flags & INVISIBLE_STATUS_BIT != 0 {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let active = session.shared_spells().pickup(holder_slot).unwrap();
+    assert!(active.active_value > 0 && active.control_flags & INVISIBLE_STATUS_BIT != 0);
+    assert!(
+        session.entities()[usize::from(player)].life > 0,
+        "the public cast precedes the lethal contact"
+    );
+
+    let events_before = session.economy().events().len();
+    for _ in 0..128 {
+        if session.player_life < 0 {
+            break;
+        }
+        let current = session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|row| row.source_entity_index == bee.source_entity_index)
+            .copied()
+            .expect("same real Bee before contact");
+        let mut contact = current.position;
+        crate::move_entity(&mut contact, current.yaw, 0, current.actual_speed);
+        session.set_level2_entity_position(player, contact).unwrap();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        session.player_life < 0,
+        "normal Bee contact must kill the pre-injured player"
+    );
+    assert!(session.economy().events()[events_before..].iter().any(|event| matches!(event,
+        Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage: 200, lethal: true }
+            if *target_entity_index == player && *attacker_entity_index == bee.entity_id
+    )), "the actual Bee damage/attacker receipt must own the lethal hit");
+    assert_eq!(
+        session.source_arena().handle(bee.source_entity_index),
+        Some(bee_handle)
+    );
+    for _ in 0..256 {
+        if session
+            .shared_spells()
+            .pickup(holder_slot)
+            .is_some_and(|holder| holder.action == 34)
+        {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let dropped = session.shared_spells().pickup(holder_slot).unwrap().clone();
+    assert_eq!(
+        (dropped.class, dropped.model, dropped.action),
+        (15, INVISIBLE_FAMILY, 34),
+        "ordinary grounded death releases the actual holder"
+    );
+    assert_eq!(
+        session.shared_spells().local_player().enabled_spell_holders[11],
+        1
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle)
+    );
+    assert_eq!(session.source_arena().handle(player), Some(player_handle));
+
+    // These are exactly the getter and activation methods consumed by the
+    // C ABI. A rejected activation must not turn a dropped physical pickup
+    // back into a held action or rewrite unrelated holder/player fields.
+    let exposed = session.shared_spells().invisible_state();
+    let mut activation_attempt = session.clone();
+    let raw_holder_before = activation_attempt.entities()[usize::from(holder_slot)].clone();
+    let raw_player_before = activation_attempt.entities()[usize::from(player)].clone();
+    assert!(
+        !activation_attempt
+            .shared_spells_mut()
+            .activate_invisible(256, false)
+    );
+    assert_eq!(
+        activation_attempt
+            .shared_spells()
+            .pickup(holder_slot)
+            .unwrap(),
+        &dropped,
+        "rejected C ABI activation must preserve the dropped holder projection"
+    );
+    assert_eq!(
+        activation_attempt.entities()[usize::from(holder_slot)],
+        raw_holder_before
+    );
+    assert_eq!(
+        activation_attempt.entities()[usize::from(player)],
+        raw_player_before
+    );
+    assert!(
+        exposed.is_none(),
+        "C ABI state must not publish a released holder as a live Invisible status: {exposed:?}"
+    );
+
+    // Source PlayerEvents opcode 15 revives the same dead player at its real
+    // Castle and invokes the normal starting-holder constructors. The dropped
+    // source remains a world pickup; it is not rebound as held inventory.
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 15,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    assert!(
+        session
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+        "public Castle revival must not roll back: {:?}",
+        session.dispatch_events()
+    );
+    assert!(
+        session.player_life > 0,
+        "the ordinary Castle command revives the player"
+    );
+    assert_eq!(session.source_arena().handle(player), Some(player_handle));
+    let revived_slot = session.shared_spells().local_player().enabled_spell_holders[11];
+    assert!(
+        revived_slot > 1 && revived_slot != holder_slot,
+        "revival allocates a current held spell beside the old drop"
+    );
+    let revived_handle = session.source_arena().handle(revived_slot).unwrap();
+    let revived = session.shared_spells().pickup(revived_slot).unwrap();
+    assert_eq!(
+        (revived.class, revived.model, revived.action),
+        (15, INVISIBLE_FAMILY, 33)
+    );
+    assert_eq!(revived.source_spell_parent_entity_index(), player);
+    assert_eq!(revived.active_value, 0);
+    let rebound = session
+        .shared_spells()
+        .invisible_state()
+        .expect("revival binds a cold current Invisible lifecycle");
+    assert_eq!(
+        (
+            rebound.holder_entity_index,
+            rebound.parent_entity_index,
+            rebound.active_value
+        ),
+        (revived_slot, player, 0)
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle)
+    );
+    assert_eq!(
+        session.shared_spells().pickup(holder_slot).unwrap().action,
+        34
+    );
+    assert_eq!(
+        session.source_arena().handle(revived_slot),
+        Some(revived_handle)
+    );
+    let hud = session
+        .day_hud()
+        .expect("revived inventory remains presentable");
+    assert!(
+        hud.left.holder_entity_index == revived_slot
+            || hud.right.holder_entity_index == revived_slot,
+        "the real hand HUD binds the revived holder"
+    );
+}
+
+#[test]
 fn carried_speed_holder_runs_its_imported_callback_after_public_cast() {
     use crate::{
         campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign},

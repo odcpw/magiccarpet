@@ -2278,7 +2278,7 @@ fn level2_campaign_minimap_is_source_ordered_visibility_bound_and_replay_safe() 
 #[test]
 fn level2_campaign_invisible_state_and_activation_guard_are_cabi_reachable() {
     let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        .join("../../../generated/mc-level2-vault-successor-closure-20261025");
     let package = level2_package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -2356,6 +2356,112 @@ fn level2_campaign_invisible_state_and_activation_guard_are_cabi_reachable() {
         ),
         MC_STATUS_OK
     );
+    // The real objective producer builds the BUILD21 vaults; its reward is
+    // not an immediate family-11 pickup. Use the complete owner BUILD closure
+    // and let those vaults finish their normal construction before supplying
+    // a controlled destruction mailbox. This checks acquisition/API guards,
+    // not earned combat or mission completion.
+    let mut vaults = Vec::new();
+    for _ in 0..64 {
+        vaults = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| house.active && house.building_index == 21)
+                .copied()
+                .collect::<Vec<_>>())
+        })
+        .expect("read actual objective-produced vaults");
+        if !vaults.is_empty()
+            && vaults.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
+        {
+            break;
+        }
+        let _ = step_level2_campaign_public(handle, input);
+    }
+    assert!(!vaults.is_empty(), "the real objective must construct its vaults");
+    assert!(vaults.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION));
+    with_campaign_session_mut(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        let attacker = reset.state.entity_index as i16;
+        for house in &vaults {
+            reset
+                .ordinary_mut()
+                .inject_house_damage(house.entity_index, house.life + 1, attacker)
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?;
+        }
+        Ok(())
+    })
+    .expect("submit controlled damage to the real live vaults");
+    // RemoveCastleStage constructs BUILD54 before publishing the vault's
+    // reward group. That actual successor must also finish and be destroyed.
+    let mut successors = Vec::new();
+    for _ in 0..64 {
+        successors = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| {
+                    house.active
+                        && vaults.iter().any(|vault| {
+                            house.building_index == vault.parameter.destruction_successor
+                                && house.position.x == vault.position.x
+                                && house.position.y == vault.position.y
+                        })
+                })
+                .copied()
+                .collect::<Vec<_>>())
+        })
+        .expect("read real vault demolition successors");
+        if successors.len() == vaults.len()
+            && successors.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
+        {
+            break;
+        }
+        let _ = step_level2_campaign_public(handle, input);
+    }
+    assert_eq!(successors.len(), vaults.len());
+    assert!(successors.iter().all(|house| {
+        house.action == sim_core::house::HOUSE_LIVE_ACTION
+            && house.parameter.destruction_successor == 0
+    }));
+    with_campaign_session_mut(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        let attacker = reset.state.entity_index as i16;
+        for house in &successors {
+            reset
+                .ordinary_mut()
+                .inject_house_damage(house.entity_index, house.life + 1, attacker)
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?;
+        }
+        Ok(())
+    })
+    .expect("submit controlled damage to the actual final vault successors");
+    for _ in 0..64 {
+        let ready = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.economy().spell_pickups().iter().any(|source| source.authored_index == 156))
+        })
+        .expect("observe the real vault reward producer");
+        if ready {
+            break;
+        }
+        let _ = step_level2_campaign_public(handle, input);
+    }
     let source = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
