@@ -6,6 +6,18 @@ then Army and status spells. Commit, push and install working batches. The full
 shared single-player engine remains the goal; trace remc2 into its real Rust
 consumers and keep unfinished acceptance open.
 
+Castle spell/mana checkpoint delivered on 2026-11-02: runtime `f10d20c6`,
+installed native `3bfe49a21bb4`. All three spell tiers, source failure/cleanup
+controls, earned mana through deposit and paid spending, and the death-marker
+merge/census path pass focused owner-data checks. The matching player loaded
+the campaign map and NightSpire with the original HUD. Human Castle play,
+hardware audio and performance still need Oliver's playtest.
+
+Use this installed checkpoint as the baseline. `mc-bhq.10` remains open for
+its broader settlement/economy acceptance; `mc-k5k.9` retains that blocking
+dependency. Their open status does not request reimplementation of the delivered
+Castle paths. This work block stops here; Alliance is the next queued capability.
+
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
 handoff complete. Continue useful work; do not produce a read-receipt report.
