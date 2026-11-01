@@ -1,9 +1,10 @@
 # Shared-engine delivery plan
 
-Oliver resumed implementation on 2026-10-29: four teams, each with three
-Terra 6.1/xhigh workers and one Sol 6.1/xhigh integrator. Finish the full shared
-single-player engine first, tracing each remc2 path into its real Rust
-consumer. Resume the preserved implementation; unfinished acceptance stays open.
+Oliver resumed implementation on 2026-11-01 with two Terra 6.1/xhigh workers
+and one Sol 6.1/xhigh integrator. Finish Castle/mana and Alliance end to end,
+then Army and status spells. Commit, push and install working batches. The full
+shared single-player engine remains the goal; trace remc2 into its real Rust
+consumers and keep unfinished acceptance open.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
@@ -27,10 +28,10 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Execute the existing plan
 
-1. Finish the connected batch already underway: Army and its actual summoned
-   creature consumers, directional spells through impact and world effects,
-   and secret entry/return with correct loading and preserved state. Check live
-   source and ownership first; do not restart a component already delivered.
+1. Finish the current connected batch: Castle/mana and Alliance, then Army and
+   status spells through their actual gameplay consumers. Other preserved work
+   remains in scope for later batches. Check live source and ownership first;
+   do not restart a component already delivered.
 2. Each feature owner follows the entire remc2-to-Rust chain: properties/assets,
    ordinary producer, schedule/dispatch, behavior and interactions, same-pass
    tail, following-pass cleanup, and actual gameplay/presentation consumers.
@@ -59,10 +60,11 @@ and a level-content expansion are separate. Do not restart planning.
 
 The current fleet uses Terra 6.1/xhigh workers and Sol 6.1/xhigh integrators.
 Discover live NTM panes and Mail identities rather than trusting old names.
-TealFalcon coordinates acceptance, tracker and pushes. The economy-team Sol
-integrator dispatches the sole Cargo/Unity build slot; delivery negotiates that
-slot for matching native/player installation. Preserve dirty source, staged
-work, warm caches and current installations.
+The current coordinator owns acceptance and tracker updates. The Sol integrator
+implements shared joins and dispatches the sole Cargo/Unity build slot, coherent
+commits/push and matching native/player installation. Discover actual identities
+from the live session. Preserve dirty source, staged work, warm caches and current
+installations.
 
 - `engine-economy`: actual per-owner Castle lifecycle, directional/resource/late
   spells, shared damage/mana consumers. First remove singleton Castle production.

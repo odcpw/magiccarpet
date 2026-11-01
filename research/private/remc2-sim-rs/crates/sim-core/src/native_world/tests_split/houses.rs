@@ -3085,6 +3085,8 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .level
         .checked_add(1)
         .expect("this ordinary upgrade has a following Castle stage");
+    // sub_68D50 gates on the holder's full maxMana. The profile's mana
+    // field is only the per-pulse projectile payload, not the cast price.
     let repeat_cost = occupied
         .shared_spells()
         .physical_spell_profile(
@@ -3094,7 +3096,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             Some(i32::from(next_castle_stage)),
         )
         .expect("the actual next-stage Castle price is defined")
-        .mana;
+        .max_mana;
     let required_capacity = occupied_mana_cost.max(repeat_cost);
     // The real reset capacity is only 1,000. Waiting at the Castle cannot
     // fund an upgrade until the player actually owns more mana. The final
@@ -3165,10 +3167,31 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     }
     let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter()
         .position(|family| *family == 1).expect("public Possession menu family") as i8;
+    let acquire_mana = |occupied: &mut Mc2Simulation, required_capacity: i32, require_switch_product: bool| {
     for claim in 0..mana_sources.len() {
         if occupied.shared_spells().player_entity().max_mana >= required_capacity {
             break;
         }
+        // Retire the previous player's flyer and impact before attributing
+        // another public cast. Attraction fields remain live as in the game.
+        for _ in 0..32 {
+            if occupied.economy().possession_effects().iter().all(|effect| {
+                    !effect.active || effect.source_id_entity_index != player_slot
+                })
+                && occupied.economy().possession_projectiles().iter().all(|projectile| {
+                    !projectile.active || projectile.source_id_entity_index != player_slot
+                })
+            {
+                break;
+            }
+            occupied.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(occupied.economy().possession_effects().iter().all(|effect| {
+            !effect.active || effect.source_id_entity_index != player_slot
+        }));
+        assert!(occupied.economy().possession_projectiles().iter().all(|projectile| {
+            !projectile.active || projectile.source_id_entity_index != player_slot
+        }));
         occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
         let holder_slot = occupied.shared_spells().local_player.enabled_spell_holders[1];
         for _ in 0..32 {
@@ -3179,6 +3202,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             }
             occupied.step_outer_turn(PlayerCommand::default(), 0);
         }
+        // A source merge immediately reclaims the absorbed slot, so the
+        // original handles cannot identify every remaining mana sphere. The
+        // first claim still proves the switch product; later casts may claim
+        // any live, eligible sphere produced by this ordinary session.
         let sphere = occupied.economy().spheres().iter()
             .filter(|sphere| sphere.active && !sphere.pending_delete
                 // Spheres roll and rival carriers can move/claim them.
@@ -3187,8 +3214,14 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
                 && sphere.player_entity_index != player_slot
                 && sphere.control_flags & 0x0020_0000 == 0
                 && occupied.session.state.live.economy.handle(sphere.source_entity_index)
-                    .is_some_and(|handle| mana_sources.contains(&handle)))
-            .min_by_key(|sphere| crate::distance_3d_wrapped(recharge_position, sphere.position))
+                    .is_some_and(|handle| !require_switch_product || claim != 0 || mana_sources.contains(&handle)))
+            .min_by_key(|sphere| {
+                let original = occupied.session.state.live.economy.handle(sphere.source_entity_index)
+                    .is_some_and(|handle| mana_sources.contains(&handle));
+                (!original, sphere.attraction_source_entity_index != 0,
+                    i32::from(sphere.velocity_x).abs() + i32::from(sphere.velocity_y).abs(),
+                    crate::distance_3d_wrapped(recharge_position, sphere.position))
+            })
             .copied().unwrap_or_else(|| panic!(
                 "actual authored mana must remain claimable before both Castle casts are affordable: claim={claim}, max={}, first_cost={occupied_mana_cost}, repeat_cost={repeat_cost}, required={required_capacity}, owned={}, sources={mana_sources:?}, current={:?}",
                 occupied.shared_spells().player_entity().max_mana,
@@ -3214,6 +3247,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         // only display_pitch lets the intervening flight step reset the
         // launch to horizontal before Possession can acquire its real target.
         occupied.set_level2_player_aim_for_test(yaw, pitch);
+        let capacity_before_claim = occupied.shared_spells().player_entity().max_mana;
         let event_start = occupied.economy().events().len();
         occupied.step_outer_turn(PlayerCommand {
             opcode: 6,
@@ -3223,7 +3257,8 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         }, 0);
         let mut saw_flyer = false;
         let mut saw_effect = false;
-        let mut saw_claim = false;
+        let mut claimed_sphere = None;
+        let mut flyer_slot = None;
         let mut ownership_trace = Vec::new();
         for turn in 0..32 {
             ownership_trace.push((
@@ -3239,25 +3274,37 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
                     .copied().collect::<Vec<_>>(),
                 occupied.state.position,
             ));
-            saw_flyer |= occupied.economy().possession_projectiles().iter()
-                .any(|row| row.source_id_entity_index == player_slot);
+            if let Some(flyer) = occupied.economy().possession_projectiles().iter()
+                .find(|row| row.source_id_entity_index == player_slot)
+            {
+                saw_flyer = true;
+                flyer_slot.get_or_insert(flyer.source_entity_index);
+            }
             saw_effect |= occupied.economy().possession_effects().iter()
-                .any(|row| row.source_id_entity_index == player_slot);
-            saw_claim |= occupied.economy().events()[event_start..].iter().any(|event| matches!(event,
-                Level2EconomyEvent::ManaSphereClaimed { owner_entity_index, .. }
-                    if *owner_entity_index == player_slot));
+                .any(|row| row.source_id_entity_index == player_slot
+                    && Some(row.projectile_entity_index) == flyer_slot);
+            claimed_sphere = claimed_sphere.or_else(|| occupied.economy().events()[event_start..].iter().find_map(|event| match event {
+                Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                    if *owner_entity_index == player_slot && (!require_switch_product || claim != 0 || *sphere_id == sphere.id) => Some(*sphere_id),
+                _ => None,
+            }));
             assert!(occupied.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
                 "public Possession must commit: {:?}", occupied.dispatch_events());
-            if saw_claim {
+            if claimed_sphere.is_some() {
                 break;
             }
             occupied.step_outer_turn(PlayerCommand::default(), 0);
         }
-        assert!(saw_flyer && saw_effect && saw_claim,
-            "claim {claim} must use the real hand, flyer, effect and owner mailbox: flyer={saw_flyer}, effect={saw_effect}, claim={saw_claim}, target={sphere:?}, source_trace={ownership_trace:#?}");
+        assert!(saw_flyer && saw_effect && claimed_sphere.is_some(),
+            "claim {claim} must use the real hand, flyer, effect and owner mailbox: flyer={saw_flyer}, effect={saw_effect}, claim={claimed_sphere:?}, target={sphere:?}, source_trace={ownership_trace:#?}");
         // Claiming is not allowed to publish sub_60F00's capacity early.
         occupied.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(occupied.shared_spells().player_entity().max_mana > capacity_before_claim,
+            "source ownership must increase real player capacity: claimed={claimed_sphere:?}, before={capacity_before_claim}, after={}",
+            occupied.shared_spells().player_entity().max_mana);
     }
+    };
+    acquire_mana(&mut occupied, required_capacity, true);
     occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
     occupied.state.yaw = recharge_yaw;
     occupied.state.display_pitch = 0;
@@ -3322,6 +3369,9 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     let upgrade_product_generation = occupied
         .economy()
         .slot_generation(upgrade_product_before.source_entity_index);
+    let upgrade_product_handle = occupied.session.state.live.economy
+        .handle(upgrade_product_before.source_entity_index)
+        .expect("the landed product has a source generation");
     let product_dispatched = |session: &Mc2Simulation| {
         session.dispatch_events().iter().any(|event| {
             matches!(event, Mc2DispatchEvent::DynamicArena {
@@ -3447,25 +3497,30 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     occupied.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(occupied.economy().player_castle_entity_index(), root_slot);
     assert!(occupied.economy().castle_projectiles().is_empty());
-    assert!(
-        occupied
-            .economy()
-            .castle_children()
-            .iter()
-            .all(|child| child.source_entity_index != upgrade_product_slot)
-    );
-    assert!(
-        !occupied
-            .economy()
-            .map_chains()
-            .is_linked(upgrade_product_slot)
-    );
-    assert!(
-        occupied
-            .economy()
-            .free_slots
-            .contains(&upgrade_product_slot)
-    );
+    assert!(occupied.session.state.live.economy.resolve(upgrade_product_handle).is_none(),
+        "the old model-43 generation must be reclaimed at the next source boundary");
+    assert!(!occupied.economy().castle_children().iter().any(|child| {
+        child.source_entity_index == upgrade_product_slot && child.model == 43 && child.action == 45
+    }), "the old model-43 child must not survive beside a replacement");
+    let replacement = occupied.economy().live_arena_cursor_rows().into_iter()
+        .find(|row| row.source_slot == upgrade_product_slot);
+    if let Some(replacement) = replacement {
+        assert_ne!(replacement.generation, upgrade_product_generation);
+        assert_eq!(replacement.kind, Level2DynamicArenaKind::CastleChild);
+        let child = occupied.economy().castle_children().iter()
+            .find(|child| child.source_entity_index == upgrade_product_slot)
+            .expect("reused slot is the real construction child");
+        assert_eq!((child.source_class, child.model, child.action, child.parent_entity_index),
+            (10, 42, 44, root_slot));
+        assert!(child.active);
+        assert_eq!(child.control_flags & 0x4, 0);
+        // Source sub_50370 copies position directly; model42 is not map-linked.
+        assert!(!occupied.economy().map_chains().is_linked(upgrade_product_slot));
+        assert!(!occupied.economy().free_slots.contains(&upgrade_product_slot));
+    } else {
+        assert!(!occupied.economy().map_chains().is_linked(upgrade_product_slot));
+        assert!(occupied.economy().free_slots.contains(&upgrade_product_slot));
+    }
     let mailbox_root = same_pass_consumer.unwrap_or_else(|| {
         occupied
             .economy()
@@ -3510,11 +3565,23 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     // Holder release is distinct from paying for another upgrade. Reuse the
     // same ordinary upkeep path that funded the first public cast; no mana
     // or capacity is granted to make a repeated cast succeed.
-    for _ in 0..32 {
+    for _ in 0..4 {
+        acquire_mana(&mut occupied, recast_holder.mana_cost, false);
+        occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
+        occupied.state.yaw = recharge_yaw;
+        occupied.state.display_pitch = 0;
+        occupied.state.effective_pitch = 0;
+        occupied.state.target_speed = 0;
+        occupied.state.actual_speed = 0;
+        for _ in 0..32 {
+            if occupied.shared_spells().caster.mana >= recast_holder.mana_cost {
+                break;
+            }
+            occupied.step_outer_turn(PlayerCommand::default(), 0);
+        }
         if occupied.shared_spells().caster.mana >= recast_holder.mana_cost {
             break;
         }
-        occupied.step_outer_turn(PlayerCommand::default(), 0);
     }
     assert!(
         occupied.shared_spells().caster.mana >= recast_holder.mana_cost,
@@ -3527,7 +3594,9 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         occupied.economy().player_castle_shift_aabb_overlap(occupied.shared_spells().player_entity()),
     );
     let recast_caster = occupied.shared_spells().player_entity().clone();
-    let recast_root = occupied.economy().castle();
+    let recast_root = occupied.economy().castle().expect("live stage-two root");
+    assert_eq!((recast_root.source_entity_index, recast_root.level), (root_slot, 2));
+    let root_generation = occupied.economy().slot_generation(root_slot);
     occupied.step_outer_turn(request, 0);
     assert!(
         occupied
@@ -3551,6 +3620,35 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             .is_some_and(|holder| holder.active_value > 0),
         "the successful recast advances the family-2 holder lifecycle"
     );
+    let after_launch = occupied.shared_spells().player_entity();
+    assert!(after_launch.mana < recast_caster.mana || after_launch.mana_regen <= -recast_holder.mana_cost,
+        "the public recast must apply or queue the full source charge: before={}, after={}, regen={}, cost={}",
+        recast_caster.mana, after_launch.mana, after_launch.mana_regen, recast_holder.mana_cost);
+    let mut completed = false;
+    for _ in 0..128 {
+        if occupied.economy().castle_at(root_slot).is_some_and(|castle| {
+            (castle.level, castle.action, castle.build_state) == (3, 4, 0)
+        }) {
+            completed = true;
+            break;
+        }
+        occupied.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(occupied.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "the real repeat upgrade must continue dispatching: {:?}", occupied.dispatch_events());
+    }
+    assert!(completed, "the funded repeat must finish the actual stage-three Castle");
+    let root = occupied.economy().castle_at(root_slot).expect("upgraded Castle root");
+    assert_eq!(occupied.economy().slot_generation(root_slot), root_generation);
+    assert_eq!((root.source_id_entity_index, root.player_entity_index, root.mana_capacity),
+        (player_slot, player_slot, 38_800));
+    assert_eq!(occupied.economy().player_castle_entity_index(), root_slot);
+    assert!(occupied.shared_spells().pickup(occupied.shared_spells().local_player.enabled_spell_holders[2])
+        .is_some_and(|holder| holder.active_value == 0), "completed construction releases its real holder");
+    let sprites = occupied.campaign_entity_presentations(0).expect("Castle presentation census");
+    let sprite = sprites.iter().find(|row| row.entity_index == root_slot)
+        .expect("upgraded live Castle reaches presentation");
+    assert_eq!((sprite.source_id, sprite.render_parameter_index, sprite.base_tmap),
+        (player_slot, 177, 96));
 }
 
 #[test]
@@ -3636,7 +3734,16 @@ fn level_two_castle_upgrade_product_reclaims_at_next_entity_pass() {
     assert!(!session.economy().castle_children().iter().any(|child| {
         child.active && child.source_class == 10 && child.model == 43 && child.action == 45
     }));
+    assert!(!session.economy().castle_children().iter().any(|child| {
+        child.source_entity_index == product_slot && child.source_class == 10 && child.model == 43 && child.action == 45
+    }), "the old product row must not survive inactive beside a replacement");
     let product_generation = product_generation_before.wrapping_add(1);
+    let product_handle = crate::campaign::source_arena::SourceEntityHandle {
+        source_slot: product_slot,
+        generation: product_generation,
+    };
+    assert!(session.session.state.live.economy.resolve(product_handle).is_none(),
+        "the original model-43 generation must not resolve after the source prepass");
     let final_generation = session.economy().slot_generation(product_slot);
     let replacement = session
         .economy()
@@ -3644,12 +3751,21 @@ fn level_two_castle_upgrade_product_reclaims_at_next_entity_pass() {
         .iter()
         .find(|row| row.source_slot == product_slot)
         .copied();
-    if replacement.is_some() {
+    if let Some(replacement) = replacement {
         assert!(
             final_generation > product_generation,
             "same-slot reuse must advance the source generation"
         );
-        assert!(session.economy().map_chains().is_linked(product_slot));
+        assert_eq!(replacement.kind, Level2DynamicArenaKind::CastleChild);
+        let child = session.economy().castle_children().iter()
+            .find(|child| child.source_entity_index == product_slot)
+            .expect("reused slot is the construction child");
+        assert_eq!((child.source_class, child.model, child.action, child.parent_entity_index),
+            (10, 42, 44, root_slot));
+        assert!(child.active);
+        assert_eq!(child.control_flags & 0x4, 0);
+        assert!(!session.economy().map_chains().is_linked(product_slot),
+            "sub_50370 constructs model42 without map linkage");
         assert!(!session.economy().free_slots.contains(&product_slot));
     } else {
         assert_eq!(final_generation, product_generation);

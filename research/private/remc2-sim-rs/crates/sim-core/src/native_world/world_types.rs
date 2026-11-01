@@ -1566,12 +1566,11 @@ pub(super) fn level2_carrier_sphere_relation_matches(
     sphere.owner_entity_index == carrier.owner_entity_index
 }
 
-pub(super) fn level2_castle_sphere_overlap(castle: Position, sphere: &ManaSphere) -> bool {
-    let dx = i32::from(sphere.position.x.wrapping_sub(castle.x).cast_signed());
-    let dy = i32::from(sphere.position.y.wrapping_sub(castle.y).cast_signed());
-    dx.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH) + i32::from(sphere.collision_pitch)
-        && dy.abs()
-            < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH) + i32::from(sphere.collision_roll)
+pub(super) fn level2_castle_sphere_overlap(castle: &Level2CastleState, sphere: &ManaSphere) -> bool {
+    let dx = i32::from(sphere.position.x.wrapping_sub(castle.position.x).cast_signed());
+    let dy = i32::from(sphere.position.y.wrapping_sub(castle.position.y).cast_signed());
+    dx.abs() < i32::from(castle.shift_pitch) + i32::from(sphere.collision_pitch)
+        && dy.abs() < i32::from(castle.shift_roll) + i32::from(sphere.collision_roll)
 }
 
 /// `sub_60810`'s stage table with the imported player spell coefficient

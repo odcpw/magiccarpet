@@ -1557,6 +1557,9 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         cast.state.yaw = yaw.wrapping_sub(aim_yaw);
         cast.state.display_pitch = pitch.wrapping_sub(aim_pitch);
         cast.state.effective_pitch = pitch.wrapping_sub(aim_pitch);
+        // The next flight step derives display pitch from this accumulator;
+        // setting the display alone does not aim the actual source player.
+        cast.state.pitch_accumulator = pitch.wrapping_sub(aim_pitch);
         cast.state.actual_speed = 0;
         cast.state.target_speed = 0;
         let parent_handle = cast
@@ -1589,6 +1592,10 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                     row.active && (row.class, row.model) == (9, 25) && row.source_id == player
                 }) {
                     let parent = &cast.entities()[usize::from(player)];
+                    assert_eq!(
+                        parent.pitch, cast.state.display_pitch,
+                        "Alliance must read the player body's current source pitch"
+                    );
                     let mut expected = parent.position;
                     crate::move_entity(
                         &mut expected,
@@ -1758,6 +1765,179 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                 launched && aimed_from_input && impacted && allied,
                 "controlled at-gate Alliance must reach the live model18: launched={launched}, aimed={aimed_from_input}, impact={impacted}, allied={allied}, trace={trace:?}"
             );
+            let actor = &cast.entities()[usize::from(actor_slot)];
+            let presentation = cast
+                .campaign_entity_presentations(cast.state.yaw)
+                .expect("the acquired Alliance actor reaches presentation")
+                .into_iter()
+                .find(|row| row.entity_index == actor_slot)
+                .expect("the allied actor is present in the source sprite census");
+            assert_eq!(presentation.position, actor.position);
+            assert_eq!(presentation.control_flags, actor.control_flags);
+
+            // A real second pickup and player Fireball collision select a
+            // hostile for this same acquired ally. The creature must consume
+            // that player-selected source target and produce its own shot.
+            let mut combat = cast.clone();
+            let hostile_slot = combat
+                .entities()
+                .iter()
+                .find(|row| row.active && row.class == 5 && row.model == 21 && row.life > 0)
+                .expect("the authored group retains a living model21 opponent")
+                .index;
+            combat
+                .set_level2_entity_position(player, fireball.position)
+                .unwrap();
+            let mut acquired_fireball = combat
+                .shared_spells()
+                .players()
+                .iter()
+                .find(|row| row.entity_index == player)
+                .is_some_and(|row| row.enabled_spell_holders[0] == fireball.source_entity_index);
+            for _ in 0..4 {
+                if acquired_fireball {
+                    break;
+                }
+                combat.step_outer_turn(PlayerCommand::default(), 0);
+                acquired_fireball |= combat.dispatch_events().iter().any(|event| {
+                    matches!(
+                        event,
+                        Mc2DispatchEvent::SpellAcquisition {
+                            family: 0,
+                            source_slot,
+                            result: Some(_),
+                            ..
+                        } if *source_slot == fireball.source_entity_index
+                    )
+                });
+                if acquired_fireball {
+                    break;
+                }
+            }
+            assert!(
+                acquired_fireball,
+                "the allied caster must acquire the real Fireball pickup"
+            );
+            let fireball_ui = crate::SOURCE_SPELL_INDEX_MAP
+                .iter()
+                .position(|family| *family == 0)
+                .expect("Fireball has a source menu entry") as i8;
+            combat.step_outer_turn(
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: fireball_ui,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            let mut hostile_position = combat.entities()[usize::from(actor_slot)].position;
+            hostile_position.x = hostile_position.x.wrapping_add(2048);
+            combat
+                .set_level2_entity_position(hostile_slot, hostile_position)
+                .unwrap();
+            let player_position = Position {
+                x: hostile_position.x.wrapping_add(256),
+                y: hostile_position.y.wrapping_add(1024),
+                z: hostile_position.z.wrapping_add(1024),
+            };
+            combat
+                .set_level2_entity_position(player, player_position)
+                .unwrap();
+            combat.state.yaw = 0;
+            combat.state.roll_accumulator = 0;
+            combat.state.pitch_accumulator = 0;
+            combat.state.display_pitch = 0;
+            combat.state.effective_pitch = 0;
+            combat.state.actual_speed = 0;
+            combat.state.target_speed = 0;
+            let mut launch_position = player_position;
+            launch_position.x = launch_position.x.wrapping_sub(256);
+            launch_position.z = launch_position.z.wrapping_add(combat.state.entity_fov);
+            let (_, fireball_pitch) = crate::level1_mission::projectile_guidance_angles(
+                launch_position,
+                hostile_position,
+            );
+            let mut selected_hostile = false;
+            let mut ally_selected_hostile = false;
+            let mut ally_fired = false;
+            for turn in 0..256 {
+                combat.step_outer_turn(
+                    PlayerCommand {
+                        flags: if turn == 0 { 0x10 } else { 0 },
+                        argument_8: if turn == 0 {
+                            fireball_pitch.cast_unsigned()
+                        } else {
+                            0
+                        },
+                        ..PlayerCommand::default()
+                    },
+                    0,
+                );
+                let caster = &combat.entities()[usize::from(player)];
+                let ally = &combat.entities()[usize::from(actor_slot)];
+                selected_hostile |= put_word(caster, 154) == hostile_slot;
+                ally_selected_hostile |= selected_hostile
+                    && ally.record[77] == 14
+                    && put_word(ally, 44) == player
+                    && put_word(ally, 154) == hostile_slot;
+                ally_fired |= combat.economy().fireball_projectiles().iter().any(|shot| {
+                    shot.origin == crate::native_world::FireballProjectileOrigin::Creature18
+                        && shot.owner_entity_index == actor_slot
+                        && shot.target_source_entity_index == hostile_slot
+                });
+                if selected_hostile && ally_selected_hostile && ally_fired {
+                    break;
+                }
+            }
+            assert!(
+                selected_hostile && ally_selected_hostile && ally_fired,
+                "real Fireball target must drive the acquired ally's attack: player={selected_hostile}, ally={ally_selected_hostile}, fired={ally_fired}, caster_target={}, ally={:?}, hostile={:?}, errors={:?}",
+                put_word(&combat.entities()[usize::from(player)], 154),
+                &combat.entities()[usize::from(actor_slot)],
+                &combat.entities()[usize::from(hostile_slot)],
+                combat
+                    .dispatch_events()
+                    .iter()
+                    .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+                    .collect::<Vec<_>>()
+            );
+
+            // Keep the real caster out of the nearby combat while the same
+            // acquired creature runs its source Alliance lifetime. No owner,
+            // target, action, or timer is manufactured by this check.
+            let remaining = i16::from_le_bytes([actor.record[50], actor.record[51]]);
+            let mut safe_player = cast.entities()[usize::from(player)].position;
+            safe_player.x = safe_player.x.wrapping_add(0x6000);
+            cast.set_level2_entity_position(player, safe_player)
+                .unwrap();
+            let mut saw_countdown = false;
+            let mut expired = false;
+            for _ in 0..160 {
+                cast.step_outer_turn(PlayerCommand::default(), 2);
+                let actor = &cast.entities()[usize::from(actor_slot)];
+                assert_eq!(cast.source_arena().handle(actor_slot), Some(actor_handle));
+                assert!(cast.entities()[usize::from(player)].life > 0);
+                let left = i16::from_le_bytes([actor.record[50], actor.record[51]]);
+                if actor.record[77] == 14 {
+                    assert_eq!(put_word(actor, 44), player);
+                    assert_ne!(
+                        put_word(actor, 154),
+                        player,
+                        "an ally must not target its caster"
+                    );
+                    saw_countdown |= left < remaining;
+                } else {
+                    assert!(left <= 0, "Alliance must expire through its source timer");
+                    assert_eq!(put_word(actor, 44), 0);
+                    assert_eq!(actor.control_flags & 0x0600_0000, 0);
+                    expired = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_countdown && expired,
+                "acquired Alliance must count down and expire"
+            );
         } else {
             assert!(
                 !launched && !impacted && !allied,
@@ -1774,6 +1954,72 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     // Fire once through the actual selected holder and starting player mana.
     // The paired branch receives the same movement and source turns without
     // the fire input; neither branch edits creature or inventory state.
+    let fire_actor_handle = pickup_near.source_arena().handle(actor_slot).unwrap();
+    let fire_holder_handle = pickup_near
+        .source_arena()
+        .handle(fireball.source_entity_index)
+        .unwrap();
+    let emitters = pickup_near
+        .economy()
+        .authored_model53()
+        .iter()
+        .filter(|source| source.active)
+        .map(|source| source.source_entity_index)
+        .collect::<Vec<_>>();
+    assert!(
+        !emitters.is_empty(),
+        "authored group must produce model53 sources"
+    );
+    let mut wait_position = pickup_near.entities()[usize::from(actor_slot)].position;
+    wait_position.x = wait_position.x.wrapping_add(0x6000);
+    pickup_near
+        .set_level2_entity_position(player, wait_position)
+        .unwrap();
+    let mut reclaim_trace = Vec::new();
+    for _ in 0..32 {
+        let emitting = pickup_near
+            .economy()
+            .authored_model53()
+            .iter()
+            .filter(|source| source.active && source.life >= 0)
+            .count();
+        let children = pickup_near
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .filter(|child| child.active && emitters.contains(&child.parent_entity_index))
+            .count();
+        let free = pickup_near.economy().free_slot_count();
+        reclaim_trace.push((emitting, children, free));
+        if emitting == 0 && children == 0 && free >= 2 {
+            break;
+        }
+        pickup_near.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        pickup_near
+            .economy()
+            .authored_model53()
+            .iter()
+            .all(|source| !source.active || source.life < 0)
+            && pickup_near
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .all(|child| !child.active || !emitters.contains(&child.parent_entity_index))
+            && pickup_near.economy().free_slot_count() >= 2,
+        "ordinary emission and reclaim must leave room for Fireball and impact: {reclaim_trace:?}"
+    );
+    assert_eq!(
+        pickup_near.source_arena().handle(actor_slot),
+        Some(fire_actor_handle)
+    );
+    assert_eq!(
+        pickup_near
+            .source_arena()
+            .handle(fireball.source_entity_index),
+        Some(fire_holder_handle)
+    );
     let fireball_ui = crate::SOURCE_SPELL_INDEX_MAP
         .iter()
         .position(|family| *family == 0)
@@ -1790,8 +2036,8 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     let actor = pickup_near.entities()[usize::from(actor_slot)].clone();
     let player_position = Position {
         x: actor.position.x.wrapping_add(256),
-        y: actor.position.y.wrapping_add(384),
-        z: actor.position.z.wrapping_sub(pickup_near.state.entity_fov),
+        y: actor.position.y.wrapping_add(1024),
+        z: actor.position.z.wrapping_add(1024),
     };
     pickup_near
         .set_level2_entity_position(player, player_position)
@@ -1799,8 +2045,14 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     pickup_near.state.yaw = 0;
     pickup_near.state.display_pitch = 0;
     pickup_near.state.effective_pitch = 0;
+    pickup_near.state.pitch_accumulator = 0;
     pickup_near.state.actual_speed = 0;
     pickup_near.state.target_speed = 0;
+    let mut launch_position = player_position;
+    launch_position.x = launch_position.x.wrapping_sub(256);
+    launch_position.z = launch_position.z.wrapping_add(pickup_near.state.entity_fov);
+    let (_, fireball_pitch) =
+        crate::level1_mission::projectile_guidance_angles(launch_position, actor.position);
     let mut no_fire = pickup_near.clone();
     let life_before = actor.life;
     let mut player_projectile = false;
@@ -1810,6 +2062,7 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
         pickup_near.step_outer_turn(
             PlayerCommand {
                 flags: if turn == 0 { 0x10 } else { 0 },
+                argument_8: fireball_pitch.cast_unsigned(),
                 ..PlayerCommand::default()
             },
             0,
@@ -1854,7 +2107,13 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             impacts,
             errors,
         ));
-        no_fire.step_outer_turn(PlayerCommand::default(), 0);
+        no_fire.step_outer_turn(
+            PlayerCommand {
+                argument_8: fireball_pitch.cast_unsigned(),
+                ..PlayerCommand::default()
+            },
+            0,
+        );
         assert!(
             !no_fire
                 .economy()
@@ -1869,6 +2128,11 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     assert!(
         player_projectile && actor_hit,
         "owner Fireball must reach the authored model18 through real input: projectile={player_projectile}, hit={actor_hit}, trace={shot_trace:?}"
+    );
+    assert_eq!(
+        put_word(&pickup_near.entities()[usize::from(player)], 154),
+        actor_slot,
+        "the successful source impact must publish the player's selected target"
     );
     let model21_slots = session
         .entities()

@@ -10399,6 +10399,7 @@ impl Level2EconomyTestView<'_> {
         let remove_rival_castle_spell =
             self.session.session.definition.source_terrain_graphics_flags() & 4 != 0;
         let live = &mut self.session.session.state.live;
+        live.economy.rebuild_possession_guidance_source_slots();
         live.step_castle_action_with_player_state(
             castle_slot,
             &reset_free_slots,
@@ -17692,6 +17693,12 @@ impl Mc2Simulation {
                     }
                     self.append_new_economy_events(pass, source_slot);
 
+                    let flight_body_updates_orientation = matches!(player_action_at_visit, 0 | 2)
+                        && self.session.state.live.economy.entities
+                            [usize::from(player_entity_index)]
+                        .control_flags
+                            & 0x800
+                            == 0;
                     if matches!(player_action_at_visit, 0 | 2) {
                         // The source body consumes the current arena latch at
                         // its numeric visit, including wind writes earlier in
@@ -17906,12 +17913,18 @@ impl Mc2Simulation {
                     } else if player_action_at_visit == 3 {
                         self.step_level2_player_banished_action();
                     }
-                    // sub_5D530 writes source yaw during ordinary and dying
-                    // flight. Later StageVar-12 followers read this same row.
+                    // sub_5D530 writes source yaw and pitch during ordinary
+                    // and dying flight. Spell constructors read this pitch,
+                    // while movement uses the separate terrain-relative pitch.
                     let live = &mut self.session.state.live;
                     let yaw = live.core.state.yaw;
-                    live.economy.entities[usize::from(player_entity_index)].set_yaw(yaw);
-                    live.shared_spells.player_entity.set_yaw(yaw);
+                    let pitch = live.core.state.display_pitch;
+                    let player = &mut live.economy.entities[usize::from(player_entity_index)];
+                    player.set_yaw(yaw);
+                    if flight_body_updates_orientation {
+                        player.set_pitch(pitch);
+                    }
+                    live.shared_spells.sync_player_entity_from_authority(player);
                     live.shared_spells
                         .sync_typed_spell_parent_caches_from_player_entity();
                     for player in &mut live.core.players {

@@ -664,6 +664,45 @@ fn level_two_shared_day_flight_uses_level2_profile() {
 }
 
 #[test]
+fn level_two_player_input_publishes_source_pitch_and_respects_body_skip() {
+    let mut session = level_two_campaign_session();
+    let player = usize::from(session.state.entity_index);
+    session.step_outer_turn(
+        PlayerCommand {
+            pitch: 64,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    assert_ne!(session.state.display_pitch, 0);
+    assert_eq!(session.entities()[player].pitch, session.state.display_pitch);
+    assert_eq!(
+        session.shared_spells().player_entity().pitch,
+        session.state.display_pitch
+    );
+
+    // sub_5D530 returns before writing source pitch when its body-skip
+    // latch is set. A different display value must not leak into the row.
+    let row = &mut session.session.state.live.economy.entities[player];
+    row.set_pitch(77);
+    row.set_control_flags(row.control_flags | 0x800);
+    session.state.display_pitch = 222;
+    session.state.pitch_accumulator = 222;
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(session.entities()[player].pitch, 77);
+    assert_eq!(session.shared_spells().player_entity().pitch, 77);
+    assert_eq!(session.entities()[player].control_flags & 0x800, 0);
+
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_ne!(session.state.display_pitch, 77);
+    assert_eq!(session.entities()[player].pitch, session.state.display_pitch);
+    assert_eq!(
+        session.shared_spells().player_entity().pitch,
+        session.state.display_pitch
+    );
+}
+
+#[test]
 fn level_two_ordinary_reset_binds_census_shared_lifecycle_and_isolation() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");

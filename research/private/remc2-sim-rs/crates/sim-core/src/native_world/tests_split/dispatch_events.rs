@@ -5908,8 +5908,8 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     // the following callback consumes the mailbox.
     let player_position = Position {
         x: bee.position.x.wrapping_add(256),
-        y: bee.position.y.wrapping_add(384),
-        z: bee.position.z.wrapping_sub(session.state.entity_fov),
+        y: bee.position.y.wrapping_add(1024),
+        z: bee.position.z.wrapping_add(1024),
     };
     session
         .set_level2_entity_position(session.state.entity_index, player_position)
@@ -5919,12 +5919,18 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
     session.state.effective_pitch = 0;
     session.state.actual_speed = 0;
     session.state.target_speed = 0;
+    session.state.pitch_accumulator = 0;
     let impact_slots_before = session
-        .economy()
-        .model17_spawned_children()
+        .entities()
         .iter()
-        .map(|row| row.source_entity_index)
+        .filter(|row| row.class == 10 && row.model == 0)
+        .map(|row| row.index)
         .collect::<BTreeSet<_>>();
+    let mut launch_position = player_position;
+    launch_position.x = launch_position.x.wrapping_sub(256);
+    launch_position.z = launch_position.z.wrapping_add(session.state.entity_fov);
+    let (_, fireball_pitch) =
+        crate::level1_mission::projectile_guidance_angles(launch_position, bee.position);
     let launch_auxiliary_byte = session
         .shared_spells()
         .players
@@ -5939,6 +5945,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
             opcode: 6,
             argument_1: 0,
             flags: 0x40,
+            argument_8: fireball_pitch.cast_unsigned(),
             ..PlayerCommand::default()
         },
         0,
@@ -6001,16 +6008,59 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
         } if *entity_index == projectile.source_entity_index
     )));
 
+    // A collision must not publish a caster target before its impact
+    // allocation succeeds. Exercise that failure from the same public birth.
+    let mut no_impact_capacity = session.clone();
+    let owner_target_before = no_impact_capacity.entities()
+        [usize::from(session.state.entity_index)]
+        .source_word_96();
+    let particles = no_impact_capacity.session.definition.presentation.particles.clone();
+    {
+        let live = &mut no_impact_capacity.session.state.live;
+        live.economy.economy.exhaust_new_event_capacity_for_test();
+        for row in &mut live.economy.entities {
+            row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+        }
+        let target_position = live.economy.economy.bee_creatures().iter()
+            .find(|row| row.source_entity_index == bee_slot)
+            .expect("the real Bee remains live in the allocation-failure branch")
+            .position;
+        let flyer = live.economy.economy.fireball_projectiles.iter_mut()
+            .find(|row| row.source_entity_index == projectile.source_entity_index)
+            .expect("the public flyer remains live before impact");
+        flyer.position = target_position;
+        flyer.actual_speed = 0;
+        let failed = crate::native_world::effects::step_projectile(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            projectile.source_entity_index,
+            crate::native_world::source_target::Context::from_ordinary(
+                &live.goats, &live.ordinary,
+            ),
+        ).expect("the ordinary Fireball impact allocation may fail");
+        assert_eq!(failed.collision_target, Some(bee_slot));
+        assert!(failed.live && failed.impact_slot.is_none());
+        assert_eq!(
+            live.economy.entities[usize::from(session.state.entity_index)].source_word_96(),
+            owner_target_before,
+            "failed impact allocation must leave the caster target unchanged"
+        );
+    }
     let launch_rng = projectile.entity_rng;
     let (hit_projectile, impact) = (0..16)
         .find_map(|_| {
             session.step_outer_turn(PlayerCommand::default(), 0);
             let impact = session
-                .economy()
-                .model17_spawned_children()
+                .entities()
                 .iter()
-                .find(|row| !impact_slots_before.contains(&row.source_entity_index))
-                .copied()?;
+                .find(|row| {
+                    row.class == 10 && row.model == 0
+                        && !impact_slots_before.contains(&row.index)
+                        && row.source_id == session.state.entity_index
+                        && row.source_word_96() == bee_slot
+                })
+                .cloned()?;
             let flyer = session
                 .economy()
                 .fireball_projectiles()
@@ -6032,16 +6082,16 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
         "the class-9 flyer never consumes the class-10 impact RNG tail"
     );
     assert_eq!(
-        (impact.source_class, impact.model, impact.action),
+        (impact.class, impact.model, impact.action),
         (10, 0, 0)
     );
     assert_eq!(
-        (impact.parent_entity_index, impact.parent_entity_id),
-        (projectile.source_entity_index, session.state.entity_index)
+        (impact.source_id, impact.source_word_96()),
+        (session.state.entity_index, bee_slot)
     );
     assert_eq!(impact.control_flags & 0x2, 0x2);
     assert_eq!(
-        impact.source_word_2c,
+        impact.source_word_2c(),
         i16::try_from(impact.entity_rng % 0x41).expect("impact RNG fits") - 32
     );
     let pending = session
@@ -6052,6 +6102,11 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
         .copied()
         .expect("target Bee remains live after mailbox write");
     assert_eq!(pending.pending_damage, 250);
+    assert_eq!(
+        session.entities()[usize::from(session.state.entity_index)].source_word_96(),
+        bee_slot,
+        "the real Fireball impact publishes the caster target consumed by allies"
+    );
     assert_eq!(
         pending.pending_attacker_entity_index,
         session.state.entity_index
@@ -6070,7 +6125,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
                         entity_index,
                         player_index: -1,
                         sound_id: 3,
-                    } if *entity_index == impact.source_entity_index
+                    } if *entity_index == impact.index
                 )
             })
     );

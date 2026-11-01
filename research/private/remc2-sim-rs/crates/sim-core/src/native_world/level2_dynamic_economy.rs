@@ -6839,6 +6839,15 @@ impl Level2EconomyState {
                     return true;
                 }
                 self.release_castle_excess_mana(castle_slot, terrain, reset_free_slots);
+                // EndOfCastleProjectile refreshes the current stage's BUILD
+                // footprint before defender maintenance and sphere collection.
+                let (shift_pitch, shift_roll) = level2_castle_shift_axes(snapshot.level);
+                if let Some(castle) = self.castle_entry_mut(castle_slot) {
+                    castle.shift_pitch = shift_pitch;
+                    castle.shift_roll = shift_roll;
+                    castle.shift_yaw = -8_192;
+                    castle.shift_fov = 0x4000;
+                }
                 self.maintain_castle_defenders(castle_slot, terrain);
                 let Some(castle) = self.castle_entry(castle_slot).copied() else {
                     self.advance_castle_phase(castle_slot);
@@ -6848,13 +6857,20 @@ impl Level2EconomyState {
                     self.advance_castle_phase(castle_slot);
                     return true;
                 }
-                let Some(sphere_index) = self.spheres.iter().position(|sphere| {
-                    sphere.active
-                        && !sphere.pending_delete
-                        && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-                        && sphere.player_entity_index == castle.source_id_entity_index
-                        && level2_castle_sphere_overlap(castle.position, sphere)
-                }) else {
+                // The class-10 mana list is rebuilt in numeric slot order at
+                // the source prepass; a same-pass birth is not linked into it.
+                let Some(sphere_index) = self.spheres.iter().enumerate()
+                    .filter(|(_, sphere)| {
+                        sphere.active
+                            && !sphere.pending_delete
+                            && sphere.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                            && sphere.player_entity_index == castle.source_id_entity_index
+                            && self.possession_guidance_source_slots.binary_search(&sphere.source_entity_index).is_ok()
+                            && level2_castle_sphere_overlap(&castle, sphere)
+                    })
+                    .min_by_key(|(_, sphere)| sphere.source_entity_index)
+                    .map(|(index, _)| index)
+                else {
                     self.advance_castle_phase(castle_slot);
                     return true;
                 };

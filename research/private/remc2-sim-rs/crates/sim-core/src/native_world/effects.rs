@@ -212,6 +212,29 @@ pub(crate) fn step_projectile(
         && birth == FireballBirth::Impact
         && projectile.origin != super::FireballProjectileOrigin::Eruption
         && projectile.source_model != 28;
+    // sub_686D0 publishes a successful hit to the current player caster
+    // before the XP tail. Allied actors consume that same word96. A failed
+    // impact allocation leaves it unchanged; a replaced flyer address no
+    // longer carries the old caster identity.
+    if birth == FireballBirth::Impact
+        && child.is_some()
+        && child != Some(slot)
+        && let Some(target) = step.collision_target.filter(|target| *target != 0)
+        && arena
+            .handle(projectile.owner_entity_index)
+            .is_some_and(|handle| {
+                matches!(
+                    arena.resolve(handle),
+                    Some(crate::campaign::source_arena::SourceEntityView::Imported(owner))
+                        if owner.index != 0 && owner.class == 3 && matches!(owner.model, 0 | 1)
+                )
+            })
+        && let Some(owner) = arena
+            .entities
+            .get_mut(usize::from(projectile.owner_entity_index))
+    {
+        owner.set_source_word_96(target);
+    }
     if child.is_some() || birth == FireballBirth::Ash {
         if impact_replaced_source || (birth == FireballBirth::Ash && child == Some(slot)) {
             rules::hide_birth_replacement(arena, slot, child)?;

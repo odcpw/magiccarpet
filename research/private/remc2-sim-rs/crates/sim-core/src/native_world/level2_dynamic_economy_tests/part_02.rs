@@ -397,6 +397,110 @@ fn level_two_castle_controller_points_pin_stage_corner_vectors() {
 }
 
 #[test]
+fn level_two_castle_collection_uses_current_stage_footprint() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut base = inspection
+        .level2_reset_session()
+        .expect("Castle collection session");
+    let position = Position {
+        x: 10_000,
+        y: 10_000,
+        z: 0,
+    };
+    let castle_slot = base
+        .economy_mut()
+        .build_castle(position, 111)
+        .expect("Castle root");
+
+    // A sphere between the stage-1 and stage-2 envelopes must be collected
+    // only by the larger root; the stage-2 edge itself remains exclusive.
+    for (stage, offset, collected) in [(1, 2_200_u16, false), (2, 2_200, true), (2, 3_356, false)]
+    {
+        let mut session = base.clone();
+        let sphere_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                901,
+                Position {
+                    x: position.x.wrapping_add(offset),
+                    ..position
+                },
+                0,
+                0x4321,
+                1_000,
+                111,
+            )
+            .expect("owned source mana sphere") as u16;
+        {
+            let mut economy = session.economy_mut();
+            let castle = economy.castle_at_mut(castle_slot).expect("Castle root");
+            castle.level = stage;
+            castle.phase = 0;
+            castle.mana_capacity = 18_000;
+        }
+        assert!(session.economy_mut().step_castle_action(castle_slot));
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("sphere remains until reclaim");
+        assert_eq!(sphere.pending_delete, collected, "stage={stage}, offset={offset}");
+        assert_eq!(
+            session.economy().castle_at(castle_slot).unwrap().mana,
+            if collected { 1_000 } else { 0 }
+        );
+    }
+}
+
+#[test]
+fn level_two_castle_collection_uses_frozen_source_slot_order() {
+    let inspection =
+        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
+    let mut session = inspection.level2_reset_session().expect("Castle collection session");
+    let position = Position { x: 10_000, y: 10_000, z: 0 };
+    let castle_slot = session.economy_mut().build_castle(position, 111).expect("Castle root");
+    session.economy_mut().castle_at_mut(castle_slot).unwrap().phase = 0;
+    let first = session.economy_mut().spawn_mana_sphere_from_death(901, position, 0, 1, 200, 111).unwrap() as u16;
+    let second = session.economy_mut().spawn_mana_sphere_from_death(902, position, 0, 2, 300, 111).unwrap() as u16;
+    {
+        let mut economy = session.economy_mut();
+        let first_index = economy.spheres.iter().position(|sphere| sphere.source_entity_index == first).unwrap();
+        let second_index = economy.spheres.iter().position(|sphere| sphere.source_entity_index == second).unwrap();
+        if (first_index < second_index) == (first < second) {
+            economy.spheres.swap(first_index, second_index);
+        }
+        economy.rebuild_possession_guidance_source_slots();
+    }
+    let born_after_prepass = session.economy_mut().spawn_mana_sphere_from_death(903, position, 0, 3, 400, 111).unwrap() as u16;
+    let reset_free_slots = session.session.baseline.economy.economy.free_slots.clone();
+    let step = |session: &mut Mc2Simulation| {
+        let live = &mut session.session.state.live;
+        assert!(live.economy.economy.step_castle_action_with_final_loss(
+            castle_slot, &mut live.terrain, &reset_free_slots, &mut |_, _| {},
+        ));
+    };
+    let is_hidden = |session: &Mc2Simulation, slot| {
+        session.economy().spheres().iter().find(|sphere| sphere.source_entity_index == slot).unwrap().pending_delete
+    };
+
+    step(&mut session);
+    assert!(is_hidden(&session, first.min(second)), "first source slot is collected first");
+    assert!(!is_hidden(&session, first.max(second)));
+    step(&mut session); // odd phase
+    step(&mut session);
+    assert!(is_hidden(&session, first.max(second)));
+    step(&mut session); // odd phase
+    step(&mut session);
+    assert!(!is_hidden(&session, born_after_prepass), "same-pass birth is not in the frozen list");
+    session.economy_mut().rebuild_possession_guidance_source_slots();
+    step(&mut session); // odd phase
+    step(&mut session);
+    assert!(is_hidden(&session, born_after_prepass), "the next prepass admits the new sphere");
+}
+
+#[test]
 fn level_two_castle_controller_coefficients_back_down_to_nonzero_stage() {
     assert_eq!(level2_castle_shift_axes(1), (1_664, 1_664));
     assert_eq!(level2_castle_shift_axes(2), (3_328, 3_328));
