@@ -1879,6 +1879,283 @@ fn level_two_cold_shield_and_invisible_menu_tiers_reach_typed_holder_visit() {
 }
 
 #[test]
+fn acquired_invisible_controls_actual_nyphur_player_selection_through_expiry() {
+    let mut session = level_two_campaign_session();
+    let player = session.state.entity_index;
+    let castle_position = session.state.position;
+    let source = authored_status_reward_prerequisite(&mut session, INVISIBLE_FAMILY);
+    session
+        .set_level2_entity_position(player, source.position)
+        .unwrap();
+    for _ in 0..4 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        if session.shared_spells().local_player().enabled_spell_holders[11] != 0 {
+            break;
+        }
+    }
+    let holder_slot = session.shared_spells().local_player().enabled_spell_holders[11];
+    assert_eq!(
+        holder_slot, source.source_entity_index,
+        "real authored reward becomes the holder"
+    );
+    let holder_handle = session.source_arena().handle(holder_slot).unwrap();
+    let rival = session
+        .players()
+        .iter()
+        .find(|row| row.is_ai)
+        .unwrap()
+        .entity_index;
+    let rival_handle = session.source_arena().handle(rival).unwrap();
+
+    // Controlled late-entry resource prerequisite: use the real Castle stage
+    // transition and only a balance its actual stage-6 capacity can hold.
+    // The player and Nyphur still obtain max-mana/pressure from source visits.
+    let castle = session
+        .economy_mut()
+        .build_castle(castle_position, player)
+        .unwrap();
+    {
+        let mut economy = session.economy_mut();
+        let root = economy.castle_at_mut(castle).unwrap();
+        root.level = 5;
+        root.action = 5;
+        root.build_state = 3;
+        assert!(economy.step_castle_action(castle));
+        assert_eq!(economy.castle_at(castle).unwrap().level, 6);
+        assert!(economy.castle_at(castle).unwrap().mana_capacity >= 300_000);
+        assert!(economy.set_castle_mana_prerequisite_for_test(castle, 300_000));
+    }
+    session
+        .shared_spells_mut()
+        .set_local_player_mana_for_test(5_000);
+    session.economy.entities[usize::from(player)].set_mana(5_000);
+    if let Some(fire) = session.context.spell_fire.as_mut() {
+        fire.caster.mana = 5_000;
+    }
+    let approach_rival = |session: &mut Mc2Simulation| {
+        let mut position = session.entities()[usize::from(rival)].position;
+        position.x = position.x.wrapping_add(1024);
+        session
+            .set_level2_entity_position(player, position)
+            .unwrap();
+    };
+    approach_rival(&mut session);
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let common = session.nyphur_common_upkeep().unwrap();
+    let player_row = &session.entities()[usize::from(player)];
+    let color = usize::from(
+        session
+            .players()
+            .iter()
+            .find(|row| row.entity_index == player)
+            .unwrap()
+            .player_color_index(),
+    );
+    let threshold = i32::from(common.array_0x1fc[4 * color + 4]);
+    let pressure = 50_000_i32
+        .wrapping_sub((player_row.max_mana / 10).wrapping_mul(i32::from(common.word_0x242)) / 255);
+    assert!(
+        pressure <= threshold,
+        "source Nyphur player gate must be funded: max={}, pressure={pressure}, threshold={threshold}",
+        player_row.max_mana
+    );
+    assert_eq!(
+        session.nyphur_dispatch_state_byte(),
+        0,
+        "ordinary rival must still be in its selector state"
+    );
+    let acquired_entry = session.clone();
+    for tier in 0_u8..=2 {
+        let mut session = acquired_entry.clone();
+        if tier > 0 {
+            // Controlled carried progression makes these supported tiers
+            // available; it does not claim the XP was earned in this entry.
+            session
+                .apply_carried_spell_progression(&[CarriedSpellProgress {
+                    family: INVISIBLE_FAMILY,
+                    persistent_experience: LEVEL2_SPELL_TIER_THRESHOLDS[11][usize::from(tier)],
+                    runtime_experience: 0,
+                    unlocked_tier: tier as i8,
+                    selected_tier: tier as i8,
+                }])
+                .expect("controlled carried Invisible progression");
+            let ui = crate::SOURCE_SPELL_INDEX_MAP
+                .iter()
+                .position(|family| *family == INVISIBLE_FAMILY)
+                .unwrap() as i8;
+            session.step_outer_turn(
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: ui,
+                    argument_2: tier as i8,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+        }
+        let physical = session.shared_spells().pickup(holder_slot).unwrap();
+        let profile =
+            crate::spell_activation::level2_set_spell_profile(INVISIBLE_FAMILY, tier).unwrap();
+        assert_eq!(physical.level_gate, tier as i8);
+        assert_eq!(physical.activation_value, profile.word_0x30);
+        assert_eq!(physical.subspell_index, profile.subspell_index);
+        assert_eq!(physical.max_mana, profile.max_mana);
+        assert_eq!(physical.source_spell_parent_entity_index(), player);
+        assert_eq!(
+            session.nyphur_dispatch_state_byte(),
+            0,
+            "tier {tier} retains the ordinary selector state before the comparison"
+        );
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let mut visible = session.clone();
+        let mut before_selection = None;
+        for turn in 0..128 {
+            approach_rival(&mut visible);
+            let phase = visible.entities()[usize::from(rival)].phase;
+            visible.step_outer_turn(PlayerCommand::default(), 0);
+            let actor = &visible.entities()[usize::from(rival)];
+            if visible.nyphur_dispatch_state_byte() == 8 && actor.source_word_96() == player {
+                before_selection = Some((turn, phase));
+                break;
+            }
+        }
+        let (before_turn, selected_phase) = before_selection
+            .expect("ordinary Nyphur must naturally select the eligible player before the cast");
+
+        // The actual hand assigned by acquisition receives a normal public fire
+        // command. No AI target, latch, mode or holder timer is supplied here.
+        let local = session
+            .players()
+            .iter()
+            .find(|row| row.entity_index == player)
+            .unwrap();
+        let fire_flag = if local.left_spell_slot == INVISIBLE_FAMILY {
+            0x10
+        } else if local.right_spell_slot == INVISIBLE_FAMILY {
+            0x20
+        } else {
+            panic!("ordinary acquisition must bind Invisible to a real hand")
+        };
+        approach_rival(&mut session);
+        let cast_phase = session.entities()[usize::from(rival)].phase;
+        session.step_outer_turn(
+            PlayerCommand {
+                flags: fire_flag,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert!(
+            session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .active_value
+                > 0
+        );
+        let observed_selector_visit = |session: &Mc2Simulation, phase| {
+            phase == selected_phase
+                && session.nyphur_dispatch_traces().iter().any(|trace| {
+                    trace.source_slot == rival
+                        && trace.state_byte == 0
+                        && trace
+                            .calls
+                            .iter()
+                            .any(|call| matches!(call, Level2NyphurDispatchCall::Sub12e70))
+                })
+        };
+        let mut saw_selector_visit = observed_selector_visit(&session, cast_phase);
+        for _ in 0..=before_turn {
+            approach_rival(&mut session);
+            let phase = session.entities()[usize::from(rival)].phase;
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            saw_selector_visit |= observed_selector_visit(&session, phase);
+            let holder = session.shared_spells().pickup(holder_slot).unwrap();
+            assert!(
+                holder.active_value > 0,
+                "the comparison is inside the real Invisible lifetime"
+            );
+            assert_ne!(
+                (
+                    session.nyphur_dispatch_state_byte(),
+                    session.entities()[usize::from(rival)].source_word_96()
+                ),
+                (8, player),
+                "the active acquired holder excludes this player from source Nyphur selection"
+            );
+        }
+        assert!(
+            saw_selector_visit,
+            "the active comparison must include Nyphur's same due selector visit"
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .global_special_state()
+                .visibility_mode,
+            tier + 1,
+            "the actual first pulse publishes the source tier's A4 visibility mode"
+        );
+        for _ in 0..=usize::from(
+            session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .activation_value,
+        ) {
+            if session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .active_value
+                == 0
+            {
+                break;
+            }
+            approach_rival(&mut session);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(
+            session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .active_value,
+            0,
+            "Invisible expires through ordinary source visits"
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .global_special_state()
+                .visibility_mode,
+            0,
+            "ordinary expiry clears the holder's source A4 visibility mode"
+        );
+        let mut selected_after = false;
+        for _ in 0..1024 {
+            approach_rival(&mut session);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let actor = &session.entities()[usize::from(rival)];
+            if session.nyphur_dispatch_state_byte() == 8 && actor.source_word_96() == player {
+                selected_after = true;
+                break;
+            }
+        }
+        assert!(
+            selected_after,
+            "the actual Nyphur must naturally select the same player again after expiry"
+        );
+        assert_eq!(
+            session.source_arena().handle(holder_slot),
+            Some(holder_handle)
+        );
+        assert_eq!(session.source_arena().handle(player), Some(player_handle));
+        assert_eq!(session.source_arena().handle(rival), Some(rival_handle));
+    }
+}
+
+#[test]
 fn level_three_acquired_shield_charge_reaches_player_upkeep() {
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level3-day-block32-campaign-recipe-v2");
@@ -3766,6 +4043,97 @@ fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
         cold.countdown,
         i16::from_le_bytes([holder.record[58], holder.record[59]])
     );
+
+    // Continue from the same ordinarily acquired holder for both higher
+    // source profiles. Carried XP and the Castle/player resources below are
+    // controlled entry prerequisites, not earned campaign progression.
+    // The menu, physical gate, holder visit, visibility and expiry are real.
+    for tier in 1_u8..=2 {
+        let mut tiered = session.clone();
+        let parent = tiered.state.entity_index;
+        let holder_slot = outcome.source_slot;
+        let holder_handle = tiered.source_arena().handle(holder_slot).unwrap();
+        let parent_handle = tiered.source_arena().handle(parent).unwrap();
+        let profile = crate::spell_activation::beyond_sight_tier_profile(tier).unwrap();
+        tiered.apply_carried_spell_progression(&[CarriedSpellProgress {
+            family: 12,
+            persistent_experience: crate::spell_activation::BEYOND_SIGHT_XP_THRESHOLDS[usize::from(tier)],
+            runtime_experience: 0,
+            unlocked_tier: tier as i8,
+            selected_tier: tier as i8,
+        }]).expect("controlled carried Beyond Sight progression");
+        tiered.step_outer_turn(PlayerCommand {
+            opcode: 31, argument_1: 12, argument_2: tier as i8, ..PlayerCommand::default()
+        }, 0);
+        let physical = tiered.shared_spells().pickup(holder_slot).unwrap();
+        assert_eq!((physical.level_gate, physical.max_mana, physical.mana_regen),
+            (tier as i8, profile.mana_cost, profile.mana_regen_requirement));
+        assert_eq!(physical.activation_value as i16, profile.activation_ticks);
+        let castle = tiered.economy_mut().build_castle_at(
+            Position::default(), Position::default(), parent, false, true,
+        ).expect("controlled source Castle for higher Beyond Sight tier");
+        {
+            let mut economy = tiered.economy_mut();
+            let root = economy.castle_at_mut(castle).unwrap();
+            root.level = 1;
+            root.action = 5;
+            root.build_state = 3;
+            assert!(economy.step_castle_action(castle));
+            assert_eq!((economy.castle_at(castle).unwrap().level, economy.castle_at(castle).unwrap().mana_capacity), (2, 18_000));
+            assert!(economy.set_castle_mana_prerequisite_for_test(castle, profile.mana_regen_requirement));
+        }
+        let balance = profile.mana_cost + 1_000;
+        {
+            let mut shared = tiered.shared_spells_mut();
+            shared.set_local_player_mana_for_test(balance);
+            shared.player_entity.set_mana_regen(0);
+            shared.player_entities[0] = shared.player_entity.clone();
+        }
+        tiered.economy.entities[usize::from(parent)].set_mana(balance);
+        tiered.economy.entities[usize::from(parent)].set_mana_regen(0);
+        if let Some(fire) = tiered.context.spell_fire.as_mut() { fire.caster.mana = balance; }
+        let cast = PlayerCommand {
+            opcode: 6, argument_1: 12, flags: 0x40, ..PlayerCommand::default()
+        };
+
+        let mut denied = tiered.clone();
+        assert!(denied.economy_mut().set_castle_mana_prerequisite_for_test(
+            castle, profile.mana_regen_requirement - 1,
+        ));
+        denied.step_outer_turn(cast, 0);
+        denied.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(denied.shared_spells().pickup(holder_slot).unwrap().active_value, 0,
+            "tier {tier} must refuse the actual below-gate Castle");
+        assert!(!denied.campaign_player_visibility(crate::campaign::spec::CampaignSelection::LEVEL2, 1)
+            .unwrap().beyond_sight_active);
+
+        tiered.step_outer_turn(cast, 0);
+        assert_eq!(tiered.shared_spells().pickup(holder_slot).unwrap().active_value,
+            profile.activation_ticks, "the actual player arms the earlier-slot holder");
+        let before_pulse = tiered.shared_spells().player_entity().mana;
+        tiered.step_outer_turn(PlayerCommand::default(), 0);
+        let state = tiered.shared_spells().beyond_sight_state().unwrap();
+        assert_eq!((state.tier, state.active_value), (tier, profile.activation_ticks - 1));
+        assert_eq!(before_pulse - tiered.shared_spells().player_entity().mana, profile.mana_cost,
+            "tier {tier} charges its physical source cost at the first holder pulse");
+        let visible = tiered.campaign_player_visibility(crate::campaign::spec::CampaignSelection::LEVEL2, 1).unwrap();
+        assert!(visible.beyond_sight_holder_present && visible.beyond_sight_active);
+        assert_eq!(visible.beyond_sight_tier, Some(tier));
+        assert_eq!(tiered.source_arena().handle(holder_slot), Some(holder_handle));
+        assert_eq!(tiered.source_arena().handle(parent), Some(parent_handle));
+        for _ in 0..=profile.activation_ticks {
+            tiered.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(tiered.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+            if tiered.shared_spells().pickup(holder_slot).unwrap().active_value == 0 { break; }
+        }
+        let expired = tiered.campaign_player_visibility(crate::campaign::spec::CampaignSelection::LEVEL2, 1).unwrap();
+        assert_eq!(tiered.shared_spells().pickup(holder_slot).unwrap().active_value, 0,
+            "tier {tier} must naturally expire through real holder visits");
+        assert!(expired.beyond_sight_holder_present && !expired.beyond_sight_active);
+        assert_eq!(expired.beyond_sight_tier, Some(tier));
+        assert_eq!(tiered.source_arena().handle(holder_slot), Some(holder_handle));
+        assert_eq!(tiered.shared_spells().local_player.enabled_spell_holders[12], holder_slot);
+    }
 
     let declared_mana = 5_000_i32;
     let baseline_capacity = session.economy().owner_max_mana[&cold.parent_entity_index];

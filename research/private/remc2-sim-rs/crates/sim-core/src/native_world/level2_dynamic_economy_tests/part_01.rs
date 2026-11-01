@@ -150,7 +150,7 @@ fn castle_construction_uses_each_owners_generation_bound_coefficients() {
 fn ordinary_level_23_materializes_source_house_27_and_runs_construction() {
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23"),
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
         PathBuf::from,
     );
     let mut campaign = crate::campaign::CampaignSession::open(
@@ -249,7 +249,7 @@ fn ordinary_level_23_imports_linked_castles_and_construction_children() {
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23")
+                .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23")
         },
         PathBuf::from,
     );
@@ -299,7 +299,7 @@ fn ordinary_level_23_imports_linked_castles_and_construction_children() {
 fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-ordinary-package-_pgn4jfo/level23"),
+            .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23"),
         PathBuf::from,
     );
     let mut campaign = crate::campaign::CampaignSession::open(
@@ -318,13 +318,28 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
     assert!(holder.active && holder.class == 15 && holder.model == 2 && holder.source_spell_parent_entity_index() == owner);
     let holder_generation = campaign.simulation().economy().slot_generation(holder_slot);
     assert_eq!(campaign.simulation().economy().castle_for_owner(owner).unwrap().source_entity_index, root_slot);
-    for _ in 0..16 {
+    let mut root_trace = Vec::new();
+    for turn in 0..16 {
+        let simulation = campaign.simulation();
+        let root = simulation.economy().castle_at(root_slot).map(|root| {
+            (root.action, root.build_state, root.source_word_2e, root.phase,
+                root.control_flags, root.level, root.mana, root.construction_slot)
+        });
+        let children = simulation.economy().castle_children().iter().filter(|child| {
+            child.parent_entity_index == root_slot
+        }).map(|child| (child.source_entity_index, child.model, child.action,
+            child.active, child.control_flags, child.life)).collect::<Vec<_>>();
+        let receipts = simulation.dispatch_events().iter().filter(|event| matches!(event,
+            Mc2DispatchEvent::Castle { source_slot, .. } if *source_slot == root_slot
+        ) || matches!(event, Mc2DispatchEvent::Error { .. })).cloned().collect::<Vec<_>>();
+        root_trace.push((turn, root, children, receipts, simulation.economy().free_slot_count()));
         if campaign.simulation().economy().castle_at(root_slot).is_some_and(|root| root.action == 4) {
             break;
         }
         campaign.step(PlayerCommand::default(), 0);
     }
-    assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4);
+    assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4,
+        "actual imported Castle must reach action4; source trace: {root_trace:#?}");
     assert!(campaign.simulation_mut().economy_mut().submit_damage(root_slot, i32::MAX, 424));
     for _ in 0..16 {
         campaign.step(PlayerCommand::default(), 0);
