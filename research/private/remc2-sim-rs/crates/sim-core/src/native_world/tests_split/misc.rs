@@ -1779,6 +1779,101 @@ fn level_two_cold_shield_and_invisible_menu_tiers_reach_typed_holder_visit() {
                 before + 1,
                 "sustained Invisible does not award a second fresh-pulse point"
             );
+
+            // sub_6B1C0 writes the holder bit and its nonplayer A4; the
+            // source does not set that bit on the parent. The ordinary Bee
+            // targeter checks the candidate player's bit instead. Exercise
+            // that distinction with the same acquired and publicly cast
+            // holder, rather than assuming that the A4 mode hides the player.
+            let holder_handle = session.source_arena().handle(holder_index).unwrap();
+            let holder = session.shared_spells().pickup(holder_index).unwrap();
+            assert!(holder.active_value > 0);
+            assert_ne!(holder.control_flags & INVISIBLE_STATUS_BIT, 0);
+            assert_eq!(
+                session.entities()[usize::from(player)].control_flags & INVISIBLE_STATUS_BIT,
+                0
+            );
+            assert_eq!(
+                session
+                    .shared_spells()
+                    .global_special_state()
+                    .visibility_mode,
+                1
+            );
+            fire_level_two_model32_group(&mut session, 21);
+            let bee_before = session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
+                .copied()
+                .expect("actual authored Bee from the group producer");
+            assert_ne!(
+                bee_before.target_entity_index,
+                Some(player),
+                "the source Bee must select the player after the cast, not inherit a target"
+            );
+            let bee_handle = session
+                .source_arena()
+                .handle(bee_before.source_entity_index)
+                .unwrap();
+            let mut engagement = Vec::new();
+            for _ in 0..128 {
+                let bee = session
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|bee| bee.source_entity_index == bee_before.source_entity_index)
+                    .copied()
+                    .expect("same authored Bee remains live");
+                if bee.action == 18 && bee.target_entity_index == Some(player) {
+                    break;
+                }
+                assert!(
+                    session
+                        .shared_spells()
+                        .pickup(holder_index)
+                        .unwrap()
+                        .active_value
+                        > 1,
+                    "Invisible must still be active while the ordinary Bee selects its target"
+                );
+                engagement.push((bee.action, bee.target_entity_index, bee.source_byte_3e));
+                let mut approach = bee.position;
+                crate::move_entity(&mut approach, bee.yaw, 0, 2048);
+                session
+                    .set_level2_entity_position(player, approach)
+                    .unwrap();
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            let bee = session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.source_entity_index == bee_before.source_entity_index)
+                .expect("same authored Bee after normal source visits");
+            assert_eq!(
+                session
+                    .source_arena()
+                    .handle(bee_before.source_entity_index),
+                Some(bee_handle)
+            );
+            assert_eq!(
+                session.source_arena().handle(holder_index),
+                Some(holder_handle)
+            );
+            assert!(
+                session
+                    .shared_spells()
+                    .pickup(holder_index)
+                    .unwrap()
+                    .active_value
+                    > 0
+            );
+            assert!(
+                bee.action == 18 && bee.target_entity_index == Some(player),
+                "source Bee should follow its player-bit predicate while the holder A4 mode is active: {engagement:?}, Bee={bee:?}"
+            );
         }
     }
 }

@@ -6650,6 +6650,30 @@ fn level_two_nyphur_sub_13e40_castle_selection_boundaries_are_exact() {
         Some(castle_slot)
     );
 
+    // sub_13E40 multiplies at source 32-bit width before signed division.
+    // These detached owner-resource inputs discriminate wrapping from an
+    // unbounded or saturating product while retaining the real selector,
+    // owner geometry, player color, and Castle produced above.
+    let mut high_mana = build_view(far_owner, near_nyphur);
+    let mut high_threat = dispatcher.clone();
+    high_threat.common_upkeep.array_0x1fc[4] = u16::MAX;
+    high_mana[111].max_mana = 300_000_000;
+    // 243 * (300_000_000 / 10) wraps to -1_299_934_592, giving
+    // 50_000 - (-1_299_934_592 / 255) = 5_147_782, above any u16 threshold.
+    assert_eq!(
+        high_threat.step_sub_13e40(112, &high_mana, &players, &presentation)
+            .expect("wrapped high-mana Castle selector"),
+        None
+    );
+    high_mana[111].max_mana = 400_000_000;
+    // At 400M the wrapped product is positive, so the same actual selector
+    // admits the Castle. Widening/saturation produce different decisions.
+    assert_eq!(
+        high_threat.step_sub_13e40(112, &high_mana, &players, &presentation)
+            .expect("wrapped positive-product Castle selector"),
+        Some(castle_slot)
+    );
+
     // Entry gates: no offensive holder, and a family-2 holder while the AI
     // still has no Castle of its own, both refuse before any scan.
     let mut holderless = armed.clone();

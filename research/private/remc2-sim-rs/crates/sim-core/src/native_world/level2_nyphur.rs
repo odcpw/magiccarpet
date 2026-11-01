@@ -46,6 +46,13 @@ const LEVEL2_NYPHUR_SUB_15FC0_BUCKETS: [u8; 4] = [2, 0x13, 0x19, 0x10];
 const LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE: u32 = 0x1400;
 const LEVEL2_NYPHUR_MODE14_ATTACK_MIN_DISTANCE: u32 = 0x0a00;
 
+/// The source Nyphur target selectors and projectile threat latch
+/// multiply at signed 32-bit width before dividing by 255. A maximum-stage
+/// Castle can give its owner enough mana to wrap that intermediate product.
+pub(super) fn source_mana_pressure_score(max_mana: i32, pressure: i16) -> i32 {
+    50_000_i32.wrapping_sub((max_mana / 10).wrapping_mul(i32::from(pressure)) / 255)
+}
+
 #[inline]
 const fn level2_nyphur_mode14_primary_admitted(distance: u32) -> bool {
     distance <= LEVEL2_NYPHUR_MODE14_PRIMARY_MAX_DISTANCE
@@ -1834,7 +1841,6 @@ impl Level2NyphurCommonUpkeep {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
     ) -> Option<u16> {
-        const CLASS3_TARGET_PRESSURE: i32 = 50_000;
         const CLASS3_TARGET_DISTANCE: u32 = 0x0190_0000;
 
         let mut best = None;
@@ -1876,8 +1882,7 @@ impl Level2NyphurCommonUpkeep {
                     continue;
                 }
                 let threshold = self.auxiliary_word(threshold_index);
-                let pressure =
-                    CLASS3_TARGET_PRESSURE - owner.max_mana / 10 * i32::from(self.word_0x242) / 255;
+                let pressure = source_mana_pressure_score(owner.max_mana, self.word_0x242);
                 if pressure >= i32::from(threshold) {
                     let Some(nearest_model01) =
                         level2_nyphur_sub_16fc0_target(candidate, source, entities)
@@ -5573,9 +5578,9 @@ impl Level2NyphurDispatcher {
             };
             let threshold_index = 4 * usize::from(owner_player.player_color_index()) + 4;
             let threshold = i32::from(self.common_upkeep.auxiliary_word(threshold_index));
-            let threat = 50_000_i32
-                - i32::from(self.common_upkeep.word_0x242) * (owner.max_mana / 10) / 255
-                < threshold;
+            let threat =
+                source_mana_pressure_score(owner.max_mana, self.common_upkeep.word_0x242)
+                    < threshold;
             let owner_far =
                 level2_nyphur_source_distance_xy_euclidean_sq(owner.position, candidate.position)
                     > 0x0384_0000;
@@ -5667,8 +5672,8 @@ impl Level2NyphurDispatcher {
                 return Ok(Some(candidate.index));
             }
 
-            let pressure = 50_000_i32
-                - candidate.max_mana / 10 * i32::from(self.common_upkeep.word_0x242) / 255;
+            let pressure =
+                source_mana_pressure_score(candidate.max_mana, self.common_upkeep.word_0x242);
             let threshold = i32::from(self.common_upkeep.auxiliary_word(4 * color + 4));
             let candidate_has_castle = entities.iter().any(|entity| {
                 entity.active
@@ -5753,7 +5758,8 @@ impl Level2NyphurDispatcher {
             };
             let threshold_index = 4 * usize::from(owner_player.player_color_index()) + 4;
             let threshold = i32::from(self.common_upkeep.auxiliary_word(threshold_index));
-            let pressure = 50_000_i32 - owner.max_mana / 10 * pressure_scale / 255;
+            let pressure =
+                source_mana_pressure_score(owner.max_mana, self.common_upkeep.word_0x242);
             if pressure >= threshold
                 || candidate.mana <= 10 * (275 - pressure_scale)
                 || entities

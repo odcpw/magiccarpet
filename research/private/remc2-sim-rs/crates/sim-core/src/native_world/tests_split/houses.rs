@@ -3722,6 +3722,167 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .expect("upgraded live Castle reaches presentation");
     assert_eq!((sprite.source_id, sprite.render_parameter_index, sprite.base_tmap),
         (player_slot, 177, 96));
+
+    // Exercise the source's last upgrade without farming through intermediate
+    // stages. The acquired holder and root are real; the stage-five entry,
+    // full stage-six Castle mana and player balance are controlled late-game
+    // prerequisites, not a claim of earned campaign progression or mana.
+    let mut upper = occupied.clone();
+    let root_handle = upper.session.state.live.economy.handle(root_slot).unwrap();
+    let holder_slot = upper.shared_spells().local_player.enabled_spell_holders
+        [usize::from(CASTLE_SPELL_FAMILY)];
+    let holder_handle = upper.session.state.live.economy.handle(holder_slot).unwrap();
+    {
+        let mut economy = upper.economy_mut();
+        let root = economy.castle_at_mut(root_slot).unwrap();
+        root.level = 5;
+        root.action = 5;
+        root.build_state = 3;
+        assert!(economy.step_castle_action(root_slot));
+        let root = economy.castle_at(root_slot).unwrap();
+        assert_eq!((root.level, root.mana_capacity), (6, 317_400));
+    }
+    for _ in 0..128 {
+        let ready = upper.economy().castle_at(root_slot).is_some_and(|root| {
+            (root.level, root.action, root.build_state) == (6, 4, 0)
+        }) && upper.shared_spells().pickup(holder_slot).is_some_and(|holder| holder.active_value == 0);
+        if ready { break; }
+        upper.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(upper.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert_eq!(upper.economy().castle_at(root_slot).map(|root| (root.level, root.action, root.build_state)), Some((6, 4, 0)));
+    assert_eq!(upper.session.state.live.economy.handle(root_slot), Some(root_handle));
+    assert_eq!(upper.session.state.live.economy.handle(holder_slot), Some(holder_handle));
+    assert_eq!(upper.shared_spells().pickup(holder_slot).unwrap().active_value, 0);
+    assert!(upper.economy_mut().set_castle_mana_prerequisite_for_test(root_slot, 317_400));
+    upper.step_outer_turn(PlayerCommand::default(), 0);
+    upper.step_outer_turn(PlayerCommand {
+        opcode: 31, argument_1: 2, argument_2: 0, ..PlayerCommand::default()
+    }, 0);
+    let holder = upper.shared_spells().pickup(holder_slot).unwrap().clone();
+    assert_eq!(holder.max_mana, 320_000, "source stage-six tier-zero price");
+    let max_mana = upper.shared_spells().player_entity().max_mana;
+    assert!(max_mana >= holder.max_mana + 1_000,
+        "the staged Castle and actual owned spheres must fund the source price: max={max_mana}");
+    let staged_mana = holder.max_mana + 1_000;
+    upper.shared_spells_mut().set_local_player_mana_for_test(staged_mana);
+    upper.economy.entities[usize::from(player_slot)].set_mana(staged_mana);
+    if let Some(fire) = upper.context.spell_fire.as_mut() { fire.caster.mana = staged_mana; }
+    upper.set_level2_entity_position(player_slot, recharge_position).unwrap();
+    upper.state.yaw = recharge_yaw;
+    upper.state.display_pitch = 0;
+    upper.state.effective_pitch = 0;
+    upper.state.target_speed = 0;
+    upper.state.actual_speed = 0;
+    let before = upper.shared_spells().player_entity().mana;
+    upper.step_outer_turn(request, 0);
+    let after = upper.shared_spells().player_entity();
+    assert!(before - after.mana >= holder.max_mana || after.mana_regen <= -holder.max_mana,
+        "last upgrade pays the actual source price: before={before}, after={}, regen={}", after.mana, after.mana_regen);
+    let flyer = upper.economy().castle_projectiles().iter().find(|projectile| {
+        projectile.target_castle_slot == root_slot && (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
+    }).copied().expect("public input launches the last real Castle upgrade");
+    let flyer_handle = upper.session.state.live.economy.handle(flyer.source_entity_index);
+    let product = upper.economy().castle_children().iter().find(|child| {
+        child.active && child.model == 43 && child.action == 45 && child.parent_entity_index == root_slot
+    }).copied().expect("the last upgrade lands as the real model-43 child");
+    let product_handle = upper.session.state.live.economy.handle(product.source_entity_index)
+        .expect("the real upgrade child has a source generation");
+    for _ in 0..128 {
+        if upper.economy().castle_at(root_slot).is_some_and(|root| {
+            (root.level, root.action, root.build_state) == (7, 4, 0)
+        }) { break; }
+        upper.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(upper.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    let root = upper.economy().castle_at(root_slot).expect("maximum Castle root");
+    assert_eq!((root.level, root.action, root.build_state, root.mana_capacity), (7, 4, 0, 300_000_000));
+    assert_eq!((root.source_id_entity_index, root.player_entity_index), (player_slot, player_slot));
+    assert_eq!(upper.session.state.live.economy.handle(root_slot), Some(root_handle));
+    assert_eq!(upper.session.state.live.economy.handle(holder_slot), Some(holder_handle));
+    if let Some(flyer_handle) = flyer_handle {
+        assert_ne!(upper.session.state.live.economy.handle(flyer.source_entity_index), Some(flyer_handle),
+            "the completed upgrade flyer generation is reclaimed");
+    }
+    assert_ne!(upper.session.state.live.economy.handle(product.source_entity_index), Some(product_handle),
+        "the completed model-43 child generation is reclaimed");
+    assert!(upper.campaign_entity_presentations(0).unwrap().iter().any(|row| {
+        row.entity_index == root_slot && row.source_id == player_slot
+    }), "maximum Castle reaches the real presentation consumer");
+    for _ in 0..32 {
+        if upper.shared_spells().pickup(holder_slot).is_some_and(|holder| holder.active_value == 0) { break; }
+        upper.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    upper.step_outer_turn(PlayerCommand {
+        opcode: 31, argument_1: 2, argument_2: 0, ..PlayerCommand::default()
+    }, 0);
+    let capped_holder = upper.shared_spells().pickup(holder_slot).unwrap();
+    assert_eq!((capped_holder.active_value, capped_holder.max_mana), (0, 300_000_000));
+    assert!(upper.shared_spells().player_entity().max_mana < capped_holder.max_mana,
+        "the real stage-seven sentinel must remain unaffordable in this controlled state");
+    upper.step_outer_turn(request, 0);
+    for _ in 0..4 { upper.step_outer_turn(PlayerCommand::default(), 0); }
+    assert_eq!(upper.economy().castle_at(root_slot).unwrap().level, 7);
+    assert!(!upper.economy().castle_projectiles().iter().any(|projectile| projectile.active
+        && projectile.target_castle_slot == root_slot), "the unaffordable boundary cannot create another upgrade flyer");
+
+    // A controlled full stage-seven Castle can fund the source's sentinel
+    // price. This is not earned mana: it drives the actual public producer
+    // through the otherwise unreachable 609E0 mailbox guard without changing
+    // that price, manufacturing the child, or writing the result mailbox.
+    assert_eq!(upper.economy().castle_at(root_slot).unwrap().mana_capacity, 300_000_000);
+    assert!(upper.economy_mut().set_castle_mana_prerequisite_for_test(root_slot, 300_000_000));
+    upper.step_outer_turn(PlayerCommand::default(), 0);
+    upper.step_outer_turn(PlayerCommand::default(), 0);
+    let max_mana = upper.shared_spells().player_entity().max_mana;
+    assert!(max_mana >= 300_001_000, "the staged Castle and owned spheres must publish the real capacity: {max_mana}");
+    assert_eq!(upper.shared_spells().pickup(holder_slot).unwrap().active_value, 0);
+    upper.shared_spells_mut().set_local_player_mana_for_test(300_001_000);
+    upper.economy.entities[usize::from(player_slot)].set_mana(300_001_000);
+    if let Some(fire) = upper.context.spell_fire.as_mut() { fire.caster.mana = 300_001_000; }
+    let before = upper.shared_spells().player_entity().mana;
+    upper.step_outer_turn(request, 0);
+    let after = upper.shared_spells().player_entity();
+    assert!(before - after.mana >= 300_000_000 || after.mana_regen <= -300_000_000,
+        "funded boundary must consume or queue the full source sentinel price");
+    assert!(upper.economy().castle_projectiles().iter().any(|projectile| {
+        projectile.target_castle_slot == root_slot && (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
+    }), "funded stage-seven input must still launch the real upgrade flyer");
+    let boundary_product = upper.economy().castle_children().iter().find(|child| {
+        child.active && child.model == 43 && child.action == 45 && child.parent_entity_index == root_slot
+    }).copied().expect("the funded stage-seven flyer lands as the real model-43 child");
+    let boundary_handle = upper.session.state.live.economy.handle(boundary_product.source_entity_index)
+        .expect("the stage-seven child has a source generation");
+    let mut product_visited = false;
+    let mut root_visited_after_product = false;
+    for _ in 0..16 {
+        for event in upper.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::DynamicArena { source_slot, kind: Level2DynamicArenaKind::CastleChild, .. }
+                    if *source_slot == boundary_product.source_entity_index => product_visited = true,
+                // Existing roots publish the Castle receipt; DynamicArena's
+                // CastleRoot receipt is only for a root born in this pass.
+                Mc2DispatchEvent::Castle { source_slot, advanced: true, .. }
+                    if *source_slot == root_slot && product_visited => root_visited_after_product = true,
+                _ => {}
+            }
+        }
+        if product_visited && root_visited_after_product
+            && upper.session.state.live.economy.handle(boundary_product.source_entity_index) != Some(boundary_handle) { break; }
+        upper.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(upper.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert!(product_visited && root_visited_after_product,
+        "the real upgrade child and its root must both receive their ordered source visits: product_visited={product_visited}, root_visited_after_product={root_visited_after_product}, product={boundary_product:?}, root={:?}, events={:?}",
+        upper.economy().castle_at(root_slot), upper.dispatch_events());
+    assert_ne!(upper.session.state.live.economy.handle(boundary_product.source_entity_index), Some(boundary_handle),
+        "the stage-seven model-43 child is reclaimed on the following pass");
+    let root = upper.economy().castle_at(root_slot).unwrap();
+    assert_eq!((root.level, root.action, root.build_state, root.source_word_80), (7, 4, 0, 0),
+        "the maximum-stage owner mailbox is consumed without constructing stage eight");
+    assert_eq!(upper.session.state.live.economy.handle(root_slot), Some(root_handle));
+    assert!(upper.shared_spells().pickup(holder_slot).unwrap().active_value > 0,
+        "the successful maximum-stage hit retains the source holder instead of the missed-product cleanup");
 }
 
 #[test]

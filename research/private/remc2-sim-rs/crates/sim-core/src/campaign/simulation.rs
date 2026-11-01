@@ -652,8 +652,8 @@ impl Mc2Simulation {
                     let latch_threshold = (model == 2).then(|| {
                         let pressure = target_owner
                             .type_str_164_auxiliary()
-                            .map_or(0, |auxiliary| i32::from(auxiliary.word_0x242_578));
-                        50_000 - attacker_max_mana / 10 * pressure / 255
+                            .map_or(0, |auxiliary| auxiliary.word_0x242_578);
+                        level2_nyphur::source_mana_pressure_score(attacker_max_mana, pressure)
                     });
                     writes.push(ThreatWrite {
                         target_owner: owner,
@@ -31871,6 +31871,281 @@ mod tests {
                 .iter()
                 .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
         );
+
+        // Continue from the same owner-authored acquired holder. Carried
+        // progression and Castle resources are explicit late-entry controls,
+        // not claims that this scenario earned those resources or tiers.
+        let acquired_for_tiers = session.clone();
+        let speed_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 3)
+            .expect("Speed has a source menu entry") as i8;
+        for tier in 0_u8..=2 {
+            let mut live = acquired_for_tiers.clone();
+            let holder_slot = pickup.source_entity_index;
+            let holder_handle = live.source_arena().handle(holder_slot).unwrap();
+            live.apply_carried_spell_progression(&[CarriedSpellProgress {
+                family: 3,
+                persistent_experience: crate::native_world::LEVEL2_SPELL_TIER_THRESHOLDS[3][2],
+                runtime_experience: 0,
+                unlocked_tier: 2,
+                selected_tier: tier as i8,
+            }])
+            .expect("controlled carried Speed progression");
+            live.step_outer_turn(
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: speed_ui,
+                    argument_2: tier as i8,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            let holder = live.shared_spells().pickup(holder_slot).unwrap();
+            let profile = crate::spell_activation::level2_set_spell_profile(3, tier).unwrap();
+            assert_eq!(holder.level_gate, tier as i8);
+            assert_eq!(holder.subspell_index, profile.subspell_index);
+            assert_eq!(holder.activation_value, profile.word_0x30);
+            assert_eq!(holder.max_mana, profile.max_mana);
+
+            let castle_position = live.state.position;
+            let castle = live
+                .economy_mut()
+                .build_castle(castle_position, player_entity_index)
+                .expect("controlled source Castle constructor");
+            {
+                let mut economy = live.economy_mut();
+                let root = economy.castle_at_mut(castle).unwrap();
+                root.level = 6;
+                root.action = 5;
+                root.build_state = 3;
+                assert!(economy.step_castle_action(castle));
+                assert_eq!(economy.castle_at(castle).unwrap().level, 7);
+                assert!(economy.castle_at(castle).unwrap().mana_capacity >= profile.max_mana * 2);
+                assert!(
+                    economy.set_castle_mana_prerequisite_for_test(castle, profile.max_mana * 2)
+                );
+            }
+            live.shared_spells_mut()
+                .set_local_player_mana_for_test(profile.max_mana * 2);
+            live.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .set_mana(profile.max_mana * 2);
+            if let Some(fire) = live.session.state.live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = profile.max_mana * 2;
+            }
+            let safe = Position {
+                x: 0x6000,
+                y: 0x6000,
+                z: 10_000,
+            };
+            live.set_level2_entity_position(player_entity_index, safe)
+                .unwrap();
+            // Real reverse input establishes the sign before the cast;
+            // the following no-movement command clears speed_changed.
+            for _ in 0..64 {
+                if live.state.target_speed < 0 {
+                    break;
+                }
+                live.step_outer_turn(
+                    PlayerCommand {
+                        flags: 2,
+                        ..PlayerCommand::default()
+                    },
+                    0,
+                );
+            }
+            assert!(
+                live.state.target_speed < 0,
+                "reverse input must establish Speed direction"
+            );
+            let parent = live.entities()[usize::from(player_entity_index)].clone();
+            let minimum_speed = parent.minimum_speed();
+            let player = live
+                .players()
+                .iter()
+                .find(|row| row.entity_index == player_entity_index)
+                .unwrap();
+            let fire_flag = if player.left_spell_slot == 3 {
+                0x10
+            } else if player.right_spell_slot == 3 {
+                0x20
+            } else {
+                panic!("the acquired Speed holder must remain in a real hand");
+            };
+            let mut unaffordable = live.clone();
+            unaffordable
+                .shared_spells_mut()
+                .set_local_player_mana_for_test(0);
+            unaffordable.session.state.live.economy.entities[usize::from(player_entity_index)]
+                .set_mana(0);
+            if let Some(fire) = unaffordable
+                .session
+                .state
+                .live
+                .core
+                .context
+                .spell_fire
+                .as_mut()
+            {
+                fire.caster.mana = 0;
+            }
+            unaffordable.step_outer_turn(
+                PlayerCommand {
+                    flags: fire_flag,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            assert_eq!(
+                unaffordable
+                    .shared_spells()
+                    .pickup(holder_slot)
+                    .unwrap()
+                    .active_value,
+                0,
+                "tier {tier} must refuse an unaffordable public cast"
+            );
+
+            let prior_trails = live
+                .economy()
+                .speed_trails()
+                .iter()
+                .filter(|row| row.active && row.source_id == parent.source_id)
+                .map(|row| row.source_entity_index)
+                .collect::<Vec<_>>();
+            let cast_phase = live.shared_spells().pickup(holder_slot).unwrap().phase;
+            live.step_outer_turn(
+                PlayerCommand {
+                    flags: fire_flag,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            let first_phase = if holder_slot < player_entity_index {
+                let armed = live.shared_spells().pickup(holder_slot).unwrap();
+                assert_eq!(armed.active_value, profile.word_0x30 as i16);
+                let phase = armed.phase;
+                live.step_outer_turn(PlayerCommand::default(), 0);
+                phase
+            } else {
+                cast_phase
+            };
+            let first = live.shared_spells().pickup(holder_slot).unwrap();
+            assert_eq!(first.active_value, profile.word_0x30 as i16 - 1);
+            let expected_first =
+                -minimum_speed * (i16::try_from(profile.subspell_index).unwrap() + 1);
+            assert_eq!(
+                live.state.target_speed, expected_first,
+                "tier {tier} first Speed pulse"
+            );
+            assert_eq!(live.state.actual_speed, expected_first);
+            let mut trail = live
+                .economy()
+                .speed_trails()
+                .iter()
+                .find(|row| {
+                    row.active
+                        && row.source_id == parent.source_id
+                        && !prior_trails.contains(&row.source_entity_index)
+                })
+                .copied()
+                .map(|row| (row, first_phase));
+            for _ in 0..4 {
+                if trail.is_some() {
+                    break;
+                }
+                let phase = live.shared_spells().pickup(holder_slot).unwrap().phase;
+                live.step_outer_turn(PlayerCommand::default(), 0);
+                trail = live
+                    .economy()
+                    .speed_trails()
+                    .iter()
+                    .find(|row| {
+                        row.active
+                            && row.source_id == parent.source_id
+                            && !prior_trails.contains(&row.source_entity_index)
+                    })
+                    .copied()
+                    .map(|row| (row, phase));
+            }
+            let (trail, trail_phase) =
+                trail.expect("real Speed holder must produce a source trail on cadence");
+            assert_eq!(trail_phase & 3, 0);
+            assert_eq!((trail.class, trail.model, trail.action), (10, 2, 2));
+            assert_eq!(trail.source_id, parent.source_id);
+            assert_eq!(trail.control_flags & 0x0002_0001, 0x0002_0001);
+            assert!(
+                !live
+                    .source_arena()
+                    .economy
+                    .map_chains
+                    .is_linked(trail.source_entity_index)
+            );
+            assert!(
+                live.campaign_entity_presentations(live.state.yaw)
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.entity_index != trail.source_entity_index)
+            );
+            let trail_handle = live
+                .source_arena()
+                .handle(trail.source_entity_index)
+                .unwrap();
+
+            let next_tier = if tier == 2 { 1 } else { tier + 1 };
+            live.step_outer_turn(
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: speed_ui,
+                    argument_2: next_tier as i8,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            let queued = live.shared_spells().pickup(holder_slot).unwrap();
+            assert!(queued.active_value > 0);
+            assert_eq!(
+                u16::from_le_bytes([queued.record[48], queued.record[49]]),
+                u16::from(next_tier) + 1
+            );
+            let expected_sustain = -minimum_speed * i16::try_from(profile.subspell_index).unwrap();
+            assert_eq!(
+                live.state.target_speed, expected_sustain,
+                "tier {tier} later Speed pulse"
+            );
+            assert_eq!(live.state.actual_speed, expected_sustain);
+            let duration = usize::from(profile.word_0x30);
+            for _ in 0..=duration {
+                if live
+                    .shared_spells()
+                    .pickup(holder_slot)
+                    .unwrap()
+                    .active_value
+                    == 0
+                {
+                    break;
+                }
+                live.set_level2_entity_position(player_entity_index, safe)
+                    .unwrap();
+                live.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            let expired = live.shared_spells().pickup(holder_slot).unwrap();
+            assert_eq!(
+                expired.active_value, 0,
+                "tier {tier} expires through source visits"
+            );
+            assert_eq!(expired.level_gate, next_tier as i8);
+            assert_eq!(
+                u16::from_le_bytes([expired.record[48], expired.record[49]]),
+                0
+            );
+            assert_eq!(live.state.target_speed, -minimum_speed);
+            assert_eq!(live.source_arena().handle(holder_slot), Some(holder_handle));
+            assert!(
+                live.source_arena().resolve(trail_handle).is_none(),
+                "source trail must hide and be reclaimed"
+            );
+        }
 
         campaign.reset();
         assert_eq!(campaign.state_hash(), reset_hash);
