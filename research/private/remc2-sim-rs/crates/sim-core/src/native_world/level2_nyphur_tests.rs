@@ -510,6 +510,64 @@ fn ordinary_mission23_rival_grounded_death_rebuilds_its_own_castle_holders() {
         crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, position, true, false).unwrap();
     }
     session.step_level2_source_pass(0);
+    // The real grounded-death callback just released this rival's held
+    // Invisible spell with a finite source lifetime. On a clone, move the
+    // existing eligible human to it and let normal source collision acquire
+    // the same generation before expiry. The original continues its revival
+    // checks below. Entry into the rival's dying action was controlled above;
+    // this does not claim a public lethal-hit producer.
+    let dropped_slot = before[11];
+    assert_eq!(dropped_slot, 437);
+    let dropped_handle = session.source_arena().handle(dropped_slot).unwrap();
+    let dropped = session.entities()[usize::from(dropped_slot)].clone();
+    assert_eq!((dropped.class, dropped.model, dropped.action), (15, 11, 34));
+    assert!(dropped.life > 1 && dropped.life <= 289);
+    let local = session.state.entity_index;
+    assert_eq!(local, 424);
+    assert_eq!(
+        session.shared_spells().local_player().enabled_spell_holders[11],
+        0
+    );
+    let local_handle = session.source_arena().handle(local).unwrap();
+    let mut collected = session.clone();
+    let mut acquired = false;
+    for _ in 0..8 {
+        let position = collected.entities()[usize::from(dropped_slot)].position;
+        collected
+            .set_level2_entity_position(local, position)
+            .unwrap();
+        collected.step_outer_turn(crate::PlayerCommand::default(), 0);
+        if collected.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::SpellAcquisition { source_slot, family: 11, result: Some(outcome), .. }
+                if *source_slot == dropped_slot && outcome.parent_entity_index == local
+        )) {
+            acquired = true;
+            break;
+        }
+    }
+    assert!(
+        acquired,
+        "the real local player must collect the positive-life rival drop"
+    );
+    assert_eq!(
+        collected.source_arena().handle(dropped_slot),
+        Some(dropped_handle)
+    );
+    assert_eq!(collected.source_arena().handle(local), Some(local_handle));
+    let held = collected.shared_spells().pickup(dropped_slot).unwrap();
+    assert_eq!((held.class, held.model, held.action), (15, 11, 33));
+    assert_eq!(held.source_spell_parent_entity_index(), local);
+    assert!(
+        held.life > 0 && held.life < dropped.life,
+        "source life decrements before the actual collision"
+    );
+    assert_eq!(
+        collected
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[11],
+        dropped_slot
+    );
     {
         let live = &mut session.session.state.live;
         assert_eq!(live.economy.entities[usize::from(owner)].action, 3);

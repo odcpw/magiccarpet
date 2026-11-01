@@ -3044,6 +3044,26 @@ impl Level2EconomyState {
         true
     }
 
+    /// A source callback set byte1 mask0x04 (dword0x400).
+    /// Keep the raw hidden row through this pass; the existing next-prologue
+    /// cleanup owns unlink, RNG retention and release of its numeric slot.
+    pub(super) fn retire_hidden_spell_source(&mut self, source_slot: u16) {
+        if let Some(source) = self
+            .spell_pickups
+            .iter_mut()
+            .find(|source| source.source_entity_index == source_slot)
+        {
+            source.active = false;
+        }
+        if let Some(source) = self
+            .spell_replacements
+            .iter_mut()
+            .find(|source| source.source_entity_index == source_slot)
+        {
+            source.active = false;
+        }
+    }
+
     pub fn step_authored_model45_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self
             .authored_model45

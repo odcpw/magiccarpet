@@ -412,16 +412,16 @@ impl SpellHolderAcquisitionState {
         }
     }
 
-    /// Apply the life/drawing prefix of `sub_68FF0`.  This intentionally
-    /// leaves a zero-life source eligible for the following pulse, matching
-    /// the source's `if (life) ... else scan` branch.
+    /// Apply the life/drawing prefix of `sub_68FF0`. Only an old life of one
+    /// hides the source and skips its scan; other nonzero values decrement
+    /// before the same visit continues to terrain and collision checks.
     pub fn step_source_life(&mut self) -> bool {
         if self.source_life != 0 {
-            self.source_life -= 1;
+            self.source_life = self.source_life.wrapping_sub(1);
             if self.source_life == 0 {
                 self.source_draw_enabled = false;
+                return false;
             }
-            return false;
         }
         true
     }
@@ -2732,9 +2732,16 @@ mod tests {
     fn source_life_treats_negative_values_as_nonzero_source_prefix() {
         let mut state = SpellHolderAcquisitionState::new(12, 38, 111, 37, 0);
         state.source_life = -1;
-        assert!(!state.step_source_life());
+        assert!(state.step_source_life());
         assert_eq!(state.source_life, -2);
         assert!(state.source_draw_enabled);
+        state.source_life = 2;
+        assert!(state.step_source_life());
+        assert_eq!(state.source_life, 1);
+        assert!(state.source_draw_enabled);
+        assert!(!state.step_source_life());
+        assert_eq!(state.source_life, 0);
+        assert!(!state.source_draw_enabled);
     }
 
     #[test]

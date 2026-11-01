@@ -8572,6 +8572,10 @@ impl Mc2Simulation {
             })
             .map_err(NativeWorldError::new)?;
 
+        if source.drawing_disabled() {
+            live.economy.economy.retire_hidden_spell_source(source_slot);
+        }
+
         // These active typed callbacks own parent upkeep/status writes. The
         // next player visit reloads the numeric carrier before consuming them.
         // Publish only the changed fields; pose and life remain authoritative
@@ -22465,11 +22469,20 @@ impl Mc2Simulation {
             pickup.phase = pickup.phase.wrapping_add(1);
             pickup.record[66] = pickup.phase;
         }
-        self.session
+        let remains_live = self.session
             .state
             .live
             .economy
-            .step_spell_replacement_slot(source_slot)
+            .step_spell_replacement_slot(source_slot);
+        if let Err(error) = self.commit_imported_spell_source_projection(source_slot) {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: error.to_string(),
+            });
+            return false;
+        }
+        remains_live
     }
 
     pub(super) fn step_level2_authored_class14(&mut self, source_slot: u16) -> bool {

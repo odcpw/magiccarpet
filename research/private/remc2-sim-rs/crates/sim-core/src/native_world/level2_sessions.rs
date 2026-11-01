@@ -2842,15 +2842,35 @@ impl Level2SharedSpellResetSession {
                     replacement.family
                 ))
             })?;
-        if self
-            .dynamic_pickups
-            .iter()
-            .any(|entity| entity.index == replacement.source_entity_index)
-        {
-            return Ok(());
-        }
         let source = self
             .pickup(self.acquisitions[family_index].source_slot)
+            .filter(|source| {
+                source.active && source.class == 15 && source.model == replacement.family
+            })
+            .or_else(|| {
+                self.pickups
+                    .iter()
+                    .chain(self.holders.iter())
+                    .chain(self.dynamic_pickups.iter())
+                    .find(|source| {
+                        source.active && source.class == 15 && source.model == replacement.family
+                    })
+            })
+            .or_else(|| {
+                // Every AddSpellXX constructor uses the same owner particle
+                // 77. A family's authored pickup may not yet be active, so
+                // take that template from another live physical spell rather
+                // than copying a reclaimed class-zero source row.
+                self.pickups
+                    .iter()
+                    .chain(self.holders.iter())
+                    .chain(self.dynamic_pickups.iter())
+                    .find(|source| {
+                        source.active
+                            && source.class == 15
+                            && source.particle_parameter_index == Some(77)
+                    })
+            })
             .ok_or_else(|| NativeWorldError::new("persistent spell source is absent"))?;
         // sub_69250 invokes AddSpellXX again, not a copy of an unrelated
         // reset pickup. Retain only particle77's owner-bound presentation.
@@ -2861,6 +2881,11 @@ impl Level2SharedSpellResetSession {
         );
         entity.particle_parameter_index = source.particle_parameter_index;
         entity.record[86..98].copy_from_slice(&source.record[86..98]);
+        // AddSpellXX calls SetEntityShiftRot after binding particle 77; do
+        // not inherit a live template's later shift or field of view.
+        entity.record[88..90].copy_from_slice(&768_i16.to_le_bytes());
+        entity.record[90..92].copy_from_slice(&768_i16.to_le_bytes());
+        entity.record[92..94].copy_from_slice(&1280_i16.to_le_bytes());
         entity.index = replacement.source_entity_index;
         entity.source_id = replacement.source_entity_index;
         entity.authority = EntityAuthority::SpellActivationLive;
@@ -2913,7 +2938,28 @@ impl Level2SharedSpellResetSession {
             NativeWorldError::new("persistent spell constructor profile is absent")
         })?;
         entity.apply_nyphur_spell_profile(profile, 0);
+        // NewEvent has allocated this numeric address to a new source row.
+        // Retire every older spell projection at the address before publishing
+        // it, including imported rows that otherwise shadow dynamic lookups.
+        let slot = replacement.source_entity_index;
+        self.pickups = std::mem::take(&mut self.pickups)
+            .into_vec()
+            .into_iter()
+            .filter(|old| old.index != slot)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        self.holders = std::mem::take(&mut self.holders)
+            .into_vec()
+            .into_iter()
+            .filter(|old| old.index != slot)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        self.dynamic_pickups.retain(|old| old.index != slot);
+        self.authored_pickup_slots.retain(|_, old| *old != slot);
         self.dynamic_pickups.push(entity.clone());
+        // Revoke any cached held status whose old numeric identity was just
+        // replaced by this ordinary persistent source.
+        self.sync_released_holder(&entity);
 
         let mut state = self.acquisitions[family_index];
         state.source_slot = replacement.source_entity_index;
@@ -3001,13 +3047,10 @@ impl Level2SharedSpellResetSession {
                 *entity = source.clone();
             }
         }
-    }
-
-    /// Refresh the shared spell projection from the one source-arena row
-    /// before dispatch. The projection remains a typed convenience view; it
-    /// must never become a second independently mutable entity authority.
-    pub(super) fn sync_pickup_from_authority(&mut self, source: &EntitySnapshot) {
-        self.sync_released_holder(source);
+        // The ordinary pickup callback consumes this acquisition carrier,
+        // including after sub_5E310 turns a held spell back into a pickup.
+        // In particular, its source lifetime is assigned only after the
+        // release position/RNG writes; preserve each source-ordered update.
         for state in &mut self.acquisitions {
             if state.source_slot != source.index {
                 continue;
@@ -3025,6 +3068,13 @@ impl Level2SharedSpellResetSession {
             state.mana = source.mana;
             state.return_side = source.source_word_4a();
         }
+    }
+
+    /// Refresh the shared spell projection from the one source-arena row
+    /// before dispatch. The projection remains a typed convenience view; it
+    /// must never become a second independently mutable entity authority.
+    pub(super) fn sync_pickup_from_authority(&mut self, source: &EntitySnapshot) {
+        self.sync_released_holder(source);
     }
 
     pub(super) fn increment_player_kill_score(&mut self, entity_index: u16, color: usize) -> bool {
@@ -4018,26 +4068,16 @@ impl Level2SharedSpellResetSession {
                 "Level 2 spell family {family} has unsupported source action {source_action}"
             )));
         };
-        if !self.acquisitions[index].step_source_life() {
-            // `sub_68FF0` disables drawing exactly when the positive source
-            // life reaches zero. Keep the raw entity byte17 bit2/dword 0x400
-            // in lock-step with the typed cadence state.
-            let source_life = self.acquisitions[index].source_life;
-            if self.acquisitions[index].source_life == 0 {
-                let source_slot = self.acquisitions[index].source_slot;
-                if let Some(pickup) = self.pickup_mut(source_slot) {
-                    pickup.life = source_life;
-                    pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
-                    pickup.disable_drawing();
-                }
-                self.acquisitions[index].source_draw_enabled = false;
-            } else {
-                let source_slot = self.acquisitions[index].source_slot;
-                if let Some(pickup) = self.pickup_mut(source_slot) {
-                    pickup.life = source_life;
-                    pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
-                }
+        let continue_scan = self.acquisitions[index].step_source_life();
+        let source_life = self.acquisitions[index].source_life;
+        if let Some(pickup) = self.pickup_mut(source_slot) {
+            pickup.life = source_life;
+            pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
+            if !continue_scan {
+                pickup.disable_drawing();
             }
+        }
+        if !continue_scan {
             return Ok(None);
         }
         if self.pickup(source_slot).is_none() {

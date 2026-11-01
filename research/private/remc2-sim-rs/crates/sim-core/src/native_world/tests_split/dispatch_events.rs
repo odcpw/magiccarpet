@@ -871,6 +871,326 @@ fn acquired_invisible_real_bee_death_drops_holder_and_rejects_stale_activation()
             || hud.right.holder_entity_index == revived_slot,
         "the real hand HUD binds the revived holder"
     );
+
+    // The ordinary authored Shield reward supplies a different-family source
+    // and an actually eligible model-0 player for the reuse consumer. This
+    // stages the real reward group, not a held spell or an inventory outcome.
+    assert_eq!(
+        session.shared_spells().local_player().enabled_spell_holders[6],
+        0
+    );
+    let shield_source = authored_status_reward_prerequisite(&mut session, SHIELD_FAMILY);
+    let shield_handle = session
+        .source_arena()
+        .handle(shield_source.source_entity_index)
+        .unwrap();
+    assert_eq!(
+        session
+            .shared_spells()
+            .pickup(shield_source.source_entity_index)
+            .unwrap()
+            .action,
+        19
+    );
+
+    // Keep the real player away from the separate authored Shield pickup
+    // while the old Invisible drop uses its ordinary remaining lifetime.
+    let mut waiting = shield_source.position;
+    waiting.x = waiting.x.wrapping_add(0x6000);
+    waiting.z = session
+        .canonical_terrain()
+        .ground_height(waiting)
+        .wrapping_add(1024);
+    session.set_level2_entity_position(player, waiting).unwrap();
+
+    // The dropped pickup has the actual sub_5E310 lifetime, not the active
+    // spell timer. Let sub_68FF0 hide it and the next source pass reclaim it.
+    // The player already owns the revived family, so the old pickup cannot
+    // be reacquired during this wait.
+    assert!(
+        dropped.life > 0 && dropped.life <= 289,
+        "the source may already have visited the newly dropped holder in this pass"
+    );
+    let mut saw_hidden = false;
+    for _ in 0..=320 {
+        let row = &session.entities()[usize::from(holder_slot)];
+        if row.drawing_disabled() {
+            saw_hidden = true;
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        saw_hidden,
+        "the actual dropped holder must naturally expire and hide"
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle),
+        "the hidden source retains its generation through the same-pass tail"
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_ne!(
+        session.source_arena().handle(holder_slot),
+        Some(holder_handle),
+        "the following pass must reclaim the hidden old generation"
+    );
+
+    // Use the ordinary persistent-spell constructor and real free stack.
+    // Other source rows can be above the old slot, so bounded constructor
+    // calls consume those real free slots rather than manipulating the stack.
+    assert!(
+        session.source_arena().handle(holder_slot).is_none(),
+        "this controlled reuse needs the naturally reclaimed slot to remain free"
+    );
+    assert_eq!(
+        session
+            .source_arena()
+            .handle(shield_source.source_entity_index),
+        Some(shield_handle)
+    );
+    let mut replacement = None;
+    for ordinal in 0_u16..128 {
+        let mut spawn_position = waiting;
+        spawn_position.x = spawn_position
+            .x
+            .wrapping_add(0x4000)
+            .wrapping_add(ordinal.wrapping_mul(0x0800));
+        let created = session
+            .allocate_level2_spell_replacement(
+                SHIELD_FAMILY,
+                shield_source.source_entity_index,
+                spawn_position,
+            )
+            .expect("ordinary persistent spell constructor");
+        if created.source_entity_index == holder_slot {
+            replacement = Some(created);
+            break;
+        }
+    }
+    let replacement = replacement.expect("ordinary allocator must reuse the reclaimed slot");
+    let replacement_handle = session.source_arena().handle(holder_slot).unwrap();
+    assert_ne!(replacement_handle.generation, holder_handle.generation);
+    assert_eq!(
+        (replacement.family, replacement.action),
+        (SHIELD_FAMILY, 20)
+    );
+    let replacement_row = session.shared_spells().pickup(holder_slot).unwrap();
+    assert_eq!(
+        (
+            replacement_row.class,
+            replacement_row.model,
+            replacement_row.action
+        ),
+        (15, SHIELD_FAMILY, 20),
+        "the new generation owns its physical pickup projection"
+    );
+    assert_eq!(replacement_row.active_value, 0);
+    assert_eq!(
+        replacement_row.control_flags & INVISIBLE_STATUS_BIT,
+        0,
+        "the replacement cannot inherit the old holder's Invisible flag"
+    );
+
+    // The actual model-0 player acquires the reused Shield row on a clone;
+    // the original keeps that row as a pickup for the Invisible cast check.
+    let mut reused_consumer = session.clone();
+    assert_eq!(
+        reused_consumer
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[6],
+        0
+    );
+    let mut reused_acquired = false;
+    for _ in 0..12 {
+        let position = reused_consumer
+            .shared_spells()
+            .pickup(holder_slot)
+            .unwrap()
+            .position;
+        reused_consumer
+            .set_level2_entity_position(player, position)
+            .unwrap();
+        reused_consumer.step_outer_turn(PlayerCommand::default(), 0);
+        if reused_consumer.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::SpellAcquisition { source_slot, family: SHIELD_FAMILY, result: Some(outcome), .. }
+                if *source_slot == holder_slot && outcome.parent_entity_index == player
+        )) {
+            reused_acquired = true;
+            break;
+        }
+    }
+    assert!(
+        reused_acquired,
+        "the current-generation Shield replacement must be genuinely acquirable"
+    );
+    assert_eq!(
+        reused_consumer.source_arena().handle(holder_slot),
+        Some(replacement_handle)
+    );
+    assert_eq!(
+        reused_consumer.source_arena().handle(player),
+        Some(player_handle)
+    );
+    let acquired_replacement = reused_consumer.shared_spells().pickup(holder_slot).unwrap();
+    assert_eq!(
+        (
+            acquired_replacement.class,
+            acquired_replacement.model,
+            acquired_replacement.action
+        ),
+        (15, SHIELD_FAMILY, 18)
+    );
+    assert_eq!(
+        acquired_replacement.source_spell_parent_entity_index(),
+        player
+    );
+    assert_eq!(
+        acquired_replacement.control_flags & INVISIBLE_STATUS_BIT,
+        0,
+        "the new held Shield cannot inherit the old Invisible status"
+    );
+    assert_eq!(
+        reused_consumer
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders[6],
+        holder_slot
+    );
+    let cold_shield = reused_consumer.shared_spells().shield_state().unwrap();
+    assert_eq!(
+        (cold_shield.holder_entity_index, cold_shield.active_value),
+        (holder_slot, 0)
+    );
+    reused_consumer
+        .shared_spells_mut()
+        .set_local_player_mana_for_test(5_000);
+    reused_consumer.economy.entities[usize::from(player)].set_mana(5_000);
+    if let Some(fire) = reused_consumer.context.spell_fire.as_mut() {
+        fire.caster.mana = 5_000;
+    }
+    reused_consumer.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 6,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let live_shield = reused_consumer.shared_spells().shield_state().unwrap();
+    assert!(
+        live_shield.active_value > 0,
+        "the acquired reused holder must cast through public input"
+    );
+    assert_eq!(live_shield.holder_entity_index, holder_slot);
+    assert_eq!(
+        reused_consumer.source_arena().handle(holder_slot),
+        Some(replacement_handle)
+    );
+
+    // Controlled resources supply the normal source gate after the long
+    // expiry wait; the ordinary player command and callback own activation.
+    session
+        .shared_spells_mut()
+        .set_local_player_mana_for_test(5_000);
+    session.economy.entities[usize::from(player)].set_mana(5_000);
+    if let Some(fire) = session.context.spell_fire.as_mut() {
+        fire.caster.mana = 5_000;
+    }
+    let local = session.shared_spells().local_player();
+    let fire_flag = if local.left_spell_slot == INVISIBLE_FAMILY {
+        0x10
+    } else if local.right_spell_slot == INVISIBLE_FAMILY {
+        0x20
+    } else {
+        panic!("revival must preserve an actual Invisible hand")
+    };
+    session.step_outer_turn(
+        PlayerCommand {
+            flags: fire_flag,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    for _ in 0..2 {
+        if session
+            .shared_spells()
+            .pickup(revived_slot)
+            .unwrap()
+            .active_value
+            > 0
+        {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(
+        session
+            .shared_spells()
+            .pickup(revived_slot)
+            .unwrap()
+            .active_value
+            > 0,
+        "the genuine revived holder must remain usable after slot reuse"
+    );
+    assert_eq!(
+        session.source_arena().handle(revived_slot),
+        Some(revived_handle)
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(replacement_handle)
+    );
+    let row_after_cast = session.shared_spells().pickup(holder_slot).unwrap();
+    assert_eq!(
+        (
+            row_after_cast.class,
+            row_after_cast.model,
+            row_after_cast.action,
+            row_after_cast.active_value
+        ),
+        (15, SHIELD_FAMILY, 20, 0),
+        "the current cast must not activate the replacement"
+    );
+    assert_eq!(row_after_cast.control_flags & INVISIBLE_STATUS_BIT, 0);
+    for _ in 0..=200 {
+        if session
+            .shared_spells()
+            .pickup(revived_slot)
+            .unwrap()
+            .active_value
+            == 0
+        {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_eq!(
+        session
+            .shared_spells()
+            .pickup(revived_slot)
+            .unwrap()
+            .active_value,
+        0,
+        "the current holder must reach its normal expiry"
+    );
+    assert_eq!(
+        session.source_arena().handle(revived_slot),
+        Some(revived_handle)
+    );
+    assert_eq!(
+        session.source_arena().handle(holder_slot),
+        Some(replacement_handle)
+    );
+    let hud = session
+        .day_hud()
+        .expect("inventory remains presentable after expiry");
+    assert!(
+        hud.left.holder_entity_index == revived_slot
+            || hud.right.holder_entity_index == revived_slot
+    );
 }
 
 #[test]
