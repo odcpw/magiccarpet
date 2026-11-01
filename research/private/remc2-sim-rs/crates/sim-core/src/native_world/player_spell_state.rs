@@ -306,7 +306,21 @@ impl Mc2LiveState {
         castle_slot: u16,
         reset_free_slots: &[u16],
         remove_rival_castle_spell: bool,
+        class3_slots: Option<&[u16]>,
     ) -> bool {
+        let current_class3;
+        let class3_slots = if let Some(slots) = class3_slots {
+            slots
+        } else {
+            current_class3 = self.economy.live_castles().map(|castle| castle.source_entity_index)
+                .chain(self.economy.entities.iter().filter(|row| row.active && row.class == 3 && row.life >= 0)
+                    .map(|row| row.index)).collect::<Vec<_>>();
+            &current_class3
+        };
+        let site_clear = self.economy.castle_at(castle_slot).is_none_or(|castle| {
+            castle.action != 5 || castle.build_state != 0 || castle.level == 0
+                || self.economy.castle_upgrade_site_checks(castle_slot, &self.terrain, class3_slots, &self.economy.entities)[1]
+        });
         let final_profile = self.economy.castle_at(castle_slot).and_then(|castle| {
             if castle.level == 0 {
                 return None;
@@ -337,10 +351,11 @@ impl Mc2LiveState {
             core,
             nyphur_dispatcher,
         };
-        economy.step_castle_action_with_final_loss(
+        economy.step_castle_action_with_site(
             castle_slot,
             terrain,
             reset_free_slots,
+            site_clear,
             &mut |economy, castle| {
                 consumer.final_loss(economy, castle, remove_rival_castle_spell, final_profile);
             },

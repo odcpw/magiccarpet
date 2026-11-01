@@ -1,5 +1,55 @@
 use super::*;
 
+impl Level2OrdinaryResetSession {
+    /// `sub_11960` runs before the construction-site refusal. Only the
+    /// frozen source model45 list is eligible; ordinary destruction/reclaim
+    /// remains the building owner's following scheduled work.
+    pub(crate) fn begin_castle_construction_source(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        castle_slot: u16,
+        model45_slots: &[u16],
+    ) -> std::result::Result<usize, String> {
+        let Some(castle) = arena.economy.castle_at(castle_slot).copied()
+            .filter(|root| root.action == 5 && root.build_state == 0)
+        else { return Ok(0) };
+        let (pitch, roll) = level2_castle_shift_axes(castle.level.wrapping_add(1));
+        let mut killed = 0;
+        for &slot in model45_slots {
+            let context = super::source_target::Context { houses: Some(&self.houses), ..Default::default() };
+            let Some(target) = super::source_target::read(arena, context, slot)? else { continue };
+            if (target.class, target.model) != (10, 45) { continue; }
+            let Some(shape) = target.collision else {
+                return Err(format!("Castle constructor model45 slot {slot} lacks source shifts"));
+            };
+            let dx = i32::from(target.position.x.wrapping_sub(castle.position.x) as i16).abs();
+            let dy = i32::from(target.position.y.wrapping_sub(castle.position.y) as i16).abs();
+            if dx > i32::from(shape.half_width) + i32::from(pitch)
+                || dy > i32::from(shape.half_depth) + i32::from(roll) { continue; }
+            if let Some(house) = self.houses.house_mut(slot).filter(|house| house.source_retained()) {
+                house.life = -1;
+                house.parameter.destruction_successor = 0;
+            } else if let Some(building) = arena.economy.authored_model45.iter_mut()
+                .find(|row| row.source_entity_index == slot && row.active)
+            {
+                building.life = -1;
+                building.font_type_index = 0;
+            } else if let Some(raw) = arena.entities.get_mut(usize::from(slot))
+                .filter(|row| row.class == 10 && row.model == 45)
+            {
+                raw.set_life(-1);
+                raw.font_type_index = 0;
+                raw.record[65] = 0;
+            } else {
+                return Err(format!("Castle constructor lost model45 slot {slot}"));
+            }
+            killed += 1;
+        }
+        arena.economy.restore_castle_site_shifts(castle_slot);
+        Ok(killed)
+    }
+}
+
 impl crate::campaign::source_arena::SourceArena {
     /// Terminal NewEvent competes with raw and typed arena occupants through
     /// the same allocator as the ordinary source constructors.
@@ -198,6 +248,7 @@ impl Level2EconomyState {
             return false;
         };
         castle.source_word_30 = 30;
+        castle.timer = 30;
         castle.pending_damage = castle.pending_damage.wrapping_add(i32::from(payload));
         castle.pending_attacker_entity_index = owner;
         true
@@ -5399,7 +5450,7 @@ impl Level2EconomyState {
             castle.shift_fov = root.array_fov();
             castle.source_word_2e = castle_state(&root);
             castle.source_word_30 = castle_timer(&root);
-            castle.timer = castle_timer(&root) as u8;
+            castle.timer = castle_timer(&root);
             castle.source_word_7c = word(&root, 128);
             castle.source_word_80 = word(&root, 132);
             if let Some(row) = child {
@@ -6450,6 +6501,117 @@ impl Level2EconomyState {
         }
     }
 
+    /// Pure `sub_11A10` probe. Membership is the class-3 list frozen at the
+    /// source prepass; pointed-to geometry is resolved at this visit. The
+    /// four map strips below deliberately preserve the source asymmetry.
+    pub(crate) fn castle_upgrade_site_clear(
+        &self,
+        castle_slot: u16,
+        terrain: &SessionTerrain,
+        class3_slots: &[u16],
+        entities: &[EntitySnapshot],
+    ) -> bool {
+        let Some(castle) = self.castle_at(castle_slot) else {
+            return false;
+        };
+        self.castle_upgrade_site_clear_for(*castle, terrain, class3_slots, entities)
+    }
+
+    pub(crate) fn castle_upgrade_site_checks(
+        &self,
+        castle_slot: u16,
+        terrain: &SessionTerrain,
+        class3_slots: &[u16],
+        entities: &[EntitySnapshot],
+    ) -> [bool; 2] {
+        let Some(mut castle) = self.castle_at(castle_slot).copied() else {
+            return [false; 2];
+        };
+        let first = self.castle_upgrade_site_clear_for(castle, terrain, class3_slots, entities);
+        (castle.shift_pitch, castle.shift_roll) = level2_castle_shift_axes(castle.level);
+        let following = self.castle_upgrade_site_clear_for(castle, terrain, class3_slots, entities);
+        [first, following]
+    }
+
+    fn castle_upgrade_site_clear_for(
+        &self,
+        castle: Level2CastleState,
+        terrain: &SessionTerrain,
+        class3_slots: &[u16],
+        entities: &[EntitySnapshot],
+    ) -> bool {
+        let (pitch, roll) = level2_castle_shift_axes(castle.level.wrapping_add(1));
+        for &slot in class3_slots {
+            if slot == castle.source_entity_index {
+                continue;
+            }
+            let geometry = if let Some(other) = self.castle_entry(slot) {
+                (other.source_model == 2).then_some((
+                    other.position, other.shift_yaw, other.shift_pitch,
+                    other.shift_roll, other.shift_fov,
+                ))
+            } else {
+                entities.get(usize::from(slot)).filter(|row| row.model == 2).map(|row| (
+                    row.position, row.array_yaw(), row.array_pitch(), row.array_roll(), row.array_fov(),
+                ))
+            };
+            if let Some((position, yaw, other_pitch, other_roll, fov)) = geometry
+                && level2_model76_sub106c0_matches(
+                    castle.position, 0, pitch, roll, 256,
+                    position, yaw, other_pitch, other_roll, fov,
+                )
+            {
+                return false;
+            }
+        }
+        let old_x = castle.shift_pitch >> 8;
+        let old_y = castle.shift_roll >> 8;
+        let next_x = pitch >> 8;
+        let next_y = roll >> 8;
+        let dx = next_x.wrapping_sub(old_x);
+        let dy = next_y.wrapping_sub(old_y);
+        let x = (castle.position.x.wrapping_add(128) >> 8) as u8;
+        let y = (castle.position.y.wrapping_add(128) >> 8) as u8;
+        let start_x = x.wrapping_sub(next_x as u8);
+        let start_y = y.wrapping_sub(next_y as u8);
+        let strip_clear = |x: u8, y: u8, reset_x: u8, width: i16, rows: i16| {
+            // Source decrement-to-zero shorts may start negative (stage7
+            // probes BUILD entry8). The read-only map repeats every256 cells
+            // on each axis, so repeated cycles cannot change this predicate.
+            let columns = u16::from_ne_bytes(width.to_ne_bytes()).min(256);
+            let rows = u16::from_ne_bytes(rows.to_ne_bytes()).min(if x == reset_x { 256 } else { 257 });
+            let mut row_y = y;
+            for row in 0..rows {
+                let mut column_x = if row == 0 { x } else { reset_x };
+                for _ in 0..columns {
+                    let angle = terrain.planes.angles[terrain_index(column_x, row_y)] as i8;
+                    if angle < 0 || terrain.map_type == MapType::Cave && angle & 8 != 0 {
+                        return false;
+                    }
+                    column_x = column_x.wrapping_add(1);
+                }
+                row_y = row_y.wrapping_add(1);
+            }
+            true
+        };
+        strip_clear(start_x, start_y, start_x, next_x.wrapping_mul(2), dy)
+            && strip_clear(start_x, start_y.wrapping_add((2 * next_y - dy) as u8), start_x, next_x.wrapping_mul(2), dy)
+            && strip_clear(start_x, start_y.wrapping_add(dy as u8), start_x, dx, dy)
+            // v11 starts at the right x for its first row only. The source
+            // resets subsequent rows to v20's LEFT x, just like v8.
+            && strip_clear(start_x.wrapping_add((next_x - dx) as u8), start_y.wrapping_add(dy as u8), start_x, dx, dy)
+    }
+
+    /// Every return from `sub_11A10` runs SetShiftByCastle(current stage),
+    /// including its yaw/fov reset rather than the action-4 vertical envelope.
+    pub(crate) fn restore_castle_site_shifts(&mut self, castle_slot: u16) {
+        if let Some(castle) = self.castle_entry_mut(castle_slot) {
+            (castle.shift_pitch, castle.shift_roll) = level2_castle_shift_axes(castle.level);
+            castle.shift_yaw = 0;
+            castle.shift_fov = 256;
+        }
+    }
+
     /// Advance the bounded Castle root action. This follows the source state
     /// table in `BeginOfCastleCreation_5FA70`: states 0/3 allocate a class-10
     /// model-42 child, state 4 scans for that child, and state 5 allocates the
@@ -6475,6 +6637,22 @@ impl Level2EconomyState {
         reset_free_slots: &[u16],
         on_final_loss: &mut dyn FnMut(&mut Level2EconomyState, Level2CastleState),
     ) -> bool {
+        let class3_slots = self.live_castles().map(|castle| castle.source_entity_index).collect::<Vec<_>>();
+        let site_clear = self.castle_at(castle_slot).is_none_or(|castle| {
+            castle.action != 5 || castle.build_state != 0 || castle.level == 0
+                || self.castle_upgrade_site_checks(castle_slot, terrain, &class3_slots, &[])[1]
+        });
+        self.step_castle_action_with_site(castle_slot, terrain, reset_free_slots, site_clear, on_final_loss)
+    }
+
+    pub(crate) fn step_castle_action_with_site(
+        &mut self,
+        castle_slot: u16,
+        terrain: &mut SessionTerrain,
+        reset_free_slots: &[u16],
+        site_clear: bool,
+        on_final_loss: &mut dyn FnMut(&mut Level2EconomyState, Level2CastleState),
+    ) -> bool {
         let Some(snapshot) = self.castle_at(castle_slot).copied() else {
             return false;
         };
@@ -6487,6 +6665,19 @@ impl Level2EconomyState {
         }
         match snapshot.action {
             5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
+                if snapshot.build_state == 0 {
+                    // 5FA70: level-zero creation bypasses 11A10; upgrades
+                    // recheck after the paid flyer has reached this root.
+                    self.restore_castle_site_shifts(castle_slot);
+                    if snapshot.level != 0 && !site_clear {
+                        let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
+                        castle.build_state = 2;
+                        castle.source_word_2e = 2;
+                        castle.control_flags &= !0x40;
+                        self.advance_castle_phase(castle_slot);
+                        return true;
+                    }
+                }
                 let source_construction_start = snapshot.level == 0
                     && snapshot.source_word_2e == 0
                     && snapshot.source_class == 3
@@ -6821,6 +7012,7 @@ impl Level2EconomyState {
                     castle.timer = castle.timer.wrapping_sub(1);
                     castle.position.z = terrain.ground_height(castle.position);
                 }
+                castle.source_word_30 = castle.timer;
                 self.advance_castle_phase(castle_slot);
                 true
             }

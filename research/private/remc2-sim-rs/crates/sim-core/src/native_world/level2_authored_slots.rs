@@ -8422,7 +8422,7 @@ impl Level2EconomyState {
             hasher.update(castle.pending_attacker_entity_index.to_le_bytes());
             hasher.update(castle.killer_entity_index.to_le_bytes());
             hasher.update(castle.control_flags.to_le_bytes());
-            hasher.update([castle.timer]);
+            hasher.update(castle.timer.to_le_bytes());
             hasher.update([castle.phase]);
             hasher.update(castle.construction_slot.to_le_bytes());
             hasher.update(castle.defense_slot.to_le_bytes());

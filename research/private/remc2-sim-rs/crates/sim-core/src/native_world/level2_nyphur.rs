@@ -5,7 +5,7 @@ use super::{
     Level2CastleState, Level2SetSpellProfile, ManaSphere, MapType, MissionContentSession,
     NativeWorldError, PLAYER_SPELL_COUNT, PlayerSnapshot, Position, PresentationSelectors, Result,
     RuntimeRelation, RuntimeSnapshot, SessionTerrain, Sha256, SourceAudioCallTag, angle_distance,
-    heading_for_positions, level2_applied_tier, level2_direct_starting_spell_profile,
+    heading_for_positions, level2_applied_tier, level2_castle_shift_axes, level2_direct_starting_spell_profile,
     level2_nyphur_participant, level2_set_spell_profile, level2_wrapping_target_distance,
     mark_source_audio_call, terrain_index,
 };
@@ -802,37 +802,82 @@ impl Level2NyphurCommonUpkeep {
         true
     }
 
-    /// Pinned `sub_13C50` entry gates. Its final `sub_155E0` eligibility
-    /// carrier belongs to another Bead, so a qualified holder is not
-    /// substituted with a generic cast: the dependent branch fails closed.
+    /// Pinned `sub_13C50` and its `sub_155E0` eligibility predicate.
+    #[cfg(test)]
     fn step_sub_13c50(
         &self,
         source: &EntitySnapshot,
         castle: Option<&EntitySnapshot>,
         entities: &[EntitySnapshot],
     ) -> bool {
+        self.step_sub_13c50_with_castle_site(source, castle, entities, [false; 2], &mut false)
+    }
+
+    fn step_sub_13c50_with_castle_site(
+        &self,
+        source: &EntitySnapshot,
+        castle: Option<&EntitySnapshot>,
+        entities: &[EntitySnapshot],
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
+    ) -> bool {
         let Some(castle) = castle else {
             return false;
         };
         if castle.index != self.castle_entity_index
             || !castle.active
-            || castle.life < 0
             || castle.action != 4
             || castle.activation_value != 0
         {
             return false;
         }
-        let Some(_family_two_holder) = self.sub_146c0(2, entities) else {
+        let Some(holder) = self.sub_146c0(2, entities) else {
             return false;
         };
-        if !self.sub_15730(2, entities) {
+        if source.active_value != 0 || self.spell_enabled[2] != 0 {
             return false;
         }
+        let clear = castle_site_clear[usize::from(*castle_site_called)];
+        *castle_site_called = true;
+        clear && self.max_mana >= holder.max_mana && self.castle_aim_admitted(source)
+    }
 
-        // `sub_155E0` owns the remaining Castle aperture/cooldown/heading
-        // decision. It is intentionally not reimplemented in this lane.
-        let _ = source;
-        false
+    /// `sub_582B0` is compared strictly against the source perception-based
+    /// angular aperture. The sign correction truncates the quarter toward zero.
+    fn castle_aim_admitted(&self, source: &EntitySnapshot) -> bool {
+        let gap = 255_i32 - i32::from(self.word_0x244);
+        let sign = gap >> 31;
+        let quarter = gap.wrapping_sub(sign << 2).wrapping_add(sign) >> 2;
+        let aperture = quarter.wrapping_add(20).wrapping_shl(11) / 360;
+        i32::from(angle_distance(i32::from(source.yaw), i32::from(source.source_roll()))) < aperture
+    }
+
+    fn source_castle_spell_available(
+        &self,
+        holder: &EntitySnapshot,
+        profile: Level2SetSpellProfile,
+        entities: &[EntitySnapshot],
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
+    ) -> bool {
+        if self.max_mana < profile.mana_regen
+            || self.mana < profile.max_mana
+            || self.spell_enabled[2] != 0
+        {
+            return false;
+        }
+        if self.castle_entity_index == 0 {
+            return self.mana >= holder.max_mana;
+        }
+        let Some(source) = entities.get(usize::from(self.source_slot)) else {
+            return false;
+        };
+        if holder.active_value != 0 {
+            return false;
+        }
+        let clear = castle_site_clear[usize::from(*castle_site_called)];
+        *castle_site_called = true;
+        clear && self.mana >= holder.max_mana && self.castle_aim_admitted(source)
     }
 
     /// Pinned `sub_13CE0`: family 1 is the first carrier gate, followed by
@@ -927,11 +972,8 @@ impl Level2NyphurCommonUpkeep {
         // capacity with the selected table's maxManaLimit_A and current
         // mana with its manaCost_6. The physical holder's maxMana is a
         // separate inclusive gate, and no source cost is charged here.
-        if family == 2 && self.castle_entity_index == 0 {
-            return self.max_mana >= profile.mana_regen
-                && self.mana >= profile.max_mana
-                && self.spell_enabled[2] == 0
-                && self.mana >= holder.max_mana;
+        if family == 2 {
+            return self.source_castle_spell_available(holder, profile, entities, [false; 2], &mut false);
         }
         if self.max_mana < profile.max_mana
             || self.mana < profile.mana
@@ -949,7 +991,7 @@ impl Level2NyphurCommonUpkeep {
     /// Execute the source `sub_15F20`: SetSpell happens before the
     /// availability check, including on the not-enough-mana result.
     fn step_sub_15f20(&mut self, family: u8, raw_tier: i8, entities: &mut [EntitySnapshot]) -> i8 {
-        self.step_sub_15f20_with_castle_profiles(family, raw_tier, entities, None)
+        self.step_sub_15f20_with_castle_profiles(family, raw_tier, entities, None, [false; 2], &mut false)
     }
 
     fn step_sub_15f20_with_castle_profiles(
@@ -958,6 +1000,8 @@ impl Level2NyphurCommonUpkeep {
         raw_tier: i8,
         entities: &mut [EntitySnapshot],
         castle_profiles: Option<&[Level2SetSpellProfile; 3]>,
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
     ) -> i8 {
         if usize::from(family) >= PLAYER_SPELL_COUNT {
             return 0;
@@ -984,13 +1028,13 @@ impl Level2NyphurCommonUpkeep {
         let Some(holder) = entities.get(usize::from(holder_slot)) else {
             return 0;
         };
-        if family == 2 && self.castle_entity_index == 0 {
+        if family == 2 {
             // SetSpell queues a requested tier while the holder is active;
             // sub_15170 still reads the holder's currently applied tier.
             let Some((_, applied)) = Self::source_spell_profile(2, holder.level_gate) else {
                 return 0;
             };
-            if !self.source_spell_available(2, holder, applied, entities) {
+            if !self.source_castle_spell_available(holder, applied, entities, castle_site_clear, castle_site_called) {
                 return 0;
             }
             return if self.max_mana < profile.mana_regen || self.mana < profile.max_mana {
@@ -1282,6 +1326,20 @@ impl Level2NyphurCommonUpkeep {
         source_control_flags: &mut u32,
         entities: &mut [EntitySnapshot],
     ) -> bool {
+        self.step_sub_14e10_with_castle_site(
+            family, source_model, source_control_flags, entities, [false; 2], &mut false,
+        )
+    }
+
+    fn step_sub_14e10_with_castle_site(
+        &mut self,
+        family: u8,
+        source_model: u8,
+        source_control_flags: &mut u32,
+        entities: &mut [EntitySnapshot],
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
+    ) -> bool {
         if family == 4 && self.source_family4_holder(entities).is_none() {
             return false;
         }
@@ -1295,7 +1353,12 @@ impl Level2NyphurCommonUpkeep {
         else {
             return false;
         };
-        if !self.source_spell_available(family, holder_before, profile, entities) {
+        let available = if family == 2 {
+            self.source_castle_spell_available(holder_before, profile, entities, castle_site_clear, castle_site_called)
+        } else {
+            self.source_spell_available(family, holder_before, profile, entities)
+        };
+        if !available {
             return false;
         }
         let Some(holder) = entities.get_mut(usize::from(holder_slot)) else {
@@ -2202,7 +2265,7 @@ fn level2_nyphur_project_castle_root(entity: &mut EntitySnapshot, castle: Level2
     entity.byte_3c = 0;
     entity.font_type_index = 0;
     entity.active_value = 0;
-    entity.activation_value = 0;
+    entity.activation_value = castle.source_word_30;
     entity.mana_regen = 0;
     entity.actual_speed = 0;
     entity.max_mana = castle.mana_capacity;
@@ -2221,7 +2284,8 @@ fn level2_nyphur_project_castle_root(entity: &mut EntitySnapshot, castle: Level2
     entity.record[30..32].copy_from_slice(&castle.source_id_entity_index.to_le_bytes());
     entity.record[32..38].fill(0);
     entity.record[46..48].fill(0);
-    entity.record[50..54].fill(0);
+    entity.record[50..52].fill(0);
+    entity.record[52..54].copy_from_slice(&castle.source_word_30.to_le_bytes());
     entity.record[63..66].fill(0);
     entity.record[66] = castle.phase;
     entity.record[67] = 3;
@@ -2239,6 +2303,23 @@ fn level2_nyphur_project_castle_root(entity: &mut EntitySnapshot, castle: Level2
     entity.record[140..148].fill(0);
     entity.record[148..152].copy_from_slice(&castle.mana.to_le_bytes());
     entity.record[152..154].copy_from_slice(&castle.player_entity_index.to_le_bytes());
+}
+
+/// `sub_11A10` restores the current-stage source shifts on every exit,
+/// including its yaw/fov writes. This dispatch projection must see that
+/// mutation before later selectors in the same Nyphur callback.
+fn level2_nyphur_restore_castle_shift(
+    entities: &mut [EntitySnapshot],
+    slot: u16,
+    current_axes: Option<(i16, i16)>,
+) {
+    let (Some(entity), Some((pitch, roll))) = (entities.get_mut(usize::from(slot)), current_axes) else {
+        return;
+    };
+    entity.record[86..88].copy_from_slice(&0_i16.to_le_bytes());
+    entity.record[88..90].copy_from_slice(&pitch.to_le_bytes());
+    entity.record[90..92].copy_from_slice(&roll.to_le_bytes());
+    entity.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
 }
 
 /// Project one live typed Castle defender into the rebuilt class-3 list used
@@ -3889,7 +3970,7 @@ impl Level2NyphurDispatcher {
         self.step_dispatch_with_castle_seed(
             pass, source_slot, entities, mana_spheres, castles, castle_children, players,
             terrain, presentation, move_speed_flag, active_level_color_index, prelude,
-            &profiles, &mut |_, _| None,
+            [false; 2], &mut false, &profiles, &mut |_, _| None,
         )
     }
 
@@ -3908,6 +3989,8 @@ impl Level2NyphurDispatcher {
         move_speed_flag: u8,
         active_level_color_index: u8,
         prelude: Option<NyphurDirectionalPrelude>,
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
         castle_profiles: &[Level2SetSpellProfile; 3],
         castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
@@ -3915,6 +3998,9 @@ impl Level2NyphurDispatcher {
         // composition layer supplies generation-validated current roots,
         // including enemies used by the ordinary target selectors below.
         self.refresh_castle_link(source_slot, castles, players);
+        let castle_current_axes = castles.iter()
+            .find(|castle| castle.active && castle.source_entity_index == self.common_upkeep.castle_entity_index)
+            .map(|castle| level2_castle_shift_axes(castle.level));
         let mut seen_spheres = BTreeSet::new();
         let mut seen_projected_slots = BTreeSet::new();
         let mut projected_entities = entities.to_vec();
@@ -4067,6 +4153,9 @@ impl Level2NyphurDispatcher {
                 move_speed_flag,
                 active_level_color_index,
                 prelude,
+                castle_site_clear,
+                castle_site_called,
+                castle_current_axes,
                 castle_profiles,
                 castle_seed,
                 &mut newborn_slot,
@@ -4113,6 +4202,9 @@ impl Level2NyphurDispatcher {
         move_speed_flag: u8,
         active_level_color_index: u8,
         prelude: Option<NyphurDirectionalPrelude>,
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
+        castle_current_axes: Option<(i16, i16)>,
         castle_profiles: &[Level2SetSpellProfile; 3],
         castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
         newborn_slot: &mut Option<u16>,
@@ -4131,7 +4223,10 @@ impl Level2NyphurDispatcher {
         // and the mode switch, not before the common callback.
         let selected_state = self.state_byte;
         match selected_state {
-            1 => self.step_sub_12ff0(source_slot, entities, terrain)?,
+            1 => self.step_sub_12ff0_with_castle_site(
+                source_slot, entities, terrain, castle_profiles, castle_site_clear,
+                castle_site_called, castle_current_axes,
+            )?,
             // The pinned program contains this structural `_nmemneed` case,
             // but no assignment of byte 0x1C1 to value 2. Preserve the call
             // in the trace map without inventing a production transition.
@@ -4153,7 +4248,10 @@ impl Level2NyphurDispatcher {
         }
         let tail_calls = if selected_state == 0 { 2 } else { 1 };
         for _ in 0..tail_calls {
-            self.step_sub_12e70(source_slot, entities, players, presentation)?;
+            self.step_sub_12e70_with_castle_site(
+                source_slot, entities, players, presentation, castle_site_clear,
+                castle_site_called, castle_current_axes,
+            )?;
         }
         Ok((
             snapshot,
@@ -4402,11 +4500,30 @@ impl Level2NyphurDispatcher {
     /// inclusive 512 near gate, exclusive 2048 far gate, family-2 tier scan,
     /// activation polarity, signed vertical step, and `sub_16580` tail remain
     /// in source order.
+    #[cfg(test)]
     fn step_sub_12ff0(
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         terrain: &SessionTerrain,
+    ) -> Result<()> {
+        let profiles = std::array::from_fn(|tier| {
+            level2_set_spell_profile(2, tier as u8).expect("Castle source tier exists")
+        });
+        self.step_sub_12ff0_with_castle_site(
+            source_slot, entities, terrain, &profiles, [false; 2], &mut false, None,
+        )
+    }
+
+    fn step_sub_12ff0_with_castle_site(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        terrain: &SessionTerrain,
+        castle_profiles: &[Level2SetSpellProfile; 3],
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
+        castle_current_axes: Option<(i16, i16)>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -4434,18 +4551,29 @@ impl Level2NyphurDispatcher {
 
         let mut tier = self.common_upkeep.spell_levels[2];
         while tier >= 0 {
-            if self.common_upkeep.step_sub_15f20(2, tier, entities) == 2 {
+            let selected = self.common_upkeep.step_sub_15f20_with_castle_profiles(
+                2, tier, entities, Some(castle_profiles), castle_site_clear, castle_site_called,
+            );
+            if *castle_site_called {
+                level2_nyphur_restore_castle_shift(entities, self.common_upkeep.castle_entity_index, castle_current_axes);
+            }
+            if selected == 2 {
                 break;
             }
             tier -= 1;
         }
         let mut source_control_flags = entities[source_index].control_flags;
-        let activated = self.common_upkeep.step_sub_14e10(
+        let activated = self.common_upkeep.step_sub_14e10_with_castle_site(
             2,
             entities[source_index].model,
             &mut source_control_flags,
             entities,
+            castle_site_clear,
+            castle_site_called,
         );
+        if *castle_site_called {
+            level2_nyphur_restore_castle_shift(entities, self.common_upkeep.castle_entity_index, castle_current_axes);
+        }
         entities[source_index].set_control_flags(source_control_flags);
         if !activated {
             self.common_upkeep.speed = 0;
@@ -4817,6 +4945,8 @@ impl Level2NyphurDispatcher {
                 tier,
                 entities,
                 Some(castle_profiles),
+                [false; 2],
+                &mut false,
             ) == 2
             {
                 break;
@@ -5490,12 +5620,28 @@ impl Level2NyphurDispatcher {
     /// the exact class-5 target or the shared `sub_14630` state/relation
     /// fall-through; later mode bodies are deliberately not reconstructed
     /// here.
+    #[cfg(test)]
     fn step_sub_12e70(
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         players: &[PlayerSnapshot],
         presentation: &PresentationSelectors,
+    ) -> Result<()> {
+        self.step_sub_12e70_with_castle_site(
+            source_slot, entities, players, presentation, [false; 2], &mut false, None,
+        )
+    }
+
+    fn step_sub_12e70_with_castle_site(
+        &mut self,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
+        presentation: &PresentationSelectors,
+        castle_site_clear: [bool; 2],
+        castle_site_called: &mut bool,
+        castle_current_axes: Option<(i16, i16)>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -5512,7 +5658,7 @@ impl Level2NyphurDispatcher {
             return Ok(());
         }
 
-        let castle = (self.common_upkeep.castle_entity_index != 0)
+        let mut castle = (self.common_upkeep.castle_entity_index != 0)
             .then(|| entities.get(usize::from(self.common_upkeep.castle_entity_index)))
             .flatten()
             .cloned();
@@ -5531,12 +5677,16 @@ impl Level2NyphurDispatcher {
         }
 
         // The Castle action-4 selector is the first cadence-gated owned row.
-        // Its final `sub_155E0` dependency fails closed when no owned carrier
-        // is available, without consuming a source relation or RNG draw.
-        if self
-            .common_upkeep
-            .step_sub_13c50(&entities[source_index], castle.as_ref(), entities)
-        {
+        let selected_castle = self.common_upkeep.step_sub_13c50_with_castle_site(
+            &entities[source_index], castle.as_ref(), entities, castle_site_clear, castle_site_called,
+        );
+        if *castle_site_called {
+            level2_nyphur_restore_castle_shift(entities, self.common_upkeep.castle_entity_index, castle_current_axes);
+            castle = entities.get(usize::from(self.common_upkeep.castle_entity_index)).cloned();
+        }
+        if selected_castle {
+            let castle = castle.as_ref().expect("sub_13C50 resolved the owned Castle");
+            entities[source_index].set_source_relation(castle);
             self.state_byte = 1;
             return Ok(());
         }

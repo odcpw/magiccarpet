@@ -995,7 +995,7 @@ pub struct Level2CastleState {
     pub pending_attacker_entity_index: u16,
     pub killer_entity_index: u16,
     pub control_flags: u32,
-    pub timer: u8,
+    pub timer: u16,
     pub phase: u8,
     /// Root action (`4` stable, `5` construction, `6` destruction) and the
     /// source construction substate used by `BeginOfCastleCreation_5FA70`.

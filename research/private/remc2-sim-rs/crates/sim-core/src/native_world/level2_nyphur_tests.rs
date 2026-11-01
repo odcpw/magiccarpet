@@ -6,6 +6,140 @@ use crate::native_world::{
 };
 
 #[test]
+fn ordinary_rival_castle_upgrade_gates_use_distinct_source_carriers() {
+    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-paj2-source4-campaign-package");
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package,
+        crate::campaign::spec::CampaignSelection::ordinary(5).unwrap(),
+    ).expect("ordinary Level 5 owner package");
+    let owner = 266_u16;
+    let holder_slot = 269_u16;
+    for _ in 0..128 {
+        if campaign.simulation().economy().castle_for_owner(owner)
+            .is_some_and(|root| root.action == 4) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    let sim = campaign.simulation();
+    let live = &sim.session.state.live;
+    let root = *sim.economy().castle_for_owner(owner).expect("actual owner Castle");
+    assert_eq!((root.level, root.action, root.source_word_30), (1, 4, 0));
+    let handle = live.economy.handle(owner).unwrap();
+    let mut ai = live.nyphur_dispatcher.get(handle).unwrap().common_upkeep.clone();
+    let mut entities = live.economy.entities.clone();
+    let mut castle = entities[usize::from(root.source_entity_index)].clone();
+    level2_nyphur_project_castle_root(&mut castle, root);
+    entities[usize::from(root.source_entity_index)] = castle.clone();
+    let mut slots = entities.iter().filter(|row| row.active && row.class == 3 && row.life >= 0)
+        .map(|row| row.index).collect::<Vec<_>>();
+    slots.extend(sim.economy().live_castles().map(|row| row.source_entity_index));
+    slots.sort_unstable();
+    slots.dedup();
+    let site = sim.economy().castle_upgrade_site_checks(root.source_entity_index, &live.terrain, &slots, &entities);
+    if site != [true, true] {
+        let terrain_only = sim.economy().castle_upgrade_site_checks(root.source_entity_index, &live.terrain, &[], &entities);
+        let (nx, ny) = level2_castle_shift_axes(root.level + 1);
+        let (nx, ny) = (nx >> 8, ny >> 8);
+        let (dx, dy) = (nx - (root.shift_pitch >> 8), ny - (root.shift_roll >> 8));
+        let x = ((root.position.x.wrapping_add(128) >> 8) as u8).wrapping_sub(nx as u8);
+        let y = ((root.position.y.wrapping_add(128) >> 8) as u8).wrapping_sub(ny as u8);
+        let strips = [(x, y, x, 2 * nx, dy),
+            (x, y.wrapping_add((2 * ny - dy) as u8), x, 2 * nx, dy),
+            (x, y.wrapping_add(dy as u8), x, dx, dy),
+            (x.wrapping_add((nx - dx) as u8), y.wrapping_add(dy as u8), x, dx, dy)];
+        let mut first = None;
+        for (strip, (first_x, start_y, reset_x, width, rows)) in strips.into_iter().enumerate() {
+            for row in 0..rows {
+                for col in 0..width {
+                    let cell_x = (if row == 0 { first_x } else { reset_x }).wrapping_add(col as u8);
+                    let cell_y = start_y.wrapping_add(row as u8);
+                    let angle = live.terrain.planes.angles[terrain_index(cell_x, cell_y)] as i8;
+                    if angle < 0 || live.terrain.map_type == MapType::Cave && angle & 8 != 0 {
+                        first.get_or_insert((strip, cell_x, cell_y, angle));
+                    }
+                }
+            }
+        }
+        eprintln!("actual owner site diagnosis: full={site:?} terrain_only={terrain_only:?} first_source_strip_failure={first:?} root={:?} stage={} shifts=({},{}) other_live_roots={:?}",
+            root.position, root.level, root.shift_pitch, root.shift_roll,
+            sim.economy().live_castles().filter(|other| other.source_entity_index != root.source_entity_index)
+                .map(|other| (other.source_entity_index, other.position)).collect::<Vec<_>>());
+    }
+    assert_eq!(site, [true, true], "this actual owner Castle must admit the source terrain/overlap predicate");
+    let holder = entities[usize::from(holder_slot)].clone();
+    assert_eq!((holder.model, holder.source_spell_parent_entity_index()), (2, owner));
+    assert_eq!(holder.active_value, 0, "the real retained holder is cold");
+    ai.castle_entity_index = root.source_entity_index;
+    ai.max_mana = 20_000;
+    ai.mana = 20_000;
+    ai.spell_enabled[2] = 0;
+    let (_, profile) = Level2NyphurCommonUpkeep::source_spell_profile(2, holder.level_gate).unwrap();
+    let mut source = entities[usize::from(owner)].clone();
+    source.active_value = 0;
+    source.set_yaw(0);
+    source.set_source_roll(0);
+    entities[usize::from(owner)] = source.clone();
+    let mut called = false;
+    assert!(ai.step_sub_13c50_with_castle_site(&source, Some(&castle), &entities, site, &mut called));
+    assert!(called);
+    let mut dying_castle = castle.clone();
+    dying_castle.life = -1;
+    called = false;
+    assert!(ai.step_sub_13c50_with_castle_site(&source, Some(&dying_castle), &entities, site, &mut called),
+        "source 13C50 does not add a life gate while the bound root is still action4");
+    assert!(called);
+
+    source.active_value = 1;
+    called = false;
+    assert!(!ai.step_sub_13c50_with_castle_site(&source, Some(&castle), &entities, site, &mut called));
+    assert!(!called, "wizard W rejects before the source site probe");
+    source.active_value = 0;
+    ai.spell_enabled[2] = 1;
+    called = false;
+    assert!(!ai.step_sub_13c50_with_castle_site(&source, Some(&castle), &entities, site, &mut called));
+    assert!(!called, "cooldown rejects before the source site probe");
+    ai.spell_enabled[2] = 0;
+
+    let gap = 255_i32 - i32::from(ai.word_0x244);
+    let sign = gap >> 31;
+    let aperture = (((gap - (sign << 2) + sign) >> 2) + 20) * 2048 / 360;
+    assert!((1..=1024).contains(&aperture));
+    source.set_source_roll(aperture as i16);
+    called = false;
+    assert!(!ai.step_sub_13c50_with_castle_site(&source, Some(&castle), &entities, site, &mut called));
+    assert!(called, "the exact angular boundary is rejected after the site probe");
+    source.set_source_roll((aperture - 1) as i16);
+    entities[usize::from(owner)] = source.clone();
+    called = false;
+    assert!(ai.step_sub_13c50_with_castle_site(&source, Some(&castle), &entities, site, &mut called));
+
+    let mut busy_holder = holder.clone();
+    busy_holder.active_value = 1;
+    called = false;
+    assert!(!ai.source_castle_spell_available(&busy_holder, profile, &entities, site, &mut called));
+    assert!(!called, "holder W rejects activation before the source site probe");
+    ai.spell_enabled[2] = 1;
+    called = false;
+    assert!(!ai.source_castle_spell_available(&holder, profile, &entities, site, &mut called));
+    assert!(!called, "activation cooldown rejects before the source site probe");
+    ai.spell_enabled[2] = 0;
+    ai.mana = profile.max_mana - 1;
+    called = false;
+    assert!(!ai.source_castle_spell_available(&holder, profile, &entities, site, &mut called));
+    assert!(!called, "the current tier's table-cost gate precedes the site probe");
+    assert!(holder.max_mana > profile.max_mana);
+    ai.mana = holder.max_mana - 1;
+    called = false;
+    assert!(!ai.source_castle_spell_available(&holder, profile, &entities, site, &mut called));
+    assert!(called, "the dynamic holder-cost gate follows the source site probe");
+    ai.mana = holder.max_mana;
+    entities[usize::from(owner)].set_source_roll(aperture as i16);
+    called = false;
+    assert!(!ai.source_castle_spell_available(&holder, profile, &entities, site, &mut called));
+    assert!(called, "the activation angle uses the same strict boundary");
+}
+
+#[test]
 fn ordinary_mission18_rival_roster_uses_each_real_owner_and_shared_rng() {
     let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
         || {

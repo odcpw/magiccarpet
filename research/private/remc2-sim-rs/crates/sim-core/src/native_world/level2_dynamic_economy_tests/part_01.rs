@@ -620,6 +620,7 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     let mut built = false;
     let mut saw_following_holder_visit = false;
     let mut construction_child = None;
+    let mut before_completion = None;
     for _ in 0..2048 {
         campaign.step(PlayerCommand::default(), 0);
         let sim = campaign.simulation();
@@ -633,6 +634,9 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
             "following actual holder visits must preserve phase, active word, queued tier and timer");
         saw_following_holder_visit |= shared.phase != initial_holder_phase;
         if let Some(root) = sim.economy().castle_for_owner(owner) {
+            if root.level == 1 && root.action == 5 && before_completion.is_none() {
+                before_completion = Some(campaign.clone());
+            }
             if root.construction_slot != 0 && construction_child.is_none()
                 && let Some(child) = sim.economy().castle_children().iter()
                     .find(|child| child.source_entity_index == root.construction_slot && child.active)
@@ -654,6 +658,265 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     let construction_child = construction_child.expect("the rebuilt Castle must create a real construction child");
     assert_ne!(campaign.simulation().source_arena().handle(construction_child.source_slot),
         Some(construction_child), "the real construction child must reach source reclamation");
+
+    // The pre-completion snapshot is a real campaign state. With the same
+    // retained holder but insufficient owner capacity, actual scheduled
+    // decisions must not select the existing-Castle upgrade mode.
+    let mut low_capacity = before_completion.expect("the real first-stage construction was observed");
+    {
+        let live = &mut low_capacity.simulation_mut().session.state.live;
+        let actor = &mut live.economy.entities[usize::from(owner)];
+        actor.max_mana = 0;
+        actor.record[144..148].copy_from_slice(&0_i32.to_le_bytes());
+        actor.set_mana(0);
+        actor.set_mana_regen(0);
+        let actor = actor.clone();
+        assert!(live.nyphur_dispatcher.get_mut(owner_handle).unwrap()
+            .sync_support_parent_resources(&actor, false));
+    }
+    let mut saw_low_capacity_visit = false;
+    for _ in 0..256 {
+        low_capacity.step(PlayerCommand::default(), 0);
+        let sim = low_capacity.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        if sim.economy().castle_for_owner(owner).is_some_and(|root| root.action == 4 && root.level == 1) {
+            let live = &sim.session.state.live;
+            for trace in sim.nyphur_dispatch_traces().iter().filter(|trace| trace.source_slot == owner) {
+                saw_low_capacity_visit = true;
+                let ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+                let holder = &live.economy.entities[usize::from(holder_slot)];
+                assert!(ai.max_mana < holder.max_mana, "the actual upgrade capacity gate must be below the holder price");
+                assert_ne!(trace.state_byte, 1, "insufficient capacity cannot enter the upgrade mode");
+                assert_ne!(live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte(), 1,
+                    "the source decision must not select an unaffordable upgrade");
+            }
+            if saw_low_capacity_visit { break; }
+        }
+    }
+    assert!(saw_low_capacity_visit, "the completed Castle must reach a real below-capacity AI decision");
+
+    // Controlled travel and aim bring the real rival close to its own
+    // completed Castle. They do not set the AI mode, target, holder or flyer.
+    let root = *campaign.simulation().economy().castle_for_owner(owner).unwrap();
+    let approach = Position { x: root.position.x.wrapping_sub(500), y: root.position.y,
+        z: root.position.z.saturating_add(512) };
+    campaign.simulation_mut().set_level2_entity_position(owner, approach).unwrap();
+    let yaw = i16::try_from(heading_for_positions(approach, root.position)).unwrap();
+    {
+        let live = &mut campaign.simulation_mut().session.state.live;
+        let actor = &mut live.economy.entities[usize::from(owner)];
+        actor.set_yaw(yaw);
+        actor.set_source_roll(yaw);
+    }
+    let mut selected_upgrade = false;
+    for _ in 0..256 {
+        let sim = campaign.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let live = &sim.session.state.live;
+        if live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte() == 1 {
+            let actor = &live.economy.entities[usize::from(owner)];
+            assert_eq!(actor.source_word_96(), root.source_entity_index,
+                "the real selector must bind the generation-owned Castle target");
+            selected_upgrade = true;
+            break;
+        }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    if !selected_upgrade {
+        let sim = campaign.simulation();
+        let live = &sim.session.state.live;
+        let ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+        let current = sim.economy().castle_for_owner(owner).unwrap();
+        let actor = &live.economy.entities[usize::from(owner)];
+        let holder = sim.shared_spells().pickup(holder_slot).unwrap();
+        let mut slots = live.economy.entities.iter()
+            .filter(|row| row.active && row.class == 3 && row.life >= 0)
+            .map(|row| row.index).collect::<Vec<_>>();
+        slots.extend(sim.economy().live_castles().map(|row| row.source_entity_index));
+        slots.sort_unstable();
+        slots.dedup();
+        let site = sim.economy().castle_upgrade_site_checks(
+            current.source_entity_index, &live.terrain, &slots, &live.economy.entities);
+        let terrain_only = sim.economy().castle_upgrade_site_checks(
+            current.source_entity_index, &live.terrain, &[], &live.economy.entities);
+        eprintln!("upgrade selector diagnosis: site={site:?} terrain_only={terrain_only:?} root_slot={} position={:?} stage={} action={} timer={} shifts=({},{}) actor_position={:?} yaw={} roll={} W={} holder_price={} cooldown={} ai_mana={}/{} cadence={} mode={}",
+            current.source_entity_index, current.position, current.level, current.action, current.source_word_30,
+            current.shift_pitch, current.shift_roll, actor.position, actor.yaw, actor.source_roll(), actor.active_value,
+            holder.max_mana, ai.spell_enabled[2], ai.mana, ai.max_mana, ai.cadence_eligible,
+            live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte());
+    }
+    assert!(selected_upgrade, "the ordinary AI must actually select its valid existing Castle for upgrade");
+
+    // Selection uses capacity; its following activation uses current mana.
+    // Test the actual latched consumer with current mana below the price.
+    let mut low_mana = campaign.clone();
+    {
+        let live = &mut low_mana.simulation_mut().session.state.live;
+        let actor = &mut live.economy.entities[usize::from(owner)];
+        actor.set_mana(0);
+        actor.set_mana_regen(0);
+        let actor = actor.clone();
+        assert!(live.nyphur_dispatcher.get_mut(owner_handle).unwrap()
+            .sync_support_parent_resources(&actor, false));
+    }
+    let mut saw_denied_visit = false;
+    for _ in 0..16 {
+        low_mana.step(PlayerCommand::default(), 0);
+        let sim = low_mana.simulation();
+        if sim.nyphur_dispatch_traces().iter().any(|trace| trace.source_slot == owner && trace.state_byte == 1) {
+            saw_denied_visit = true;
+            assert!(sim.economy().castle_projectiles().iter().all(|flyer| !flyer.active || flyer.owner_entity_index != owner),
+                "the real state1 consumer must refuse a flyer without current mana");
+            assert_eq!(sim.shared_spells().pickup(holder_slot).unwrap().active_value, 0,
+                "the refused activation must not arm the retained holder");
+            break;
+        }
+    }
+    assert!(saw_denied_visit, "the unaffordable real state1 consumer must be visited");
+
+    let (starting_mana, previous_price) = {
+        let sim = campaign.simulation();
+        let ai = sim.session.state.live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+        let holder = sim.shared_spells().pickup(holder_slot).unwrap();
+        (ai.mana, holder.max_mana)
+    };
+    assert!(previous_price > 1_000 && starting_mana >= previous_price,
+        "the controlled owner must actually afford its physical Castle holder price");
+    let mut saw_state1 = false;
+    let mut flyer = None;
+    let mut paid = false;
+    let mut upgraded = false;
+    let mut upgrade_child = None;
+    let mut upgrade_product = None;
+    let mut saw_root_mailbox = false;
+    let mut saw_queued_tier_zero = false;
+    let mut saw_queued_tier_applied = false;
+    let mut previous_holder_state = None;
+    for _ in 0..2048 {
+        let (before_stage, before_holder, before_parent_regen) = {
+            let sim = campaign.simulation();
+            (sim.economy().castle_for_owner(owner).unwrap().level,
+                sim.shared_spells().pickup(holder_slot).unwrap().clone(),
+                sim.session.state.live.economy.entities[usize::from(owner)].mana_regen)
+        };
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        saw_state1 |= sim.nyphur_dispatch_traces().iter().any(|trace| trace.source_slot == owner && trace.state_byte == 1);
+        let live = &sim.session.state.live;
+        let ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+        let holder = sim.shared_spells().pickup(holder_slot).unwrap();
+        let holder_state = (holder.level_gate, holder.active_value > 0, holder.source_word_2c());
+        if previous_holder_state != Some(holder_state) {
+            eprintln!("Castle holder transition tier/active/queued={holder_state:?}; owner mode={} cooldown={}",
+                live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte(), ai.spell_enabled[2]);
+            previous_holder_state = Some(holder_state);
+        }
+        saw_queued_tier_zero |= holder.active_value > 0 && holder.source_word_2c() == 1;
+        saw_queued_tier_applied |= saw_queued_tier_zero && holder.active_value == 0
+            && holder.source_word_2c() == 0 && holder.level_gate == 0;
+        if let Some(actual) = sim.economy().castle_projectiles().iter().find(|projectile| {
+            projectile.owner_entity_index == owner && projectile.holder_entity_index == holder_slot
+        }) {
+            if flyer.is_none() {
+                // Source charges the physical price before allocating this
+                // fresh holder's flyer; owner 266 precedes holder 269 in the
+                // same source pass. Read the actual parent's resulting upkeep
+                // on that allocation step, not any later unrelated charge.
+                let raw_parent = &live.economy.entities[usize::from(owner)];
+                let holder = sim.shared_spells().pickup(holder_slot).unwrap();
+                let price = holder.max_mana;
+                let current = sim.economy().castle_for_owner(owner).unwrap();
+                eprintln!("first owned Castle flyer: before_stage={before_stage} before_holder=(tier={},price={},W={}) before_parent_regen={before_parent_regen} after_stage={} action={} holder=(tier={},price={},W={}) projectile=(subspell={},mana={}) parent_regen={} economy_events={:?}",
+                    before_holder.level_gate, before_holder.max_mana, before_holder.active_value,
+                    current.level, current.action, holder.level_gate, price, holder.active_value,
+                    actual.source_subspell_index, actual.source_mana, raw_parent.mana_regen,
+                    sim.dispatch_events().iter().filter(|event| matches!(event, Mc2DispatchEvent::Economy { .. })).collect::<Vec<_>>());
+                let selected_profile = live.source_spell_profile(2, holder.level_gate as u8, owner)
+                    .expect("actual selected-tier Castle profile for the owner's current stage");
+                assert_eq!(price, selected_profile.max_mana,
+                    "the source-selected physical tier must carry its current stage price");
+                assert!(starting_mana >= price, "the selected physical price must be affordable");
+                assert!(before_parent_regen >= 0,
+                    "the pre-visit parent must not carry an unrelated negative charge");
+                assert_eq!(raw_parent.mana_regen, -price,
+                    "the fresh flyer visit must charge exactly the selected physical price");
+                assert_eq!(ai.mana_regen, raw_parent.mana_regen,
+                    "the source parent charge must reach the rival AI carrier");
+                paid = true;
+            }
+            flyer = Some(actual.source_entity_index);
+        }
+        assert_eq!(sim.source_arena().handle(root.source_entity_index), Some(seed_handle),
+            "the upgrade must keep the actual root generation");
+        let current = sim.economy().castle_for_owner(owner).expect("owner retains the same Castle");
+        if upgrade_product.is_none()
+            && let Some(product) = sim.economy().castle_children().iter().find(|child| {
+                child.model == 43 && child.parent_entity_index == root.source_entity_index
+                    && child.owner_entity_index == owner
+            })
+        {
+            upgrade_product = sim.source_arena().handle(product.source_entity_index);
+        }
+        saw_root_mailbox |= current.source_word_80 == owner
+            || (current.source_word_7c == 10 && current.action == 5);
+        if current.level >= 2 && current.construction_slot != 0 && upgrade_child.is_none()
+            && let Some(child) = sim.economy().castle_children().iter().find(|child| {
+                child.source_entity_index == current.construction_slot && child.active
+            })
+        {
+            assert_eq!((child.model, child.parent_entity_index, child.owner_entity_index),
+                (42, root.source_entity_index, owner));
+            upgrade_child = sim.source_arena().handle(child.source_entity_index);
+        }
+        if current.level >= 2 && current.action == 4 {
+            upgraded = true;
+            break;
+        }
+    }
+    assert!(saw_state1, "the actual scheduled source state1 must run");
+    assert!(flyer.is_some(), "the real Castle holder must produce its paid source flyer");
+    assert!(paid, "the real Castle holder must charge its owner");
+    assert!(upgrade_product.is_some(), "the real flyer must create its owned model43 upgrade product");
+    assert!(saw_root_mailbox, "the real model43 product must reach the same Castle root consumer");
+    assert!(upgraded, "the original owned Castle must finish a higher-stage construction");
+    let child = upgrade_child.expect("the upgrade must create its real linked construction child");
+    let product = upgrade_product.unwrap();
+    // A completed root can become observable in the same pass that hides a
+    // child. UpdateEntities reclaims those rows in its following prepass.
+    for _ in 0..16 {
+        let sim = campaign.simulation();
+        if sim.source_arena().handle(child.source_slot) != Some(child)
+            && sim.source_arena().handle(product.source_slot) != Some(product) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+        assert!(campaign.simulation().dispatch_events().iter()
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert_ne!(campaign.simulation().source_arena().handle(child.source_slot), Some(child),
+        "the higher-stage construction child must cross source reclaim");
+    assert_ne!(campaign.simulation().source_arena().handle(product.source_slot), Some(product),
+        "the actual upgrade product must cross source reclaim");
+    let final_sim = campaign.simulation();
+    let final_root = final_sim.economy().castle_for_owner(owner).unwrap();
+    assert!(final_sim.economy().map_chains().is_linked(final_root.source_entity_index),
+        "the completed owned root must remain in the presentation map chain");
+    let final_holder = final_sim.shared_spells().pickup(holder_slot).unwrap();
+    assert_eq!(final_holder.source_spell_parent_entity_index(), owner);
+    assert_eq!(final_holder.active_value, 0, "the completed upgrade clears its source holder");
+    let final_live = &final_sim.session.state.live;
+    let final_raw = &final_live.economy.entities[usize::from(holder_slot)];
+    let final_profile = final_live.source_spell_profile(2, final_holder.level_gate as u8, owner)
+        .expect("completed owner Castle has a physical holder profile");
+    assert!(saw_queued_tier_zero && saw_queued_tier_applied,
+        "the active holder must queue and later apply the actual source tier-zero request");
+    assert_eq!(final_holder.level_gate, 0,
+        "the holder must retain the source-queued tier after its zero-W cleanup");
+    assert_eq!((final_holder.max_mana, final_holder.mana, final_holder.mana_regen),
+        (final_profile.max_mana, final_profile.mana, final_profile.mana_regen),
+        "the completed Castle reprices the owner's actual holder for its current stage");
+    assert_eq!((final_raw.level_gate, final_raw.max_mana, final_raw.mana, final_raw.mana_regen),
+        (final_holder.level_gate, final_holder.max_mana, final_holder.mana, final_holder.mana_regen),
+        "the source arena and shared holder agree after the upgrade");
 }
 
 #[test]

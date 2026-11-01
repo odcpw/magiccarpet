@@ -1664,6 +1664,9 @@ pub(super) fn level2_castle_controller_dimensions(level: u8) -> (u8, u8) {
         2 | 3 => (21, 21),
         4 | 5 => (35, 35),
         6 | 7 => (48, 48),
+        // 11A10 probes stage+1 even at stage7. Owner BUILD00 TAB entries
+        // 8/9 are real 1x1 rows, rather than the absent-selector fallback.
+        8 | 9 => (1, 1),
         _ => (0, 0),
     }
 }

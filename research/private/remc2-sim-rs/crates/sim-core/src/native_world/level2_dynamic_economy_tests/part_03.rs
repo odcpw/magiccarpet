@@ -1,4 +1,117 @@
 #[test]
+fn castle_upgrade_site_probe_preserves_source_strips_and_late_refusal() {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-copper-house27-v3-oucmzgsa/level23");
+    let mut campaign = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(23).unwrap(),
+    ).expect("actual source22 owner package");
+    // Keep the actual initial terrain: stepping unrelated Castle BUILD
+    // callbacks changes its flags before this isolated refusal control.
+    let live = &mut campaign.simulation_mut().session.state.live;
+    let mut economy = live.economy.economy.clone();
+    let mut terrain = live.terrain.clone();
+    let entities = &live.economy.entities;
+    let original = *economy.castle_at(450).expect("actual rival root");
+    let other = *economy.castle_at(476).expect("other actual rival root");
+    assert_eq!((original.level, original.owner_entity_index), (1, 425));
+    let slots = [450, 476];
+    assert!(!economy.castle_upgrade_site_clear(450, &terrain, &slots, entities), "actual source22 Castle border is blocked");
+    // Controlled helper terrain isolates the exact strip/refusal semantics
+    // below. This is not upgrade production evidence: the scheduled Level5
+    // check owns that positive path on its actual unmodified owner terrain.
+    let root = original;
+    assert_eq!((root.shift_pitch, root.shift_roll), level2_castle_shift_axes(1));
+    let (next_pitch, next_roll) = level2_castle_shift_axes(2);
+    let start_x = ((root.position.x.wrapping_add(128) >> 8) as u8).wrapping_sub((next_pitch >> 8) as u8);
+    let start_y = ((root.position.y.wrapping_add(128) >> 8) as u8).wrapping_sub((next_roll >> 8) as u8);
+    for row in 0..26_u8 {
+        for column in 0..26_u8 {
+            terrain.planes.angles[terrain_index(start_x.wrapping_add(column), start_y.wrapping_add(row))] &= 0x7f;
+        }
+    }
+    assert!(economy.castle_upgrade_site_clear(450, &terrain, &slots, entities), "controlled helper aperture");
+    let sampled = terrain_index(start_x, start_y);
+    let old_angle = terrain.planes.angles[sampled];
+    terrain.planes.angles[sampled] = 0x80;
+    assert!(!economy.castle_upgrade_site_clear(450, &terrain, &slots, entities));
+    terrain.planes.angles[sampled] = 8;
+    terrain.map_type = MapType::Cave;
+    assert!(!economy.castle_upgrade_site_clear(450, &terrain, &slots, entities));
+    terrain.map_type = MapType::Day;
+    assert!(economy.castle_upgrade_site_clear(450, &terrain, &slots, entities), "bit8 alone is allowed outside caves");
+    terrain.planes.angles[sampled] = old_angle;
+    // Literal source side strips cover dy rows, rather than the whole inner
+    // height; this unvisited cell must not be rejected by a rectangular ring.
+    let dy = (next_roll >> 8) - (root.shift_roll >> 8);
+    let omitted = terrain_index(start_x, start_y.wrapping_add((2 * dy) as u8));
+    let omitted_angle = terrain.planes.angles[omitted];
+    terrain.planes.angles[omitted] = 0x80;
+    assert!(economy.castle_upgrade_site_clear(450, &terrain, &slots, entities));
+    terrain.planes.angles[omitted] = omitted_angle;
+    let right_first = terrain_index(start_x.wrapping_add(7), start_y.wrapping_add(7));
+    let right_later = terrain_index(start_x.wrapping_add(7), start_y.wrapping_add(8));
+    let first_angle = terrain.planes.angles[right_first];
+    let later_angle = terrain.planes.angles[right_later];
+    terrain.planes.angles[right_later] = 0x80;
+    assert!(economy.castle_upgrade_site_clear(450, &terrain, &slots, entities), "right-strip later rows reset to left x");
+    terrain.planes.angles[right_first] = 0x80;
+    assert!(!economy.castle_upgrade_site_clear(450, &terrain, &slots, entities), "first right row keeps its shifted x");
+    terrain.planes.angles[right_first] = first_angle;
+    terrain.planes.angles[right_later] = later_angle;
+    // Refusal controls move an existing source root; they do not stand in for
+    // an ordinary upgrade producer. Membership, including later-hidden rows,
+    // is fixed independently of this current pointed-to geometry.
+    economy.castle_at_mut(476).unwrap().position = root.position;
+    assert!(!economy.castle_upgrade_site_clear(450, &terrain, &slots, entities));
+    economy.castle_at_mut(476).unwrap().active = false;
+    assert!(!economy.castle_upgrade_site_clear(450, &terrain, &slots, entities));
+    assert!(economy.castle_upgrade_site_clear(450, &terrain, &[450], entities));
+    *economy.castle_entry_mut(476).unwrap() = other;
+    // Source11960 resets current shifts before the construction11A10 call.
+    // Invalid terrain at that later call cancels without allocating children.
+    terrain.planes.angles[sampled] = 0x80;
+    let children = economy.castle_children().len();
+    let reset = live.economy.economy.free_slots.clone();
+    let castle = economy.castle_at_mut(450).unwrap();
+    castle.action = 5;
+    castle.build_state = 0;
+    castle.source_word_2e = 0;
+    castle.control_flags |= 0x40;
+    assert!(economy.step_castle_action(450, &mut terrain, &reset));
+    let denied = *economy.castle_at(450).unwrap();
+    assert_eq!((denied.level, denied.action, denied.build_state, denied.source_word_2e), (1, 5, 2, 2));
+    assert_eq!(denied.control_flags & 0x40, 0);
+    assert_eq!((denied.shift_pitch, denied.shift_roll, denied.shift_yaw, denied.shift_fov),
+        (root.shift_pitch, root.shift_roll, 0, 256));
+    assert_eq!(economy.castle_children().len(), children);
+    assert!(economy.step_castle_action(450, &mut terrain, &reset));
+    assert_eq!((economy.castle_at(450).unwrap().action, economy.castle_at(450).unwrap().build_state), (4, 0));
+    assert_eq!(economy.castle_for_owner(451).unwrap().source_entity_index, 476);
+    // Imported/source timers are full words; the countdown and AI projection
+    // must observe the same value after each actual action4 visit.
+    let castle = economy.castle_at_mut(450).unwrap();
+    castle.timer = 300;
+    castle.source_word_30 = 300;
+    assert!(economy.step_castle_action(450, &mut terrain, &reset));
+    assert_eq!((economy.castle_at(450).unwrap().timer, economy.castle_at(450).unwrap().source_word_30), (299, 299));
+    let mut ordinary = live.ordinary.clone();
+    let mut arena = live.economy.clone();
+    let house = ordinary.houses.house_mut(1).expect("actual source22 house27");
+    house.position = root.position;
+    let old_life = house.life;
+    let castle = arena.economy.castle_at_mut(450).unwrap();
+    castle.position = root.position;
+    castle.action = 5;
+    castle.build_state = 0;
+    assert_eq!(ordinary.begin_castle_construction_source(&mut arena, 450, &[]).unwrap(), 0);
+    assert_eq!(ordinary.houses.house_mut(1).unwrap().life, old_life, "new membership is not admitted mid-pass");
+    assert_eq!(ordinary.begin_castle_construction_source(&mut arena, 450, &[1]).unwrap(), 1);
+    let house = ordinary.houses.house_mut(1).unwrap();
+    assert_eq!((house.life, house.parameter.destruction_successor), (-1, 0));
+    assert!(house.source_retained(), "constructor marks death; ordinary callback owns consequences/reclaim");
+}
+
+#[test]
 fn level_two_quickfair_child_replacement_compaction_preserves_source_identity() {
     fn assert_child(
         economy: &Level2EconomyState,

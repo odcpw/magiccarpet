@@ -10447,6 +10447,7 @@ impl Level2EconomyTestView<'_> {
             castle_slot,
             &reset_free_slots,
             remove_rival_castle_spell,
+            None,
         )
     }
 
@@ -18441,6 +18442,13 @@ impl Mc2Simulation {
                 }
             }
             (ExistingHandler::CastleRoot, SourceRoute::CastleRoot) => {
+                {
+                    let live = &mut self.session.state.live;
+                    let model45_slots = effect_lists.model45_slots(&live.economy).to_vec();
+                    live.ordinary.begin_castle_construction_source(
+                        &mut live.economy, source_slot, &model45_slots,
+                    )?;
+                }
                 let holder_update = self
                     .session
                     .state
@@ -18461,10 +18469,14 @@ impl Mc2Simulation {
                             .clear_castle_release_cooldown(source_slot);
                     }
                 }
+                let site_class3_slots = if effect_lists.is_current(&self.session.state.live.economy) {
+                    pass_start_class3_slots
+                } else { &[] };
                 let advanced = self.session.state.live.step_castle_action_with_player_state(
                     source_slot,
                     &reset_free_slots,
                     remove_rival_castle_spell,
+                    Some(site_class3_slots),
                 );
                 self.session.state.live.sync_castle_player_relations();
                 // Publish the source handler's economy sidecars before
@@ -19547,9 +19559,20 @@ impl Mc2Simulation {
                     let terrain = &live.terrain;
                     let players = live.core.players.clone();
                     let source_arena = &mut live.economy;
+                    // A recyclable NewEvent reset clears source list heads;
+                    // EffectLists retains frozen membership and that epoch cut.
+                    let site_class3_slots = if effect_lists.is_current(source_arena) {
+                        pass_start_class3_slots
+                    } else { &[] };
                     let (entities, economy) =
                         (&mut source_arena.entities, &mut source_arena.economy);
                     let source_id = entities[usize::from(source_slot)].source_id;
+                    let castle_handle = economy.castle_for_owner(source_slot)
+                        .map(|root| (root.source_entity_index, economy.slot_generation(root.source_entity_index)));
+                    let castle_site_clear = castle_handle.map_or([false; 2], |(slot, _)| {
+                        economy.castle_upgrade_site_checks(slot, terrain, site_class3_slots, entities)
+                    });
+                    let mut castle_site_called = false;
                     let castles = economy
                         .live_castles()
                         .filter(|root| {
@@ -19584,6 +19607,8 @@ impl Mc2Simulation {
                             move_speed_flag,
                             active_level_color_index,
                             Some(prelude),
+                            castle_site_clear,
+                            &mut castle_site_called,
                             &castle_profiles,
                             &mut |owner, position| {
                                 let root = economy.allocate_ai_castle_root_seed(position, owner, source_id, terrain)?;
@@ -19602,6 +19627,13 @@ impl Mc2Simulation {
                         .ok_or_else(|| {
                             format!("rival source slot {source_slot} lost its player dispatcher")
                         })?;
+                    if castle_site_called
+                        && let Some((slot, generation)) = castle_handle
+                        && economy.slot_generation(slot) == generation
+                        && economy.castle_for_owner(source_slot).is_some_and(|root| root.source_entity_index == slot)
+                    {
+                        economy.restore_castle_site_shifts(slot);
+                    }
                     for sphere in spheres {
                         let Some(&(generation, prior_owner)) = sphere_relations.get(&sphere.source_entity_index) else {
                             continue;
