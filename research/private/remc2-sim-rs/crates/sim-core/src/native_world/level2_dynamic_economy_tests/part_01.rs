@@ -1,4 +1,267 @@
 #[test]
+fn ordinary_public_death_marker_merge_retains_living_claimant() {
+    use crate::campaign::spec::CampaignSelection;
+
+    let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2"),
+        PathBuf::from,
+    );
+    let mut campaign = crate::campaign::CampaignSession::open(package, CampaignSelection::LEVEL2)
+        .expect("actual Level 2 owner package");
+    let player = campaign.simulation().state.entity_index;
+    let participant = campaign.simulation().nyphur_participant().unwrap();
+    let rival = participant.entity_index;
+    let rival_holder = participant.possession_holder_index;
+    let features = campaign.simulation().mission().authored_features().to_vec();
+    let feature_position = |index| features.iter().find(|row| row.index == index).unwrap().world_position(0);
+    // These are ordinary authored switch locations, reached by declared
+    // positioning; their own scheduled callbacks construct the spheres.
+    let mut activated_23 = false;
+    let mut activated_24 = false;
+    let mut authored_generations = Vec::new();
+    for index in [342, 344] {
+        let position = feature_position(index);
+        for _ in 0..8 {
+            campaign.simulation_mut().set_level2_entity_position(player, position).unwrap();
+            campaign.step(PlayerCommand::default(), 0);
+            activated_23 |= campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 23, .. }));
+            let group_24_now = campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 24, .. }));
+            activated_24 |= group_24_now;
+            if group_24_now {
+                for sphere in campaign.simulation().economy().spheres().iter().filter(|sphere| sphere.active) {
+                    if (345..=354).any(|feature| {
+                        let position = feature_position(feature);
+                        (sphere.position.x, sphere.position.y) == (position.x, position.y)
+                    }) {
+                        if let Some(handle) = campaign.simulation().source_arena().handle(sphere.source_entity_index) {
+                            authored_generations.push(handle);
+                        }
+                    }
+                }
+            }
+            if (index == 342 && activated_23) || (index == 344 && activated_24) { break; }
+        }
+    }
+    assert!(activated_23 && activated_24 && !authored_generations.is_empty(),
+        "the actual switch chain must activate groups 23 and 24 and construct model-39 generations");
+    // Rival state 6 selects and publicly casts its physical Possession
+    // holder. Do not write the selection, projectile or owner relation.
+    let mut rival_sphere = None;
+    let mut saw_rival_flyer = false;
+    for _ in 0..240 {
+        rival_sphere = campaign.simulation().economy().spheres().iter()
+            .find(|sphere| sphere.active && sphere.player_entity_index == rival
+                && campaign.simulation().source_arena().handle(sphere.source_entity_index)
+                    .is_some_and(|handle| authored_generations.contains(&handle)))
+            .map(|sphere| sphere.source_entity_index);
+        saw_rival_flyer |= campaign.simulation().economy().possession_projectiles().iter()
+            .any(|row| row.holder_entity_index == rival_holder && row.source_id_entity_index == rival);
+        if rival_sphere.is_some() && saw_rival_flyer { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    let rival_sphere = rival_sphere.expect("ordinary rival pursuit must really claim a sphere");
+    assert!(saw_rival_flyer, "the actual rival holder must create its scheduled Possession flyer");
+    let rival_handle = campaign.simulation().source_arena().handle(rival_sphere).unwrap();
+    let own_sphere = campaign.simulation().economy().spheres().iter()
+        .find(|sphere| sphere.active && sphere.player_entity_index == 0
+            && campaign.simulation().source_arena().handle(sphere.source_entity_index)
+                .is_some_and(|handle| authored_generations.contains(&handle)))
+        .expect("a distinct authored sphere remains unclaimed").source_entity_index;
+    let own_handle = campaign.simulation().source_arena().handle(own_sphere).unwrap();
+    let target = campaign.simulation().possession_guidance_target_top_for_test(own_sphere).unwrap();
+    let mut approach = Position { x: target.x.wrapping_sub(768), y: target.y, z: target.z.wrapping_add(512) };
+    approach.z = approach.z.max(campaign.simulation().canonical_terrain().ground_height(approach).wrapping_add(256));
+    campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+    let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(approach, target);
+    campaign.simulation_mut().set_level2_player_aim_for_test(yaw, pitch);
+    let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 1).unwrap() as i8;
+    campaign.step(PlayerCommand { opcode: 6, argument_1: possession_ui, flags: 0x40,
+        ..PlayerCommand::default() }, 0);
+    let mut saw_player_flyer = false;
+    let mut saw_player_effect = false;
+    for _ in 0..64 {
+        saw_player_flyer |= campaign.simulation().economy().possession_projectiles().iter()
+            .any(|row| row.source_id_entity_index == player);
+        saw_player_effect |= campaign.simulation().economy().possession_effects().iter()
+            .any(|row| row.source_id_entity_index == player);
+        if campaign.simulation().economy().spheres().iter().any(|sphere|
+            sphere.source_entity_index == own_sphere && sphere.player_entity_index == player)
+            && saw_player_flyer && saw_player_effect { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    assert!(saw_player_flyer && saw_player_effect, "public Possession must produce its flyer and impact");
+    assert!(campaign.simulation().economy().spheres().iter().any(|sphere|
+        sphere.source_entity_index == own_sphere && sphere.player_entity_index == player),
+        "public Possession must actually claim its selected sphere");
+    // Controlled travel and an explicitly injured player are prerequisites;
+    // normal AI decisions, attacks, damage and marker callback remain untouched.
+    let enemy_position = campaign.simulation().entities()[usize::from(rival)].position;
+    let mut contact_position = Position { x: enemy_position.x.wrapping_add(512),
+        y: enemy_position.y, z: enemy_position.z };
+    contact_position.z = contact_position.z.max(
+        campaign.simulation().canonical_terrain().ground_height(contact_position).wrapping_add(256));
+    campaign.simulation_mut().set_level2_entity_position(player, contact_position).unwrap();
+    campaign.step(PlayerCommand { opcode: 0x27, argument_1: 1, ..PlayerCommand::default() }, 0);
+    let injured_life = 200;
+    {
+        let live = &mut campaign.simulation_mut().session.state.live;
+        live.player_life = injured_life;
+        live.economy.entities[usize::from(player)].set_life(injured_life);
+        live.shared_spells.set_player_entity_life(injured_life);
+    }
+    assert_eq!(campaign.simulation().shared_spells().player_entity().life, injured_life);
+    assert_eq!(campaign.simulation().entities()[usize::from(player)].life, injured_life);
+    let life_before_contact = campaign.simulation().shared_spells().player_entity().life;
+    let damage_start = campaign.simulation().economy().events().len();
+    let mut marker = None;
+    for _ in 0..256 {
+        campaign.step(PlayerCommand::default(), 0);
+        marker = campaign.simulation().economy().player_death_markers().iter()
+            .find(|row| row.active && row.trigger_player_entity_index == player).copied();
+        if marker.is_some() { break; }
+    }
+    if marker.is_none() {
+        // Declared later-objective prerequisite: invoke the actual imported
+        // group-21 producer to construct its authored hostile Bees. This is
+        // controlled progression, not a claim of untouched mission play.
+        // Actor state, player life, targeting, damage and death stay source-owned.
+        let producer = campaign.simulation().entities().iter().find(|row|
+            row.active && row.class == 11 && row.model == 32 && row.action == 32 && row.source_id == 21)
+            .expect("actual authored group-21 source producer").index;
+        campaign.simulation_mut().activate_level2_authored_bees(0);
+        assert!(campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 21, .. } if *source_slot == producer)),
+            "the real group producer must publish its activation");
+        let bee = campaign.simulation().economy().bee_creatures().iter()
+            .find(|row| row.authored_index() == Some(229) && row.life >= 0 && row.drawing_enabled)
+            .copied().expect("actual group-21 row229 Bee constructor");
+        let bee_handle = campaign.simulation().source_arena().handle(bee.source_entity_index).unwrap();
+        let mut approach = bee.position;
+        crate::move_entity(&mut approach, bee.yaw, 0, 512);
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        campaign.step(PlayerCommand { opcode: 0x27, argument_1: 1, ..PlayerCommand::default() }, 0);
+        for _ in 0..256 {
+            campaign.step(PlayerCommand::default(), 0);
+            marker = campaign.simulation().economy().player_death_markers().iter()
+                .find(|row| row.active && row.trigger_player_entity_index == player).copied();
+            if marker.is_some() { break; }
+        }
+        assert_eq!(campaign.simulation().source_arena().handle(bee_handle.source_slot), Some(bee_handle),
+            "the actual hostile generation must remain present through contact");
+    }
+    let sim = campaign.simulation();
+    let actual_damage = sim.economy().events()[damage_start..].iter().filter(|event| matches!(event,
+        Level2EconomyEvent::DamageApplied { target_entity_index, .. } if *target_entity_index == player)).collect::<Vec<_>>();
+    let marker = marker.unwrap_or_else(|| panic!("real contact did not produce player death: life={life_before_contact}->{} player={:?} rival={:?} ai={:?} damage={actual_damage:?}",
+        sim.shared_spells().player_entity().life, sim.state.position,
+        sim.entities()[usize::from(rival)], sim.nyphur_common_upkeep()));
+    assert!(actual_damage.iter().any(|event| matches!(event,
+        Level2EconomyEvent::DamageApplied { lethal: true, .. })),
+        "a real scheduled attacker must produce the lethal player damage");
+    assert_eq!(campaign.simulation().source_arena().handle(own_sphere), Some(own_handle));
+    assert!(campaign.simulation().economy().spheres().iter().any(|sphere|
+        sphere.source_entity_index == own_sphere && sphere.player_entity_index == marker.source_entity_index),
+        "5E310 must rebind the original current sphere to the actual marker");
+    assert_eq!(campaign.simulation().source_arena().handle(rival_sphere), Some(rival_handle));
+    // Controlled geometry only: bring the two genuinely produced and claimed
+    // generations together after the real death. Preserve their owner, mana,
+    // life, velocity and all callback state; the ordinary numeric pass must
+    // still find the collision and run 36D50 itself.
+    let (first_slot, second_slot) = if own_sphere < rival_sphere {
+        (own_sphere, rival_sphere)
+    } else {
+        (rival_sphere, own_sphere)
+    };
+    let first = *campaign.simulation().economy().spheres().iter()
+        .find(|row| row.source_entity_index == first_slot && row.active).unwrap();
+    let second = *campaign.simulation().economy().spheres().iter()
+        .find(|row| row.source_entity_index == second_slot && row.active).unwrap();
+    let first_claim = campaign.simulation().economy().current_owner_resources(
+        campaign.simulation().entities(), first.player_entity_index);
+    let second_claim = campaign.simulation().economy().current_owner_resources(
+        campaign.simulation().entities(), second.player_entity_index);
+    let merged_mana = first.mana.wrapping_add(second.mana);
+    assert!(first.vertical_velocity <= 0, "controlled contact requires an already descending sphere");
+    let mut contact = first.position;
+    contact.z = campaign.simulation().canonical_terrain().ground_height(contact);
+    let first_position = Position {
+        x: contact.x.wrapping_add_signed(first.velocity_x.clamp(-MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_MAX_XY_VELOCITY).wrapping_neg()),
+        y: contact.y.wrapping_add_signed(first.velocity_y.clamp(-MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_MAX_XY_VELOCITY).wrapping_neg()),
+        z: contact.z,
+    };
+    {
+        let economy = &mut campaign.simulation_mut().session.state.live.economy.economy;
+        for (slot, position) in [(first_slot, first_position), (second_slot, contact)] {
+            economy.spheres.iter_mut().find(|row| row.source_entity_index == slot && row.active)
+                .unwrap().position = position;
+            economy.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot, active: true, x: position.x, y: position.y,
+            }).unwrap();
+        }
+    }
+    let before_merge = campaign.simulation().economy().events().len();
+    for _ in 0..512 {
+        if campaign.simulation().economy().events()[before_merge..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::ManaSpheresMerged { target_sphere_id, source_sphere_id, .. }
+                if (*target_sphere_id == u32::from(own_sphere) && *source_sphere_id == u32::from(rival_sphere))
+                || (*target_sphere_id == u32::from(rival_sphere) && *source_sphere_id == u32::from(own_sphere)))) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    let merged = campaign.simulation().economy().events()[before_merge..].iter().find(|event| matches!(event,
+        Level2EconomyEvent::ManaSpheresMerged { target_sphere_id, source_sphere_id, .. }
+            if (*target_sphere_id == u32::from(own_sphere) && *source_sphere_id == u32::from(rival_sphere))
+            || (*target_sphere_id == u32::from(rival_sphere) && *source_sphere_id == u32::from(own_sphere))))
+        .unwrap_or_else(|| panic!("real marker-bound and rival-owned sphere generations did not meet: marker={marker:?} spheres={:?}", campaign.simulation().economy().spheres()));
+    assert!(matches!(merged, Level2EconomyEvent::ManaSpheresMerged { owner_entity_index, .. } if *owner_entity_index == rival),
+        "the living class-3 claimant wins over the source class-10 marker: merged={merged:?} first={first:?} second={second:?} claimant_class_max={first_claim:?}/{second_claim:?} marker={marker:?} rival={rival} current={:?}",
+        campaign.simulation().economy().spheres().iter().filter(|row|
+            row.source_entity_index == own_sphere || row.source_entity_index == rival_sphere).collect::<Vec<_>>());
+    let (survivor, absorbed) = match merged {
+        Level2EconomyEvent::ManaSpheresMerged { target_sphere_id, source_sphere_id, .. } =>
+            (*target_sphere_id as u16, *source_sphere_id as u16),
+        _ => unreachable!(),
+    };
+    let absorbed_handle = if absorbed == own_sphere { own_handle } else { rival_handle };
+    let survivor_handle = if survivor == own_sphere { own_handle } else { rival_handle };
+    assert_ne!(campaign.simulation().source_arena().handle(absorbed), Some(absorbed_handle),
+        "the absorbed original generation is immediately reclaimed");
+    assert_eq!(campaign.simulation().source_arena().handle(survivor), Some(survivor_handle),
+        "the merge retains the other original sphere generation");
+    let survivor_row = campaign.simulation().economy().spheres().iter()
+        .find(|row| row.active && row.source_entity_index == survivor).unwrap();
+    assert_eq!((survivor_row.player_entity_index, survivor_row.owner_entity_index, survivor_row.mana),
+        (rival, rival, merged_mana));
+    campaign.step(PlayerCommand::default(), 0); // next source census
+    let sim = campaign.simulation();
+    assert_eq!(sim.source_arena().handle(survivor), Some(survivor_handle),
+        "the retained generation must still be present for the next census");
+    let survivor_credit = sim.economy().owner_mana_rows.iter()
+        .find(|row| row.active && row.source_entity_index == survivor)
+        .expect("the next census must include the actual retained generation");
+    assert_eq!((survivor_credit.source_class, survivor_credit.source_model,
+        survivor_credit.player_entity_index, survivor_credit.mana), (10, 39, rival, merged_mana));
+    let capacity = sim.economy().owner_max_mana_capacity(rival);
+    let expected_capacity = sim.economy().owner_mana_rows.iter()
+        .filter(|row| row.active && row.player_entity_index == rival)
+        .fold(*sim.economy().owner_base_max_mana.get(&rival).unwrap(), |total, row|
+            total.saturating_add(row.mana));
+    assert_eq!(capacity, expected_capacity, "the rival census must include the merged mana once");
+    let rival_raw = &sim.entities()[usize::from(rival)];
+    let rival_ai = sim.nyphur_common_upkeep().unwrap();
+    assert_eq!(rival_raw.max_mana, capacity, "source census must publish to the surviving raw wizard");
+    assert_eq!(rival_ai.max_mana, capacity, "the same capacity must reach rival affordability");
+    assert_eq!(rival_ai.mana, rival_raw.mana, "the actual current resource remains the rival's");
+    assert!(sim.economy().spheres().iter().all(|row| !row.active || row.player_entity_index != player),
+        "the dead player must not retain a sphere relation after its marker redirect");
+    let hud = sim.day_hud_for(CampaignSelection::LEVEL2).expect("actual local HUD after death");
+    let local = sim.shared_spells().player_entity();
+    assert_eq!((hud.local_player_mana, hud.local_player_max_mana), (local.mana, local.max_mana));
+}
+
+#[test]
 fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
     use crate::campaign::spec::CampaignSelection;
 
@@ -81,7 +344,24 @@ fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
             y: current.position.y.wrapping_add(384),
             z: current.position.z.wrapping_sub(campaign.simulation().state.entity_fov) };
         campaign.simulation_mut().set_level2_entity_position(player, position).unwrap();
-        campaign.simulation_mut().set_level2_player_aim_for_test(0, 0);
+        // Aim the ordinary hand launch at the Goat's current real position.
+        // The source offsets the hand sideways before adding the eye height.
+        let mut launch = position;
+        launch.z = launch.z.wrapping_add(campaign.simulation().state.entity_fov);
+        let (initial_yaw, _) = crate::level1_mission::projectile_guidance_angles(launch, current.position);
+        let flags = campaign.simulation().shared_spells().player_entity().control_flags;
+        let hand_yaw = if flags & 0x0100 != 0 { Some(initial_yaw.wrapping_sub(512)) }
+            else if flags & 0x0200 != 0 { Some(initial_yaw.wrapping_add(512)) } else { None };
+        if let Some(hand_yaw) = hand_yaw {
+            let mut hand = position;
+            crate::move_entity(&mut hand, hand_yaw, 0, 256);
+            if campaign.simulation().canonical_terrain().ground_height(hand) <= hand.z {
+                launch.x = hand.x;
+                launch.y = hand.y;
+            }
+        }
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, current.position);
+        campaign.simulation_mut().set_level2_player_aim_for_test(yaw, pitch);
         campaign.step(PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40,
             ..PlayerCommand::default() }, 0);
         shots += 1;
@@ -121,7 +401,14 @@ fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
         if reward_slot.is_some() { break; }
         campaign.step(PlayerCommand::default(), 0);
     }
-    let reward_slot = reward_slot.expect("actual Fireball damage and scheduled Goat death must produce its 300-mana sphere");
+    let reward_slot = reward_slot.unwrap_or_else(|| {
+        let sim = campaign.simulation();
+        let events = sim.economy().events();
+        panic!("actual Fireball damage and scheduled Goat death must produce its 300-mana sphere: shots={shots}, goat={:?}, live_fireballs={:?}, recent_economy_events={:?}",
+            sim.goats().iter().find(|row| row.entity_index == goat_slot),
+            sim.economy().fireball_projectiles().iter().filter(|row| row.owner_entity_index == player).collect::<Vec<_>>(),
+            &events[events.len().saturating_sub(12)..]);
+    });
     let reward_event_start = campaign.simulation().economy().events().iter().rposition(|event| matches!(event,
         Level2EconomyEvent::ManaSphereSpawned { source_entity_index, sphere_id, mana: 300, .. }
             if *source_entity_index == goat_slot && *sphere_id == u32::from(reward_slot)))
@@ -199,13 +486,15 @@ fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
     let mut saw_capacity = false;
     let mut collector_trace = Vec::new();
     let mut reward_retirement_event_end = None;
-    for turn in 0..512 {
+    // The observed collector carries real mana toward the Castle at turn
+    // 511; allow the remaining ordinary scheduled return trip to finish.
+    for turn in 0..768 {
         let sim = campaign.simulation();
         let original_live = sim.source_arena().handle(reward_slot) == Some(reward_handle);
         if !original_live && reward_retirement_event_end.is_none() {
             reward_retirement_event_end = Some(sim.economy().events().len());
         }
-        if matches!(turn, 0 | 1 | 7 | 31 | 127 | 511) {
+        if matches!(turn, 0 | 1 | 7 | 31 | 127 | 511 | 767) {
             collector_trace.push((turn,
                 sim.economy().castle_for_owner(player).map(|row|
                     (row.source_entity_index, row.position, row.level, row.phase, row.mana, row.defender_slots)),
@@ -1265,8 +1554,8 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
         let current = sim.economy().castle_for_owner(owner).expect("owner retains the same Castle");
         if upgrade_product.is_none()
             && let Some(product) = sim.economy().castle_children().iter().find(|child| {
-                child.model == 43 && child.parent_entity_index == root.source_entity_index
-                    && child.owner_entity_index == owner
+                child.model == 43 && child.parent_entity_index == 0
+                    && child.id_entity_index == owner && child.owner_entity_index == owner
             })
         {
             upgrade_product = sim.source_arena().handle(product.source_entity_index);
@@ -2223,7 +2512,7 @@ fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
         assert!(live.economy.economy.step_mana_sphere_slot(
             sphere_slot,
             &terrain,
-            &entities,
+            &mut entities,
             |_| 105,
         ));
     }
@@ -2268,7 +2557,7 @@ fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
         assert!(live.economy.economy.step_mana_sphere_slot(
             sphere_slot,
             &terrain,
-            &entities,
+            &mut entities,
             |_| 105,
         ));
     }
@@ -5268,6 +5557,111 @@ fn level_two_economy_conformance_death_split_and_merge_vectors() {
             }]
         );
     }
+}
+
+#[test]
+fn level_two_death_marker_redirect_follows_current_frozen_mana_chain() {
+    // Controlled source-order check. The public test above supplies the
+    // actual death/claim producer; this one isolates 5E310's list walk.
+    let session = super::super::tests::level_two_campaign_session();
+    let player = session.state.entity_index;
+    let position = session.state.position;
+    let terrain = session.canonical_terrain().clone();
+    let mut arena = session.source_arena().clone();
+    let spawn = |arena: &mut crate::campaign::source_arena::SourceArena, owner| {
+        arena.economy.spawn_mana_sphere_from_death(901, position, 0, 1, 50, owner, &terrain).unwrap() as u16
+    };
+    let hidden = spawn(&mut arena, player);
+    let freed = spawn(&mut arena, player);
+    let tail = spawn(&mut arena, player);
+    let spare = spawn(&mut arena, 0);
+    let mut slots = vec![hidden, freed, tail, spare];
+    slots.sort_unstable();
+    assert_eq!(slots, vec![hidden, freed, tail, spare], "the controlled chain must retain its ordered tail");
+    let chain = crate::campaign::source_arena::SourceManaChain::capture(&mut arena, slots);
+    {
+        let row = arena.economy.spheres_mut().iter_mut().find(|row| row.source_entity_index == hidden).unwrap();
+        row.pending_delete = true;
+        row.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    }
+    let born = spawn(&mut arena, player); // born after the frozen list was built
+    assert!(arena.economy.merge_mana_spheres_with_entities(born, freed, Some(&mut arena.entities)));
+    assert!(arena.economy.merge_mana_spheres_with_entities(born, spare, Some(&mut arena.entities)));
+    assert_eq!((arena.entities[usize::from(freed)].class, arena.entities[usize::from(freed)].model), (0, 39));
+    let marker = arena.economy.allocate_player_death_marker(player, position).unwrap().source_entity_index;
+    assert_eq!(marker, spare, "the later freed slot is reused by the real marker constructor");
+    arena.retire_previous_source_projection(marker);
+    assert_eq!(arena.redirect_mana_chain_to_marker(&chain, player, marker), 3,
+        "hidden, freed and later live rows remain reachable in source order");
+    assert_eq!(arena.economy.spheres().iter().find(|row| row.source_entity_index == hidden).unwrap().player_entity_index, marker);
+    assert_eq!(arena.entities[usize::from(freed)].source_player_entity_index(), marker);
+    assert_eq!(arena.economy.spheres().iter().find(|row| row.source_entity_index == tail).unwrap().player_entity_index, marker);
+    assert_eq!(arena.economy.spheres().iter().find(|row| row.source_entity_index == born).unwrap().player_entity_index, player,
+        "a same-pass birth absent from dword38523 is not redirected");
+}
+
+#[test]
+fn level_two_marker_merge_resolves_current_slot_class_after_reuse() {
+    // Controlled arbitration/reuse check. The connected gameplay test owns
+    // the producer and consumer evidence; these values isolate 36D50's
+    // class precedence even when maxMana would select the opposite side.
+    let mut session = super::super::tests::level_two_campaign_session();
+    let victim = session.state.entity_index;
+    let rival = session.players.iter().find(|row| row.entity_index != victim)
+        .expect("actual rival owner").entity_index;
+    let position = session.state.position;
+    let marker = session.economy_mut().allocate_player_death_marker(victim, position)
+        .expect("controlled marker allocation").source_entity_index;
+    let marker_generation = session.economy().slot_generation(marker);
+    let target = session.economy_mut().spawn_mana_sphere_from_death(901, position, 0, 1, 100, victim).unwrap() as u16;
+    let source = session.economy_mut().spawn_mana_sphere_from_death(902, position, 0, 2, 50, rival).unwrap() as u16;
+    {
+        let arena = &mut session.session.state.live.economy;
+        let chain = crate::campaign::source_arena::SourceManaChain::capture(arena, vec![target, source]);
+        assert_eq!(arena.redirect_mana_chain_to_marker(&chain, victim, marker), 1);
+    }
+    session.economy_mut().set_owner_max_mana(marker, 2_000);
+    session.economy_mut().set_owner_max_mana(rival, 0);
+    let mut reverse = session.clone();
+    let mut entities = session.entities().to_vec();
+    entities[usize::from(source)].next_relation = Some(333);
+    assert!(session.session.state.live.economy.economy
+        .merge_mana_spheres_with_entities(target, source, Some(&mut entities)));
+    let retained = &entities[usize::from(source)];
+    assert_eq!((retained.class, retained.model, retained.mana,
+        retained.source_player_entity_index(), retained.next_relation), (0, 39, 50, rival, Some(333)),
+        "sub_57F20 clears only class and keeps the current model39 payload and chain link");
+    let merged = session.economy().spheres().iter().find(|row| row.source_entity_index == target).unwrap();
+    assert_eq!((merged.player_entity_index, merged.owner_entity_index, merged.mana), (rival, rival, 150));
+    let mut entities = reverse.entities().to_vec();
+    assert!(reverse.session.state.live.economy.economy
+        .merge_mana_spheres_with_entities(source, target, Some(&mut entities)));
+    let merged = reverse.economy().spheres().iter().find(|row| row.source_entity_index == source).unwrap();
+    assert_eq!((merged.player_entity_index, merged.owner_entity_index, merged.mana), (rival, rival, 150),
+        "the living claimant wins regardless of which sphere absorbs the other");
+
+    // The marker's slot now becomes a class-3 carrier. No marker identity
+    // may survive in the class used by a later source relation.
+    session.economy_mut().player_death_markers.iter_mut()
+        .find(|row| row.source_entity_index == marker).unwrap().active = false;
+    session.economy_mut().reclaim_inactive_slots_at_source_boundary();
+    let reused = session.economy_mut().spawn_mana_carrier(position, rival, 0).unwrap();
+    assert_eq!(reused, marker);
+    assert_ne!(session.economy().slot_generation(reused), marker_generation);
+    let new_target = session.economy_mut().spawn_mana_sphere_from_death(903, position, 0, 3, 100, reused).unwrap() as u16;
+    let new_source = session.economy_mut().spawn_mana_sphere_from_death(904, position, 0, 4, 50, rival).unwrap() as u16;
+    // Make the old sidecar values prefer the rival, while the current class-3
+    // carrier's real maxMana is larger than the current rival record. The
+    // source compares current physical records, not the previous census.
+    session.economy_mut().set_owner_max_mana(reused, 0);
+    session.economy_mut().set_owner_max_mana(rival, 2_000);
+    let mut entities = session.entities().to_vec();
+    let carrier = session.economy().carriers().iter().find(|row| row.source_entity_index == reused).unwrap();
+    assert!(carrier.max_mana > entities[usize::from(rival)].max_mana);
+    assert!(session.session.state.live.economy.economy
+        .merge_mana_spheres_with_entities(new_target, new_source, Some(&mut entities)));
+    let merged = session.economy().spheres().iter().find(|row| row.source_entity_index == new_target).unwrap();
+    assert_eq!((merged.player_entity_index, merged.owner_entity_index, merged.mana), (reused, reused, 150));
 }
 
 #[test]

@@ -868,7 +868,9 @@ struct ArenaTargets<'arena, 'actors> {
 pub(crate) struct EffectLists {
     class3: Vec<u16>,
     model45: Vec<u16>,
-    mana_chain: Vec<u16>,
+    class3_chain: crate::campaign::source_arena::SourceSlotChain,
+    model45_chain: crate::campaign::source_arena::SourceSlotChain,
+    mana_chain: crate::campaign::source_arena::SourceManaChain,
     epoch: u32,
 }
 
@@ -911,7 +913,7 @@ pub(crate) fn apply_encounter_world_action(
     if !lists.is_current(arena) {
         return Ok(());
     }
-    for &slot in &lists.mana_chain {
+    for &slot in lists.mana_chain.slots() {
         match arena
             .economy
             .live_arena_cursor_row(slot)
@@ -989,6 +991,11 @@ pub(crate) fn publish_player_death_marker(
         .ok_or_else(|| format!("player death marker {slot} has no retained particle"))?;
     let mut row =
         crate::world::terrain::cave_features::new_event(slot, marker.entity_rng, marker.position);
+    // This is a projection refresh, not another NewEvent. Preserve the
+    // current fixed record's intrusive successor through marker callbacks.
+    row.next_relation = arena.entities[usize::from(slot)].next_relation;
+    let encoded = row.next_relation.map_or(0, |next| u32::from(next) + 1);
+    row.record[4..8].copy_from_slice(&encoded.to_le_bytes());
     row.class = 10;
     row.model = 40;
     row.set_source_action(42);
@@ -1040,6 +1047,34 @@ pub(crate) fn retire_hidden_player_death_markers(
 }
 
 impl EffectLists {
+    pub(crate) fn castle_site_rows(
+        &self,
+        arena: &SourceArena,
+        context: super::source_target::Context<'_>,
+    ) -> Result<super::level2_dynamic_economy::CastleSiteRows, String> {
+        let resolve = |chain: &crate::campaign::source_arena::SourceSlotChain| {
+            chain.current_slots(&arena.economy, &arena.entities).into_iter()
+                .map(|slot| {
+                    let view = super::source_target::read(arena, context, slot)?
+                        .ok_or_else(|| format!("Castle site list lost current slot {slot}"))?;
+                    let shape = view.collision
+                        .ok_or_else(|| format!("Castle site slot {slot} has no current source axes"))?;
+                    Ok(super::level2_dynamic_economy::CastleSiteRow {
+                        model: view.model, position: view.position,
+                        pitch: shape.half_width, roll: shape.half_depth,
+                    })
+                }).collect::<Result<Vec<_>, String>>()
+        };
+        Ok(super::level2_dynamic_economy::CastleSiteRows {
+            class3: resolve(&self.class3_chain)?,
+            model45: resolve(&self.model45_chain)?,
+        })
+    }
+
+    pub(crate) fn mana_chain(&self) -> &crate::campaign::source_arena::SourceManaChain {
+        &self.mana_chain
+    }
+
     pub(crate) fn is_current(&self, arena: &SourceArena) -> bool {
         self.epoch == arena.economy.replacement_list_epoch
     }
@@ -1088,9 +1123,42 @@ pub(crate) fn capture_effect_lists(
     }
     model45.sort_unstable();
     model45.dedup();
+    model45.retain(|&slot| match targets.arena.economy.live_arena_kind(slot) {
+        Some(super::Level2DynamicArenaKind::AuthoredModel45) => true,
+        Some(_) => false,
+        None => targets.arena.entities.get(usize::from(slot)).is_some_and(|row| {
+            row.active && row.class == 10 && row.model == 45
+        }),
+    });
+    let mut class3 = targets.class3_slots();
+    class3.extend(targets.arena.economy.castle_children.iter()
+        .filter(|row| row.active && row.source_class == 3 && row.life >= 0)
+        .map(|row| row.source_entity_index));
+    class3.sort_unstable();
+    class3.dedup();
+    class3.retain(|&slot| {
+        if let Some(row) = targets.arena.economy.castle_at(slot) {
+            row.source_class == 3 && row.life >= 0
+        } else if let Some(row) = targets.arena.economy.castle_children.iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            row.source_class == 3 && row.life >= 0
+        } else {
+            targets.arena.economy.live_arena_kind(slot).is_none()
+                && targets.arena.entities[usize::from(slot)].life >= 0
+        }
+    });
+    let class3_chain = crate::campaign::source_arena::SourceSlotChain::capture(
+        targets.arena, class3.clone(),
+    );
+    let model45_chain = crate::campaign::source_arena::SourceSlotChain::capture(
+        targets.arena, model45.clone(),
+    );
     EffectLists {
-        class3: targets.class3_slots(),
+        class3,
         model45,
+        class3_chain,
+        model45_chain,
         mana_chain: {
             let mut slots = targets
                 .arena
@@ -1126,7 +1194,9 @@ pub(crate) fn capture_effect_lists(
                     .filter(|row| row.active)
                     .map(|row| row.source_entity_index),
             );
-            slots.into_iter().collect()
+            crate::campaign::source_arena::SourceManaChain::capture(
+                targets.arena, slots.into_iter().collect(),
+            )
         },
         epoch: targets.arena.economy.replacement_list_epoch,
     }
@@ -2470,7 +2540,7 @@ mod tests {
         assert!(
             arena
                 .economy
-                .step_mana_sphere_slot(slot, terrain, &arena.entities, |_| 52,)
+                .step_mana_sphere_slot(slot, terrain, &mut arena.entities, |_| 52,)
         );
         let current = arena
             .economy
@@ -2549,7 +2619,7 @@ mod tests {
         assert!(arena.economy.step_mana_sphere_slot(
             sphere.source_entity_index,
             terrain,
-            &arena.entities,
+            &mut arena.entities,
             |_| 52,
         ));
         let current = arena

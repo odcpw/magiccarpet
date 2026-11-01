@@ -969,6 +969,23 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 }
                 let live = &mut self.owner.session.state.live;
                 let economy = &mut live.economy;
+                let castle_slots = economy.live_arena_slots().into_iter()
+                    .filter(|(_, kind)| matches!(kind, Level2DynamicArenaKind::CastleChild
+                        | Level2DynamicArenaKind::CastleController | Level2DynamicArenaKind::CastleDefender
+                        | Level2DynamicArenaKind::CastleAuxiliary))
+                    .map(|(slot, _)| slot).collect::<Vec<_>>();
+                for slot in castle_slots {
+                    let context = source_target::Context {
+                        particles: Some(&self.owner.session.definition.presentation.particles),
+                        map_type: Some(live.terrain.map_type()),
+                        ..Default::default()
+                    };
+                    if let Some(view) = source_target::read(economy, context, slot)?
+                        && view.control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+                    {
+                        economy.retain_castle_target(view);
+                    }
+                }
                 economy.reclaim_deferred_bee_creatures_at_source_boundary();
                 economy.reclaim_possession_rows_at_source_boundary();
                 crate::world::effects::lighting::prepare_fireball_reclaim(
@@ -4771,6 +4788,7 @@ impl Mc2Simulation {
             return None;
         };
 
+        let prior_allocations = self.session.state.live.economy.castle_source_allocations();
         let parent_entity_index = holder.source_spell_parent_entity_index();
         let local_parent =
             parent_entity_index == self.session.state.live.shared_spells.player_entity.index;
@@ -4818,6 +4836,9 @@ impl Mc2Simulation {
                 // Source leaves cleanup for the next zero-W callback.
                 next_active_value = 0;
             } else if fresh {
+                let castle_shape = crate::spells::castle::particle_shape(
+                    self.session.definition.presentation.particles.get(18)?,
+                );
                 let stage = self
                     .session
                     .state
@@ -4979,6 +5000,8 @@ impl Mc2Simulation {
                         terrain,
                     );
                 if let Some(spawned_slot) = spawned {
+                    self.session.state.live.economy
+                        .set_castle_projectile_shape(spawned_slot, castle_shape);
                     // The A4 byte transfer and sound are success-only source
                     // epilogue writes; predicate or allocator failure leaves
                     // the parent byte and audio journal untouched.
@@ -5060,6 +5083,8 @@ impl Mc2Simulation {
         {
             in_flight.active_value = next_active_value;
         }
+        self.session.state.live.economy
+            .retire_new_castle_source_projections(&prior_allocations);
         spawned
     }
 
@@ -10437,11 +10462,13 @@ impl Level2EconomyTestView<'_> {
             self.session.session.definition.source_terrain_graphics_flags() & 4 != 0;
         let live = &mut self.session.session.state.live;
         live.economy.rebuild_possession_guidance_source_slots();
+        let lists = area_damage::capture_effect_lists(&mut live.economy, None);
         live.step_castle_action_with_player_state(
             castle_slot,
             &reset_free_slots,
             remove_rival_castle_spell,
             None,
+            lists.mana_chain(),
         )
     }
 
@@ -10974,6 +11001,16 @@ impl Mc2Simulation {
     /// history before an outer turn; the turn-start cursor deliberately
     /// excludes those stale entries from dispatcher output.
     pub(super) fn append_new_economy_events(&mut self, pass: u8, fallback_source_slot: u16) {
+        self.append_new_economy_events_with_castle_source(pass, fallback_source_slot, None, None);
+    }
+
+    fn append_new_economy_events_with_castle_source(
+        &mut self,
+        pass: u8,
+        fallback_source_slot: u16,
+        castle_source: Option<Level2CastleState>,
+        collector_source: Option<crate::native_world::Level2CastleChild>,
+    ) {
         let events = self.session.state.live.economy.events();
         let start = self
             .session
@@ -10984,6 +11021,55 @@ impl Mc2Simulation {
         let pending = events[start..].to_vec();
         self.session.state.scratch.economy_event_cursor = events.len();
         for event in pending {
+            let castle_sound = match event {
+                Level2EconomyEvent::CastleConstructionSound { source_entity_index, sound_id }
+                | Level2EconomyEvent::CastleDestructionSound { source_entity_index, sound_id } => {
+                    Some((source_entity_index, sound_id))
+                }
+                Level2EconomyEvent::CastleDefenderCaveSound { defender_slot, sound_id } => {
+                    Some((defender_slot, sound_id))
+                }
+                _ => None,
+            };
+            if let Some((source_slot, sound_id)) = castle_sound {
+                // Source60480/605E0 use the Castle's pre-mutation pose;
+                // 60D50 uses the collector before its settle position copy.
+                // Resolve their typed carriers rather than inactive raw shadows.
+                let source = if sound_id == 22 {
+                    collector_source.filter(|source| source.source_entity_index == source_slot)
+                        .or_else(|| self.session.state.live.economy.castle_children().iter()
+                            .find(|source| source.source_entity_index == source_slot).copied())
+                        .map(|source| (source.position, source.control_flags, source.id_entity_index, source.action))
+                } else {
+                    castle_source.filter(|source| source.source_entity_index == source_slot)
+                        .or_else(|| self.session.state.live.economy.castle_entry(source_slot).copied())
+                        .map(|source| (source.position, source.control_flags, source.source_id_entity_index, source.action))
+                };
+                let audio = source.filter(|source| source.1 & 0x80 == 0)
+                    .and_then(|(position, _, source_id, action)| crate::prepare_event_sound_command(
+                        self.state.position,
+                        self.state.yaw,
+                        position,
+                        sound_id,
+                        0, // These Castle calls have fixed pitch; no RNG draw.
+                        source_id,
+                        action,
+                    ));
+                self.flush_shared_effects();
+                let turn = self.session.state.live.core.runtime.global_turn;
+                self.effect_journal_mut().append_prepared_flight(turn,
+                    FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: match sound_id {
+                            10 => crate::MissionAudioSite::CastleConstruction,
+                            22 => crate::MissionAudioSite::CastleCollectorCave,
+                            _ => crate::MissionAudioSite::CastleDestruction,
+                        },
+                        entity_index: source_slot,
+                        player_index: -1,
+                        sound_id,
+                    }, audio);
+            }
             if let Level2EconomyEvent::CastleStageDestroyed {
                 source_entity_index,
                 next_level,
@@ -17781,7 +17867,7 @@ impl Mc2Simulation {
                             [context_event_start..]
                             .to_vec();
                         self.append_context_effects(context_events);
-                        self.step_level2_player_dying_action(pass, source_slot, body.proposed)?;
+                        self.step_level2_player_dying_action(pass, source_slot, body.proposed, effect_lists.mana_chain())?;
                         *player_position = self.session.state.live.core.state.position;
                         evidence.push(body);
                     } else if matches!(
@@ -18466,17 +18552,20 @@ impl Mc2Simulation {
                 let site_class3_slots = if effect_lists.is_current(&self.session.state.live.economy) {
                     pass_start_class3_slots
                 } else { &[] };
+                let castle_sound_source = self.session.state.live.economy
+                    .castle_entry(source_slot).copied();
                 let advanced = self.session.state.live.step_castle_action_with_player_state(
                     source_slot,
                     &reset_free_slots,
                     remove_rival_castle_spell,
                     Some(site_class3_slots),
+                    effect_lists.mana_chain(),
                 );
                 self.session.state.live.sync_castle_player_relations();
                 // Publish the source handler's economy sidecars before
                 // the coarse Castle wrapper, matching the handler-first
                 // ApplyEvents cursor order used by dynamic rows.
-                self.append_new_economy_events(pass, source_slot);
+                self.append_new_economy_events_with_castle_source(pass, source_slot, castle_sound_source, None);
                 if pass_start_castle_root_slots.contains(&source_slot) {
                     self.push_dispatch_effect(Mc2DispatchEvent::Castle {
                         pass,
@@ -19456,7 +19545,7 @@ impl Mc2Simulation {
                 let action =
                     self.session.state.live.economy.entities[usize::from(source_slot)].action;
                 if action == 2 {
-                    self.step_level2_nyphur_dying_action(source_slot)?;
+                    self.step_level2_nyphur_dying_action(source_slot, effect_lists.mana_chain())?;
                     return Ok(());
                 }
                 if action == 3 {
@@ -19542,6 +19631,7 @@ impl Mc2Simulation {
                         .find(|player| player.entity_index == source_slot)
                         .and_then(|player| live.economy.handle(player.enabled_spell_holders[2]))
                 };
+                let prior_allocations = self.session.state.live.economy.castle_source_allocations();
                 let dispatch = {
                     let live = &mut self.session.state.live;
                     let castle_profile = |tier| {
@@ -19639,10 +19729,13 @@ impl Mc2Simulation {
                             })
                         {
                             current.player_entity_index = sphere.player_entity_index;
+                            current.owner_entity_index = sphere.owner_entity_index;
                         }
                     }
                     result
                 };
+                self.session.state.live.economy
+                    .retire_new_castle_source_projections(&prior_allocations);
                 // Mode-3 SetSpell writes the physical row, including a
                 // queued tier. The later Castle-holder callback consumes
                 // the shared view of that same current arena generation.
@@ -24086,10 +24179,10 @@ impl Mc2Simulation {
                 "campaign owner color is out of bounds",
             ));
         }
-        Ok(live.economy.economy.step_mana_sphere_slot(
+        Ok(live.economy.economy.step_mana_sphere_slot_with_owner_resources(
             source_slot,
             &live.terrain,
-            &live.economy.entities,
+            &mut live.economy.entities,
             |relation| {
                 players
                     .iter()
@@ -24098,6 +24191,7 @@ impl Mc2Simulation {
                         105 + 8 * OFFLINE_COLORS[usize::from(player.player_color_index())]
                     })
             },
+            |economy, rows, slot| economy.current_owner_resources(rows, slot),
         ))
     }
 
@@ -24142,13 +24236,78 @@ impl Mc2Simulation {
     ) -> bool {
         let live = match kind {
             Level2DynamicArenaKind::CastleProjectile => {
-                let terrain = &self.session.state.live.terrain;
-                let source_arena = &mut self.session.state.live.economy;
-                source_arena.economy.step_castle_projectile_slot(
-                    source_slot,
-                    &source_arena.entities,
-                    terrain,
-                )
+                let step = {
+                    let live = &mut self.session.state.live;
+                    let captured;
+                    let lists = if let Some(lists) = effect_lists {
+                        lists
+                    } else {
+                        captured = area_damage::capture_effect_lists(
+                            &mut live.economy,
+                            Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                        );
+                        &captured
+                    };
+                    let target_slot = live.economy.castle_projectiles().iter()
+                        .find(|row| row.active && row.source_entity_index == source_slot)
+                        .map_or(0, |row| row.source_word_96);
+                    let context = source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        particles: Some(&self.session.definition.presentation.particles),
+                        map_type: Some(live.terrain.map_type()),
+                        player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                        player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    let target = match source_target::read(&live.economy, context, target_slot) {
+                        Ok(view) => view.and_then(|view| view.collision.map(|shape| (view.position, shape))),
+                        Err(message) => {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                            return false;
+                        }
+                    };
+                    let site_rows = match lists.castle_site_rows(&live.economy, context)
+                    {
+                        Ok(rows) => rows,
+                        Err(message) => {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                            return false;
+                        }
+                    };
+                    let prior_allocations = live.economy.castle_source_allocations();
+                    let step = live.economy.economy.step_castle_projectile_slot_with_target_and_site_rows(
+                        source_slot, &live.economy.entities, &live.terrain, target, Some(&site_rows),
+                    );
+                    let products = live.economy.castle_children().iter()
+                        .filter(|row| row.active && row.model == 43 && row.action == 45
+                            && prior_allocations.get(&row.source_entity_index)
+                                != Some(&live.economy.slot_generation(row.source_entity_index)))
+                        .map(|row| row.source_entity_index).collect::<Vec<_>>();
+                    live.economy.retire_new_castle_source_projections(&prior_allocations);
+                    if !products.is_empty() {
+                        let Some(particle) = self.session.definition.presentation.particles.get(41) else {
+                            self.push_dispatch_effect(Mc2DispatchEvent::Error {
+                                pass, source_slot, message: "Castle upgrade requires source particle41".into(),
+                            });
+                            return false;
+                        };
+                        for slot in products {
+                            live.economy.economy.bind_castle_upgrade_particle(slot, particle);
+                            if let Err(message) = source_target::bind_castle_upgrade_record(&mut live.economy, slot, particle) {
+                                self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                                return false;
+                            }
+                        }
+                    }
+                    step
+                };
+                if let Some(owner) = step.clear_holder_owner
+                    && let Err(message) = self.commit_castle_holder_source_update(owner, false)
+                {
+                    self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                    return false;
+                }
+                step.live
             }
             Level2DynamicArenaKind::FireballProjectile => {
                 let live = &mut self.session.state.live;
@@ -24258,12 +24417,39 @@ impl Mc2Simulation {
                     .step_possession_effect_slot(source_slot, &mut live.ordinary.houses)
             }
             Level2DynamicArenaKind::CastleDefender => {
-                let terrain = &self.session.state.live.terrain;
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .step_castle_defender_slot(source_slot, terrain)
+                let live = &mut self.session.state.live;
+                let collector_source = live.economy.castle_children().iter()
+                    .find(|row| row.active && row.source_entity_index == source_slot)
+                    .copied();
+                let target_slot = collector_source.map_or(0, |row| row.target_sphere_slot);
+                let context = source_target::Context {
+                    spells: Some(&live.shared_spells),
+                    particles: Some(&self.session.definition.presentation.particles),
+                    map_type: Some(live.terrain.map_type()),
+                    player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                    player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                    ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                };
+                let target = match source_target::collector_target(&live.economy, context, target_slot) {
+                    Ok(target) => target,
+                    Err(message) => {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                        return false;
+                    }
+                };
+                let mut consumer = source_target::CastleCollectorConsumer {
+                    target, entities: &mut live.economy.entities, shared: &mut live.shared_spells,
+                };
+                let result = live.economy.economy.step_castle_defender_slot_with_consumer(
+                    source_slot, &live.terrain, &mut consumer,
+                );
+                source_target::publish_collector_player_resources(
+                    &live.economy, &mut live.shared_spells, &mut live.nyphur_dispatcher, target_slot,
+                );
+                self.append_new_economy_events_with_castle_source(
+                    pass, source_slot, None, collector_source,
+                );
+                result
             }
             Level2DynamicArenaKind::ManaSphere => {
                 match self.step_level2_mana_sphere_source_slot(source_slot) {
@@ -25113,6 +25299,46 @@ impl Mc2Simulation {
                 }
             }
             Level2DynamicArenaKind::CastleChild | Level2DynamicArenaKind::CastleController => {
+                let product = self.session.state.live.economy.castle_children().iter()
+                    .find(|row| row.active && row.source_entity_index == source_slot
+                        && row.source_class == 10 && row.model == 43 && row.action == 45).copied();
+                if let Some(product) = product {
+                    let (visit, target_slot) = {
+                        let live = &mut self.session.state.live;
+                        let target_slot = live.core.players.iter()
+                            .find(|row| row.entity_index == product.id_entity_index)
+                            .map_or(0, |row| u16::from_le_bytes([row.record[42], row.record[43]]));
+                        let context = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        let target = match if product.life >= 0 && product.control_flags & 2 == 0 {
+                            source_target::castle_upgrade_target(&live.economy, context, target_slot)
+                        } else { Ok(None) } {
+                            Ok(target) => target,
+                            Err(message) => {
+                                self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                                return false;
+                            }
+                        };
+                        if product.life >= 0 { source_target::advance_castle_upgrade_frame(&mut live.economy, source_slot); }
+                        (live.economy.economy.step_castle_upgrade_product_with_target(source_slot, target), target_slot)
+                    };
+                    if let Some(owner) = visit.hit_owner {
+                        self.session.state.live.economy.write_castle_upgrade_mailbox(target_slot, owner);
+                    }
+                    if let Some(owner) = visit.clear_holder_owner
+                        && let Err(message) = self.commit_castle_holder_source_update(owner, false)
+                    {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                        return false;
+                    }
+                    visit.live
+                } else {
                 let live = &mut self.session.state.live;
                 if crate::native_world::castle_defense::is_controller(&live.economy, source_slot) {
                     let context = source_target::Context {
@@ -25166,20 +25392,10 @@ impl Mc2Simulation {
                     &mut live.terrain,
                 )
                 }
+                }
             }
             Level2DynamicArenaKind::CastleRoot => true,
         };
-        if !live
-            && kind == Level2DynamicArenaKind::CastleProjectile
-            && let Some(holder_index) = self
-                .session
-                .state
-                .live
-                .economy
-                .rejected_castle_projectile_holder(source_slot)
-        {
-            self.clear_castle_spell_holder_cooldown(holder_index);
-        }
         if matches!(
             kind,
             Level2DynamicArenaKind::CastleRoot
@@ -26223,6 +26439,7 @@ impl Mc2Simulation {
     fn step_level2_nyphur_dying_action(
         &mut self,
         source_slot: u16,
+        mana_chain: &crate::campaign::source_arena::SourceManaChain,
     ) -> std::result::Result<(), String> {
         const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
 
@@ -26317,6 +26534,8 @@ impl Mc2Simulation {
             .economy
             .allocate_player_death_marker(source_slot, position)
         {
+            self.session.state.live.economy
+                .retire_previous_source_projection(marker.source_entity_index);
             let player = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
             player.set_source_action(3);
             player.set_source_dword_10(PLAYER_BANISHED_ACTION_TIMER);
@@ -26324,7 +26543,8 @@ impl Mc2Simulation {
                 .state
                 .live
                 .economy
-                .redirect_player_mana_spheres_to_death_marker(
+                .redirect_mana_chain_to_marker(
+                    mana_chain,
                     source_slot,
                     marker.source_entity_index,
                 );
@@ -26528,6 +26748,7 @@ impl Mc2Simulation {
         pass: u8,
         source_slot: u16,
         burst_position: Position,
+        mana_chain: &crate::campaign::source_arena::SourceManaChain,
     ) -> std::result::Result<(), String> {
         const PLAYER_DEATH_NOTIFICATION_ID: u16 = 374;
         const PLAYER_DEATH_NOTIFICATION_STATE: u8 = 1;
@@ -26666,6 +26887,8 @@ impl Mc2Simulation {
                 .economy
                 .allocate_player_death_marker(player_entity_index, position)
             {
+                self.session.state.live.economy
+                    .retire_previous_source_projection(marker.source_entity_index);
                 let player =
                     &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
                 player.set_source_action(3);
@@ -26674,7 +26897,8 @@ impl Mc2Simulation {
                     .state
                     .live
                     .economy
-                    .redirect_player_mana_spheres_to_death_marker(
+                    .redirect_mana_chain_to_marker(
+                        mana_chain,
                         player_entity_index,
                         marker.source_entity_index,
                     );
@@ -27730,6 +27954,7 @@ mod tests {
                 .unwrap();
             assert_eq!(session.economy().castle().unwrap().level, 0);
             let before = session.shared_spells().spell_experience()[2];
+            let journal_start = session.effect_journal().records().len();
             if allocation_fails {
                 session.economy_mut().exhaust_new_event_capacity_for_test();
             }
@@ -27755,6 +27980,19 @@ mod tests {
                 }, .. } if *source_entity_index == castle)),
                 !allocation_fails
             );
+            let construction_audio = session.effect_journal().records()[journal_start..].iter()
+                .filter(|record| matches!(record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index, sound_id: 10, ..
+                    }) if entity_index == castle))
+                .collect::<Vec<_>>();
+            assert_eq!(construction_audio.len(), usize::from(!allocation_fails),
+                "only successful model42 allocation reaches playable Castle construction audio");
+            if let Some(record) = construction_audio.first() {
+                let prepared = record.audio.expect("typed Castle sound must reach the prepared audio consumer");
+                assert_eq!(prepared.play_type, 1);
+                assert_eq!(prepared.command.rate_delta_percent, 0);
+            }
             let expected = before + i32::from(!allocation_fails);
             assert_eq!(session.shared_spells().spell_experience()[2], expected);
             let canonical = session
@@ -27777,6 +28015,12 @@ mod tests {
                 expected
             );
             session.append_new_economy_events(0, castle);
+            assert_eq!(session.effect_journal().records()[journal_start..].iter()
+                .filter(|record| matches!(record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index, sound_id: 10, ..
+                    }) if entity_index == castle)).count(), usize::from(!allocation_fails),
+                "re-publishing the same source receipt must not play construction audio twice");
             assert_eq!(
                 session.shared_spells().spell_experience()[2],
                 expected,
@@ -27891,7 +28135,7 @@ mod tests {
             assert!(live.economy.economy.step_mana_sphere_slot(
                 sphere,
                 &live.terrain,
-                &live.economy.entities,
+                &mut live.economy.entities,
                 |_| 0
             ));
             assert!(
@@ -29717,8 +29961,9 @@ mod tests {
                 if dead {
                     // Real grounded death tail releases the old holders. No direct
                     // life/action/inventory assignments manufacture the precondition.
+                    let lists = area_damage::capture_effect_lists(&mut session.session.state.live.economy, None);
                     session
-                        .step_level2_player_dying_action(0, actor_slot, away)
+                        .step_level2_player_dying_action(0, actor_slot, away, lists.mana_chain())
                         .unwrap();
                     assert!(session.player_life < 0);
                     for (family, old_slot) in held_before.iter().enumerate() {
@@ -38874,7 +39119,8 @@ mod tests {
         session.set_level2_entity_position(slot, position).unwrap();
         session.economy.entities[usize::from(slot)].set_source_action(2);
         session.economy.entities[usize::from(slot)].set_source_word_2c(0);
-        session.step_level2_nyphur_dying_action(slot).unwrap();
+        let lists = area_damage::capture_effect_lists(&mut session.session.state.live.economy, None);
+        session.step_level2_nyphur_dying_action(slot, lists.mana_chain()).unwrap();
         let after = session
             .campaign_presentation_opponent(CampaignSelection::LEVEL2)
             .expect("released opponent spells are not entity references");
@@ -38964,8 +39210,9 @@ mod tests {
             .map(|sphere| sphere.player_entity_index)
             .collect::<Vec<_>>();
 
+        let lists = area_damage::capture_effect_lists(&mut session.session.state.live.economy, None);
         session
-            .step_level2_player_dying_action(0, player_entity_index, position)
+            .step_level2_player_dying_action(0, player_entity_index, position, lists.mana_chain())
             .unwrap();
         assert_eq!(session.economy.entities[player_index].action, 2);
         let released_hud = session.day_hud().expect("released holders remain readable");
@@ -38999,8 +39246,9 @@ mod tests {
             sphere_relations
         );
 
+        let lists = area_damage::capture_effect_lists(&mut session.session.state.live.economy, None);
         session
-            .step_level2_player_dying_action(0, player_entity_index, position)
+            .step_level2_player_dying_action(0, player_entity_index, position, lists.mana_chain())
             .unwrap();
         assert_eq!(session.economy.entities[player_index].action, 2);
         assert!(session.economy.player_death_markers.is_empty());

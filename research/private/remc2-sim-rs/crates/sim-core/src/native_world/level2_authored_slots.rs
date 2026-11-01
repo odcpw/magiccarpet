@@ -550,6 +550,10 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub(crate) fn source_list_epoch(&self) -> u32 {
+        self.replacement_list_epoch
+    }
+
     pub(crate) fn new_event_rng(&self, source_slot: u16) -> u16 {
         // Pinned remc2 NewEvent_4A050: rand_0x14 is the source slot plus the
         // global D41A0.rand_0x8 stream, not the inactive row's stale RNG.
@@ -5347,6 +5351,10 @@ impl Level2EconomyState {
         })
     }
 
+    pub(crate) fn live_arena_kind(&self, slot: u16) -> Option<Level2DynamicArenaKind> {
+        self.live_arena_cursor_row(slot).map(|row| row.kind)
+    }
+
     /// Read the live source action-table selector for one typed arena row.
     ///
     /// `UpdateEntities_57730` reads class/action from the fixed numeric row at
@@ -8420,6 +8428,13 @@ impl Level2EconomyState {
             hasher.update(projectile.target_castle_slot.to_le_bytes());
             hasher.update(projectile.yaw.to_le_bytes());
             hasher.update(projectile.pitch.to_le_bytes());
+            hasher.update(projectile.source_roll.to_le_bytes());
+            hasher.update(projectile.source_fov.to_le_bytes());
+            for axis in [projectile.collision_shape.vertical_offset, projectile.collision_shape.half_width,
+                projectile.collision_shape.half_depth, projectile.collision_shape.half_height]
+            {
+                hasher.update(axis.to_le_bytes());
+            }
             hasher.update(projectile.actual_speed.to_le_bytes());
             hasher.update(projectile.minimum_speed.to_le_bytes());
             hasher.update(projectile.life.to_le_bytes());

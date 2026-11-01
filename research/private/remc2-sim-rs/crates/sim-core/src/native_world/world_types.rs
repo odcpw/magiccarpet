@@ -342,7 +342,7 @@ impl EntitySnapshot {
 
     /// Keep the source `playerEntityIndex_0x94_148` relation in the lossless
     /// record when an authoritative callback claims a dynamic target.
-    pub(super) fn set_source_player_entity_index(&mut self, player_entity_index: u16) {
+    pub(crate) fn set_source_player_entity_index(&mut self, player_entity_index: u16) {
         self.record[152..154].copy_from_slice(&player_entity_index.to_le_bytes());
     }
 
@@ -374,6 +374,28 @@ impl EntitySnapshot {
         self.class = 0;
         self.record[2] = 0;
         self.record[67] = 0;
+    }
+
+    /// Preserve model39's physical fields through sub57F20. Its next_0
+    /// remains readable by the current source list until NewEvent resets it.
+    pub(crate) fn retain_mana_sphere_source(&mut self, source: &ManaSphere) {
+        self.model = 39;
+        self.record[68] = 39;
+        self.set_source_action(source.action);
+        self.set_position(source.position);
+        self.set_entity_rng(source.entity_rng);
+        self.set_yaw(source.yaw);
+        self.set_life(source.life);
+        self.set_max_life(source.max_life);
+        self.set_phase(source.phase);
+        self.set_source_word_2c(source.vertical_velocity);
+        self.set_mana(source.mana);
+        self.set_source_player_entity_index(source.player_entity_index);
+        self.set_control_flags(source.control_flags);
+        self.record[86..88].copy_from_slice(&source.collision_yaw.to_le_bytes());
+        self.set_source_overlap_half_extents(source.collision_pitch, source.collision_roll);
+        self.record[92..94].copy_from_slice(&source.collision_fov.to_le_bytes());
+        self.reclaim_source_row();
     }
 
     /// Update the source position while keeping the lossless record projection
@@ -1566,7 +1588,10 @@ pub(super) fn level2_carrier_sphere_relation_matches(
     sphere.owner_entity_index == carrier.owner_entity_index
 }
 
-pub(super) fn level2_castle_sphere_overlap(castle: &Level2CastleState, sphere: &ManaSphere) -> bool {
+pub(super) fn level2_castle_sphere_overlap(
+    castle: &Level2CastleState,
+    sphere: &crate::campaign::source_arena::SourceManaRow,
+) -> bool {
     let dx = i32::from(sphere.position.x.wrapping_sub(castle.position.x).cast_signed());
     let dy = i32::from(sphere.position.y.wrapping_sub(castle.position.y).cast_signed());
     dx.abs() < i32::from(castle.shift_pitch) + i32::from(sphere.collision_pitch)

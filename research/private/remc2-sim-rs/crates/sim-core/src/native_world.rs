@@ -1175,6 +1175,11 @@ pub struct Level2CastleProjectile {
     /// Source flyer orientation used by 66D00's landing bounce.
     pub yaw: i16,
     pub pitch: i16,
+    /// Source roll/fov hold the last desired guidance angles.
+    pub(crate) source_roll: i16,
+    pub(crate) source_fov: i16,
+    /// SetEntityIndexAndRot binds these collision axes from particle 18.
+    pub(crate) collision_shape: crate::combat::area::Shape,
     pub actual_speed: i16,
     pub minimum_speed: i16,
     pub life: i32,

@@ -38,6 +38,123 @@ pub(crate) struct SourceCursorRow {
     pub(crate) kind: Level2DynamicArenaKind,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SourceManaRow {
+    pub(crate) source_slot: u16,
+    pub(crate) position: Position,
+    pub(crate) player_entity_index: u16,
+    pub(crate) control_flags: u32,
+    pub(crate) mana: i32,
+    pub(crate) collision_yaw: i16,
+    pub(crate) collision_pitch: i16,
+    pub(crate) collision_roll: i16,
+    pub(crate) collision_fov: i16,
+}
+
+/// An UpdateEntities head. Links live in the fixed raw records,
+/// including inactive shadows of typed rows. NewEvent resets a reused
+/// record's next_0; sub57F20 alone leaves its old successor intact.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SourceSlotChain {
+    slots: Vec<u16>,
+    generations: BTreeMap<u16, u32>,
+    epoch: u32,
+}
+
+impl SourceSlotChain {
+    pub(crate) fn capture(arena: &mut SourceArena, slots: Vec<u16>) -> Self {
+        let generations = slots.iter()
+            .map(|&slot| (slot, arena.economy.slot_generation(slot)))
+            .collect();
+        for (index, &slot) in slots.iter().enumerate() {
+            let next = slots.get(index + 1).copied().unwrap_or(0);
+            let row = &mut arena.entities[usize::from(slot)];
+            row.next_relation = Some(next);
+            let encoded = row.next_relation.map_or(0, |slot| u32::from(slot) + 1);
+            row.record[4..8].copy_from_slice(&encoded.to_le_bytes());
+        }
+        Self { slots, generations, epoch: arena.economy.source_list_epoch() }
+    }
+
+    pub(crate) fn slots(&self) -> &[u16] {
+        &self.slots
+    }
+
+    pub(crate) fn current_slots(
+        &self,
+        economy: &Level2EconomyState,
+        entities: &[EntitySnapshot],
+    ) -> Vec<u16> {
+        if self.epoch != economy.source_list_epoch() {
+            return Vec::new();
+        }
+        let mut current = self.slots.first().copied().unwrap_or(0);
+        let mut visited = BTreeSet::new();
+        let mut rows = Vec::new();
+        while current != 0 && visited.insert(current) {
+            let Some(raw) = entities.get(usize::from(current)) else { break };
+            rows.push(current);
+            // NewEvent has already reset next_0 before projection retirement.
+            current = if self.generations.get(&current)
+                == Some(&economy.slot_generation(current))
+            {
+                raw.next_relation.unwrap_or(0)
+            } else { 0 };
+        }
+        rows
+    }
+}
+
+/// The dword38523 list resolves mana payloads from their current owners.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SourceManaChain(SourceSlotChain);
+
+impl SourceManaChain {
+    pub(crate) fn capture(arena: &mut SourceArena, slots: Vec<u16>) -> Self {
+        Self(SourceSlotChain::capture(arena, slots))
+    }
+
+    pub(crate) fn slots(&self) -> &[u16] {
+        self.0.slots()
+    }
+
+    pub(crate) fn rows(
+        &self,
+        economy: &Level2EconomyState,
+        entities: &[EntitySnapshot],
+    ) -> Vec<SourceManaRow> {
+        let mut rows = Vec::new();
+        for current in self.0.current_slots(economy, entities) {
+            let raw = &entities[usize::from(current)];
+            match economy.live_arena_kind(current) {
+                Some(Level2DynamicArenaKind::ManaSphere) => {
+                    if let Some(sphere) = economy.spheres().iter()
+                        .find(|row| row.active && row.source_entity_index == current)
+                    {
+                        rows.push(SourceManaRow {
+                            source_slot: current, position: sphere.position,
+                            player_entity_index: sphere.player_entity_index,
+                            control_flags: sphere.control_flags, mana: sphere.mana,
+                            collision_yaw: sphere.collision_yaw, collision_pitch: sphere.collision_pitch,
+                            collision_roll: sphere.collision_roll, collision_fov: sphere.collision_fov,
+                        });
+                    }
+                }
+                Some(_) => {}
+                None if raw.model == 39 => rows.push(SourceManaRow {
+                    source_slot: current, position: raw.position,
+                    player_entity_index: raw.source_player_entity_index(),
+                    control_flags: raw.control_flags, mana: raw.mana,
+                    collision_yaw: raw.array_yaw(), collision_pitch: raw.array_pitch(),
+                    collision_roll: raw.array_roll(), collision_fov: raw.array_fov(),
+                }),
+                None => {}
+            }
+        }
+        rows
+    }
+}
+
 fn raw_word(row: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
 }
@@ -804,6 +921,18 @@ impl SourceArena {
         terrain: &mut crate::native_world::SessionTerrain,
         reset_free_slots: &[u16],
     ) -> Result<(), String> {
+        // 49F90 can also run inside5E310. Retain hidden sphere packets
+        // before it frees them: the already-built head still follows these
+        // addresses, and only NewEvent may overwrite their model/next fields.
+        let hidden_spheres = self.economy.spheres().iter()
+            .filter(|sphere| sphere.active && sphere.control_flags
+                & crate::level1_mission::SOURCE_DISABLED_FLAG != 0)
+            .filter(|sphere| self.economy.live_arena_kind(sphere.source_entity_index)
+                == Some(Level2DynamicArenaKind::ManaSphere))
+            .copied().collect::<Vec<_>>();
+        for sphere in hidden_spheres {
+            self.entities[usize::from(sphere.source_entity_index)].retain_mana_sphere_source(&sphere);
+        }
         let dynamic = self
             .economy
             .live_arena_slots()
@@ -903,11 +1032,148 @@ impl SourceArena {
     /// raw packet and projections must not survive the allocation boundary.
     pub(crate) fn retire_previous_source_projection(&mut self, slot: u16) {
         self.effects.forget_source_slot(slot);
-        self.entities[usize::from(slot)].reclaim_source_row();
+        let mut raw = crate::world::terrain::cave_features::new_event(
+            slot, self.economy.new_event_rng(slot), Position::default(),
+        );
+        raw.reclaim_source_row();
+        self.entities[usize::from(slot)] = raw;
         crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
         self.raw_creature_origins.remove(&slot);
         self.creature_parents.remove(&slot);
         self.clear_raw_creature_part_bindings_for_slot(slot);
+    }
+
+    /// Preserve the current fixed-address target fields before its typed
+    /// Castle carrier is reclaimed. sub57F20 clears class, not pose/model or
+    /// next_0; a later flyer still dereferences that same physical record.
+    pub(crate) fn retain_castle_target(&mut self, view: crate::native_world::source_target::View) {
+        let kind = self.economy.live_arena_kind(view.slot);
+        let resources = self.economy.castle_children().iter()
+            .find(|row| row.active && row.source_entity_index == view.slot
+                && matches!(kind, Some(Level2DynamicArenaKind::CastleChild
+                    | Level2DynamicArenaKind::CastleController | Level2DynamicArenaKind::CastleDefender
+                    | Level2DynamicArenaKind::CastleAuxiliary)))
+            .map(|row| (row.mana, row.max_mana, row.player_entity_index, row.source_dword_10))
+            .or_else(|| self.economy.castle_entry(view.slot)
+                .filter(|row| row.slot_generation == self.economy.slot_generation(view.slot))
+                .map(|row| {
+                (row.mana, row.mana_capacity, row.player_entity_index, i32::from(row.level))
+            }));
+        let root_words = self.economy.castle_entry(view.slot)
+            .map(|row| (row.auxiliary_cooldown, row.source_word_2e, row.source_word_30));
+        let child_active = self.economy.castle_children().iter()
+            .find(|row| row.active && row.source_entity_index == view.slot
+                && matches!(kind, Some(Level2DynamicArenaKind::CastleChild
+                    | Level2DynamicArenaKind::CastleController | Level2DynamicArenaKind::CastleDefender
+                    | Level2DynamicArenaKind::CastleAuxiliary)))
+            .map(|row| row.source_word_2e);
+        let raw = &mut self.entities[usize::from(view.slot)];
+        raw.source_id = view.source_id;
+        raw.record[30..32].copy_from_slice(&view.source_id.to_le_bytes());
+        raw.model = view.model;
+        raw.record[68] = view.model;
+        raw.set_position(view.position);
+        raw.set_life(view.life);
+        raw.set_control_flags(view.control_flags);
+        if let Some((mana, maximum, owner, stage)) = resources {
+            raw.mana = mana;
+            raw.record[148..152].copy_from_slice(&mana.to_le_bytes());
+            raw.max_mana = maximum;
+            raw.record[144..148].copy_from_slice(&maximum.to_le_bytes());
+            raw.set_source_player_entity_index(owner);
+            raw.set_source_dword_10(stage);
+        }
+        if let Some((queued, active, activation)) = root_words {
+            raw.record[48..50].copy_from_slice(&u16::from(queued).to_le_bytes());
+            raw.active_value = active.cast_signed();
+            raw.record[50..52].copy_from_slice(&active.to_le_bytes());
+            raw.activation_value = activation;
+            raw.record[52..54].copy_from_slice(&u16::from(activation).to_le_bytes());
+        } else if let Some(active) = child_active {
+            raw.active_value = active;
+            raw.record[50..52].copy_from_slice(&active.to_le_bytes());
+        }
+        if let Some(yaw) = view.yaw { raw.set_yaw(yaw); }
+        if let Some(shape) = view.collision {
+            for (offset, value) in [(86, shape.vertical_offset), (88, shape.half_width),
+                (90, shape.half_depth), (92, shape.half_height)]
+            {
+                raw.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        raw.reclaim_source_row();
+    }
+
+    /// 389F0 writes the owner's current fixed address, including the sentinel
+    /// or a reclaimed record. Only a current Castle root owns typed mailboxes.
+    pub(crate) fn write_castle_upgrade_mailbox(&mut self, slot: u16, owner: u16) {
+        if self.economy.live_arena_kind(slot) == Some(Level2DynamicArenaKind::CastleRoot)
+            && let Some(root) = self.economy.castle_at_mut(slot)
+        {
+            root.source_word_7c = 10;
+            root.source_word_80 = owner;
+        }
+        if let Some(raw) = self.entities.get_mut(usize::from(slot)) {
+            raw.record[128..130].copy_from_slice(&10_u16.to_le_bytes());
+            raw.record[132..134].copy_from_slice(&owner.to_le_bytes());
+        }
+    }
+
+    /// 5E310 rewrites only model39 records reached through the current
+    /// dword38523 chain after the marker's NewEvent has completed.
+    pub(crate) fn redirect_mana_chain_to_marker(
+        &mut self,
+        chain: &SourceManaChain,
+        player: u16,
+        marker: u16,
+    ) -> usize {
+        let rows = chain.rows(&self.economy, &self.entities);
+        let mut redirected = 0;
+        for row in rows.into_iter().filter(|row| row.player_entity_index == player) {
+            if self.economy.live_arena_kind(row.source_slot) == Some(Level2DynamicArenaKind::ManaSphere) {
+                if let Some(sphere) = self.economy.spheres_mut().iter_mut()
+                    .find(|sphere| sphere.active && sphere.source_entity_index == row.source_slot)
+                {
+                    sphere.player_entity_index = marker;
+                    redirected += 1;
+                }
+            } else {
+                self.entities[usize::from(row.source_slot)].set_source_player_entity_index(marker);
+                redirected += 1;
+            }
+        }
+        self.economy.refresh_owner_mana_rows();
+        redirected
+    }
+
+    /// Capture the typed products which a Castle constructor can allocate.
+    /// The callback owns allocation/RNG order; this join only identifies the
+    /// generations whose prior raw projections NewEvent must retire.
+    pub(crate) fn castle_source_allocations(&self) -> BTreeMap<u16, u32> {
+        self.economy
+            .live_arena_slots()
+            .into_iter()
+            .filter(|(_, kind)| {
+                matches!(kind,
+                    Level2DynamicArenaKind::CastleProjectile
+                        | Level2DynamicArenaKind::CastleRoot
+                        | Level2DynamicArenaKind::CastleChild
+                        | Level2DynamicArenaKind::CastleController
+                        | Level2DynamicArenaKind::CastleDefender
+                        | Level2DynamicArenaKind::CastleAuxiliary
+                        | Level2DynamicArenaKind::ManaSphere
+                )
+            })
+            .map(|(slot, _)| (slot, self.economy.slot_generation(slot)))
+            .collect()
+    }
+
+    pub(crate) fn retire_new_castle_source_projections(&mut self, prior: &BTreeMap<u16, u32>) {
+        for (slot, generation) in self.castle_source_allocations() {
+            if prior.get(&slot) != Some(&generation) {
+                self.retire_previous_source_projection(slot);
+            }
+        }
     }
 
     fn allocate_source_slot_notifying(&mut self, mut publish: impl FnMut(u16, u16)) -> Option<u16> {
@@ -1886,6 +2152,57 @@ mod tests {
             .expect("real Level 2 package with source constructor counters")
             .simulation()
             .clone()
+    }
+
+    #[test]
+    fn mana_chain_keeps_freed_fields_and_cuts_new_event_successor() {
+        let session = level_two_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let mut position = session.state.position;
+        position.z = terrain.ground_height(position);
+        let first = arena.allocate_authored_model39(0, 0, position).unwrap().source_entity_index;
+        let marker = arena.allocate_player_death_marker(session.state.entity_index, position)
+            .unwrap().source_entity_index;
+        let middle = arena.allocate_authored_model39(0, 0, position).unwrap().source_entity_index;
+        let last_position = Position { x: position.x.wrapping_add(4096), ..position };
+        let last = arena.allocate_authored_model39(0, 0, last_position).unwrap().source_entity_index;
+        let chain = SourceManaChain::capture(&mut arena, vec![first, marker, middle, last]);
+        // The actual constructor starts with upward velocity128; let its
+        // ordinary physics reach ground contact before expecting36D50.
+        for _ in 0..64 {
+            assert!(arena.economy.step_mana_sphere_slot(first, &terrain, &mut arena.entities, |_| 0));
+            if arena.economy.spheres().iter().all(|row| row.source_entity_index != middle) { break; }
+        }
+        assert!(arena.economy.spheres().iter().all(|row| row.source_entity_index != middle));
+        assert_eq!((arena.entities[usize::from(middle)].class,
+            arena.entities[usize::from(middle)].model), (0, 39));
+        assert_eq!(chain.rows(&arena.economy, &arena.entities).iter()
+            .map(|row| row.source_slot).collect::<Vec<_>>(), vec![first, middle, last],
+            "the frozen marker bridge and retained class-zero sphere keep their current next links");
+        let reused = arena.allocate_source_slot().unwrap();
+        assert_eq!(reused, middle);
+        assert_eq!(arena.entities[usize::from(reused)].model, 0);
+        assert_eq!(chain.rows(&arena.economy, &arena.entities).iter()
+            .map(|row| row.source_slot).collect::<Vec<_>>(), vec![first],
+            "NewEvent overwrites the model and cuts next_0; the old sphere cannot be credited");
+        arena.economy.initialize_authored_model39(reused, 0, position).unwrap();
+        assert_eq!(chain.rows(&arena.economy, &arena.entities).iter()
+            .map(|row| row.source_slot).collect::<Vec<_>>(), vec![first, reused],
+            "a genuine new model39 at the frozen address is read before its zero successor");
+        arena.economy.spheres_mut().iter_mut()
+            .find(|row| row.active && row.source_entity_index == reused).unwrap()
+            .control_flags |= crate::level1_mission::SOURCE_DISABLED_FLAG;
+        arena.rebuild_source_arena_with_terrain(&mut terrain, &[]).unwrap();
+        assert_eq!((arena.entities[usize::from(reused)].class,
+            arena.entities[usize::from(reused)].model), (0, 39),
+            "49F90 retains the hidden model39 packet before marker allocation");
+        let new_marker = arena.allocate_player_death_marker(session.state.entity_index, position).unwrap();
+        assert_eq!(new_marker.source_entity_index, reused);
+        arena.retire_previous_source_projection(reused);
+        assert_eq!(chain.rows(&arena.economy, &arena.entities).iter()
+            .map(|row| row.source_slot).collect::<Vec<_>>(), vec![first],
+            "marker NewEvent cuts the current source link after49F90 reclaim");
     }
 
     #[test]

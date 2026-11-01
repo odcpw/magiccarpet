@@ -2,6 +2,50 @@
 
 use super::*;
 
+/// The Castle callback borrows source records for its two mana scans and
+/// player records for final loss. Keeping those operations in one narrow
+/// consumer preserves their source call order without aliasing the arena.
+pub(crate) trait CastleSourceConsumer {
+    fn mana_rows(&self, economy: &Level2EconomyState)
+        -> Vec<crate::campaign::source_arena::SourceManaRow>;
+    fn hide_mana_source(&mut self, economy: &mut Level2EconomyState, slot: u16);
+    fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState);
+}
+
+// Pure economy checks have no raw actor domain. Their existing callback
+// remains a bounded test adapter; production uses CastlePlayerConsumer below.
+#[cfg(test)]
+impl<F: FnMut(&mut Level2EconomyState, Level2CastleState)> CastleSourceConsumer for F {
+    fn mana_rows(&self, economy: &Level2EconomyState)
+        -> Vec<crate::campaign::source_arena::SourceManaRow>
+    {
+        economy.possession_guidance_source_slots.iter().filter_map(|slot| {
+            let sphere = economy.spheres().iter()
+                .find(|row| row.active && row.source_entity_index == *slot)?;
+            Some(crate::campaign::source_arena::SourceManaRow {
+                source_slot: *slot, position: sphere.position,
+                player_entity_index: sphere.player_entity_index,
+                control_flags: sphere.control_flags, mana: sphere.mana,
+                collision_yaw: sphere.collision_yaw, collision_pitch: sphere.collision_pitch,
+                collision_roll: sphere.collision_roll, collision_fov: sphere.collision_fov,
+            })
+        }).collect()
+    }
+
+    fn hide_mana_source(&mut self, economy: &mut Level2EconomyState, slot: u16) {
+        if let Some(sphere) = economy.spheres.iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            sphere.pending_delete = true;
+            sphere.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        }
+    }
+
+    fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState) {
+        self(economy, castle);
+    }
+}
+
 /// The shared `unk_F42B0x` A4 target installed by `NewEvent_4A050` for
 /// nonplayer entities. Ordinary spell acquisition and carry do not rebind it
 /// to the holder's parent. Player A4 fields have their own distinct owner.
@@ -10,6 +54,10 @@ use super::*;
 pub struct GlobalSpecialState {
     pub protection_ticks: u16,
     pub visibility_mode: u8,
+    /// Source A4 byte197 written by a nonplayer collector's 60EA0 damage tail.
+    /// This global A4 is distinct from the human player's damage feedback.
+    #[serde(default)]
+    pub damage_flash_ticks: u8,
 }
 
 impl GlobalSpecialState {
@@ -17,10 +65,14 @@ impl GlobalSpecialState {
         *self == Self::default()
     }
     pub(super) fn append_hash(self, hasher: &mut Sha256) {
-        if self != Self::default() {
+        if self.protection_ticks != 0 || self.visibility_mode != 0 {
             hasher.update(b"source-global-special-state-v1");
             hasher.update(self.protection_ticks.to_le_bytes());
             hasher.update([self.visibility_mode]);
+        }
+        if self.damage_flash_ticks != 0 {
+            hasher.update(b"source-global-collector-damage-flash-v1");
+            hasher.update([self.damage_flash_ticks]);
         }
     }
 }
@@ -96,6 +148,10 @@ impl Level2SharedSpellResetSession {
 
     pub(crate) fn apply_source_global_context(&mut self, context: GlobalSpecialState) {
         self.global_special_state = context;
+    }
+
+    pub(crate) fn record_castle_collector_damage(&mut self) {
+        self.global_special_state.damage_flash_ticks = 4;
     }
 
     pub(super) fn physical_spell_profile(
@@ -335,6 +391,7 @@ impl Mc2LiveState {
         reset_free_slots: &[u16],
         remove_rival_castle_spell: bool,
         class3_slots: Option<&[u16]>,
+        mana_chain: &crate::campaign::source_arena::SourceManaChain,
     ) -> bool {
         let current_class3;
         let class3_slots = if let Some(slots) = class3_slots {
@@ -362,6 +419,7 @@ impl Mc2LiveState {
                 .physical_spell_profile(2, tier, owner, Some(0))
                 .map(|profile| (tier, profile))
         });
+        let prior_allocations = self.economy.castle_source_allocations();
         let Self {
             economy: arena,
             core,
@@ -373,38 +431,39 @@ impl Mc2LiveState {
         let crate::campaign::source_arena::SourceArena {
             economy, entities, ..
         } = arena;
-        let prior_defenders = economy.castle_children().iter()
-            .filter(|child| child.active && child.source_class == 3 && child.model == 3)
-            .map(|child| (child.source_entity_index, economy.slot_generation(child.source_entity_index)))
-            .collect::<BTreeSet<_>>();
         let mut consumer = CastlePlayerConsumer {
             entities,
             shared_spells,
             core,
             nyphur_dispatcher,
+            mana_chain,
+            remove_rival_castle_spell,
+            final_profile,
         };
         let live = economy.step_castle_action_with_site(
             castle_slot,
             terrain,
             reset_free_slots,
             site_clear,
-            &mut |economy, castle| {
-                consumer.final_loss(economy, castle, remove_rival_castle_spell, final_profile);
-            },
+            &mut consumer,
         );
-        // 5FF50 uses NewEvent for each replacement collector. The economy
-        // owns its typed constructor, while this join owns the raw record:
-        // retire only a newly allocated generation's old raw shadow before
-        // a later numeric callback can mistake it for another live actor.
-        let newborn_defenders = economy.castle_children().iter()
-            .filter(|child| child.active && child.source_class == 3 && child.model == 3)
-            .filter(|child| !prior_defenders.contains(&(
-                child.source_entity_index, economy.slot_generation(child.source_entity_index),
-            )))
-            .map(|child| child.source_entity_index)
-            .collect::<Vec<_>>();
-        for slot in newborn_defenders {
-            arena.retire_previous_source_projection(slot);
+        let retired_root = economy.castle_entry(castle_slot).copied()
+            .filter(|root| !root.active);
+        // Construction, controller, overflow and collector constructors all
+        // use NewEvent. Retire only their newly allocated generations before
+        // the next numeric consumer; existing Castle products stay intact.
+        arena.retire_new_castle_source_projections(&prior_allocations);
+        if let Some(root) = retired_root {
+            arena.retain_castle_target(super::source_target::View {
+                slot: root.source_entity_index, source_id: root.source_id_entity_index,
+                active: false, class: 0, model: 2, position: root.position,
+                life: root.life, control_flags: root.control_flags,
+                yaw: None, roll: None, relations: Default::default(),
+                collision: Some(crate::combat::area::Shape {
+                    vertical_offset: root.shift_yaw, half_width: root.shift_pitch,
+                    half_depth: root.shift_roll, half_height: root.shift_fov,
+                }),
+            });
         }
         live
     }
@@ -492,12 +551,40 @@ struct CastlePlayerConsumer<'a> {
     shared_spells: &'a mut Level2SharedSpellResetSession,
     core: &'a mut crate::campaign::state::CanonicalRuntimeState,
     nyphur_dispatcher: &'a mut level2_nyphur::RivalWizardRoster,
+    mana_chain: &'a crate::campaign::source_arena::SourceManaChain,
+    remove_rival_castle_spell: bool,
+    final_profile: Option<(u8, Level2SetSpellProfile)>,
+}
+
+impl CastleSourceConsumer for CastlePlayerConsumer<'_> {
+    fn mana_rows(&self, economy: &Level2EconomyState)
+        -> Vec<crate::campaign::source_arena::SourceManaRow>
+    {
+        self.mana_chain.rows(economy, self.entities)
+    }
+
+    fn hide_mana_source(&mut self, economy: &mut Level2EconomyState, slot: u16) {
+        if economy.live_arena_kind(slot) == Some(Level2DynamicArenaKind::ManaSphere) {
+            if let Some(sphere) = economy.spheres.iter_mut()
+                .find(|row| row.active && row.source_entity_index == slot)
+            {
+                sphere.pending_delete = true;
+                sphere.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+            }
+        } else if let Some(raw) = self.entities.get_mut(usize::from(slot)) {
+            raw.disable_drawing();
+        }
+    }
+
+    fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState) {
+        self.apply_final_loss(economy, castle, self.remove_rival_castle_spell, self.final_profile);
+    }
 }
 
 impl CastlePlayerConsumer<'_> {
-    fn final_loss(
+    fn apply_final_loss(
         &mut self,
-        economy: &Level2EconomyState,
+        economy: &mut Level2EconomyState,
         castle: Level2CastleState,
         remove_rival_castle_spell: bool,
         final_profile: Option<(u8, Level2SetSpellProfile)>,
@@ -532,6 +619,46 @@ impl CastlePlayerConsumer<'_> {
             .iter()
             .find(|player| player.entity_index == owner)
             .map_or(0, |player| player.enabled_spell_holders[2]);
+        if self.entities[usize::from(owner)].model != 1 {
+            // 605E0's human final-loss branch clears the current addressed
+            // holder, then6D880 acts on this Castle caller's own word2C.
+            // Unlike construction state2, this root can have word2E=0:
+            // SetSpell then cold-applies its clamped family2 profile to the
+            // root itself, before 5FCA0's subsequent overflow/cleanup tail.
+            let wrote_holder = self.shared_spells.apply_castle_holder_record_update(
+                economy, self.entities, &self.core.players,
+                self.core.context.spell_fire.as_mut(), owner, false,
+            ).ok().flatten().is_some();
+            // The addressed holder may alias this root. Read after5F890's
+            // word2E write, just as6D880 does through the same fixed address.
+            let caller = economy.castle_entry(castle.source_entity_index).copied().unwrap_or(castle);
+            if wrote_holder && caller.auxiliary_cooldown != 0 {
+                if caller.source_word_2e == 0 {
+                    let tier = caller.auxiliary_cooldown.saturating_sub(1).min(2);
+                    let parent = self.entities[usize::from(castle.source_entity_index)]
+                        .source_spell_parent_entity_index();
+                    let stage = Level2SharedSpellResetSession::castle_stage_for_owner(economy, parent);
+                    if let Some(profile) = self.shared_spells.physical_spell_profile(2, tier, parent, stage) {
+                        let raw = &mut self.entities[usize::from(castle.source_entity_index)];
+                        raw.active_value = 0;
+                        raw.record[50..52].fill(0);
+                        raw.apply_nyphur_spell_profile(profile, tier);
+                        if let Some(root) = economy.castle_entry_mut(castle.source_entity_index) {
+                            root.mana = profile.mana;
+                            root.mana_capacity = profile.max_mana;
+                            root.source_word_30 = profile.word_0x30;
+                            root.timer = profile.word_0x30;
+                        }
+                    }
+                }
+                // If word2E was nonzero, SetSpell only queued on this root;
+                // either branch is followed by6D880's unconditional clear.
+                self.entities[usize::from(castle.source_entity_index)].record[48..50].fill(0);
+                if let Some(root) = economy.castle_entry_mut(castle.source_entity_index) {
+                    root.auxiliary_cooldown = 0;
+                }
+            }
+        }
         if remove_spell
             && let Some(holder) = self
                 .entities
@@ -628,6 +755,84 @@ fn apply_castle_spell_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn castle_final_loss_applies_queued_profile_to_caller_before_reclaim() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let campaign = crate::campaign::CampaignSession::open(
+            package, crate::campaign::spec::CampaignSelection::LEVEL2,
+        ).unwrap();
+        let base = campaign.simulation().clone();
+        let owner = base.state.entity_index;
+        let holder = base.shared_spells().local_player.enabled_spell_holders[2];
+        assert_ne!(holder, 0, "the actual owner has its source Castle holder");
+        assert!(!base.shared_spells().free_spell_usage);
+        let profile = level2_set_spell_profile(2, 2).unwrap();
+        for (queued, aliases_caller, caller_word) in [(0, false, 0), (37, false, 0), (37, true, 2)] {
+            let mut session = base.clone();
+            let position = session.state.position;
+            let root = session.economy_mut().build_castle(position, owner).unwrap();
+            // Controlled last-stage loss entry. No spell result is injected:
+            // the ordinary numeric root callback performs final loss, the
+            // current-holder write, caller SetSpell and the overflow tail.
+            {
+                let mut economy = session.economy_mut();
+                let castle = economy.castle_at_mut(root).unwrap();
+                castle.level = 1;
+                castle.action = 6;
+                castle.life = -1;
+                castle.timer = 3;
+                castle.source_word_2e = caller_word;
+                castle.source_word_30 = 3;
+                castle.auxiliary_cooldown = queued;
+            }
+            if aliases_caller {
+                let live = &mut session.session.state.live;
+                for player in live.core.players.iter_mut()
+                    .chain(live.shared_spells.players.iter_mut())
+                    .chain(std::iter::once(&mut live.shared_spells.local_player))
+                    .filter(|row| row.entity_index == owner)
+                {
+                    assert!(player.set_enabled_spell_holder_index(2, root));
+                }
+            }
+            let generation = session.economy().slot_generation(root);
+            let event_start = session.economy().events().len();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+            let raw = &session.entities()[usize::from(root)];
+            assert_eq!(session.economy().slot_generation(root), generation);
+            assert_eq!(raw.source_word_2c(), 0, "6D880 clears the actual caller's queue");
+            assert_eq!(raw.source_word_2e(), 0);
+            assert_eq!(raw.source_word_30(), 5,
+                "the following 5FCA0 tail overwrites the temporary SetSpell counter");
+            let overflow = session.economy().events()[event_start..].iter().filter_map(|event| match event {
+                Level2EconomyEvent::ManaSphereSpawned { source_entity_index, mana, .. }
+                    if *source_entity_index == root => Some(*mana),
+                _ => None,
+            }).collect::<Vec<_>>();
+            if queued != 0 {
+                assert_eq!(raw.level_gate, 2, "SetSpell clamps37-1 to actual Castle tier2");
+                assert_eq!((raw.subspell_index, raw.mana_regen, raw.max_mana, raw.mana),
+                    (profile.subspell_index, profile.mana_regen, profile.max_mana, 0),
+                    "cold SetSpell uses the Castle caller's sentinel parent, not the destroyed owner's price");
+                assert_eq!(overflow, [profile.mana],
+                    "the following5FD00 must actually construct a sphere from all cold-profile mana at stage0");
+            } else {
+                assert_eq!(raw.max_mana, 5_000,
+                    "source60810 stage0 retains5000 when no caller SetSpell overrides it");
+                assert!(overflow.is_empty(), "an empty caller queue creates no cold-profile mana drop");
+            }
+            if !aliases_caller {
+                assert_eq!(session.shared_spells().pickup(holder).unwrap().active_value, 0,
+                    "the current addressed holder is released without becoming the profile caller");
+            }
+            let surviving_root = session.economy().castle_entry(root);
+            assert!(surviving_root.is_none_or(|root| !root.active));
+        }
+    }
 
     #[test]
     fn castle_cost_uses_source_stage_scaling_and_destruction_surcharge() {

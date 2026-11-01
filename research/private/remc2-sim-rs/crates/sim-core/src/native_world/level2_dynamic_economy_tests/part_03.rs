@@ -1192,6 +1192,110 @@ fn level_two_castle_defender_addballon_class3_threshold_terrain_and_life() {
 }
 
 #[test]
+fn level_two_castle_defender_uses_new_current_sphere_at_reused_numeric_target() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let position = Position { x: 10_000, y: 10_000, z: 0 };
+    let root = session.economy_mut().build_castle(position, 111).unwrap();
+    session.economy_mut().castle_at_mut(root).unwrap().level = 1;
+    session.economy_mut().maintain_castle_defenders(root);
+    let holder = session.economy().castle_at(root).unwrap().defender_slots[0];
+    // Odd parent phase leaves the holder's word96 intact on this pass.
+    session.economy_mut().castle_at_mut(root).unwrap().phase = 1;
+    let target_position = Position { z: 256, ..position };
+    session.economy_mut().castle_children.iter_mut()
+        .find(|row| row.source_entity_index == holder).unwrap().position = position;
+    let old = session.economy_mut().spawn_mana_sphere_from_death(901, target_position, 0, 1, 300, 111).unwrap() as u16;
+    let sink = session.economy_mut().spawn_mana_sphere_from_death(902, target_position, 0, 2, 100, 0).unwrap() as u16;
+    let old_handle = session.source_arena().handle(old).unwrap();
+    session.economy_mut().castle_children.iter_mut()
+        .find(|row| row.source_entity_index == holder).unwrap().target_sphere_slot = old;
+    {
+        let arena = &mut session.session.state.live.economy;
+        assert!(arena.economy.merge_mana_spheres_with_entities(sink, old, Some(&mut arena.entities)));
+    }
+    let replacement = session.economy_mut().spawn_mana_sphere_from_death(903, target_position, 0, 3, 500, 111).unwrap() as u16;
+    assert_eq!(replacement, old);
+    let replacement_handle = session.source_arena().handle(replacement).unwrap();
+    assert_ne!(replacement_handle, old_handle);
+    let events_before = session.economy().events().len();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.economy().events()[events_before..].iter().any(|event| matches!(event,
+        Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana: 500 }
+            if *defender_slot == holder && *sphere_id == u32::from(replacement))),
+        "60AB0 must consume the actual replacement's 500, not the old generation's 300");
+    assert_eq!(session.economy().castle_children().iter().find(|row| row.source_entity_index == holder).unwrap().mana, 500);
+}
+
+#[test]
+fn level_two_castle_defender_null_target_still_runs_source_damage_tail() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let position = Position { x: 10_000, y: 10_000, z: 3_000 };
+    let root = session.economy_mut().build_castle(position, 111).unwrap();
+    session.economy_mut().castle_at_mut(root).unwrap().level = 1;
+    session.economy_mut().maintain_castle_defenders(root);
+    let holder = session.economy().castle_at(root).unwrap().defender_slots[0];
+    {
+        let mut economy = session.economy_mut();
+        let row = economy.castle_children.iter_mut().find(|row| row.source_entity_index == holder).unwrap();
+        row.target_sphere_slot = 0;
+        row.position = position;
+        row.life = 100;
+        row.pending_damage = 40;
+        row.pending_attacker_entity_index = 112;
+    }
+    let mut lethal = session.clone();
+    assert!(session.economy_mut().step_castle_defender_slot(holder));
+    let row = session.economy().castle_children().iter().find(|row| row.source_entity_index == holder).unwrap();
+    assert_eq!((row.position, row.life, row.pending_damage, row.pending_attacker_entity_index), (position, 60, 40, 0),
+        "the null target skips movement but not nonlethal 60EA0 damage");
+    lethal.economy_mut().castle_children.iter_mut().find(|row| row.source_entity_index == holder).unwrap().pending_damage = 101;
+    assert!(lethal.economy_mut().step_castle_defender_slot(holder));
+    let row = lethal.economy().castle_children().iter().find(|row| row.source_entity_index == holder).unwrap();
+    assert_eq!((row.position, row.life, row.killer_entity_index, row.pending_attacker_entity_index), (position, -1, 112, 112),
+        "lethal 60EA0 retains the attacker mailbox and writes word24");
+}
+
+#[test]
+fn level_two_castle_defender_consumes_sphere_hidden_by_earlier_root_in_same_pass() {
+    // Controlled ordering: the real root callback runs before its actual
+    // holder in one numeric pass. No collector result is assigned by setup.
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let position = Position { x: 10_000, y: 10_000, z: 0 };
+    let root = session.economy_mut().build_castle(position, 111).unwrap();
+    session.economy_mut().castle_at_mut(root).unwrap().level = 1;
+    session.economy_mut().castle_at_mut(root).unwrap().phase = 0;
+    session.economy_mut().maintain_castle_defenders(root);
+    let holder = session.economy().castle_at(root).unwrap().defender_slots[0];
+    assert!(root < holder, "the root must visit before its actual collector");
+    let mut target = position;
+    target.z = 256;
+    session.economy_mut().castle_children.iter_mut()
+        .find(|row| row.source_entity_index == holder).unwrap().position = position;
+    let sphere = session.economy_mut().spawn_mana_sphere_from_death(901, target, 0, 1, 300, 111).unwrap();
+    let events_before = session.economy().events().len();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let events = &session.economy().events()[events_before..];
+    let root_visit = events.iter().position(|event| matches!(event,
+        Level2EconomyEvent::ManaSphereCollected { sphere_id, carrier_id, mana: 300 }
+            if *sphere_id == sphere && *carrier_id == u32::from(root)))
+        .expect("the actual earlier root must hide and credit the sphere");
+    let holder_visit = events.iter().position(|event| matches!(event,
+        Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, sphere_id, mana: 300 }
+            if *defender_slot == holder && *sphere_id == sphere))
+        .expect("60AB0 must still read the current hidden class10 target");
+    assert!(root_visit < holder_visit);
+    assert_eq!(session.economy().castle_at(root).unwrap().mana, 300);
+    assert_eq!(session.economy().castle_children().iter().find(|row| row.source_entity_index == holder).unwrap().mana, 300);
+    let handle = session.source_arena().handle(sphere as u16).unwrap();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_ne!(session.source_arena().handle(handle.source_slot), Some(handle),
+        "following source boundary reclaims the hidden sphere generation");
+}
+
+#[test]
 fn level_two_castle_defender_sphere_target_consumes_through_outer_dispatch() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
@@ -1639,6 +1743,12 @@ fn level_two_castle_defender_cave_collision_matches_source_control_tail() {
         y: holder_position.y.to_be_bytes()[0],
     };
     let terrain_index = terrain_index(tile.x, tile.y);
+    // A non-owned class-10 target takes 60AB0's no-movement branch but still
+    // enters the cave tail. A zero target skips that entire branch in source.
+    let target_slot = session.economy_mut()
+        .spawn_mana_sphere_from_death(77, holder_position, 0, 0x1234, 1, 0)
+        .and_then(|slot| u16::try_from(slot).ok())
+        .expect("controlled non-owner sphere target");
 
     // Angle bit 8 blocks the holder. The source toggles bit 0, selects
     // speed 48, emits sound 22 on the uncooldown transition, and applies
@@ -1657,7 +1767,7 @@ fn level_two_castle_defender_cave_collision_matches_source_control_tail() {
             .iter_mut()
             .find(|child| child.source_entity_index == defender_slot)
             .expect("Cave defender holder");
-        child.target_sphere_slot = 0;
+        child.target_sphere_slot = target_slot;
         child.position = Position {
             z: ground.saturating_add(520),
             ..holder_position
@@ -1927,6 +2037,16 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
             .expect("unlink stale typed sphere");
         stale_slot
     };
+    // Controlled stale projection of the retired generation. The scheduled
+    // Castle overflow constructor must own the reused address completely;
+    // this packet is not a produced gameplay sphere or earned-mana proof.
+    {
+        let raw = &mut rebuild.session.state.live.economy.entities[usize::from(stale_slot)];
+        raw.active = true;
+        raw.class = 10;
+        raw.model = 39;
+        raw.next_relation = Some(rebuild_castle_slot);
+    }
     {
         let mut economy = rebuild.economy_mut();
         economy.free_slots.clear();
@@ -1945,6 +2065,10 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
         )
     }));
     assert_ne!(stale_slot, rebuild_castle_slot);
+    let reused_raw = &rebuild.session.state.live.economy.entities[usize::from(stale_slot)];
+    assert!(!reused_raw.active);
+    assert_eq!(reused_raw.class, 0, "NewEvent retires the prior raw generation");
+    assert_eq!(reused_raw.next_relation, None, "NewEvent resets the old intrusive successor");
     assert!(
         rebuild
             .economy()
@@ -2761,6 +2885,18 @@ fn level_two_castle_flyer_later_site_gate_bounces_and_retries_root() {
         .expect("live flyer before pure gate failure");
     assert!(before_failed_retry.position.z > session.canonical_terrain().ground_height(initial));
     assert_eq!(before_failed_retry.life, before_failed_retry.max_life);
+    let mut expected_flight = crate::spells::castle::CastleFlight {
+        position: before_failed_retry.position,
+        yaw: before_failed_retry.yaw,
+        pitch: before_failed_retry.pitch,
+        speed: before_failed_retry.actual_speed,
+        minimum_speed: before_failed_retry.minimum_speed,
+    };
+    expected_flight.advance(before_failed_retry.axis_position);
+    let mut expected_bounce = expected_flight.position;
+    crate::move_entity(&mut expected_bounce,
+        expected_flight.yaw.wrapping_add(0x400) & 0x07ff,
+        expected_flight.pitch, expected_flight.speed);
     assert!(
         session
             .economy_mut()
@@ -2774,8 +2910,11 @@ fn level_two_castle_flyer_later_site_gate_bounces_and_retries_root() {
         .copied()
         .expect("allocation failure leaves bounced flyer live");
     assert!(bounced.active);
-    assert_ne!(bounced.position, before_failed_retry.position);
-    assert_eq!(bounced.yaw, 1_536);
+    assert_eq!(bounced.position, expected_bounce,
+        "66D00 applies a second MoveEntity using only the local reverse yaw");
+    assert_eq!(bounced.yaw, expected_flight.yaw,
+        "the bounce does not overwrite the post-steer source heading");
+    assert_eq!(bounced.pitch, expected_flight.pitch);
     assert_eq!(bounced.life, bounced.max_life - 1);
     assert!(session.economy().castle().is_none());
 
@@ -2801,16 +2940,249 @@ fn level_two_castle_flyer_later_site_gate_bounces_and_retries_root() {
 }
 
 #[test]
+fn level_two_castle_new_flyer_preserves_changed_owner_relation_until_child() {
+    let mut session = level_two_possession_lifecycle_session();
+    session.select_level2_campaign_entry_stage();
+    session.step_outer_turn(PlayerCommand {
+        opcode: 6, argument_1: 2, flags: 0x40, ..PlayerCommand::default()
+    }, 0);
+    let flyer = session.economy().castle_projectiles().iter()
+        .find(|row| row.active && row.source_word_96 == 0)
+        .copied().expect("ordinary public cast launches a new-Castle flyer");
+    let owner = flyer.owner_entity_index;
+    // Controlled interleaving: another already-owned root appears while the
+    // original new-Castle flyer is in flight. It is deliberately far from
+    // the flyer so that 11CB0's placement admission is not the variable.
+    let old_position = Position {
+        x: flyer.position.x.wrapping_add(0x4000),
+        y: flyer.position.y.wrapping_add(0x4000),
+        z: flyer.position.z,
+    };
+    let old_root = session.economy_mut().build_castle(old_position, owner)
+        .expect("controlled existing owner Castle");
+    assert_eq!(session.economy().player_castle_entity_index(), old_root);
+    let free = session.economy().free_slots.clone();
+    assert!(free.len() >= 2);
+    let _ = session.economy_mut().exhaust_new_event_capacity_for_test();
+    session.economy_mut().free_slots = vec![free[free.len() - 1]];
+    for _ in 0..64 {
+        if !session.economy_mut().step_castle_projectile_slot(flyer.source_entity_index, &[]) {
+            break;
+        }
+    }
+    let seed = session.economy().live_castles()
+        .find(|root| root.owner_entity_index == owner && root.source_entity_index != old_root)
+        .copied().expect("66D00 allocates the source seed even after owner relation changes");
+    assert_eq!((seed.level, seed.action, seed.build_state), (0, 5, 0));
+    assert_eq!(session.economy().player_castle_entity_index(), old_root,
+        "the constructor alone must not erase the earlier owner relation");
+    assert!(!session.economy_mut().step_castle_action(seed.source_entity_index),
+        "the source seed retries when model42 cannot be allocated");
+    assert_eq!(session.economy().player_castle_entity_index(), old_root);
+    session.economy_mut().free_slots.push(free[free.len() - 2]);
+    assert!(session.economy_mut().step_castle_action(seed.source_entity_index));
+    assert_eq!(session.economy().player_castle_entity_index(), seed.source_entity_index,
+        "60480 publishes the new owner relation only after model42 succeeds");
+    assert!(session.economy().castle_at(old_root).is_some());
+    assert!(session.economy().castle_at(seed.source_entity_index).is_some());
+}
+
+#[test]
+fn level_two_castle_flyer_tracks_current_diagonal_target_with_source_steps() {
+    let package = level_two_fixture_path();
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
+        .expect("qualified Level 2 owner data");
+    let shape = crate::spells::castle::particle_shape(
+        inspection.presentation().particles.get(18).expect("owner particle 18"));
+    let mut session = inspection.level2_reset_session().unwrap();
+    let owner = session.state.entity_index;
+    let initial = Position { x: 0x4000, y: 0x4000, z: 12_000 };
+    let root = session.economy_mut().build_castle(initial, owner).unwrap();
+    let flyer = session.economy_mut().spawn_castle_projectile(initial, owner, 0, 0, 0, 0).unwrap();
+    assert!(session.economy_mut().set_castle_projectile_shape(flyer, shape));
+    let target_shape = crate::combat::area::Shape {
+        half_width: 1, half_depth: 1, vertical_offset: 0, half_height: 1,
+    };
+    for target in [
+        Position { x: 0x5000, y: 0x5000, z: 13_000 },
+        Position { x: 0x3000, y: 0x5000, z: 11_000 },
+    ] {
+        let before = *session.economy().castle_projectiles().iter()
+            .find(|row| row.source_entity_index == flyer).unwrap();
+        assert_eq!(before.source_word_96, root);
+        let (desired_yaw, desired_pitch) =
+            crate::level1_mission::projectile_guidance_angles(before.position, target);
+        let yaw = before.yaw.wrapping_add(crate::turn_toward(before.yaw, desired_yaw, 22)) & 0x07ff;
+        let pitch = before.pitch.wrapping_add(crate::turn_toward(before.pitch, desired_pitch, 22)) & 0x07ff;
+        let speed = before.actual_speed.wrapping_add(2 * before.minimum_speed.cmp(&before.actual_speed) as i16);
+        let mut expected = before.position;
+        crate::move_entity(&mut expected, yaw, pitch, speed);
+        let visit = {
+            let live = &mut session.session.state.live;
+            live.economy.economy.step_castle_projectile_slot_with_target(
+                flyer, &live.economy.entities, &live.terrain, Some((target, target_shape)),
+            )
+        };
+        assert!(visit.live && visit.clear_holder_owner.is_none());
+        let after = session.economy().castle_projectiles().iter()
+            .find(|row| row.source_entity_index == flyer).unwrap();
+        assert_eq!((after.position, after.yaw, after.pitch, after.actual_speed), (expected, yaw, pitch, speed));
+        assert_eq!((after.source_roll, after.source_fov), (desired_yaw, desired_pitch));
+        assert_eq!(after.collision_shape, shape);
+        assert_ne!(after.position, target, "flight does not snap to a current target");
+    }
+}
+
+#[test]
+fn level_two_castle_upgrade_product_current_record_and_visit_gates() {
+    let mut base = level_two_possession_lifecycle_session();
+    let owner = base.state.entity_index;
+    let position = Position { x: 0, y: 0, z: -1 };
+    let sentinel_position = Position { z: 0, ..position };
+    let slot = base.economy_mut().allocate_castle_upgrade_product(position, owner)
+        .expect("controlled source model43 product");
+    let target_shape = crate::combat::area::Shape {
+        vertical_offset: 0, half_width: 0, half_depth: 0, half_height: 0,
+    };
+    for (life, initialized, hidden, target, hit, clear) in [
+        (8, false, false, sentinel_position, true, false),
+        (8, false, false, Position { x: 8192, ..sentinel_position }, false, true),
+        (-1, false, false, sentinel_position, false, false),
+        (8, true, false, sentinel_position, false, false),
+        (8, false, true, sentinel_position, true, false),
+    ] {
+        let mut session = base.clone();
+        {
+            let mut economy = session.economy_mut();
+            let child = economy.castle_children.iter_mut()
+                .find(|child| child.source_entity_index == slot).unwrap();
+            child.life = life;
+            if initialized { child.control_flags |= 2; }
+            if hidden { child.control_flags |= ENTITY_DRAW_DISABLED_BIT; }
+        }
+        let prior = *session.economy().castle_children().iter()
+            .find(|child| child.source_entity_index == slot).unwrap();
+        let visit = session.economy_mut().step_castle_upgrade_product_with_target(
+            slot, Some((target, target_shape)),
+        );
+        assert!(visit.live);
+        assert_eq!(visit.hit_owner, hit.then_some(owner));
+        assert_eq!(visit.clear_holder_owner, clear.then_some(owner));
+        let after = session.economy().castle_children().iter()
+            .find(|child| child.source_entity_index == slot).unwrap();
+        assert_eq!(after.life, life - 1);
+        assert_eq!(after.source_dword_10, prior.source_dword_10 + 1);
+        assert_eq!(after.source_byte_3e, prior.source_byte_3e.wrapping_add(1));
+        assert_ne!(after.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!(after.control_flags & 2 != 0, initialized || life >= 0);
+    }
+    let mut rebound = base.clone();
+    let particle = ParticleParameter {
+        base_tmap: 0, word_2: 0, word_4: 0, speed: 0, rotation_speed: 2048,
+        byte_10: 0, byte_11: 0, render_mode: 0, byte_13: 0,
+    };
+    assert!(rebound.economy_mut().bind_castle_upgrade_particle(slot, &particle));
+    let child = rebound.economy().castle_children().iter()
+        .find(|child| child.source_entity_index == slot).unwrap();
+    assert_eq!((child.visual_index, child.yaw, child.roll), (41, 1024, 512));
+    let visit = rebound.economy_mut().step_castle_upgrade_product_with_target(
+        slot, Some((sentinel_position, target_shape)),
+    );
+    assert_eq!((visit.hit_owner, visit.clear_holder_owner), (None, Some(owner)),
+        "particle41 vertical offset reaches the actual contact test");
+}
+
+#[test]
+fn level_two_castle_flyer_cave_site_flags_and_initial_life() {
+    let mut base = level_two_possession_lifecycle_session();
+    {
+        let terrain = base.canonical_terrain_mut();
+        terrain.planes.angles.fill(8);
+        terrain.planes.ground_heights.fill(0);
+        terrain.planes.secondary_heights.fill(255);
+        terrain.map_type = MapType::Day;
+    }
+    let site = Position { x: 8192, y: 8192, z: 4000 };
+    let flyer = base.economy_mut().spawn_castle_projectile(site, 111, 0, 0, 0, 0)
+        .expect("controlled new-Castle flyer");
+    base.economy_mut().castle_projectiles.iter_mut()
+        .find(|row| row.source_entity_index == flyer).unwrap().life = 7;
+
+    let mut cave = base.clone();
+    cave.canonical_terrain_mut().map_type = MapType::Cave;
+    assert!(!cave.economy_mut().step_castle_projectile_slot(flyer, &[]),
+        "bit8 rejects the initial cave placement");
+    let rejected = cave.economy().castle_projectiles().iter()
+        .find(|row| row.source_entity_index == flyer).unwrap();
+    assert!(rejected.site_rejected && rejected.drawing_disabled);
+    assert_ne!(rejected.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT, 0,
+        "66D00 sets the initialized bit before rejecting the site");
+    assert_eq!(rejected.life, 7, "the initial visit does not reset life");
+
+    assert!(base.economy_mut().step_castle_projectile_slot(flyer, &[]),
+        "bit8 alone permits the same site on Day terrain");
+    assert_eq!(base.economy().castle_projectiles().iter()
+        .find(|row| row.source_entity_index == flyer).unwrap().life, 7);
+    base.canonical_terrain_mut().map_type = MapType::Cave;
+    base.economy_mut().free_slots.clear();
+    assert!(base.economy_mut().step_castle_projectile_slot(flyer, &[]),
+        "later cave gate attempts allocation and retains the flyer when full");
+    let bounced = base.economy().castle_projectiles().iter()
+        .find(|row| row.source_entity_index == flyer).unwrap();
+    assert_eq!(bounced.life, 6);
+    assert!(bounced.active && !bounced.site_rejected);
+    assert!(base.economy().castle().is_none());
+
+    let terrain = base.canonical_terrain_mut();
+    terrain.map_type = MapType::Day;
+    terrain.planes.angles.fill(0x80);
+    let live = &base.session.state.live;
+    assert!(live.economy.economy.castle_projectile_site_blocked_with_rows(
+        site, &live.economy.entities, &live.terrain, Some(&CastleSiteRows::default()),
+    ), "a negative flag still rejects Day placement");
+}
+
+#[test]
+fn level_two_castle_site_gate_uses_current_rows_from_frozen_heads() {
+    let mut session = level_two_possession_lifecycle_session();
+    let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+        x: x * 2048, y: y * 2048, z: 0,
+    })).find(|position| {
+        let live = &session.session.state.live;
+        !live.economy.economy.castle_projectile_site_blocked_with_rows(
+            *position, &live.economy.entities, &live.terrain, Some(&CastleSiteRows::default()),
+        )
+    }).expect("source terrain has an admissible site");
+    let owner = session.state.entity_index;
+    session.economy_mut().build_castle(site, owner).expect("controlled same-pass birth");
+    let blocked = |rows: &CastleSiteRows| {
+        let live = &session.session.state.live;
+        live.economy.economy.castle_projectile_site_blocked_with_rows(
+            site, &live.economy.entities, &live.terrain, Some(rows),
+        )
+    };
+    assert!(!blocked(&CastleSiteRows::default()), "a birth outside the frozen heads is not scanned");
+    let row = CastleSiteRow { model: 1, position: site, pitch: 0, roll: 0 };
+    assert!(!blocked(&CastleSiteRows { class3: vec![row], model45: vec![] }));
+    assert!(blocked(&CastleSiteRows { class3: vec![CastleSiteRow { model: 2, ..row }], model45: vec![] }),
+        "class3 head checks the current record's model only");
+    assert!(blocked(&CastleSiteRows { class3: vec![], model45: vec![row] }),
+        "model45 head checks current geometry even if its record model changed");
+    let edge = CastleSiteRow { model: 2, position: Position { x: site.x.wrapping_add(2560), ..site }, ..row };
+    assert!(blocked(&CastleSiteRows { class3: vec![edge], model45: vec![] }));
+    let outside = CastleSiteRow { position: Position { x: site.x.wrapping_add(2561), ..site }, ..edge };
+    assert!(!blocked(&CastleSiteRows { class3: vec![outside], model45: vec![] }));
+}
+
+#[test]
 fn level_two_castle_site_gate_scans_live_castles_and_model45_rows() {
     let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");
     let inspection = NativeWorld::inspect_level2_with_owner_cache(&package, &gameplay_cache)
         .expect("qualified Level 2 gameplay component");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 site-gate session");
-    session.select_level2_campaign_entry_stage();
     let request = PlayerCommand {
         opcode: 6,
         argument_1: 2,
@@ -2818,23 +3190,48 @@ fn level_two_castle_site_gate_scans_live_castles_and_model45_rows() {
         ..PlayerCommand::default()
     };
     for (class, model) in [(3_u8, 2_u8), (10_u8, 45_u8)] {
-        session.reset();
+        let mut session = inspection.level2_reset_session().expect("Level 2 site-gate session");
         session.select_level2_campaign_entry_stage();
-        let blocker_index = session
-            .economy
-            .entities
-            .iter()
-            .position(|entity| !entity.active && entity.index != 0)
-            .expect("free source row for site-gate blocker");
         let player_position = session.state.position;
-        let blocker = &mut session.economy.entities[blocker_index];
-        blocker.active = true;
-        blocker.life = if class == 10 && model == 45 { -1 } else { 8 };
-        blocker.class = class;
-        blocker.model = model;
-        blocker.record[88..90].copy_from_slice(&0_i16.to_le_bytes());
-        blocker.record[90..92].copy_from_slice(&0_i16.to_le_bytes());
-        blocker.set_position(player_position);
+        // Controlled geometry uses actual owner carriers. A fabricated raw
+        // row can alias an existing actor sidecar and abort before the cast.
+        let blocker_slot = if class == 3 {
+            let live = &session.session.state.live;
+            let existing = live.economy.economy.live_castles()
+                .find(|root| root.owner_entity_index != session.state.entity_index)
+                .map(|root| root.source_entity_index);
+            let other = live.core.players.iter()
+                .find(|player| player.entity_index != session.state.entity_index)
+                .map(|player| player.entity_index).expect("other source owner");
+            if let Some(slot) = existing {
+                session.economy_mut().castle_at_mut(slot).unwrap().position = player_position;
+                slot
+            } else {
+                session.economy_mut().build_castle(player_position, other)
+                    .expect("controlled real Castle blocker")
+            }
+        } else {
+            let live = &mut session.session.state.live;
+            let slot = live.ordinary.houses.houses().iter()
+                .find(|house| house.source_retained())
+                .map(|house| house.entity_index).expect("actual owner House blocker");
+            let house = live.ordinary.houses.house_mut(slot).unwrap();
+            house.position = player_position;
+            house.life = -1;
+            let house = *house;
+            house.publish_source(&mut live.economy.entities[usize::from(slot)]);
+            slot
+        };
+        let blocker_index = usize::from(blocker_slot);
+        let (class3_head, model45_head) = {
+            let mut probe = session.clone();
+            let arena = &mut probe.session.state.live.economy;
+            let lists = crate::native_world::area_damage::capture_effect_lists(arena, None);
+            (lists.class3_slots(arena).to_vec(), lists.model45_slots(arena).to_vec())
+        };
+        let head = if class == 3 { &class3_head } else { &model45_head };
+        assert!(head.contains(&blocker_slot),
+            "controlled blocker must be in frozen source head: class={class} model={model} slot={blocker_slot}, class3={class3_head:?}, model45={model45_head:?}");
 
         // The source cursor visits the newly allocated flyer after the
         // holder in this same request pass. Install the live blocker
@@ -2849,7 +3246,11 @@ fn level_two_castle_site_gate_scans_live_castles_and_model45_rows() {
             .iter()
             .find(|projectile| projectile.site_rejected && !projectile.active)
             .copied()
-            .expect("same-pass site gate hides the blocked Castle flyer");
+            .unwrap_or_else(|| panic!(
+                "same-pass site gate hides the blocked Castle flyer: class={class} model={model} slot={blocker_slot}, blocker={:?}, player={:?}, flyers={:?}, dispatch={:?}",
+                session.economy.entities[blocker_index], session.state.position,
+                session.economy().castle_projectiles(), session.dispatch_events(),
+            ));
         assert_eq!((flyer.source_class, flyer.source_model), (9, 10));
         let flyer_generation = session.economy().slot_generation(flyer.source_entity_index);
         assert!(flyer.drawing_disabled);
@@ -2883,22 +3284,24 @@ fn level_two_castle_site_gate_scans_live_castles_and_model45_rows() {
                 .iter()
                 .any(|projectile| projectile.source_entity_index == flyer.source_entity_index)
         );
-        assert!(
-            session
-                .economy()
-                .free_slots
-                .contains(&flyer.source_entity_index)
-        );
-        assert!(
-            !session
-                .economy()
-                .map_chains()
-                .is_linked(flyer.source_entity_index)
-        );
-        assert_eq!(
-            session.economy().slot_generation(flyer.source_entity_index),
-            flyer_generation
-        );
+        let slot = flyer.source_entity_index;
+        let generation = session.economy().slot_generation(slot);
+        let free = session.economy().free_slots.contains(&slot);
+        let linked = session.economy().map_chains().is_linked(slot);
+        let current = session.economy().live_arena_cursor_rows().into_iter()
+            .find(|row| row.source_slot == slot);
+        if free {
+            assert!(!linked, "a free reclaimed flyer slot cannot stay mapped");
+            assert_eq!(generation, flyer_generation);
+        } else {
+            // A later NewEvent in this pass may consume the reclaimed
+            // address. Require its actual new generation and live mapping.
+            assert_ne!(generation, flyer_generation,
+                "a reserved slot must not retain the old flyer generation: current={current:?}");
+            assert!(current.is_some() || session.economy.entities[usize::from(slot)].active,
+                "a reused slot must have an actual current occupant");
+            assert!(linked, "the current reused occupant must have its map membership");
+        }
     }
 }
 

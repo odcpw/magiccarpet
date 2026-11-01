@@ -13,6 +13,169 @@ use crate::villager::VillagerFamily;
 
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
 
+pub(crate) fn bind_castle_upgrade_record(
+    arena: &mut SourceArena,
+    slot: u16,
+    particle: &ParticleParameter,
+) -> Result<(), String> {
+    let limit = super::campaign_shared_families::particle_animation_limit(particle.render_mode)
+        .ok_or_else(|| format!("Castle particle41 render mode {} has no source animation limit", particle.render_mode))?;
+    let raw = &mut arena.entities[usize::from(slot)];
+    raw.record[94..96].copy_from_slice(&41_u16.to_le_bytes());
+    raw.record[96] = 0;
+    raw.record[97] = limit;
+    Ok(())
+}
+
+pub(crate) fn advance_castle_upgrade_frame(arena: &mut SourceArena, slot: u16) {
+    let raw = &mut arena.entities[usize::from(slot)];
+    if raw.record[96].cast_signed() < raw.record[97].cast_signed() {
+        raw.record[96] = raw.record[96].wrapping_add(1);
+    }
+}
+
+/// 389F0 includes Entities[0] in its direct Castle pointer dereference.
+pub(crate) fn castle_upgrade_target(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<(Position, Shape)>, String> {
+    let view = if slot == 0 {
+        arena.entities.first().map(View::raw)
+    } else { read(arena, context, slot)? };
+    view.map(|view| {
+        view.collision.map(|shape| (view.position, shape))
+            .ok_or_else(|| format!("Castle upgrade target {slot} lacks current source axes"))
+    }).transpose()
+}
+
+pub(crate) fn collector_target(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<super::level2_dynamic_economy::Level2CastleCollectorTarget>, String> {
+    let Some(view) = read(arena, context, slot)? else { return Ok(None) };
+    let raw = &arena.entities[usize::from(slot)];
+    let kind = arena.economy.live_arena_kind(slot);
+    let mut mana = if kind.is_none() { raw.mana } else { 0 };
+    let mut relation = if kind.is_none() { raw.source_player_entity_index() } else { 0 };
+    let mut stage = if kind.is_none() { raw.source_dword_10() } else { 0 };
+    let mut shape = view.collision;
+    if let Some(row) = arena.economy.spheres.iter()
+        .find(|row| kind == Some(Kind::ManaSphere) && row.active && row.source_entity_index == slot)
+    {
+        mana = row.mana;
+        relation = row.player_entity_index;
+    } else if kind == Some(Kind::CastleRoot) && let Some(row) = arena.economy.castle_at(slot) {
+        mana = row.mana;
+        relation = row.player_entity_index;
+        stage = i32::from(row.level);
+    } else if let Some(row) = arena.economy.castle_children.iter()
+        .find(|row| row.active && row.source_entity_index == slot
+            && matches!(kind, Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender | Kind::CastleAuxiliary)))
+    {
+        mana = row.mana;
+        relation = row.player_entity_index;
+        shape = shape.or_else(|| context.particle_shape(row.visual_index));
+    } else if let Some(row) = arena.economy.carriers.iter()
+        .find(|row| kind == Some(Kind::ManaCarrier) && row.active && row.source_entity_index == slot)
+    {
+        mana = row.carried_mana;
+        relation = row.owner_entity_index;
+    }
+    // Zero-relation class10 and nonclass10 branches never test these axes.
+    let shape = if view.class == 10 && relation != 0 {
+        shape.ok_or_else(|| format!("Castle collector target {slot} lacks current collision axes"))?
+    } else { shape.unwrap_or(Shape { half_width: 0, half_depth: 0, vertical_offset: 0, half_height: 0 }) };
+    Ok(Some(super::level2_dynamic_economy::Level2CastleCollectorTarget {
+        source_slot: slot, source_class: view.class, source_model: view.model, position: view.position,
+        player_entity_index: relation, mana, source_dword_10: stage,
+        collision_yaw: shape.vertical_offset, collision_pitch: shape.half_width,
+        collision_roll: shape.half_depth, collision_fov: shape.half_height,
+    }))
+}
+
+/// A callback-local pointer view plus the raw record domain. Economy-owned
+/// mutations go to their current carrier; retained free rows stay physical.
+pub(crate) struct CastleCollectorConsumer<'a> {
+    pub(crate) target: Option<super::level2_dynamic_economy::Level2CastleCollectorTarget>,
+    pub(crate) entities: &'a mut [EntitySnapshot],
+    pub(crate) shared: &'a mut super::Level2SharedSpellResetSession,
+}
+
+pub(crate) fn publish_collector_player_resources(
+    arena: &SourceArena,
+    shared: &mut super::Level2SharedSpellResetSession,
+    rivals: &mut super::level2_nyphur::RivalWizardRoster,
+    slot: u16,
+) {
+    if arena.economy.live_arena_kind(slot).is_some() { return; }
+    let Some(row) = arena.entities.get(usize::from(slot))
+        .filter(|row| row.active && row.class == 3 && matches!(row.model, 0 | 1))
+    else { return };
+    if let Some(handle) = arena.handle(slot) && let Some(rival) = rivals.get_mut(handle) {
+        rival.sync_spell_target_resources(row);
+    }
+    shared.sync_player_entity_from_authority(row);
+}
+
+impl super::level2_dynamic_economy::Level2CastleCollectorConsumer for CastleCollectorConsumer<'_> {
+    fn record_damage(&mut self) {
+        self.shared.record_castle_collector_damage();
+    }
+    fn read(&self, _economy: &super::Level2EconomyState, slot: u16)
+        -> Option<super::level2_dynamic_economy::Level2CastleCollectorTarget>
+    {
+        self.target.filter(|row| row.source_slot == slot)
+    }
+
+    fn set_attraction(&mut self, economy: &mut super::Level2EconomyState, slot: u16, in_range: bool, holder: u16) {
+        let kind = economy.live_arena_kind(slot);
+        if kind == Some(Kind::ManaSphere) && let Some(row) = economy.spheres.iter_mut().find(|row| row.active && row.source_entity_index == slot) {
+            if in_range { row.control_flags |= 0x40; row.assigned_defender_slot = holder; }
+            else { row.control_flags &= !0x40; }
+        } else if kind == Some(Kind::CastleRoot) && let Some(row) = economy.castle_at_mut(slot) {
+            if in_range { row.control_flags |= 0x40; } else { row.control_flags &= !0x40; }
+        } else if matches!(kind, Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender | Kind::CastleAuxiliary))
+            && let Some(row) = economy.castle_children.iter_mut().find(|row| row.active && row.source_entity_index == slot) {
+            if in_range { row.control_flags |= 0x40; row.target_sphere_slot = holder; }
+            else { row.control_flags &= !0x40; }
+        }
+        if let Some(raw) = self.entities.get_mut(usize::from(slot)) {
+            raw.set_control_flags(if in_range { raw.control_flags | 0x40 } else { raw.control_flags & !0x40 });
+            if in_range { raw.set_source_word_96(holder); }
+        }
+    }
+
+    fn add_mana(&mut self, economy: &mut super::Level2EconomyState, slot: u16, delta: i32) {
+        let kind = economy.live_arena_kind(slot);
+        if kind == Some(Kind::CastleRoot) && let Some(row) = economy.castle_at_mut(slot) { row.mana = row.mana.wrapping_add(delta); }
+        else if matches!(kind, Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender | Kind::CastleAuxiliary))
+            && let Some(row) = economy.castle_children.iter_mut().find(|row| row.active && row.source_entity_index == slot) {
+            row.mana = row.mana.wrapping_add(delta);
+        } else if kind == Some(Kind::ManaCarrier) && let Some(row) = economy.carriers.iter_mut().find(|row| row.active && row.source_entity_index == slot) {
+            row.carried_mana = row.carried_mana.wrapping_add(delta);
+        }
+        if let Some(raw) = self.entities.get_mut(usize::from(slot)) {
+            let previous = self.target.filter(|row| row.source_slot == slot).map_or(raw.mana, |row| row.mana);
+            raw.set_mana(previous.wrapping_add(delta));
+        }
+    }
+
+    fn hide(&mut self, economy: &mut super::Level2EconomyState, slot: u16) {
+        let kind = economy.live_arena_kind(slot);
+        if kind == Some(Kind::ManaSphere) && let Some(row) = economy.spheres.iter_mut().find(|row| row.active && row.source_entity_index == slot) {
+            row.pending_delete = true;
+            row.control_flags |= 0x400;
+        } else if kind == Some(Kind::CastleRoot) && let Some(row) = economy.castle_at_mut(slot) { row.control_flags |= 0x400; }
+        else if matches!(kind, Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender | Kind::CastleAuxiliary))
+            && let Some(row) = economy.castle_children.iter_mut().find(|row| row.active && row.source_entity_index == slot) {
+            row.control_flags |= 0x400;
+        }
+        if let Some(raw) = self.entities.get_mut(usize::from(slot)) { raw.disable_drawing(); }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Context<'a> {
     pub(crate) goats: Option<&'a GoatFamily>,
@@ -505,6 +668,17 @@ fn dynamic(
                 .iter()
                 .find(|row| row.active && row.source_entity_index == slot)
                 .ok_or_else(|| format!("target slot {slot} lost its Castle child"))?;
+            if row.model == 43 && row.action == 45 {
+                view.yaw = Some(0);
+                view.roll = Some(0);
+                view.collision = Some(Shape {
+                    vertical_offset: row.yaw.cast_signed(),
+                    half_width: row.roll.cast_signed(),
+                    half_depth: row.roll.cast_signed(),
+                    half_height: row.roll.cast_signed(),
+                });
+                return Ok(view);
+            }
             view.yaw = Some(row.yaw as i16);
             view.roll = Some(row.roll as i16);
             view.relations.target = Some(row.target_sphere_slot);
@@ -868,13 +1042,13 @@ fn castle_projectile(row: &super::Level2CastleProjectile) -> View {
         life: row.life,
         control_flags: row.control_flags | if row.drawing_disabled { 0x400 } else { 0 },
         yaw: Some(row.yaw),
-        roll: None,
+        roll: Some(row.source_roll),
         relations: Relations {
             target: Some(row.source_word_96),
             attacker: Some(row.holder_entity_index),
             ..Relations::default()
         },
-        collision: None,
+        collision: Some(row.collision_shape),
     }
 }
 

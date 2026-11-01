@@ -2575,7 +2575,15 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
     // `sub_5F660`/`sub_68DE0` still arm the holder and charge through the
     // source mana-regeneration side effect; only the absent flyer is
     // rolled back by the failed NewEvent allocation.
-    assert_ne!(holder_after.active_value, 0);
+    assert_eq!(
+        holder_after.active_value,
+        holder_after.activation_value as i16,
+        "failed flyer allocation retains the fresh source countdown for retry"
+    );
+    let caster_after_failure = allocation_failed.shared_spells().player_entity();
+    assert!(caster_after_failure.mana <= 0 || caster_after_failure.mana_regen <= -holder_after.max_mana,
+        "the source charges before the failed allocation: mana={}, regen={}, price={}",
+        caster_after_failure.mana, caster_after_failure.mana_regen, holder_after.max_mana);
     assert_eq!(
         u16::from_le_bytes([holder_after.record[40], holder_after.record[41]]),
         word24_before,
@@ -2751,6 +2759,363 @@ fn level_two_castle_public_route_rejects_invalid_input_and_allocation_failures()
 }
 
 #[test]
+fn level_two_castle_collector_cave_sound_and_damage_reach_source_consumers() {
+    // Controlled Cave-route regression on the qualified Day package. The
+    // collector is made by the real Castle constructor; terrain, travel,
+    // target relation and damage mailbox are declared branch prerequisites.
+    // This is scheduled consumer evidence, not a Cave mission playthrough.
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let player = session.state.entity_index;
+    let position = session.state.position;
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    let root = session.economy_mut().build_castle(position, player).unwrap();
+    {
+        let mut economy = session.economy_mut();
+        let castle = economy.castle_at_mut(root).unwrap();
+        castle.level = 1;
+        castle.action = 4;
+        castle.build_state = 0;
+        castle.phase = 1; // Keep this pass's explicitly selected target.
+        economy.maintain_castle_defenders(root);
+    }
+    let collector = session.economy().castle_at(root).unwrap().defender_slots[0];
+    let source_position = Position {
+        z: session.canonical_terrain().ground_height(position).wrapping_add(520),
+        ..position
+    };
+    let target = session.economy_mut()
+        .spawn_mana_sphere_from_death(905, source_position, 0, 123, 300, 0)
+        .unwrap() as u16;
+    {
+        let terrain = session.canonical_terrain_mut();
+        terrain.map_type = MapType::Cave;
+        terrain.planes.angles.fill(8);
+        terrain.planes.secondary_heights.fill(255);
+    }
+    {
+        let mut economy = session.economy_mut();
+        let child = economy.castle_children.iter_mut()
+            .find(|row| row.source_entity_index == collector).unwrap();
+        child.position = source_position;
+        // A neutral target takes the source's relation-mismatch branch:
+        // no horizontal movement, but the common Cave settle tail still runs.
+        child.target_sphere_slot = target;
+        child.control_flags = 0;
+        child.cave_collision_cooldown = 0;
+        child.pending_attacker_entity_index = player;
+        child.pending_damage = 1;
+    }
+    let listener = session.state.position;
+    let cursor = session.effect_journal().records().len();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.dispatch_events().iter().all(|event|
+        !matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+    assert_eq!(session.state.position, listener, "the controlled listener stays still");
+    let sounds = session.effect_journal().records()[cursor..].iter().filter(|record|
+        matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::CastleCollectorCave,
+                entity_index, sound_id: 22, ..
+            }) if entity_index == collector)).collect::<Vec<_>>();
+    assert_eq!(sounds.len(), 1, "the source transition reaches client audio exactly once");
+    let audio = sounds[0].audio.expect("collector sound is prepared for the actual client");
+    assert_eq!(audio.play_type, 1);
+    assert_eq!(audio.command.rate_delta_percent, 0);
+    assert_eq!(audio.command.relative_z,
+        i32::from(source_position.z) - i32::from(listener.z),
+        "60D50 prepares sound before settling and copying the actor's position");
+    let child = session.economy().castle_children().iter()
+        .find(|row| row.source_entity_index == collector).unwrap();
+    assert_ne!(child.position.z, source_position.z, "the scheduled settle actually ran");
+    assert_eq!(child.pending_attacker_entity_index, 0, "60EA0 consumes nonlethal ownership");
+    assert_eq!(session.shared_spells().global_special_state().damage_flash_ticks, 4,
+        "the nonplayer A4 feedback reaches its actual global owner");
+    let cursor = session.effect_journal().records().len();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(!session.effect_journal().records()[cursor..].iter().any(|record|
+        matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                entity_index, sound_id: 22, ..
+            }) if entity_index == collector)), "the existing cooldown prevents repeat playback");
+}
+
+#[test]
+fn level_two_castle_public_route_consumes_configured_build_footprint() {
+    let spells = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../remc2-native-runtime/CD_Files/DATA/SPELLS.DAT"))
+        .expect("actual owner SPELLS.DAT");
+    assert_eq!(spells.len(), 26 * 80);
+    for tier in 0_u8..3 {
+        let offset = 2 * 80 + 2 + usize::from(tier) * 26;
+        let row = &spells[offset..offset + 26];
+        let profile = crate::spell_activation::level2_set_spell_profile(2, tier).unwrap();
+        assert_eq!(profile.subspell_index, i32::from_le_bytes(row[0..4].try_into().unwrap()) as u16);
+        assert_eq!(profile.max_mana, i32::from_le_bytes(row[4..8].try_into().unwrap()));
+        assert_eq!(profile.mana_regen, i32::from_le_bytes(row[8..12].try_into().unwrap()));
+        assert_eq!(profile.word_0x30, u16::from_le_bytes(row[22..24].try_into().unwrap()));
+        assert_eq!(row[24], tier, "the controller coefficient is this owner row's life byte");
+    }
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let initial = level_two_campaign_session_with_owner_cache(&gameplay_cache);
+    let mut results = Vec::new();
+    for material in [0x10_u8, 0x11] {
+        let mut session = initial.clone();
+        let mut cells = vec![0xff; 8 * 8 * 2];
+        for cell in cells.chunks_exact_mut(2) {
+            cell.copy_from_slice(&[material, 4]);
+        }
+        let footprint = CastleBuildFootprint::from_owner_cells(1, 8, 8, &cells)
+            .expect("controlled valid stage-one BUILD binding");
+        assert!(session.economy_mut().set_castle_stage_footprint(1, footprint));
+        session.select_level2_campaign_entry_stage();
+        let sound_cursor = session.effect_journal().records().len();
+        session.step_outer_turn(PlayerCommand {
+            opcode: 6,
+            argument_1: 2,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        }, 0);
+        assert!(session.economy().castle_projectiles().iter().any(|row| {
+            (row.source_class, row.source_model) == (9, 10)
+        }), "the ordinary hand input must allocate the Castle flyer");
+        let mut saw_construction_child = false;
+        let mut saw_prepared_sound = false;
+        for _ in 0..128 {
+            saw_construction_child |= session.economy().castle_children().iter()
+                .any(|child| child.active && child.model == 42 && child.action == 44);
+            if !saw_prepared_sound && let Some(root) = session.economy().castle() {
+                for record in &session.effect_journal().records()[sound_cursor..] {
+                    if matches!(record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                            entity_index, sound_id: 10, ..
+                        }) if entity_index == root.source_entity_index)
+                    {
+                        let audio = record.audio.expect("Castle construction prepares client audio");
+                        assert_eq!(audio.play_type, 1);
+                        assert_eq!(audio.command.relative_x,
+                            i32::from(root.position.x) - i32::from(session.state.position.x));
+                        assert_eq!(audio.command.relative_y,
+                            i32::from(root.position.y) - i32::from(session.state.position.y));
+                        saw_prepared_sound = true;
+                    }
+                }
+            }
+            if session.economy().castle().is_some_and(|root| {
+                (root.level, root.action, root.build_state) == (1, 4, 0)
+            }) {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        let root = session.economy().castle().expect("public cast creates the real root");
+        assert_eq!((root.level, root.action, root.build_state), (1, 4, 0));
+        assert_eq!(root.source_id_entity_index, session.state.entity_index);
+        assert!(saw_construction_child, "the actual model-42 child consumes BUILD");
+        assert!(saw_prepared_sound, "construction sound reaches the prepared client journal");
+        results.push((root.anchor_position, session.canonical_terrain().planes().terrain_types.clone()));
+    }
+    assert_eq!(results[0].0, results[1].0, "only the BUILD material varies");
+    assert_ne!(results[0].1, results[1].1,
+        "the configured BUILD binding must affect the live construction terrain");
+}
+
+#[test]
+fn level_two_castle_controller_exhaustion_keeps_constructed_prefix() {
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let mut session = level_two_campaign_session_with_owner_cache(&gameplay_cache);
+    session.select_level2_campaign_entry_stage();
+    session.step_outer_turn(PlayerCommand {
+        opcode: 6,
+        argument_1: 2,
+        flags: 0x40,
+        ..PlayerCommand::default()
+    }, 0);
+    for _ in 0..128 {
+        if session.economy().castle().is_some_and(|root| {
+            (root.level, root.action, root.build_state) == (1, 4, 0)
+        }) {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let root = session.economy().castle().expect("public cast creates a root");
+    assert_eq!((root.level, root.action, root.build_state), (1, 4, 0));
+    let root_handle = session.session.state.live.economy.handle(root.source_entity_index).unwrap();
+
+    // Controlled source-visit prerequisites: stage two has a tier-two
+    // controller coefficient and only two allocator slots. The actual
+    // constructor must commit model42 and one of four model79 controllers.
+    let free = session.economy().free_slots.clone();
+    assert!(free.len() >= 2);
+    {
+        let mut economy = session.economy_mut();
+        assert!(economy.set_castle_controller_coefficient_for_owner(root.owner_entity_index, 2, 2));
+        {
+            let staged_root = economy.castle_at_mut(root.source_entity_index).unwrap();
+            staged_root.action = 5;
+            staged_root.build_state = 3;
+            staged_root.source_word_2e = 3;
+        }
+        let _ = economy.exhaust_new_event_capacity_for_test();
+        economy.free_slots = free[free.len() - 2..].to_vec();
+        assert!(economy.step_castle_action(root.source_entity_index));
+    }
+    let staged = session.economy().castle_at(root.source_entity_index).unwrap();
+    assert_eq!((staged.level, staged.build_state, staged.controller_chain_count), (2, 4, 1));
+    let child_slot = staged.construction_slot;
+    let controller_slot = staged.controller_chain_head;
+    assert_eq!(staged.controller_chain_tail, controller_slot);
+    assert_ne!(child_slot, controller_slot);
+    assert!(session.economy().free_slots.is_empty());
+    let child = session.economy().castle_children().iter()
+        .find(|row| row.active && row.source_entity_index == child_slot).unwrap();
+    assert_eq!((child.model, child.action, child.parent_entity_index), (42, 44, root.source_entity_index));
+    let controller = session.economy().castle_children().iter()
+        .find(|row| row.active && row.source_entity_index == controller_slot).unwrap();
+    assert_eq!((controller.model, controller.action, controller.source_byte_43), (79, 0x56, 2));
+    assert_eq!((controller.chain_previous_slot, controller.chain_next_slot), (root.source_entity_index, 0));
+    assert_eq!(session.session.state.live.economy.handle(root.source_entity_index), Some(root_handle));
+    // Restoring capacity cannot silently complete a failed controller prefix:
+    // source 613D0 stops on allocation failure rather than scheduling retry.
+    session.economy_mut().free_slots = free[..free.len() - 2].to_vec();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(session.economy().castle_at(root.source_entity_index).unwrap().controller_chain_count, 1);
+}
+
+#[test]
+fn level_two_castle_upgrade_fixed_target_and_product_failure_controls() {
+    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/level2-day-owner-cache/components/gameplay");
+    let mut session = level_two_campaign_session_with_owner_cache(&gameplay_cache);
+    session.select_level2_campaign_entry_stage();
+    session.step_outer_turn(PlayerCommand {
+        opcode: 6, argument_1: 2, flags: 0x40, ..PlayerCommand::default()
+    }, 0);
+    for _ in 0..128 {
+        if session.economy().castle().is_some_and(|root| {
+            (root.level, root.action, root.build_state) == (1, 4, 0)
+        }) { break; }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let root = session.economy().castle().expect("public cast creates the Castle");
+    assert_eq!((root.level, root.action, root.build_state), (1, 4, 0));
+    let holder = session.shared_spells().local_player.enabled_spell_holders[2];
+    // The following direct flyer and root mutation are controlled failure
+    // prerequisites. Ordinary paid tier production is covered by the public
+    // route below; these controls isolate the later fixed-address callback.
+    let flyer = session.economy_mut().spawn_castle_projectile(
+        root.position, root.owner_entity_index, holder, 0, 0, 0,
+    ).expect("controlled upgrade flyer");
+    let shape = crate::combat::area::Shape {
+        vertical_offset: root.shift_yaw, half_width: root.shift_pitch,
+        half_depth: root.shift_roll, half_height: root.shift_fov,
+    };
+    let mut exhausted = session.clone();
+    let free = exhausted.economy().free_slots.clone();
+    assert!(!free.is_empty());
+    let original_life = exhausted.economy().castle_projectiles().iter()
+        .find(|row| row.source_entity_index == flyer).unwrap().life;
+    let _ = exhausted.economy_mut().exhaust_new_event_capacity_for_test();
+    let visit = {
+        let live = &mut exhausted.session.state.live;
+        live.economy.economy.step_castle_projectile_slot_with_target(
+            flyer, &live.economy.entities, &live.terrain, Some((root.position, shape)),
+        )
+    };
+    assert!(visit.live, "failed NewEvent keeps the actual flyer for retry");
+    assert_eq!(visit.clear_holder_owner, Some(root.owner_entity_index));
+    assert_eq!(exhausted.economy().castle_projectiles().iter()
+        .find(|row| row.source_entity_index == flyer).unwrap().life, original_life,
+        "a collision retry does not decrement the source flight lifetime");
+    exhausted.economy_mut().free_slots.push(*free.last().unwrap());
+    let visit = {
+        let live = &mut exhausted.session.state.live;
+        live.economy.economy.step_castle_projectile_slot_with_target(
+            flyer, &live.economy.entities, &live.terrain, Some((root.position, shape)),
+        )
+    };
+    assert!(!visit.live && visit.clear_holder_owner.is_none());
+    assert!(exhausted.economy().castle_children().iter().any(|child| {
+        child.active && child.model == 43 && child.id_entity_index == root.owner_entity_index
+    }), "restored capacity permits the actual model43 product");
+
+    let mut reused = session.clone();
+    let replacement_position = Position { x: root.position.x.wrapping_add(256), ..root.position };
+    let visit = {
+        let live = &mut reused.session.state.live;
+        live.economy.economy.step_castle_projectile_slot_with_target(
+            flyer, &live.economy.entities, &live.terrain, Some((replacement_position, shape)),
+        )
+    };
+    assert!(!visit.live);
+    let product = reused.economy().castle_children().iter().find(|child| {
+        child.active && child.model == 43 && child.id_entity_index == root.owner_entity_index
+    }).expect("current target replacement receives the flight contact");
+    assert_eq!(product.position, replacement_position,
+        "66B30 observes the current fixed-slot target, not a cached Castle pose");
+
+    // Controlled changed-relation case: the owner now points at a genuine
+    // newly allocated sphere record. The ordinary numeric product callback
+    // must write that current physical row, not the original Castle root.
+    let product_slot = product.source_entity_index;
+    let mut changed = reused.clone();
+    let particle = changed.session.definition.presentation.particles[41];
+    assert!(changed.economy_mut().bind_castle_upgrade_particle(product_slot, &particle));
+    crate::native_world::source_target::bind_castle_upgrade_record(
+        &mut changed.session.state.live.economy, product_slot, &particle,
+    ).expect("controlled product has the actual particle41 binding");
+    let sphere_slot = changed.economy_mut()
+        .spawn_mana_sphere_from_death(77, replacement_position, 0, 0x1234, 300, 0)
+        .and_then(|slot| u16::try_from(slot).ok())
+        .expect("controlled current replacement record");
+    {
+        let mut economy = changed.economy_mut();
+        let sphere = economy.spheres.iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot).unwrap();
+        sphere.position = replacement_position;
+        sphere.collision_yaw = (particle.rotation_speed / 2) as i16;
+        sphere.collision_pitch = 512;
+        sphere.collision_roll = 512;
+        sphere.collision_fov = 512;
+    }
+    let old_root_mailbox = {
+        let root = changed.economy().castle_at(root.source_entity_index).unwrap();
+        (root.source_word_7c, root.source_word_80)
+    };
+    changed.session.state.live.core.players.iter_mut()
+        .find(|player| player.entity_index == root.owner_entity_index).unwrap()
+        .record[42..44].copy_from_slice(&sphere_slot.to_le_bytes());
+    assert!(changed.step_level2_dynamic_arena(0, product_slot, Level2DynamicArenaKind::CastleChild));
+    let current = &changed.session.state.live.economy.entities[usize::from(sphere_slot)].record;
+    assert_eq!(u16::from_le_bytes([current[128], current[129]]), 10);
+    assert_eq!(u16::from_le_bytes([current[132], current[133]]), root.owner_entity_index);
+    let root_after = changed.economy().castle_at(root.source_entity_index).unwrap();
+    assert_eq!((root_after.source_word_7c, root_after.source_word_80), old_root_mailbox);
+
+    let mut missing = session.clone();
+    missing.economy_mut().castle_at_mut(root.source_entity_index).unwrap().active = false;
+    let visit = {
+        let live = &mut missing.session.state.live;
+        live.economy.economy.step_castle_projectile_slot_with_target(
+            flyer, &live.economy.entities, &live.terrain, Some((root.position, shape)),
+        )
+    };
+    assert!(!visit.live, "a freed fixed target record can still land its model43 product");
+    let product = missing.economy().castle_children().iter().find(|child| {
+        child.active && child.model == 43 && child.id_entity_index == root.owner_entity_index
+    }).copied().expect("source landing does not require a live Castle root");
+    assert_eq!(product.parent_entity_index, 0);
+    assert!(missing.economy_mut().step_castle_child_terminal_slot(product.source_entity_index));
+    assert_eq!(missing.economy().castle_upgrade_product_missing_root_owner(product.source_entity_index),
+        Some(root.owner_entity_index), "389F0 must release the owner's current holder on miss");
+}
+
+#[test]
 fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() {
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");
@@ -2819,6 +3184,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
 
     let mut child_failed = level_two_campaign_session_with_owner_cache(&gameplay_cache);
     child_failed.select_level2_campaign_entry_stage();
+    let failure_sound_cursor = child_failed.effect_journal().records().len();
     child_failed.step_outer_turn(request, 0);
     let free_slots = child_failed.economy().free_slots.clone();
     child_failed.economy_mut().free_slots = vec![free_slots[0]];
@@ -2842,6 +3208,12 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .castle()
         .expect("root remains after child allocation failure");
     assert_eq!(failed_root.source_entity_index, root_slot);
+    assert!(child_failed.effect_journal().records()[failure_sound_cursor..].iter().all(|record| {
+        !matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                entity_index, sound_id: 10, ..
+            }) if entity_index == root_slot)
+    }), "failed model42 allocation must not prepare construction audio");
     assert_eq!(failed_root.source_word_2e, 0);
     assert_eq!(
         failed_root.phase,
@@ -3042,7 +3414,7 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             if allocation_available { 4 } else { 3 },
             "only the successful constructor advances the real root");
     }
-    for valid_parent in [false, true] {
+    for (valid_parent, holder_enabled) in [(true, true), (false, true), (true, false)] {
         let mut release = occupied.clone();
         let holder_slot = release.shared_spells().local_player.enabled_spell_holders[2];
         {
@@ -3060,13 +3432,25 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             live.shared_spells.sync_pickup_from_authority(&holder);
             live.economy.entities[usize::from(holder_slot)] = holder;
         }
+        if !holder_enabled {
+            let live = &mut release.session.state.live;
+            let owner = live.core.state.entity_index;
+            assert!(live.core.players.iter_mut().find(|player| player.entity_index == owner)
+                .unwrap().set_enabled_spell_holder_index(2, 0));
+            assert!(live.shared_spells.local_player.set_enabled_spell_holder_index(2, 0));
+            if let Some(player) = live.shared_spells.players.iter_mut()
+                .find(|player| player.entity_index == owner)
+            {
+                assert!(player.set_enabled_spell_holder_index(2, 0));
+            }
+        }
         release.step_outer_turn(PlayerCommand::default(), 0);
         assert!(release.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
             "Castle state-2 release must dispatch: {:?}", release.dispatch_events());
         let root = release.economy().castle_at(root_slot).unwrap();
         assert_eq!((root.action, root.build_state, root.source_word_2e), (4, 0, 0));
-        assert_eq!(root.auxiliary_cooldown, if valid_parent { 0 } else { 37 },
-            "6D880 clears the root word2c only when its owner's actual holder resolves");
+        assert_eq!(root.auxiliary_cooldown, if holder_enabled { 0 } else { 37 },
+            "5F890 tests the owner's current holder address, not that record's parent");
     }
     let occupied_holder = occupied
         .shared_spells()
@@ -3106,7 +3490,10 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     // Position and aim are controlled inputs to this focused regression;
     // no mana, capacity, ownership mailbox or mission completion is granted.
     let player_slot = occupied.state.entity_index;
-    let recharge_position = occupied.state.position;
+    // Flight now follows the actual source trajectory, so the Castle need
+    // not land at the launch point. Controlled travel returns to its real
+    // completed root before waiting for ordinary recharge.
+    let recharge_position = completed_root.position;
     let recharge_yaw = occupied.state.yaw;
     let switch_position = occupied
         .mission()
@@ -3306,6 +3693,9 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     };
     acquire_mana(&mut occupied, required_capacity, true);
     occupied.set_level2_entity_position(player_slot, recharge_position).unwrap();
+    assert!(occupied.economy().player_castle_shift_aabb_overlap(
+        occupied.shared_spells().player_entity()
+    ), "controlled return must actually reach the completed Castle");
     occupied.state.yaw = recharge_yaw;
     occupied.state.display_pitch = 0;
     occupied.state.effective_pitch = 0;
@@ -3358,7 +3748,13 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             higher.step_outer_turn(PlayerCommand::default(), 0);
         }
         let before = higher.shared_spells().player_entity().mana;
-        assert!(before >= expected_cost, "tier {tier} requires normal paid mana");
+        assert!(before >= expected_cost,
+            "tier {tier} requires normal paid mana: mana={before}, regen={}, capacity={}, position={:?}, root={:?}, overlap={}",
+            higher.shared_spells().player_entity().mana_regen,
+            higher.shared_spells().player_entity().max_mana,
+            higher.state.position,
+            higher.economy().castle_at(root_slot),
+            higher.economy().player_castle_shift_aabb_overlap(higher.shared_spells().player_entity()));
         higher.step_outer_turn(request, 0);
         let after = higher.shared_spells().player_entity();
         assert!(before - after.mana >= expected_cost || after.mana_regen <= -expected_cost,
@@ -3439,6 +3835,13 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         .find(|child| child.active && child.model == 43 && child.action == 45)
         .copied()
         .expect("the source landing constructs its actual 10/43 product");
+    let particle41 = occupied.session.definition.presentation.particles[41];
+    assert_eq!((upgrade_product_before.visual_index, upgrade_product_before.yaw),
+        (41, particle41.rotation_speed / 2),
+        "the public flyer binds the actual model43 particle before its visit");
+    let product_raw = &occupied.session.state.live.economy.entities
+        [usize::from(upgrade_product_before.source_entity_index)].record;
+    assert_eq!(u16::from_le_bytes([product_raw[94], product_raw[95]]), 41);
     let upgrade_product_generation = occupied
         .economy()
         .slot_generation(upgrade_product_before.source_entity_index);
@@ -3552,7 +3955,8 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
             "the ordinary source visit must match the exact unmodified producer callback prediction"
         );
     }
-    assert_eq!(upgrade_product.parent_entity_index, root_slot);
+    assert_eq!(upgrade_product.parent_entity_index, 0);
+    assert_eq!(upgrade_product.id_entity_index, player_slot);
     assert_ne!(upgrade_product.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
     assert_ne!(upgrade_product.control_flags & 0x2, 0);
     assert!(
@@ -3784,7 +4188,8 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     }).copied().expect("public input launches the last real Castle upgrade");
     let flyer_handle = upper.session.state.live.economy.handle(flyer.source_entity_index);
     let product = upper.economy().castle_children().iter().find(|child| {
-        child.active && child.model == 43 && child.action == 45 && child.parent_entity_index == root_slot
+        child.active && child.model == 43 && child.action == 45
+            && child.parent_entity_index == 0 && child.id_entity_index == player_slot
     }).copied().expect("the last upgrade lands as the real model-43 child");
     let product_handle = upper.session.state.live.economy.handle(product.source_entity_index)
         .expect("the real upgrade child has a source generation");
@@ -3849,7 +4254,8 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         projectile.target_castle_slot == root_slot && (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
     }), "funded stage-seven input must still launch the real upgrade flyer");
     let boundary_product = upper.economy().castle_children().iter().find(|child| {
-        child.active && child.model == 43 && child.action == 45 && child.parent_entity_index == root_slot
+        child.active && child.model == 43 && child.action == 45
+            && child.parent_entity_index == 0 && child.id_entity_index == player_slot
     }).copied().expect("the funded stage-seven flyer lands as the real model-43 child");
     let boundary_handle = upper.session.state.live.economy.handle(boundary_product.source_entity_index)
         .expect("the stage-seven child has a source generation");

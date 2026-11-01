@@ -490,14 +490,53 @@ fn level_two_castle_collection_uses_frozen_source_slot_order() {
     assert!(!is_hidden(&session, first.max(second)));
     step(&mut session); // odd phase
     step(&mut session);
-    assert!(is_hidden(&session, first.max(second)));
+    // Deliberately invoke another even Castle visit within the same frozen
+    // list. Source 5F8F0 does not test the hidden bit; the first record is
+    // still in the list and is credited again before the next prologue.
+    assert!(!is_hidden(&session, first.max(second)));
+    assert!(!is_hidden(&session, born_after_prepass), "same-pass birth is not in the frozen list");
+    let first_mana = if first < second { 200 } else { 300 };
+    assert_eq!(session.economy().castle_at(castle_slot).unwrap().mana, first_mana * 2);
+    session.economy_mut().reclaim_inactive_slots_at_source_boundary();
+    session.economy_mut().rebuild_possession_guidance_source_slots();
     step(&mut session); // odd phase
     step(&mut session);
-    assert!(!is_hidden(&session, born_after_prepass), "same-pass birth is not in the frozen list");
+    assert!(is_hidden(&session, first.max(second)), "the next prepass reclaims the first and selects the second");
+    assert!(!is_hidden(&session, born_after_prepass));
+    session.economy_mut().reclaim_inactive_slots_at_source_boundary();
     session.economy_mut().rebuild_possession_guidance_source_slots();
     step(&mut session); // odd phase
     step(&mut session);
     assert!(is_hidden(&session, born_after_prepass), "the next prepass admits the new sphere");
+}
+
+#[test]
+fn level_two_castle_frozen_scan_keeps_sphere_hidden_by_earlier_carrier() {
+    // Controlled same-pass ordering check: the preceding carrier callback
+    // hides the actual model-39 row, but source 5F810/5F8F0 still walk the
+    // frozen list until the following UpdateEntities prologue.
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let position = Position { x: 10_000, y: 10_000, z: 0 };
+    let owner = 111;
+    let castle = session.economy_mut().build_castle(position, owner).unwrap();
+    session.economy_mut().castle_at_mut(castle).unwrap().phase = 0;
+    let sphere = session.economy_mut().spawn_mana_sphere_from_death(901, position, 0, 1, 300, owner).unwrap() as u16;
+    let carrier = session.economy_mut().spawn_mana_carrier(position, owner, sphere.into()).unwrap();
+    session.economy_mut().rebuild_possession_guidance_source_slots();
+    assert!(session.economy_mut().absorb_sphere_into_carrier(sphere, carrier));
+    assert_eq!(session.economy().select_castle_defender_sphere(position, owner, 0, 0), Some(sphere));
+    session.economy_mut().spheres.iter_mut().find(|row| row.source_entity_index == sphere)
+        .unwrap().control_flags |= LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT;
+    assert_eq!(session.economy().select_castle_defender_sphere(position, owner, 0, 0), None,
+        "5F810 checks byte1 bit 0x20, unlike the Castle's own 5F8F0 scan");
+    assert!(session.economy_mut().step_castle_action(castle));
+    assert_eq!(session.economy().castle_at(castle).unwrap().mana, 300);
+    assert_eq!(session.economy().carriers().iter().find(|row| row.source_entity_index == carrier).unwrap().carried_mana, 300);
+    session.economy_mut().reclaim_inactive_slots_at_source_boundary();
+    session.economy_mut().rebuild_possession_guidance_source_slots();
+    assert_eq!(session.economy().select_castle_defender_sphere(position, owner, 0, 0), None);
+    assert!(session.economy().spheres().iter().all(|row| row.source_entity_index != sphere));
 }
 
 #[test]

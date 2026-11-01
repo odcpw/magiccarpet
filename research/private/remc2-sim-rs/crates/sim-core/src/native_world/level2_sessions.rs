@@ -572,14 +572,28 @@ mod source30_house_action_51_tests {
 }
 
 impl Level2SharedSpellResetSession {
-    /// Apply sub_5F890 to the current holder named by this Castle's owner.
-    /// Rival relations retain their source generations; a stale relation
-    /// cannot address another owner's newly allocated holder.
+    /// Apply sub_5F890 to the current record named by the owner's SpellEnabled[2].
+    /// The source writes this fixed address even after reclaim or replacement;
+    /// parent, family and generation checks would change its failure behavior.
     pub(super) fn apply_castle_holder_source_update(
         &mut self,
         arena: &mut crate::campaign::source_arena::SourceArena,
         players: &[PlayerSnapshot],
-        rivals: &level2_nyphur::RivalWizardRoster,
+        _rivals: &level2_nyphur::RivalWizardRoster,
+        fire: Option<&mut crate::SpellFireContext>,
+        owner: u16,
+        busy: bool,
+    ) -> std::result::Result<Option<u16>, String> {
+        self.apply_castle_holder_record_update(
+            &mut arena.economy, &mut arena.entities, players, fire, owner, busy,
+        )
+    }
+
+    pub(super) fn apply_castle_holder_record_update(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        entities: &mut [EntitySnapshot],
+        players: &[PlayerSnapshot],
         fire: Option<&mut crate::SpellFireContext>,
         owner: u16,
         busy: bool,
@@ -587,39 +601,55 @@ impl Level2SharedSpellResetSession {
         let Some(player) = players.iter().find(|player| player.entity_index == owner) else {
             return Ok(None);
         };
-        let Some(owner_handle) = arena.handle(owner) else { return Ok(None); };
         let holder_slot = player.enabled_spell_holders[usize::from(CASTLE_SPELL_FAMILY)];
-        let Some(holder_handle) = arena.handle(holder_slot).filter(|_| holder_slot != 0) else {
+        if holder_slot == 0 {
             return Ok(None);
-        };
-        if player.is_ai && rivals.bound_live_holder(owner_handle, player, arena,
-            usize::from(CASTLE_SPELL_FAMILY)) != Some(holder_handle)
+        }
+        let raw = entities.get(usize::from(holder_slot))
+            .ok_or_else(|| format!("Castle holder relation {holder_slot} is outside the source arena"))?;
+        let kind = economy.live_arena_kind(holder_slot);
+        let current_selector = economy.live_arena_cursor_row(holder_slot)
+            .and_then(|row| economy.live_arena_class_action(holder_slot, row.kind))
+            .unwrap_or((raw.class, raw.action));
+        let mut current_pickup = self.pickup(holder_slot).filter(|holder|
+            current_selector == (holder.class, holder.action) && holder.class == 15
+        ).cloned();
+        let activation = current_pickup.as_ref().map(|holder| holder.activation_value)
+            .or_else(|| (kind == Some(Level2DynamicArenaKind::CastleRoot))
+                .then(|| economy.castle_at(holder_slot).map(|root| root.source_word_30))
+                .flatten())
+            .unwrap_or_else(|| raw.source_word_30());
+        let active_value = if busy { activation.wrapping_sub(1).cast_signed() } else { 0 };
+        let raw = &mut entities[usize::from(holder_slot)];
+        raw.active_value = active_value;
+        raw.record[50..52].copy_from_slice(&active_value.to_le_bytes());
+        if kind == Some(Level2DynamicArenaKind::CastleRoot)
+            && let Some(root) = economy.castle_at_mut(holder_slot)
         {
-            return Ok(None);
+            root.source_word_2e = active_value.cast_unsigned();
+            root.build_state = u8::try_from(active_value.cast_unsigned()).unwrap_or(u8::MAX);
         }
-        let Some(mut holder) = self.pickup(holder_slot).filter(|holder| {
-            holder.active && holder.class == 15 && holder.model == CASTLE_SPELL_FAMILY
-                && holder.source_spell_parent_entity_index() == owner
-        }).cloned() else { return Ok(None); };
-        let current_selector = arena.economy.live_arena_cursor_row(holder_slot)
-            .and_then(|row| arena.economy.live_arena_class_action(holder_slot, row.kind))
-            .or_else(|| arena.entities.get(usize::from(holder_slot))
-                .filter(|row| row.active).map(|row| (row.class, row.action)));
-        if current_selector != Some((holder.class, holder.action)) {
-            return Ok(None);
-        }
-        holder.active_value = if busy {
-            holder.activation_value.wrapping_sub(1).cast_signed()
-        } else { 0 };
-        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
-        self.sync_pickup_from_authority(&holder);
-        arena.entities[usize::from(holder_slot)] = holder.clone();
-        if let Some(fire) = fire
-            && let Some(projected) = fire.holders.iter_mut()
-                .find(|projected| projected.entity_index == holder_slot)
+        if matches!(kind, Some(Level2DynamicArenaKind::CastleChild
+            | Level2DynamicArenaKind::CastleController | Level2DynamicArenaKind::CastleDefender
+            | Level2DynamicArenaKind::CastleAuxiliary))
+            && let Some(child) = economy.castle_children.iter_mut()
+                .find(|child| child.active && child.source_entity_index == holder_slot)
         {
-            projected.active_value = holder.active_value;
+            child.source_word_2e = active_value;
         }
+        if let Some(holder) = current_pickup.as_mut() {
+            holder.active_value = active_value;
+            holder.record[50..52].copy_from_slice(&active_value.to_le_bytes());
+            self.sync_pickup_from_authority(holder);
+            if let Some(fire) = fire
+                && let Some(projected) = fire.holders.iter_mut()
+                    .find(|projected| projected.entity_index == holder_slot)
+            {
+                projected.active_value = active_value;
+            }
+        }
+        // Source's clear branch calls6D880 on its caller, not this addressed
+        // holder. Its queued tier stays pending for the holder's own zero-W visit.
         Ok(Some(holder_slot))
     }
 

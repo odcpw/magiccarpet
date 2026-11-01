@@ -2355,7 +2355,7 @@ mod tests {
                 let child = replaced[0].0;
                 // The palette resolver is an explicit callback input here;
                 // actual player-color lookup belongs to the root adapter.
-                let (economy, entities) = (&mut arena.economy, &arena.entities);
+                let (economy, entities) = (&mut arena.economy, &mut arena.entities);
                 assert!(
                     economy.step_mana_sphere_slot(child, &terrain, entities, |owner| {
                         assert_eq!(owner, session.state.entity_index);

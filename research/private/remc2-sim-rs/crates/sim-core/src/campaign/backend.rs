@@ -5498,6 +5498,7 @@ pub(crate) mod tests {
         let warm_context = GlobalSpecialState {
             protection_ticks: 23,
             visibility_mode: 2,
+            damage_flash_ticks: 0,
         };
         // Keep the envelope valid while making the replay's final state
         // receipt false, so this exercises candidate verification itself.

@@ -1257,11 +1257,34 @@ mod tests {
         assert_eq!(live.economy.entities[usize::from(slot)].active_value, 0);
         let player = live.core.players.iter_mut().find(|player| player.entity_index == owner).unwrap();
         assert!(player.set_enabled_spell_holder_index(2, other_slot));
+        let mut current_holder = live.shared_spells.pickup(other_slot).unwrap().clone();
+        current_holder.record[48..50].copy_from_slice(&2_u16.to_le_bytes());
+        live.shared_spells.sync_pickup_from_authority(&current_holder);
+        live.economy.entities[usize::from(other_slot)] = current_holder;
         assert_eq!(live.shared_spells.apply_castle_holder_source_update(
             &mut live.economy, &live.core.players, &live.nyphur_dispatcher,
             None, owner, false,
-        ).unwrap(), None, "another owner's holder cannot satisfy a stale relation");
-        assert_eq!(live.shared_spells.pickup(other_slot).unwrap().active_value, 7);
-        assert_eq!(live.economy.entities[usize::from(other_slot)].active_value, 7);
+        ).unwrap(), Some(other_slot), "5F890 writes the current address without a parent or generation gate");
+        assert_eq!(live.shared_spells.pickup(other_slot).unwrap().active_value, 0);
+        assert_eq!(live.economy.entities[usize::from(other_slot)].active_value, 0);
+        assert_eq!(live.shared_spells.pickup(other_slot).unwrap().source_word_2c(), 2,
+            "6D880 is called on the callback caller; the addressed holder's queue waits for its own visit");
+
+        // Controlled retained-record case: a nonzero relation still writes
+        // its current physical word even if the address is on the free stack.
+        let free = live.economy.free_source_slots()[0];
+        let raw = &mut live.economy.entities[usize::from(free)];
+        assert!(!raw.active);
+        raw.record[52..54].copy_from_slice(&9_u16.to_le_bytes());
+        raw.record[50..52].copy_from_slice(&7_u16.to_le_bytes());
+        live.core.players.iter_mut().find(|player| player.entity_index == owner)
+            .unwrap().set_enabled_spell_holder_index(2, free);
+        assert_eq!(live.shared_spells.apply_castle_holder_source_update(
+            &mut live.economy, &live.core.players, &live.nyphur_dispatcher,
+            None, owner, true,
+        ).unwrap(), Some(free));
+        assert_eq!(live.economy.entities[usize::from(free)].source_word_2e(), 8);
+        assert!(!live.economy.entities[usize::from(free)].active,
+            "the counter write must not resurrect a freed record");
     }
 }

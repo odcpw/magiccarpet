@@ -32,6 +32,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let first = GlobalSpecialState {
         protection_ticks: 0,
         visibility_mode: 1,
+        damage_flash_ticks: 0,
     };
     original
         .session_mut()
@@ -56,6 +57,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
     let warm = GlobalSpecialState {
         protection_ticks: 0,
         visibility_mode: 2,
+        damage_flash_ticks: 4,
     };
     let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(81803).unwrap();
     let guard = loaded.identity().guard();

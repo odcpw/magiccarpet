@@ -4182,6 +4182,10 @@ impl Level2NyphurDispatcher {
                     let player_entity_index = projected.source_player_entity_index();
                     if player_entity_index != sphere.player_entity_index {
                         sphere.player_entity_index = player_entity_index;
+                        // 135C0 has already committed its successful claim.
+                        // Publish that owning player to semantic consumers at
+                        // this source point, before any later Possession pulse.
+                        sphere.owner_entity_index = player_entity_index;
                     }
                 }
             }
@@ -4190,7 +4194,15 @@ impl Level2NyphurDispatcher {
             // every projected sphere in its typed arena carrier.
             for (index, entity) in projected_entities.iter().enumerate() {
                 if !projected_dynamic_slots.contains(&index) {
+                    // The temporary target view rebuilds its own lists. An
+                    // ordinary wizard visit does not rewrite UpdateEntities'
+                    // canonical next_0 links in the fixed source records.
+                    let next = entities[index].next_relation;
+                    let mut encoded = [0; 4];
+                    encoded.copy_from_slice(&entities[index].record[4..8]);
                     entities[index] = entity.clone();
+                    entities[index].next_relation = next;
+                    entities[index].record[4..8].copy_from_slice(&encoded);
                 }
             }
             result
