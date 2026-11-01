@@ -3281,6 +3281,96 @@ struct Level2PublicPossessionClaimRoute {
     castle_defender_events: Vec<McCampaignEconomyEventV2>,
 }
 
+/// Fund the label consumer through the same public producer, hand, flyer
+/// and ownership path as the economy checks. No player or Castle mana is set.
+pub(super) fn fund_level2_status_labels(handle: u64, required_mana: i32, producer_observed: bool) {
+    // The preceding real pickup overlaps this switch. Retain its actual
+    // receipt instead of trying to fire an already consumed producer again.
+    assert!(
+        producer_observed,
+        "the ordinary acquisition must observe the real group-1 producer"
+    );
+    let switch = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+            unreachable!("status labels use the ordinary campaign")
+        };
+        Ok(reset
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|row| row.index == 11)
+            .expect("real group-1 switch")
+            .world_position(0))
+    })
+    .expect("read actual switch position");
+    let mut input = McCampaignStepInputV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignStepInputV2>(),
+        generation: 0,
+        command: valid_command(),
+        player_slot: 0,
+        player_x: switch.x,
+        player_y: switch.y,
+        player_z: 256,
+        ..McCampaignStepInputV2::default()
+    };
+    let spheres = campaign_mana_spheres_public(handle, 0)
+        .into_iter()
+        .filter(|row| row.active != 0 && row.model == 39 && row.owner_entity_index == 0)
+        .collect::<Vec<_>>();
+    let source_ids = spheres
+        .iter()
+        .map(|row| row.sphere_id)
+        .collect::<BTreeSet<_>>();
+    let target = spheres
+        .iter()
+        .min_by_key(|row| {
+            (
+                row.sphere_id != 141,
+                i32::from(row.velocity_x).abs() + i32::from(row.velocity_y).abs(),
+                row.sphere_id,
+            )
+        })
+        .expect("actual neutral mana remains available for the public Possession cast");
+    let route = drive_level2_public_group1_possession_claims_with_expected(
+        handle,
+        input,
+        target.sphere_id,
+        &source_ids,
+        None,
+    );
+    assert!(
+        !route.new_claimed_group1_sphere_ids.is_empty(),
+        "the real Possession effect must publish ownership receipts"
+    );
+    input = route.input;
+    input.command = valid_command();
+    // Keep the live player away from nearby combat while ordinary recharge
+    // consumes the newly owned capacity. The input remains a normal position.
+    input.player_x = switch.x.wrapping_add(0x4000);
+    input.player_y = switch.y;
+    input.player_z = 4096;
+    let mut funded = false;
+    for _ in 0..512 {
+        step_level2_campaign_public(handle, input);
+        funded = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!()
+            };
+            let player = &reset.entities()[usize::from(reset.state.entity_index)];
+            Ok(player.life > 0 && player.mana >= required_mana && player.max_mana >= required_mana)
+        })
+        .unwrap();
+        if funded {
+            break;
+        }
+    }
+    assert!(
+        funded,
+        "actual claimed mana and ordinary recharge must fund the status cast"
+    );
+}
+
 /// Shared public route used by the Possession predecessor proof and the
 /// Invisible consumer. It retains the predecessor's strict-flight and
 /// package-specific overlap assertions so later capability tests never replace that
@@ -3400,10 +3490,14 @@ fn drive_level2_public_group1_possession_claims_with_expected(
     // the selected request so that the freshly allocated flyer is born at
     // the source-valid position rather than being repositioned one turn
     // too late.
+    let target_descendants = sphere_lineage_descendants(
+        selected_target_sphere_id, &observed_merge_lineage,
+    );
     let target = campaign_mana_spheres_public(handle, 0)
         .into_iter()
-        .find(|sphere| sphere.sphere_id == selected_target_sphere_id)
-        .expect("armed Possession target remains visible through the public ABI");
+        .filter(|sphere| sphere.active != 0 && target_descendants.contains(&sphere.sphere_id))
+        .min_by_key(|sphere| (sphere.sphere_id != selected_target_sphere_id, sphere.sphere_id))
+        .expect("the selected sphere or its actual merge descendant remains visible");
     let (yaw, pitch, actual_speed, entity_fov, a4_yaw, a4_pitch) =
         with_campaign_session(handle, |session| {
             let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {

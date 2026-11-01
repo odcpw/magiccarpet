@@ -286,9 +286,17 @@ pub(crate) fn step_holder(
         .ok_or_else(|| format!("Alliance holder {slot} is not live class15/model24/action72"))?;
     let tier = crate::spell_activation::level2_applied_tier(holder.level_gate)
         .ok_or("Alliance holder has a negative source tier")?;
-    let rule = *rules::SOURCE_RULES
+    let source_rule = *rules::SOURCE_RULES
         .get(usize::from(tier))
         .ok_or("Alliance holder tier is outside owner SPELLS.DAT")?;
+    // sub_68D50/sub_68DE0 read the current physical holder, including
+    // source profile overrides. The projectile payload still comes from
+    // the selected SPELLS.DAT row in sub_6CD20.
+    let rule = rules::Rule {
+        mana_cost: holder.max_mana,
+        castle_mana_required: holder.mana_regen,
+        ..source_rule
+    };
     let parent_slot = holder.source_spell_parent_entity_index();
     let parent = arena
         .entities

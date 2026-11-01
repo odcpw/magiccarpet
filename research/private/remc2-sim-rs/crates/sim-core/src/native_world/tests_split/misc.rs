@@ -2009,17 +2009,12 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
     fire_level_two_model32_group(&mut session, 21);
     let acquire_shield = |session: &mut Mc2Simulation| {
         session.step_outer_turn(PlayerCommand::default(), 0);
-        let source = session
-            .economy()
-            .spell_pickups()
-            .iter()
-            .find(|source| source.authored_index == 155)
-            .copied()
-            .expect("authored family-6 source");
+        let source = authored_status_reward_prerequisite(session, 6);
+        assert_eq!(source.authored_index, 155);
         session
             .set_level2_entity_position(session.state.entity_index, source.position)
             .expect("ordinary local-player position carrier remains valid");
-        (0..4)
+        let outcome = (0..4)
             .find_map(|_| {
                 session.step_outer_turn(PlayerCommand::default(), 0);
                 session
@@ -2034,10 +2029,70 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
                         _ => None,
                     })
             })
-            .expect("ordinary authored family-6 acquisition")
+            .expect("ordinary authored family-6 acquisition");
+        let holder = session.source_arena().handle(outcome.source_slot).unwrap();
+        let mut safe = source.position;
+        safe.x = safe.x.wrapping_add(0x6000);
+        safe.z = session
+            .canonical_terrain()
+            .ground_height(safe)
+            .wrapping_add(1024);
+        session
+            .set_level2_entity_position(session.state.entity_index, safe)
+            .expect("keep the player away from Bee contact during source protection");
+        // The imported player starts with 100 genuine source-protection
+        // visits. The player callback clears incoming hits until this reaches
+        // zero, so wait normally before casting the finite-duration Shield.
+        for _ in 0..104 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        assert_eq!(
+            session.source_arena().handle(outcome.source_slot),
+            Some(holder)
+        );
+        assert!(session.player_life > 0);
+        let player = session.state.entity_index;
+        let mut engagement = Vec::new();
+        for _ in 0..256 {
+            let bee = session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
+                .copied()
+                .expect("authored Bee remains available for ordinary targeting");
+            if bee.action == 18 && bee.target_entity_index == Some(player) {
+                break;
+            }
+            engagement.push((bee.action, bee.target_entity_index, bee.source_byte_3e));
+            // Stay inside the real awareness cone but outside contact range.
+            // Bee target/action remain exclusively owned by its source AI.
+            let mut approach = bee.position;
+            crate::move_entity(&mut approach, bee.yaw, 0, 2048);
+            session
+                .set_level2_entity_position(player, approach)
+                .expect("move the real player into the Bee awareness cone");
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let bee = session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|bee| bee.authored_index() == Some(LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX))
+            .expect("authored Bee remains live after engagement");
+        assert!(
+            bee.action == 18 && bee.target_entity_index == Some(player),
+            "source Bee must naturally select the player before Shield cast: {engagement:?}, Bee={bee:?}"
+        );
+        outcome
     };
 
     let outcome = acquire_shield(&mut session);
+    let acquired_for_tiers = session.clone();
     assert!(session.shared_spells_mut().activate_shield(256, false));
     session.step_outer_turn(PlayerCommand::default(), 0);
     let active = session
@@ -2056,10 +2111,21 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         .copied()
         .expect("production row-229 Bee source");
     assert_eq!(bee.subspell_index, 200);
-    assert!(session.state.entity_index < bee.source_entity_index);
-    assert!(bee.source_entity_index < outcome.source_slot);
+    assert_ne!(session.state.entity_index, bee.source_entity_index);
+    let bee_precedes_player = bee.source_entity_index < session.state.entity_index;
+    assert!(
+        bee.source_entity_index < outcome.source_slot,
+        "source order: player={}, Bee={}, holder={}",
+        session.state.entity_index,
+        bee.source_entity_index,
+        outcome.source_slot
+    );
+    assert_ne!(session.state.entity_index, outcome.source_slot);
+    let player_precedes_holder = session.state.entity_index < outcome.source_slot;
     let mut damage = None;
-    for _ in 0..128 {
+    let mut contact_observations = Vec::new();
+    let mut recoil_observation = None;
+    for turn in 0..128 {
         let live_bee = session
             .economy()
             .bee_creatures()
@@ -2073,6 +2139,53 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
             .set_level2_entity_position(session.state.entity_index, target)
             .expect("ordinary local-player position carrier remains valid");
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let current_bee = session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+            .copied();
+        if live_bee.actual_speed >= 0 && current_bee.is_some_and(|row| row.actual_speed < 0) {
+            let player = &session.entities()[usize::from(session.state.entity_index)];
+            recoil_observation = Some((
+                turn,
+                live_bee,
+                current_bee,
+                player.life,
+                player.control_flags,
+                player.record[98..104].to_vec(),
+                session.player_life,
+                session.player_pending_damage,
+                session.player_pending_attacker,
+                session.shared_spells().shield_state(),
+                session.shared_spells().pickup_events().to_vec(),
+                session
+                    .dispatch_events()
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            Mc2DispatchEvent::Economy {
+                                event: Level2EconomyEvent::DamageApplied { .. },
+                                ..
+                            } | Mc2DispatchEvent::Error { .. }
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ));
+        }
+        if turn < 4 || turn % 16 == 0 {
+            contact_observations.push((
+                turn,
+                current_bee,
+                session.state.position,
+                session.player_life,
+                session.player_pending_damage,
+                session.player_pending_attacker,
+                session.shared_spells().shield_state(),
+            ));
+        }
         damage = session
             .shared_spells()
             .pickup_events()
@@ -2093,7 +2206,13 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
             break;
         }
     }
-    let damage = damage.expect("ordinary Bee collision reaches the player Shield consumer");
+    let damage = damage.unwrap_or_else(|| {
+        panic!(
+            "ordinary Bee collision reaches the player Shield consumer: initial={bee:?}, observations={contact_observations:?}, recoil={recoil_observation:?}, final events={:?}, shared={:?}",
+            session.dispatch_events(),
+            session.shared_spells().pickup_events()
+        )
+    });
     assert_eq!(damage.raw_damage, 200);
     assert_eq!(damage.applied_damage, 50);
     assert_eq!(damage.mana_drained, 50);
@@ -2188,9 +2307,16 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         .expect("active family-6 Shield state before expiry alignment")
         .activation_value;
     let cadence = u16::try_from(live_bee.action_window).expect("Bee cadence fits");
-    let turns_to_last_live = u16::try_from(shield_ticks - 1).expect("Shield duration fits");
-    let warmup =
-        (cadence - (u16::from(live_bee.source_byte_3e) + turns_to_last_live) % cadence) % cadence;
+    let turns_to_last_live = u8::try_from(shield_ticks - 1).expect("Shield duration fits");
+    let warmup = (0..=u8::MAX)
+        .find(|advance| {
+            let phase = live_bee
+                .source_byte_3e
+                .wrapping_add(*advance)
+                .wrapping_add(turns_to_last_live);
+            u16::from(phase) % cadence == 0
+        })
+        .expect("wrapping source phase reaches Bee contact cadence");
     let set_player_outside_contact = |session: &mut Mc2Simulation| {
         let live_bee = session
             .economy()
@@ -2234,7 +2360,7 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         .copied()
         .expect("production row-229 Bee remains before expiry contact");
     assert_eq!(
-        (u16::from(bee_before_acquisition.source_byte_3e) + 1) % cadence,
+        u16::from(bee_before_acquisition.source_byte_3e.wrapping_add(1)) % cadence,
         0
     );
     set_player_outside_contact(&mut session);
@@ -2258,6 +2384,28 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
         .set_level2_entity_position(session.state.entity_index, bee_before_contact.position)
         .expect("ordinary local-player position carrier remains valid");
     session.step_outer_turn(PlayerCommand::default(), 0);
+    let receipts = session.cf10_production_schedule_receipts();
+    let callback = |wanted| {
+        receipts
+            .iter()
+            .position(|receipt| {
+                matches!(receipt,
+                crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                    pass: crate::campaign::schedule::SourcePass::UpdateEntities,
+                    slot,
+                    ..
+                } if *slot == wanted)
+            })
+            .expect("expiry pass visits each live source callback")
+    };
+    let (bee_visit, player_visit, holder_visit) = (
+        callback(bee.source_entity_index),
+        callback(session.state.entity_index),
+        callback(outcome.source_slot),
+    );
+    assert!(bee_visit < holder_visit);
+    assert_eq!(bee_visit < player_visit, bee_precedes_player);
+    assert_eq!(player_visit < holder_visit, player_precedes_holder);
     let expired = session
         .shared_spells()
         .shield_state()
@@ -2269,38 +2417,273 @@ fn level_two_automatic_bee_contact_consumes_shield_status_at_player_visit() {
                 | crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT),
         0
     );
-    assert_eq!(session.player_pending_damage, 200);
-    assert!(
-        session
+    if bee_precedes_player && player_precedes_holder {
+        // Bee, player, then holder visit in numeric order: the contact is
+        // consumed while the last Shield tick still exists, before expiry.
+        let protected = session
             .shared_spells()
             .pickup_events()
             .iter()
-            .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
-    );
-
-    set_player_outside_contact(&mut session);
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(session.player_life, life_before - 200);
-    assert!(
-        session
-            .shared_spells()
-            .pickup_events()
-            .iter()
-            .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
-    );
-    assert!(session.dispatch_events().iter().any(|event| matches!(
-        event,
-        Mc2DispatchEvent::Economy {
-            event: Level2EconomyEvent::DamageApplied {
-                attacker_entity_index,
-                damage: 200,
+            .find_map(|event| match event {
+                Level2SharedSpellEvent::ShieldDamageApplied {
+                    attacker_entity_index,
+                    damage,
+                    ..
+                } if *attacker_entity_index == bee.entity_id => Some(*damage),
+                _ => None,
+            })
+            .expect("earlier Bee contact is consumed before Shield expires");
+        assert_eq!(
+            (
+                protected.raw_damage,
+                protected.applied_damage,
+                protected.mana_drained
+            ),
+            (200, 50, 50)
+        );
+        assert_eq!(session.player_life, life_before - 50);
+        let after_expiry_life = session.player_life;
+        let mut unprotected = false;
+        for _ in 0..128 {
+            let live_bee = session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+                .copied()
+                .expect("authored Bee remains live after expiry");
+            let mut target = live_bee.position;
+            crate::move_entity(&mut target, live_bee.yaw, 0, live_bee.actual_speed);
+            session
+                .set_level2_entity_position(session.state.entity_index, target)
+                .unwrap();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Mc2DispatchEvent::Economy {
+                        event: Level2EconomyEvent::DamageApplied {
+                            attacker_entity_index,
+                            damage: 200,
+                            ..
+                        },
+                        ..
+                    } if *attacker_entity_index == bee.entity_id
+                )
+            }) {
+                unprotected = true;
+                break;
+            }
+        }
+        assert!(unprotected, "real Bee contact must damage after expiry");
+        assert_eq!(session.player_life, after_expiry_life - 200);
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
+        );
+    } else if bee_precedes_player {
+        // Bee, holder, then player: this hit is queued before expiry but
+        // consumed after expiry in the same UpdateEntities pass.
+        assert_eq!(session.player_life, life_before - 200);
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::Economy {
+                event: Level2EconomyEvent::DamageApplied {
+                    attacker_entity_index,
+                    damage: 200,
+                    ..
+                },
                 ..
-            },
-            ..
-        } if *attacker_entity_index == bee.entity_id
-    )));
+            } if *attacker_entity_index == bee.entity_id
+        )));
+    } else {
+        // Player, Bee, then holder: the contact enters the mailbox before
+        // expiry and is consumed unprotected at the following player visit.
+        assert_eq!(session.player_pending_damage, 200);
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
+        );
+        set_player_outside_contact(&mut session);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_life, life_before - 200);
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .all(|event| !matches!(event, Level2SharedSpellEvent::ShieldDamageApplied { .. }))
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::Economy {
+                event: Level2EconomyEvent::DamageApplied {
+                    attacker_entity_index,
+                    damage: 200,
+                    ..
+                },
+                ..
+            } if *attacker_entity_index == bee.entity_id
+        )));
+    }
     session.reset();
     assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+
+    // Exercise both remaining physical profiles against the same authored Bee.
+    // Castle and mana are explicit source-valid entry prerequisites here;
+    // acquisition, menu selection, cast, contact and damage remain real.
+    for tier in [1_i8, 2] {
+        let mut tier_session = acquired_for_tiers.clone();
+        let player = tier_session.state.entity_index;
+        let holder_handle = tier_session
+            .source_arena()
+            .handle(outcome.source_slot)
+            .unwrap();
+        let ui_index = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 6)
+            .expect("Shield has a source menu entry") as i8;
+        tier_session.step_outer_turn(
+            PlayerCommand {
+                opcode: 31,
+                argument_1: ui_index,
+                argument_2: tier,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let holder = tier_session
+            .shared_spells()
+            .pickup(outcome.source_slot)
+            .unwrap();
+        assert_eq!(holder.level_gate, tier);
+        let (cost, requirement) = (holder.max_mana, holder.mana_regen);
+        let castle = tier_session
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                player,
+                false,
+                true,
+            )
+            .expect("source Castle for controlled tier resource prerequisites");
+        {
+            let mut economy = tier_session.economy_mut();
+            let root = economy.castle_at_mut(castle).unwrap();
+            // Controlled source-valid capacity, as in the acquired Alliance
+            // tier check; this does not claim an earned Castle upgrade.
+            root.level = 6;
+            root.action = 5;
+            root.build_state = 3;
+            assert!(economy.step_castle_action(castle));
+            assert_eq!(economy.castle_at(castle).unwrap().level, 7);
+            assert!(economy.castle_at(castle).unwrap().mana_capacity >= requirement.max(cost));
+        }
+        assert!(
+            tier_session
+                .economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, requirement.max(cost))
+        );
+        tier_session
+            .shared_spells_mut()
+            .set_local_player_mana_for_test(cost);
+        tier_session.economy.entities[usize::from(player)].set_mana(cost);
+        if let Some(fire) = tier_session.context.spell_fire.as_mut() {
+            fire.caster.mana = cost;
+        }
+        tier_session.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 6,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let armed = tier_session.shared_spells().shield_state().unwrap();
+        assert_eq!(armed.tier, tier as u8);
+        assert!(
+            armed.active_value > 0,
+            "public cast must activate Shield tier {tier}"
+        );
+        if outcome.source_slot < player {
+            assert_eq!(
+                armed.active_value, armed.activation_value,
+                "lower-slot holder first pulses on the following pass"
+            );
+            tier_session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let active = tier_session.shared_spells().shield_state().unwrap();
+        assert_eq!(active.tier, tier as u8);
+        assert_eq!(active.active_value, armed.activation_value - 1);
+        let expected_flag = if tier == 2 {
+            crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT
+        } else {
+            crate::spell_activation::SHIELD_MANA_STATUS_BIT
+        };
+        assert_ne!(
+            active.parent_status_flags & expected_flag,
+            0,
+            "tier {tier} source pulse must publish its protection: {active:?}"
+        );
+        let mut observed = None;
+        for _ in 0..128 {
+            let live_bee = tier_session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|candidate| candidate.source_entity_index == bee.source_entity_index)
+                .copied()
+                .expect("authored Bee retains its live source slot");
+            let mut target = live_bee.position;
+            crate::move_entity(&mut target, live_bee.yaw, 0, live_bee.actual_speed);
+            tier_session
+                .set_level2_entity_position(player, target)
+                .unwrap();
+            tier_session.step_outer_turn(PlayerCommand::default(), 0);
+            observed = tier_session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2SharedSpellEvent::ShieldDamageApplied {
+                        target_entity_index,
+                        attacker_entity_index,
+                        damage,
+                    } if *target_entity_index == player
+                        && *attacker_entity_index == bee.entity_id =>
+                    {
+                        Some(*damage)
+                    }
+                    _ => None,
+                });
+            if observed.is_some() {
+                break;
+            }
+        }
+        let damage = observed.expect("real Bee contact reaches the selected Shield tier");
+        assert_eq!(damage.raw_damage, 200);
+        assert_eq!(damage.applied_damage, if tier == 2 { 0 } else { 50 });
+        assert_eq!(damage.mana_drained, if tier == 2 { 0 } else { 50 });
+        assert_eq!(
+            tier_session.source_arena().handle(outcome.source_slot),
+            Some(holder_handle)
+        );
+    }
 }
 
 #[test]
@@ -2368,23 +2751,12 @@ fn level_two_remote_shield_owner_does_not_overwrite_local_mana_projection() {
 
 #[test]
 fn level_two_shield_expiry_replays_queued_setspell_word() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 Shield cleanup session");
+    let mut session = level_two_campaign_session();
+    let source = authored_status_reward_prerequisite(&mut session, 6);
+    assert_eq!(source.authored_index, 155);
     session
-        .set_level2_selected_objective_stage_state(2)
-        .expect("source objective completion sentinel");
-    session.step_outer_turn(PlayerCommand::default(), 0);
-    let source = session
-        .economy()
-        .spell_pickups()
-        .iter()
-        .find(|source| source.authored_index == 155)
-        .copied()
-        .expect("authored family-6 source");
-    session.state.position = source.position;
+        .set_level2_entity_position(session.state.entity_index, source.position)
+        .expect("move the authoritative player to the real Shield reward");
     let acquired = (0..4).find_map(|_| {
         session.step_outer_turn(PlayerCommand::default(), 0);
         session
@@ -2400,21 +2772,60 @@ fn level_two_shield_expiry_replays_queued_setspell_word() {
             })
     });
     let outcome = acquired.expect("authored family-6 acquisition");
-    assert!(session.shared_spells_mut().activate_shield(256, false));
-    {
-        let mut shared = session.shared_spells_mut();
-        shared
-            .shield
-            .as_mut()
-            .expect("active Shield state")
-            .active_value = 1;
-        shared
-            .pickup_mut(outcome.source_slot)
-            .expect("active Shield holder row")
-            .record[48..50]
-            .copy_from_slice(&2_u16.to_le_bytes());
+    let holder_handle = session
+        .source_arena()
+        .handle(outcome.source_slot)
+        .unwrap();
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 6,
+            argument_1: 6,
+            flags: 0x40,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let active = session.shared_spells().pickup(outcome.source_slot).unwrap();
+    assert!(
+        active.active_value > 0,
+        "public input activates the acquired Shield"
+    );
+    let duration = usize::from(active.activation_value);
+    let ui_index = crate::SOURCE_SPELL_INDEX_MAP
+        .iter()
+        .position(|family| *family == 6)
+        .expect("Shield has a source menu entry") as i8;
+    session.step_outer_turn(
+        PlayerCommand {
+            opcode: 31,
+            argument_1: ui_index,
+            argument_2: 1,
+            ..PlayerCommand::default()
+        },
+        0,
+    );
+    let queued = session.shared_spells().pickup(outcome.source_slot).unwrap();
+    assert!(
+        queued.active_value > 0,
+        "tier change is queued while Shield is active"
+    );
+    assert_eq!(queued.record_bytes()[48..50], 2_u16.to_le_bytes());
+    for _ in 0..=duration {
+        if session
+            .shared_spells()
+            .pickup(outcome.source_slot)
+            .unwrap()
+            .active_value
+            == 0
+        {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
     }
-    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(
+        session.source_arena().handle(outcome.source_slot),
+        Some(holder_handle)
+    );
     let holder = session
         .shared_spells()
         .dynamic_pickups()
@@ -2919,10 +3330,13 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
             .economy
             .build_castle_at(Position::default(), Position::default(), owner, false, true)
             .expect("same declared remote Castle prerequisite");
+        // The imported rival profile requires more Castle mana than the
+        // local tier table. Stage this callback control from the actual holder.
+        let required = live.shared_spells.pickup(invisible_slot).unwrap().mana_regen;
         assert!(
             live.economy
                 .economy
-                .set_castle_mana_prerequisite_for_test(castle, 10_000)
+                .set_castle_mana_prerequisite_for_test(castle, required)
         );
         support_spells::step_source_slot(
             &mut live.shared_spells,
@@ -2962,6 +3376,28 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
     let morph = session.shared_spells().pickup(morph_slot).unwrap();
     assert_eq!((morph.class, morph.model, morph.action), (15, 4, 12));
     assert_eq!(morph.source_spell_parent_entity_index(), owner);
+    // The earlier Invisible pulse has spent its own cost. The next
+    // controlled callback must also satisfy this physical Morph profile.
+    let morph_cost = morph.max_mana;
+    let morph_castle_requirement = morph.mana_regen;
+    let owner_castle = session
+        .economy
+        .economy
+        .castle_for_owner(owner)
+        .expect("the declared rival Castle remains live")
+        .source_entity_index;
+    assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(
+        owner_castle,
+        morph_castle_requirement,
+    ));
+    session
+        .shared_spells_mut()
+        .player_entities
+        .iter_mut()
+        .find(|row| row.index == owner)
+        .unwrap()
+        .set_mana(morph_cost);
+    session.economy.entities[usize::from(owner)].set_mana(morph_cost);
     activate_status_source_for_test(&mut session, morph_slot);
     assert!(session.economy.entities[usize::from(morph_slot)].active_value > 0);
     for tier in [1, 2] {
@@ -2990,7 +3426,23 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
             .campaign_player_visibility(selection, rival.slot)
             .unwrap();
         assert_eq!(visibility.beyond_sight_tier, Some(tier as u8));
-        assert!(visibility.family4_gate_active);
+        let holder = &session.economy.entities[usize::from(morph_slot)];
+        let parent = &session.economy.entities[usize::from(owner)];
+        assert!(
+            visibility.family4_gate_active,
+            "tier={tier} Morph holder={morph_slot} active={} duration={} cost={} Castle-required={} parent={} mana={} regen={} life={} Castle={:?} owner_handle={:?} holder_handle={:?}",
+            holder.active_value,
+            holder.activation_value,
+            holder.max_mana,
+            holder.mana_regen,
+            parent.index,
+            parent.mana,
+            parent.mana_regen,
+            parent.life,
+            session.economy.economy.castle_for_owner(owner).map(|castle| castle.mana),
+            session.source_arena().handle(owner),
+            session.source_arena().handle(morph_slot),
+        );
         assert_eq!(visibility.visible_to_local_player, tier == 2);
     }
 

@@ -147,6 +147,11 @@ pub(crate) struct ResolvedSourceVisit {
     handler: ExistingHandler,
     route: SourceRoute,
     phase: Option<u8>,
+    /// Source-time resources for the existing scheduler receipts. This lets
+    /// temporal integration checks distinguish a charge from a later transfer.
+    #[cfg(test)]
+    player_resources:
+        Option<(crate::campaign::source_arena::SourceEntityHandle, i32, i32, i32)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -840,6 +845,16 @@ impl Level2ResolvedSourcePlan {
     pub(crate) fn observed_dynamic_cursor_row(&self) -> Option<Level2DynamicArenaCursorRow> {
         match self.route() {
             SourceRoute::Dynamic(row) => Some(row),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn observed_player_resources(
+        &self,
+    ) -> Option<(crate::campaign::source_arena::SourceEntityHandle, i32, i32, i32)> {
+        match self {
+            Self::Callback(visit) => visit.player_resources,
             _ => None,
         }
     }
@@ -6865,9 +6880,33 @@ impl Mc2Simulation {
                         .is_none_or(|runtime| runtime.control_flags & 0x21 == 0)
                 })
                 .map(|source| {
+                    // Typed class-5 owners retain the live source identity,
+                    // including summoned creatures whose ID is their caster.
+                    // The imported slot is only the fallback for other models.
+                    let source_id = self
+                        .economy()
+                        .authored_class5_archer()
+                        .iter()
+                        .find(|row| row.source_entity_index == source.source_entity_index)
+                        .map(|row| row.entity_id)
+                        .or_else(|| {
+                            self.economy()
+                                .authored_fireflies()
+                                .iter()
+                                .find(|row| row.source_entity_index == source.source_entity_index)
+                                .map(|row| row.entity_id)
+                        })
+                        .or_else(|| {
+                            self.economy()
+                                .authored_dragons()
+                                .iter()
+                                .find(|row| row.source_entity_index == source.source_entity_index)
+                                .map(|row| row.entity_id)
+                        })
+                        .unwrap_or(source.source_entity_index);
                     (
                         source.source_entity_index,
-                        source.source_entity_index,
+                        source_id,
                         source.particle_index,
                         source.yaw,
                         source.position,
@@ -14570,6 +14609,15 @@ impl Mc2Simulation {
             handler: entry.handler,
             route,
             phase,
+            #[cfg(test)]
+            player_resources: {
+                let live = &self.session.state.live;
+                let slot = live.core.state.entity_index;
+                live.economy.handle(slot).map(|handle| {
+                    let player = &live.economy.entities[usize::from(slot)];
+                    (handle, player.mana, player.mana_regen, player.max_mana)
+                })
+            },
         }))
     }
 
@@ -27792,8 +27840,16 @@ mod tests {
         for (tier, model, expected_count, level, package_name, check_expiry) in [
             (
                 0_u8,
-                2_u8,
+                19_u8,
                 8_usize,
+                6,
+                "mc-bhq6-ordinary-20261025-zclu5fjj/level6",
+                false,
+            ),
+            (
+                0,
+                2,
+                8,
                 2,
                 "mc-bhq8-level2-collision-v2-day",
                 true,
@@ -27811,14 +27867,6 @@ mod tests {
             (1, 25, 4, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
             (0, 19, 8, 1, "mc-bhq6-ordinary-20261025-zclu5fjj/level1", false),
             (0, 19, 8, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
-            (
-                0,
-                19,
-                8,
-                6,
-                "mc-bhq6-ordinary-20261025-zclu5fjj/level6",
-                false,
-            ),
         ] {
             let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../generated")
@@ -27916,30 +27964,50 @@ mod tests {
                 .economy_mut()
                 .build_castle(position, player)
                 .unwrap();
+            if level == 6 {
+                // This is a controlled prerequisite for the downstream Army
+                // exercise, not earned Level 6 mana or a public Castle
+                // upgrade. Enter the real construction callback at stage 5
+                // so the stage-6 Castle can actually contain the required
+                // 150,000 mana without inflating a stage-1 capacity.
+                let mut economy = session.economy_mut();
+                let root = economy.castle_at_mut(castle).unwrap();
+                root.level = 5;
+                root.action = 5;
+                root.build_state = 3;
+                assert!(economy.step_castle_action(castle));
+                let root = economy.castle_at(castle).unwrap();
+                assert_eq!((root.level, root.mana_capacity), (6, 317_400));
+            }
             assert!(
                 session
                     .economy_mut()
                     .set_castle_mana_prerequisite_for_test(castle, army_tier.castle_mana_required)
             );
+            // The Level 6 holder precedes the player in source-slot order.
+            // Leave room for ordinary upkeep before its first visit; merely
+            // setting the exact price leaves 9,986 at activation. Both this
+            // balance and the Castle prerequisite are deliberately staged.
+            let staged_player_mana = army_tier.mana_cost + if level == 6 { 1_000 } else { 0 };
             {
                 // Supply resources, without staging an active holder, flyer or ring.
                 let live = &mut session.session.state.live;
                 live.economy.refresh_owner_mana_rows();
                 for row in &mut live.shared_spells.player_entities {
                     if row.index == player {
-                        row.set_mana(army_tier.mana_cost);
+                        row.set_mana(staged_player_mana);
                         row.set_mana_regen(0);
                     }
                 }
                 live.shared_spells
                     .player_entity
-                    .set_mana(army_tier.mana_cost);
+                    .set_mana(staged_player_mana);
                 live.shared_spells.player_entity.set_mana_regen(0);
-                live.shared_spells.caster.mana = army_tier.mana_cost;
-                live.shared_spells.player_mana = army_tier.mana_cost;
-                live.economy.entities[usize::from(player)].set_mana(army_tier.mana_cost);
+                live.shared_spells.caster.mana = staged_player_mana;
+                live.shared_spells.player_mana = staged_player_mana;
+                live.economy.entities[usize::from(player)].set_mana(staged_player_mana);
                 if let Some(fire) = live.core.context.spell_fire.as_mut() {
-                    fire.caster.mana = army_tier.mana_cost;
+                    fire.caster.mana = staged_player_mana;
                 }
             }
             // The same acquired/carried holder must reject either missing
@@ -28103,6 +28171,7 @@ mod tests {
             let mut rings = BTreeMap::new();
             let mut summoned = BTreeSet::new();
             let mut saw_summoned_upkeep = false;
+            let mut saw_summoned_presentation = false;
             let mut summoned_handles = BTreeMap::new();
             let mut observed_army_children = Vec::new();
             let mut terminal_ring_observations = Vec::new();
@@ -28123,21 +28192,22 @@ mod tests {
                     let live = &mut campaign.simulation_mut().session.state.live;
                     for row in &mut live.shared_spells.player_entities {
                         if row.index == player {
-                            row.set_mana(army_tier.mana_cost);
+                            row.set_mana(staged_player_mana);
                             row.set_mana_regen(0);
                         }
                     }
                     live.shared_spells
                         .player_entity
-                        .set_mana(army_tier.mana_cost);
+                        .set_mana(staged_player_mana);
                     live.shared_spells.player_entity.set_mana_regen(0);
-                    live.shared_spells.caster.mana = army_tier.mana_cost;
-                    live.shared_spells.player_mana = army_tier.mana_cost;
-                    live.economy.entities[usize::from(player)].set_mana(army_tier.mana_cost);
+                    live.shared_spells.caster.mana = staged_player_mana;
+                    live.shared_spells.player_mana = staged_player_mana;
+                    live.economy.entities[usize::from(player)].set_mana(staged_player_mana);
                     if let Some(fire) = live.core.context.spell_fire.as_mut() {
-                        fire.caster.mana = army_tier.mana_cost;
+                        fire.caster.mana = staged_player_mana;
                     }
                 }
+                let player_mana_before_turn = campaign.simulation().entities()[usize::from(player)].mana;
                 let population_before_turn = campaign.simulation().economy().source_creature_population;
                 let terrain_deaths_before_turn = terrain_death_children.len();
                 campaign.step(
@@ -28184,14 +28254,69 @@ mod tests {
                         .map(|row| (row.index, row.class, row.model, row.life, row.phase,
                             row.drawing_disabled(), u16::from_le_bytes([row.record[42], row.record[43]])))
                         .collect::<Vec<_>>();
-                    activation_observations.push((turn,
-                        (parent.action, parent.life, parent.mana, parent.mana_regen, parent.position,
+                    activation_observations.push((turn, player_mana_before_turn,
+                        (parent.action, parent.life, parent.mana, parent.max_mana, parent.mana_regen, parent.position,
                             parent.yaw, parent.pitch, parent.control_flags),
                         (holder_row.action, holder_row.level_gate, holder_row.active_value,
                             holder_row.activation_value, holder_row.max_mana, holder_row.mana_regen,
                             holder_row.source_spell_parent_entity_index()),
                         (local.left_spell_slot_raw, local.right_spell_slot_raw, local.selected_spell_ui_index),
-                        arena.economy.free_slot_count(), sounds, callbacks, products));
+                        arena.economy.free_slot_count(), sounds, callbacks, products,
+                        (session.shared_spells().player_entity.mana,
+                            session.shared_spells().player_entity.mana_regen)));
+                }
+                if level == 6 && turn == first_pulse_turn {
+                    // The authored model26 at slot73 subtracts regen+14
+                    // between holder7 and player77. A negative spell charge
+                    // therefore increases mana before upkeep consumes it;
+                    // the final net balance alone cannot prove payment.
+                    let visits = session.cf10_production_schedule_receipts().into_iter()
+                        .filter_map(|receipt| match receipt {
+                            ScheduleReceipt::EpilogueCompleted {
+                                pass, scan, slot, original, current: CurrentOccupant::Known { selector, .. },
+                            } => Some((slot, pass, scan, original,
+                                selector.observed_player_resources()?)),
+                            _ => None,
+                        }).collect::<Vec<_>>();
+                    let (holder_order, (_, holder_pass, holder_scan, holder_before, holder_after)) = visits.iter()
+                        .enumerate().find(|(_, (slot, _, _, _, _))| *slot == holder)
+                        .expect("the real Army holder receives its source callback");
+                    let before = holder_before.observed_player_resources().unwrap();
+                    assert_eq!(before.0, player_handle);
+                    assert!(before.1 >= army_tier.mana_cost);
+                    assert_eq!(*holder_after,
+                        (player_handle, before.1, -army_tier.mana_cost, before.3),
+                        "the real first pulse queues the full source price");
+
+                    let (thief_order, (_, thief_pass, thief_scan, thief_before, thief_after)) = visits.iter()
+                        .enumerate().find(|(_, (slot, _, _, _, _))| *slot == 73)
+                        .expect("the authored model26 receives its source callback");
+                    assert!(matches!(thief_before,
+                        Level2ResolvedSourcePlan::Callback(visit)
+                            if visit.handler == ExistingHandler::Creature26));
+                    assert_eq!((arena.entities[73].class, arena.entities[73].model), (5, 26));
+                    assert_eq!(thief_before.observed_player_resources(), Some(*holder_after));
+                    assert_eq!(*thief_after, (player_handle,
+                        holder_after.1.wrapping_sub(holder_after.2.wrapping_add(14)).max(0),
+                        holder_after.2, holder_after.3),
+                        "source model26 subtracts the signed current regen plus14");
+
+                    let (player_order, (_, player_pass, player_scan, player_before, player_after)) = visits.iter()
+                        .enumerate().find(|(_, (slot, _, _, _, _))| *slot == player)
+                        .expect("the real player receives its later source callback");
+                    assert!(holder_order < thief_order && thief_order < player_order);
+                    assert_eq!(*holder_pass, SourcePass::UpdateEntities);
+                    assert_eq!(holder_pass, thief_pass);
+                    assert_eq!(holder_pass, player_pass);
+                    assert_eq!(holder_scan, thief_scan);
+                    assert_eq!(holder_scan, player_scan);
+                    assert_eq!(player_before.observed_player_resources(), Some(*thief_after));
+                    assert_eq!(player_after.0, player_handle);
+                    assert_eq!(player_after.1,
+                        thief_after.1.wrapping_add(thief_after.2).clamp(0, thief_after.3),
+                        "the player consumes the full queued charge after the real transfer");
+                    assert_eq!(player_after.2, (player_after.3 / 200).max(1000));
+                    saw_paid_cast = true;
                 }
                 for row in &arena.entities {
                     if row.active
@@ -28215,7 +28340,12 @@ mod tests {
                                 == (army_tier.cooldown as i16).wrapping_sub(2);
                         }
                         let caster = &session.shared_spells().player_entity;
-                        saw_paid_cast |= caster.mana == 0 || caster.mana_regen == -army_tier.mana_cost;
+                        saw_paid_cast |= caster.mana == 0
+                            || caster.mana_regen == -army_tier.mana_cost
+                            || (level == 6
+                                && player_mana_before_turn >= army_tier.mana_cost
+                                && player_mana_before_turn.saturating_sub(caster.mana)
+                                    >= army_tier.mana_cost);
                     }
                     if row.active
                         && (row.class, row.model, row.action) == (10, 72, 79)
@@ -28229,6 +28359,10 @@ mod tests {
                                 row.drawing_disabled(), arena.economy.free_slot_count()));
                         }
                     }
+                }
+                if level == 6 && turn == first_pulse_turn {
+                    assert!(saw_flyer,
+                        "the acquired Army holder must launch at its first admitted source visit: {activation_observations:?}");
                 }
                 let census = arena.creature_runtime_census(&BTreeMap::new(), &BTreeMap::new());
                 for identity in census.entries().iter().filter(|identity| {
@@ -28327,6 +28461,40 @@ mod tests {
                                 .unwrap();
                             assert_eq!(state.parent_entity_index, player);
                             saw_summoned_upkeep |= state.word_0x2e < 250;
+                            if level == 6 && !saw_summoned_presentation {
+                                let source = arena
+                                    .economy
+                                    .authored_class5()
+                                    .iter()
+                                    .find(|source| {
+                                        source.active && source.source_entity_index == source_slot
+                                    })
+                                    .expect("the real summoned Firefly has its source carrier");
+                                let presentation = session
+                                    .campaign_entity_presentations(0)
+                                    .expect("the acquired Army reaches the campaign sprite projection")
+                                    .into_iter()
+                                    .find(|row| row.entity_index == source_slot);
+                                if let Some(presentation) = presentation {
+                                    assert_eq!(
+                                        state.entity_id,
+                                        arena.entities[usize::from(player)].source_id
+                                    );
+                                    assert_eq!(
+                                        presentation.source_id, state.entity_id,
+                                        "the summoned sprite retains its real source owner"
+                                    );
+                                    assert_eq!(presentation.position, source.position);
+                                    assert_eq!(
+                                        presentation.render_parameter_index,
+                                        crate::native_world::level2_class5::firefly::FIREFLY_PARTICLE
+                                    );
+                                    let particle = &session.session.definition.presentation.particles
+                                        [usize::from(presentation.render_parameter_index)];
+                                    assert_eq!(presentation.base_tmap, particle.base_tmap);
+                                    saw_summoned_presentation = true;
+                                }
+                            }
                         } else if model == 2 {
                             let bee = arena
                                 .economy
@@ -28424,7 +28592,7 @@ mod tests {
             );
             assert!(
                 saw_paid_cast,
-                "public cast debits mana or retains its source mana charge"
+                "public cast debits mana or retains its source mana charge: {activation_observations:?}"
             );
             assert_eq!(
                 rings.len(),
@@ -28444,6 +28612,10 @@ mod tests {
                 saw_summoned_upkeep,
                 "summoned creatures reach their actual scheduled lifetime consumer"
             );
+            if level == 6 {
+                assert!(saw_summoned_presentation,
+                    "an acquired Army Firefly must reach the real campaign sprite projection");
+            }
             if check_expiry {
                 let arena = &campaign.simulation().session.state.live.economy;
                 let parent = &arena.entities[usize::from(player)];
@@ -28549,21 +28721,27 @@ mod tests {
                 let live = &mut campaign.simulation_mut().session.state.live;
                 for row in &mut live.shared_spells.player_entities {
                     if row.index == player {
-                        row.set_mana(army_tier.mana_cost);
+                        row.set_mana(staged_player_mana);
                         row.set_mana_regen(0);
                     }
                 }
                 live.shared_spells
                     .player_entity
-                    .set_mana(army_tier.mana_cost);
+                    .set_mana(staged_player_mana);
                 live.shared_spells.player_entity.set_mana_regen(0);
-                live.shared_spells.caster.mana = army_tier.mana_cost;
-                live.shared_spells.player_mana = army_tier.mana_cost;
-                live.economy.entities[usize::from(player)].set_mana(army_tier.mana_cost);
+                live.shared_spells.caster.mana = staged_player_mana;
+                live.shared_spells.player_mana = staged_player_mana;
+                live.economy.entities[usize::from(player)].set_mana(staged_player_mana);
                 if let Some(fire) = live.core.context.spell_fire.as_mut() {
-                    fire.caster.mana = army_tier.mana_cost;
+                    fire.caster.mana = staged_player_mana;
                 }
             }
+            let prior_flyers = {
+                let arena = &campaign.simulation().session.state.live.economy;
+                arena.entities.iter().filter(|row| row.active
+                    && (row.class, row.model, row.action) == (9, 24, 25))
+                    .filter_map(|row| arena.handle(row.index)).collect::<Vec<_>>()
+            };
             campaign.step(
                 PlayerCommand {
                     opcode: 6,
@@ -28580,9 +28758,27 @@ mod tests {
                     .pickup(holder)
                     .unwrap()
                     .active_value,
-                (army_tier.cooldown as i16).wrapping_sub(1),
+                (army_tier.cooldown as i16).wrapping_sub(i16::from(holder > player)),
                 "an affordable cast is admitted again after the cooldown"
             );
+            if holder < player {
+                let arena = &campaign.simulation().session.state.live.economy;
+                assert!(arena.entities.iter().filter(|row| row.active
+                    && (row.class, row.model, row.action) == (9, 24, 25))
+                    .filter_map(|row| arena.handle(row.index))
+                    .all(|handle| prior_flyers.contains(&handle)),
+                    "the earlier holder cannot emit after its numeric visit has passed");
+                campaign.step(PlayerCommand::default(), 0);
+                assert_eq!(campaign.simulation().shared_spells().pickup(holder).unwrap().active_value,
+                    (army_tier.cooldown as i16).wrapping_sub(1),
+                    "the following source pass owns the first admitted pulse");
+                let arena = &campaign.simulation().session.state.live.economy;
+                assert!(arena.entities.iter().any(|row| row.active
+                    && (row.class, row.model, row.action) == (9, 24, 25)
+                    && u16::from_le_bytes([row.record[42], row.record[43]]) == holder
+                    && arena.handle(row.index).is_some_and(|handle| !prior_flyers.contains(&handle))),
+                    "the following holder visit constructs a real new Army flyer generation");
+            }
         }
     }
 

@@ -3315,6 +3315,79 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
         "actual owned source mana must supply both Castle cast capacities: max={}, first_cost={occupied_mana_cost}, repeat_cost={repeat_cost}, sources={mana_sources:?}, current={:?}",
         occupied.shared_spells().player_entity().max_mana,
         occupied.economy().spheres());
+
+    // Start each higher-tier cast from this same genuinely acquired holder,
+    // stage-one root and earned mana. Only the carried spell progression is
+    // staged; the selected physical profile, price, payment and upgrade all
+    // go through the normal public session and source callbacks.
+    for (tier, expected_cost, expected_coefficient) in [(1_u8, 12_500, 256_u16), (2, 15_000, 512)] {
+        let mut higher = occupied.clone();
+        assert_eq!(higher.economy().castle_at(root_slot).unwrap().level, 1);
+        let root_handle = higher.session.state.live.economy.handle(root_slot).unwrap();
+        let holder_slot = higher.shared_spells().local_player.enabled_spell_holders
+            [usize::from(CASTLE_SPELL_FAMILY)];
+        let holder_handle = higher.session.state.live.economy.handle(holder_slot).unwrap();
+        higher.apply_carried_spell_progression(&[CarriedSpellProgress {
+            family: CASTLE_SPELL_FAMILY,
+            persistent_experience: LEVEL2_SPELL_TIER_THRESHOLDS[usize::from(CASTLE_SPELL_FAMILY)]
+                [usize::from(tier)],
+            runtime_experience: 0,
+            unlocked_tier: tier as i8,
+            selected_tier: tier as i8,
+        }]).expect("controlled carried Castle progression");
+        higher.step_outer_turn(PlayerCommand {
+            opcode: 31,
+            argument_1: 2,
+            argument_2: tier as i8,
+            ..PlayerCommand::default()
+        }, 0);
+        let holder = higher.shared_spells().pickup(holder_slot).unwrap().clone();
+        assert_eq!((holder.level_gate, holder.max_mana), (tier as i8, expected_cost));
+        assert_eq!(higher.session.state.live.economy.handle(holder_slot), Some(holder_handle));
+        assert!(higher.shared_spells().player_entity().max_mana >= expected_cost);
+        higher.set_level2_entity_position(player_slot, recharge_position).unwrap();
+        higher.state.yaw = recharge_yaw;
+        higher.state.display_pitch = 0;
+        higher.state.effective_pitch = 0;
+        higher.state.target_speed = 0;
+        higher.state.actual_speed = 0;
+        for _ in 0..32 {
+            if higher.shared_spells().player_entity().mana >= expected_cost {
+                break;
+            }
+            higher.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let before = higher.shared_spells().player_entity().mana;
+        assert!(before >= expected_cost, "tier {tier} requires normal paid mana");
+        higher.step_outer_turn(request, 0);
+        let after = higher.shared_spells().player_entity();
+        assert!(before - after.mana >= expected_cost || after.mana_regen <= -expected_cost,
+            "tier {tier} must consume or queue its full physical price: before={before}, after={}, regen={}", after.mana, after.mana_regen);
+        assert!(higher.economy().castle_projectiles().iter().any(|projectile| {
+            projectile.target_castle_slot == root_slot
+                && (projectile.source_byte_43, projectile.source_byte_44) == (10, 43)
+        }), "tier {tier} public input must create the real upgrade flyer");
+        assert_eq!(higher.economy().castle_stage_coefficient_for_owner(player_slot, 2), expected_coefficient);
+        assert_eq!(higher.economy().castle_controller_coefficients_for_owner(player_slot)[2], tier);
+        for _ in 0..128 {
+            if higher.economy().castle_at(root_slot).is_some_and(|root| {
+                (root.level, root.action, root.build_state) == (2, 4, 0)
+            }) {
+                break;
+            }
+            higher.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(higher.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        let root = higher.economy().castle_at(root_slot).expect("tier upgrade retains the Castle");
+        assert_eq!((root.level, root.action, root.build_state), (2, 4, 0));
+        assert_eq!(higher.session.state.live.economy.handle(root_slot), Some(root_handle));
+        assert_eq!((root.source_id_entity_index, root.player_entity_index), (player_slot, player_slot));
+        let (base_life, capacity) = crate::native_world::world_types::level2_castle_stage_stats(2);
+        assert_eq!(root.max_life, base_life * i32::from(expected_coefficient) / 256);
+        assert_eq!(root.mana_capacity, capacity);
+        let sprites = higher.campaign_entity_presentations(0).expect("tier Castle presentation");
+        assert!(sprites.iter().any(|row| row.entity_index == root_slot && row.source_id == player_slot));
+    }
     let player_before_recharge = occupied.shared_spells().player_entity().clone();
     let overlap_before_recharge = occupied
         .economy()

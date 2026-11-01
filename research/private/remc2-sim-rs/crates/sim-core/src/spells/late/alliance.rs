@@ -79,9 +79,10 @@ impl Holder {
             if let Some(parent) = parent {
                 let admitted = parent.life >= 0
                     && parent.mana >= 0
-                    && parent
-                        .castle_mana
-                        .is_some_and(|mana| mana >= rule.castle_mana_required)
+                    && (rule.castle_mana_required == 0
+                        || parent
+                            .castle_mana
+                            .is_some_and(|mana| mana >= rule.castle_mana_required))
                     && (self.active != self.duration || parent.mana >= rule.mana_cost);
                 if !admitted {
                     self.active = 1;
@@ -330,6 +331,32 @@ mod tests {
         assert!(visit.denied && visit.cleanup);
         assert_eq!(visit.projectile_allocation_attempts, 0);
         assert_eq!(parent.mana_regen, 100);
+    }
+
+    #[test]
+    fn zero_castle_requirement_uses_the_physical_holder_cost() {
+        let rule = super::Rule {
+            mana_cost: 1_234,
+            castle_mana_required: 0,
+            ..SOURCE_RULES[0]
+        };
+        let mut parent = caster();
+        parent.castle_mana = None;
+        parent.mana = rule.mana_cost;
+        let mut holder = Holder::new(rule, rule.duration, 0);
+        let visit = holder.visit(rule, Some(&mut parent));
+        assert!(!visit.denied);
+        assert_eq!(visit.projectile_allocation_attempts, 1);
+        assert_eq!(parent.mana_regen, -1_234);
+
+        let mut short = caster();
+        short.castle_mana = None;
+        short.mana = rule.mana_cost - 1;
+        let mut holder = Holder::new(rule, rule.duration, 0);
+        let denied = holder.visit(rule, Some(&mut short));
+        assert!(denied.denied);
+        assert_eq!(denied.projectile_allocation_attempts, 0);
+        assert_eq!(short.mana_regen, 100);
     }
 
     #[test]

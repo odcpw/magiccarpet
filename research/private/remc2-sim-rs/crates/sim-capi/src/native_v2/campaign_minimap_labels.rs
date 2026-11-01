@@ -39,6 +39,9 @@ mod tests {
         let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-level2-vault-successor-closure-20261025");
         let package = package.to_string_lossy();
+        let cache = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-level2-vault-successor-environment-20261025");
+        let cache = cache.to_string_lossy();
         let selection = McCampaignSelectionV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCampaignSelectionV2>(),
@@ -49,11 +52,13 @@ mod tests {
         };
         let mut handle = 0;
         assert_eq!(
-            mc_native_campaign_session_open(
+            mc_native_campaign_session_open_with_asset_cache(
                 package.as_ptr(),
                 package.len() as u32,
                 std::ptr::null(),
                 0,
+                cache.as_ptr(),
+                cache.len() as u32,
                 &raw const selection,
                 &raw mut handle,
             ),
@@ -123,33 +128,41 @@ mod tests {
         }
         // Exercise the actual pickup callback and its numeric publication,
         // without granting a synthetic holder or setting an active timer.
-        let acquired_tick = campaign_abi::with_campaign_session_mut(handle, |session| {
-            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
-                unreachable!("opening package has a source campaign session")
-            };
-            let position = reset
-                .shared_spells()
-                .pickups()
-                .iter()
-                .find(|row| row.index == 38)
-                .expect("ordinary Beyond Sight pickup")
-                .position;
-            for _ in 0..4 {
-                reset.state.position = position;
-                reset.step_outer_turn(PlayerCommand::default(), 0);
-                if reset.shared_spells().beyond_sight_state().is_some() {
-                    break;
+        let (acquired_tick, mut group1_produced) =
+            campaign_abi::with_campaign_session_mut(handle, |session| {
+                let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+                    unreachable!("opening package has a source campaign session")
+                };
+                let position = reset
+                    .shared_spells()
+                    .pickups()
+                    .iter()
+                    .find(|row| row.index == 38)
+                    .expect("ordinary Beyond Sight pickup")
+                    .position;
+                let mut group1_produced = false;
+                for _ in 0..4 {
+                    reset.state.position = position;
+                    reset.step_outer_turn(PlayerCommand::default(), 0);
+                    group1_produced |= reset.dispatch_events().iter().any(|event| {
+                        matches!(
+                            event,
+                            Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                        )
+                    });
+                    if reset.shared_spells().beyond_sight_state().is_some() {
+                        break;
+                    }
                 }
-            }
-            let holder = reset
-                .shared_spells()
-                .beyond_sight_state()
-                .expect("ordinary overlap acquires the imported family-12 holder");
-            assert_eq!(holder.active_value, 0);
-            assert_eq!(reset.players()[0].enabled_spell_holders[12], 38);
-            Ok(reset.state.tick)
-        })
-        .expect("actual opening source acquisition passes");
+                let holder = reset
+                    .shared_spells()
+                    .beyond_sight_state()
+                    .expect("ordinary overlap acquires the imported family-12 holder");
+                assert_eq!(holder.active_value, 0);
+                assert_eq!(reset.players()[0].enabled_spell_holders[12], 38);
+                Ok((reset.state.tick, group1_produced))
+            })
+            .expect("actual opening source acquisition passes");
         let mut bytes = vec![0; 8192];
         assert_eq!(
             mc_native_campaign_minimap_labels_json(
@@ -169,13 +182,42 @@ mod tests {
             serde_json::json!([]),
             "owning an inactive Beyond Sight holder does not reveal the player label"
         );
+        group1_produced |= campaign_abi::with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+                unreachable!()
+            };
+            assert_eq!(
+                reset.entities()[usize::from(reset.state.entity_index)].max_mana,
+                1000
+            );
+            assert_eq!(reset.entities()[38].max_mana, 1800);
+            reset.step_outer_turn(
+                PlayerCommand {
+                    opcode: 6,
+                    argument_1: 12,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            assert_eq!(
+                reset.entities()[38].active_value,
+                0,
+                "the real scalar gate refuses an unfunded selected cast"
+            );
+            Ok(reset.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Mc2DispatchEvent::AuthoredGroupActivated { group: 1, .. }
+                )
+            }))
+        })
+        .unwrap();
+        super::super::tests::fund_level2_status_labels(handle, 1800, group1_produced);
         let active_tick = campaign_abi::with_campaign_session_mut(handle, |session| {
             let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 unreachable!()
             };
-            // The real source command pays the physical holder's immediate
-            // activation cost. The following source visit owns the separate
-            // first-pulse gate; this is deliberately not a funded-duration test.
             reset.step_outer_turn(
                 PlayerCommand {
                     opcode: 6,
@@ -218,10 +260,14 @@ mod tests {
             let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
                 unreachable!()
             };
-            // This genuine starting player has no Castle-funded capacity for
-            // the 1800 first pulse. Its next normal visit must clear labels,
-            // while retaining the acquired tier-0 inventory relation.
-            reset.step_outer_turn(PlayerCommand::default(), 0);
+            // The funded holder expires through its ordinary source visits,
+            // retaining the acquired inventory relation.
+            for _ in 0..151 {
+                reset.step_outer_turn(PlayerCommand::default(), 0);
+                if reset.entities()[38].active_value == 0 {
+                    break;
+                }
+            }
             assert_eq!(reset.entities()[38].active_value, 0);
             assert_eq!(reset.players()[0].enabled_spell_holders[12], 38);
             let visibility = reset

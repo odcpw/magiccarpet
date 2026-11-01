@@ -1422,10 +1422,218 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
     // integration check. This is not evidence of earned campaign resources.
     let rule = crate::level_definition::late_spells::ALLIANCE_PROPERTIES.tiers[0];
     let actor_slot = slots[0].0;
-    for (castle_mana, player_mana, settled, admitted) in [
+
+    // Exercise the same genuinely acquired holder and authored actor with
+    // controlled carried progression and resources for the higher tiers.
+    // The source stage-7 Castle can hold both prerequisites; this is not a
+    // claim that the player earned the staged mana or progression here.
+    for tier in 1_u8..=2 {
+        let mut cast = alliance_acquired_session.clone();
+        for _ in 0..32 {
+            if cast
+                .economy()
+                .authored_model53()
+                .iter()
+                .all(|source| !source.active || source.life < 0)
+                && cast
+                    .economy()
+                    .model17_spawned_children()
+                    .iter()
+                    .all(|child| !child.active)
+                && cast.economy().free_slot_count() >= 12
+            {
+                break;
+            }
+            cast.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let holder_handle = cast
+            .source_arena()
+            .handle(alliance.source_entity_index)
+            .expect("acquired Alliance holder remains live");
+        let actor_handle = cast
+            .source_arena()
+            .handle(actor_slot)
+            .expect("owner-authored Alliance target remains live");
+        let parent_handle = cast
+            .source_arena()
+            .handle(player)
+            .expect("acquiring player remains live");
+        cast.apply_carried_spell_progression(&[crate::native_world::CarriedSpellProgress {
+            family: 24,
+            persistent_experience: crate::native_world::LEVEL2_SPELL_TIER_THRESHOLDS[24]
+                [usize::from(tier)],
+            runtime_experience: 0,
+            unlocked_tier: tier as i8,
+            selected_tier: tier as i8,
+        }])
+        .expect("controlled carried Alliance progression");
+        assert_eq!(
+            cast.source_arena().handle(alliance.source_entity_index),
+            Some(holder_handle)
+        );
+        assert_eq!(
+            cast.shared_spells()
+                .pickup(alliance.source_entity_index)
+                .unwrap()
+                .level_gate,
+            tier as i8
+        );
+
+        let tier_rule =
+            crate::level_definition::late_spells::ALLIANCE_PROPERTIES.tiers[usize::from(tier)];
+        let source_duration = u16::try_from(tier_rule.subspell_index)
+            .expect("Alliance source duration fits its physical word");
+        let castle = cast
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                player,
+                false,
+                true,
+            )
+            .expect("controlled source Castle constructor");
+        {
+            let mut economy = cast.economy_mut();
+            let root = economy.castle_at_mut(castle).unwrap();
+            root.level = 6;
+            root.action = 5;
+            root.build_state = 3;
+            assert!(economy.step_castle_action(castle));
+            assert_eq!(economy.castle_at(castle).unwrap().level, 7);
+            assert!(
+                economy.castle_at(castle).unwrap().mana_capacity
+                    >= tier_rule.runtime_castle_mana_limit
+            );
+            assert!(economy.set_castle_mana_prerequisite_for_test(
+                castle,
+                tier_rule.runtime_castle_mana_limit
+            ));
+        }
+        let player_mana = tier_rule.mana_cost + 1_000;
+        cast.economy.entities[usize::from(player)].set_mana(player_mana);
+        {
+            let mut shared = cast.shared_spells_mut();
+            shared.player_entity.set_mana(player_mana);
+            shared.player_entities[0] = shared.player_entity.clone();
+            shared.caster.mana = player_mana;
+            shared.player_mana = player_mana;
+        }
+        cast.step_outer_turn(
+            PlayerCommand {
+                opcode: 31,
+                argument_1: alliance_ui,
+                argument_2: tier as i8,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+
+        let target = cast.entities()[usize::from(actor_slot)].position;
+        let player_position = Position {
+            x: target.x,
+            y: target.y.wrapping_add(1024),
+            z: target.z.wrapping_add(1024),
+        };
+        cast.set_level2_entity_position(player, player_position)
+            .unwrap();
+        let (yaw, pitch) =
+            crate::level1_mission::projectile_guidance_angles(player_position, target);
+        cast.state.yaw = yaw;
+        cast.state.display_pitch = pitch;
+        cast.state.effective_pitch = pitch;
+        cast.state.pitch_accumulator = pitch;
+        cast.state.actual_speed = 0;
+        cast.state.target_speed = 0;
+        let mut saw_flyer = false;
+        let mut saw_impact = false;
+        let mut saw_allied = false;
+        let mut trace = Vec::new();
+        for turn in 0..24 {
+            cast.step_outer_turn(
+                PlayerCommand {
+                    flags: if turn == 0 { 0x10 } else { 0 },
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            assert!(
+                !cast
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "tier {tier} Alliance dispatch: {:?}",
+                cast.dispatch_events()
+            );
+            for row in cast
+                .entities()
+                .iter()
+                .filter(|row| row.active && row.source_id == player)
+            {
+                if (row.class, row.model) == (9, 25) {
+                    assert_eq!(
+                        row.record[74], tier_rule.life,
+                        "flyer carries source radius"
+                    );
+                    assert_eq!(
+                        row.subspell_index, source_duration,
+                        "flyer carries source duration"
+                    );
+                    saw_flyer = true;
+                }
+                if (row.class, row.model) == (10, 74) {
+                    assert_eq!(
+                        row.record[74], tier_rule.life,
+                        "impact carries source radius"
+                    );
+                    assert_eq!(
+                        row.subspell_index, source_duration,
+                        "impact carries source duration"
+                    );
+                    saw_impact = true;
+                }
+            }
+            let actor = &cast.entities()[usize::from(actor_slot)];
+            let parent = u16::from_le_bytes([actor.record[44], actor.record[45]]);
+            let remaining = u16::from_le_bytes([actor.record[50], actor.record[51]]);
+            let duration = u16::from_le_bytes([actor.record[52], actor.record[53]]);
+            if actor.record[77] == 14
+                && parent == player
+                && cast.source_arena().creature_parent_binding(actor_handle) == Some(parent_handle)
+            {
+                assert_eq!(duration, source_duration);
+                assert!(remaining > 0 && remaining <= duration);
+                saw_allied = true;
+            }
+            trace.push((
+                turn,
+                actor.action,
+                actor.record[77],
+                parent,
+                remaining,
+                duration,
+                cast.economy().free_slot_count(),
+            ));
+            if saw_flyer && saw_impact && saw_allied {
+                break;
+            }
+        }
+        assert!(
+            saw_flyer && saw_impact && saw_allied,
+            "acquired tier {tier} must produce flyer, impact and ownership: flyer={saw_flyer}, impact={saw_impact}, allied={saw_allied}, trace={trace:?}"
+        );
+        assert_eq!(cast.source_arena().handle(actor_slot), Some(actor_handle));
+        assert_eq!(
+            cast.source_arena().handle(alliance.source_entity_index),
+            Some(holder_handle)
+        );
+    }
+
+    for (castle_mana, player_mana, settled, free_profile, admitted) in [
         (
             rule.runtime_castle_mana_limit - 1,
             rule.mana_cost,
+            false,
             false,
             false,
         ),
@@ -1434,11 +1642,33 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             rule.mana_cost - 1,
             false,
             false,
+            false,
         ),
         // The immediate full-arena cast is the observed NewEvent failure
         // control; it still charges mana, as in source sub_6CD20.
-        (rule.runtime_castle_mana_limit, rule.mana_cost, false, false),
-        (rule.runtime_castle_mana_limit, rule.mana_cost, true, true),
+        (
+            rule.runtime_castle_mana_limit,
+            rule.mana_cost,
+            false,
+            false,
+            false,
+        ),
+        (
+            rule.runtime_castle_mana_limit,
+            rule.mana_cost,
+            true,
+            false,
+            true,
+        ),
+        // The public source free-use option clears the physical Castle
+        // requirement, but leaves the holder's actual mana cost intact.
+        (
+            rule.runtime_castle_mana_limit - 1,
+            rule.mana_cost,
+            true,
+            true,
+            true,
+        ),
     ] {
         let mut cast = alliance_acquired_session.clone();
         if settled {
@@ -1532,6 +1762,16 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             shared.caster.mana = player_mana;
             shared.player_mana = player_mana;
         }
+        if free_profile {
+            cast.step_outer_turn(
+                PlayerCommand {
+                    opcode: 0x1e,
+                    argument_1: 9,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+        }
         cast.step_outer_turn(
             PlayerCommand {
                 opcode: 31,
@@ -1541,6 +1781,24 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             },
             0,
         );
+        if free_profile {
+            let physical = cast
+                .shared_spells()
+                .pickup(alliance.source_entity_index)
+                .unwrap();
+            assert_eq!(
+                physical.mana_regen, 0,
+                "source option clears the physical Castle gate"
+            );
+            assert_eq!(
+                physical.max_mana, rule.mana_cost,
+                "source option retains the physical cost"
+            );
+            assert!(
+                cast.economy().castle_for_owner(player).unwrap().mana
+                    < rule.runtime_castle_mana_limit
+            );
+        }
         let target = cast.entities()[usize::from(actor_slot)].position;
         let player_position = Position {
             x: target.x,
@@ -1647,6 +1905,12 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                 .cloned()
                 .collect::<Vec<_>>();
             let current_castle_mana = cast.economy().castle_for_owner(player).map(|row| row.mana);
+            if free_profile {
+                assert!(
+                    current_castle_mana.is_some_and(|mana| mana < rule.runtime_castle_mana_limit),
+                    "free-use cast must remain below the ordinary Castle gate"
+                );
+            }
             let current_player_mana = cast.entities()[usize::from(player)].mana;
             charged |= previous_mana - current_player_mana == rule.mana_cost;
             previous_mana = current_player_mana;
@@ -1765,6 +2029,13 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                 launched && aimed_from_input && impacted && allied,
                 "controlled at-gate Alliance must reach the live model18: launched={launched}, aimed={aimed_from_input}, impact={impacted}, allied={allied}, trace={trace:?}"
             );
+            if free_profile {
+                assert!(
+                    charged,
+                    "free-use holder still charges its physical cost: {trace:?}"
+                );
+                continue;
+            }
             let actor = &cast.entities()[usize::from(actor_slot)];
             let presentation = cast
                 .campaign_entity_presentations(cast.state.yaw)
@@ -1830,11 +2101,38 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                 },
                 0,
             );
-            let mut hostile_position = combat.entities()[usize::from(actor_slot)].position;
-            hostile_position.x = hostile_position.x.wrapping_add(2048);
+            let ally_position = combat.entities()[usize::from(actor_slot)].position;
+            // Pick a nearby east/west approach with the lowest sampled owner
+            // terrain. East/west also keeps the player's northbound Fireball
+            // clear of the ally. The previous long offset fired into a ridge.
+            let mut hostile_position = [(768_i16, 0_i16), (-768, 0)]
+                .into_iter()
+                .map(|(dx, dy)| {
+                    let peak = (1..=3)
+                        .map(|step| {
+                            let sample = Position {
+                                x: ally_position.x.wrapping_add((dx * step / 3) as u16),
+                                y: ally_position.y.wrapping_add((dy * step / 3) as u16),
+                                z: ally_position.z,
+                            };
+                            combat.canonical_terrain().ground_height(sample)
+                        })
+                        .max()
+                        .unwrap();
+                    (peak, dx, dy)
+                })
+                .min_by_key(|(peak, _, _)| *peak)
+                .map(|(_, dx, dy)| Position {
+                    x: ally_position.x.wrapping_add(dx as u16),
+                    y: ally_position.y.wrapping_add(dy as u16),
+                    z: ally_position.z,
+                })
+                .unwrap();
+            hostile_position.z = combat.canonical_terrain().ground_height(hostile_position);
             combat
                 .set_level2_entity_position(hostile_slot, hostile_position)
                 .unwrap();
+            let hostile_handle = combat.source_arena().handle(hostile_slot).unwrap();
             let player_position = Position {
                 x: hostile_position.x.wrapping_add(256),
                 y: hostile_position.y.wrapping_add(1024),
@@ -1860,7 +2158,14 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
             let mut selected_hostile = false;
             let mut ally_selected_hostile = false;
             let mut ally_fired = false;
+            let mut ally_impact = false;
+            let mut ally_mailbox = false;
+            let mut ally_damage_consumed = false;
+            let mut ally_receipts = Vec::new();
+            let mut impact_context = Vec::new();
             for turn in 0..256 {
+                let previous_life = combat.entities()[usize::from(hostile_slot)].life;
+                crate::native_world::area_damage::start_effect_damage_trace(hostile_slot);
                 combat.step_outer_turn(
                     PlayerCommand {
                         flags: if turn == 0 { 0x10 } else { 0 },
@@ -1873,6 +2178,45 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                     },
                     0,
                 );
+                let receipts = crate::native_world::area_damage::take_effect_damage_trace();
+                for receipt in receipts
+                    .into_iter()
+                    .filter(|receipt| receipt.pulse.owner == actor_slot)
+                {
+                    if impact_context.len() < 4 {
+                        let position = receipt.pulse.position;
+                        let nearby = combat
+                            .entities()
+                            .iter()
+                            .filter(|row| {
+                                row.active
+                                    && i32::from(row.position.x.wrapping_sub(position.x) as i16)
+                                        .abs()
+                                        < 800
+                                    && i32::from(row.position.y.wrapping_sub(position.y) as i16)
+                                        .abs()
+                                        < 800
+                            })
+                            .map(|row| {
+                                (
+                                    row.index,
+                                    row.class,
+                                    row.model,
+                                    row.source_id,
+                                    row.position,
+                                    row.source_word_96(),
+                                    row.life,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        impact_context.push((
+                            position,
+                            combat.canonical_terrain().ground_height(position),
+                            nearby,
+                        ));
+                    }
+                    ally_receipts.push(receipt);
+                }
                 let caster = &combat.entities()[usize::from(player)];
                 let ally = &combat.entities()[usize::from(actor_slot)];
                 selected_hostile |= put_word(caster, 154) == hostile_slot;
@@ -1885,13 +2229,40 @@ fn owner_switch_publishes_model18_and_normal_scheduler_visits_it() {
                         && shot.owner_entity_index == actor_slot
                         && shot.target_source_entity_index == hostile_slot
                 });
-                if selected_hostile && ally_selected_hostile && ally_fired {
+                ally_impact |= combat.entities().iter().any(|effect| {
+                    effect.active
+                        && (effect.class, effect.model, effect.source_id) == (10, 0, actor_slot)
+                        && effect.source_word_96() == hostile_slot
+                });
+                ally_mailbox |= ally_receipts.iter().any(|receipt| {
+                    receipt.pulse.payload == RULES.projectile_damage
+                        && receipt
+                            .mailbox_after
+                            .is_some_and(|(damage, attacker)| damage > 0 && attacker == actor_slot)
+                });
+                let hostile = &combat.entities()[usize::from(hostile_slot)];
+                ally_damage_consumed |= combat.source_arena().handle(hostile_slot)
+                    == Some(hostile_handle)
+                    && hostile.life < previous_life
+                    && put_word(hostile, 42) == actor_slot;
+                if selected_hostile
+                    && ally_selected_hostile
+                    && ally_fired
+                    && ally_impact
+                    && ally_mailbox
+                    && ally_damage_consumed
+                {
                     break;
                 }
             }
             assert!(
-                selected_hostile && ally_selected_hostile && ally_fired,
-                "real Fireball target must drive the acquired ally's attack: player={selected_hostile}, ally={ally_selected_hostile}, fired={ally_fired}, caster_target={}, ally={:?}, hostile={:?}, errors={:?}",
+                selected_hostile
+                    && ally_selected_hostile
+                    && ally_fired
+                    && ally_impact
+                    && ally_mailbox
+                    && ally_damage_consumed,
+                "real Fireball target must drive the acquired ally's damaging attack: player={selected_hostile}, ally={ally_selected_hostile}, fired={ally_fired}, impact={ally_impact}, mailbox={ally_mailbox}, consumed={ally_damage_consumed}, caster_target={}, ally={:?}, hostile={:?}, impact_context={impact_context:?}, receipts={ally_receipts:?}, errors={:?}",
                 put_word(&combat.entities()[usize::from(player)], 154),
                 &combat.entities()[usize::from(actor_slot)],
                 &combat.entities()[usize::from(hostile_slot)],
