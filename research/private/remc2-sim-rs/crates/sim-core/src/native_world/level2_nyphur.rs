@@ -923,6 +923,16 @@ impl Level2NyphurCommonUpkeep {
         profile: Level2SetSpellProfile,
         entities: &[EntitySnapshot],
     ) -> bool {
+        // sub_15170's no-Castle family-2 branch compares the owner's
+        // capacity with the selected table's maxManaLimit_A and current
+        // mana with its manaCost_6. The physical holder's maxMana is a
+        // separate inclusive gate, and no source cost is charged here.
+        if family == 2 && self.castle_entity_index == 0 {
+            return self.max_mana >= profile.mana_regen
+                && self.mana >= profile.max_mana
+                && self.spell_enabled[2] == 0
+                && self.mana >= holder.max_mana;
+        }
         if self.max_mana < profile.max_mana
             || self.mana < profile.mana
             || self.spell_enabled[usize::from(family)] != 0
@@ -939,6 +949,16 @@ impl Level2NyphurCommonUpkeep {
     /// Execute the source `sub_15F20`: SetSpell happens before the
     /// availability check, including on the not-enough-mana result.
     fn step_sub_15f20(&mut self, family: u8, raw_tier: i8, entities: &mut [EntitySnapshot]) -> i8 {
+        self.step_sub_15f20_with_castle_profiles(family, raw_tier, entities, None)
+    }
+
+    fn step_sub_15f20_with_castle_profiles(
+        &mut self,
+        family: u8,
+        raw_tier: i8,
+        entities: &mut [EntitySnapshot],
+        castle_profiles: Option<&[Level2SetSpellProfile; 3]>,
+    ) -> i8 {
         if usize::from(family) >= PLAYER_SPELL_COUNT {
             return 0;
         }
@@ -955,10 +975,30 @@ impl Level2NyphurCommonUpkeep {
             return 0;
         };
         let tier = level2_applied_tier(raw_tier).expect("non-negative Nyphur spell tier");
-        holder.apply_nyphur_spell_profile(profile, tier);
+        let physical_profile = if family == 2 {
+            castle_profiles.map_or(profile, |profiles| profiles[usize::from(tier)])
+        } else {
+            profile
+        };
+        holder.apply_nyphur_spell_profile(physical_profile, tier);
         let Some(holder) = entities.get(usize::from(holder_slot)) else {
             return 0;
         };
+        if family == 2 && self.castle_entity_index == 0 {
+            // SetSpell queues a requested tier while the holder is active;
+            // sub_15170 still reads the holder's currently applied tier.
+            let Some((_, applied)) = Self::source_spell_profile(2, holder.level_gate) else {
+                return 0;
+            };
+            if !self.source_spell_available(2, holder, applied, entities) {
+                return 0;
+            }
+            return if self.max_mana < profile.mana_regen || self.mana < profile.max_mana {
+                -1
+            } else {
+                2
+            };
+        }
         if !self.source_spell_available(family, holder, profile, entities) {
             return if self.max_mana < profile.max_mana || self.mana < profile.mana {
                 -1
@@ -3827,6 +3867,7 @@ impl Level2NyphurDispatcher {
     /// tail; their exact source symbol and call position are retained in the
     /// returned trace.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) fn step_dispatch(
         &mut self,
         pass: u8,
@@ -3841,6 +3882,34 @@ impl Level2NyphurDispatcher {
         move_speed_flag: u8,
         active_level_color_index: u8,
         prelude: Option<NyphurDirectionalPrelude>,
+    ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
+        let profiles = std::array::from_fn(|tier| {
+            level2_set_spell_profile(2, tier as u8).expect("Castle source tier exists")
+        });
+        self.step_dispatch_with_castle_seed(
+            pass, source_slot, entities, mana_spheres, castles, castle_children, players,
+            terrain, presentation, move_speed_flag, active_level_color_index, prelude,
+            &profiles, &mut |_, _| None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn step_dispatch_with_castle_seed(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        entities: &mut [EntitySnapshot],
+        mana_spheres: &mut [ManaSphere],
+        castles: &[Level2CastleState],
+        castle_children: &[Level2CastleChild],
+        players: &[PlayerSnapshot],
+        terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
+        move_speed_flag: u8,
+        active_level_color_index: u8,
+        prelude: Option<NyphurDirectionalPrelude>,
+        castle_profiles: &[Level2SetSpellProfile; 3],
+        castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
         // Castle construction/destruction changes A4 after reset. The
         // composition layer supplies generation-validated current roots,
@@ -3983,8 +4052,11 @@ impl Level2NyphurDispatcher {
             }
         }
 
-        if projected_carrier {
-            level2_nyphur_rebuild_class10_source_order(&mut projected_entities);
+        {
+            if projected_carrier {
+                level2_nyphur_rebuild_class10_source_order(&mut projected_entities);
+            }
+            let mut newborn_slot = None;
             let result = self.step_dispatch_inner(
                 pass,
                 source_slot,
@@ -3995,7 +4067,13 @@ impl Level2NyphurDispatcher {
                 move_speed_flag,
                 active_level_color_index,
                 prelude,
+                castle_profiles,
+                castle_seed,
+                &mut newborn_slot,
             );
+            if let Some(slot) = newborn_slot {
+                projected_dynamic_slots.insert(usize::from(slot));
+            }
             if result.is_ok() {
                 // `sub_135C0` writes the selected model-39 row's
                 // playerEntityIndex relation after a successful family-1
@@ -4020,20 +4098,8 @@ impl Level2NyphurDispatcher {
                     entities[index] = entity.clone();
                 }
             }
-            return result;
+            result
         }
-
-        self.step_dispatch_inner(
-            pass,
-            source_slot,
-            entities,
-            players,
-            terrain,
-            presentation,
-            move_speed_flag,
-            active_level_color_index,
-            prelude,
-        )
     }
 
     fn step_dispatch_inner(
@@ -4047,6 +4113,9 @@ impl Level2NyphurDispatcher {
         move_speed_flag: u8,
         active_level_color_index: u8,
         prelude: Option<NyphurDirectionalPrelude>,
+        castle_profiles: &[Level2SetSpellProfile; 3],
+        castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
+        newborn_slot: &mut Option<u16>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
         let snapshot = self.common_upkeep.step(
             source_slot,
@@ -4067,7 +4136,9 @@ impl Level2NyphurDispatcher {
             // but no assignment of byte 0x1C1 to value 2. Preserve the call
             // in the trace map without inventing a production transition.
             2 => Self::step_nmemneed(),
-            3 => self.step_sub_13100(source_slot, entities, terrain)?,
+            3 => self.step_sub_13100(
+                source_slot, entities, terrain, castle_profiles, castle_seed, newborn_slot,
+            )?,
             4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
             6 => self.step_sub_135c0(source_slot, entities, terrain, presentation)?,
@@ -4719,6 +4790,9 @@ impl Level2NyphurDispatcher {
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         terrain: &SessionTerrain,
+        castle_profiles: &[Level2SetSpellProfile; 3],
+        castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
+        newborn_slot: &mut Option<u16>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -4738,12 +4812,37 @@ impl Level2NyphurDispatcher {
 
         let mut tier = self.common_upkeep.spell_levels[2];
         while tier >= 0 {
-            if self.common_upkeep.step_sub_15f20(2, tier, entities) == 2 {
+            if self.common_upkeep.step_sub_15f20_with_castle_profiles(
+                2,
+                tier,
+                entities,
+                Some(castle_profiles),
+            ) == 2
+            {
                 break;
             }
             tier -= 1;
         }
         let mut source_control_flags = entities[source_index].control_flags;
+        if self.common_upkeep.castle_entity_index == 0 && self.source_spell_ready(2, entities) {
+            // sub_14E10 clears this bit after its availability gate, then
+            // creates the owned Castle seed directly. Allocation failure is
+            // still a successful activation in the source.
+            source_control_flags &= !0x100;
+            entities[source_index].set_control_flags(source_control_flags);
+            if let Some(castle) = castle_seed(source_slot, axis) {
+                let slot = castle.source_entity_index;
+                let entity = entities.get_mut(usize::from(slot)).ok_or_else(|| {
+                    NativeWorldError::new(
+                        "Level 2 Nyphur newborn Castle slot is outside the entity arena",
+                    )
+                })?;
+                level2_nyphur_project_castle_root(entity, castle);
+                *newborn_slot = Some(slot);
+                self.common_upkeep.castle_entity_index = slot;
+            }
+            return self.step_sub_16580(source_index, entities, terrain);
+        }
         if self.common_upkeep.step_sub_14e10(
             2,
             entities[source_index].model,

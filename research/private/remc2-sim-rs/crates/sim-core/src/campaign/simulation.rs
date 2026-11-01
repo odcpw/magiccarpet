@@ -15412,13 +15412,16 @@ impl Mc2Simulation {
                 switch.position = position;
             }
         }
+        // Rival Fireball/Possession handlers mutate the raw row directly.
+        // Castle uses the shared holder, so its timer and advanced phase
+        // must reach the raw authority before the next wizard's SetSpell.
         let sync_imported_holder = matches!(
             route,
             SourceRoute::PossessionHolder
                 | SourceRoute::CastleHolder
                 | SourceRoute::FireballHolder
                 | SourceRoute::ImportedSpellSource
-        ) && !is_rival_holder
+        ) && (!is_rival_holder || route == SourceRoute::CastleHolder)
             && live
                 .economy
                 .entities
@@ -19527,12 +19530,26 @@ impl Mc2Simulation {
                     .shared_spells
                     .local_player
                     .player_color_index();
+                let castle_holder = {
+                    let live = &self.session.state.live;
+                    live.core.players.iter()
+                        .find(|player| player.entity_index == source_slot)
+                        .and_then(|player| live.economy.handle(player.enabled_spell_holders[2]))
+                };
                 let dispatch = {
-                    let terrain = &self.session.state.live.terrain;
-                    let players = &self.session.state.live.core.players;
-                    let source_arena = &mut self.session.state.live.economy;
+                    let live = &mut self.session.state.live;
+                    let castle_profile = |tier| {
+                        live.source_spell_profile(2, tier, source_slot).ok_or_else(|| {
+                            format!("rival {source_slot} has no Castle profile for tier {tier}")
+                        })
+                    };
+                    let castle_profiles = [castle_profile(0)?, castle_profile(1)?, castle_profile(2)?];
+                    let terrain = &live.terrain;
+                    let players = live.core.players.clone();
+                    let source_arena = &mut live.economy;
                     let (entities, economy) =
                         (&mut source_arena.entities, &mut source_arena.economy);
+                    let source_id = entities[usize::from(source_slot)].source_id;
                     let castles = economy
                         .live_castles()
                         .filter(|root| {
@@ -19545,28 +19562,80 @@ impl Mc2Simulation {
                         .copied()
                         .collect::<Vec<_>>();
                     let castle_children = economy.castle_children().to_vec();
-                    self.session
-                        .state
-                        .live
-                        .nyphur_dispatcher
-                        .with_owner_mut(target_handle, |dispatcher| dispatcher.step_dispatch(
+                    // The direct AI constructor needs the arena during the
+                    // mode callback. Keep only a view of spheres, and merge
+                    // its one mutable relation after the callback completes.
+                    let mut spheres = economy.spheres().to_vec();
+                    let sphere_relations = spheres.iter().map(|sphere| {
+                        (sphere.source_entity_index,
+                         (economy.slot_generation(sphere.source_entity_index), sphere.player_entity_index))
+                    }).collect::<BTreeMap<_, _>>();
+                    let result = live.nyphur_dispatcher
+                        .with_owner_mut(target_handle, |dispatcher| dispatcher.step_dispatch_with_castle_seed(
                             pass,
                             source_slot,
                             entities,
-                            economy.spheres_mut(),
+                            &mut spheres,
                             &castles,
                             &castle_children,
-                            players,
+                            &players,
                             terrain,
                             &self.session.definition.presentation,
                             move_speed_flag,
                             active_level_color_index,
                             Some(prelude),
+                            &castle_profiles,
+                            &mut |owner, position| {
+                                let root = economy.allocate_ai_castle_root_seed(position, owner, source_id, terrain)?;
+                                // sub_14E10 publishes A4 before the wizard's
+                                // remaining movement and decision tail.
+                                for player in live.core.players.iter_mut()
+                                    .chain(live.shared_spells.players.iter_mut())
+                                    .chain(std::iter::once(&mut live.shared_spells.local_player))
+                                    .filter(|player| player.entity_index == owner)
+                                {
+                                    player.record[42..44].copy_from_slice(&root.source_entity_index.to_le_bytes());
+                                }
+                                Some(root)
+                            },
                         ))
                         .ok_or_else(|| {
                             format!("rival source slot {source_slot} lost its player dispatcher")
-                        })?
+                        })?;
+                    for sphere in spheres {
+                        let Some(&(generation, prior_owner)) = sphere_relations.get(&sphere.source_entity_index) else {
+                            continue;
+                        };
+                        if sphere.player_entity_index != prior_owner
+                            && economy.slot_generation(sphere.source_entity_index) == generation
+                            && let Some(current) = economy.spheres_mut().iter_mut().find(|current| {
+                                current.active && current.source_entity_index == sphere.source_entity_index
+                            })
+                        {
+                            current.player_entity_index = sphere.player_entity_index;
+                        }
+                    }
+                    result
                 };
+                // Mode-3 SetSpell writes the physical row, including a
+                // queued tier. The later Castle-holder callback consumes
+                // the shared view of that same current arena generation.
+                if let Some(holder_handle) = castle_holder {
+                    let live = &mut self.session.state.live;
+                    if live.economy.handle(holder_handle.source_slot) == Some(holder_handle)
+                        && live.core.players.iter().any(|player| {
+                            player.entity_index == source_slot
+                                && player.enabled_spell_holders[2] == holder_handle.source_slot
+                        })
+                        && let Some(holder) = live.economy.entities
+                            .get(usize::from(holder_handle.source_slot))
+                            .filter(|holder| holder.active && holder.class == 15 && holder.model == 2
+                                && holder.source_spell_parent_entity_index() == source_slot)
+                            .cloned()
+                    {
+                        live.shared_spells.sync_pickup_from_authority(&holder);
+                    }
+                }
                 match dispatch {
                     Ok((_snapshot, trace)) => {
                         let source =

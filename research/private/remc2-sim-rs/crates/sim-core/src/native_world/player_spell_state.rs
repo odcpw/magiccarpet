@@ -277,6 +277,28 @@ impl Mc2LiveState {
         }
     }
 
+    /// sub_60780 reapplies the physical holder's current tier, independently
+    /// of the human menu selector. Resolve the same live owner/holder pair
+    /// that ordinary AI inventory lookups consume.
+    fn current_castle_holder_tier(&self, owner: u16) -> Option<u8> {
+        let player = self.shared_spells.players.iter()
+            .find(|player| player.entity_index == owner)?;
+        let slot = player.enabled_spell_holders[2];
+        let owner_handle = self.economy.handle(owner)?;
+        let holder_handle = self.economy.handle(slot)?;
+        if player.is_ai
+            && self.nyphur_dispatcher.bound_live_holder(owner_handle, player, &self.economy, 2)
+                != Some(holder_handle)
+        {
+            return None;
+        }
+        let holder = self.economy.entities.get(usize::from(slot))
+            .filter(|holder| holder.active && holder.class == 15 && holder.model == 2
+                && holder.source_spell_parent_entity_index() == owner)?;
+        let tier = u8::try_from(holder.level_gate).ok()?;
+        (tier <= 2).then_some(tier)
+    }
+
     /// Run the Castle callback with its actual player inventory consumer at
     /// `sub_605E0`, before the root is hidden and the remaining handler tail.
     pub(crate) fn step_castle_action_with_player_state(
@@ -293,12 +315,7 @@ impl Mc2LiveState {
             if self.economy.entities.get(usize::from(owner))?.action > 1 {
                 return None;
             }
-            let player = self
-                .shared_spells
-                .players
-                .iter()
-                .find(|player| player.entity_index == owner)?;
-            let tier = player.family_selected_tiers[2].clamp(0, 2).cast_unsigned();
+            let tier = self.current_castle_holder_tier(owner)?;
             self.shared_spells
                 .physical_spell_profile(2, tier, owner, Some(0))
                 .map(|profile| (tier, profile))
@@ -357,7 +374,16 @@ impl Mc2LiveState {
         else {
             return;
         };
-        let tier = player.family_selected_tiers[2].clamp(0, 2).cast_unsigned();
+        let tier = if force {
+            let Some(tier) = self.current_castle_holder_tier(owner) else {
+                return;
+            };
+            tier
+        } else {
+            // sub_6D8B0 refreshes the human owner's selected tier through
+            // ordinary SetSpell, including its active-holder queue branch.
+            player.family_selected_tiers[2].clamp(0, 2).cast_unsigned()
+        };
         let profile = if let Some(stage) = stage_override {
             self.shared_spells
                 .physical_spell_profile(2, tier, owner, Some(stage))

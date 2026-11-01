@@ -5485,6 +5485,23 @@ impl Level2EconomyState {
         )
     }
 
+    /// `sub_14E10` creates the same source seed as flyer landing, but binds
+    /// its AI owner immediately, before the wizard's remaining callback.
+    pub(crate) fn allocate_ai_castle_root_seed(
+        &mut self,
+        position: Position,
+        owner_entity_index: u16,
+        source_id: u16,
+        terrain: &SessionTerrain,
+    ) -> Option<Level2CastleState> {
+        let footprint = self.castle_stage_footprints.get(&1)?;
+        let (root_position, anchor) = level2_castle_root_positions(terrain, footprint, position);
+        let slot = self.allocate_castle_root_seed(root_position, anchor, owner_entity_index)?;
+        self.castle_at_mut(slot)?.source_id_entity_index = source_id;
+        self.link_castle_owner(owner_entity_index, slot);
+        self.castle_at(slot).copied()
+    }
+
     pub(super) fn build_castle_at(
         &mut self,
         position: Position,

@@ -384,7 +384,14 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
         campaign.step(PlayerCommand::default(), 0);
         let simulation = campaign.simulation();
         assert!(simulation.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
-        saw_owner_visit |= simulation.nyphur_dispatch_traces().iter().any(|trace| trace.source_slot == owner);
+        for trace in simulation.nyphur_dispatch_traces().iter().filter(|trace| trace.source_slot == owner) {
+            saw_owner_visit = true;
+            assert_ne!(trace.state_byte, 3,
+                "feature4 must not enter the no-Castle rebuild mode after removing the holder");
+            assert!(trace.calls.iter().any(|call| matches!(call,
+                crate::native_world::level2_nyphur::Level2NyphurDispatchCall::Sub12e70)),
+                "the ordinary AI visit must execute the decision tail");
+        }
         let live = &simulation.session.state.live;
         assert_eq!(live.economy.handle(owner), Some(owner_handle));
         let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
@@ -420,6 +427,31 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
         campaign.step(PlayerCommand::default(), 0);
     }
     assert_eq!(campaign.simulation().economy().castle_at(root_slot).unwrap().action, 4);
+    let old_root = campaign.simulation().source_arena().handle(root_slot).expect("imported root generation");
+    let controllers = campaign.simulation().economy().castle_at(root_slot).unwrap()
+        .controller_chain_slots.iter().copied().filter(|slot| *slot != 0)
+        .map(|slot| (slot, campaign.simulation().economy().slot_generation(slot)))
+        .collect::<Vec<_>>();
+    eprintln!("real old Castle controller count: {}", controllers.len());
+    let holder = campaign.simulation().shared_spells().pickup(holder_slot).unwrap();
+    assert!(holder.max_mana > 0);
+    // Destruction reprices the retained holder from stage one to stage zero,
+    // so a value just below the old price would not prove the later gate.
+    let below_capacity = 0_i32;
+    let owner_handle = campaign.simulation().source_arena().handle(owner).unwrap();
+    {
+        // Control the actual owner resource carriers below sub_13B00's
+        // physical-holder capacity gate before destroying its real Castle.
+        let live = &mut campaign.simulation_mut().session.state.live;
+        let actor = &mut live.economy.entities[usize::from(owner)];
+        actor.max_mana = below_capacity;
+        actor.record[144..148].copy_from_slice(&below_capacity.to_le_bytes());
+        actor.set_mana(0);
+        actor.set_mana_regen(0);
+        let actor = actor.clone();
+        assert!(live.nyphur_dispatcher.get_mut(owner_handle).unwrap()
+            .sync_support_parent_resources(&actor, false));
+    }
     assert!(campaign.simulation_mut().economy_mut().submit_damage(root_slot, i32::MAX, 265));
     for _ in 0..16 {
         campaign.step(PlayerCommand::default(), 0);
@@ -431,6 +463,197 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
     assert!(simulation.economy().castle_for_owner(owner).is_none());
     assert_eq!(simulation.shared_spells().players.iter().find(|p| p.entity_index == owner).unwrap().enabled_spell_holders[2], holder_slot);
     assert!(simulation.shared_spells().pickup(holder_slot).is_some_and(|holder| holder.active && holder.control_flags & ENTITY_DRAW_DISABLED_BIT == 0));
+    // The old generation must cross the normal following-pass reclaim before
+    // the rival is allowed the resources to select a replacement site.
+    campaign.step(PlayerCommand::default(), 0);
+    assert_ne!(campaign.simulation().source_arena().handle(root_slot), Some(old_root),
+        "the destroyed root must reach its next source reclaim boundary");
+    for (slot, generation) in controllers {
+        assert!(campaign.simulation().economy().free_source_slots().contains(&slot)
+            || campaign.simulation().economy().slot_generation(slot) != generation,
+            "the retired controller must cross its source reclaim boundary");
+    }
+    assert!(campaign.simulation().economy().castle_for_owner(owner).is_none());
+    let mut saw_below_gate_visit = false;
+    for _ in 0..8 {
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        for trace in sim.nyphur_dispatch_traces().iter().filter(|trace| trace.source_slot == owner) {
+            saw_below_gate_visit = true;
+            let live = &sim.session.state.live;
+            let ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+            let actor = &live.economy.entities[usize::from(owner)];
+            let current_holder = &live.economy.entities[usize::from(holder_slot)];
+            assert_eq!(ai.max_mana, actor.max_mana,
+                "the decision must use the same capacity as the real actor");
+            assert!(ai.max_mana < current_holder.max_mana,
+                "below-capacity premise: AI {} vs current holder {}", ai.max_mana, current_holder.max_mana);
+            assert_ne!(trace.state_byte, 3, "insufficient capacity cannot enter rebuild mode");
+            assert!(trace.calls.iter().any(|call| matches!(call,
+                crate::native_world::level2_nyphur::Level2NyphurDispatchCall::Sub12e70)));
+            assert_ne!(live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte(), 3,
+                "the actual selector must reject the retained holder below its capacity gate");
+        }
+    }
+    assert!(saw_below_gate_visit, "the owner must reach the actual below-capacity decision");
+
+    {
+        // Declare learned tier two in the real player's source progression;
+        // the retained physical holder remains at tier zero until mode3
+        // invokes the ordinary source SetSpell path.
+        let live = &mut campaign.simulation_mut().session.state.live;
+        let player = live.shared_spells.players.iter_mut()
+            .find(|player| player.entity_index == owner).unwrap();
+        let runtime = LEVEL2_SPELL_TIER_THRESHOLDS[2][2]
+            .wrapping_sub(player.persistent_spell_experience[2]);
+        player.runtime_spell_experience[2] = runtime;
+        player.spell_unlocked_levels[2] = 2;
+        player.record[172..176].copy_from_slice(&runtime.to_le_bytes());
+        player.record[504] = 2;
+        let player = player.clone();
+        live.core.players.iter_mut().find(|row| row.entity_index == owner).unwrap()
+            .sync_spell_progression_family_from(&player, 2);
+        assert_eq!(live.economy.entities[usize::from(holder_slot)].level_gate, 0);
+    }
+    {
+        // Declared resource prerequisite, not earned mana: provide a normal
+        // 20,000 capacity and balance so the actual holder's 1,000/4,000
+        // source gates can run without inventing a decision or Castle.
+        let live = &mut campaign.simulation_mut().session.state.live;
+        let actor = &mut live.economy.entities[usize::from(owner)];
+        actor.max_mana = 20_000;
+        actor.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());
+        actor.set_mana(20_000);
+        actor.set_mana_regen(0);
+        let actor = actor.clone();
+        assert!(live.nyphur_dispatcher.get_mut(owner_handle).unwrap()
+            .sync_support_parent_resources(&actor, false));
+    }
+    let mut saw_selection = false;
+    for _ in 0..64 {
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let live = &sim.session.state.live;
+        if live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte() == 3 {
+            let ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+            let player = live.core.players.iter().find(|player| player.entity_index == owner).unwrap();
+            assert_eq!((player.spell_unlocked_levels[2], ai.spell_levels[2]), (2, 2),
+                "the real selector must retain declared player progression through the roster");
+            assert!(ai.mana >= 8_000 && ai.max_mana >= 8_000,
+                "the tier2 no-Castle gate must have its actual owner mana and capacity");
+            saw_selection = true;
+            break;
+        }
+    }
+    assert!(saw_selection, "the real no-Castle selector must choose mode3 after its gate passes");
+
+    // Control the rival's travel to the AI-selected axis after, and only
+    // after, the real selector chose it. The mode3 distance gate and seed
+    // constructor still execute through ordinary scheduled visits.
+    let selected = &campaign.simulation().entities()[usize::from(owner)].record;
+    let x = u16::from_le_bytes([selected[158], selected[159]]);
+    let y = u16::from_le_bytes([selected[160], selected[161]]);
+    let site = Position { x, y, z: i16::from_le_bytes([selected[162], selected[163]]) };
+    let (expected_root, expected_anchor) = {
+        let live = &campaign.simulation().session.state.live;
+        let footprint = live.economy.economy.castle_stage_footprints.get(&1)
+            .expect("ordinary map has the source Castle footprint");
+        level2_castle_root_positions(&live.terrain, footprint, site)
+    };
+    let initial_holder_tier = campaign.simulation().entities()[usize::from(holder_slot)].level_gate;
+    assert_eq!(campaign.simulation().entities()[usize::from(holder_slot)].active_value, 0,
+        "this control exercises cold SetSpell rather than the active queued-tier branch");
+    assert_eq!(&campaign.simulation().entities()[usize::from(holder_slot)].record[50..52], &[0, 0],
+        "the real source word2E must also be cold before the next mode3 visit");
+    campaign.simulation_mut().set_level2_entity_position(owner, site).unwrap();
+    let mut saw_mode3 = false;
+    let mut seed = None;
+    let mut mana_before_seed = None;
+    for _ in 0..32 {
+        let before = campaign.simulation().session.state.live.nyphur_dispatcher
+            .get(owner_handle).unwrap().common_upkeep(0).mana;
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        saw_mode3 |= sim.nyphur_dispatch_traces().iter().any(|trace| trace.source_slot == owner && trace.state_byte == 3);
+        if let Some(root) = sim.economy().castle_for_owner(owner) {
+            seed = Some(*root);
+            mana_before_seed = Some(before);
+            break;
+        }
+    }
+    let seed = seed.expect("the real mode3 decision must create its owned Castle seed");
+    assert!(saw_mode3);
+    assert_eq!((seed.source_class, seed.source_model, seed.owner_entity_index), (3, 2, owner));
+    assert_eq!(seed.position, expected_root, "the selected site uses source terrain placement");
+    assert_eq!(seed.anchor_position, expected_anchor, "construction uses the source perimeter anchor");
+    let sim = campaign.simulation();
+    let live = &sim.session.state.live;
+    let ai = live.nyphur_dispatcher.get(owner_handle).unwrap().common_upkeep(0);
+    assert_eq!(ai.castle_entity_index, seed.source_entity_index,
+        "the actual AI state must see the new root by its same-visit tail");
+    assert_eq!(ai.spell_enabled[2], 0, "the source no-Castle seed sets no spell cooldown");
+    assert_eq!(Some(ai.mana), mana_before_seed, "the source direct seed does not charge mana");
+    assert_eq!(live.core.players.iter().find(|player| player.entity_index == owner).unwrap().enabled_spell_holders[2], holder_slot);
+    let raw_holder = &live.economy.entities[usize::from(holder_slot)];
+    let shared_holder = live.shared_spells.pickup(holder_slot).unwrap();
+    let expected_profile = live.source_spell_profile(2, 2, owner)
+        .expect("real owner tier2 profile for the current Castle stage");
+    eprintln!("real rival Castle holder tier: {initial_holder_tier} -> {}; AI learned tier {}, root level {} action {}",
+        raw_holder.level_gate, ai.spell_levels[2], seed.level, seed.action);
+    assert_eq!((initial_holder_tier, raw_holder.level_gate), (0, 2),
+        "mode3 must apply the real learned tier to the retained physical holder");
+    assert_eq!(raw_holder.level_gate, ai.spell_levels[2], "actual mode3 SetSpell applies the source-selected tier");
+    assert_eq!((raw_holder.max_mana, raw_holder.mana, raw_holder.mana_regen),
+        (expected_profile.max_mana, expected_profile.mana, expected_profile.mana_regen),
+        "the current physical tier must carry the current Castle-stage price");
+    assert_eq!((shared_holder.level_gate, shared_holder.max_mana, shared_holder.mana, shared_holder.mana_regen),
+        (raw_holder.level_gate, raw_holder.max_mana, raw_holder.mana, raw_holder.mana_regen),
+        "the following Castle holder callback must consume the authoritative SetSpell profile");
+    assert_eq!(&shared_holder.record[48..54], &raw_holder.record[48..54],
+        "queued tier, active word and activation duration must be published together");
+    assert_eq!(shared_holder.active_value, 0,
+        "the direct seed does not activate the player Castle projectile holder");
+    let initial_holder_phase = shared_holder.phase;
+    let seed_handle = live.economy.handle(seed.source_entity_index).expect("new source root is live");
+    let mut built = false;
+    let mut saw_following_holder_visit = false;
+    let mut construction_child = None;
+    for _ in 0..2048 {
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert_eq!(sim.source_arena().handle(seed.source_entity_index), Some(seed_handle));
+        let live = &sim.session.state.live;
+        let raw = &live.economy.entities[usize::from(holder_slot)];
+        let shared = live.shared_spells.pickup(holder_slot).unwrap();
+        assert_eq!((raw.phase, raw.active_value, &raw.record[48..54], &raw.record[58..60]),
+            (shared.phase, shared.active_value, &shared.record[48..54], &shared.record[58..60]),
+            "following actual holder visits must preserve phase, active word, queued tier and timer");
+        saw_following_holder_visit |= shared.phase != initial_holder_phase;
+        if let Some(root) = sim.economy().castle_for_owner(owner) {
+            if root.construction_slot != 0 && construction_child.is_none()
+                && let Some(child) = sim.economy().castle_children().iter()
+                    .find(|child| child.source_entity_index == root.construction_slot && child.active)
+            {
+                assert_eq!((child.model, child.parent_entity_index, child.owner_entity_index),
+                    (42, root.source_entity_index, owner));
+                construction_child = sim.source_arena().handle(root.construction_slot);
+            }
+            if root.level >= 1 && root.action == 4 {
+                built = true;
+            }
+        }
+        if built && saw_following_holder_visit {
+            break;
+        }
+    }
+    assert!(built, "the actual seed must finish construction and reach Castle action4");
+    assert!(saw_following_holder_visit, "the retained holder must reach a following source visit");
+    let construction_child = construction_child.expect("the rebuilt Castle must create a real construction child");
+    assert_ne!(campaign.simulation().source_arena().handle(construction_child.source_slot),
+        Some(construction_child), "the real construction child must reach source reclamation");
 }
 
 #[test]

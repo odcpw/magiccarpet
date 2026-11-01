@@ -441,7 +441,8 @@ pub struct Level2SetSpellProfile {
     pub mana: i32,
 }
 
-/// Return the pinned `Spells.cpp` profile for a physical spell family/tier.
+/// Return the pinned owner `SPELLS.DAT` profile after applicable
+/// `SetDefaultSpells_5C0A0` overrides for a physical family/tier.
 /// This is the table cost before GetSpellManaCost_6D710 follows the owner's
 /// Castle relation. The runtime resolves that dynamic cost at SetSpell.
 #[must_use]
@@ -642,8 +643,8 @@ pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetS
                 word_0x30: 101,
                 byte_0x3b: 1,
                 mana_regen: 0,
-                max_mana: 2_000,
-                mana: 19,
+                max_mana: 5_000,
+                mana: 49,
             },
         ],
         [
@@ -2529,7 +2530,7 @@ mod tests {
             (1, 2, 20, 51, 1, 1_000, 1_000, 19),
             (2, 0, 0, 101, 1, 0, 1_000, 9),
             (2, 1, 0, 101, 1, 0, 1_250, 12),
-            (2, 2, 1, 101, 1, 0, 2_000, 19),
+            (2, 2, 1, 101, 1, 0, 5_000, 49),
             (3, 0, 2, 301, 1, 0, 1_000, 3),
             (3, 1, 3, 451, 1, 0, 2_500, 5),
             (3, 2, 4, 501, 1, 0, 5_000, 9),
