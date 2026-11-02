@@ -13,10 +13,27 @@ merge/census path pass focused owner-data checks. The matching player loaded
 the campaign map and NightSpire with the original HUD. Human Castle play,
 hardware audio and performance still need Oliver's playtest.
 
-Use this installed checkpoint as the baseline. `mc-bhq.10` remains open for
-its broader settlement/economy acceptance; `mc-k5k.9` retains that blocking
-dependency. Their open status does not request reimplementation of the delivered
-Castle paths. This work block stops here; Alliance is the next queued capability.
+`mc-bhq.10` remains open for its broader settlement/economy acceptance;
+`mc-k5k.9` retains that blocking dependency. Their open status does not request
+reimplementation of the delivered Castle paths.
+
+Alliance checkpoint delivered on 2026-11-02: runtime `4acdee29`, installed
+native `a620baf8396d`. The actual acquired three-tier cast/takeover path,
+representative allied attack through real target damage, and natural expiry
+pass the existing owner-data scenario. Focused controls cover special creature
+consumers, current parent records, allocation failures/reuse, shared A4 input
+and Castle relations, arrow collision, restoration, and replay/carry. The current
+occupant determines scheduler dispatch, including a reused player address.
+The matching installed player loaded the campaign map, original loading screen,
+and NightSpire terrain/HUD; its native library and all 437 Rust inputs match the
+tested candidate. No Unity or original-art changes were required.
+
+Use this Alliance installation as the current baseline; the Castle native and
+receipt remain in the local rollback. `mc-k5k.5` stays open for its combined
+families22/23/24 acceptance. These bounded checks do not establish every eligible
+creature's complete mission playability; Oliver's human spell playthrough,
+hardware audio and performance remain unverified. Existing package-formatting
+debt remains unchanged. This batch stops here; Army and status spells are next.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
