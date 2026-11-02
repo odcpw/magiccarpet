@@ -655,13 +655,35 @@ pub(crate) fn step_in_arena(
         .ok_or_else(|| format!("Bee source slot {slot} is absent"))?;
     let source_generation = arena.slot_generation(slot);
     let before = arena.economy.bee_creatures[index];
+    if before.stage_var2 == 14 {
+        let mut pointers = vec![before.parent_entity_index, before.target_entity_index.unwrap_or(0), before.damage_attacker_entity_index];
+        if let Some(parent) = crate::native_world::source_target::read(arena, Default::default(), before.parent_entity_index)? {
+            pointers.extend([parent.relations.target.unwrap_or(0), parent.relations.attacker.unwrap_or(0)]);
+        }
+        for pointer in pointers {
+            if rows.iter().any(|row| row.slot == pointer) { continue; }
+            let Some(parent) = level2_class5::archer::alliance_parent_relation(arena, pointer)? else { continue };
+        let target = parent.target;
+        let raw = &arena.entities[usize::from(parent.slot)];
+        rows.push(BeeActor {
+            slot: parent.slot, source_id: parent.source_id, class: target.class, model: target.model,
+            action: target.action, position: target.position, life: target.life,
+            control_flags: target.control_flags, target: target.word_0x96_150,
+            attacker: parent.attacker, killer: raw.word_24(), peer: target.word_0x32,
+            child: raw.word_34(), parent: parent.parent, stage_index: parent.stage_index,
+            stage_mode: parent.stage_mode, stage_relation: parent.stage_relation,
+            yaw: parent.yaw, roll: parent.roll, actual_speed: target.actual_speed,
+            maximum_speed: target.maximum_speed, half_width: parent.half_width,
+            height_offset: raw.array_yaw(), frozen_class3_member: false,
+            frozen_class5_member: false, frozen_family_member: false,
+        });
+        }
+    }
     let child = arena.handle(slot);
     let generation_bound_stage = (matches!(before.origin, BeeCreatureOrigin::MorphSpell { .. })
         && before.stage_var2 == 12)
         || (matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
-        && before.stage_var2 == 13)
-        || (before.stage_var2 == 14
-            && child.is_some_and(|child| arena.has_creature_parent_binding(child)));
+        && before.stage_var2 == 13);
     if generation_bound_stage
         && child.is_none_or(|child| {
             arena
@@ -669,7 +691,7 @@ pub(crate) fn step_in_arena(
                 .is_none_or(|parent| parent.source_slot != before.parent_entity_index)
         })
     {
-        // A recycled numeric slot is not this Morph, Army or Alliance parent.
+        // Retain the existing Morph and Army lifetime binding.
         rows.retain(|row| row.slot != before.parent_entity_index);
     }
     let stage = runtime.descriptor(before.stage_var1);

@@ -281,7 +281,7 @@ pub(crate) fn step_charge_in_arena(
     Ok(outcome)
 }
 
-fn alliance_blink_bits(remaining: u16, duration: u16, phase: u8, clear: bool) -> u32 {
+pub(crate) fn alliance_blink_bits(remaining: u16, duration: u16, phase: u8, clear: bool) -> u32 {
     if clear {
         return 0;
     }
@@ -296,27 +296,35 @@ fn alliance_blink_bits(remaining: u16, duration: u16, phase: u8, clear: bool) ->
 /// Source sub_1E9C0/sub_1ED30 applies the same blink bits to the current
 /// word34 child chain. Keep writes with the current actor owner; a reused
 /// slot must never resurrect the old raw compatibility row.
-fn alliance_blink_children(
+pub(crate) fn alliance_blink_children(
     arena: &mut SourceArena,
     slot: u16,
     flags: u32,
     context: crate::native_world::source_target::Context<'_>,
 ) -> std::result::Result<(), String> {
-    let mut child = arena.economy.authored_class5_runtime.iter()
+    let child = arena.economy.authored_class5_runtime.iter()
         .find(|row| row.source_entity_index == slot)
         .ok_or_else(|| format!("Alliance Firefly {slot} lost class5 runtime"))?.linked_head;
+    alliance_blink_chain(arena, child, flags, context)
+}
+
+pub(crate) fn alliance_blink_chain(
+    arena: &mut SourceArena,
+    mut child: u16,
+    flags: u32,
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<(), String> {
     let mut remaining = arena.entities.len();
     while child != 0 {
-        if remaining == 0 { return Err(format!("Alliance Firefly {slot} has a cyclic blink chain")); }
+        if remaining == 0 { return Err("Alliance actor has a cyclic blink chain".to_owned()); }
         remaining -= 1;
         let Some(view) = crate::native_world::source_target::read(arena, context, child)? else { break; };
-        if !view.active { break; }
         let next = view.relations.next.ok_or_else(|| format!("Alliance Firefly child {child} has no current next link"))?;
-        let handle = arena.handle(child).ok_or_else(|| format!("Alliance Firefly child {child} lost its handle"))?;
-        let kind = match arena.resolve(handle) {
+        let kind = match arena.handle(child).and_then(|handle| arena.resolve(handle)) {
             Some(crate::campaign::source_arena::SourceEntityView::Imported(_)) => None,
             Some(crate::campaign::source_arena::SourceEntityView::Dynamic(kind)) => Some(kind),
-            None => break,
+            None if !view.active => None,
+            None => return Err(format!("Alliance child {child} lost its current carrier")),
         };
         let update = |control: &mut u32| *control = (*control & !0x0600_0000) | flags;
         match kind {
@@ -387,13 +395,9 @@ pub(crate) fn alliance_attack_target_allowed(
     state.word_0x2e = state.word_0x2e.wrapping_sub(1);
     let state = *state;
     if state.word_0x2e.cast_signed() <= 0 { return Ok(false); }
-    if state.parent_entity_index == 0
-        || arena.slot_generation(state.parent_entity_index) != state.parent_generation
-    {
-        return Ok(true);
-    }
+    if state.parent_entity_index == 0 { return Ok(true); }
     let Some(parent) = crate::native_world::source_target::read(arena, context, state.parent_entity_index)?
-        .filter(|parent| parent.active) else { return Ok(true); };
+        else { return Ok(true); };
     if target_slot == state.parent_entity_index { return Ok(false); }
     let target = parent.relations.target.ok_or_else(|| format!("Alliance Firefly parent {} has no current target", state.parent_entity_index))?;
     let selected = if target != 0 { target } else {
@@ -427,10 +431,9 @@ pub(crate) fn step_alliance_stage_slot(
         state.control_flags = (state.control_flags & !0x0600_0000) | flags;
         alliance_blink_children(arena, slot, flags, context)?;
     }
-    let parent = if state.word_0x2e.cast_signed() > 0 && state.parent_entity_index != 0
-        && arena.slot_generation(state.parent_entity_index) == state.parent_generation {
+    let parent = if state.word_0x2e.cast_signed() > 0 && state.parent_entity_index != 0 {
         crate::native_world::source_target::read(arena, context, state.parent_entity_index)?
-            .filter(|parent| parent.active && parent.life > 0)
+            .filter(|parent| parent.life > 0)
     } else { None };
     let mut feedback = Vec::new();
     if let Some(parent) = parent {
@@ -3517,22 +3520,32 @@ mod tests {
             "the ordinary source scheduler expires Alliance on the original Firefly");
         assert!(scheduled_arena.resolve(child).is_some());
 
-        let mut lost = arena.clone();
-        let mut lost_terrain = terrain.clone();
-        lost.economy.release_slot(parent, None);
-        assert_eq!(lost.allocate_source_slot_with_terrain(&mut lost_terrain), Some(parent));
-        let mut replacement = crate::native_world::cave_features::new_event(parent, 5, position);
-        replacement.class = 3;
-        replacement.model = 0;
-        replacement.record[67] = 3;
-        replacement.set_life(1_000);
-        lost.entities[usize::from(parent)] = replacement;
-        assert_ne!(lost.handle(parent), Some(parent_handle));
-        assert!(step_alliance_stage_slot(&mut lost, slot, &[], &mut lost_terrain, Default::default())
-            .unwrap().retained_for_epilogue);
-        let state = lost.economy.authored_fireflies.iter().find(|row| row.source_entity_index == slot).unwrap();
-        assert_eq!((state.stage_var2, state.parent_entity_index), (10, 0), "reused parent is not followed");
-        assert!(lost.resolve(child).is_some(), "Alliance expiry returns the original creature, not a fake reclaim");
+        for parent_case in ["free", "reused", "dead"] {
+            let mut controlled = arena.clone();
+            let mut controlled_terrain = terrain.clone();
+            if parent_case != "dead" {
+                controlled.entities[usize::from(parent)].reclaim_source_row();
+                controlled.economy.release_slot(parent, None);
+                if parent_case == "reused" {
+                    assert_eq!(controlled.allocate_source_slot_with_terrain(&mut controlled_terrain), Some(parent));
+                    let mut replacement = crate::native_world::cave_features::new_event(parent, 5, position);
+                    replacement.class = 3;
+                    replacement.model = 0;
+                    replacement.record[67] = 3;
+                    replacement.set_life(1_000);
+                    controlled.entities[usize::from(parent)] = replacement;
+                    assert_ne!(controlled.handle(parent), Some(parent_handle));
+                }
+            } else {
+                controlled.entities[usize::from(parent)].set_life(0);
+            }
+            assert!(step_alliance_stage_slot(&mut controlled, slot, &[], &mut controlled_terrain, Default::default())
+                .unwrap().retained_for_epilogue);
+            let state = controlled.economy.authored_fireflies.iter().find(|row| row.source_entity_index == slot).unwrap();
+            let expected = if parent_case == "dead" { (10, 0) } else { (14, parent) };
+            assert_eq!((state.stage_var2, state.parent_entity_index), expected, "{parent_case}");
+            assert!(controlled.resolve(child).is_some());
+        }
 
         // A real typed linked child receives both the blink and its clear.
         let linked_slot = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();

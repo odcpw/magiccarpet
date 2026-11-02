@@ -731,7 +731,7 @@ fn model9_candidate_blocked<W: FlightWorld>(
         || model9_slope_measure(candidate, world) >= MODEL9_SLOPE_LIMIT
 }
 
-fn step_model9_source_movement<W: FlightWorld>(
+pub(super) fn step_model9_source_movement<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
 ) -> std::result::Result<(bool, u8, bool), Model9Action79Error> {

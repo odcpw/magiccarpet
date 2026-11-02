@@ -50,7 +50,7 @@ pub(crate) fn current_attack_target(
         return Ok(None);
     }
     Ok(crate::native_world::source_target::read(arena, context, target_slot)?
-        .filter(|target| target.active && target.life >= 0 && !target.drawing_disabled())
+        .filter(|target| target.life >= 0 && !target.drawing_disabled())
         .map(|target| GoatPlayerTarget {
             entity_index: target_slot,
             position: target.position,
@@ -92,12 +92,120 @@ pub(crate) fn step_attack_in_arena(
     if damaged {
         return Ok(DragonAttackStep { live: true, fireball: None });
     }
-    let target = current_attack_target(arena, context, source.word_0x96_150)?;
+    let allowed = alliance_attack_target_allowed(arena, source_slot, source.word_0x96_150, context)?;
+    let target = if allowed {
+        current_attack_target(arena, context, source.word_0x96_150)?
+    } else { None };
     arena.economy.step_authored_dragon_attack_slot(
         source_slot, target, frozen_model0_slots, terrain, true,
     )
 }
 pub(crate) const DRAGON_INITIAL_MANA: i32 = 2_250;
+
+/// Live Dragon fields read and written by the Alliance terminal. The raw
+/// arena packet is only a projection; movement and stage remain typed here.
+pub(crate) fn alliance_projection(arena: &SourceArena, slot: u16) -> Option<EntitySnapshot> {
+    let handle = arena.handle(slot)?;
+    if !matches!(arena.resolve(handle), Some(crate::campaign::source_arena::SourceEntityView::Dynamic(
+        Level2DynamicArenaKind::AuthoredClass5
+    ))) { return None; }
+    let source = arena.economy.authored_class5.iter().find(|row|
+        row.active && row.source_entity_index == slot && row.model == DRAGON_MODEL)?;
+    let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot)?;
+    let mut row = arena.entities.get(usize::from(slot))?.clone();
+    row.active = true;
+    row.record[2] = 1;
+    row.source_id = state.entity_id;
+    row.record[30..32].copy_from_slice(&state.entity_id.to_le_bytes());
+    row.class = 5;
+    row.model = DRAGON_MODEL;
+    row.record[67] = 5;
+    row.record[68] = DRAGON_MODEL;
+    row.set_source_action(source.action);
+    row.set_position(source.position);
+    row.set_life(source.life);
+    row.set_control_flags((state.control_flags & !0x400) | if source.drawing_enabled { 0 } else { 0x400 });
+    row.record[44..46].copy_from_slice(&state.parent_entity_index.to_le_bytes());
+    row.record[50..52].copy_from_slice(&state.stage_remaining.to_le_bytes());
+    row.record[52..54].copy_from_slice(&state.alliance_duration.to_le_bytes());
+    row.record[76] = state.stage_var1;
+    row.record[77] = state.stage_var2;
+    row.record[78..80].copy_from_slice(&state.stage_relation.to_le_bytes());
+    row.record[154..156].copy_from_slice(&source.word_0x96_150.to_le_bytes());
+    Some(row)
+}
+
+pub(crate) fn apply_alliance_takeover(
+    arena: &mut SourceArena,
+    child: SourceEntityHandle,
+    row: &EntitySnapshot,
+    parent: Option<SourceEntityHandle>,
+) -> std::result::Result<bool, String> {
+    let slot = child.source_slot;
+    if row.index != slot || (row.class, row.model) != (5, DRAGON_MODEL)
+        || row.record[76] != 0 || row.record[77] != 14
+        || arena.handle(slot) != Some(child)
+        || alliance_projection(arena, slot).is_none_or(|current| current.source_id != row.source_id)
+    { return Ok(false); }
+    let parent_slot = u16::from_le_bytes([row.record[44], row.record[45]]);
+    let generation = parent.filter(|handle| handle.source_slot == parent_slot)
+        .map_or_else(|| arena.slot_generation(parent_slot), |handle| handle.generation);
+    let source = arena.economy.authored_class5.iter_mut().find(|source|
+        source.active && source.source_entity_index == slot && source.model == DRAGON_MODEL)
+        .ok_or_else(|| format!("Alliance Dragon {slot} lost its typed source"))?;
+    source.action = row.action;
+    source.word_0x96_150 = row.source_word_96();
+    let state = arena.economy.authored_dragons.iter_mut().find(|state| state.source_entity_index == slot)
+        .ok_or_else(|| format!("Alliance Dragon {slot} lost its sidecar"))?;
+    state.parent_entity_index = parent_slot;
+    state.parent_generation = generation;
+    state.stage_remaining = i16::from_le_bytes([row.record[50], row.record[51]]);
+    state.alliance_duration = u16::from_le_bytes([row.record[52], row.record[53]]);
+    state.stage_var1 = row.record[76];
+    state.stage_var2 = row.record[77];
+    state.stage_relation = u16::from_le_bytes([row.record[78], row.record[79]]);
+    if let Some(parent) = parent.filter(|handle| handle.source_slot == parent_slot) {
+        if !arena.bind_creature_parent(child, parent) {
+            return Err(format!("Alliance Dragon {slot} lost its parent binding"));
+        }
+    }
+    Ok(true)
+}
+
+/// sub_1ED30 blinks and consumes Alliance time during the ordinary attack
+/// callback, then rejects the parent and targets other than its selection.
+fn alliance_attack_target_allowed(
+    arena: &mut SourceArena,
+    slot: u16,
+    target_slot: u16,
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<bool, String> {
+    let index = arena.economy.authored_dragons.iter().position(|state| state.source_entity_index == slot)
+        .ok_or_else(|| format!("Dragon {slot} lost its attack sidecar"))?;
+    let mut state = arena.economy.authored_dragons[index];
+    if state.stage_var2 != 14 { return Ok(true); }
+    let phase = arena.economy.authored_class5.iter().find(|row|
+        row.active && row.source_entity_index == slot && row.model == DRAGON_MODEL)
+        .ok_or_else(|| format!("Alliance Dragon {slot} lost its attack source"))?.source_byte_3e;
+    let flags = super::firefly::alliance_blink_bits(
+        state.stage_remaining.cast_unsigned(), state.alliance_duration, phase, false,
+    );
+    super::firefly::alliance_blink_children(arena, slot, flags, context)?;
+    state.control_flags = (state.control_flags & !0x0600_0000) | flags;
+    state.stage_remaining = state.stage_remaining.wrapping_sub(1);
+    arena.economy.authored_dragons[index] = state;
+    if state.stage_remaining <= 0 { return Ok(false); }
+    if state.parent_entity_index == 0 { return Ok(true); }
+    let Some(parent) = crate::native_world::source_target::read(arena, context, state.parent_entity_index)?
+        else { return Ok(true); };
+    if target_slot == state.parent_entity_index { return Ok(false); }
+    let selected = parent.relations.target.ok_or_else(|| format!("Alliance Dragon parent {} has no target", state.parent_entity_index))?;
+    let selected = if selected != 0 { selected } else {
+        parent.relations.attacker.ok_or_else(|| format!("Alliance Dragon parent {} has no attacker", state.parent_entity_index))?
+    };
+    Ok(selected == 0 || selected == target_slot)
+}
+
 pub(crate) const DRAGON_SEGMENT_MANA: i32 = DRAGON_MAX_MANA >> 5;
 pub(crate) const DRAGON_SUBSPELL_INDEX: u16 = 100;
 const DRAGON_DESCRIPTOR_CADENCE: u8 = 30;
@@ -225,6 +333,143 @@ pub(crate) fn allocate_boss_summoned(
 pub(crate) struct DragonBossStageStep {
     pub(crate) retained_for_epilogue: bool,
     pub(crate) spell_feedback: Option<(u16, u8)>,
+}
+
+#[derive(Default)]
+pub(crate) struct DragonAllianceStep {
+    pub(crate) retained_for_epilogue: bool,
+    pub(crate) spell_feedback: Vec<(u16, u8)>,
+}
+
+/// Source sub_1D5D0 -> sub_1E9C0 followed by sub_1F300's
+/// projectile-dodge and vertical tails, against the same typed Dragon root.
+pub(crate) fn step_alliance_stage_slot(
+    arena: &mut SourceArena,
+    slot: u16,
+    frozen_model0_slots: &[u16],
+    projectiles: &[DragonProjectileThreat],
+    terrain: &mut SessionTerrain,
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<DragonAllianceStep, String> {
+    let source_index = arena.economy.authored_class5.iter().position(|row|
+        row.active && row.source_entity_index == slot && row.model == DRAGON_MODEL
+            && row.action == DRAGON_STAGE_ACTION)
+        .ok_or_else(|| format!("Alliance Dragon {slot} lost its stage source"))?;
+    let state_index = arena.economy.authored_dragons.iter().position(|row| row.source_entity_index == slot)
+        .ok_or_else(|| format!("Alliance Dragon {slot} lost its sidecar"))?;
+    let runtime_index = arena.economy.authored_class5_runtime.iter().position(|row| row.source_entity_index == slot)
+        .ok_or_else(|| format!("Alliance Dragon {slot} lost its class5 runtime"))?;
+    let mut source = arena.economy.authored_class5[source_index];
+    let mut state = arena.economy.authored_dragons[state_index];
+    let mut runtime = arena.economy.authored_class5_runtime[runtime_index];
+    if state.stage_var2 != 14 { return Err(format!("Dragon {slot} is not in Alliance stage14")); }
+    state.stage_remaining = state.stage_remaining.wrapping_sub(1);
+    if state.stage_remaining > 0 {
+        let flags = super::firefly::alliance_blink_bits(
+            state.stage_remaining.cast_unsigned(), state.alliance_duration, source.source_byte_3e, false,
+        );
+        state.control_flags = (state.control_flags & !0x0600_0000) | flags;
+        super::firefly::alliance_blink_children(arena, slot, flags, context)?;
+    }
+    let parent = if state.stage_remaining > 0 && state.parent_entity_index != 0 {
+        crate::native_world::source_target::read(arena, context, state.parent_entity_index)?
+            .filter(|row| row.life > 0)
+    } else { None };
+    let mut feedback = Vec::new();
+    if let Some(parent) = parent {
+        let saved_target = source.word_0x96_150;
+        source.word_0x96_150 = state.parent_entity_index;
+        let mut damaged = false;
+        if source.pending_word_0x62 != 0 {
+            source.life = source.life.wrapping_sub(runtime.pending_damage);
+            source.word_0x26 = source.pending_word_0x62;
+            source.pending_word_0x62 = 0;
+            runtime.pending_damage = 0;
+            damaged = true;
+        } else { source.word_0x26 = 0; }
+        let mut child = runtime.linked_head;
+        let mut remaining = arena.entities.len();
+        while child != 0 {
+            if remaining == 0 { return Err(format!("Alliance Dragon {slot} has a cyclic child chain")); }
+            remaining -= 1;
+            let Some(view) = crate::native_world::source_target::read(arena, context, child)? else { break; };
+            if view.life < source.life {
+                source.life = view.life;
+                source.word_0x26 = view.relations.attacker.ok_or_else(|| format!("Alliance Dragon child {child} has no attacker"))?;
+                damaged = true;
+                break;
+            }
+            child = view.relations.next.ok_or_else(|| format!("Alliance Dragon child {child} has no next link"))?;
+        }
+        if source.life < 0 {
+            source.word_0x24 = source.word_0x26;
+            state.stage_remaining = 1;
+        } else {
+            if step_dragon_motion(&mut source, &mut state, terrain) {
+                arena.economy.decrement_source_creature_population();
+            }
+            if damaged {
+                let attacker = source.word_0x26;
+                let same_family = crate::native_world::source_target::read(arena, context, attacker)?
+                    .is_some_and(|row| (row.class, row.model) == (5, DRAGON_MODEL));
+                if attacker != state.parent_entity_index && !same_family {
+                    source.word_0x96_150 = attacker;
+                    source.action = DRAGON_ATTACK_ACTION;
+                    feedback.push((state.parent_entity_index, 19));
+                }
+            } else if source.source_byte_3e & 7 == 0 {
+                if !state.movement_blocked {
+                    source.roll = i16::try_from(crate::heading_for_positions(source.position, parent.position))
+                        .expect("Alliance Dragon parent heading fits i16");
+                    if source.source_byte_3e & 0x3f == 0 { apply_dragon_wander(&mut source); }
+                }
+                if let Some(peer) = frozen_model0_slots.iter().find_map(|peer_slot| {
+                    arena.economy.authored_class5.iter().find(|peer| {
+                        peer.active && peer.model == DRAGON_MODEL && peer.source_entity_index == *peer_slot
+                            && arena.economy.authored_dragons.iter().any(|other|
+                                other.source_entity_index == *peer_slot && other.entity_id != state.entity_id)
+                            && i32::from(peer.position.x.wrapping_sub(source.position.x).cast_signed()).abs() < i32::from(source.shift_rot_x)
+                            && i32::from(peer.position.y.wrapping_sub(source.position.y).cast_signed()).abs() < i32::from(source.shift_rot_x)
+                    })
+                }) {
+                    source.roll = i16::try_from(crate::heading_for_positions(peer.position, source.position))
+                        .expect("Alliance Dragon separation heading fits i16");
+                }
+            }
+        }
+        let parent_target = parent.relations.target.ok_or_else(|| format!("Alliance Dragon parent {} has no target", state.parent_entity_index))?;
+        let inherited = if parent_target != 0 { parent_target } else {
+            parent.relations.attacker.ok_or_else(|| format!("Alliance Dragon parent {} has no attacker", state.parent_entity_index))?
+        };
+        source.word_0x96_150 = if inherited != 0 { inherited } else { saved_target };
+        if source.word_0x96_150 != 0 {
+            if let Some(target) = crate::native_world::source_target::read(arena, context, source.word_0x96_150)? {
+                let allied = target.relations.parent == Some(state.parent_entity_index)
+                    && target.relations.stage_mode == Some(14);
+                if allied || target.life <= 0 || target.drawing_disabled() {
+                    source.word_0x96_150 = 0;
+                } else if distance_3d_wrapped(source.position, target.position) < u32::from(DRAGON_RANGE) {
+                    source.action = DRAGON_ATTACK_ACTION;
+                    feedback.push((state.parent_entity_index, 24));
+                }
+            }
+        }
+    } else {
+        super::firefly::alliance_blink_children(arena, slot, 0, context)?;
+        state.stage_var2 = 10;
+        state.stage_var1 = state.stage_relation as u8;
+        state.parent_entity_index = 0;
+        state.parent_generation = 0;
+        state.control_flags &= !0x0600_0000;
+        source.word_0x96_150 = 0;
+    }
+    step_dragon_tails(&mut source, &mut state, terrain, &arena.economy.map_chains, projectiles);
+    arena.economy.source_rng.insert(slot, source.entity_rng);
+    arena.economy.authored_class5[source_index] = source;
+    arena.economy.authored_dragons[state_index] = state;
+    arena.economy.authored_class5_runtime[runtime_index] = runtime;
+    crate::world::effects::sync_position(arena, terrain, slot, source.position, source.active, false)?;
+    Ok(DragonAllianceStep { retained_for_epilogue: true, spell_feedback: feedback })
 }
 
 /// Action 7 for the boss-launched Dragon. The parent binding is generation
@@ -666,7 +911,7 @@ pub(crate) fn prepare_boss_stage_pass(arena: &mut SourceArena, frozen_model0_slo
         else {
             continue;
         };
-        if !matches!(state.stage_var2, 16 | 17) {
+        if !matches!(state.stage_var2, 14 | 16 | 17) {
             continue;
         }
         if let Some(source) = arena.economy.authored_class5.iter_mut().find(|source| {
@@ -680,6 +925,181 @@ pub(crate) fn prepare_boss_stage_pass(arena: &mut SourceArena, frozen_model0_slo
             source.action = DRAGON_STAGE_ACTION;
         }
     }
+}
+
+/// After Alliance expires, source sub_12500 rebinds the saved StageVar on
+/// the next source pass. Keep the shared route counter and thinning rules.
+pub(crate) fn prepare_alliance_stage_pass(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    frozen_model0_slots: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<(), String> {
+    for &slot in frozen_model0_slots {
+        let Some(source_index) = arena.economy.authored_class5.iter().position(|source|
+            source.active && source.source_entity_index == slot && source.model == DRAGON_MODEL)
+            else { continue; };
+        let Some(state_index) = arena.economy.authored_dragons.iter().position(|state|
+            state.source_entity_index == slot && matches!(state.stage_var2, 1 | 2 | 6 | 10))
+            else { continue; };
+        let mut source = arena.economy.authored_class5[source_index];
+        let mut state = arena.economy.authored_dragons[state_index];
+        let mut index = state.stage_var1 as i8;
+        let mut mode = state.stage_var2 as i8;
+        let mut error = None;
+        crate::native_world::creatures::stage_route::Route {
+            model: DRAGON_MODEL, position: source.position, action: &mut source.action,
+            index: &mut index, mode: &mut mode, relation: &mut state.stage_relation,
+        }.prepare(runtime, |target| match crate::native_world::source_target::read(arena, context, target) {
+            Ok(Some(view)) => view.life < 0 || view.drawing_disabled(),
+            Ok(None) => false,
+            Err(e) => { error = Some(e); false }
+        });
+        if let Some(error) = error { return Err(error); }
+        state.stage_var1 = index as u8;
+        state.stage_var2 = mode as u8;
+        arena.economy.authored_class5[source_index] = source;
+        arena.economy.authored_dragons[state_index] = state;
+    }
+    Ok(())
+}
+
+/// sub_12100 binds a route only after the Dragon constructor succeeds.
+pub(crate) fn bind_authored_stage_in_arena(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    slot: u16,
+    stage_index: u8,
+) -> std::result::Result<(), String> {
+    let source_index = arena.economy.authored_class5.iter().position(|source|
+        source.active && source.source_entity_index == slot && source.model == DRAGON_MODEL)
+        .ok_or_else(|| format!("Dragon {slot} lost its stage source"))?;
+    let state_index = arena.economy.authored_dragons.iter().position(|state| state.source_entity_index == slot)
+        .ok_or_else(|| format!("Dragon {slot} lost its stage sidecar"))?;
+    let mut source = arena.economy.authored_class5[source_index];
+    let mut state = arena.economy.authored_dragons[state_index];
+    let mut index = state.stage_var1 as i8;
+    let mut mode = state.stage_var2 as i8;
+    crate::native_world::creatures::stage_route::Route {
+        model: DRAGON_MODEL, position: source.position, action: &mut source.action,
+        index: &mut index, mode: &mut mode, relation: &mut state.stage_relation,
+    }.bind(runtime, stage_index);
+    state.stage_var1 = index as u8;
+    state.stage_var2 = mode as u8;
+    arena.economy.authored_class5[source_index] = source;
+    arena.economy.authored_dragons[state_index] = state;
+    Ok(())
+}
+
+/// Dragon's source stage-1 patrol, stage-2 guard, and stage-6 wander.
+/// sub_1F300 always executes the Dragon-specific tails after these callbacks.
+pub(crate) fn step_authored_stage_in_arena(
+    arena: &mut SourceArena,
+    runtime: &RuntimeSnapshot,
+    terrain: &mut SessionTerrain,
+    slot: u16,
+    players: &[GoatPlayerTarget],
+    frozen_model0_slots: &[u16],
+    projectiles: &[DragonProjectileThreat],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<DragonAllianceStep, String> {
+    let source_index = arena.economy.authored_class5.iter().position(|source|
+        source.active && source.source_entity_index == slot && source.model == DRAGON_MODEL
+            && source.action == DRAGON_STAGE_ACTION)
+        .ok_or_else(|| format!("Dragon {slot} lost its authored stage source"))?;
+    let state_index = arena.economy.authored_dragons.iter().position(|state| state.source_entity_index == slot)
+        .ok_or_else(|| format!("Dragon {slot} lost its authored stage sidecar"))?;
+    let runtime_index = arena.economy.authored_class5_runtime.iter().position(|state| state.source_entity_index == slot)
+        .ok_or_else(|| format!("Dragon {slot} lost its creature runtime"))?;
+    let mut source = arena.economy.authored_class5[source_index];
+    let mut state = arena.economy.authored_dragons[state_index];
+    let mut creature = arena.economy.authored_class5_runtime[runtime_index];
+    if !matches!(state.stage_var2, 1 | 2 | 6) {
+        return Err(format!("Dragon {slot} has unsupported authored stage {}", state.stage_var2));
+    }
+    let point = if matches!(state.stage_var2, 1 | 2) {
+        let stage = runtime.stage_variables.get(usize::from(state.stage_var1))
+            .ok_or_else(|| format!("Dragon {slot} lost StageVar {}", state.stage_var1))?;
+        let RuntimeRelation::AxisScalar(point) = stage.relation else {
+            return Err(format!("Dragon {slot} stage has no point"));
+        };
+        Position { x: point as u16, y: (point >> 16) as u16, z: 0 }
+    } else { Position::default() };
+    let guard = state.stage_var2 == 2
+        && (i32::from(point.x.cast_signed()) - i32::from(source.position.x.cast_signed())).abs() <= 3072
+        && (i32::from(point.y.cast_signed()) - i32::from(source.position.y.cast_signed())).abs() <= 3072;
+    let wander = state.stage_var2 == 6 || guard;
+    let saved_target = source.word_0x96_150;
+    if consume_dragon_damage(&mut source, &mut creature, &arena.economy.authored_dragon_parts, terrain) {
+        if source.life >= 0 {
+            let same_family = crate::native_world::source_target::read(arena, context, source.word_0x26)?
+                .is_some_and(|row| (row.class, row.model) == (5, DRAGON_MODEL));
+            if same_family {
+                source.word_0x96_150 = saved_target;
+                source.action = DRAGON_STAGE_ACTION;
+            } else {
+                state.stage_var2 = 10;
+            }
+        }
+    } else {
+        if step_dragon_motion(&mut source, &mut state, terrain) {
+            arena.economy.decrement_source_creature_population();
+        }
+        if wander {
+            // Owner descriptor71 byte32 has bit2 clear, so sub_1E1C0 moves
+            // and draws its guarded random turn every sixteen visits.
+            if source.source_byte_3e & 15 == 0 && !state.movement_blocked {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                source.roll = source.roll.wrapping_add(
+                    i16::try_from(source.entity_rng % 113 + 142).expect("Dragon wander turn fits i16")
+                ) & 0x07ff;
+            }
+        } else if source.source_byte_3e & 7 == 0 {
+            if !state.movement_blocked {
+                source.roll = i16::try_from(crate::heading_for_positions(source.position, point))
+                    .expect("Dragon stage heading fits i16");
+                if source.source_byte_3e & 0x3f == 0 { apply_dragon_wander(&mut source); }
+            }
+            if let Some(peer) = frozen_model0_slots.iter().find_map(|peer_slot| {
+                arena.economy.authored_class5.iter().find(|peer| {
+                    peer.active && peer.model == DRAGON_MODEL && peer.source_entity_index == *peer_slot
+                        && arena.economy.authored_dragons.iter().any(|other|
+                            other.source_entity_index == *peer_slot && other.entity_id != state.entity_id)
+                        && i32::from(peer.position.x.cast_signed()).abs_diff(i32::from(source.position.x.cast_signed())) < source.shift_rot_x as u32
+                        && i32::from(peer.position.y.cast_signed()).abs_diff(i32::from(source.position.y.cast_signed())) < source.shift_rot_x as u32
+                })
+            }) {
+                source.roll = i16::try_from(crate::heading_for_positions(peer.position, source.position))
+                    .expect("Dragon stage separation heading fits i16");
+            }
+        }
+    }
+    if state.stage_var2 == 2 && source.action == DRAGON_STAGE_ACTION && source.source_byte_39 != 0
+        && source.source_byte_3e % DRAGON_DESCRIPTOR_CADENCE == 0
+    {
+        let range_squared = u32::from(DRAGON_RANGE).pow(2);
+        if let Some(target) = players.iter().filter(|target| target.control_flags & 0x20 == 0)
+            .filter_map(|target| {
+                let dx = i32::from(target.position.x) - i32::from(source.position.x);
+                let dy = i32::from(target.position.y.wrapping_sub(source.position.y).cast_signed());
+                let distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)).cast_unsigned();
+                let heading = crate::heading_for_positions(source.position, target.position);
+                (distance <= range_squared && crate::angle_distance(i32::from(source.yaw), heading) < DRAGON_VIEW_HALF_ANGLE)
+                    .then_some((distance, target.entity_index))
+            }).min_by_key(|(distance, _)| *distance).map(|(_, slot)| slot)
+        {
+            source.word_0x96_150 = target;
+            state.stage_var2 = 10;
+            source.action = DRAGON_ATTACK_ACTION;
+        }
+    }
+    step_dragon_tails(&mut source, &mut state, terrain, &arena.economy.map_chains, projectiles);
+    arena.economy.source_rng.insert(slot, source.entity_rng);
+    arena.economy.authored_class5[source_index] = source;
+    arena.economy.authored_dragons[state_index] = state;
+    arena.economy.authored_class5_runtime[runtime_index] = creature;
+    crate::world::effects::sync_position(arena, terrain, slot, source.position, source.active, false)?;
+    Ok(DragonAllianceStep { retained_for_epilogue: true, spell_feedback: Vec::new() })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1105,10 +1525,13 @@ impl Level2EconomyState {
         self.authored_dragons.push(AuthoredDragonRuntime {
             source_entity_index,
             entity_id: source_entity_index,
+            stage_var1: 0,
             stage_var2: 0,
+            stage_relation: 0,
             parent_entity_index: 0,
             parent_generation: 0,
             stage_remaining: 0,
+            alliance_duration: 0,
             linked_entity_index: 0,
             word_0x36: 96,
             control_flags: DRAGON_CONSTRUCTOR_FLAGS,
@@ -1708,6 +2131,11 @@ fn step_dragon_motion(
     state: &mut AuthoredDragonRuntime,
     terrain: &SessionTerrain,
 ) -> bool {
+    // sub_1B8C0 consumes this one-shot suppression before terrain/motion.
+    if state.control_flags & 0x800 != 0 {
+        state.control_flags &= !0x800;
+        return false;
+    }
     let transition = crate::ground_creature_motion::step_ground_creature_motion(
         source.position,
         source.yaw,
@@ -1995,6 +2423,100 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
 #[cfg(test)]
 mod lightning_consumer_tests {
     use super::*;
+
+    #[test]
+    fn alliance_impact_controls_dragon_attack_and_returns_original_actor() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let owner = session.state.entity_index;
+        let position = session.state.position;
+        let dragon = arena.economy.allocate_authored_dragon(575, position, DRAGON_LIFE, &terrain)
+            .expect("real Dragon constructor");
+        let slot = dragon.source_entity_index;
+        arena.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == slot).unwrap().source_byte_3e = 0;
+        bind_authored_stage_in_arena(&mut arena, &mut runtime, slot, 6).unwrap();
+        assert_eq!(arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap().stage_var2, 2);
+        let target = arena.allocate_source_slot_with_terrain(&mut terrain).expect("target slot");
+        let mut target_row = crate::world::terrain::cave_features::new_event(target, 1, position);
+        target_row.class = 3;
+        target_row.model = 0;
+        target_row.record[67] = 3;
+        target_row.set_life(1_000);
+        arena.entities[usize::from(target)] = target_row;
+        arena.entities[usize::from(owner)].set_life(1_000);
+        arena.entities[usize::from(owner)].set_source_word_96(target);
+        let effect = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain)
+            .expect("Alliance terminal");
+        let effect_row = &mut arena.entities[usize::from(effect)];
+        effect_row.source_id = owner;
+        effect_row.record[30..32].copy_from_slice(&owner.to_le_bytes());
+        effect_row.set_source_word_96(slot);
+        effect_row.set_subspell_index(3);
+        effect_row.record[74] = 16;
+        let impact = crate::native_world::alliance_spell::step_impact(&mut arena, effect, &[slot]).unwrap();
+        assert_eq!(impact.affected_entities, vec![slot]);
+        let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((state.stage_var2, state.parent_entity_index, state.entity_id), (14, owner, slot));
+        assert_eq!((state.stage_remaining, state.alliance_duration), (3, 3));
+        assert!(arena.entities[usize::from(effect)].drawing_disabled());
+        let step = step_alliance_stage_slot(&mut arena, slot, &[slot], &[], &mut terrain, Default::default()).unwrap();
+        assert!(step.retained_for_epilogue);
+        assert_eq!(step.spell_feedback, vec![(owner, 24)]);
+        let source = arena.economy.authored_class5.iter().find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((source.action, source.word_0x96_150), (DRAGON_ATTACK_ACTION, target));
+        let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!(state.stage_remaining, 2);
+        assert_eq!(state.control_flags & 0x0600_0000, 0x0400_0000);
+        assert!(arena.economy.authored_dragon_parts.iter().filter(|part| part.active && part.entity_id == slot)
+            .all(|part| part.control_flags & 0x0600_0000 == 0x0400_0000));
+        let attack = step_attack_in_arena(&mut arena, &mut terrain, slot, &[slot], Default::default()).unwrap();
+        assert!(attack.fireball.is_some(), "the converted Dragon reaches its real attack producer");
+        assert_eq!(arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap().stage_remaining, 1);
+        let denied = step_attack_in_arena(&mut arena, &mut terrain, slot, &[slot], Default::default()).unwrap();
+        assert!(denied.fireball.is_none());
+        prepare_boss_stage_pass(&mut arena, &[slot]);
+        step_alliance_stage_slot(&mut arena, slot, &[slot], &[], &mut terrain, Default::default()).unwrap();
+        let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((state.stage_var2, state.parent_entity_index, state.entity_id), (10, 0, slot));
+        assert_eq!(state.stage_var1, 6, "Alliance restores the source StageVar index");
+        assert_eq!(state.control_flags & 0x0600_0000, 0);
+        assert!(arena.economy.authored_dragon_parts.iter().filter(|part| part.active && part.entity_id == slot)
+            .all(|part| part.control_flags & 0x0600_0000 == 0));
+        prepare_alliance_stage_pass(&mut arena, &mut runtime, &[slot], Default::default()).unwrap();
+        let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((state.stage_var1, state.stage_var2), (6, 2));
+        let resumed = step_authored_stage_in_arena(&mut arena, &runtime, &mut terrain, slot, &[], &[slot], &[], Default::default()).unwrap();
+        assert!(resumed.retained_for_epilogue, "restored source guard executes on the original Dragon");
+
+        // The same owner-level runtime supplies patrol kind1 and wander kind6.
+        // Reapply the actual terminal and expire each binding before visiting
+        // its restored callback, rather than only testing the route helper.
+        for (stage_index, mode) in [(1, 1), (2, 6)] {
+            bind_authored_stage_in_arena(&mut arena, &mut runtime, slot, stage_index).unwrap();
+            let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!((state.stage_var1, state.stage_var2), (stage_index, mode));
+            let effect = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain).unwrap();
+            let row = &mut arena.entities[usize::from(effect)];
+            row.source_id = owner;
+            row.record[30..32].copy_from_slice(&owner.to_le_bytes());
+            row.set_source_word_96(slot);
+            row.set_subspell_index(1);
+            row.record[74] = 16;
+            let impact = crate::native_world::alliance_spell::step_impact(&mut arena, effect, &[slot]).unwrap();
+            assert_eq!(impact.affected_entities, vec![slot]);
+            step_alliance_stage_slot(&mut arena, slot, &[slot], &[], &mut terrain, Default::default()).unwrap();
+            let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!((state.stage_var1, state.stage_var2), (stage_index, 10));
+            prepare_alliance_stage_pass(&mut arena, &mut runtime, &[slot], Default::default()).unwrap();
+            let state = arena.economy.authored_dragons.iter().find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!((state.stage_var1, state.stage_var2), (stage_index, mode));
+            let resumed = step_authored_stage_in_arena(&mut arena, &runtime, &mut terrain, slot, &[], &[slot], &[], Default::default()).unwrap();
+            assert!(resumed.retained_for_epilogue, "restored Dragon stage {mode} executes");
+        }
+    }
 
     #[test]
     fn boss_dragon_constructor_launch_parent_loss_and_reclaim_use_real_parts() {

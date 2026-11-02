@@ -425,7 +425,7 @@ pub(crate) fn step_row(
         .clone();
     let source_id = row.source_id;
     let parent_slot = word(&row, 44);
-    let parent_current = arena.handle(slot).is_some_and(|child| {
+    let parent_current = row.record[77] == 14 || arena.handle(slot).is_some_and(|child| {
         // Imported reset rows have generation zero and predate the runtime
         // association. Every allocated Army or boss child binds a parent.
         if arena.has_creature_parent_binding(child) {

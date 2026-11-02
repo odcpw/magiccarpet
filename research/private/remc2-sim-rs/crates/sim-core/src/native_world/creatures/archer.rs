@@ -46,7 +46,7 @@ pub(crate) const ARCHER_CHILD_SPEED: i16 = 384;
 pub(crate) const ARCHER_CHILD_MAX_LIFE: i16 = 5120 / ARCHER_CHILD_SPEED;
 pub(crate) const ARCHER_CHILD_SUBSPELL_INDEX: u16 = ARCHER_CLASS_PROPERTIES.arrow_damage;
 pub(crate) const ARCHER_CHILD_PARTICLE_INDEX: u16 = 195;
-pub(crate) const ARCHER_CHILD_PARTICLE_FOV: i16 = 60;
+pub(crate) const ARCHER_CHILD_BODY_FOV: i16 = 0;
 
 /// The model-4-only words owned by `AddArchers_4BA10`.  The root remains in
 /// `authored_class5`; this typed sidecar supplies the linked-peer/head words,
@@ -192,6 +192,9 @@ pub struct Level2AuthoredClass5ArcherChild {
     pub life: i16,
     pub subspell_index: u16,
     pub particle_index: u16,
+    pub collision_half_width: i16,
+    pub collision_vertical_offset: i16,
+    pub collision_half_height: i16,
     pub control_flags: u32,
     pub xtype: u8,
     pub xsubtype: u8,
@@ -206,6 +209,18 @@ pub struct Level2AuthoredClass5ArcherChild {
     pub phase: u8,
     pub drawing_enabled: bool,
     pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ArrowCollisionTarget {
+    pub target: crate::native_world::level2_dynamic_economy::Level2FireballCollisionTarget,
+    pub control_flags: u32,
+    pub mana: i32,
+}
+
+pub(crate) struct ArrowCollisionFrame {
+    pub targets: Vec<ArrowCollisionTarget>,
+    pub owner_class_model: Option<(u8, u8)>,
 }
 
 /// A linked child observed by the `word_0x34` walk in `sub_1FAA0` and
@@ -1702,7 +1717,7 @@ pub(crate) fn archer_child_packet(
         // NewEvent clears body roll; neither AddEvent09_0D nor the Archer
         // sub_1CCE0 tail copies the parent's body orientation into the arrow.
         roll: 0,
-        fov: ARCHER_CHILD_PARTICLE_FOV,
+        fov: ARCHER_CHILD_BODY_FOV,
         position,
         // NewEvent seeds byte_0x3E from the fixed arena slot before the
         // ordinary callback epilogue advances it.

@@ -1501,7 +1501,10 @@ impl GoatFamily {
                 let target = self.alliance_target(index).and_then(|slot| {
                     let target = self
                         .source_entity_view(slot)
-                        .filter(|target| target.active && target.life >= 0)?;
+                        .filter(|target| {
+                            (target.active || self.goats[index].stage_var_2 == 14)
+                                && target.life >= 0
+                        })?;
                     if self.frozen_model_slots.is_none() && target.class == 3 && target.model == 0 {
                         // The retained Level 1 entry receives current players,
                         // while its other source views come from the reset.

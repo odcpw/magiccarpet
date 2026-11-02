@@ -6,7 +6,10 @@
 //! the focused Alliance kernel; scheduler tails and following-pass reclaim
 //! remain with the shared dispatch owner.
 
-use super::{EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain};
+use super::{
+    EntitySnapshot, EntitySpecialRelation, Level2SharedSpellResetSession, ParticleParameter,
+    SessionTerrain,
+};
 use crate::campaign::source_arena::SourceArena;
 use crate::spell_activation::ProjectileSpellCastInput as CastInput;
 use crate::spells::late::alliance::{self as rules, Impact};
@@ -81,9 +84,16 @@ fn construct_source_carrier(
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
-    if slot == parent_slot || slot == holder_slot {
-        return Err("Alliance source allocator selected a live parent or holder".to_owned());
+    if slot == holder_slot {
+        return Err("Alliance source allocator selected the live holder".to_owned());
     }
+    // The source passes &parent.position into the constructor. If NewEvent
+    // reuses that freed parent, its reset occurs before this pointer is read.
+    let position = if slot == parent_slot {
+        Position::default()
+    } else {
+        position
+    };
     let mut row = crate::world::terrain::cave_features::new_event(
         slot,
         arena.economy.new_event_rng(slot),
@@ -187,13 +197,14 @@ fn construct_carrier(
     holder_slot: u16,
     parameters: rules::ProjectileParameters,
     input: CastInput,
+    shared_a4_input: CastInput,
 ) -> Result<Option<u16>, String> {
     let parent_before = arena
         .entities
         .get(usize::from(parent_slot))
-        .filter(|parent| parent.index == parent_slot && parent.active)
+        .filter(|parent| parent_slot != 0 && parent.index == parent_slot)
         .cloned()
-        .ok_or("Alliance constructor parent is no longer live")?;
+        .ok_or("Alliance constructor parent address is outside the source arena")?;
     let Some(slot) = construct_source_carrier(
         arena,
         terrain,
@@ -209,9 +220,16 @@ fn construct_carrier(
         let parent = arena
             .entities
             .get(usize::from(parent_slot))
-            .filter(|parent| parent.index == parent_slot && parent.active)
+            .filter(|parent| parent.index == parent_slot)
             .cloned()
-            .ok_or("Alliance parent was lost during source allocation")?;
+            .ok_or("Alliance parent address was lost during source allocation")?;
+        // NewEvent can reset this fixed parent's A4 pointer during allocation;
+        // it can also already address the shared A4 on entry to the holder.
+        let input = if parent.special_relation == EntitySpecialRelation::GlobalSpecialState {
+            shared_a4_input
+        } else {
+            input
+        };
         let holder = arena
             .entities
             .get(usize::from(holder_slot))
@@ -233,7 +251,7 @@ fn construct_carrier(
         row.record[72] = IMPACT_MODEL;
         row.set_subspell_index(parameters.damage);
         row.set_source_byte_46(parameters.radius_tiles);
-        row.set_source_dword_10(i32::from(parameters.pending_cast_auxiliary));
+        row.set_source_dword_10(i32::from(input.auxiliary_byte));
         put_word(row, 42, holder_slot);
         put_word(row, 44, holder.source_spell_parent_entity_index());
         set_owner(row, parent.source_id);
@@ -301,7 +319,7 @@ pub(crate) fn step_holder(
     let parent = arena
         .entities
         .get(usize::from(parent_slot))
-        .filter(|parent| parent_slot != 0 && parent.active)
+        .filter(|parent| parent_slot != 0 && parent.index == parent_slot)
         .cloned();
 
     let Some(holder_row) = arena.entities.get_mut(usize::from(slot)) else {
@@ -337,15 +355,14 @@ pub(crate) fn step_holder(
     };
 
     if let (Some(parent), Some(caster)) = (parent.as_ref(), caster) {
-        if let Some(authority) = arena.entities.get_mut(usize::from(parent_slot)) {
-            authority.set_mana_regen(caster.mana_regen);
-            shared.sync_player_entity_from_authority(authority);
-            if parent_slot == shared.player_entity.index {
-                shared.sync_typed_spell_parent_caches_from_player_entity();
-            }
-        }
         if visit.projectile_allocation_attempts != 0 {
             let parameters = rule.projectile_parameters(caster, slot);
+            let shared_a4_input = CastInput {
+                aim_yaw: shared.global_special_state.input_yaw,
+                aim_pitch: shared.global_special_state.input_pitch,
+                auxiliary_byte: shared.global_special_state.cast_auxiliary,
+                castle_mana: input.castle_mana,
+            };
             outcome.projectile = construct_carrier(
                 arena,
                 terrain,
@@ -354,12 +371,43 @@ pub(crate) fn step_holder(
                 slot,
                 parameters,
                 input,
+                shared_a4_input,
             )?;
             if let Some(projectile) = outcome.projectile {
-                outcome.clear_player_aux = Some(parent_slot);
+                if arena
+                    .entities
+                    .get(usize::from(parent_slot))
+                    .is_some_and(|parent| {
+                        parent.special_relation == EntitySpecialRelation::GlobalSpecialState
+                    })
+                {
+                    shared.global_special_state.cast_auxiliary = 0;
+                } else {
+                    outcome.clear_player_aux = Some(parent_slot);
+                }
                 arena
                     .economy
-                    .prepare_sound(projectile, parent_slot, -1, parameters.sound);
+                    .prepare_sound(projectile, projectile, -1, parameters.sound);
+            }
+        }
+        // sub_68DE0 runs after the allocation attempt and reads the current
+        // fixed parent record. Allocation can itself reuse a reclaimed parent.
+        if let Some(authority) = arena.entities.get_mut(usize::from(parent_slot)) {
+            let regen = if visit.mana_pulse {
+                if authority.mana_regen >= 0 {
+                    rule.mana_cost.wrapping_neg()
+                } else {
+                    authority.mana_regen.wrapping_sub(rule.mana_cost)
+                }
+            } else if caster.mana_regen != parent.mana_regen {
+                caster.mana_regen
+            } else {
+                authority.mana_regen
+            };
+            authority.set_mana_regen(regen);
+            shared.sync_player_entity_from_authority(authority);
+            if parent_slot == shared.player_entity.index {
+                shared.sync_typed_spell_parent_caches_from_player_entity();
             }
         }
     }
@@ -372,7 +420,7 @@ pub(crate) fn step_holder(
         if deferred != 0 {
             let deferred_tier = deferred
                 .checked_sub(1)
-                .and_then(|value| u8::try_from(value).ok())
+                .and_then(|value| u8::try_from(value.min(2)).ok())
                 .ok_or("Alliance queued profile tier is outside the source table")?;
             let profile = shared
                 .physical_spell_profile(24, deferred_tier, parent_slot, None)
@@ -424,6 +472,8 @@ enum TypedAllianceOwner {
     Bee,
     Firefly,
     Archer,
+    Dragon,
+    Worm,
 }
 
 fn typed_projection(
@@ -439,6 +489,14 @@ fn typed_projection(
         .or_else(|| {
             super::level2_class5::archer::alliance_projection(arena, slot)
                 .map(|row| (TypedAllianceOwner::Archer, row))
+        })
+        .or_else(|| {
+            super::level2_class5::dragon::alliance_projection(arena, slot)
+                .map(|row| (TypedAllianceOwner::Dragon, row))
+        })
+        .or_else(|| {
+            super::creatures::worm::dynamic::alliance_projection(arena, slot)
+                .map(|row| (TypedAllianceOwner::Worm, row))
         })
 }
 
@@ -473,8 +531,8 @@ pub(crate) fn step_impact(
         );
     }
     // Alliance assigns its parent when the terminal takes over the creature,
-    // rather than at the creature's original construction. Observe that live
-    // address now so a later reuse cannot prolong the new Alliance binding.
+    // rather than at its original construction. Capture the current typed
+    // identity for the write; later source behavior reads the fixed address.
     let parent = arena.handle(effect.source_id);
     let center_slot = effect.source_word_96();
     let mut typed_targets = std::collections::BTreeMap::new();
@@ -522,6 +580,16 @@ pub(crate) fn step_impact(
                     }
                     TypedAllianceOwner::Archer => {
                         super::level2_class5::archer::apply_alliance_takeover(
+                            arena, *child, row, parent,
+                        )?
+                    }
+                    TypedAllianceOwner::Dragon => {
+                        super::level2_class5::dragon::apply_alliance_takeover(
+                            arena, *child, row, parent,
+                        )?
+                    }
+                    TypedAllianceOwner::Worm => {
+                        super::creatures::worm::dynamic::apply_alliance_takeover(
                             arena, *child, row, parent,
                         )?
                     }
@@ -586,6 +654,367 @@ mod tests {
     use super::*;
 
     #[test]
+    fn holder_expiry_clamps_queued_profile_and_reads_reclaimed_parent() {
+        let mut base = crate::native_world::tests::level_two_campaign_session();
+        base.apply_carried_spell_families(&[24], Some(24)).unwrap();
+        let parent_slot = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player.enabled_spell_holders[24];
+        for (queued, tier) in [(1, 0), (3, 2), (4, 2), (i16::MAX, 2)] {
+            let mut simulation = base.clone();
+            let particles = simulation.session.definition.presentation.particles.clone();
+            let live = &mut simulation.session.state.live;
+            let expected = live
+                .shared_spells
+                .physical_spell_profile(24, tier, parent_slot, None)
+                .expect("Alliance physical tier");
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.active_value = 1;
+            holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            holder.set_source_word_2c(queued);
+            let parent = &mut live.economy.entities[usize::from(parent_slot)];
+            parent.reclaim_source_row();
+            parent.set_life(100);
+            parent.set_mana(rules::SOURCE_RULES[0].mana_cost);
+            parent.set_mana_regen(13);
+            let outcome = step_holder(
+                &mut live.shared_spells,
+                &mut live.economy,
+                &mut live.terrain,
+                &particles,
+                holder_slot,
+                CastInput {
+                    castle_mana: Some(rules::SOURCE_RULES[0].castle_mana_required),
+                    ..Default::default()
+                },
+            )
+            .expect("fixed parent holder expiry");
+            assert!(outcome.profile_updated);
+            assert!(!outcome.charged);
+            assert_eq!(
+                live.economy.entities[usize::from(parent_slot)].mana_regen,
+                0,
+                "sub_68DE0 reads a nonzero reclaimed parent address"
+            );
+            let holder = live.shared_spells.pickup(holder_slot).unwrap();
+            assert_eq!(holder.level_gate, tier as i8);
+            assert_eq!(holder.source_word_2c(), 0);
+            assert_eq!(holder.max_mana, expected.max_mana);
+            assert_eq!(holder.activation_value, expected.word_0x30);
+        }
+    }
+
+    #[test]
+    fn holder_charges_on_allocation_failure_but_not_on_refusal_for_all_tiers() {
+        let mut base = crate::native_world::tests::level_two_campaign_session();
+        base.apply_carried_spell_families(&[24], Some(24)).unwrap();
+        let parent_slot = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player.enabled_spell_holders[24];
+        for tier in 0..3 {
+            for refused in [false, true] {
+                let mut simulation = base.clone();
+                simulation
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .exhaust_new_event_capacity_for_test();
+                let particles = simulation.session.definition.presentation.particles.clone();
+                let live = &mut simulation.session.state.live;
+                live.economy.finish_source_group();
+                let profile = live
+                    .shared_spells
+                    .physical_spell_profile(24, tier, parent_slot, None)
+                    .expect("Alliance physical tier");
+                let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+                holder.apply_nyphur_spell_profile(profile, tier);
+                holder.active_value = holder.activation_value.cast_signed();
+                holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                let parent = &mut live.economy.entities[usize::from(parent_slot)];
+                parent.set_life(100);
+                parent.set_mana(if refused {
+                    profile.max_mana - 1
+                } else {
+                    profile.max_mana
+                });
+                parent.set_mana_regen(13);
+                let outcome = step_holder(
+                    &mut live.shared_spells,
+                    &mut live.economy,
+                    &mut live.terrain,
+                    &particles,
+                    holder_slot,
+                    CastInput {
+                        castle_mana: Some(profile.mana_regen),
+                        ..Default::default()
+                    },
+                )
+                .expect("Alliance failed allocation or refusal");
+                assert!(outcome.projectile.is_none());
+                assert!(outcome.clear_player_aux.is_none());
+                assert_eq!(outcome.denied, refused);
+                assert_eq!(outcome.charged, !refused);
+                assert_eq!(
+                    live.economy.entities[usize::from(parent_slot)].mana_regen,
+                    if refused { 13 } else { -profile.max_mana }
+                );
+                let holder = live.shared_spells.pickup(holder_slot).unwrap();
+                assert_eq!(
+                    holder.active_value,
+                    if refused {
+                        0
+                    } else {
+                        profile.word_0x30.cast_signed() - 1
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reclaimed_parent_slot_can_be_reused_before_the_pulse_cost() {
+        let mut simulation = crate::native_world::tests::level_two_campaign_session();
+        simulation
+            .apply_carried_spell_families(&[24], Some(24))
+            .unwrap();
+        let parent_slot = simulation.state.entity_index;
+        let holder_slot = simulation
+            .shared_spells()
+            .local_player
+            .enabled_spell_holders[24];
+        simulation
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test();
+        let particles = simulation.session.definition.presentation.particles.clone();
+        let live = &mut simulation.session.state.live;
+        live.economy.finish_source_group();
+        let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+        holder.active_value = holder.activation_value.cast_signed();
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        crate::world::terrain::cave_features::reclaim(
+            &mut live.economy,
+            &mut live.terrain,
+            parent_slot,
+        );
+        let parent = &mut live.economy.entities[usize::from(parent_slot)];
+        parent.set_life(100);
+        parent.set_mana(rules::SOURCE_RULES[0].mana_cost);
+        parent.set_mana_regen(13);
+        live.shared_spells.global_special_state.input_yaw = 37;
+        live.shared_spells.global_special_state.input_pitch = -21;
+        live.shared_spells.global_special_state.cast_auxiliary = 11;
+        let outcome = step_holder(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            holder_slot,
+            CastInput {
+                aim_yaw: 120,
+                aim_pitch: 55,
+                auxiliary_byte: 7,
+                castle_mana: Some(rules::SOURCE_RULES[0].castle_mana_required),
+            },
+        )
+        .expect("Alliance holder can reuse its reclaimed parent");
+        assert_eq!(outcome.projectile, Some(parent_slot));
+        assert_eq!(outcome.clear_player_aux, None);
+        assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 0);
+        let projectile = &live.economy.entities[usize::from(parent_slot)];
+        assert_eq!(
+            (projectile.class, projectile.model, projectile.action),
+            (9, 25, 26)
+        );
+        assert_eq!(projectile.position, Position::default());
+        assert_eq!(
+            (
+                projectile.yaw,
+                projectile.pitch,
+                projectile.source_dword_10()
+            ),
+            (37, -21, 11),
+            "the current shared A4 supplies and clears the cast input after NewEvent"
+        );
+        assert_eq!(
+            projectile.mana, 50,
+            "the player cache must not overwrite the new carrier"
+        );
+        assert_eq!(
+            projectile.mana_regen,
+            -rules::SOURCE_RULES[0].mana_cost,
+            "sub_68DE0 charges the freshly constructed fixed row"
+        );
+        assert!(
+            live.economy
+                .economy
+                .events()
+                .iter()
+                .any(|event| matches!(event,
+            super::super::Level2EconomyEvent::PreparedSound {
+                source_entity_index, entity_index, sound_id: 9, ..
+            } if *source_entity_index == parent_slot && *entity_index == parent_slot))
+        );
+    }
+
+    #[test]
+    fn already_reused_parent_reads_current_shared_cast_input_and_castle() {
+        let mut base = crate::native_world::tests::level_two_campaign_session();
+        // Release an earlier slot before the turn so the actual carrier is
+        // born behind the source cursor and first visited on the next pass.
+        let earlier_slot = {
+            let live = &mut base.session.state.live;
+            construct_impact(&mut live.economy, &mut live.terrain)
+                .expect("reserve an ordinary earlier source slot")
+        };
+        base.apply_carried_spell_families(&[24], Some(24)).unwrap();
+        let parent_slot = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player.enabled_spell_holders[24];
+        assert!(earlier_slot < holder_slot && earlier_slot != parent_slot);
+        let castle = base
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                parent_slot,
+                false,
+                true,
+            )
+            .expect("controlled owner Castle");
+        let requirement = base.shared_spells().pickup(holder_slot).unwrap().mana_regen;
+        assert!(requirement > 0);
+        assert!(
+            base.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, requirement)
+        );
+        {
+            let live = &mut base.session.state.live;
+            live.economy.finish_source_group();
+            crate::world::terrain::cave_features::reclaim(
+                &mut live.economy,
+                &mut live.terrain,
+                parent_slot,
+            );
+            let slot = construct_impact(&mut live.economy, &mut live.terrain)
+                .expect("reclaimed parent is available to the actual impact constructor");
+            assert_eq!(slot, parent_slot);
+            let row = &mut live.economy.entities[usize::from(slot)];
+            row.set_life(100);
+            row.set_mana(rules::SOURCE_RULES[0].mana_cost);
+            crate::world::terrain::cave_features::reclaim(
+                &mut live.economy,
+                &mut live.terrain,
+                earlier_slot,
+            );
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            live.economy.entities[usize::from(holder_slot)] = holder.clone();
+            live.shared_spells.global_special_state.cast_auxiliary = 11;
+        }
+        for (global_castle, should_launch) in [(0, false), (castle, true)] {
+            let mut simulation = base.clone();
+            simulation
+                .session
+                .state
+                .live
+                .shared_spells
+                .global_special_state
+                .castle_entity_index = global_castle;
+            simulation.step_outer_turn(
+                crate::PlayerCommand {
+                    argument_6: 37,
+                    argument_8: (-21_i16).cast_unsigned(),
+                    ..Default::default()
+                },
+                0,
+            );
+            assert!(
+                !simulation.dispatch_events().iter().any(|event| matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                )),
+                "outer turn rolled back: {:?}",
+                simulation.dispatch_events()
+            );
+            let live = &simulation.session.state.live;
+            assert_eq!(
+                (
+                    live.shared_spells.global_special_state.input_yaw,
+                    live.shared_spells.global_special_state.input_pitch
+                ),
+                (37, -21)
+            );
+            let projectile = live.economy.entities.iter().find(|row| {
+                row.active
+                    && (row.class, row.model, row.action) == (9, 25, 26)
+                    && u16::from_le_bytes([row.record[42], row.record[43]]) == holder_slot
+            });
+            assert_eq!(
+                projectile.is_some(),
+                should_launch,
+                "the current shared Castle address decides the gate, not the stale owner's Castle; parent={:?}, holder={:?}, castle={:?}, carriers={:?}, events={:?}",
+                live.economy
+                    .entities
+                    .get(usize::from(parent_slot))
+                    .map(|row| (
+                        row.class,
+                        row.model,
+                        row.action,
+                        row.life,
+                        row.mana,
+                        row.mana_regen,
+                        row.special_relation
+                    )),
+                live.shared_spells.pickup(holder_slot).map(|row| (
+                    row.active_value,
+                    row.activation_value,
+                    row.max_mana,
+                    row.mana_regen
+                )),
+                live.economy
+                    .castle_at(castle)
+                    .map(|row| (row.active, row.mana)),
+                live.economy
+                    .entities
+                    .iter()
+                    .filter(|row| row.class == 9 && row.model == 25)
+                    .map(|row| (
+                        row.index,
+                        row.active,
+                        row.action,
+                        row.yaw,
+                        row.pitch,
+                        row.source_dword_10()
+                    ))
+                    .collect::<Vec<_>>(),
+                simulation.dispatch_events()
+            );
+            if let Some(projectile) = projectile {
+                assert_ne!(projectile.index, parent_slot);
+                assert_eq!(
+                    (
+                        projectile.yaw,
+                        projectile.pitch,
+                        projectile.source_dword_10()
+                    ),
+                    (37, -21, 11)
+                );
+                assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 0);
+                assert_eq!(
+                    live.economy.entities[usize::from(parent_slot)].mana_regen,
+                    -rules::SOURCE_RULES[0].mana_cost
+                );
+            } else {
+                assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 11);
+            }
+        }
+    }
+
+    #[test]
     fn carried_alliance_holder_launch_uses_aim_not_map_links() {
         let mut base = crate::native_world::tests::level_two_campaign_session();
         // The retained family is a controlled campaign input; its holder and
@@ -642,6 +1071,16 @@ mod tests {
             let slot = outcome
                 .projectile
                 .expect("Alliance source carrier allocated");
+            assert!(
+                live.economy
+                    .economy
+                    .events()
+                    .iter()
+                    .any(|event| matches!(event,
+                super::super::Level2EconomyEvent::PreparedSound {
+                    source_entity_index, entity_index, sound_id: 9, ..
+                } if *source_entity_index == slot && *entity_index == slot))
+            );
             let flyer = &live.economy.entities[usize::from(slot)];
             assert_eq!((flyer.class, flyer.model, flyer.action), (9, 25, 26));
             assert_eq!((flyer.yaw, flyer.pitch), (expected_yaw, expected_pitch));

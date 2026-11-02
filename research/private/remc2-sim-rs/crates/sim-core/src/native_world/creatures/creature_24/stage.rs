@@ -270,7 +270,11 @@ fn summon_follow(
         {
             actor.target = actor.attacker;
             actor.action = 194;
-            effects.feedback = Some((actor.stage.parent, 19));
+            if actor.stage.mode == 14 {
+                effects.earlier_feedback = Some((actor.stage.parent, 19));
+            } else {
+                effects.feedback = Some((actor.stage.parent, 19));
+            }
         }
     } else if let Some(target) = ctx.target(actor.target) {
         follow(actor, ctx, target.position, false, None);

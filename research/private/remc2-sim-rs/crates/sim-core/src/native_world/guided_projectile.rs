@@ -131,6 +131,16 @@ fn class5_gate_fields(arena: &SourceArena, slot: u16) -> Option<(u8, u8, u16)> {
                     .find(|state| state.source_entity_index == slot)
                     .map(|state| (state.stage_var2, state.parent_entity_index))
             })
+            .or_else(|| {
+                arena.authored_dragons.iter()
+                    .find(|state| state.source_entity_index == slot)
+                    .map(|state| (state.stage_var2, state.parent_entity_index))
+            })
+            .or_else(|| {
+                arena.authored_class5_model3.iter()
+                    .find(|state| state.source_entity_index == slot)
+                    .map(|state| (state.stage_var2, state.parent_entity_index))
+            })
             .unwrap_or((0, 0));
         Some((row.source_byte_39, stage.0, stage.1))
     } else if let Some(row) = arena
@@ -513,6 +523,11 @@ fn acquire_alliance(
             let mut target = arena.entities[usize::from(slot)].clone();
             target.class = actor.class;
             target.model = actor.model;
+            if let Some(current) = arena.economy.live_arena_cursor_row(slot) {
+                let (_, action) = arena.economy.live_arena_class_action(slot, current.kind)
+                    .ok_or_else(|| format!("Alliance target {slot} lost its current action"))?;
+                target.action = action;
+            }
             target.record[77] = stage;
             if cadence == 0 || !crate::spells::late::alliance::eligible_target(&target) {
                 continue;

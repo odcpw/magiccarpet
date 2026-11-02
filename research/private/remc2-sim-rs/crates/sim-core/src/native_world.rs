@@ -2341,10 +2341,15 @@ pub struct AuthoredDragonRuntime {
     pub source_entity_index: u16,
     /// Source `id_0x1A`, independent of the player/mana owner at word 0x94.
     pub entity_id: u16,
+    pub stage_var1: u8,
     pub stage_var2: u8,
+    /// Source word_0x4A, preserving the stage to restore after Alliance.
+    pub stage_relation: u16,
     pub parent_entity_index: u16,
     pub parent_generation: u32,
     pub stage_remaining: i16,
+    /// Source word_0x30, the original Alliance duration used for blinking.
+    pub alliance_duration: u16,
     /// Source `word_0x32`, used by the ordinary creature peer relation.
     pub linked_entity_index: u16,
     pub word_0x36: i16,
@@ -2416,6 +2421,13 @@ pub struct AuthoredDragonPart {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredClass5Model3State {
     pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub stage_var1: u8,
+    pub stage_var2: u8,
+    pub stage_relation: u16,
+    pub parent_entity_index: u16,
+    pub stage_remaining: i16,
+    pub alliance_duration: u16,
     pub damage_dword_0x5e_94: i32,
     pub word_0x32: u16,
     pub word_0x34: u16,

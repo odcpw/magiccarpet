@@ -208,11 +208,8 @@ fn model0_or1_near_parent(actor: Actor, frame: &Frame<'_>, parent: u16) -> Optio
 
 fn transparency_mode(actor: Actor, remaining: i16) -> u8 {
     let source_counter = actor.source_counter;
-    if remaining <= actor.route_duration.wrapping_sub(16)
-        && remaining >= 16
-        && source_counter & 0x1c == 16
-    {
-        source_counter & 3
+    if remaining <= actor.route_duration.wrapping_sub(16) && remaining >= 16 {
+        if source_counter & 0x1c == 16 { source_counter & 3 } else { 0 }
     } else if source_counter & 1 != 0 {
         0
     } else {
@@ -457,27 +454,61 @@ pub(super) fn step(
         14 => {
             actor.route_remaining = actor.route_remaining.wrapping_sub(1);
             let remaining = actor.route_remaining;
-            mode14_transparency(actor, frame, remaining, effects);
-            let parent = live(frame, actor.parent).filter(|parent| parent.life > 0);
-            if actor.route_remaining <= 0 || parent.is_none() {
+            if remaining > 0 { mode14_transparency(actor, frame, remaining, effects); }
+            let parent = if remaining > 0 { frame.target(actor.parent).filter(|parent| parent.life > 0) } else { None };
+            if let Some(parent) = parent {
+                let previous = actor.target;
+                actor.target = actor.parent;
+                match super::consume(actor, frame) {
+                    DamageResult::Killed => {
+                        // consume() selects the ordinary death action, but
+                        // sub_1E700 only shortens the allied lifetime here.
+                        actor.action = 231;
+                        actor.route_remaining = 1;
+                    }
+                    result => {
+                        let motion = move_actor(actor, frame.terrain);
+                        if motion == super::MoveResult::Stuck && actor.life == -1 {
+                            effects.population_decrement = true;
+                        }
+                        if matches!(result, DamageResult::Hit) {
+                            if actor.attacker != actor.parent && frame.target(actor.attacker)
+                                .is_none_or(|row| (row.class, row.model) != (super::SOURCE_CLASS, super::SOURCE_MODEL)) {
+                                actor.target = actor.attacker;
+                                enter_target_action(actor);
+                                effects.notices.feedback.push((actor.parent, 19));
+                            }
+                        } else if actor.source_counter & 7 == 0 {
+                            if actor.flags & 0x40000 == 0 {
+                                actor.roll = crate::heading_for_positions(actor.position, parent.position) as i16;
+                                if actor.source_counter & 63 == 0 { update_roam_roll(actor); }
+                            }
+                            let extent = u16::try_from(actor.half_width.max(0)).unwrap_or(u16::MAX);
+                            if let Some(peer) = frame.same_model.iter().filter_map(|slot| frame.target(*slot)).find(|peer|
+                                peer.source_id != actor.source_id && actor.position.x.abs_diff(peer.position.x) < extent
+                                    && actor.position.y.abs_diff(peer.position.y) < extent) {
+                                actor.roll = crate::heading_for_positions(peer.position, actor.position) as i16;
+                            }
+                        }
+                    }
+                }
+                let inherited = if parent.route_target != 0 { parent.route_target } else { parent.attacker };
+                actor.target = if inherited != 0 { inherited } else { previous };
+                if let Some(target) = frame.target(actor.target) {
+                    if (target.parent == actor.parent && target.route_mode == 14) || target.life <= 0 || target.flags & 0x400 != 0 {
+                        actor.target = 0;
+                    } else if distance(actor.position, target.position) < SOURCE_PROPERTIES.target_radius {
+                        actor.action = SOURCE_ATTACK_ACTION;
+                        effects.notices.feedback.push((actor.parent, 24));
+                    }
+                }
+            } else {
                 actor.route_index = actor.route_relation as u8;
                 actor.route_mode = 10;
                 actor.target = 0;
                 actor.parent = 0;
-            } else if !take_damage(actor, frame)
-                && let Some(parent) = parent
-            {
-                let target = live(frame, actor.target)
-                    .or_else(|| live(frame, parent.route_target))
-                    .unwrap_or(parent);
-                let _ = move_actor(actor, frame.terrain);
-                actor.roll = crate::heading_for_positions(actor.position, target.position) as i16;
-                if actor.source_counter & 7 == 0
-                    && distance(actor.position, target.position) < SOURCE_PROPERTIES.target_radius
-                {
-                    actor.target = target.slot;
-                    actor.action = SOURCE_ATTACK_ACTION;
-                }
+                actor.flags &= !0x0600_0000;
+                set_child_transparency(*actor, frame, 0, effects);
             }
         }
         17 => {
@@ -578,6 +609,8 @@ mod tests {
             route_index: 0,
             route_relation: 0,
             route_target: 0,
+            parent: 0,
+            route_mode: 0,
         }
     }
 

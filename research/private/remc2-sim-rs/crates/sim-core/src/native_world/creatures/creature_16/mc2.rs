@@ -160,10 +160,10 @@ pub(crate) fn prepare_source_pass(arena:&mut SourceArena,runtime:&mut RuntimeSna
     }
 }
 
-fn targets(arena:&SourceArena)->Vec<Target> {
+fn targets(arena:&SourceArena,direct:&std::collections::BTreeSet<u16>)->Vec<Target> {
     let mut targets=super::super::creature_15::mc2::targets_in_arena(arena);
     let typed=arena.economy.live_arena_slots();
-    for row in arena.entities.iter().filter(|r|r.active&&r.class!=0&&r.index!=0&&!typed.iter().any(|(s,_)|*s==r.index)) {
+    for row in arena.entities.iter().filter(|r|(r.active&&r.class!=0||direct.contains(&r.index))&&r.index!=0&&!typed.iter().any(|(s,_)|*s==r.index)) {
         let actor=Target {
             slot:row.index,source_id:row.source_id,class:row.class,model:row.model,action:row.action,life:row.life,
             control_flags:row.control_flags,position:row.position,previous:word(row,54),next:word(row,56),
@@ -181,9 +181,10 @@ pub(crate) fn step_row(
     arena:&mut SourceArena,runtime:&mut RuntimeSnapshot,terrain:&mut SessionTerrain,
     particles:&[ParticleParameter],slot:u16,class3:&[u16],families:&[Vec<u16>;29],
 )->Result<Effects,String> {
-    let mut targets=targets(arena);
     let mut row=arena.entities.get(usize::from(slot)).filter(|r|r.active&&r.class==5&&r.model==SOURCE_MODEL)
         .ok_or_else(||format!("Wyvern callback lost slot{slot}"))?.clone();
+    let direct=crate::native_world::source_target::alliance_direct_references(arena,&row)?;
+    let mut targets=targets(arena,&direct);
     let handle = arena.handle(slot).ok_or_else(|| format!("Wyvern lost source slot{slot}"))?;
     if matches!(row.record[77], 13 | 16)
         && arena.has_creature_parent_binding(handle)

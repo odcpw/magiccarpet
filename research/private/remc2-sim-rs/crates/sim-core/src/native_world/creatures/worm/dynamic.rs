@@ -5,6 +5,7 @@
 //! `sub_4D000` is a separate source family and is deliberately absent here.
 
 use crate::{FlightWorld, Position, Tile};
+use crate::campaign::source_arena::{SourceArena, SourceEntityHandle};
 
 use super::super::super::*;
 
@@ -155,6 +156,249 @@ struct Model3Peer {
     drawing_enabled: bool,
 }
 
+pub(crate) fn alliance_projection(arena: &SourceArena, slot: u16) -> Option<EntitySnapshot> {
+    let handle = arena.handle(slot)?;
+    if !matches!(arena.resolve(handle), Some(crate::campaign::source_arena::SourceEntityView::Dynamic(Level2DynamicArenaKind::AuthoredClass5))) { return None; }
+    let source = arena.economy.authored_class5.iter().find(|row| row.active && row.source_entity_index == slot && row.model == 3)?;
+    let state = arena.economy.authored_class5_model3.iter().find(|row| row.source_entity_index == slot)?;
+    let mut row = arena.entities.get(usize::from(slot))?.clone();
+    row.active = true; row.record[2] = 1; row.source_id = state.entity_id;
+    row.record[30..32].copy_from_slice(&state.entity_id.to_le_bytes());
+    row.class = 5; row.model = 3; row.record[67] = 5; row.record[68] = 3;
+    row.set_source_action(source.action); row.set_position(source.position); row.set_life(source.life);
+    row.set_control_flags((state.control_flags & !0x400) | if source.drawing_enabled { 0 } else { 0x400 });
+    row.record[44..46].copy_from_slice(&state.parent_entity_index.to_le_bytes());
+    row.record[50..52].copy_from_slice(&state.stage_remaining.to_le_bytes());
+    row.record[52..54].copy_from_slice(&state.alliance_duration.to_le_bytes());
+    row.record[76] = state.stage_var1; row.record[77] = state.stage_var2;
+    row.record[78..80].copy_from_slice(&state.stage_relation.to_le_bytes());
+    row.record[154..156].copy_from_slice(&source.word_0x96_150.to_le_bytes());
+    Some(row)
+}
+
+pub(crate) fn apply_alliance_takeover(arena: &mut SourceArena, child: SourceEntityHandle, row: &EntitySnapshot, parent: Option<SourceEntityHandle>) -> std::result::Result<bool, String> {
+    let slot = child.source_slot;
+    if row.index != slot || (row.class, row.model) != (5, 3) || row.record[76] != 0 || row.record[77] != 14
+        || arena.handle(slot) != Some(child) || alliance_projection(arena, slot).is_none_or(|current| current.source_id != row.source_id) {
+        return Ok(false);
+    }
+    let parent_slot = u16::from_le_bytes([row.record[44], row.record[45]]);
+    let source = arena.economy.authored_class5.iter_mut().find(|row| row.active && row.source_entity_index == slot && row.model == 3)
+        .ok_or_else(|| format!("Alliance Worm {slot} lost its typed root"))?;
+    source.action = row.action; source.word_0x96_150 = row.source_word_96();
+    let state = arena.economy.authored_class5_model3.iter_mut().find(|row| row.source_entity_index == slot)
+        .ok_or_else(|| format!("Alliance Worm {slot} lost its state"))?;
+    state.parent_entity_index = parent_slot;
+    state.stage_remaining = i16::from_le_bytes([row.record[50], row.record[51]]);
+    state.alliance_duration = u16::from_le_bytes([row.record[52], row.record[53]]);
+    state.stage_var1 = row.record[76]; state.stage_var2 = row.record[77];
+    state.stage_relation = u16::from_le_bytes([row.record[78], row.record[79]]);
+    if let Some(parent) = parent.filter(|parent| parent.source_slot == parent_slot) {
+        if !arena.bind_creature_parent(child, parent) { return Err(format!("Alliance Worm {slot} lost its parent binding")); }
+    }
+    Ok(true)
+}
+
+pub(crate) fn step_alliance_stage_slot(
+    arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16,
+    peers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<Vec<(u16, u8)>, String> {
+    let source_index = arena.economy.authored_class5.iter().position(|row| row.active && row.source_entity_index == slot && row.model == 3 && row.action == 31)
+        .ok_or_else(|| format!("Alliance Worm {slot} lost its stage root"))?;
+    let state_index = arena.economy.authored_class5_model3.iter().position(|row| row.source_entity_index == slot)
+        .ok_or_else(|| format!("Alliance Worm {slot} lost its state"))?;
+    let mut source = arena.economy.authored_class5[source_index];
+    let mut state = arena.economy.authored_class5_model3[state_index];
+    if state.stage_var2 != 14 { return Err(format!("Worm {slot} is not allied")); }
+    state.stage_remaining = state.stage_remaining.wrapping_sub(1);
+    let parent = if state.stage_remaining > 0 {
+        crate::native_world::source_target::read(arena, context, state.parent_entity_index)?.filter(|row| row.life > 0)
+    } else { None };
+    let bits = crate::native_world::level2_class5::firefly::alliance_blink_bits(
+        state.stage_remaining as u16, state.alliance_duration as u16, source.source_byte_3e, parent.is_none(),
+    );
+    state.control_flags = (state.control_flags & !0x0600_0000) | bits;
+    crate::native_world::level2_class5::firefly::alliance_blink_chain(arena, state.word_0x34, bits, context)?;
+    let mut feedback = Vec::new();
+    if let Some(parent) = parent {
+        let previous = source.word_0x96_150;
+        source.word_0x96_150 = state.parent_entity_index;
+        match arena.economy.model3_source_prepass(&mut source, &mut state) {
+            2 => state.stage_remaining = 1,
+            hit => {
+                let motion = arena.economy.model3_step_source_movement(&mut source, &mut state, terrain);
+                if motion == 4 && source.life == -1 { arena.economy.decrement_source_creature_population(); }
+                if hit == 1 {
+                    let attacker = crate::native_world::source_target::read(arena, context, source.word_0x26)?;
+                    if source.word_0x26 != state.parent_entity_index && attacker.is_none_or(|row| (row.class, row.model) != (5, 3)) {
+                        source.word_0x96_150 = source.word_0x26;
+                        source.action = 26;
+                        feedback.push((state.parent_entity_index, 19));
+                    }
+                } else if source.source_byte_3e & 7 == 0 {
+                    if state.control_flags & MODEL3_RAW_MOTION_COLLISION_BIT == 0 {
+                        source.roll = heading_for_positions(source.position, parent.position) as i16;
+                        if source.source_byte_3e & 63 == 0 {
+                            source.entity_rng = level2_next_rng16(source.entity_rng); let first = source.entity_rng;
+                            source.entity_rng = level2_next_rng16(source.entity_rng);
+                            let delta = (2 * (i32::from(first % 157) / 79) - 1) * (i32::from(source.entity_rng & 255) + 85);
+                            source.roll = ((i32::from(source.roll) + delta) & 2047) as i16;
+                        }
+                    }
+                    alliance_retarget_nearby(arena, &mut source, state.entity_id, state.render_pitch, peers, context)?;
+                }
+            }
+        }
+        let target = parent.relations.target.unwrap_or(0);
+        let selected = if target != 0 { target } else { parent.relations.attacker.unwrap_or(0) };
+        source.word_0x96_150 = if selected == 0 { previous } else { selected };
+        if let Some(target) = crate::native_world::source_target::read(arena, context, source.word_0x96_150)? {
+            if (target.relations.parent == Some(state.parent_entity_index) && target.relations.stage_mode == Some(14))
+                || target.life <= 0 || target.drawing_disabled() {
+                source.word_0x96_150 = 0;
+            } else if crate::legacy_sqrt(level2_wrapping_source_distance_3d(source.position, target.position)) < MODEL3_TARGET_RANGE {
+                source.action = 26;
+                feedback.push((state.parent_entity_index, 24));
+            }
+        }
+    } else {
+        state.stage_var2 = 10; state.stage_var1 = state.stage_relation as u8;
+        state.parent_entity_index = 0; source.word_0x96_150 = 0;
+    }
+    arena.economy.source_rng.insert(slot, source.entity_rng);
+    arena.economy.authored_class5[source_index] = source;
+    arena.economy.authored_class5_model3[state_index] = state;
+    crate::world::effects::sync_position(arena, terrain, slot, source.position, source.active, false)?;
+    Ok(feedback)
+}
+
+pub(crate) fn step_alliance_attack_slot(
+    arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16,
+    peers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<(), String> {
+    let source_index = arena.economy.authored_class5.iter().position(|row| row.active && row.source_entity_index == slot && row.model == 3 && row.action == 26)
+        .ok_or_else(|| format!("Alliance Worm {slot} lost its attack root"))?;
+    let state_index = arena.economy.authored_class5_model3.iter().position(|row| row.source_entity_index == slot)
+        .ok_or_else(|| format!("Alliance Worm {slot} lost its state"))?;
+    let mut source = arena.economy.authored_class5[source_index];
+    let mut state = arena.economy.authored_class5_model3[state_index];
+    if state.stage_var2 != 14 { return Err(format!("Worm {slot} is not allied")); }
+    match arena.economy.model3_source_prepass(&mut source, &mut state) {
+        2 => source.action = 28,
+        1 => {
+            source.word_0x96_150 = source.word_0x26;
+            arena.economy.model3_source_terrain_settle(&mut source, terrain);
+        }
+        _ => {
+            let motion = arena.economy.model3_step_source_movement(&mut source, &mut state, terrain);
+            if motion == 4 && source.life == -1 { arena.economy.decrement_source_creature_population(); }
+            let bits = crate::native_world::level2_class5::firefly::alliance_blink_bits(
+                state.stage_remaining as u16, state.alliance_duration as u16, source.source_byte_3e, false,
+            );
+            state.control_flags = (state.control_flags & !0x0600_0000) | bits;
+            crate::native_world::level2_class5::firefly::alliance_blink_chain(arena, state.word_0x34, bits, context)?;
+            state.stage_remaining = state.stage_remaining.wrapping_sub(1);
+            let parent = crate::native_world::source_target::read(arena, context, state.parent_entity_index)?;
+            let selected = parent.map(|parent| {
+                let target = parent.relations.target.unwrap_or(0);
+                if target == 0 { parent.relations.attacker.unwrap_or(0) } else { target }
+            }).unwrap_or(0);
+            let allowed = state.stage_remaining > 0 && (parent.is_none() ||
+                (source.word_0x96_150 != state.parent_entity_index && (selected == 0 || selected == source.word_0x96_150)));
+            let target = if allowed { crate::native_world::source_target::read(arena, context, source.word_0x96_150)? } else { None };
+            if let Some(target) = target.filter(|target| target.life >= 0 && !target.drawing_disabled()) {
+                if source.source_byte_3e & 3 == 0 {
+                    source.roll = heading_for_positions(source.position, target.position) as i16;
+                    alliance_retarget_nearby(arena, &mut source, state.entity_id, state.render_pitch, peers, context)?;
+                }
+                if source.source_byte_3e % MODEL3_DESCRIPTOR_CADENCE == 0 {
+                    if crate::legacy_sqrt(level2_wrapping_source_distance_3d(source.position, target.position)) >= MODEL3_TARGET_RANGE {
+                        source.action = 25;
+                    } else {
+                        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(source.position, target.position);
+                        let mut launch_position = source.position; launch_position.z = launch_position.z.wrapping_add(source.fov);
+                        let spawned = arena.economy.spawn_fireball_projectile_with_payload(
+                            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                origin: FireballProjectileOrigin::Worm, position: launch_position, yaw, pitch,
+                                axis_position: target.position, source_id_entity_index: state.entity_id,
+                                holder_entity_index: 0, source_subspell_index: 500, source_mana: 0, source_dword_0x10: 0,
+                                target_source_entity_index: target.slot, target_class: target.class, target_model: target.model,
+                            }, 0,
+                        );
+                        if spawned.is_some() {
+                            Level2EconomyState::apply_creature_fireball_target_feedback(&mut arena.entities, target.slot);
+                            arena.economy.events.push(Level2EconomyEvent::AuthoredClass5Model3Sound { source_entity_index: slot, sound_id: 8 });
+                        }
+                    }
+                }
+            } else { source.action = 25; }
+        }
+    }
+    arena.economy.source_rng.insert(slot, source.entity_rng);
+    arena.economy.authored_class5[source_index] = source;
+    arena.economy.authored_class5_model3[state_index] = state;
+    crate::world::effects::sync_position(arena, terrain, slot, source.position, source.active, false)?;
+    Ok(())
+}
+
+fn alliance_retarget_nearby(
+    arena: &SourceArena,
+    source: &mut Level2AuthoredClass5Source,
+    source_id: u16,
+    extent: i16,
+    peers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<(), String> {
+    for &slot in peers {
+        let Some(peer) = crate::native_world::source_target::read(arena, context, slot)? else { continue };
+        if peer.source_id != source_id
+            && i32::from(peer.position.x).abs_diff(i32::from(source.position.x)) < extent.max(0) as u32
+            && i32::from(peer.position.y).abs_diff(i32::from(source.position.y)) < extent.max(0) as u32
+        {
+            source.roll = heading_for_positions(peer.position, source.position) as i16;
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Apply sub_12500 to the typed Worm root's actual route state before its
+/// source visit, including the next pass after Alliance restores stage10.
+pub(crate) fn prepare_alliance_stage_pass(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    slots: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<(), String> {
+    for &slot in slots {
+        let Some(source_index) = arena.economy.authored_class5.iter().position(|row|
+            row.active && row.source_entity_index == slot && row.model == 3) else { continue };
+        let Some(state_index) = arena.economy.authored_class5_model3.iter().position(|row|
+            row.source_entity_index == slot) else { continue };
+        let mut source = arena.economy.authored_class5[source_index];
+        let mut state = arena.economy.authored_class5_model3[state_index];
+        let mut index = state.stage_var1 as i8;
+        let mut mode = state.stage_var2 as i8;
+        let mut error = None;
+        let mut route = super::super::stage_route::Route {
+            model: 3, position: source.position, action: &mut source.action,
+            index: &mut index, mode: &mut mode, relation: &mut state.stage_relation,
+        };
+        route.prepare(runtime, |target| match crate::native_world::source_target::read(arena, context, target) {
+            Ok(target) => target.is_some_and(|target| target.life < 0 || target.drawing_disabled()),
+            Err(problem) => { error = Some(problem); false }
+        });
+        if let Some(problem) = error { return Err(problem); }
+        state.stage_var1 = index as u8;
+        state.stage_var2 = mode as u8;
+        arena.economy.authored_class5[source_index] = source;
+        arena.economy.authored_class5_model3[state_index] = state;
+    }
+    Ok(())
+}
+
 impl Level2EconomyState {
     /// Reproduce `sub_4B6F0`'s ordered child allocation. `NewEvent` failure
     /// ends the loop but does not roll back the root or already-created body
@@ -269,6 +513,13 @@ impl Level2EconomyState {
         }
         Level2AuthoredClass5Model3State {
             source_entity_index: source.source_entity_index,
+            entity_id: source.source_entity_index,
+            stage_var1: 0,
+            stage_var2: 0,
+            stage_relation: 0,
+            parent_entity_index: 0,
+            stage_remaining: 0,
+            alliance_duration: 0,
             damage_dword_0x5e_94: 0,
             word_0x32: 0,
             word_0x34: first_slot,

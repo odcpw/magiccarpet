@@ -206,6 +206,8 @@ pub(crate) struct Creature17Effects {
     pub kill_credit: Option<u16>,
     pub linked_actions: Vec<(u16, u8)>,
     pub linked_updates: Vec<LinkedUpdate>,
+    pub linked_blink_flags: Vec<(u16, u32)>,
+    pub feedback: Vec<(u16, u8)>,
     pub population_decrements: u32,
     pub kill: bool,
     pub route_hide: bool,
@@ -428,13 +430,16 @@ fn pursue(
     }
     if hit == 1 {
         actor.target = actor.attacker;
-        settle(actor, ctx.terrain);
-        return;
+        if actor.route_mode != 14 {
+            settle(actor, ctx.terrain);
+            return;
+        }
     }
     move_actor(actor, ctx.terrain, effects);
-    let Some(target) = ctx
-        .target(actor.target)
-        .filter(|target| target.alive() && target.player())
+    let selected = ctx.target(actor.target);
+    let selected = stage::alliance_target(actor, ctx, effects, selected);
+    let Some(target) = selected
+        .filter(|target| target.alive() && (actor.route_mode == 14 || target.player()))
     else {
         reset_from_bad_target(actor);
         return;

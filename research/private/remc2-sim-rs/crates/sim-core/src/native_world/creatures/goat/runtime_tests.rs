@@ -1,6 +1,6 @@
 use super::{GoatStepEvent, next_rng};
 use crate::{
-    PlayerCommand,
+    PlayerCommand, Position,
     campaign::{CampaignSession, spec::CampaignSelection},
     native_world::Level2EconomyEvent,
 };
@@ -19,6 +19,142 @@ fn ordinary_goat_package(level: u16) -> crate::campaign::spec::DecodedCampaignPa
         CampaignSelection::ordinary(level).unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn alliance_goat_reads_current_parent_and_retained_target_records() {
+    use crate::native_world::{Mc2DispatchEvent, alliance_spell};
+
+    let mut base = crate::native_world::tests::level_two_campaign_session();
+    let parent = base.state.entity_index;
+    let goat_slot = base
+        .goats()
+        .iter()
+        .find(|goat| goat.active && goat.life > 0)
+        .expect("owner package has a living Goat")
+        .entity_index;
+    let goat_handle = base.source_arena().handle(goat_slot).unwrap();
+    // Exercise the ordinary terminal constructor and scheduler on an actual
+    // owner-data Goat. The terminal payload is controlled; public acquisition
+    // and paid flight are covered by the shared acquired-spell scenario.
+    let effect = {
+        let live = &mut base.session.state.live;
+        let effect = alliance_spell::construct_impact(&mut live.economy, &mut live.terrain)
+            .expect("ordinary Alliance terminal");
+        let row = &mut live.economy.entities[usize::from(effect)];
+        row.source_id = parent;
+        row.record[30..32].copy_from_slice(&parent.to_le_bytes());
+        row.set_source_byte_46(32);
+        row.set_subspell_index(40);
+        row.set_source_word_96(goat_slot);
+        effect
+    };
+    base.step_level2_source_pass(0);
+    assert!(
+        !base
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+    );
+    assert!(base.entities()[usize::from(effect)].drawing_disabled());
+    assert_eq!(
+        base.goats()
+            .iter()
+            .find(|goat| goat.entity_index == goat_slot)
+            .unwrap()
+            .stage_var_2,
+        14
+    );
+
+    for parent_case in ["live", "free", "reused", "dead"] {
+        let mut control = base.clone();
+        let particles = control.session.definition.presentation.particles.clone();
+        let live = &mut control.session.state.live;
+        let target = live
+            .economy
+            .allocate_source_slot_with_terrain(&mut live.terrain)
+            .unwrap();
+        assert_ne!(target, parent);
+        let position = live
+            .goats
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == goat_slot)
+            .unwrap()
+            .position;
+        let mut retained = crate::world::terrain::cave_features::new_event(target, 7, position);
+        retained.class = 5;
+        retained.model = 21;
+        retained.record[67] = 5;
+        retained.record[68] = 21;
+        retained.set_life(100);
+        live.economy.entities[usize::from(target)] = retained;
+        if matches!(parent_case, "free" | "reused") {
+            crate::world::terrain::cave_features::reclaim(
+                &mut live.economy,
+                &mut live.terrain,
+                parent,
+            );
+            if parent_case == "reused" {
+                assert_eq!(
+                    live.economy
+                        .allocate_source_slot_with_terrain(&mut live.terrain),
+                    Some(parent)
+                );
+                let mut replacement =
+                    crate::world::terrain::cave_features::new_event(parent, 5, Position::default());
+                replacement.class = 3;
+                replacement.record[67] = 3;
+                replacement.set_life(100);
+                live.economy.entities[usize::from(parent)] = replacement;
+            }
+        } else if parent_case == "dead" {
+            live.economy.entities[usize::from(parent)].set_life(0);
+        }
+        // A direct target address can likewise retain positive life after
+        // reclaim. It is excluded from searches, but sub_1E9C0 still reads it.
+        crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, target);
+        live.economy.entities[usize::from(parent)].set_source_word_96(target);
+        let before = live
+            .goats
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == goat_slot)
+            .unwrap()
+            .lifetime;
+        live.goats
+            .step_runtime_slot(
+                goat_slot,
+                &mut live.terrain,
+                &[],
+                &mut live.economy,
+                &live.core.runtime,
+                &particles,
+            )
+            .expect("real Goat Alliance callback");
+        let goat = live
+            .goats
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == goat_slot)
+            .unwrap();
+        assert_eq!(live.economy.handle(goat_slot), Some(goat_handle));
+        if parent_case == "dead" {
+            assert_eq!((goat.stage_var_2, goat.parent_entity_index), (10, 0));
+        } else {
+            assert_eq!(
+                (goat.stage_var_2, goat.parent_entity_index),
+                (14, parent),
+                "{parent_case}"
+            );
+            assert_eq!(goat.lifetime, before - 1);
+            assert_eq!(goat.target_entity_index, Some(target));
+            assert_eq!(
+                goat.action, 10,
+                "retained positive-life target remains addressable: {parent_case}"
+            );
+        }
+    }
 }
 
 #[test]

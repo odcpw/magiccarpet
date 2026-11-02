@@ -315,12 +315,11 @@ pub(crate) fn prepare_source_pass(
     )
 }
 
-fn targets(arena: &SourceArena) -> Vec<Target> {
+fn targets(arena: &SourceArena, alliance_pointers: &[u16]) -> Vec<Target> {
     let mut rows = super::super::creature_15::mc2::targets_in_arena(arena);
     let typed = arena.economy.live_arena_slots();
     for row in arena.entities.iter().filter(|row| {
-        row.active
-            && row.class != 0
+        ((row.active && row.class != 0) || alliance_pointers.contains(&row.index))
             && row.index != 0
             && !typed.iter().any(|(slot, _)| *slot == row.index)
     }) {
@@ -379,14 +378,15 @@ pub(crate) fn step_row(
         .ok_or_else(|| format!("model21 callback lost slot{slot}"))?
         .clone();
     let parent_slot = word(&row, 44);
-    let stale_parent = arena.handle(slot).is_some_and(|child| {
+    let stale_parent = row.record[77] != 14 && arena.handle(slot).is_some_and(|child| {
         arena.has_creature_parent_binding(child)
             && arena
                 .creature_parent(child)
                 .is_none_or(|parent| parent.source_slot != parent_slot)
     });
     let mut actor_row = row;
-    let mut targets = targets(arena);
+    let pointers: Vec<_> = crate::native_world::source_target::alliance_direct_references(arena, &actor_row)?.into_iter().collect();
+    let mut targets = targets(arena, &pointers);
     if stale_parent {
         // A source-parent word names an address; the producer's binding names
         // the occupant that created this child. Preserve unbound authored
@@ -465,7 +465,7 @@ pub(crate) fn step_row(
         let mut tail = Effects::default();
         if matches!(current.record[77], 13 | 16) {
             current.record[71] = 0;
-            let targets = self::targets(arena);
+            let targets = self::targets(arena, &[]);
             let context = Context {
                 terrain,
                 targets: &targets,

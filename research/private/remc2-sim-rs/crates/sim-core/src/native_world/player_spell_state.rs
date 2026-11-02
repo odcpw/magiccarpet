@@ -58,9 +58,21 @@ pub struct GlobalSpecialState {
     /// This global A4 is distinct from the human player's damage feedback.
     #[serde(default)]
     pub damage_flash_ticks: u8,
+    /// Aim words on the shared A4 selected by NewEvent, distinct from a player A4.
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_angle")]
+    pub input_yaw: i16,
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_angle")]
+    pub input_pitch: i16,
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_auxiliary")]
+    pub cast_auxiliary: u8,
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_slot")]
+    pub castle_entity_index: u16,
 }
 
 impl GlobalSpecialState {
+    fn zero_angle(value: &i16) -> bool { *value == 0 }
+    fn zero_auxiliary(value: &u8) -> bool { *value == 0 }
+    fn zero_slot(value: &u16) -> bool { *value == 0 }
     pub(crate) fn is_default(&self) -> bool {
         *self == Self::default()
     }
@@ -73,6 +85,16 @@ impl GlobalSpecialState {
         if self.damage_flash_ticks != 0 {
             hasher.update(b"source-global-collector-damage-flash-v1");
             hasher.update([self.damage_flash_ticks]);
+        }
+        if self.input_yaw != 0 || self.input_pitch != 0 || self.cast_auxiliary != 0 {
+            hasher.update(b"source-global-cast-input-v1");
+            hasher.update(self.input_yaw.to_le_bytes());
+            hasher.update(self.input_pitch.to_le_bytes());
+            hasher.update([self.cast_auxiliary]);
+        }
+        if self.castle_entity_index != 0 {
+            hasher.update(b"source-global-castle-relation-v1");
+            hasher.update(self.castle_entity_index.to_le_bytes());
         }
     }
 }
@@ -419,6 +441,7 @@ impl Mc2LiveState {
                 .physical_spell_profile(2, tier, owner, Some(0))
                 .map(|profile| (tier, profile))
         });
+        let prior_castle = self.economy.castle_at(castle_slot).copied();
         let prior_allocations = self.economy.castle_source_allocations();
         let Self {
             economy: arena,
@@ -447,6 +470,19 @@ impl Mc2LiveState {
             site_clear,
             &mut consumer,
         );
+        // sub_60480/sub_605E0 address the current fixed owner's A4, even
+        // when NewEvent has rebound that address to the shared special state.
+        if let Some(prior) = prior_castle
+            && consumer.entities.get(usize::from(prior.source_id_entity_index))
+                .is_some_and(|owner| owner.special_relation == EntitySpecialRelation::GlobalSpecialState)
+            && let Some(current) = economy.castle_entry(castle_slot)
+        {
+            if prior.action == 5 && matches!(prior.build_state, 0 | 3)
+                && current.active && current.build_state == 4
+            {
+                consumer.shared_spells.global_special_state.castle_entity_index = castle_slot;
+            }
+        }
         let retired_root = economy.castle_entry(castle_slot).copied()
             .filter(|root| !root.active);
         // Construction, controller, overflow and collector constructors all
@@ -577,6 +613,12 @@ impl CastleSourceConsumer for CastlePlayerConsumer<'_> {
     }
 
     fn final_loss(&mut self, economy: &mut Level2EconomyState, castle: Level2CastleState) {
+        if self.entities.get(usize::from(castle.source_id_entity_index))
+            .is_some_and(|owner| owner.special_relation == EntitySpecialRelation::GlobalSpecialState)
+        {
+            // sub_605E0 clears the current A4 unconditionally at final loss.
+            self.shared_spells.global_special_state.castle_entity_index = 0;
+        }
         self.apply_final_loss(economy, castle, self.remove_rival_castle_spell, self.final_profile);
     }
 }
@@ -832,6 +874,39 @@ mod tests {
             let surviving_root = session.economy().castle_entry(root);
             assert!(surviving_root.is_none_or(|root| !root.active));
         }
+    }
+
+    #[test]
+    fn alliance_shared_a4_castle_relation_follows_real_build_and_final_loss() {
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let owner = session.state.entity_index;
+        let position = session.state.position;
+        let root = session.economy_mut().build_castle(position, owner).unwrap();
+        {
+            let live = &mut session.session.state.live;
+            // Controlled current A4 binding; the ordinary Castle callbacks
+            // below must publish through that pointer rather than player caches.
+            live.economy.entities[usize::from(owner)].special_relation = EntitySpecialRelation::GlobalSpecialState;
+            let castle = live.economy.castle_at_mut(root).unwrap();
+            castle.action = 5;
+            castle.build_state = 3;
+        }
+        session.step_level2_source_pass(0);
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        assert_eq!(session.shared_spells().global_special_state.castle_entity_index, root);
+        {
+            let live = &mut session.session.state.live;
+            live.shared_spells.global_special_state.castle_entity_index = root.wrapping_add(1);
+            let castle = live.economy.castle_at_mut(root).unwrap();
+            castle.level = 1;
+            castle.action = 6;
+            castle.life = -1;
+            castle.timer = 3;
+        }
+        session.step_level2_source_pass(0);
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        assert_eq!(session.shared_spells().global_special_state.castle_entity_index, 0,
+            "final source loss clears the current A4 even when its previous slot differs");
     }
 
     #[test]

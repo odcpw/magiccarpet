@@ -79,9 +79,11 @@ fn roam_to(
 ) {
     move_actor(actor, ctx.terrain, effects);
     if actor.phase & 7 == 0 {
-        actor.roll = heading_for_positions(actor.position, destination) as i16;
-        if actor.phase & 63 == 0 {
-            jitter(actor);
+        if actor.control_flags & 0x40000 == 0 {
+            actor.roll = heading_for_positions(actor.position, destination) as i16;
+            if actor.phase & 63 == 0 {
+                jitter(actor);
+            }
         }
         if let Some(peer) = ctx
             .model17
@@ -112,6 +114,32 @@ fn follow_parent(
     } else {
         effects.route_hide = true;
     }
+}
+
+fn alliance_blink(actor: &mut Creature17State, ctx: &Creature17Context<'_>, effects: &mut Creature17Effects, clear: bool) {
+    let phase = if clear { 0 } else if actor.route_remaining <= actor.route_duration.wrapping_sub(16)
+        && actor.route_remaining >= 16 {
+        if actor.phase & 0x1c == 16 { actor.phase & 3 } else { 0 }
+    } else if actor.phase & 1 != 0 { 0 } else { 2 };
+    let bits = match phase { 1 | 3 => 0x0200_0000, 2 => 0x0400_0000, _ => 0 };
+    actor.control_flags = (actor.control_flags & !0x0600_0000) | bits;
+    let mut child = actor.linked_child;
+    for _ in 0..=ctx.targets.len() {
+        let Some(row) = ctx.target(child) else { break };
+        effects.linked_blink_flags.push((row.slot, bits));
+        child = row.linked_child;
+    }
+}
+
+pub(super) fn alliance_target(actor: &mut Creature17State, ctx: &Creature17Context<'_>, effects: &mut Creature17Effects, target: Option<Target>) -> Option<Target> {
+    if actor.route_mode != 14 { return target; }
+    alliance_blink(actor, ctx, effects, false);
+    actor.route_remaining = actor.route_remaining.wrapping_sub(1);
+    if actor.route_remaining <= 0 { return None; }
+    let Some(parent) = ctx.target(actor.parent) else { return target };
+    let target = target?;
+    let selected = if parent.target != 0 { parent.target } else { parent.attacker };
+    (target.slot != parent.slot && (selected == 0 || selected == target.slot)).then_some(target)
 }
 
 pub(super) fn step(
@@ -226,18 +254,43 @@ pub(super) fn step(
         }
         14 => {
             actor.route_remaining = actor.route_remaining.wrapping_sub(1);
-            if actor.route_remaining <= 0 {
+            if actor.route_remaining > 0 { alliance_blink(actor, ctx, effects, false); }
+            let parent = if actor.route_remaining > 0 { ctx.target(actor.parent).filter(|row| row.life > 0) } else { None };
+            if let Some(parent) = parent {
+                let previous = actor.target;
+                actor.target = actor.parent;
+                match consume(actor, ctx) {
+                    2 => actor.route_remaining = 1,
+                    hit => {
+                        if hit == 0 {
+                            roam_to(actor, ctx, effects, parent.position);
+                        } else {
+                            move_actor(actor, ctx.terrain, effects);
+                            if actor.attacker != actor.parent && ctx.target(actor.attacker)
+                                .is_none_or(|row| (row.class, row.model) != (super::SOURCE_CLASS, super::SOURCE_MODEL)) {
+                                actor.target = actor.attacker;
+                                actor.action = 138;
+                                effects.feedback.push((actor.parent, 19));
+                            }
+                        }
+                    }
+                }
+                let inherited = if parent.target != 0 { parent.target } else { parent.attacker };
+                actor.target = if inherited != 0 { inherited } else { previous };
+                if let Some(target) = ctx.target(actor.target) {
+                    if (target.parent == actor.parent && target.route_mode == 14) || target.life <= 0 || target.flags & 0x400 != 0 {
+                        actor.target = 0;
+                    } else if super::distance(actor.position, target.position) < RULES.target_range {
+                        actor.action = 138;
+                        effects.feedback.push((actor.parent, 24));
+                    }
+                }
+            } else {
                 actor.route_mode = 10;
                 actor.route_index = actor.route_relation as u8;
-                actor.route_relation = 0;
                 actor.parent = 0;
                 actor.target = 0;
-                actor.action = 138;
-            } else if let Some(target) = stage_target(actor, ctx) {
-                actor.roll = heading_for_positions(actor.position, target.position) as i16;
-                move_actor(actor, ctx.terrain, effects);
-            } else {
-                effects.route_hide = true;
+                alliance_blink(actor, ctx, effects, true);
             }
         }
         17 => {

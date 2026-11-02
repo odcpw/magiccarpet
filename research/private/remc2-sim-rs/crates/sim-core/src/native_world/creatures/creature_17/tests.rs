@@ -57,6 +57,48 @@ fn model_slots(arena: &SourceArena) -> [Vec<u16>; 29] {
 }
 
 #[test]
+fn alliance_impact_drives_model17_follow_selected_attack_and_expiry() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut terrain = session.canonical_terrain().clone();
+    let mut runtime = session.session.state.live.core.runtime.clone();
+    let particles = &session.session.definition.presentation.particles;
+    let parent = session.state.entity_index;
+    let position = session.state.position;
+    let actor = add_creature(&mut arena, &mut terrain, particles, position, 137);
+    arena.entities[usize::from(actor)].record[76] = 3;
+    let enemy = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+    let mut target = crate::native_world::cave_features::new_event(enemy, 5, position);
+    target.class = 5; target.model = 21; target.record[67] = 5; target.record[68] = 21;
+    target.set_life(1_000);
+    arena.entities[usize::from(enemy)] = target;
+    put(&mut arena.entities[usize::from(parent)], 154, enemy);
+    let impact = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain).unwrap();
+    let effect = &mut arena.entities[usize::from(impact)];
+    effect.source_id = parent; put(effect, 30, parent); effect.record[74] = 32;
+    effect.subspell_index = 40; put(effect, 154, actor);
+    assert_eq!(crate::native_world::alliance_spell::step_impact(&mut arena, impact, &[actor]).unwrap().affected_entities, vec![actor]);
+    assert_eq!((arena.entities[usize::from(actor)].action, arena.entities[usize::from(actor)].record[77]), (143, 14));
+    let families = model_slots(&arena);
+    let outcome = mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families).unwrap();
+    assert_eq!(outcome.feedback, vec![(parent, 24)]);
+    let row = &arena.entities[usize::from(actor)];
+    assert_eq!((row.action, u16::from_le_bytes([row.record[154], row.record[155]])), (138, enemy));
+    let before = u16::from_le_bytes([row.record[50], row.record[51]]);
+    mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families).unwrap();
+    let row = &arena.entities[usize::from(actor)];
+    assert_eq!(u16::from_le_bytes([row.record[50], row.record[51]]), before - 1);
+    assert_eq!(row.action, 138, "a selected class5 enemy remains a valid target");
+
+    let row = &mut arena.entities[usize::from(actor)];
+    row.set_source_action(143); put(row, 50, 1);
+    mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families).unwrap();
+    let row = &arena.entities[usize::from(actor)];
+    assert_eq!((row.record[77], row.record[76], u16::from_le_bytes([row.record[44], row.record[45]])), (10, 3, 0));
+    assert!(!row.drawing_disabled());
+}
+
+#[test]
 fn constructor_binds_source17_properties_and_particle285() {
     let simulation = crate::native_world::tests::level_two_campaign_session();
     let particles = &simulation.session.definition.presentation.particles;

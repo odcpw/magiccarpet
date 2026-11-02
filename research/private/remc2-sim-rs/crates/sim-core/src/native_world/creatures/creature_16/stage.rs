@@ -92,7 +92,12 @@ fn summon_follow(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
     move_actor(actor,ctx,effects);
     if hit==1 {
         if actor.attacker()!=actor.stage().parent && ctx.target(actor.attacker()).is_none_or(|t|t.class!=5||t.model!=SOURCE_MODEL) {
-            actor.set_target(actor.attacker());actor.set_action(130);effects.feedback=Some((actor.stage().parent,19));
+            actor.set_target(actor.attacker());actor.set_action(130);
+            if actor.stage().mode == 14 {
+                effects.earlier_feedback=Some((actor.stage().parent,19));
+            } else {
+                effects.feedback=Some((actor.stage().parent,19));
+            }
         }
     } else if let Some(target)=ctx.target(actor.target()) {follow(actor,ctx,target.position,false,None);}
 }

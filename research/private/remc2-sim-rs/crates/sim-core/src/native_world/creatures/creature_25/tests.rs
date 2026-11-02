@@ -970,7 +970,7 @@ fn summoned_cymmerian_rejects_reused_parent_slot_and_hides() {
 }
 
 #[test]
-fn authored_cymmerian_alliance_impact_rebinds_parent_and_rejects_reuse() {
+fn authored_cymmerian_alliance_impact_follows_current_parent_until_death() {
     let package = crate::campaign::spec::DecodedCampaignPackage::decode(
         mission_eighteen_root().join("level10"),
         crate::campaign::spec::CampaignSelection::ordinary(10).unwrap(),
@@ -1089,6 +1089,13 @@ fn authored_cymmerian_alliance_impact_rebinds_parent_and_rejects_reuse() {
         crate::native_world::source_target::Context::default(),
     )
     .unwrap();
+    assert_eq!(arena.entities[usize::from(slot)].record[77], 14);
+    assert_eq!(word(&arena.entities[usize::from(slot)], 44), parent_slot);
+    arena.entities[usize::from(parent_slot)].set_life(0);
+    mc2::step_row(
+        &mut arena, &mut runtime, &mut terrain, &particles, slot, &[parent_slot], &families,
+        crate::native_world::source_target::Context::default(),
+    ).unwrap();
     assert_eq!(arena.entities[usize::from(slot)].record[77], 10);
     assert_eq!(word(&arena.entities[usize::from(slot)], 44), 0);
 }

@@ -246,7 +246,7 @@ pub(crate) fn allocate_authored(
     Ok(Some(slot))
 }
 
-fn targets(arena: &SourceArena) -> Vec<Target> {
+fn targets(arena: &SourceArena, alliance_pointers: &[u16]) -> Vec<Target> {
     let mut targets = super::super::creature_15::mc2::targets_in_arena(arena)
         .into_iter()
         .map(|row| Target {
@@ -276,8 +276,7 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
         .collect::<Vec<_>>();
     let typed = arena.economy.live_arena_slots();
     for row in arena.entities.iter().filter(|row| {
-        row.active
-            && row.class != 0
+        ((row.active && row.class != 0) || alliance_pointers.contains(&row.index))
             && row.index != 0
             && !typed.iter().any(|(slot, _)| *slot == row.index)
     }) {
@@ -397,13 +396,16 @@ pub(crate) fn step_row(
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model-18 callback lost slot{slot}"))?;
     let mut actor = load(actor_row, arena.slot_generation(slot));
-    let stale_parent = arena.handle(slot).is_some_and(|child| {
+    let stale_parent = actor.route_mode != 14 && arena.handle(slot).is_some_and(|child| {
         arena.has_creature_parent_binding(child)
             && arena
                 .creature_parent(child)
                 .is_none_or(|parent| parent.source_slot != actor.parent)
     });
-    let mut targets = targets(arena);
+    // Alliance follows the current fixed record, even after sub_57F20 has
+    // returned it to the free stack. Its remaining fields are not cleared.
+    let pointers: Vec<_> = crate::native_world::source_target::alliance_direct_references(arena, actor_row)?.into_iter().collect();
+    let mut targets = targets(arena, &pointers);
     if stale_parent {
         // Bound summons must not follow a later occupant of the same source
         // slot; unbound authored routes retain their source-slot behavior.

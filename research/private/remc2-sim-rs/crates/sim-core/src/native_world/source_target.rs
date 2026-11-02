@@ -377,10 +377,82 @@ impl View {
     }
 }
 
-/// Read a source pointer, including retained bytes at a free address. Only
-/// the sentinel and addresses outside the source array are absent. A current
-/// typed occupant is resolved before considering external sidecars or raw
-/// storage. An unsupported typed carrier is an explicit integration error.
+/// Alliance directly dereferences these addresses even after reclaim. The
+/// result supplements pointer reads without changing frozen search lists.
+pub(crate) fn alliance_direct_references(
+    arena: &SourceArena,
+    source: &EntitySnapshot,
+) -> Result<std::collections::BTreeSet<u16>, String> {
+    let mut referenced = std::collections::BTreeSet::new();
+    if source.record[77] != 14 {
+        return Ok(referenced);
+    }
+    let mut pending = vec![
+        source.source_spell_parent_entity_index(),
+        source.source_word_96(),
+        source.word_26(),
+        u16::from_le_bytes([source.record[102], source.record[103]]),
+        u16::from_le_bytes([source.record[56], source.record[57]]),
+    ];
+    while let Some(slot) = pending.pop() {
+        if slot == 0 || referenced.contains(&slot) {
+            continue;
+        }
+        let Some(target) = read(arena, Context::default(), slot)? else {
+            continue;
+        };
+        referenced.insert(slot);
+        pending.extend([
+            target.relations.target.unwrap_or(0),
+            target.relations.attacker.unwrap_or(0),
+            target.relations.next.unwrap_or(0),
+        ]);
+    }
+    Ok(referenced)
+}
+
+/// Current sub_10780 map-chain targets for one arrow. Ordinary actor domains
+/// and typed arena carriers are resolved at this callback, not at reset.
+pub(crate) fn arrow_collision_frame(
+    arena: &SourceArena,
+    slot: u16,
+    context: Context<'_>,
+) -> Result<super::creatures::archer::ArrowCollisionFrame, String> {
+    use super::creatures::archer::{ArrowCollisionFrame, ArrowCollisionTarget};
+    let arrow = arena.economy.authored_class5_archer_children.iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+        .ok_or_else(|| format!("Arrow {slot} lost its current carrier"))?;
+    if arrow.action != super::creatures::archer::ARCHER_CHILD_ACTION {
+        return Ok(ArrowCollisionFrame { targets: Vec::new(), owner_class_model: None });
+    }
+    let mut targets = Vec::new();
+    let offsets = super::guided_projectile::collision_search_offsets(arrow.collision_half_width);
+    for target_slot in crate::level1_mission::source_map_search_slots(&arena.map_chains, arrow.position, &offsets) {
+        let Some(view) = read(arena, context, target_slot)? else { continue; };
+        if view.control_flags & 8 == 0 { continue; }
+        let shape = view.collision.ok_or_else(|| format!("Arrow target {target_slot} has no current axes"))?;
+        let mana = match arena.economy.archer_arrow_target_properties(target_slot, &arena.entities) {
+            Some((_, _, _, mana)) => mana,
+            None if view.control_flags & 0x8010 == 0 => 0,
+            None => return Err(format!("Protected arrow target {target_slot} has no current mana")),
+        };
+        targets.push(ArrowCollisionTarget {
+            target: super::level2_dynamic_economy::Level2FireballCollisionTarget {
+                source_slot: target_slot, source_id: view.source_id,
+                class: view.class, model: view.model, position: view.position,
+                half_width: shape.half_width, vertical_offset: shape.vertical_offset,
+                half_height: shape.half_height,
+            },
+            control_flags: view.control_flags,
+            mana,
+        });
+    }
+    let owner_class_model = read(arena, context, arrow.entity_id)?.map(|view| (view.class, view.model));
+    Ok(ArrowCollisionFrame { targets, owner_class_model })
+}
+
+/// Read the current fixed-address occupant; allocation is separate from a
+/// source pointer's validity.
 pub(crate) fn read(
     arena: &SourceArena,
     context: Context<'_>,
@@ -918,15 +990,27 @@ fn dynamic(
             row.life,
             row.control_flags
         ),
-        Kind::AuthoredClass5ArcherChild => carrier!(
-            economy.authored_class5_archer_children,
-            row,
-            row.source_class,
-            row.model,
-            row.entity_id,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
+        Kind::AuthoredClass5ArcherChild => {
+            let row = economy.authored_class5_archer_children.iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("Arrow {slot} lost its current collision axes"))?;
+            let mut view = carrier!(
+                economy.authored_class5_archer_children,
+                row,
+                row.source_class,
+                row.model,
+                row.entity_id,
+                row.life,
+                row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
+            );
+            view.collision = Some(Shape {
+                half_width: row.collision_half_width,
+                half_depth: row.collision_half_width,
+                vertical_offset: row.collision_vertical_offset,
+                half_height: row.collision_half_height,
+            });
+            view
+        }
         Kind::AuthoredModel32 => carrier!(
             economy.authored_model32,
             row,
@@ -1137,11 +1221,17 @@ fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
             {
                 relation.parent = Some(state.parent_entity_index);
                 relation.stage_mode = Some(state.stage_var2);
+                relation.stage_index = Some(state.stage_var1);
+                relation.stage_relation = Some(state.stage_relation);
             } else if let Some(state) = economy
                 .authored_class5_model3
                 .iter()
                 .find(|row| row.source_entity_index == slot)
             {
+                relation.parent = Some(state.parent_entity_index);
+                relation.stage_mode = Some(state.stage_var2);
+                relation.stage_index = Some(state.stage_var1);
+                relation.stage_relation = Some(state.stage_relation);
                 relation.next = Some(state.word_0x34);
             }
             relation

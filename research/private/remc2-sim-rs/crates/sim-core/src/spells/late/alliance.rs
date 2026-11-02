@@ -209,7 +209,9 @@ pub(crate) fn impact(
     let target_slot = effect.source_word_96();
     let Some(center) = rows_by_slot
         .get(usize::from(target_slot))
-        .filter(|row| target_slot != 0 && row.index == target_slot && row.active)
+        // Entities_EA3E4 points at fixed records; reclaim clears class but
+        // does not invalidate the address or erase its position and model.
+        .filter(|row| target_slot != 0 && row.index == target_slot)
     else {
         rows_by_slot[usize::from(effect_slot)].disable_drawing();
         return result;

@@ -577,6 +577,24 @@ pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> 
         return None;
     }
     let economy = &arena.economy;
+    if let Some(row) = economy.authored_class5_archer_children.iter()
+        .find(|row| row.active && row.source_entity_index == slot)
+    {
+        return Some(Actor {
+            source_id: row.entity_id,
+            class: row.source_class,
+            model: row.model,
+            position: row.position,
+            shape: Shape {
+                half_width: row.collision_half_width,
+                half_depth: row.collision_half_width,
+                vertical_offset: row.collision_vertical_offset,
+                half_height: row.collision_half_height,
+            },
+            damage_mask: 0,
+            control_flags: row.control_flags | if row.drawing_enabled { 0 } else { ENTITY_DRAW_DISABLED_BIT },
+        });
+    }
     if let Some(row) = economy
         .authored_trees
         .iter()
@@ -815,6 +833,7 @@ pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> 
                 .map(|state| state.entity_id)
                 .or_else(|| firefly.map(|state| state.entity_id))
                 .or_else(|| dragon.map(|state| state.entity_id))
+                .or_else(|| model3.map(|state| state.entity_id))
                 .unwrap_or(slot),
             class: 5,
             model: row.model,

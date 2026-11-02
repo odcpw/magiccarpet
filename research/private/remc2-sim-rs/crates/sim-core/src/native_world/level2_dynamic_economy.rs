@@ -922,7 +922,7 @@ fn fireball_target_selector_matches(
 
 /// One map-linked collision row read by `sub_10780` after flyer movement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct Level2FireballCollisionTarget {
+pub(crate) struct Level2FireballCollisionTarget {
     pub source_slot: u16,
     pub source_id: u16,
     pub class: u8,
@@ -2047,14 +2047,31 @@ impl Level2EconomyState {
         &self,
         imported_entities: &[EntitySnapshot],
     ) -> Vec<Level2FireballCollisionTarget> {
+        self.projectile_collision_targets(imported_entities, false)
+    }
+
+    /// sub_10780 follows current linked addresses even while hidden or dead;
+    /// the arrow callback applies the source bit8 and selector predicates.
+    pub(super) fn arrow_collision_targets(
+        &self,
+        imported_entities: &[EntitySnapshot],
+    ) -> Vec<Level2FireballCollisionTarget> {
+        self.projectile_collision_targets(imported_entities, true)
+    }
+
+    fn projectile_collision_targets(
+        &self,
+        imported_entities: &[EntitySnapshot],
+        retain_linked: bool,
+    ) -> Vec<Level2FireballCollisionTarget> {
         let mut targets = imported_entities
             .iter()
             .filter(|entity| {
                 entity.index != 0
                     && entity.active
-                    && entity.life >= 0
+                    && (retain_linked || entity.life >= 0 && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0)
+                    && (!retain_linked || self.live_arena_kind(entity.index).is_none())
                     && entity.control_flags & 8 != 0
-                    && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                     && self.map_chains.is_linked(entity.index)
             })
             .map(|entity| {
@@ -2073,8 +2090,7 @@ impl Level2EconomyState {
             .collect::<Vec<_>>();
         targets.extend(self.bee_creatures.iter().filter_map(|bee| {
             (bee.active
-                && bee.drawing_enabled
-                && bee.life >= 0
+                && (retain_linked || bee.drawing_enabled && bee.life >= 0)
                 && bee.control_flags & 8 != 0
                 && self.map_chains.is_linked(bee.source_entity_index))
             .then_some(Level2FireballCollisionTarget {
@@ -2090,8 +2106,7 @@ impl Level2EconomyState {
         }));
         targets.extend(self.castle_defenders.iter().filter_map(|actor| {
             (actor.active
-                && actor.drawing_enabled()
-                && actor.life >= 0
+                && (retain_linked || actor.drawing_enabled() && actor.life >= 0)
                 && actor.control_flags & 8 != 0
                 && self.map_chains.is_linked(actor.source_entity_index))
             .then_some(Level2FireballCollisionTarget {
@@ -2107,8 +2122,7 @@ impl Level2EconomyState {
         }));
         targets.extend(self.authored_class5.iter().filter_map(|source| {
             (source.active
-                && source.drawing_enabled
-                && source.life >= 0
+                && (retain_linked || source.drawing_enabled && source.life >= 0)
                 && matches!(
                     source.model,
                     crate::goat::GOAT_MODEL
@@ -2146,11 +2160,10 @@ impl Level2EconomyState {
                 .iter()
                 .find(|render| render.source_entity_index == source.source_entity_index)?;
             (source.active
-                && source.drawing_enabled
-                && source.life >= 0
+                && (retain_linked || source.drawing_enabled && source.life >= 0
+                    && render.control_flags & ENTITY_DRAW_DISABLED_BIT == 0)
                 && source.model == level2_class5::dragon::DRAGON_MODEL
                 && render.control_flags & 8 != 0
-                && render.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                 && self.map_chains.is_linked(source.source_entity_index))
             .then_some(Level2FireballCollisionTarget {
                 source_slot: source.source_entity_index,
@@ -2165,8 +2178,7 @@ impl Level2EconomyState {
         }));
         targets.extend(self.authored_dragon_parts.iter().filter_map(|part| {
             (part.active
-                && part.drawing_enabled
-                && part.life >= 0
+                && (retain_linked || part.drawing_enabled && part.life >= 0)
                 && self.map_chains.is_linked(part.source_entity_index))
             .then_some(Level2FireballCollisionTarget {
                 source_slot: part.source_entity_index,
@@ -2180,9 +2192,8 @@ impl Level2EconomyState {
             })
         }));
         for castle in self.live_castles().filter(|castle| {
-            castle.life >= 0
+            (retain_linked || castle.life >= 0 && castle.control_flags & ENTITY_DRAW_DISABLED_BIT == 0)
                 && castle.control_flags & 8 != 0
-                && castle.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                 && self.map_chains.is_linked(castle.source_entity_index)
         }) {
             targets.push(Level2FireballCollisionTarget {
@@ -2195,6 +2206,29 @@ impl Level2EconomyState {
                 vertical_offset: castle.shift_yaw,
                 half_height: castle.shift_fov,
             });
+        }
+        if retain_linked {
+            targets.extend(self.authored_class5.iter().filter_map(|source| {
+                let state = self.authored_class5_model3.iter()
+                    .find(|state| state.source_entity_index == source.source_entity_index)?;
+                (source.active && source.model == 3 && state.control_flags & 8 != 0
+                    && self.map_chains.is_linked(source.source_entity_index))
+                    .then_some(Level2FireballCollisionTarget {
+                        source_slot: source.source_entity_index, source_id: state.entity_id,
+                        class: 5, model: 3, position: source.position,
+                        half_width: state.render_pitch, vertical_offset: state.render_yaw,
+                        half_height: state.render_fov,
+                    })
+            }));
+            targets.extend(self.authored_class5_model3_children.iter().filter_map(|part| {
+                (part.active && part.control_flags & 8 != 0 && self.map_chains.is_linked(part.source_entity_index))
+                    .then_some(Level2FireballCollisionTarget {
+                        source_slot: part.source_entity_index, source_id: part.parent_entity_index,
+                        class: 5, model: part.model, position: part.position,
+                        half_width: part.render_pitch, vertical_offset: part.render_yaw,
+                        half_height: part.render_fov,
+                    })
+            }));
         }
         targets
     }

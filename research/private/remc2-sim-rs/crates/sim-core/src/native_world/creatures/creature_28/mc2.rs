@@ -284,6 +284,8 @@ fn targets(arena: &SourceArena) -> Vec<super::Target> {
                 route_index: row.record[76],
                 route_relation: word(row, 78),
                 route_target: word(row, 154),
+                parent: target.parent,
+                route_mode: target.stage.mode,
             })
         })
         .collect::<Vec<_>>();
@@ -320,12 +322,6 @@ pub(crate) fn step_row(
     slot: u16,
     same_model: &[u16],
 ) -> Result<Effects, String> {
-    let targets = targets(arena);
-    let frame = Frame {
-        terrain,
-        targets: &targets,
-        same_model,
-    };
     let mut row = arena
         .entities
         .get(usize::from(slot))
@@ -333,6 +329,27 @@ pub(crate) fn step_row(
         .cloned()
         .ok_or_else(|| format!("model28 callback lost slot{slot}"))?;
     let mut actor = load(&row).ok_or_else(|| format!("model28 row{slot} is malformed"))?;
+    let mut targets = targets(arena);
+    if actor.route_mode == 14 {
+        let pointers = crate::native_world::source_target::alliance_direct_references(arena, &row)?;
+        for pointer in pointers {
+            if targets.iter().any(|target| target.slot == pointer) { continue; }
+            let Some(view) = crate::native_world::source_target::read(arena, Default::default(), pointer)? else { continue };
+            let raw = &arena.entities[usize::from(pointer)];
+            targets.push(super::Target {
+                slot: pointer, source_id: view.source_id, class: view.class, model: view.model,
+                action: raw.action, phase: raw.record[74], flags: view.control_flags, life: view.life,
+                position: view.position, yaw: view.yaw.unwrap_or(0),
+                half_width: view.collision.map_or(0, |shape| shape.half_width),
+                next: view.relations.next.unwrap_or(0), attacker: view.relations.attacker.unwrap_or(0),
+                killer: raw.word_24(), route_index: view.relations.stage_index.unwrap_or(0),
+                route_relation: view.relations.stage_relation.unwrap_or(0),
+                route_target: view.relations.target.unwrap_or(0), parent: view.relations.parent.unwrap_or(0),
+                route_mode: view.relations.stage_mode.unwrap_or(0),
+            });
+        }
+    }
+    let frame = Frame { terrain, targets: &targets, same_model };
     let source_counter = actor.source_counter;
     let mut callback = super::step(&mut actor, &frame, runtime, particles)?;
     let position = actor.position;
@@ -340,6 +357,7 @@ pub(crate) fn step_row(
     store(&mut row, actor, particles)?;
     arena.economy.source_rng.insert(slot, rng);
     arena.entities[usize::from(slot)] = row;
+    if callback.population_decrement { arena.economy.decrement_source_creature_population(); }
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
     if callback.water_splash {
         let _ = materialize_water_splash(arena, terrain, position)?;
@@ -377,4 +395,47 @@ pub(crate) fn step_row(
         crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
     }
     Ok(callback.notices)
+}
+
+#[cfg(test)]
+mod alliance_tests {
+    use super::*;
+
+    #[test]
+    fn impact_drives_model28_selected_target_and_restores_stage() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let runtime = session.session.state.live.core.runtime.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let parent = session.state.entity_index;
+        let position = session.state.position;
+        let slot = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+        let seed = arena.new_event_rng(slot);
+        let mut row = construct_row(slot, seed, position, 1, particles).unwrap();
+        row.record[76] = 3;
+        arena.entities[usize::from(slot)] = row;
+        crate::world::effects::sync_position(&mut arena, &mut terrain, slot, position, true, false).unwrap();
+        let enemy = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+        let mut target = crate::native_world::cave_features::new_event(enemy, 5, position);
+        target.class = 5; target.model = 21; target.record[67] = 5; target.record[68] = 21;
+        target.set_life(1_000);
+        arena.entities[usize::from(enemy)] = target;
+        put_word(&mut arena.entities[usize::from(parent)], 154, enemy);
+        let impact = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain).unwrap();
+        let effect = &mut arena.entities[usize::from(impact)];
+        effect.source_id = parent; put_word(effect, 30, parent); effect.record[74] = 32;
+        effect.subspell_index = 40; put_word(effect, 154, slot);
+        assert_eq!(crate::native_world::alliance_spell::step_impact(&mut arena, impact, &[slot]).unwrap().affected_entities, vec![slot]);
+        let effects = step_row(&mut arena, &runtime, &mut terrain, particles, slot, &[slot]).unwrap();
+        assert_eq!(effects.feedback, vec![(parent, 24)]);
+        let row = &arena.entities[usize::from(slot)];
+        assert_eq!((row.action, word(row, 154), row.record[77]), (226, enemy, 14));
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_source_action(231); put_word(row, 50, 1);
+        step_row(&mut arena, &runtime, &mut terrain, particles, slot, &[slot]).unwrap();
+        let row = &arena.entities[usize::from(slot)];
+        assert_eq!((row.record[77], row.record[76], word(row, 44)), (10, 3, 0));
+        assert!(!row.drawing_disabled());
+    }
 }

@@ -5,6 +5,91 @@ use crate::{FlightWorld, Position, Tile, WATER_AMBIENCE_MASK};
 use super::super::*;
 
 impl crate::campaign::source_arena::SourceArena {
+    /// Move the legacy typed Skeleton into the ordinary lossless carrier at
+    /// its existing address. This is representation transfer, not a birth:
+    /// allocation, RNG, intrusive links and the source generation stay put.
+    pub(crate) fn promote_authored_skeleton(
+        &mut self,
+        slot: u16,
+        particles: &[ParticleParameter],
+        descriptor: &[u8],
+    ) -> std::result::Result<bool, String> {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        let Some(source) = self.economy.authored_class5.iter()
+            .find(|row| row.active && row.model == 9 && row.source_entity_index == slot).copied()
+        else { return Ok(false); };
+        let runtime = self.economy.authored_class5_runtime.iter()
+            .find(|row| row.source_entity_index == slot).copied()
+            .unwrap_or(Level2AuthoredClass5RuntimeState {
+                source_entity_index: slot, byte_0x38: 1, xtype: 3,
+                descriptor_index: 80, pending_damage: 0, linked_head: 0,
+            });
+        let handle = self.handle(slot).ok_or_else(|| format!("Skeleton {slot} lost its address"))?;
+        let particle = particles.get(usize::from(source.particle_index))
+            .ok_or_else(|| format!("Skeleton {slot} has no current particle"))?;
+        let pose = campaign_shared_families::ParticlePose {
+            animation_limit: particle.animation_limit().ok_or("Skeleton particle has no animation limit")?,
+            array_yaw: (particle.rotation_speed / 2) as i16,
+            array_pitch: (particle.speed / 2) as i16,
+            array_roll: (particle.speed / 2) as i16,
+            array_fov: (particle.rotation_speed / 2) as i16,
+        };
+        let scan_period = descriptor.get(26..28)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .filter(|period| *period != 0).ok_or("Skeleton descriptor has no scan period")?;
+        let mut raw = campaign_shared_families::construct_skeleton_source(
+            slot, source.entity_rng, source.position, source.source_byte_3e, scan_period, pose,
+        );
+        raw.set_source_action(source.action);
+        raw.set_entity_rng(source.entity_rng);
+        raw.set_max_life(source.max_life);
+        raw.set_life(source.life);
+        raw.set_mana(source.mana);
+        raw.max_mana = source.max_mana;
+        raw.record[144..148].copy_from_slice(&source.max_mana.to_le_bytes());
+        raw.set_actual_speed(source.actual_speed);
+        raw.record[136..138].copy_from_slice(&source.minimum_speed.to_le_bytes());
+        raw.record[138..140].copy_from_slice(&source.maximum_speed.to_le_bytes());
+        raw.set_subspell_index(source.subspell_index);
+        raw.set_source_dword_10(source.dword_0x10);
+        raw.set_yaw(source.yaw);
+        raw.set_pitch(source.pitch);
+        raw.set_source_roll(source.roll);
+        raw.set_fov(source.fov);
+        raw.record[98..102].copy_from_slice(&runtime.pending_damage.to_le_bytes());
+        for (offset, value) in [(40, source.word_0x24), (42, source.word_0x26),
+            (56, runtime.linked_head), (102, source.pending_word_0x62), (154, source.word_0x96_150)] {
+            raw.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        raw.record[60] = runtime.byte_0x38;
+        raw.record[61] = source.source_byte_39;
+        raw.record[63] = source.byte_0x3b;
+        raw.record[69] = runtime.xtype;
+        raw.record[74] = source.byte_0x46_70;
+        raw.particle_parameter_index = Some(source.particle_index);
+        raw.record[94..96].copy_from_slice(&source.particle_index.to_le_bytes());
+        raw.record[88..90].copy_from_slice(&source.shift_rot_x.to_le_bytes());
+        raw.record[90..92].copy_from_slice(&source.shift_rot_x.to_le_bytes());
+        raw.record[92..94].copy_from_slice(&source.shift_rot_y.to_le_bytes());
+        raw.parameter_relation = Some(runtime.descriptor_index);
+        raw.record[164..168].copy_from_slice(&(u32::from(runtime.descriptor_index) + 1).to_le_bytes());
+        raw.set_map_links(self.economy.map_chains.old_map_entity(slot), self.economy.map_chains.next_entity(slot));
+        raw.next_relation = self.entities[usize::from(slot)].next_relation;
+        raw.record[4..8].copy_from_slice(&self.entities[usize::from(slot)].record[4..8]);
+        raw.set_source_player_entity_index(*self.economy.source_owner.get(&slot).unwrap_or(&0));
+        if !source.drawing_enabled { raw.disable_drawing(); }
+        self.economy.authored_class5.retain(|row| row.source_entity_index != slot);
+        self.economy.authored_class5_runtime.retain(|row| row.source_entity_index != slot);
+        self.entities[usize::from(slot)] = raw;
+        if self.handle(slot) != Some(handle) || !self.bind_raw_creature_origin(
+            handle, CreatureKind::Skeleton,
+            CreatureRootOrigin::AuthoredRecord { authored_record: source.authored_index },
+        ) {
+            return Err(format!("Skeleton {slot} changed identity during promotion"));
+        }
+        Ok(true)
+    }
+
     /// Complete the ordinary 68BF0 prepass for the opening families which
     /// retain multipart projections. Other families run their own adapter.
     /// Membership is frozen before callbacks; child links read live occupants.
@@ -389,6 +474,49 @@ fn model9_step_movement<W: FlightWorld>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alliance_promotes_legacy_skeleton_without_reallocating_its_source_address() {
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let feature = session.session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.kind == 5 && feature.subtype == 9).copied().unwrap();
+        let position = feature.world_position(session.canonical_terrain().ground_height(feature.world_position(0)));
+        let particles = session.session.definition.presentation.particles.clone();
+        let parameters = session.session.definition.presentation.entity_parameters.clone();
+        let live = &mut session.session.state.live;
+        let owner = live.core.state.entity_index;
+        let source = live.economy.economy.allocate_authored_skeleton(feature.index, position, 1234, &live.terrain).unwrap();
+        let slot = source.source_entity_index;
+        let handle = live.economy.handle(slot).unwrap();
+        let free = live.economy.economy.free_slots.clone();
+        let phase_counter = live.economy.economy.class5_model9_constructor_phase;
+        let links = (live.economy.map_chains.old_map_entity(slot), live.economy.map_chains.next_entity(slot));
+        assert!(live.economy.promote_authored_skeleton(slot, &particles, &parameters[80]).unwrap());
+        assert_eq!(live.economy.handle(slot), Some(handle));
+        assert_eq!(live.economy.economy.free_slots, free);
+        assert_eq!(live.economy.economy.class5_model9_constructor_phase, phase_counter);
+        assert_eq!((live.economy.map_chains.old_map_entity(slot), live.economy.map_chains.next_entity(slot)), links);
+        assert!(!live.economy.authored_class5().iter().any(|row| row.source_entity_index == slot));
+        let row = &live.economy.entities[usize::from(slot)];
+        assert_eq!((row.life, row.mana, row.entity_rng, row.position), (source.life, source.mana, source.entity_rng, source.position));
+        let effect = crate::native_world::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain).unwrap();
+        let row = &mut live.economy.entities[usize::from(effect)];
+        row.source_id = owner;
+        row.record[74] = 32;
+        row.subspell_index = 40;
+        row.record[154..156].copy_from_slice(&slot.to_le_bytes());
+        let impact = crate::native_world::alliance_spell::step_impact(&mut live.economy, effect, &[slot]).unwrap();
+        assert_eq!(impact.affected_entities, [slot]);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row = &session.session.state.live.economy.entities[usize::from(slot)];
+        assert_eq!(session.session.state.live.economy.handle(slot), Some(handle));
+        assert_eq!(row.record[77], 14);
+        assert!(session.cf10_production_schedule_receipts().iter().any(|receipt| matches!(
+            receipt, crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot: visited, .. } if *visited == slot
+        )));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Error { source_slot, .. } if *source_slot == slot)));
+    }
 
     #[derive(Clone, Copy, Debug, Default)]
     struct Model9TestWorld {

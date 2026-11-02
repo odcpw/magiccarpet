@@ -497,7 +497,8 @@ impl GoatFamily {
         }
         let parent = self
             .source_entity_view(self.goats[index].parent_entity_index)
-            .filter(|parent| parent.active && parent.life > 0);
+            // sub_1E9C0 reads the current fixed record, even after reclaim.
+            .filter(|parent| parent.entity_index != 0 && parent.life > 0);
         if self.goats[index].lifetime <= 0 || parent.is_none() {
             self.goats[index].stage_var_2 = 10;
             self.goats[index].target_entity_index = None;
@@ -518,8 +519,7 @@ impl GoatFamily {
             .target_entity_index
             .and_then(|slot| self.source_entity_view(slot));
         if let Some(target) = target {
-            if !target.active
-                || target.life <= 0
+            if target.life <= 0
                 || target.control_flags & 0x400 != 0
                 || (target.parent_entity_index == self.goats[index].parent_entity_index
                     && target.stage_var_2 == 14)

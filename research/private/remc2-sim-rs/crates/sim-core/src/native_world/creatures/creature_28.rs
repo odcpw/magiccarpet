@@ -82,6 +82,8 @@ pub(crate) struct Target {
     pub route_index: u8,
     pub route_relation: u16,
     pub route_target: u16,
+    pub parent: u16,
+    pub route_mode: u8,
 }
 
 impl Target {
@@ -131,6 +133,7 @@ pub(crate) struct Effects {
     pub sound: Option<u8>,
     pub animation: Option<u16>,
     pub kill_credit: Option<u16>,
+    pub feedback: Vec<(u16, u8)>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -143,6 +146,7 @@ pub(crate) struct CallbackEffects {
     pub stage_mana_expiry: bool,
     pub stage_mana_mode13: bool,
     pub child_fade_flags: Vec<(u16, u8)>,
+    pub population_decrement: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

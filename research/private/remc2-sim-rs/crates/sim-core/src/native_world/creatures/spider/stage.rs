@@ -266,7 +266,11 @@ fn summon_follow(actor: &mut SpiderState, ctx: &SpiderContext<'_>, effects: &mut
         {
             actor.target = actor.attacker;
             actor.action = 162;
-            effects.feedback = Some((actor.stage.parent, 19));
+            if actor.stage.mode == 14 {
+                effects.earlier_feedback = Some((actor.stage.parent, 19));
+            } else {
+                effects.feedback = Some((actor.stage.parent, 19));
+            }
         }
     } else if let Some(target) = ctx.target(actor.target) {
         follow(actor, ctx, target.position, false, None);

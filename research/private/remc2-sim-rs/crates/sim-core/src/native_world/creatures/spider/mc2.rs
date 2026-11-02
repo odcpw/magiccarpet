@@ -184,7 +184,7 @@ pub(crate) fn construct_row(
     Ok(Some(row))
 }
 
-fn targets(arena: &SourceArena) -> Vec<Target> {
+fn targets(arena: &SourceArena, direct: &std::collections::BTreeSet<u16>) -> Vec<Target> {
     let mut targets = super::super::creature_15::mc2::targets_in_arena(arena)
         .into_iter()
         .map(|row| Target {
@@ -213,8 +213,7 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
     // must not disappear behind the imported-only filter in old family views.
     let typed = arena.economy.live_arena_slots();
     for row in arena.entities.iter().filter(|row| {
-        row.active
-            && row.class != 0
+        (row.active && row.class != 0 || direct.contains(&row.index))
             && row.index != 0
             && !typed.iter().any(|(slot, _)| *slot == row.index)
     }) {
@@ -336,7 +335,7 @@ pub(crate) fn prepare_source_pass(
     if families[usize::from(SOURCE_MODEL)].is_empty() {
         return Ok(());
     }
-    let targets = targets(arena);
+    let targets = targets(arena, &Default::default());
     for slot in &families[usize::from(SOURCE_MODEL)] {
         let Some(row) = arena
             .entities
@@ -378,7 +377,6 @@ pub(crate) fn step_row(
     families: &[Vec<u16>; 29],
     local_player_status: Option<(u16, i8)>,
 ) -> Result<SpiderEffects, String> {
-    let targets = targets(arena);
     let class5 = families.iter().flatten().copied().collect::<Vec<_>>();
     let generation = arena.slot_generation(slot);
     let row = arena
@@ -387,6 +385,8 @@ pub(crate) fn step_row(
         .filter(|r| r.active && r.class == 5 && r.model == SOURCE_MODEL)
         .ok_or_else(|| format!("Spider callback lost slot{slot}"))?;
     let mut actor = load(row, generation);
+    let direct = crate::native_world::source_target::alliance_direct_references(arena, row)?;
+    let targets = targets(arena, &direct);
     let mut context = SpiderContext {
         terrain,
         targets: &targets,

@@ -7970,6 +7970,12 @@ impl Level2EconomyState {
                 hasher.update(state.parent_generation.to_le_bytes());
                 hasher.update(state.stage_remaining.to_le_bytes());
             }
+            if state.stage_var1 != 0 || state.stage_relation != 0 || state.alliance_duration != 0 {
+                hasher.update(b"dragon-alliance-stage-v1");
+                hasher.update([state.stage_var1]);
+                hasher.update(state.stage_relation.to_le_bytes());
+                hasher.update(state.alliance_duration.to_le_bytes());
+            }
             hasher.update(state.linked_entity_index.to_le_bytes());
             hasher.update(state.word_0x36.to_le_bytes());
             hasher.update(state.control_flags.to_le_bytes());
@@ -8030,6 +8036,19 @@ impl Level2EconomyState {
         hasher.update(b"authored-class5-model3-v3");
         for state in &self.authored_class5_model3 {
             hasher.update(state.source_entity_index.to_le_bytes());
+            if state.entity_id != state.source_entity_index
+                || state.stage_var1 != 0 || state.stage_var2 != 0
+                || state.stage_relation != 0 || state.parent_entity_index != 0
+                || state.stage_remaining != 0 || state.alliance_duration != 0
+            {
+                hasher.update(b"model3-alliance-stage-v1");
+                hasher.update(state.entity_id.to_le_bytes());
+                hasher.update([state.stage_var1, state.stage_var2]);
+                hasher.update(state.stage_relation.to_le_bytes());
+                hasher.update(state.parent_entity_index.to_le_bytes());
+                hasher.update(state.stage_remaining.to_le_bytes());
+                hasher.update(state.alliance_duration.to_le_bytes());
+            }
             hasher.update(state.damage_dword_0x5e_94.to_le_bytes());
             hasher.update(state.word_0x32.to_le_bytes());
             hasher.update(state.word_0x34.to_le_bytes());
@@ -8106,6 +8125,12 @@ impl Level2EconomyState {
             hasher.update(feedback.target_ticks.to_le_bytes());
         }
         for child in &self.authored_class5_archer_children {
+            if (child.collision_half_width, child.collision_vertical_offset, child.collision_half_height) != (0, 30, 60) {
+                hasher.update(b"archer-child-collision-v1");
+                hasher.update(child.collision_half_width.to_le_bytes());
+                hasher.update(child.collision_vertical_offset.to_le_bytes());
+                hasher.update(child.collision_half_height.to_le_bytes());
+            }
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_id.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());

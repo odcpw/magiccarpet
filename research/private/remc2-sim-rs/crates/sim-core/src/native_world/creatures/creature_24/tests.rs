@@ -1,5 +1,64 @@
 use super::*;
 
+#[test]
+fn alliance_follows_retained_parent_and_expires_when_dead() {
+    let (package, mut arena, mut runtime, mut terrain, particles) = cave_owner_arena();
+    let player = arena.entities.iter().find(|row| row.active && row.class == 3 && row.model == 0).unwrap().index;
+    let feature = crate::level1_mission::parse_authored_features(package.authored_bytes()).unwrap().into_iter()
+        .find(|row| row.kind == 5 && row.subtype == 24 && row.activation_group > 0).unwrap();
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let slot = mc2::allocate_authored(&mut arena, &mut runtime, &mut terrain, &particles,
+        position, 16000, None, feature.index).unwrap().unwrap();
+    let terminal = crate::native_world::alliance_spell::construct_impact(&mut arena, &mut terrain).unwrap();
+    let effect = &mut arena.entities[usize::from(terminal)];
+    effect.source_id = player;
+    effect.record[74] = 1;
+    effect.subspell_index = 40;
+    effect.record[154..156].copy_from_slice(&slot.to_le_bytes());
+    let impact = crate::native_world::alliance_spell::step_impact(&mut arena, terminal, &[slot]).unwrap();
+    assert_eq!(impact.affected_entities, [slot]);
+    let hostile = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+    let mut enemy = crate::world::terrain::cave_features::new_event(hostile, 17, Position {
+        x: position.x.wrapping_add(512), ..position
+    });
+    enemy.class = 3;
+    enemy.model = 1;
+    enemy.record[67] = 3;
+    enemy.record[68] = 1;
+    enemy.set_life(1000);
+    arena.entities[usize::from(hostile)] = enemy;
+    crate::native_world::area_damage::contact(&mut arena, None, slot, 1, hostile).unwrap();
+    let parent = &mut arena.entities[usize::from(player)];
+    parent.set_life(100);
+    parent.record[154..156].copy_from_slice(&hostile.to_le_bytes());
+    parent.record[42..44].fill(0);
+    parent.reclaim_source_row();
+    assert_eq!(parent.class, 0);
+    assert_eq!(parent.life, 100);
+    let families = std::array::from_fn(|model| if model == usize::from(SOURCE_MODEL) { vec![slot] } else { Vec::new() });
+    for life in [100, 0] {
+        let mut trial = arena.clone();
+        let mut trial_runtime = runtime.clone();
+        let mut trial_terrain = terrain.clone();
+        trial.entities[usize::from(player)].set_life(life);
+        let effects = mc2::step_row(&mut trial, &mut trial_runtime, &mut trial_terrain, &particles,
+            slot, &[], &families).unwrap();
+        let actor = &trial.entities[usize::from(slot)];
+        assert_eq!(actor.record[77], if life > 0 { 14 } else { 10 });
+        assert_eq!(u16::from_le_bytes([actor.record[44], actor.record[45]]),
+            if life > 0 { player } else { 0 });
+        if life > 0 {
+            assert_eq!(effects.earlier_feedback, Some((player, 19)));
+            assert_eq!(effects.feedback, Some((player, 24)));
+            assert_eq!(i16::from_le_bytes([actor.record[50], actor.record[51]]), 39);
+        } else {
+            assert_eq!(actor.source_word_96(), 0);
+            assert_eq!(actor.control_flags & 0x0600_0000, 0);
+        }
+    }
+}
+
+
 fn actor() -> Creature24State {
     construct(
         701,

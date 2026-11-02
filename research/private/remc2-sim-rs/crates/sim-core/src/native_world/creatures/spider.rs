@@ -180,6 +180,7 @@ pub(crate) struct SpiderEffects {
     pub summon_expire: bool,
     pub kill_credit: Option<u16>,
     pub feedback: Option<(u16, u8)>,
+    pub earlier_feedback: Option<(u16, u8)>,
     pub sound: Option<u8>,
     pub population_decrements: u32,
 }

@@ -81,6 +81,7 @@ pub(crate) struct Effects {
     pub target_music: Option<u16>,
     pub kill_credit: Option<u16>,
     pub feedback: Option<(u16,u8)>,
+    pub earlier_feedback: Option<(u16,u8)>,
     pub sound: Option<u8>,
     pub linked_updates: Vec<Target>,
     pub population_decrements: u32,

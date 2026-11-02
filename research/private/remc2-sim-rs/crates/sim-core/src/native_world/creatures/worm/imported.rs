@@ -469,6 +469,177 @@ pub(crate) fn step_raw_multipart_action31<W: FlightWorld>(
     })
 }
 
+/// Alliance's action31 follows the fixed parent record through sub_1E9C0.
+/// Return ordered spell feedback for the scheduler's existing reward owner.
+pub(crate) fn step_raw_alliance_stage<W: FlightWorld>(
+    entities: &mut [EntitySnapshot], source_slot: u16, world: &W,
+) -> Result<(MultipartRootExternalEffect, Vec<(u16, u8)>), MultipartCallbackError> {
+    step_raw_alliance_stage_inner(entities, source_slot, world, None)
+}
+
+fn step_raw_alliance_stage_inner<W: FlightWorld>(
+    entities: &mut [EntitySnapshot], source_slot: u16, world: &W, peers: Option<&[u16]>,
+) -> Result<(MultipartRootExternalEffect, Vec<(u16, u8)>), MultipartCallbackError> {
+    let index = checked_slot(entities, source_slot)?;
+    validate_carrier(RawEntityView::read(&entities[index]), MULTIPART_STAGE_ACTION)?;
+    let remaining = (read_u16(&entities[index], 50) as i16).wrapping_sub(1);
+    write_u16(&mut entities[index], 50, remaining as u16);
+    let parent_slot = read_u16(&entities[index], 44);
+    let parent = if parent_slot != 0 && remaining > 0 {
+        Some(checked_relation(entities, source_slot, "Alliance parent", parent_slot)?)
+    } else { None };
+    let alive = parent.is_some_and(|parent| entities[parent].life > 0);
+    if remaining <= 0 || !alive {
+        raw_alliance_blink(entities, source_slot, true)?;
+        let source = &mut entities[index];
+        source.record[77] = 10;
+        source.record[76] = read_u16(source, 78) as u8;
+        write_u16(source, 44, 0); write_u16(source, 154, 0);
+        return Ok((MultipartRootExternalEffect::None, Vec::new()));
+    }
+    raw_alliance_blink(entities, source_slot, false)?;
+    let previous = read_u16(&entities[index], 154);
+    write_u16(&mut entities[index], 154, parent_slot);
+    let prelude = read_root_prelude(entities, source_slot)?;
+    apply_root_prelude(&mut entities[index], prelude);
+    let mut feedback = Vec::new();
+    let mut external = MultipartRootExternalEffect::None;
+    if prelude.state == 2 {
+        write_u16(&mut entities[index], 40, prelude.attacker);
+        write_u16(&mut entities[index], 50, 1);
+    } else {
+        let motion = step_root_motion(&mut entities[index], world);
+        if motion == MultipartMotionResult::Blocked && entities[index].life == -1 {
+            external = MultipartRootExternalEffect::DecrementLiveEntityCounter;
+        }
+        if prelude.state == 1 {
+            let attacker = &entities[checked_relation(entities, source_slot, "Alliance attacker", prelude.attacker)?];
+            if prelude.attacker != parent_slot && (attacker.class, attacker.model) != (MULTIPART_CLASS, MULTIPART_MODEL) {
+                write_u16(&mut entities[index], 154, prelude.attacker);
+                entities[index].set_source_action(MULTIPART_ATTACK_ACTION);
+                feedback.push((parent_slot, 19));
+            }
+        } else if entities[index].phase & 7 == 0 {
+            let parent_position = entities[parent.unwrap()].position;
+            if entities[index].control_flags & MULTIPART_MOTION_COLLISION_BIT == 0 {
+                let position = entities[index].position;
+                set_roll(&mut entities[index], heading(position, parent_position));
+                if entities[index].phase & 63 == 0 {
+                    let first = next_rng(entities[index].entity_rng); let second = next_rng(first);
+                    entities[index].set_entity_rng(second);
+                    let delta = (2 * (i32::from(first % 157) / 79) - 1) * (i32::from(second & 255) + 85);
+                    let roll = (i32::from(entities[index].source_roll()) + delta) & 2047;
+                    set_roll(&mut entities[index], roll as i16);
+                }
+            }
+            let source = RawEntityView::read(&entities[index]);
+            if let Some(peer) = first_nearby_same_model_in(entities, source_slot, source, peers) {
+                set_roll(&mut entities[index], heading(peer.position, source.position));
+            }
+        }
+    }
+    let parent = parent.unwrap();
+    let inherited = match read_u16(&entities[parent], 154) { 0 => read_u16(&entities[parent], 42), selected => selected };
+    let selected = if inherited == 0 { previous } else { inherited };
+    write_u16(&mut entities[index], 154, selected);
+    if selected != 0 {
+        let target = checked_relation(entities, source_slot, "Alliance target", selected)?;
+        if (read_u16(&entities[target], 44) == parent_slot && entities[target].record[77] == 14)
+            || entities[target].life <= 0 || entities[target].drawing_disabled() {
+            write_u16(&mut entities[index], 154, 0);
+        } else if wrapped_distance_3d(entities[index].position, entities[target].position) < MULTIPART_DESCRIPTOR_RANGE {
+            entities[index].set_source_action(MULTIPART_ATTACK_ACTION);
+            feedback.push((parent_slot, 24));
+        }
+    }
+    Ok((external, feedback))
+}
+
+fn raw_alliance_blink(entities: &mut [EntitySnapshot], source_slot: u16, clear: bool) -> Result<(), MultipartCallbackError> {
+    let index = checked_slot(entities, source_slot)?;
+    let bits = crate::native_world::level2_class5::firefly::alliance_blink_bits(
+        read_u16(&entities[index], 50), read_u16(&entities[index], 52), entities[index].phase, clear,
+    );
+    let mut child = read_u16(&entities[index], 56);
+    let flags = entities[index].control_flags;
+    entities[index].set_control_flags((flags & !0x0600_0000) | bits);
+    let mut remaining = entities.len();
+    while child != 0 {
+        if remaining == 0 { return Err(MultipartCallbackError::ChildChainCycle { source_slot }); }
+        remaining -= 1;
+        let child_index = checked_relation(entities, source_slot, "Alliance child", child)?;
+        child = read_u16(&entities[child_index], 56);
+        let flags = entities[child_index].control_flags;
+        entities[child_index].set_control_flags((flags & !0x0600_0000) | bits);
+    }
+    Ok(())
+}
+
+/// Resolve only the direct Alliance pointer graph and the frozen model list
+/// into callback-local records. Their owning carriers remain authoritative.
+fn projected_alliance_rows(
+    arena: &crate::campaign::source_arena::SourceArena,
+    slot: u16,
+    peers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<Vec<EntitySnapshot>, String> {
+    let source = arena.entities.get(usize::from(slot)).ok_or("Worm source address is absent")?;
+    let mut pointers = crate::native_world::source_target::alliance_direct_references(arena, source)?;
+    pointers.extend(peers.iter().copied());
+    let mut rows = arena.entities.to_vec();
+    for pointer in pointers {
+        if pointer == slot { continue; }
+        let Some(view) = crate::native_world::source_target::read(arena, context, pointer)? else { continue };
+        let row = &mut rows[usize::from(pointer)];
+        row.active = view.active; row.source_id = view.source_id;
+        row.class = view.class; row.model = view.model;
+        row.set_position(view.position); row.set_life(view.life); row.set_control_flags(view.control_flags);
+        write_u16(row, 42, view.relations.attacker.unwrap_or(0));
+        write_u16(row, 44, view.relations.parent.unwrap_or(0));
+        write_u16(row, 56, view.relations.next.unwrap_or(0));
+        write_u16(row, 154, view.relations.target.unwrap_or(0));
+        row.record[77] = view.relations.stage_mode.unwrap_or(0);
+    }
+    Ok(rows)
+}
+
+pub(crate) fn step_imported_alliance_stage(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &super::super::super::SessionTerrain,
+    slot: u16,
+    peers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<(MultipartRootExternalEffect, Vec<(u16, u8)>), String> {
+    let mut rows = projected_alliance_rows(arena, slot, peers, context)?;
+    let outcome = step_raw_alliance_stage_inner(&mut rows, slot, terrain, Some(peers)).map_err(|error| error.to_string())?;
+    let root = &rows[usize::from(slot)];
+    let flags = root.control_flags & 0x0600_0000;
+    let child = read_u16(root, 56);
+    crate::native_world::level2_class5::firefly::alliance_blink_chain(arena, child, flags, context)?;
+    arena.entities[usize::from(slot)] = root.clone();
+    Ok(outcome)
+}
+
+pub(crate) fn step_imported_alliance_attack(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &super::super::super::SessionTerrain,
+    slot: u16,
+    peers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> std::result::Result<MultipartAttackStep, String> {
+    let mut rows = projected_alliance_rows(arena, slot, peers, context)?;
+    let prelude = read_root_prelude(&rows, slot).map_err(|error| error.to_string())?;
+    let outcome = step_raw_multipart_action26_inner(&mut rows, slot, terrain, Some(peers)).map_err(|error| error.to_string())?;
+    let root = &rows[usize::from(slot)];
+    if prelude.state == 0 {
+        let flags = root.control_flags & 0x0600_0000;
+        let child = read_u16(root, 56);
+        crate::native_world::level2_class5::firefly::alliance_blink_chain(arena, child, flags, context)?;
+    }
+    arena.entities[usize::from(slot)] = root.clone();
+    Ok(outcome)
+}
+
 /// Execute the package-reachable action-26 attack callback. Allocation,
 /// target feedback and sound remain outer-session effects so a failed
 /// `NewEvent` cannot be mistaken for a successful Fireball launch.
@@ -476,6 +647,12 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
     entities: &mut [EntitySnapshot],
     source_slot: u16,
     world: &W,
+) -> Result<MultipartAttackStep, MultipartCallbackError> {
+    step_raw_multipart_action26_inner(entities, source_slot, world, None)
+}
+
+fn step_raw_multipart_action26_inner<W: FlightWorld>(
+    entities: &mut [EntitySnapshot], source_slot: u16, world: &W, peers: Option<&[u16]>,
 ) -> Result<MultipartAttackStep, MultipartCallbackError> {
     let source_index = checked_slot(entities, source_slot)?;
     let source_before = RawEntityView::read(&entities[source_index]);
@@ -510,6 +687,21 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
             MultipartRootExternalEffect::None
         };
     let target_slot = read_u16(&entities[source_index], 154);
+    let allied = entities[source_index].record[77] == 14;
+    if allied {
+        raw_alliance_blink(entities, source_slot, false)?;
+        let remaining = (read_u16(&entities[source_index], 50) as i16).wrapping_sub(1);
+        write_u16(&mut entities[source_index], 50, remaining as u16);
+        let parent = read_u16(&entities[source_index], 44);
+        let selected = if parent == 0 { 0 } else {
+            let index = checked_relation(entities, source_slot, "Alliance parent", parent)?;
+            match read_u16(&entities[index], 154) { 0 => read_u16(&entities[index], 42), selected => selected }
+        };
+        if remaining <= 0 || (parent != 0 && (target_slot == parent || (selected != 0 && selected != target_slot))) {
+            entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
+            return Ok(MultipartAttackStep { source_slot, launch: None, external_effect });
+        }
+    }
     let target = if target_slot == 0 {
         None
     } else {
@@ -517,11 +709,11 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
         Some(RawEntityView::read(&entities[target_index]))
     };
     let Some(target) = target.filter(|target| {
-        target.active
+        (allied || target.active)
             && target.life >= 0
             && !entities[usize::from(target.slot)].drawing_disabled()
-            && wrapped_distance_3d(entities[source_index].position, target.position)
-                < MULTIPART_DESCRIPTOR_RANGE
+            && (allied || wrapped_distance_3d(entities[source_index].position, target.position)
+                < MULTIPART_DESCRIPTOR_RANGE)
     }) else {
         entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
         return Ok(MultipartAttackStep {
@@ -537,10 +729,11 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
             &mut entities[source_index],
             heading(source_position, target.position),
         );
-        if let Some(peer) = first_nearby_same_model(
+        if let Some(peer) = first_nearby_same_model_in(
             entities,
             source_slot,
             RawEntityView::read(&entities[source_index]),
+            peers,
         ) {
             set_roll(
                 &mut entities[source_index],
@@ -550,6 +743,10 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
     }
 
     let launch = if entities[source_index].phase % 30 == 0 {
+        if allied && wrapped_distance_3d(entities[source_index].position, target.position) >= MULTIPART_DESCRIPTOR_RANGE {
+            entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
+            return Ok(MultipartAttackStep { source_slot, launch: None, external_effect });
+        }
         let position = entities[source_index].position;
         let (yaw, pitch) =
             crate::level1_mission::projectile_guidance_angles(position, target.position);
@@ -567,8 +764,8 @@ pub(crate) fn step_raw_multipart_action26<W: FlightWorld>(
             source_mana: 0,
             source_dword_0x10: 0,
             target_source_entity_index: target.slot,
-            target_class: 0,
-            target_model: 0,
+            target_class: target.class,
+            target_model: target.model,
         })
     } else {
         None
@@ -1020,17 +1217,23 @@ fn first_nearby_same_model(
     source_slot: u16,
     source: RawEntityView,
 ) -> Option<RawEntityView> {
+    first_nearby_same_model_in(entities, source_slot, source, None)
+}
+
+fn first_nearby_same_model_in(
+    entities: &[EntitySnapshot], source_slot: u16, source: RawEntityView, peers: Option<&[u16]>,
+) -> Option<RawEntityView> {
     entities.iter().find_map(|candidate| {
         let candidate = RawEntityView::read(candidate);
         (candidate.slot != source_slot
-            && candidate.active
-            && candidate.life >= 0
-            && candidate.class == MULTIPART_CLASS
-            && candidate.model == source.model
+            && if let Some(peers) = peers { peers.contains(&candidate.slot) } else {
+                candidate.active && candidate.life >= 0 && candidate.class == MULTIPART_CLASS
+                    && candidate.model == source.model
             // `UpdateEntities_57730` omits these teardown/presentation
             // actions from `bytearray_38403x[model]`; notably this keeps the
             // action-232 multipart children out of the peer scan.
-            && !matches!(candidate.action, 0xb4 | 0xe8 | 0xea)
+                    && !matches!(candidate.action, 0xb4 | 0xe8 | 0xea)
+            }
             && candidate.source_id != source.source_id
             && wrapped_axis_distance(source.position.x, candidate.position.x)
                 < i32::from(source.array_pitch)
@@ -1360,6 +1563,42 @@ mod tests {
         (0..count)
             .map(|slot| entity(slot, 0, 0, 0, Position { x: 0, y: 0, z: 0 }))
             .collect()
+    }
+
+    #[test]
+    fn alliance_stage_and_attack_use_current_fixed_parent_record() {
+        let mut entities = arena(5);
+        let pos = Position { x: 1000, y: 1000, z: 0 };
+        entities[1] = entity(1, 5, 3, 31, pos);
+        entities[2] = entity(2, 3, 0, 0, pos);
+        entities[3] = entity(3, 5, 21, 0, pos);
+        entities[4] = entity(4, 5, 3, 232, pos);
+        entities[1].record[76] = 0; entities[1].record[77] = 14;
+        write_u16(&mut entities[1], 44, 2); write_u16(&mut entities[1], 50, 40);
+        write_u16(&mut entities[1], 52, 40); write_u16(&mut entities[1], 56, 4);
+        write_u16(&mut entities[2], 154, 3);
+        entities[2].reclaim_source_row();
+        let (effect, feedback) = step_raw_alliance_stage(&mut entities, 1, &FlatWorld).unwrap();
+        assert_eq!(effect, MultipartRootExternalEffect::None);
+        assert_eq!(feedback, vec![(2, 24)]);
+        assert_eq!((entities[1].action, read_u16(&entities[1], 154)), (26, 3));
+        write_u16(&mut entities[1], 154, 2);
+        step_raw_multipart_action26(&mut entities, 1, &FlatWorld).unwrap();
+        assert_eq!(entities[1].action, 25, "the parent address is rejected in attack26");
+        entities[1].set_source_action(26);
+        write_u16(&mut entities[1], 154, 3);
+        entities[3].set_position(Position { x: 20_000, ..pos });
+        entities[1].set_phase(1);
+        assert!(step_raw_multipart_action26(&mut entities, 1, &FlatWorld).unwrap().launch.is_none());
+        assert_eq!(entities[1].action, 26, "range is not tested between source cadence ticks");
+        entities[1].set_phase(0);
+        assert!(step_raw_multipart_action26(&mut entities, 1, &FlatWorld).unwrap().launch.is_none());
+        assert_eq!(entities[1].action, 25, "the cadence visit rejects a distant target");
+        entities[1].set_source_action(31);
+        entities[2].set_life(0);
+        step_raw_alliance_stage(&mut entities, 1, &FlatWorld).unwrap();
+        assert_eq!((entities[1].record[77], read_u16(&entities[1], 44)), (10, 0));
+        assert_eq!(entities[4].control_flags & 0x0600_0000, 0);
     }
 
     #[test]

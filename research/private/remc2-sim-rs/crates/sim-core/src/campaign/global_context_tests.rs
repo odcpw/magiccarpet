@@ -33,6 +33,10 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         protection_ticks: 0,
         visibility_mode: 1,
         damage_flash_ticks: 0,
+        input_yaw: 37,
+        input_pitch: -11,
+        cast_auxiliary: 9,
+        castle_entity_index: 19,
     };
     original
         .session_mut()
@@ -58,6 +62,10 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         protection_ticks: 0,
         visibility_mode: 2,
         damage_flash_ticks: 4,
+        input_yaw: -41,
+        input_pitch: 13,
+        cast_auxiliary: 17,
+        castle_entity_index: 23,
     };
     let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(81803).unwrap();
     let guard = loaded.identity().guard();

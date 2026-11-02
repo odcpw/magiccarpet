@@ -250,7 +250,7 @@ pub(crate) fn allocate_authored(
     Ok(Some(slot))
 }
 
-fn targets(arena: &SourceArena) -> Vec<Target> {
+fn targets(arena: &SourceArena, pointers: &[u16]) -> Vec<Target> {
     let mut targets = super::super::creature_15::mc2::targets_in_arena(arena)
         .into_iter()
         .map(|row| Target {
@@ -280,8 +280,7 @@ fn targets(arena: &SourceArena) -> Vec<Target> {
         .collect::<Vec<_>>();
     let typed = arena.economy.live_arena_slots();
     for row in arena.entities.iter().filter(|row| {
-        row.active
-            && row.class != 0
+        ((row.active && row.class != 0) || pointers.contains(&row.index))
             && row.index != 0
             && !typed.iter().any(|(slot, _)| *slot == row.index)
     }) {
@@ -458,13 +457,14 @@ pub(crate) fn step_row(
     class3: &[u16],
     families: &[Vec<u16>; 29],
 ) -> Result<Creature17Effects, String> {
-    let targets = targets(arena);
     let actor_row = arena
         .entities
         .get(usize::from(slot))
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model-17 callback lost slot{slot}"))?;
     let mut actor = load(actor_row, arena.slot_generation(slot));
+    let pointers: Vec<_> = crate::native_world::source_target::alliance_direct_references(arena, actor_row)?.into_iter().collect();
+    let targets = targets(arena, &pointers);
     let callback_action = actor.action;
     let context = Creature17Context {
         terrain,
@@ -477,6 +477,11 @@ pub(crate) fn step_row(
         .ok_or_else(|| format!("unsupported model-17 action{}", actor.action))?;
     store(&mut arena.entities[usize::from(slot)], actor, particles)?;
     arena.economy.source_rng.insert(slot, actor.rng);
+    for (linked_slot, flags) in &effects.linked_blink_flags {
+        if let Some(row) = arena.entities.get_mut(usize::from(*linked_slot)) {
+            row.set_control_flags((row.control_flags & !0x0600_0000) | *flags);
+        }
+    }
     for _ in 0..effects.population_decrements {
         arena.economy.decrement_source_creature_population();
     }

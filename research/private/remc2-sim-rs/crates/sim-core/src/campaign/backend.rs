@@ -5499,6 +5499,7 @@ pub(crate) mod tests {
             protection_ticks: 23,
             visibility_mode: 2,
             damage_flash_ticks: 0,
+            ..GlobalSpecialState::default()
         };
         // Keep the envelope valid while making the replay's final state
         // receipt false, so this exercises candidate verification itself.

@@ -1177,6 +1177,40 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
     assert_eq!(u16::from_le_bytes([raw.record[52], raw.record[53]]), 40);
     assert_eq!(u16::from_le_bytes([raw.record[154], raw.record[155]]), 0);
 
+    // Exercise the acquired typed actor's Alliance callback independently of
+    // the Morph holder, whose own expiration can hide the Bee on the same pass.
+    for parent_case in ["free", "reused", "dead"] {
+        let mut controlled = arena.clone();
+        let mut controlled_terrain = terrain.clone();
+        controlled.economy.bee_creatures.iter_mut().find(|row| row.source_entity_index == bee_slot)
+            .unwrap().action = 23;
+        controlled.entities[usize::from(bee_slot)].set_source_action(23);
+        if parent_case != "dead" {
+            controlled.entities[usize::from(parent_slot)].reclaim_source_row();
+            controlled.economy.release_slot(parent_slot, None);
+            if parent_case == "reused" {
+                assert_eq!(controlled.allocate_source_slot_with_terrain(&mut controlled_terrain), Some(parent_slot));
+                let mut replacement = crate::native_world::cave_features::new_event(parent_slot, 5, position);
+                replacement.class = 3;
+                replacement.record[67] = 3;
+                replacement.set_life(1_000);
+                controlled.entities[usize::from(parent_slot)] = replacement;
+                assert_ne!(controlled.handle(parent_slot), Some(allied_parent));
+            }
+        } else {
+            controlled.entities[usize::from(parent_slot)].set_life(0);
+        }
+        let models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        mc2::step_in_arena(
+            &mut controlled, &session.session.state.live.core.runtime, &mut controlled_terrain,
+            &session.session.definition.presentation.particles, bee_slot, &models, &[], None, None,
+        ).expect("Alliance Bee fixed-record parent visit");
+        let bee = controlled.economy.bee_creatures.iter().find(|row| row.source_entity_index == bee_slot).unwrap();
+        let expected = if parent_case == "dead" { (10, 0) } else { (14, parent_slot) };
+        assert_eq!((bee.stage_var2, bee.parent_entity_index), expected, "{parent_case}");
+        assert_eq!(controlled.handle(bee_slot), Some(bee_handle));
+    }
+
     // The shadow control above is deliberately local. For the actual source
     // scheduler, obtain a Bee from an acquired/carry Morph holder: an invented
     // holder cannot satisfy the production semantic identity check.
@@ -1273,13 +1307,10 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
                 control.shared_spells().pickup(holder).map(|row| (row.active_value, row.source_word_96()))));
         }
         if parent_reused {
-            // The original Alliance parent is gone, so its Bee returns to
-            // StageVar10. This body is also still owned by the real Morph
-            // holder: sub_6A030 hides word96 when that holder expires.
+            // The real Morph holder separately hides word96 when it expires.
             let first = visits[0].2.expect("Bee remains allocated for the hiding pass");
             assert_eq!(visits[0].1, Some(actual_bee_handle));
-            assert_eq!((first.stage_var2, first.parent_entity_index, first.drawing_enabled),
-                (10, 0, false), "parent loss and Morph expiry share the first pass: {visits:?}");
+            assert!(!first.drawing_enabled, "Morph expiry hides its Bee on the first pass: {visits:?}");
             assert_eq!(visits[0].3, Some((0, 0)), "the Morph holder expires and clears word96");
             assert!(control.source_arena().resolve(actual_bee_handle).is_none(),
                 "the following source boundary reclaims the original Bee generation");
@@ -1292,7 +1323,7 @@ fn alliance_impact_syncs_only_the_exact_typed_bee_before_its_source_visit() {
             let current = control.source_arena().bee_creatures().iter()
                 .find(|row| row.active && row.source_entity_index == actual_bee)
                 .unwrap_or_else(|| panic!("Alliance Bee disappeared with its parent live: {visits:?}"));
-            assert_eq!(current.stage_var2, 14, "Alliance follows the original parent generation");
+            assert_eq!(current.stage_var2, 14, "Alliance follows the current parent record");
         }
     }
 
