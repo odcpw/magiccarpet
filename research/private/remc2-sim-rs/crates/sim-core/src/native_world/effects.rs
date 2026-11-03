@@ -35,19 +35,68 @@ pub(crate) fn step_projectile(
     particles: &[ParticleParameter],
     slot: u16,
     context: super::source_target::Context<'_>,
+    capture_slots: &[u16],
+    owner_target_range: u16,
 ) -> Result<super::level2_dynamic_economy::Level2FireballStep, String> {
     use super::level2_dynamic_economy::FireballBirth;
-    let bound = arena
+    let entry = arena
         .economy
         .fireball_projectiles
         .iter()
         .find(|row| row.active && row.source_entity_index == slot)
-        .map_or(0, |row| row.target_source_entity_index);
+        .copied();
+    let bound = entry.map_or(0, |row| row.target_source_entity_index);
     let context = super::source_target::Context {
         particles: Some(particles),
         map_type: Some(terrain.map_type()),
         ..context
     };
+    let mut initial_capture = false;
+    if let Some(projectile) = entry.filter(|row| {
+        matches!((row.source_model, row.action), (0, 0) | (28, 29))
+            && row.target_source_entity_index == 0
+            && !row.acquisition_attempted
+    }) {
+        let mut view = crate::world::terrain::cave_features::new_event(
+            slot,
+            projectile.entity_rng,
+            projectile.position,
+        );
+        view.class = 9;
+        view.model = projectile.source_model;
+        view.source_id = projectile.owner_entity_index;
+        view.set_yaw(projectile.yaw);
+        view.set_pitch(projectile.pitch);
+        let empty_models = std::array::from_fn(|_| Vec::new());
+        initial_capture = super::guided_projectile::acquire_capture(
+            arena,
+            &mut view,
+            &super::guided_projectile::Targets {
+                class3: &[],
+                class5: &empty_models,
+                class10: capture_slots,
+                owner_target_range,
+            },
+            context,
+        )?;
+        if initial_capture {
+            let row = arena
+                .economy
+                .fireball_projectiles
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .ok_or("capture acquisition lost its Fireball carrier")?;
+            row.target_source_entity_index = view.source_word_96();
+            row.roll = view.source_roll();
+            row.fov = view.fov;
+        }
+    }
+    let current_bound = arena
+        .economy
+        .fireball_projectiles
+        .iter()
+        .find(|row| row.source_entity_index == slot)
+        .map_or(bound, |row| row.target_source_entity_index);
     // Capture each candidate's current fixed-address owner before borrowing
     // the economy mutably. Only errors for the actual target or visited map
     // candidates are consumed by the flyer callback.
@@ -55,7 +104,7 @@ pub(crate) fn step_projectile(
         .entities
         .iter()
         .map(|row| {
-            if row.index == bound || arena.economy.map_chains.is_linked(row.index) {
+            if row.index == current_bound || arena.economy.map_chains.is_linked(row.index) {
                 super::source_target::read(arena, context, row.index)
             } else {
                 Ok(None)
@@ -68,6 +117,7 @@ pub(crate) fn step_projectile(
         &arena.entities,
         true,
         Some(&views),
+        initial_capture,
     )?;
     if let Some(position) = arena
         .economy
@@ -89,6 +139,66 @@ pub(crate) fn step_projectile(
         .find(|s| s.source_entity_index == slot)
         .copied()
         .ok_or("terminal flyer lost its current carrier")?;
+    // 65C20 asks 68AC0 before its ordinary impact. Magic Mine owns the
+    // capture mailbox; the caller commits the current holder's expiry value.
+    let capture_target = step.collision_target.filter(|target| {
+        matches!(
+            (projectile.source_model, projectile.action),
+            (0, 0) | (28, 29)
+        ) && arena
+            .entities
+            .get(usize::from(*target))
+            .is_some_and(|mine| {
+                (mine.class, mine.model) == (10, 78)
+                    && mine.word_32() == projectile.owner_entity_index
+                    && u16::from_le_bytes([mine.record[58], mine.record[59]]) == u16::MAX
+            })
+    });
+    if let Some(mine_slot) = capture_target {
+        let visual = rules::allocate_from_source_position(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::Impact,
+            ),
+            slot,
+            projectile.position,
+            particles,
+        )?;
+        // The visual NewEvent runs first. Fixed pointers may now refer to
+        // newborn rows; source does not recheck the mine predicate afterward.
+        let current = super::source_target::read(arena, context, slot)?
+            .ok_or("captured Fireball lost its fixed source address")?;
+        let holder_slot = current.relations.attacker.unwrap_or(0);
+        if holder_slot != 0 {
+            let holder = super::source_target::status_parent(arena, context, holder_slot)?
+                .ok_or("captured Fireball holder address is outside source arena")?;
+            crate::world::fields::magic_mine::store_captured_spell(
+                &mut arena.entities[usize::from(mine_slot)],
+                holder.model,
+                holder.level_gate as u8,
+            );
+            step.captured_holder = Some(holder_slot);
+        }
+        arena.economy.prepare_sound(slot, slot, -1, 26);
+        if visual == Some(slot) {
+            rules::hide_birth_replacement(arena, slot, visual)?;
+        } else if let Some(current) = arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == slot)
+        {
+            current.active = false;
+            current.drawing_disabled = true;
+        }
+        step.live = false;
+        step.impact_slot = visual;
+        step.direct_hit_owner = None;
+        step.direct_hit_family = None;
+        step.accuracy = None;
+        return Ok(step);
+    }
     let child = if birth == FireballBirth::Impact
         && projectile.origin == super::FireballProjectileOrigin::Eruption
     {
@@ -130,24 +240,53 @@ pub(crate) fn step_projectile(
             crate::level_definition::EffectKind::Impact
         };
         let definition = sim_definition::adapter::mc2_effect_definition(kind);
-        let child = if matches!(
-            kind,
-            crate::level_definition::EffectKind::Impact | crate::level_definition::EffectKind::Ash
-        ) {
-            rules::allocate_from_source_position(
-                arena,
-                terrain,
-                definition,
-                slot,
-                projectile.position,
-                particles,
-            )?
-        } else {
-            rules::allocate(arena, terrain, definition, projectile.position, particles)?
-        };
+        let child = rules::allocate_from_source_position(
+            arena,
+            terrain,
+            definition,
+            slot,
+            projectile.position,
+            particles,
+        )?;
         if let Some(id) = child
             && kind == crate::level_definition::EffectKind::FireSpheres
         {
+            // 65C20 and 65B50 read the flyer again after the full constructor.
+            // A source-position address reused by the root or one sector now
+            // carries that newborn's fields, never the previous flyer payload.
+            let replacement = arena.economy.live_arena_kind(slot);
+            let replaced_root = if replacement == Some(Kind::AuthoredModel76) {
+                arena
+                    .economy
+                    .authored_model76()
+                    .iter()
+                    .find(|row| row.source_entity_index == slot)
+                    .map(|row| {
+                        (
+                            row.entity_id,
+                            row.subspell_index,
+                            row.yaw,
+                            row.pitch,
+                            row.target_entity_index,
+                        )
+                    })
+            } else if replacement == Some(Kind::Model76Child) {
+                arena
+                    .economy
+                    .model76_children()
+                    .iter()
+                    .find(|row| row.source_entity_index == slot)
+                    .map(|row| (row.entity_id, row.subspell_index, row.yaw, row.pitch, 0))
+            } else {
+                None
+            };
+            let (owner, damage, yaw, pitch, target) = replaced_root.unwrap_or((
+                projectile.owner_entity_index,
+                projectile.source_subspell_index,
+                projectile.yaw,
+                projectile.pitch,
+                step.collision_target.unwrap_or(0),
+            ));
             // sub_65B50 specializes the successful sub_65C20 result. The
             // constructor's 80-tick children keep their own life; only the
             // root receives the 30-tick lifetime and projectile payload.
@@ -157,24 +296,51 @@ pub(crate) fn step_projectile(
                 .iter_mut()
                 .find(|row| row.source_entity_index == id)
                 .expect("Fire Spheres constructor retains its root");
-            root.entity_id = projectile.owner_entity_index;
-            root.subspell_index = projectile.source_subspell_index;
-            root.yaw = projectile.yaw;
-            root.pitch = projectile.pitch;
+            root.entity_id = owner;
+            root.subspell_index = damage;
+            root.yaw = yaw;
+            root.pitch = pitch;
             root.max_life = 30;
             root.life = 30;
-            root.target_entity_index = step.collision_target.unwrap_or(0);
-            arena
-                .economy
-                .source_owner
-                .insert(id, projectile.owner_entity_index);
+            root.target_entity_index = target;
+            arena.economy.source_owner.insert(id, owner);
+            let local_sector = super::source_target::status_parent(arena, context, owner)?
+                .is_some_and(|parent| {
+                    (parent.class, parent.model) == (3, 0)
+                        && matches!(parent.special_relation, super::EntitySpecialRelation::PlayerState(index)
+                            if context.spells.is_some_and(|shared| index == shared.local_player.slot))
+                });
             for child in arena
                 .economy
                 .effect_sphere_children_mut()
                 .iter_mut()
                 .filter(|row| row.parent_entity_index == id)
             {
-                child.entity_id = projectile.owner_entity_index;
+                child.entity_id = owner;
+                if local_sector {
+                    child.visual_index = 42;
+                }
+            }
+            // 65B50's final DisableEntityDrawing acts on the current address.
+            if replacement == Some(Kind::AuthoredModel76) {
+                if let Some(row) = arena
+                    .economy
+                    .effect_sphere_roots_mut()
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot)
+                {
+                    row.control_flags |= 0x400;
+                    row.drawing_enabled = false;
+                }
+            } else if replacement == Some(Kind::Model76Child)
+                && let Some(row) = arena
+                    .economy
+                    .effect_sphere_children_mut()
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot)
+            {
+                row.control_flags |= 0x400;
+                row.drawing_enabled = false;
             }
         } else if let Some(id) = child {
             let row = &mut arena.entities[usize::from(id)];
@@ -249,10 +415,48 @@ pub(crate) fn step_projectile(
         }
         step.live = false;
     }
-    // sub_65820 reads word26's holder *after* the impact NewEvent. A
-    // recycled holder address therefore supplies its current model; a zero
-    // holder, failed allocation, or non-actor termination awards nothing.
+    // 65780 reads both target pointers and the current shooter after the
+    // impact constructor. It counts successful eligible output even on
+    // terrain; a hit additionally needs equal current target identities.
     if child.is_some()
+        && matches!(
+            (projectile.source_model, projectile.action),
+            (0, 0) | (28, 29)
+        )
+    {
+        let current = super::source_target::read(arena, context, slot)?
+            .ok_or("Fireball source address is outside source arena")?;
+        let shooter = super::source_target::read(arena, context, current.source_id)?;
+        if current.class == 9
+            && matches!(current.model, 0 | 28)
+            && shooter.is_some_and(|owner| (owner.class, owner.model) == (3, 0))
+        {
+            let hit = if let Some(target) = step.collision_target.filter(|_| bound != 0) {
+                let target = super::source_target::read(arena, context, target)?;
+                let bound = super::source_target::read(arena, context, bound)?;
+                matches!((target, bound), (Some(target), Some(bound))
+                    if target.source_id == bound.source_id)
+            } else {
+                false
+            };
+            step.accuracy = Some((current.source_id, hit));
+        }
+    }
+    // Fireball's actual 65C20 awards family0 after an actor impact,
+    // independently of word26. Other flyers' 65820 reads the holder model
+    // after NewEvent; keep that distinct policy for their callbacks.
+    if child.is_some()
+        && step.collision_target.is_some()
+        && matches!(
+            (projectile.source_model, projectile.action),
+            (0, 0) | (28, 29)
+        )
+    {
+        let current = super::source_target::read(arena, context, slot)?
+            .ok_or("Fireball source address is outside source arena")?;
+        step.direct_hit_owner = Some(current.source_id);
+        step.direct_hit_family = Some(0);
+    } else if child.is_some()
         && !impact_replaced_source
         && !(projectile.origin == super::FireballProjectileOrigin::Eruption && child == Some(slot))
         && step.direct_hit_owner.is_some()
@@ -419,7 +623,7 @@ pub(crate) fn sprite_sources(arena: &SourceArena) -> Vec<(u16, u16, u16, i16, Po
         rows.push((
             s.source_entity_index,
             s.entity_id,
-            340,
+            s.visual_index,
             s.yaw,
             s.position,
             s.control_flags,
@@ -1024,4 +1228,174 @@ where
         )?;
     }
     Ok(visit)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fireball_collision_reaches_the_existing_magic_mine_capture_consumer() {
+        use crate::Position;
+        use crate::native_world::{
+            FireballProjectileOrigin, level2_dynamic_economy::Level2FireballProjectileLaunchPayload,
+        };
+        let session = super::super::tests::level_two_campaign_session();
+        for (visual_space, has_holder) in [(true, true), (false, true), (true, false)] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let particles = &session.session.definition.presentation.particles;
+            let player = session.state.entity_index;
+            let holder = session.shared_spells().local_player().enabled_spell_holders[0];
+            assert_ne!(holder, 0);
+            let position = Position {
+                x: 2_048,
+                y: 2_048,
+                z: 8_000,
+            };
+            let mine = crate::world::fields::magic_mine::construct(
+                &mut arena,
+                &mut terrain,
+                position,
+                particles[66],
+            )
+            .unwrap()
+            .expect("the real mine constructor");
+            // The mine owner's source relation is explicit setup. Collision,
+            // visual allocation and capture use the actual shared callbacks.
+            arena.entities[usize::from(mine)].record[54..56].copy_from_slice(&player.to_le_bytes());
+            let flyer = arena
+                .allocate_source_slot_with_terrain(&mut terrain)
+                .unwrap();
+            arena
+                .economy
+                .initialize_fireball_projectile(
+                    flyer,
+                    Level2FireballProjectileLaunchPayload {
+                        origin: FireballProjectileOrigin::PlayerSpell,
+                        position: Position {
+                            y: position.y + 384,
+                            ..position
+                        },
+                        yaw: 0,
+                        pitch: 0,
+                        axis_position: position,
+                        source_id_entity_index: player,
+                        holder_entity_index: if has_holder { holder } else { 0 },
+                        source_subspell_index: 250,
+                        source_mana: 20,
+                        source_dword_0x10: 0,
+                        target_source_entity_index: 0,
+                        target_class: 10,
+                        target_model: 78,
+                    },
+                    0,
+                )
+                .unwrap();
+            if !visual_space {
+                arena.economy.free_slots.clear();
+                arena.finish_source_group();
+            }
+            let outcome = super::step_projectile(
+                &mut arena,
+                &mut terrain,
+                particles,
+                flyer,
+                crate::native_world::source_target::Context {
+                    spells: Some(session.shared_spells()),
+                    player: Some((player, position, 10_000)),
+                    ..crate::native_world::source_target::Context::default()
+                },
+                &[mine],
+                5_120,
+            )
+            .unwrap();
+            assert_eq!(outcome.collision_target, Some(mine));
+            assert!(!outcome.live);
+            assert_eq!(outcome.impact_slot.is_some(), visual_space);
+            assert_eq!(outcome.captured_holder, has_holder.then_some(holder));
+            assert_eq!(outcome.accuracy, None);
+            assert_eq!(outcome.direct_hit_owner, None);
+            let captured = &arena.entities[usize::from(mine)];
+            assert_eq!(
+                u16::from_le_bytes([captured.record[58], captured.record[59]]),
+                if has_holder { 0 } else { u16::MAX }
+            );
+            assert!(
+                arena
+                    .economy
+                    .fireball_projectiles()
+                    .iter()
+                    .any(|row| row.source_entity_index == flyer
+                        && row.drawing_disabled
+                        && !row.active)
+            );
+        }
+    }
+
+    #[test]
+    fn fire_spheres_clear_retained_raw_rows_and_keep_source_constructor_chain() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let particles = &session.session.definition.presentation.particles;
+        let slot = *arena.economy.free_source_slots().last().unwrap();
+        // A retained packet at an ordinary free address must be cleared by
+        // canonical NewEvent, rather than survive a typed-only allocation.
+        let stale = &mut arena.entities[usize::from(slot)];
+        stale.active = true;
+        stale.class = 9;
+        stale.model = 28;
+        stale.set_life(-321);
+        let generation = arena.economy.slot_generation(slot);
+        let root = crate::world::effects::allocate_from_source_position(
+            &mut arena,
+            &mut terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                sim_definition::level_definition::EffectKind::FireSpheres,
+            ),
+            slot,
+            session.state.position,
+            particles,
+        )
+        .unwrap()
+        .expect("the ordinary free stack has 26 source rows");
+        assert_eq!(root, slot);
+        assert!(arena.economy.slot_generation(slot) > generation);
+        assert_eq!(
+            arena.entities[usize::from(slot)].class,
+            0,
+            "the old raw incarnation is retired with the typed constructor"
+        );
+        let source = arena
+            .economy
+            .authored_model76()
+            .iter()
+            .find(|row| row.source_entity_index == root)
+            .unwrap();
+        assert_eq!(
+            source.position,
+            crate::Position::default(),
+            "the aliased source-position pointer sees NewEvent's zero position"
+        );
+        assert_eq!((source.model, source.action, source.life), (76, 83, 80));
+        let children = arena
+            .economy
+            .model76_children()
+            .iter()
+            .filter(|row| row.parent_entity_index == root)
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 25);
+        assert!(children.iter().all(|row| row.model == 77
+            && row.action == 84
+            && row.entity_id == root
+            && row.entity_rng == children[0].entity_rng));
+        assert_eq!(
+            children.iter().filter(|row| row.column_index == 0).count(),
+            5
+        );
+        assert!(
+            children
+                .iter()
+                .all(|row| arena.entities[usize::from(row.source_entity_index)].class == 0)
+        );
+    }
 }

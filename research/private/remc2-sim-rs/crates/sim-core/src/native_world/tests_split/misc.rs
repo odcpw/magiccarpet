@@ -1451,10 +1451,17 @@ fn level_two_shield_active_holder_ticks_through_outer_turn_and_reset() {
 
 #[test]
 fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
-    let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-level2-vault-successor-environment-20261025");
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let gameplay_cache = generated.join("mc-b9s2-cursor-level2-vault-20261029");
     for tier in 0..=2 {
-        let mut session = level_two_campaign_session_with_owner_cache(&gameplay_cache);
+        let mut session = crate::campaign::CampaignSession::open_with_owner_cache(
+            generated.join("mc-level2-vault-successor-closure-20261025"),
+            &gameplay_cache,
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .expect("the actual installed package/cache pair")
+        .simulation()
+        .clone();
         fire_level_two_model32_group(&mut session, 21);
         let bee_slot = session
             .economy()
@@ -1553,8 +1560,9 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
             );
             assert_eq!(collision.direct_hit_owner, Some(player));
             // Exercise the same actual cast and collision with and without
-            // source word26. The successful Fire Spheres allocation carries
-            // an experience award only when the holder address is nonzero.
+            // source word26. Unlike common 65820, Fireball's actual 65C20
+            // awards family0 after successful actor impact even without a
+            // holder; the two callback policies must remain distinct.
             for holder_present in [true, false] {
                 let mut control = arena.clone();
                 let mut control_terrain = terrain.clone();
@@ -1579,12 +1587,14 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
                             &session.session.state.live.ordinary,
                         )
                     },
+                    &[],
+                    0,
                 )
                 .unwrap();
                 assert!(hit.impact_slot.is_some(), "actual actor impact allocates");
                 assert!(hit.collision_target.is_some(), "the target is an actor");
-                assert_eq!(hit.direct_hit_owner, holder_present.then_some(player));
-                assert_eq!(hit.direct_hit_family, holder_present.then_some(0));
+                assert_eq!(hit.direct_hit_owner, Some(player));
+                assert_eq!(hit.direct_hit_family, Some(0));
             }
             // AddFireSpheres needs 26 actual arena rows. Failed allocation
             // must retain the flyer and return no XP award to its dispatcher.
@@ -1602,6 +1612,8 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
                         &session.session.state.live.ordinary,
                     )
                 },
+                &[],
+                0,
             )
             .unwrap();
             assert!(failed.live);

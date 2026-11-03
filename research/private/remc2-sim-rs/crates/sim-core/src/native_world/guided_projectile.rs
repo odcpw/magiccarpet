@@ -312,10 +312,13 @@ pub(super) fn acquire_capture(
     if !matches!(row.model, 0 | 2..=5 | 8..=9 | 12 | 22..=23 | 26 | 28 | 30) {
         return Ok(false);
     }
-    let Some(owner) = arena.entities.get(usize::from(row.source_id)) else {
+    if row.source_id == 0 {
+        return Ok(false);
+    }
+    let Some(owner) = super::source_target::read(arena, context, row.source_id)? else {
         return Err("guided projectile owner address is outside arena".to_owned());
     };
-    if row.source_id == 0 || owner.class != 3 {
+    if owner.class != 3 {
         return Ok(false);
     }
     let owner_position = owner.position;

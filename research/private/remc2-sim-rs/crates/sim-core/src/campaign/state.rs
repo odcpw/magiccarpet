@@ -68,6 +68,7 @@ pub struct CampaignDefinition {
     pub identity_receipt: CanonicalDigest,
     pub(crate) speed_multipliers: [i32; 3],
     pub(crate) possession_properties: crate::level_definition::PossessionProperties,
+    pub(crate) fireball_properties: crate::level_definition::FireballProperties,
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
     authored_creature_entities: BTreeMap<u16, LevelEntityId>,
@@ -365,6 +366,7 @@ impl CampaignDefinition {
             identity_receipt,
             speed_multipliers: [2, 3, 4],
             possession_properties: crate::level_definition::POSSESSION_PROPERTIES,
+            fireball_properties: crate::level_definition::FIREBALL_PROPERTIES,
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
             authored_creature_entities: BTreeMap::new(),
@@ -428,6 +430,14 @@ impl CampaignDefinition {
         self.refresh_rule_identity();
     }
 
+    pub(crate) fn bind_fireball_properties(
+        &mut self,
+        properties: crate::level_definition::FireballProperties,
+    ) {
+        self.fireball_properties = properties;
+        self.refresh_rule_identity();
+    }
+
     fn refresh_rule_identity(&mut self) {
         let base = Self::base_identity_receipt(
             self.profile,
@@ -445,7 +455,7 @@ impl CampaignDefinition {
                 }
             })
         };
-        self.identity_receipt =
+        let possession_identity =
             if self.possession_properties == crate::level_definition::POSSESSION_PROPERTIES {
                 speed_identity
             } else {
@@ -467,6 +477,31 @@ impl CampaignDefinition {
                     ] {
                         hasher.update(value.to_le_bytes());
                     }
+                })
+            };
+        self.identity_receipt =
+            if self.fireball_properties == crate::level_definition::FIREBALL_PROPERTIES {
+                possession_identity
+            } else {
+                digest_with(|hasher| {
+                    hasher.update(possession_identity.as_bytes());
+                    hasher.update(b"fireball-properties-v1");
+                    for tier in self.fireball_properties.tiers {
+                        hasher.update(tier.power.to_le_bytes());
+                        hasher.update(tier.cooldown.to_le_bytes());
+                        hasher.update(tier.castle_mana_required.to_le_bytes());
+                        hasher.update(tier.mana_cost.to_le_bytes());
+                        hasher.update([tier.font_type, tier.source_life]);
+                    }
+                    for value in [
+                        self.fireball_properties.projectile_speed,
+                        self.fireball_properties.projectile_lifetime,
+                        self.fireball_properties.aim_distance,
+                    ] {
+                        hasher.update(value.to_le_bytes());
+                    }
+                    hasher.update(self.fireball_properties.render_index.to_le_bytes());
+                    hasher.update(self.fireball_properties.local_render_index.to_le_bytes());
                 })
             };
     }

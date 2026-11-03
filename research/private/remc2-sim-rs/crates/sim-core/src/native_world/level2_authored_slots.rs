@@ -3945,9 +3945,8 @@ impl Level2EconomyState {
     }
 
     /// Allocate the authored class-10/model-76 Fire Spheres root plus its
-    /// exact 25 linked model-77 children. The pinned constructor is atomic:
-    /// if any row cannot be reserved or linked, the whole family is rolled
-    /// back with no partial live cluster.
+    /// exact 25 linked model-77 children. Source 4F2A0 requires 26 ordinary
+    /// free addresses before entering the constructor.
     pub fn allocate_authored_model76(
         &mut self,
         authored_index: u16,
@@ -3958,7 +3957,31 @@ impl Level2EconomyState {
             return None;
         }
         let state_before = self.clone();
-        let source_entity_index = self.allocate_slot()?;
+        let mut slots = [0; 1 + LEVEL2_MODEL76_CHILD_COUNT];
+        for slot in &mut slots {
+            let Some(allocated) = self.allocate_slot() else {
+                *self = state_before;
+                return None;
+            };
+            *slot = allocated;
+        }
+        let result = self.initialize_authored_model76_slots(authored_index, position, slots);
+        if result.is_none() {
+            *self = state_before;
+        }
+        result
+    }
+
+    /// Initialize only addresses already allocated by NewEvent. Runtime
+    /// callers use SourceArena so retained raw rows are overwritten too;
+    /// import/economy callers share these same constructor fields.
+    pub(crate) fn initialize_authored_model76_slots(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        slots: [u16; 1 + LEVEL2_MODEL76_CHILD_COUNT],
+    ) -> Option<Level2AuthoredModel76Source> {
+        let source_entity_index = slots[0];
         let entity_rng = self.new_event_rng(source_entity_index);
         let root_position = position;
         if self
@@ -3971,7 +3994,6 @@ impl Level2EconomyState {
             })
             .is_err()
         {
-            *self = state_before;
             return None;
         }
         let root = Level2AuthoredModel76Source {
@@ -4009,12 +4031,7 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_model76.push(root);
-        for index in 0..LEVEL2_MODEL76_CHILD_COUNT {
-            let child_slot = self.allocate_slot().unwrap_or_default();
-            if child_slot == 0 {
-                *self = state_before;
-                return None;
-            }
+        for (index, child_slot) in slots.into_iter().skip(1).enumerate() {
             let row_index = u8::try_from(index / 5).expect("model-76 child row fits");
             let column_index = u8::try_from(index % 5).expect("model-76 child column fits");
             let child_rng = level2_next_rng16(entity_rng);
@@ -4087,6 +4104,7 @@ impl Level2EconomyState {
                 row_index,
                 column_index,
                 chain_index: u8::try_from(index).expect("model-76 child index fits"),
+                visual_index: 340,
                 yaw,
                 pitch,
                 roll,
@@ -4113,7 +4131,6 @@ impl Level2EconomyState {
                 })
                 .is_err()
             {
-                *self = state_before;
                 return None;
             }
             self.source_rng.insert(child_slot, child_rng);
@@ -7820,6 +7837,10 @@ impl Level2EconomyState {
             ]);
         }
         for child in &self.model76_children {
+            if child.visual_index != 340 {
+                hasher.update(b"fire-sphere-selector-v1");
+                hasher.update(child.visual_index.to_le_bytes());
+            }
             if child.pending_damage != 0 || child.pending_damage_owner != 0 {
                 hasher.update(b"fire-sphere-damage-v1");
                 hasher.update(child.pending_damage.to_le_bytes());

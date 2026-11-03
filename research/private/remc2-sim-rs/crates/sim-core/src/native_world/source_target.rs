@@ -3256,6 +3256,560 @@ mod tests {
     }
 
     #[test]
+    fn fireball_launch_reuses_current_parent_or_holder_records_after_new_event() {
+        use crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        for replace_holder in [false, true] {
+            let mut session = super::super::tests::level_two_campaign_session();
+            let player = session.state.entity_index;
+            let holder_slot = session.shared_spells().local_player.enabled_spell_holders[0];
+            let victim = if replace_holder { holder_slot } else { player };
+            let old_position = Position {
+                x: 40_000,
+                y: 41_000,
+                z: 2_000,
+            };
+            let cost = {
+                let live = &mut session.session.state.live;
+                live.economy.economy.exhaust_new_event_capacity_for_test();
+                for row in &mut live.economy.entities {
+                    row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+                }
+                let parent = &mut live.economy.entities[usize::from(player)];
+                parent.set_position(old_position);
+                parent.set_actual_speed(71);
+                parent.set_mana(10_000);
+                parent.set_mana_regen(17);
+                parent.set_life(1_000);
+                let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+                holder.active_value = holder.activation_value.cast_signed();
+                holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                let cost = holder.max_mana;
+                if replace_holder {
+                    holder.set_control_flags(holder.control_flags | SOURCE_REPLACEABLE_FLAG);
+                }
+                live.economy.entities[usize::from(holder_slot)] = holder.clone();
+                let raw = &mut live.economy.entities[usize::from(victim)];
+                raw.set_control_flags(raw.control_flags | SOURCE_REPLACEABLE_FLAG);
+                live.economy.rebuild_source_free_arena();
+                live.economy.economy.free_slots.clear();
+                cost
+            };
+            let born = session
+                .step_level2_fireball_holder_source_slot(holder_slot)
+                .unwrap();
+            assert_eq!(born, victim);
+            let flyer = session
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|row| row.source_entity_index == born)
+                .unwrap();
+            assert_eq!(
+                flyer.actual_speed,
+                384 + 71,
+                "speed argument is evaluated before NewEvent"
+            );
+            if replace_holder {
+                assert_eq!((flyer.source_subspell_index, flyer.source_mana), (100, 50));
+                assert_eq!(
+                    session.entities()[usize::from(holder_slot)].active_value,
+                    -1
+                );
+                assert_eq!(session.entities()[usize::from(player)].mana_regen, 0);
+            } else {
+                assert_eq!(
+                    flyer.position,
+                    Position {
+                        z: 50,
+                        ..Position::default()
+                    }
+                );
+                assert_ne!(flyer.position, old_position);
+                assert_eq!(session.entities()[usize::from(player)].mana_regen, -cost);
+            }
+        }
+    }
+
+    #[test]
+    fn acquired_fireball_tiers_reach_real_damage_death_and_natural_descendant_cleanup() {
+        use crate::native_world::simulation::CarriedSpellProgress;
+        use crate::{FlightWorld as _, PlayerCommand};
+
+        for (tier, configured) in [(0_u8, false), (1, false), (2, false), (0, true)] {
+            let mut session = super::super::tests::level_two_campaign_session();
+            if configured {
+                let original = session.clone();
+                let before = session.session.definition.identity_receipt;
+                session.apply_fireball_projectile_speed(512);
+                session.session.rebase();
+                assert_ne!(session.session.definition.identity_receipt, before);
+                assert_eq!(original.session.definition.identity_receipt, before);
+                assert_eq!(
+                    original
+                        .session
+                        .definition
+                        .fireball_properties
+                        .projectile_speed,
+                    384
+                );
+            }
+            session.select_level2_campaign_entry_stage();
+            let player = session.state.entity_index;
+            let holder = session.shared_spells().local_player.enabled_spell_holders[0];
+            assert_ne!(holder, 0, "ordinary startup acquires Fireball");
+            assert_eq!(
+                session
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .source_spell_parent_entity_index(),
+                player
+            );
+            // Declared objective/progression/resources/positions select this
+            // scenario. The actual authored producer, acquired holder, public
+            // cast, flight, impact, damage/death and cleanup run normally.
+            let producer = session
+                .entities()
+                .iter()
+                .find(|row| row.active && row.class == 11 && row.model == 32 && row.source_id == 21)
+                .unwrap();
+            let stage = usize::try_from(producer.level_gate).unwrap();
+            for objective in 0..session.runtime.objectives.len() {
+                session
+                    .runtime
+                    .set_level2_objective_stage_selector_for(objective, stage, 2);
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                super::super::Mc2DispatchEvent::AuthoredGroupActivated { group: 21, .. }
+            )));
+            let bee_slot = session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|row| row.authored_index().is_some())
+                .unwrap()
+                .source_entity_index;
+            for _ in 0..160 {
+                let bee = *session
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|row| row.source_entity_index == bee_slot)
+                    .unwrap();
+                if bee.action == 17 {
+                    break;
+                }
+                let mut position = bee.position;
+                if bee.action == 23 {
+                    crate::move_entity(&mut position, bee.yaw, 0, 1_000);
+                } else {
+                    position.x = position.x.wrapping_add(20_000);
+                    position.y = position.y.wrapping_add(20_000);
+                }
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            let bee = *session
+                .economy()
+                .bee_creatures()
+                .iter()
+                .find(|row| row.source_entity_index == bee_slot)
+                .unwrap();
+            assert_eq!(bee.action, 17);
+            let initial_life = bee.life;
+            let kill_count = session.economy().authored_bee_kill_census(player);
+            let castle = session
+                .economy_mut()
+                .build_castle(
+                    Position {
+                        x: bee.position.x.wrapping_add(0x4000),
+                        y: bee.position.y.wrapping_add(0x4000),
+                        ..bee.position
+                    },
+                    player,
+                )
+                .unwrap();
+            assert!(
+                session
+                    .economy_mut()
+                    .set_castle_mana_prerequisite_for_test(castle, 10_000)
+            );
+            {
+                let live = &mut session.session.state.live;
+                live.economy.refresh_owner_mana_rows();
+                let parent = &mut live.economy.entities[usize::from(player)];
+                parent.set_mana(15_000);
+                parent.set_mana_regen(0);
+                let snapshot = parent.clone();
+                live.shared_spells
+                    .sync_player_entity_from_authority(&snapshot);
+                live.shared_spells.set_local_player_mana_for_test(15_000);
+                live.shared_spells.local_player.record[42..44]
+                    .copy_from_slice(&castle.to_le_bytes());
+                for state in live
+                    .shared_spells
+                    .players
+                    .iter_mut()
+                    .chain(live.core.players.iter_mut())
+                    .filter(|state| state.entity_index == player)
+                {
+                    state.record[42..44].copy_from_slice(&castle.to_le_bytes());
+                }
+            }
+            session
+                .apply_carried_spell_progression(&[CarriedSpellProgress {
+                    family: 0,
+                    persistent_experience: super::super::LEVEL2_SPELL_TIER_THRESHOLDS[0]
+                        [usize::from(tier)],
+                    runtime_experience: 0,
+                    unlocked_tier: tier as i8,
+                    selected_tier: tier as i8,
+                }])
+                .unwrap();
+            assert_eq!(
+                session.shared_spells().pickup(holder).unwrap().level_gate,
+                tier as i8
+            );
+            let baseline = session
+                .entities()
+                .iter()
+                .map(|row| (row.index, session.economy().slot_generation(row.index)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut descendants = std::collections::BTreeMap::new();
+            let mut speeds = std::collections::BTreeMap::new();
+            let mut saw_flyer = false;
+            let mut saw_impact = false;
+            let mut saw_damage = false;
+            let mut saw_sectors = false;
+            let mut saw_tail = false;
+            let mut terminal_witness = None;
+            let mut saw_presentation = false;
+            let mut casts = 0;
+            for turn in 0..320 {
+                assert!(
+                    !session
+                        .dispatch_events()
+                        .iter()
+                        .any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                    "tier{tier}: {:?}",
+                    session.dispatch_events()
+                );
+                let current = session
+                    .economy()
+                    .bee_creatures()
+                    .iter()
+                    .find(|row| row.source_entity_index == bee_slot)
+                    .copied();
+                saw_damage |= current.is_some_and(|row| {
+                    row.life < initial_life && row.damage_attacker_entity_index == player
+                });
+                let killed = session.economy().authored_bee_kill_census(player) > kill_count;
+                let alive_descendants = descendants.iter().any(|(&slot, &generation)| {
+                    session.economy().slot_generation(slot) == generation
+                        && session.source_arena().handle(slot).is_some()
+                });
+                if saw_flyer
+                    && saw_impact
+                    && saw_damage
+                    && !alive_descendants
+                    && session.shared_spells().pickup(holder).unwrap().active_value == 0
+                    && (tier < 2 || (killed && saw_tail))
+                {
+                    break;
+                }
+                let should_cast = casts == 0
+                    || (tier == 2
+                        && !killed
+                        && !alive_descendants
+                        && session.shared_spells().pickup(holder).unwrap().active_value == 0
+                        && casts < 4);
+                let command = if should_cast {
+                    let target = current.expect("live target until source death").position;
+                    let position = Position {
+                        x: target.x.wrapping_add(256),
+                        y: target.y.wrapping_add(1_024),
+                        z: target.z.wrapping_add(512),
+                    };
+                    session
+                        .set_level2_entity_position(player, position)
+                        .unwrap();
+                    session.state.yaw = 0;
+                    session.state.display_pitch = 0;
+                    session.state.effective_pitch = 0;
+                    session.state.actual_speed = 0;
+                    session.state.target_speed = 0;
+                    let launch = Position {
+                        x: position.x.wrapping_sub(256),
+                        z: position
+                            .z
+                            .wrapping_add(session.entities()[usize::from(player)].array_fov()),
+                        ..position
+                    };
+                    let (_, pitch) =
+                        crate::level1_mission::projectile_guidance_angles(launch, target);
+                    casts += 1;
+                    PlayerCommand {
+                        opcode: 6,
+                        argument_1: 0,
+                        flags: 0x40,
+                        argument_8: pitch.cast_unsigned(),
+                        ..PlayerCommand::default()
+                    }
+                } else {
+                    PlayerCommand::default()
+                };
+                let roots_before = session
+                    .economy()
+                    .authored_model76()
+                    .iter()
+                    .filter(|root| {
+                        root.entity_id == player
+                            && root.active
+                            && root.drawing_enabled
+                            && root.control_flags & 0x400 == 0
+                    })
+                    .map(|root| (root.source_entity_index, root.position))
+                    .collect::<Vec<_>>();
+                let generations_before = if roots_before.is_empty() {
+                    Vec::new()
+                } else {
+                    session
+                        .entities()
+                        .iter()
+                        .map(|row| session.economy().slot_generation(row.index))
+                        .collect::<Vec<_>>()
+                };
+                session.step_outer_turn(command, 0);
+                for flyer in session
+                    .economy()
+                    .fireball_projectiles()
+                    .iter()
+                    .filter(|row| {
+                        row.owner_entity_index == player && row.holder_entity_index == holder
+                    })
+                {
+                    saw_flyer = true;
+                    assert_eq!(
+                        (flyer.source_model, flyer.action),
+                        if tier == 2 { (28, 29) } else { (0, 0) }
+                    );
+                    assert_eq!(flyer.minimum_speed, if configured { 512 } else { 384 });
+                    assert_eq!(
+                        *speeds
+                            .entry(flyer.source_entity_index)
+                            .or_insert(flyer.actual_speed),
+                        flyer.actual_speed,
+                        "sub65C20 retains inherited speed"
+                    );
+                    descendants.insert(
+                        flyer.source_entity_index,
+                        session.economy().slot_generation(flyer.source_entity_index),
+                    );
+                    if flyer.active {
+                        let view = session
+                            .campaign_entity_presentations(0)
+                            .unwrap()
+                            .into_iter()
+                            .find(|view| view.entity_index == flyer.source_entity_index)
+                            .unwrap();
+                        assert_eq!((view.source_id, view.render_parameter_index), (player, 42));
+                        saw_presentation = true;
+                    }
+                }
+                for row in session.entities().iter().filter(|row| {
+                    row.active
+                        && row.class == 10
+                        && row.model == 0
+                        && row.source_id == player
+                        && baseline.get(&row.index).copied().unwrap_or_default()
+                            != session.economy().slot_generation(row.index)
+                }) {
+                    saw_impact = true;
+                    descendants.insert(row.index, session.economy().slot_generation(row.index));
+                }
+                for root in session
+                    .economy()
+                    .authored_model76()
+                    .iter()
+                    .filter(|row| row.entity_id == player)
+                {
+                    saw_impact = true;
+                    assert_eq!((root.model, root.action, root.max_life), (76, 83, 30));
+                    descendants.insert(
+                        root.source_entity_index,
+                        session.economy().slot_generation(root.source_entity_index),
+                    );
+                    let children = session
+                        .economy()
+                        .model76_children()
+                        .iter()
+                        .filter(|child| child.parent_entity_index == root.source_entity_index)
+                        .collect::<Vec<_>>();
+                    if children.len() == 25 {
+                        saw_sectors = true;
+                    }
+                    for child in children {
+                        assert_eq!(
+                            (child.model, child.action, child.visual_index),
+                            (77, 84, 42)
+                        );
+                        descendants.insert(
+                            child.source_entity_index,
+                            session.economy().slot_generation(child.source_entity_index),
+                        );
+                    }
+                }
+                // The shrinking root emits a NewEvent-owned model0 tail,
+                // whose self-ID is deliberately distinct from the caster.
+                for (root_slot, position) in roots_before {
+                    let after = session
+                        .economy()
+                        .authored_model76()
+                        .iter()
+                        .find(|root| root.source_entity_index == root_slot);
+                    if after.is_none_or(|root| {
+                        !root.active || !root.drawing_enabled || root.control_flags & 0x400 != 0
+                    }) {
+                        let position = after.map_or(position, |root| root.position);
+                        terminal_witness = Some((
+                            root_slot,
+                            position,
+                            session
+                                .entities()
+                                .iter()
+                                .filter(|row| {
+                                    row.active
+                                        && row.class == 10
+                                        && row.model == 0
+                                        && session.economy().slot_generation(row.index)
+                                            != generations_before[usize::from(row.index)]
+                                })
+                                .map(|row| {
+                                    (
+                                        row.index,
+                                        row.source_id,
+                                        row.position,
+                                        session.economy().slot_generation(row.index),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        ));
+                        for tail in session.entities().iter().filter(|row| {
+                            row.active
+                                && row.class == 10
+                                && row.model == 0
+                                && row.source_id == row.index
+                                && row.position.x == position.x
+                                && row.position.y == position.y
+                                && session.economy().slot_generation(row.index)
+                                    != generations_before[usize::from(row.index)]
+                        }) {
+                            let visited = tail.index > root_slot;
+                            assert_eq!(
+                                (tail.life, tail.phase),
+                                (
+                                    if visited { 7 } else { 8 },
+                                    (tail.index as u8).wrapping_add(u8::from(visited))
+                                ),
+                                "the fresh tail runs only after the root's current numeric cursor"
+                            );
+                            let mut expected_z = position.z;
+                            if visited {
+                                let ground = session.canonical_terrain().ground_height(position);
+                                if expected_z > ground {
+                                    expected_z = expected_z.wrapping_add(tail.source_word_2c());
+                                }
+                                if expected_z <= ground {
+                                    expected_z = ground;
+                                }
+                                if let Some(ceiling) =
+                                    session.canonical_terrain().ceiling_height(position)
+                                {
+                                    let limit = ceiling.wrapping_sub(tail.array_fov());
+                                    if expected_z > limit {
+                                        expected_z = limit;
+                                    }
+                                }
+                            }
+                            assert_eq!(
+                                tail.position.z, expected_z,
+                                "the actual first sub30D50 visit owns vertical settling"
+                            );
+                            saw_tail = true;
+                            descendants
+                                .insert(tail.index, session.economy().slot_generation(tail.index));
+                        }
+                    }
+                }
+                if turn == 319 {
+                    let live = &session.session.state.live;
+                    let context = Context {
+                        spells: Some(&live.shared_spells),
+                        particles: Some(&session.session.definition.presentation.particles),
+                        ..Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    let survivors = descendants
+                        .iter()
+                        .filter(|(slot, generation)| {
+                            live.economy.economy.slot_generation(**slot) == **generation
+                                && live.economy.handle(**slot).is_some()
+                        })
+                        .map(|(&slot, &generation)| {
+                            (
+                                slot,
+                                generation,
+                                live.economy.economy.live_arena_kind(slot),
+                                read(&live.economy, context, slot).map(|row| {
+                                    row.map(|row| {
+                                        (
+                                            row.class,
+                                            row.model,
+                                            row.control_flags,
+                                            row.life,
+                                            row.active,
+                                            row.position,
+                                        )
+                                    })
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    panic!(
+                        "tier{tier}: casts={casts}, flyer={saw_flyer}, impact={saw_impact}, damage={saw_damage}, sectors={saw_sectors}, tail={saw_tail}, killed={}/{kill_count}, holder_active={}, survivors={survivors:?}, terminal={terminal_witness:?}, bee={current:?}",
+                        session.economy().authored_bee_kill_census(player),
+                        session.shared_spells().pickup(holder).unwrap().active_value
+                    );
+                }
+            }
+            assert!(saw_flyer && saw_impact && saw_damage && saw_presentation);
+            assert_eq!(saw_sectors, tier == 2);
+            assert_eq!(
+                saw_tail,
+                tier == 2,
+                "the actual root terminal tail is observed and reclaimed"
+            );
+            if tier == 2 {
+                assert!(
+                    session.economy().authored_bee_kill_census(player) > kill_count,
+                    "tiered damage reaches actual attributed phase-gated death"
+                );
+            }
+            assert!(
+                descendants.iter().all(|(&slot, &generation)| session
+                    .economy()
+                    .slot_generation(slot)
+                    != generation
+                    || session.source_arena().handle(slot).is_none()),
+                "natural following-pass reclaim"
+            );
+        }
+    }
+
+    #[test]
     fn acquired_possession_all_tiers_reach_real_ownership_and_auxiliary_consumers() {
         use crate::native_world::simulation::CarriedSpellProgress;
         use crate::{FlightWorld as _, PlayerCommand};

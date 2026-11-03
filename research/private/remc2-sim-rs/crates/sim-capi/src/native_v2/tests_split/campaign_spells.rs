@@ -315,6 +315,216 @@ fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
 }
 
 #[test]
+fn campaign_public_fireball_reaches_real_impact_presentation_and_reclaim() {
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let handle = open_level2_campaign_handle_with_package_and_asset_cache(
+        &generated.join("mc-level2-vault-successor-closure-20261025"),
+        &generated.join("mc-b9s2-cursor-level2-vault-20261029"),
+    );
+    let mut input = McCampaignStepInputV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignStepInputV2>(),
+        command: McCommandV2 {
+            flags: 0x40,
+            requested_spell: 0,
+            ..valid_command()
+        },
+        // Declared position setup only; the real inventory, cast, projectile,
+        // impact constructor and scheduler own every resulting effect.
+        player_x: 384,
+        player_y: 62_080,
+        player_z: 8_000,
+        ..McCampaignStepInputV2::default()
+    };
+    let mut flyer = None;
+    let mut first_position = None;
+    let mut moved = false;
+    let mut impact = None;
+    let mut impact_visible = false;
+    let mut reclaimed = false;
+    let mut observer_moved = false;
+    let mut trace = Vec::new();
+    for _ in 0..64 {
+        let (snapshot, events) = step_level2_campaign_public(handle, input);
+        assert_no_level2_dispatch_error(handle, &events, "public Fireball lifecycle");
+        input.command = valid_command();
+        let rows = campaign_entities_public(handle);
+        let source = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!()
+            };
+            let flyers = reset
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .filter(|row| row.owner_entity_index == snapshot.player_entity_index)
+                .map(|row| {
+                    (
+                        row.source_entity_index,
+                        row.active,
+                        row.drawing_disabled,
+                        row.position,
+                        (row.yaw, row.pitch),
+                        row.life,
+                        row.source_subspell_index,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let effects = reset
+                .entities()
+                .iter()
+                .filter(|row| row.class == 10 && row.source_id == snapshot.player_entity_index)
+                .map(|row| {
+                    (
+                        row.index,
+                        row.model,
+                        row.active,
+                        row.position,
+                        row.control_flags,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let parent = &reset.entities()[usize::from(snapshot.player_entity_index)];
+            Ok((
+                flyers,
+                effects,
+                (
+                    parent.position,
+                    parent.yaw,
+                    parent.pitch,
+                    reset.state.position,
+                    reset.state.effective_pitch,
+                ),
+            ))
+        })
+        .unwrap();
+        let public = rows
+            .iter()
+            .filter(|row| row.class_id == 10 && row.source_id == snapshot.player_entity_index)
+            .map(|row| {
+                (
+                    row.entity_index,
+                    row.model,
+                    row.active,
+                    (row.x, row.y, row.z),
+                )
+            })
+            .collect::<Vec<_>>();
+        let source = (source, public);
+        if trace.last().is_none_or(|(_, prior)| *prior != source) {
+            trace.push((snapshot.revision, source));
+        }
+        if flyer.is_none() {
+            flyer = rows
+                .iter()
+                .find(|row| {
+                    row.active != 0
+                        && row.class_id == 9
+                        && row.model == 0
+                        && row.source_id == snapshot.player_entity_index
+                })
+                .map(|row| row.entity_index);
+        }
+        if let Some(row) = rows.iter().find(|row| {
+            Some(row.entity_index) == flyer
+                && row.active != 0
+                && row.class_id == 9
+                && row.model == 0
+        }) {
+            let position = (row.x, row.y, row.z);
+            let first = first_position.get_or_insert(position);
+            moved |= *first != position;
+        }
+        if impact.is_none() && flyer.is_some() {
+            impact = rows
+                .iter()
+                .find(|row| {
+                    row.active != 0
+                        && row.class_id == 10
+                        && row.model == 0
+                        && row.source_id == snapshot.player_entity_index
+                })
+                .map(|row| row.entity_index);
+        }
+        if let Some(slot) = impact {
+            let tick = with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                    unreachable!()
+                };
+                Ok(reset.campaign_tick())
+            })
+            .unwrap();
+            let mut sprites = vec![McCampaignEntityPresentationV2::default(); rows.len()];
+            let mut count = 0;
+            assert_eq!(
+                mc_native_campaign_entity_presentations_copy(
+                    handle,
+                    snapshot.generation,
+                    tick,
+                    0,
+                    sprites.as_mut_ptr(),
+                    sprites.len() as u32,
+                    struct_size::<McCampaignEntityPresentationV2>(),
+                    &raw mut count,
+                ),
+                MC_STATUS_OK
+            );
+            impact_visible |= sprites[..count as usize]
+                .iter()
+                .any(|row| row.entity_index == slot && row.render_parameter_index == 7);
+            if !observer_moved {
+                let binding = with_campaign_session(handle, |session| {
+                    let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                        unreachable!()
+                    };
+                    Ok(reset
+                        .campaign_entity_presentations(0)
+                        .map_err(|error| {
+                            AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string())
+                        })?
+                        .into_iter()
+                        .find(|row| row.entity_index == slot)
+                        .expect("the actual impact owns a canonical presentation binding"))
+                })
+                .unwrap();
+                assert_eq!(binding.render_parameter_index, 7);
+                // TTL21 carries this real expiry impact8448 units away.
+                // The public API is visibility-filtered at source range5120;
+                // observing it in place must not relax that renderer rule.
+                assert!(
+                    !impact_visible,
+                    "the distant impact is correctly range-culled"
+                );
+                input.player_x = binding.position.x;
+                input.player_y = binding.position.y.wrapping_add(1_024);
+                input.player_z = binding.position.z;
+                observer_moved = true;
+            }
+            reclaimed = rows
+                .iter()
+                .find(|row| row.entity_index == slot)
+                .is_none_or(|row| row.active == 0 || (row.class_id, row.model) != (10, 0));
+            if impact_visible && reclaimed {
+                break;
+            }
+        }
+    }
+    assert!(
+        flyer.is_some() && moved,
+        "the public cast must move a real Fireball"
+    );
+    assert!(
+        impact.is_some() && impact_visible,
+        "its real 10/0 impact must reach the original particle7 client binding; impact={impact:?}, visible={impact_visible}, trace={trace:?}"
+    );
+    assert!(
+        reclaimed,
+        "the actual impact must finish its natural source lifetime"
+    );
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn campaign_public_possession_claims_an_authored_house_through_the_shared_runtime() {
     let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
     let handle = open_level2_campaign_handle_with_package_and_asset_cache(

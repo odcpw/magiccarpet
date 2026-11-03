@@ -500,7 +500,7 @@ pub(crate) fn allocate(
     allocate_inner(arena, terrain, definition, position, particles, None)
 }
 
-/// Construct an impact, radial explosion, ash or ground fire from a source
+/// Construct an impact, radial explosion, ash, ground fire or fire spheres from a source
 /// entity's position address. NewEvent can reuse that same address and zero it
 /// before the constructor maps the child or admits its light.
 pub(crate) fn allocate_from_source_position(
@@ -517,9 +517,10 @@ pub(crate) fn allocate_from_source_position(
             | EffectKind::RadialExplosion
             | EffectKind::Ash
             | EffectKind::GroundFire
+            | EffectKind::FireSpheres
     ) {
         return Err(
-            "source-position effect constructor only supports impact, radial explosion, ash and ground fire"
+            "source-position effect constructor only supports impact, radial explosion, ash, ground fire and fire spheres"
                 .to_owned(),
         );
     }
@@ -715,12 +716,27 @@ fn allocate_inner(
             .ok_or_else(|| "Fire Spheres requires retained particle340".to_owned())?;
         let lifetime = i16::try_from(definition.lifetime_base())
             .map_err(|_| "Fire Spheres lifetime exceeds its retained carrier".to_owned())?;
-        let Some(root) = arena
-            .economy
-            .allocate_authored_model76(u16::MAX, position, terrain)
-        else {
+        // 4F2A0 tests only the ordinary free stack. Every subsequent
+        // NewEvent still overwrites the canonical fixed record, including
+        // a retained raw occupant or a source-position pointer alias.
+        let mut slots = [0; 26];
+        if arena.economy.free_slot_count() < slots.len() {
             return Ok(None);
+        }
+        for slot in &mut slots {
+            *slot = arena
+                .allocate_source_slot_with_terrain(terrain)
+                .ok_or("Fire Spheres lost a pre-counted ordinary free address")?;
+        }
+        let position = if source_position_slot.is_some_and(|source| slots.contains(&source)) {
+            Position::default()
+        } else {
+            position
         };
+        let root = arena
+            .economy
+            .initialize_authored_model76_slots(u16::MAX, position, slots)
+            .ok_or("Fire Spheres could not initialize its canonical addresses")?;
         let slot = root.source_entity_index;
         arena.economy.bind_model76_collision_axes(
             slot,

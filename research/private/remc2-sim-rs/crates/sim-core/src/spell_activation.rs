@@ -5,6 +5,7 @@
 use crate::MissionAudioSite;
 use crate::{FlightEvent, SourceAudioCallTag, mark_source_audio_call};
 
+pub(crate) mod fireball;
 pub(crate) mod possession;
 
 const DIRECTION_BITS: u32 = 0x0300;
@@ -449,6 +450,17 @@ pub struct Level2SetSpellProfile {
 /// Castle relation. The runtime resolves that dynamic cost at SetSpell.
 #[must_use]
 pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
+    if family == 0 && tier < 3 {
+        let rule = crate::level_definition::FIREBALL_PROPERTIES.tiers[tier as usize];
+        return Some(Level2SetSpellProfile {
+            subspell_index: rule.power,
+            word_0x30: rule.cooldown,
+            byte_0x3b: ((rule.font_type & 1) == 0) as u8,
+            mana_regen: rule.castle_mana_required,
+            max_mana: rule.mana_cost,
+            mana: rule.mana_cost / rule.cooldown as i32,
+        });
+    }
     if family == 1 && tier < 3 {
         let rule = crate::level_definition::POSSESSION_PROPERTIES.tiers[tier as usize];
         return Some(Level2SetSpellProfile {

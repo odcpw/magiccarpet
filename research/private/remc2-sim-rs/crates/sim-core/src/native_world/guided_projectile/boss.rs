@@ -672,6 +672,8 @@ mod tests {
             &particles,
             slot,
             source_target::Context::default(),
+            &[],
+            0,
         )
         .expect("water callback tolerates a full source arena");
         assert_eq!(failed.impact_slot, None);
@@ -689,6 +691,8 @@ mod tests {
             &particles,
             slot,
             source_target::Context::default(),
+            &[],
+            0,
         )
         .expect("water callback uses the real frozen source allocator");
         assert_eq!(step.impact_slot, Some(slot));
@@ -796,6 +800,8 @@ mod tests {
             &particles,
             slot,
             source_target::Context::default(),
+            &[],
+            0,
         )
         .expect("the real terminal Fireball callback completes");
         assert_eq!(step.impact_slot, Some(slot));

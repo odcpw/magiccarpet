@@ -2147,6 +2147,9 @@ pub struct Level2Model76Child {
     pub row_index: u8,
     pub column_index: u8,
     pub chain_index: u8,
+    /// Current particle selector. 65B50 changes local-player sectors to42
+    /// without changing the collision axes copied from constructor row340.
+    pub visual_index: u16,
     pub yaw: i16,
     pub pitch: i16,
     pub roll: i16,

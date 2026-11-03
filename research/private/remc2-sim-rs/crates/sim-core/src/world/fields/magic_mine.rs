@@ -83,6 +83,13 @@ pub(crate) struct Capture {
     pub sound: u16,
 }
 
+/// The two source words written after the capture visual's NewEvent. The
+/// adapter resolves the current holder first; this owns the mine payload.
+pub(crate) fn store_captured_spell(mine: &mut EntitySnapshot, family: u8, tier: u8) {
+    mine.record[58..60].copy_from_slice(&u16::from(family).to_le_bytes());
+    mine.record[56..58].copy_from_slice(&u16::from(tier).to_le_bytes());
+}
+
 /// sub_68AC0. The ordinary collision caller resolves the flyer's holder link
 /// before calling this. A successful capture consumes the holder immediately
 /// and leaves its family/tier in the mine's source words for the field handler.
@@ -107,8 +114,7 @@ pub(crate) fn capture(
         return None;
     }
     let mine = &mut rows[usize::from(mine_slot)];
-    mine.record[58..60].copy_from_slice(&u16::from(holder_model).to_le_bytes());
-    mine.record[56..58].copy_from_slice(&u16::from(holder_tier).to_le_bytes());
+    store_captured_spell(mine, holder_model, holder_tier);
     let holder = &mut rows[usize::from(captured_holder)];
     holder.active_value = 1;
     holder.record[50..52].copy_from_slice(&1_u16.to_le_bytes());

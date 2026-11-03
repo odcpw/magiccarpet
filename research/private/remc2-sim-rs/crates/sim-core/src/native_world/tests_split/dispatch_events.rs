@@ -6302,9 +6302,9 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
 
     // The real package starts the local wizard at z=256 over type-0 ground.
     // Ordinary pitch input reaches 250 after sixteen turns; the cast turn
-    // reaches 251 and the source-speed 384 flyer crosses ground on its first
-    // numeric callback. Its free slot precedes the player, so that callback
-    // occurs on the following pass. No position is manufactured here.
+    // reaches251. Using the parent's actual collision FOV, the source-speed
+    // 384 flyer remains above ground on its first callback and crosses it on
+    // its second. Its lower slot first runs on the following source pass.
     for _ in 0..16 {
         session.step_outer_turn(
             PlayerCommand {
@@ -6377,13 +6377,38 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
     )));
 
     session.step_outer_turn(PlayerCommand::default(), 0);
-    let flyer = session
+    let first = session
         .economy()
         .fireball_projectiles()
         .iter()
         .find(|row| row.source_entity_index == flyer.source_entity_index)
         .copied()
-        .expect("the first source visit retains the hidden Fireball until prepass");
+        .expect("the first source visit retains the still airborne Fireball");
+    assert!(first.active && !first.drawing_disabled);
+    assert!(first.position.z > session.canonical_terrain().ground_height(first.position));
+    let mut predicted = first.position;
+    crate::move_entity(&mut predicted, first.yaw, first.pitch, first.actual_speed);
+    assert!(
+        predicted.z < session.canonical_terrain().ground_height(predicted),
+        "the actual next source movement must cross water, without moving the player or flyer"
+    );
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let flyer = session
+        .economy()
+        .fireball_projectiles()
+        .iter()
+        .find(|row| row.source_entity_index == first.source_entity_index)
+        .copied()
+        .expect("the contact visit retains the hidden Fireball until prepass");
+    assert_eq!(
+        (flyer.position.x, flyer.position.y),
+        (first.position.x, first.position.y),
+        "65C20 restores pre-move XY when clamping a terrain contact"
+    );
+    assert_eq!(
+        flyer.life, first.life,
+        "terrain contact does not take the free-flight lifetime branch"
+    );
     assert!(
         !flyer.active && flyer.drawing_disabled,
         "water flyer={flyer:?}, player slot={}, dispatch={:?}",
@@ -6488,7 +6513,7 @@ fn level_two_public_fireball_hits_qualified_water_without_fabricating_an_impact(
             entity_index,
             player_index: -1,
             sound_id: 9,
-        } if *entity_index == flyer.source_entity_index
+        } if *entity_index == session.state.entity_index
     )));
     assert!(cast_events.iter().all(|event| !matches!(
         event,
@@ -6642,7 +6667,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
             entity_index,
             player_index: -1,
             sound_id: 9,
-        } if *entity_index == projectile.source_entity_index
+        } if *entity_index == session.state.entity_index
     )));
 
     // A collision must not publish a caster target before its impact
@@ -6672,10 +6697,11 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
             &mut live.terrain,
             &particles,
             projectile.source_entity_index,
-            crate::native_world::source_target::Context::from_ordinary(
-                &live.goats, &live.ordinary,
-            ),
-        ).expect("the ordinary Fireball impact allocation may fail");
+            crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+            &[],
+            0,
+        )
+        .expect("the ordinary Fireball impact allocation may fail");
         assert_eq!(failed.collision_target, Some(bee_slot));
         assert!(failed.live && failed.impact_slot.is_none());
         assert_eq!(
@@ -7390,6 +7416,10 @@ fn level_two_family0_fireball_rejects_invalid_producer_admission_and_capacity() 
         let mana = shared.player_entity.mana;
         shared.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
     }
+    // The holder reads the current fixed parent, not its shared projection.
+    let player = session.state.entity_index;
+    let mana = session.shared_spells().player_entity.mana;
+    session.economy.entities[usize::from(player)].set_mana(mana);
     assert!(
         session
             .step_level2_fireball_holder_source_slot(115)

@@ -46,6 +46,8 @@ mod meteor;
 pub use meteor::{METEOR_PROPERTIES, MeteorProperties, MeteorTier};
 mod possession;
 pub use possession::{POSSESSION_PROPERTIES, PossessionProperties, PossessionTierProperties};
+mod fireball;
+pub use fireball::{FIREBALL_PROPERTIES, FireballProperties, FireballTierProperties};
 mod lightning;
 pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;

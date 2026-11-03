@@ -416,7 +416,7 @@ impl crate::world::fields::wind::Arena for Level2EconomyState {
 
 impl Level2EconomyState {
     /// `sub_6DCA0` applies `sub_4D380` after the common Fireball constructor.
-    /// Its only differences are model28 and action29 for physical tier2.
+    /// Its only differences are model28 and action29 for table life >= 2.
     pub(super) fn apply_fireball_tier_constructor(&mut self, slot: u16, tier: i8) {
         if tier >= 2
             && let Some(projectile) = self
@@ -1071,6 +1071,8 @@ pub(crate) struct Level2FireballCollisionTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Level2FireballStep {
     pub live: bool,
+    pub accuracy: Option<(u16, bool)>,
+    pub captured_holder: Option<u16>,
     pub impact_slot: Option<u16>,
     pub reflection: Option<super::support_spells::ReboundReflection>,
     pub pending_birth: Option<FireballBirth>,
@@ -1326,10 +1328,27 @@ impl Level2EconomyState {
         payload: Level2FireballProjectileLaunchPayload,
         player_speed: i16,
     ) -> Option<u16> {
+        self.initialize_fireball_projectile_with_properties(
+            source_entity_index,
+            payload,
+            player_speed,
+            0,
+            crate::level_definition::FIREBALL_PROPERTIES,
+        )
+    }
+
+    pub(super) fn initialize_fireball_projectile_with_properties(
+        &mut self,
+        source_entity_index: u16,
+        payload: Level2FireballProjectileLaunchPayload,
+        player_speed: i16,
+        source_life: u8,
+        properties: crate::level_definition::FireballProperties,
+    ) -> Option<u16> {
         let entity_rng = self.new_event_rng(source_entity_index);
         let projectile = Level2FireballProjectile {
             origin: payload.origin,
-            visual_index: crate::level1_mission::FIREBALL_RENDER_INDEX,
+            visual_index: properties.render_index,
             source_entity_index,
             entity_rng,
             owner_entity_index: payload.source_id_entity_index,
@@ -1337,8 +1356,12 @@ impl Level2EconomyState {
             source_subspell_index: payload.source_subspell_index,
             source_mana: payload.source_mana,
             source_class: FIREBALL_PROJECTILE_CLASS,
-            source_model: FIREBALL_PROJECTILE_MODEL,
-            action: 0,
+            source_model: if source_life >= 2 {
+                28
+            } else {
+                FIREBALL_PROJECTILE_MODEL
+            },
+            action: if source_life >= 2 { 29 } else { 0 },
             payload: i32::from(payload.source_subspell_index),
             position: payload.position,
             axis_position: payload.axis_position,
@@ -1346,12 +1369,13 @@ impl Level2EconomyState {
             pitch: payload.pitch & 0x07ff,
             roll: payload.yaw & 0x07ff,
             fov: payload.pitch & 0x07ff,
-            actual_speed: FIREBALL_SPEED
+            actual_speed: properties
+                .projectile_speed
                 .wrapping_add(player_speed)
                 .clamp(FIREBALL_SPEED, 0x2000),
-            minimum_speed: FIREBALL_SPEED,
-            life: FIREBALL_LIFETIME_TICKS,
-            max_life: FIREBALL_LIFETIME_TICKS,
+            minimum_speed: properties.projectile_speed,
+            life: properties.projectile_lifetime,
+            max_life: properties.projectile_lifetime,
             dword_0x10: payload.source_dword_0x10,
             target_source_entity_index: payload.target_source_entity_index,
             target_class: payload.target_class,
@@ -1512,6 +1536,7 @@ impl Level2EconomyState {
             imported_entities,
             defer_birth,
             None,
+            false,
         )
         .expect("legacy Fireball advance does not use current-address views")
     }
@@ -1523,6 +1548,7 @@ impl Level2EconomyState {
         imported_entities: &[EntitySnapshot],
         defer_birth: bool,
         views: Option<&[std::result::Result<Option<super::source_target::View>, String>]>,
+        initial_capture: bool,
     ) -> std::result::Result<Level2FireballStep, String> {
         let guidance_targets = self.fireball_guidance_targets(imported_entities)?;
         let collision_targets = if views.is_none() {
@@ -1534,6 +1560,8 @@ impl Level2EconomyState {
             projectile.active && projectile.source_entity_index == source_slot
         }) else {
             return Ok(Level2FireballStep {
+                captured_holder: None,
+                accuracy: None,
                 live: false,
                 impact_slot: None,
                 reflection: None,
@@ -1544,6 +1572,8 @@ impl Level2EconomyState {
             });
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
+        let source_fireball =
+            projectile.source_class == 9 && matches!(projectile.source_model, 0 | 28);
 
         if matches!(
             projectile.origin,
@@ -1680,11 +1710,50 @@ impl Level2EconomyState {
                 for target in guidance_targets
                     .iter()
                     .copied()
-                    .filter(|target| target.can_be_acquired_by(projectile.owner_entity_index))
-                    .filter(|target| {
-                        fireball_target_selector_matches(&projectile, target.class, target.model)
-                    })
                 {
+                    let mut target = target;
+                    if let Some(views) = views {
+                        let Some(current) = views
+                            .get(usize::from(target.source_slot))
+                            .ok_or("Fireball acquisition address is outside arena")?
+                            .as_ref()
+                            .map_err(Clone::clone)?
+                        else {
+                            continue;
+                        };
+                        if current.class == 3 && current.control_flags & 0x20 != 0 {
+                            continue;
+                        }
+                        target.source_id = current.source_id;
+                        target.class = current.class;
+                        target.model = current.model;
+                        target.stage_mode = current.relations.stage_mode.unwrap_or(0);
+                        target.parent_entity_index = current.relations.parent.unwrap_or(0);
+                        target.top_position = if current.model == 2 {
+                            current.position
+                        } else {
+                            let shape = current.collision.ok_or_else(|| {
+                                format!(
+                                    "Fireball acquisition target {} lacks current source axes",
+                                    target.source_slot
+                                )
+                            })?;
+                            super::guided_projectile::centre(
+                                current.position,
+                                current.model,
+                                shape.vertical_offset,
+                            )
+                        };
+                    }
+                    if !target.can_be_acquired_by(projectile.owner_entity_index)
+                        || !fireball_target_selector_matches(
+                            &projectile,
+                            target.class,
+                            target.model,
+                        )
+                    {
+                        continue;
+                    }
                     let Some(score) = projectile_target_score(
                         projectile.position,
                         projectile.yaw,
@@ -1713,6 +1782,62 @@ impl Level2EconomyState {
                     projectile.fov = projectile.pitch;
                 }
             }
+        } else if source_fireball {
+            let position = if let Some(views) = views {
+                match views
+                    .get(usize::from(projectile.target_source_entity_index))
+                    .ok_or("Fireball target address is outside arena")?
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                {
+                    Some(target) if target.model == 2 => Some(target.position),
+                    Some(target) => {
+                        let shape = target.collision.ok_or_else(|| {
+                            format!(
+                                "Fireball target {} lacks current source axes",
+                                projectile.target_source_entity_index
+                            )
+                        })?;
+                        Some(super::guided_projectile::centre(
+                            target.position,
+                            target.model,
+                            shape.vertical_offset,
+                        ))
+                    }
+                    None => None,
+                }
+            } else {
+                imported_entities
+                    .get(usize::from(projectile.target_source_entity_index))
+                    .map(|row| {
+                        super::guided_projectile::centre(row.position, row.model, row.array_yaw())
+                    })
+            };
+            if let Some(position) = position {
+                (projectile.roll, projectile.fov) =
+                    projectile_guidance_angles(projectile.position, position);
+                projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                    projectile.yaw,
+                    projectile.roll,
+                    if initial_capture {
+                        FIREBALL_INITIAL_YAW_TURN_LIMIT
+                    } else {
+                        FIREBALL_HOMING_YAW_TURN_LIMIT
+                    },
+                )) & 0x07ff;
+                projectile.pitch = if initial_capture {
+                    projectile.fov
+                } else {
+                    projectile.pitch.wrapping_add(turn_toward(
+                        projectile.pitch,
+                        projectile.fov,
+                        FIREBALL_HOMING_PITCH_TURN_LIMIT,
+                    )) & 0x07ff
+                };
+                if initial_capture {
+                    projectile.acquisition_attempted = true;
+                }
+            }
         } else if let Some(target) = guidance_targets
             .iter()
             .find(|target| target.source_slot == projectile.target_source_entity_index)
@@ -1731,12 +1856,16 @@ impl Level2EconomyState {
             )) & 0x07ff;
         }
 
-        // sub_65820 adjusts the source speed by two toward minSpeed before
-        // moving, including player-launched shots that inherit extra speed.
-        let speed_delta = i32::from(projectile.minimum_speed) - i32::from(projectile.actual_speed);
-        projectile.actual_speed = projectile
-            .actual_speed
-            .wrapping_add((2 * speed_delta.signum()) as i16);
+        // sub_65C20 (model0/28) retains inherited speed. The distinct
+        // sub_65820 routes ease speed before movement.
+        if !source_fireball {
+            let speed_delta =
+                i32::from(projectile.minimum_speed) - i32::from(projectile.actual_speed);
+            projectile.actual_speed = projectile
+                .actual_speed
+                .wrapping_add((2 * speed_delta.signum()) as i16);
+        }
+        let previous_position = projectile.position;
         crate::move_entity(
             &mut projectile.position,
             projectile.yaw,
@@ -1884,6 +2013,8 @@ impl Level2EconomyState {
                         .expect("live reflected Fireball retains its arena map slot");
                 }
                 return Ok(Level2FireballStep {
+                    captured_holder: None,
+                    accuracy: None,
                     live: true,
                     impact_slot: None,
                     pending_birth: None,
@@ -1916,13 +2047,17 @@ impl Level2EconomyState {
                     .filter(|limit| projectile.position.z > *limit)
             };
             if let Some(height) = contact_height {
-                // sub_65820 retains moved XY and replaces only Z. The floor
-                // branch short-circuits before the cave ceiling branch.
+                // sub_65C20 restores the pre-move XY; sub_65820 retains moved XY.
+                if source_fireball {
+                    projectile.position = previous_position;
+                }
                 projectile.position.z = height;
                 if terrain.material_mask(projectile.position) == 1 {
                     if defer_birth {
                         self.fireball_projectiles[projectile_index] = projectile;
                         return Ok(Level2FireballStep {
+                            captured_holder: None,
+                            accuracy: None,
                             live: true,
                             impact_slot: None,
                             reflection: None,
@@ -1949,6 +2084,8 @@ impl Level2EconomyState {
                     projectile.drawing_disabled = true;
                     self.fireball_projectiles[projectile_index] = projectile;
                     return Ok(Level2FireballStep {
+                        captured_holder: None,
+                        accuracy: None,
                         live: false,
                         impact_slot: None,
                         reflection: None,
@@ -1976,6 +2113,8 @@ impl Level2EconomyState {
         }
         if !terminal {
             return Ok(Level2FireballStep {
+                captured_holder: None,
+                accuracy: None,
                 live: true,
                 impact_slot: None,
                 reflection: None,
@@ -1988,6 +2127,8 @@ impl Level2EconomyState {
 
         if defer_birth {
             return Ok(Level2FireballStep {
+                captured_holder: None,
+                accuracy: None,
                 live: true,
                 impact_slot: None,
                 reflection: None,
@@ -2032,6 +2173,8 @@ impl Level2EconomyState {
             projectile.drawing_disabled = true;
         }
         Ok(Level2FireballStep {
+            captured_holder: None,
+            accuracy: None,
             live: impact_slot.is_none(),
             impact_slot,
             reflection: None,
@@ -2059,6 +2202,7 @@ impl Level2EconomyState {
                     && entity.active
                     && entity.life >= 0
                     && entity.class == 3
+                    && entity.control_flags & 0x20 == 0
                     && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
             })
             .map(|entity| entity.index)

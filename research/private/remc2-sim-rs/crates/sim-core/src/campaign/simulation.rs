@@ -4018,7 +4018,19 @@ impl Mc2Simulation {
         else {
             return;
         };
-        let Some(profile) = level2_direct_starting_spell_profile(FIREBALL_SPELL_FAMILY, tier)
+        let owner = self
+            .session
+            .state
+            .live
+            .shared_spells
+            .pickup(holder_index)
+            .map(|holder| holder.source_spell_parent_entity_index())
+            .unwrap_or(0);
+        let Some(profile) =
+            self.session
+                .state
+                .live
+                .source_spell_profile(FIREBALL_SPELL_FAMILY, tier, owner)
         else {
             return;
         };
@@ -4060,259 +4072,391 @@ impl Mc2Simulation {
         &mut self,
         holder_index: u16,
     ) -> Option<u16> {
-        let Some(holder) = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .pickup(holder_index)
-            .filter(|holder| {
-                holder.index == holder_index
-                    && holder.active
-                    && holder.class == 15
-                    && holder.model == FIREBALL_SPELL_FAMILY
-                    && holder.action == 0
-            })
-            .cloned()
-        else {
-            return None;
-        };
-        let parent_entity_index = self.session.state.live.shared_spells.player_entity.index;
-        if holder.source_spell_parent_entity_index() != parent_entity_index {
-            return None;
-        }
+        self.step_fireball_holder(holder_index, false)
+    }
 
-        let mut next_active_value = holder.active_value;
-        let mut spawned = None;
-        if holder.active_value <= 0 {
-            self.apply_fireball_spell_holder_cleanup(holder_index);
-        } else {
-            let fresh = holder.active_value == holder.activation_value.cast_signed();
-            let parent_life = self.session.state.live.shared_spells.player_entity.life;
-            let parent_mana = self.session.state.live.shared_spells.player_entity.mana;
-            let parent_mana_regen = self
-                .session
-                .state
-                .live
-                .shared_spells
-                .player_entity
-                .mana_regen;
-            let castle_mana = self
-                .session
-                .state
-                .live
-                .economy
-                .castle_for_owner(holder.source_spell_parent_entity_index())
-                .map(|castle| castle.mana);
-            let predicate = holder.level_gate >= 0
-                && holder.level_gate <= 2
-                && parent_life >= 0
-                && parent_mana >= 0
-                && (holder.mana_regen == 0
-                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
-                && (!fresh || parent_mana >= holder.max_mana);
-            if !predicate {
-                // `sub_693F0` sets W=1 before its unconditional decrement on
-                // a failed `sub_68D50` gate.
-                next_active_value = 0;
-            } else {
-                let mana_regen = if fresh {
-                    Some(if parent_mana_regen >= 0 {
-                        -holder.max_mana
-                    } else {
-                        parent_mana_regen.wrapping_sub(holder.max_mana)
-                    })
-                } else if parent_mana_regen > 0 {
-                    Some(0)
-                } else {
-                    None
+    fn fireball_auxiliary(&self, parent: &EntitySnapshot) -> (i16, i16, u8, bool) {
+        let live = &self.session.state.live;
+        match parent.special_relation {
+            EntitySpecialRelation::GlobalSpecialState => (
+                live.shared_spells.global_special_state.input_yaw,
+                live.shared_spells.global_special_state.input_pitch,
+                live.shared_spells.global_special_state.cast_auxiliary,
+                false,
+            ),
+            EntitySpecialRelation::PlayerState(index) => {
+                let Some(player) = live
+                    .shared_spells
+                    .players
+                    .iter()
+                    .chain(live.core.players.iter())
+                    .find(|player| player.slot == index)
+                else {
+                    return (0, 0, 0, false);
                 };
-                if fresh {
-                    let constructor_position = self.session.state.live.core.state.position;
-                    let mut launch_position = constructor_position;
-                    let direction_bits = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .player_entity
-                        .control_flags
-                        & 0x0300;
-                    let hand_yaw = if direction_bits & 0x0100 != 0 {
-                        Some(self.session.state.live.core.state.yaw.wrapping_sub(512))
-                    } else if direction_bits & 0x0200 != 0 {
-                        Some(self.session.state.live.core.state.yaw.wrapping_add(512))
-                    } else {
-                        None
-                    };
-                    if let Some(hand_yaw) = hand_yaw {
-                        crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                        if self.canonical_terrain().ground_height(launch_position)
-                            > launch_position.z
-                        {
-                            launch_position = self.session.state.live.core.state.position;
-                        }
-                    }
-                    launch_position.z = launch_position
-                        .z
-                        .wrapping_add(self.session.state.live.core.state.entity_fov);
-                    let auxiliary = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .beyond_sight_auxiliary();
-                    let launch_yaw = auxiliary
-                        .next_entity
-                        .wrapping_add(self.session.state.live.core.state.yaw);
-                    let launch_pitch = auxiliary
-                        .entity_index2
-                        .wrapping_add(self.session.state.live.core.state.display_pitch);
-                    let mut axis_position = self.session.state.live.core.state.position;
-                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 0x4000);
-                    let source_dword_0x10 = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .players
-                        .iter()
-                        .find(|player| player.entity_index == parent_entity_index)
-                        .and_then(PlayerSnapshot::type_str_164_auxiliary)
-                        .map_or(0, |carrier| i32::from(carrier.byte_0x154_340));
-                    let actual_speed = self.session.state.live.core.state.actual_speed;
-                    spawned = self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .spawn_fireball_projectile_with_payload(
-                            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
-                                origin: FireballProjectileOrigin::PlayerSpell,
-                                position: constructor_position,
-                                yaw: launch_yaw,
-                                pitch: launch_pitch,
-                                axis_position,
-                                source_id_entity_index: parent_entity_index,
-                                holder_entity_index: holder_index,
-                                source_subspell_index: holder.subspell_index,
-                                source_mana: holder.mana,
-                                source_dword_0x10,
-                                target_source_entity_index: 0,
-                                target_class: 0,
-                                target_model: 0,
-                            },
-                            actual_speed,
-                        );
-                    if let Some(spawned_slot) = spawned {
-                        let live = &mut self.session.state.live;
-                        crate::world::effects::sync_position(
-                            &mut live.economy, &mut live.terrain, spawned_slot,
-                            constructor_position, true, false,
-                        ).expect("a source-allocated Fireball retains valid map membership");
-                        crate::world::effects::lighting::admit_source(
-                            &mut live.economy,
-                            &live.terrain,
-                            spawned_slot,
-                            constructor_position,
-                            crate::world::effects::lighting::SourceLight::Fireball,
-                        );
-                        if let Some(projectile) = live
-                            .economy
-                            .fireball_projectiles
-                            .iter_mut()
-                            .find(|row| row.source_entity_index == spawned_slot)
-                        {
-                            projectile.position = launch_position;
-                        }
-                        self.session
-                            .state
-                            .live
-                            .economy
-                            .apply_fireball_tier_constructor(spawned_slot, holder.level_gate);
-                        if let Some(player) = self
-                            .session
-                            .state
-                            .live
-                            .shared_spells
-                            .players
-                            .iter_mut()
-                            .find(|player| player.entity_index == parent_entity_index)
-                        {
-                            if let Some(carrier) = player.type_str_164_auxiliary.as_mut() {
-                                carrier.byte_0x154_340 = 0;
-                                player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
-                            }
-                            if self
-                                .session
-                                .state
-                                .live
-                                .shared_spells
-                                .local_player
-                                .entity_index
-                                == parent_entity_index
-                            {
-                                self.session.state.live.shared_spells.local_player = player.clone();
-                            }
-                        }
-                        mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
-                        self.push_flight_effect(FlightEvent::PrepareSound {
-                            #[cfg(test)]
-                            audio_site: crate::MissionAudioSite::FireballLaunch,
-                            entity_index: spawned_slot,
-                            player_index: -1,
-                            sound_id: self.session.state.live.fireball_launch_sound_id,
-                        });
-                    }
-                }
-                // Source `sub_693F0` attempts the constructor and publishes
-                // launch sound first, then charges the parent through
-                // `sub_68DE0` even when allocation failed.
-                if let Some(mana_regen) = mana_regen {
-                    // The following player visit copies the numeric carrier
-                    // during movement before consuming upkeep. Publish the
-                    // charge there too, or that copy erases this mailbox.
-                    self.commit_spell_parent_mana_regen(parent_entity_index, mana_regen);
-                }
-                next_active_value = holder.active_value.saturating_sub(1);
+                let local = index == live.shared_spells.local_player.slot;
+                let (yaw, pitch) = if local {
+                    let aux = live.shared_spells.beyond_sight_auxiliary();
+                    (aux.next_entity, aux.entity_index2)
+                } else {
+                    player
+                        .record
+                        .get(PLAYER_LEGACY_RECORD_BYTES + 24..PLAYER_LEGACY_RECORD_BYTES + 28)
+                        .map_or((0, 0), |bytes| {
+                            (
+                                i16::from_le_bytes([bytes[0], bytes[1]]),
+                                i16::from_le_bytes([bytes[2], bytes[3]]),
+                            )
+                        })
+                };
+                let byte = live
+                    .economy
+                    .handle(player.entity_index)
+                    .and_then(|handle| live.nyphur_dispatcher.get(handle))
+                    .map(|dispatcher| dispatcher.source_byte_0x154())
+                    .or_else(|| {
+                        player
+                            .type_str_164_auxiliary()
+                            .map(|aux| aux.byte_0x154_340)
+                    })
+                    .unwrap_or(0);
+                (yaw, pitch, byte, local)
             }
+            _ => (0, 0, 0, false),
         }
-        if let Some(authoritative) = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .pickup_mut(holder_index)
+    }
+
+    fn clear_fireball_auxiliary(&mut self, parent: &EntitySnapshot) {
+        let live = &mut self.session.state.live;
+        match parent.special_relation {
+            EntitySpecialRelation::GlobalSpecialState => {
+                live.shared_spells.global_special_state.cast_auxiliary = 0
+            }
+            EntitySpecialRelation::PlayerState(index) => {
+                for player in live
+                    .shared_spells
+                    .players
+                    .iter_mut()
+                    .chain(live.core.players.iter_mut())
+                    .filter(|player| player.slot == index)
+                {
+                    if let Some(aux) = player.type_str_164_auxiliary.as_mut() {
+                        aux.byte_0x154_340 = 0;
+                    }
+                    player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                    if let Some(handle) = live.economy.handle(player.entity_index)
+                        && let Some(dispatcher) = live.nyphur_dispatcher.get_mut(handle)
+                    {
+                        dispatcher.clear_source_byte_0x154();
+                    }
+                }
+                if let Some(player) = live.shared_spells.players.iter().find(|player| {
+                    player.entity_index == live.shared_spells.local_player.entity_index
+                }) {
+                    live.shared_spells.local_player = player.clone();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_fireball_from_holder(
+        &mut self,
+        holder: &EntitySnapshot,
+        parent: &EntitySnapshot,
+        source_life: u8,
+    ) -> Option<u16> {
+        let owner = holder.source_spell_parent_entity_index();
+        let properties = self.session.definition.fireball_properties;
+        let slot = {
+            let live = &mut self.session.state.live;
+            live.economy
+                .allocate_source_slot_with_terrain(&mut live.terrain)?
+        };
+        let alias = slot == owner;
+        let origin = if alias {
+            Position::default()
+        } else {
+            parent.position
+        };
         {
-            authoritative.active_value = next_active_value;
-            authoritative.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
-        }
-        if holder.active_value > 0 && next_active_value == 0 {
-            self.apply_fireball_spell_holder_cleanup(holder_index);
-        }
-        if let Some(holder) = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .pickup_mut(holder_index)
-        {
-            let word_36 = u16::from_le_bytes(
-                holder.record[58..60]
-                    .try_into()
-                    .expect("Fireball holder word-36 extent"),
+            let live = &mut self.session.state.live;
+            live.economy.retire_previous_source_projection(slot);
+            live.economy
+                .economy
+                .initialize_fireball_projectile_with_properties(
+                    slot,
+                    level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                        origin: FireballProjectileOrigin::PlayerSpell,
+                        position: origin,
+                        yaw: 0,
+                        pitch: 0,
+                        axis_position: Position::default(),
+                        source_id_entity_index: slot,
+                        holder_entity_index: 0,
+                        source_subspell_index: 100,
+                        source_mana: 50,
+                        source_dword_0x10: 0,
+                        target_source_entity_index: 0,
+                        target_class: 0,
+                        target_model: 0,
+                    },
+                    parent.actual_speed,
+                    source_life,
+                    properties,
+                )?;
+            crate::world::effects::lighting::admit_source(
+                &mut live.economy,
+                &live.terrain,
+                slot,
+                origin,
+                crate::world::effects::lighting::SourceLight::Fireball,
             );
-            if word_36 != 0 {
-                holder.record[58..60].copy_from_slice(&word_36.saturating_sub(1).to_le_bytes());
+        }
+        // sub_6DCA0 receives speed by value, then sub_693F0 rereads the
+        // fixed parent pointer after NewEvent and all constructor work.
+        let current_parent = {
+            let live = &self.session.state.live;
+            let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+            context.spells = Some(&live.shared_spells);
+            context.particles = Some(&self.session.definition.presentation.particles);
+            source_target::status_parent(&live.economy, context, owner)
+                .ok()
+                .flatten()?
+        };
+        let (aux_yaw, aux_pitch, byte, local) = self.fireball_auxiliary(&current_parent);
+        let mut position = current_parent.position;
+        let hand = if current_parent.control_flags & 0x100 != 0 {
+            Some(current_parent.yaw.wrapping_sub(512))
+        } else if current_parent.control_flags & 0x200 != 0 {
+            Some(current_parent.yaw.wrapping_add(512))
+        } else {
+            None
+        };
+        if let Some(yaw) = hand {
+            crate::move_entity(&mut position, yaw, 0, 256);
+            if self.canonical_terrain().ground_height(position) > position.z {
+                position = current_parent.position;
             }
         }
-        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
-            && let Some(in_flight) = fire
-                .holders
-                .iter_mut()
-                .find(|candidate| candidate.entity_index == holder_index)
+        position.z = position.z.wrapping_add(current_parent.array_fov());
+        let yaw = aux_yaw.wrapping_add(current_parent.yaw);
+        let pitch = aux_pitch.wrapping_add(current_parent.pitch);
+        let mut axis = if alias {
+            position
+        } else {
+            current_parent.position
+        };
+        crate::move_entity(
+            &mut axis,
+            if alias {
+                aux_yaw.wrapping_add(yaw)
+            } else {
+                yaw
+            },
+            if alias {
+                aux_pitch.wrapping_add(pitch)
+            } else {
+                pitch
+            },
+            properties.aim_distance,
+        );
         {
-            in_flight.active_value = next_active_value;
+            let live = &mut self.session.state.live;
+            let projectile = live
+                .economy
+                .economy
+                .fireball_projectiles
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .expect("new Fireball carrier");
+            projectile.position = position;
+            projectile.owner_entity_index = current_parent.source_id;
+            projectile.holder_entity_index = holder.index;
+            projectile.source_subspell_index = if slot == holder.index {
+                100
+            } else {
+                holder.subspell_index
+            };
+            projectile.payload = i32::from(projectile.source_subspell_index);
+            projectile.source_mana = if slot == holder.index {
+                50
+            } else {
+                holder.mana
+            };
+            projectile.yaw = yaw;
+            projectile.pitch = pitch;
+            projectile.dword_0x10 = i32::from(byte);
+            projectile.axis_position = axis;
+            if local {
+                projectile.visual_index = properties.local_render_index;
+            }
+            live.economy
+                .economy
+                .source_owner
+                .insert(slot, current_parent.source_id);
+            crate::world::effects::sync_position(
+                &mut live.economy,
+                &mut live.terrain,
+                slot,
+                position,
+                true,
+                false,
+            )
+            .expect("source-allocated Fireball map membership");
+        }
+        self.clear_fireball_auxiliary(&current_parent);
+        mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
+        self.push_flight_effect(FlightEvent::PrepareSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::FireballLaunch,
+            entity_index: owner,
+            player_index: -1,
+            sound_id: self.session.state.live.fireball_launch_sound_id,
+        });
+        Some(slot)
+    }
+
+    fn step_fireball_holder(&mut self, holder_index: u16, raw: bool) -> Option<u16> {
+        let live = &self.session.state.live;
+        let holder = if raw {
+            live.economy.entities.get(usize::from(holder_index))
+        } else {
+            live.shared_spells.pickup(holder_index)
+        }
+        .filter(|holder| {
+            holder.active
+                && holder.index == holder_index
+                && holder.class == 15
+                && holder.model == FIREBALL_SPELL_FAMILY
+                && holder.action == 0
+        })?
+        .clone();
+        let owner = holder.source_spell_parent_entity_index();
+        let tier = u8::try_from(holder.level_gate).ok().filter(|tier| *tier < 3)?;
+        let source_life =
+            self.session.definition.fireball_properties.tiers[usize::from(tier)].source_life;
+        let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+        context.spells = Some(&live.shared_spells);
+            context.particles = Some(&self.session.definition.presentation.particles);
+        let parent = source_target::status_parent(&live.economy, context, owner)
+            .ok()
+            .flatten();
+        let castle = parent.as_ref().and_then(|parent| {
+            source_target::status_castle_mana(&live.economy, &live.shared_spells, parent)
+                .ok()
+                .flatten()
+        });
+        let fresh = holder.active_value == holder.activation_value.cast_signed();
+        let admitted = parent.as_ref().is_some_and(|parent| {
+            parent.life >= 0
+                && parent.mana >= 0
+                && (holder.mana_regen == 0 || castle.is_some_and(|mana| mana >= holder.mana_regen))
+                && (!fresh || parent.mana >= holder.max_mana)
+        });
+        let transition =
+            crate::spell_activation::fireball::step(crate::spell_activation::fireball::Input {
+                active: holder.active_value,
+                duration: holder.activation_value.cast_signed(),
+                timer: u16::from_le_bytes([holder.record[58], holder.record[59]]),
+                parent_present: parent.is_some(),
+                gate: admitted,
+            });
+        let spawned = if transition.launch {
+            parent
+                .as_ref()
+                .and_then(|parent| self.spawn_fireball_from_holder(&holder, parent, source_life))
+        } else {
+            None
+        };
+        let parent = if spawned.is_some() {
+            let live = &self.session.state.live;
+            let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+            context.spells = Some(&live.shared_spells);
+            context.particles = Some(&self.session.definition.presentation.particles);
+            source_target::status_parent(&live.economy, context, owner)
+                .ok()
+                .flatten()
+        } else {
+            parent
+        };
+        if transition.charge
+            && let Some(parent) = parent.as_ref()
+            && (fresh || parent.mana_regen > 0)
+        {
+            let cost = if spawned == Some(holder_index) {
+                0
+            } else {
+                holder.max_mana
+            };
+            let mana_regen = if fresh {
+                if parent.mana_regen >= 0 {
+                    cost.wrapping_neg()
+                } else {
+                    parent.mana_regen.wrapping_sub(cost)
+                }
+            } else {
+                0
+            };
+            let mut after = parent.clone();
+            after.set_mana_regen(mana_regen);
+            let live = &mut self.session.state.live;
+            let _ = source_target::commit_status_parent(
+                &mut live.economy,
+                &mut live.shared_spells,
+                None,
+                parent,
+                &after,
+            );
+            if parent.class == 3
+                && matches!(parent.model, 0 | 1)
+                && live.economy.economy.live_arena_kind(owner).is_none()
+                && matches!(parent.special_relation, EntitySpecialRelation::PlayerState(index)
+                    if live.shared_spells.players.get(usize::from(index)).is_some_and(|player| player.entity_index == owner))
+            {
+                self.commit_spell_parent_mana_regen(owner, mana_regen);
+            }
+        }
+        // A constructor can replace the holder address. Never publish the
+        // predecessor's timer into the new projectile's typed carrier.
+        if spawned == Some(holder_index) {
+            let row = &mut self.session.state.live.economy.entities[usize::from(holder_index)];
+            row.active_value = row.active_value.wrapping_sub(1);
+            row.record[50..52].copy_from_slice(&row.active_value.to_le_bytes());
+            let timer = u16::from_le_bytes([row.record[58], row.record[59]]);
+            if timer != 0 {
+                row.record[58..60].copy_from_slice(&timer.wrapping_sub(1).to_le_bytes());
+            }
+        } else {
+            let live = &mut self.session.state.live;
+            let current = if raw {
+                live.economy.entities.get_mut(usize::from(holder_index))
+            } else {
+                live.shared_spells.pickup_mut(holder_index)
+            };
+            if let Some(current) =
+                current.filter(|row| row.class == 15 && row.model == 0 && row.action == 0)
+            {
+                current.active_value = transition.active;
+                current.record[50..52].copy_from_slice(&transition.active.to_le_bytes());
+                current.record[58..60].copy_from_slice(&transition.timer.to_le_bytes());
+            }
+            if transition.expired {
+                if raw {
+                    self.apply_level2_nyphur_holder_cleanup(holder_index, FIREBALL_SPELL_FAMILY, 0);
+                } else {
+                    self.apply_fireball_spell_holder_cleanup(holder_index);
+                }
+            }
+            if !raw
+                && let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
+                && let Some(in_flight) = fire
+                    .holders
+                    .iter_mut()
+                    .find(|row| row.entity_index == holder_index)
+            {
+                in_flight.active_value = transition.active;
+            }
         }
         spawned
     }
@@ -4366,12 +4510,26 @@ impl Mc2Simulation {
     }
 
     fn is_rival_holder(&self, slot: u16) -> bool {
-        self.rival_holder_owner(slot, usize::from(FIREBALL_SPELL_FAMILY)).is_some()
-            || (self.session.state.live.economy.entities.get(usize::from(slot)).is_some_and(|row| {
-                row.active && row.class == 15 && row.model == POSSESSION_SPELL_FAMILY
-                    && row.action == POSSESSION_SPELL_FAMILY.saturating_mul(3)
-            }) && self.session.state.live.shared_spells.local_player.enabled_spell_holders
-                [usize::from(POSSESSION_SPELL_FAMILY)] != slot)
+        self.session
+            .state
+            .live
+            .economy
+            .entities
+            .get(usize::from(slot))
+            .is_some_and(|row| {
+                row.active
+                    && row.class == 15
+                    && matches!(row.model, FIREBALL_SPELL_FAMILY | POSSESSION_SPELL_FAMILY)
+                    && row.action == row.model.saturating_mul(3)
+                    && self
+                        .session
+                        .state
+                        .live
+                        .shared_spells
+                        .local_player
+                        .enabled_spell_holders[usize::from(row.model)]
+                        != slot
+            })
     }
 
     /// Apply the queued SetSpell write made by the source holder's terminal
@@ -4410,7 +4568,7 @@ impl Mc2Simulation {
         };
         let owner = self.session.state.live.economy.entities[usize::from(holder_index)]
             .source_spell_parent_entity_index();
-        let profile = if family == POSSESSION_SPELL_FAMILY {
+        let profile = if matches!(family, POSSESSION_SPELL_FAMILY | FIREBALL_SPELL_FAMILY) {
             self.session
                 .state
                 .live
@@ -4442,233 +4600,7 @@ impl Mc2Simulation {
         &mut self,
         holder_index: u16,
     ) -> Option<u16> {
-        let (owner, owner_handle) = self.rival_holder_owner(holder_index, usize::from(FIREBALL_SPELL_FAMILY))?;
-        let holder = self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .get(usize::from(holder_index))
-            .filter(|holder| {
-                holder.active
-                    && holder.index == holder_index
-                    && holder.class == 15
-                    && holder.model == FIREBALL_SPELL_FAMILY
-                    && holder.action == 0
-                    && holder.source_spell_parent_entity_index() == owner
-            })
-            .cloned()?;
-        let parent = self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .get(usize::from(owner))
-            .filter(|parent| {
-                parent.active
-                    && parent.index == owner
-                    && parent.class == 3
-                    && parent.model == 1
-                    && parent.action == 1
-            })
-            .cloned()?;
-
-        let mut next_active_value = holder.active_value;
-        let mut spawned = None;
-        if holder.active_value > 0 {
-            let tier = u8::try_from(holder.level_gate).ok();
-            let profile = tier
-                .and_then(|tier| level2_direct_starting_spell_profile(FIREBALL_SPELL_FAMILY, tier));
-            let profile_matches = profile.as_ref().is_some_and(|profile| {
-                profile.subspell_index == holder.subspell_index
-                    && profile.word_0x30 == holder.activation_value
-                    && profile.byte_0x3b == holder.byte_3b
-                    && profile.mana_regen == holder.mana_regen
-                    && profile.max_mana == holder.max_mana
-                    && profile.mana == holder.mana
-            });
-            let activation_value = i16::try_from(holder.activation_value).ok();
-            let fresh =
-                activation_value.is_some_and(|activation| holder.active_value == activation);
-            let common_upkeep = self
-                .session
-                .state
-                .live
-                .nyphur_dispatcher.get(owner_handle)?
-                .common_upkeep(parent.phase);
-            let castle_mana = self.session.state.live.economy.castle_for_owner(owner)
-                .filter(|castle| castle.source_entity_index == common_upkeep.castle_entity_index && castle.life >= 0)
-                .map(|castle| castle.mana);
-            let admitted = profile_matches
-                && (holder.mana_regen == 0
-                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
-                && parent.life >= 0
-                && parent.mana >= 0
-                && (!fresh || parent.mana >= holder.max_mana);
-            if !admitted {
-                // `sub_693F0` forces W to one before its unconditional
-                // decrement when `sub_68D50` rejects the parent.
-                next_active_value = 0;
-            } else {
-                let orientation = if fresh {
-                    self.rival_type_str_orientation(owner)
-                } else {
-                    Some((0, 0))
-                };
-                let Some((next_entity, entity_index2)) = orientation else {
-                    return None;
-                };
-                let parent_mana_regen = parent.mana_regen;
-                let mana_regen = if fresh {
-                    if parent_mana_regen >= 0 {
-                        -holder.max_mana
-                    } else {
-                        parent_mana_regen.wrapping_sub(holder.max_mana)
-                    }
-                } else if parent_mana_regen > 0 {
-                    0
-                } else {
-                    parent_mana_regen
-                };
-                if fresh {
-                    let constructor_position = parent.position;
-                    let mut launch_position = constructor_position;
-                    let direction_bits = parent.control_flags & 0x0300;
-                    let hand_yaw = if direction_bits & 0x0100 != 0 {
-                        Some(parent.yaw.wrapping_sub(512))
-                    } else if direction_bits & 0x0200 != 0 {
-                        Some(parent.yaw.wrapping_add(512))
-                    } else {
-                        None
-                    };
-                    if let Some(hand_yaw) = hand_yaw {
-                        crate::move_entity(&mut launch_position, hand_yaw, 0, 256);
-                        if self.canonical_terrain().ground_height(launch_position)
-                            > launch_position.z
-                        {
-                            launch_position = parent.position;
-                        }
-                    }
-                    launch_position.z = launch_position.z.wrapping_add(parent.fov);
-                    let launch_yaw = next_entity.wrapping_add(parent.yaw);
-                    let launch_pitch = entity_index2.wrapping_add(parent.pitch);
-                    let mut axis_position = parent.position;
-                    crate::move_entity(&mut axis_position, launch_yaw, launch_pitch, 0x4000);
-                    let source_dword_0x10 = i32::from(
-                        self.session
-                            .state
-                            .live
-                            .nyphur_dispatcher.get(owner_handle)?
-                            .source_byte_0x154(),
-                    );
-                    spawned = self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .spawn_fireball_projectile_with_payload(
-                            level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
-                                origin: FireballProjectileOrigin::PlayerSpell,
-                                position: constructor_position,
-                                yaw: launch_yaw,
-                                pitch: launch_pitch,
-                                axis_position,
-                                source_id_entity_index: owner,
-                                holder_entity_index: holder_index,
-                                source_subspell_index: holder.subspell_index,
-                                source_mana: holder.mana,
-                                source_dword_0x10,
-                                target_source_entity_index: 0,
-                                target_class: 0,
-                                target_model: 0,
-                            },
-                            parent.actual_speed,
-                        );
-                    if let Some(spawned_slot) = spawned {
-                        let live = &mut self.session.state.live;
-                        crate::world::effects::sync_position(
-                            &mut live.economy, &mut live.terrain, spawned_slot,
-                            constructor_position, true, false,
-                        ).expect("a source-allocated Fireball retains valid map membership");
-                        crate::world::effects::lighting::admit_source(
-                            &mut live.economy,
-                            &live.terrain,
-                            spawned_slot,
-                            constructor_position,
-                            crate::world::effects::lighting::SourceLight::Fireball,
-                        );
-                        if let Some(projectile) = live
-                            .economy
-                            .fireball_projectiles
-                            .iter_mut()
-                            .find(|row| row.source_entity_index == spawned_slot)
-                        {
-                            projectile.position = launch_position;
-                        }
-                        self.session
-                            .state
-                            .live
-                            .economy
-                            .apply_fireball_tier_constructor(spawned_slot, holder.level_gate);
-                        self.session
-                            .state
-                            .live
-                            .nyphur_dispatcher.get_mut(owner_handle)?
-                            .clear_source_byte_0x154();
-                        mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
-                        self.push_flight_effect(FlightEvent::PrepareSound {
-                            #[cfg(test)]
-                            audio_site: crate::MissionAudioSite::FireballLaunch,
-                            entity_index: spawned_slot,
-                            player_index: -1,
-                            sound_id: self.session.state.live.fireball_launch_sound_id,
-                        });
-                    }
-                }
-                // Pinned `sub_693F0` charges the parent only after the
-                // constructor/sound attempt. Keep the common carrier and the
-                // fixed entity projection in lockstep for the next Nyphur
-                // upkeep visit, including allocation failure.
-                self.session
-                    .state
-                    .live
-                    .nyphur_dispatcher.get_mut(owner_handle)?
-                    .apply_holder_mana_regen(mana_regen);
-                if let Some(parent) = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .entities
-                    .get_mut(usize::from(owner))
-                {
-                    parent.set_mana_regen(mana_regen);
-                }
-                next_active_value = holder.active_value.wrapping_sub(1);
-            }
-        }
-
-        if let Some(holder) = self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .get_mut(usize::from(holder_index))
-        {
-            holder.active_value = next_active_value;
-            holder.record[50..52].copy_from_slice(&next_active_value.to_le_bytes());
-            let word_36 = u16::from_le_bytes([holder.record[58], holder.record[59]]);
-            if word_36 != 0 {
-                holder.record[58..60].copy_from_slice(&word_36.wrapping_sub(1).to_le_bytes());
-            }
-        }
-        if next_active_value == 0 && holder.active_value > 0 {
-            self.apply_level2_nyphur_holder_cleanup(holder_index, FIREBALL_SPELL_FAMILY, 0);
-        }
-        spawned
+        self.step_fireball_holder(holder_index, true)
     }
 
     /// Source `sub_69640`/`sub_69900` for the canonical Nyphur
@@ -5735,6 +5667,12 @@ impl Mc2Simulation {
         properties.projectile_speed = speed;
         std::sync::Arc::make_mut(&mut self.session.definition)
             .bind_possession_properties(properties);
+    }
+
+    pub(crate) fn apply_fireball_projectile_speed(&mut self, speed: i16) {
+        let mut properties = self.session.definition.fireball_properties;
+        properties.projectile_speed = speed;
+        std::sync::Arc::make_mut(&mut self.session.definition).bind_fireball_properties(properties);
     }
 
     /// Bind the immutable compiled Goat policy to the package-decoded
@@ -14623,7 +14561,7 @@ impl Mc2Simulation {
                     && holder.class == 15
                     && holder.model == FIREBALL_SPELL_FAMILY
                     && holder.action == 0
-                    && holder.source_spell_parent_entity_index() == player_entity_index
+                    && holder.index == live.shared_spells.local_player.enabled_spell_holders[usize::from(FIREBALL_SPELL_FAMILY)]
             })
         {
             Some((
@@ -14650,8 +14588,7 @@ impl Mc2Simulation {
                 && holder.class == 15
                 && holder.model == FIREBALL_SPELL_FAMILY
                 && holder.action == 0
-                && self.rival_holder_owner(source_slot, usize::from(FIREBALL_SPELL_FAMILY)).is_some()
-                && holder.active_value > 0
+                && dynamic_row.is_none()
         }) {
             Some((
                 SourceRoute::FireballHolder,
@@ -16235,7 +16172,6 @@ impl Mc2Simulation {
         };
         let feedback = {
             let live = &mut self.session.state.live;
-            let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
             if retained == Some(Level2DynamicArenaKind::AuthoredModel76) {
                 let target = live
                     .economy
@@ -16244,14 +16180,24 @@ impl Mc2Simulation {
                     .find(|s| s.source_entity_index == source_slot)
                     .map_or(0, |s| s.target_entity_index);
                 if target != 0 {
-                    let pose = area_damage::source_actor(
-                        &mut live.economy,
-                        Some(actors.reborrow()),
-                        target,
-                    );
-                    let life =
-                        area_damage::source_life(&live.economy, Some(actors.reborrow()), target)
-                            .unwrap_or(-1);
+                    let context = source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        particles: Some(particles),
+                        map_type: Some(live.terrain.map_type()),
+                        player: Some((player_slot, player_position, live.player_life)),
+                        player_orientation: Some((
+                            live.core.state.yaw,
+                            live.core.state.roll_accumulator,
+                        )),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    let current = source_target::read(&live.economy, context, target)?
+                        .ok_or_else(|| format!("Fire Spheres {source_slot} target {target} is outside the source arena"))?;
+                    let shape = current.collision.ok_or_else(|| {
+                        format!(
+                            "Fire Spheres {source_slot} target {target} lacks current source axes"
+                        )
+                    })?;
                     if let Some(root) = live
                         .economy
                         .economy
@@ -16259,19 +16205,15 @@ impl Mc2Simulation {
                         .iter_mut()
                         .find(|s| s.source_entity_index == source_slot)
                     {
-                        if let Some(pose) = pose {
-                            root.target_position = pose.position;
-                            root.target_height_offset = pose.shape.vertical_offset;
-                            root.target_pitch = pose.shape.half_width;
-                            root.target_control_flags = pose.control_flags;
-                            root.target_life = life;
-                        } else {
-                            root.target_life = -1;
-                            root.target_control_flags = 0x400;
-                        }
+                        root.target_position = current.position;
+                        root.target_height_offset = shape.vertical_offset;
+                        root.target_pitch = shape.half_width;
+                        root.target_control_flags = current.control_flags;
+                        root.target_life = current.life;
                     }
                 }
             }
+            let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
             let mut state = std::mem::take(&mut live.economy.effects);
             let mut apply = |arena: &mut SourceArena, pulse| {
                 area_damage::apply_effect(
@@ -19396,12 +19338,38 @@ impl Mc2Simulation {
                             particles: Some(&self.session.definition.presentation.particles),
                             ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
                         };
+                        let owner_range = live
+                            .economy
+                            .fireball_projectiles()
+                            .iter()
+                            .find(|row| row.source_entity_index == source_slot)
+                            .and_then(|row| {
+                                live.economy
+                                    .entities
+                                    .get(usize::from(row.owner_entity_index))
+                            })
+                            .and_then(|owner| owner.parameter_relation)
+                            .and_then(|index| {
+                                self.session
+                                    .definition
+                                    .presentation
+                                    .entity_parameters
+                                    .get(usize::from(index))
+                            })
+                            .map_or(0, |row| u16::from_le_bytes([row[28], row[29]]));
+                        let capture_slots = if effect_lists.is_current(&live.economy) {
+                            pass_start_capture_slots
+                        } else {
+                            &[]
+                        };
                         crate::native_world::effects::step_projectile(
                             &mut live.economy,
                             &mut live.terrain,
                             &self.session.definition.presentation.particles,
                             source_slot,
                             context,
+                            capture_slots,
+                            owner_range,
                         )?
                     };
                     if let Some(reflection) = step.reflection {
@@ -19412,6 +19380,61 @@ impl Mc2Simulation {
                             &mut live.core,
                             reflection,
                         );
+                    }
+                    if let Some(holder_slot) = step.captured_holder {
+                        let rival = self.is_rival_holder(holder_slot);
+                        let live = &mut self.session.state.live;
+                        let mut context =
+                            source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+                        context.spells = Some(&live.shared_spells);
+                        if source_target::read(&live.economy, context, holder_slot)?
+                            .is_some_and(|current| current.class == 15 && current.model == 0)
+                        {
+                            if let Some(raw) =
+                                live.economy.entities.get_mut(usize::from(holder_slot))
+                            {
+                                raw.active_value = 1;
+                                raw.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+                            }
+                            if !rival {
+                                if let Some(holder) = live.shared_spells.pickup_mut(holder_slot) {
+                                    holder.active_value = 1;
+                                    holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+                                }
+                                if let Some(fire) = live.core.context.spell_fire.as_mut()
+                                    && let Some(holder) = fire
+                                        .holders
+                                        .iter_mut()
+                                        .find(|row| row.entity_index == holder_slot)
+                                {
+                                    holder.active_value = 1;
+                                }
+                            }
+                        }
+                    }
+                    if let Some((owner, hit)) = step.accuracy {
+                        let live = &mut self.session.state.live;
+                        for player in live
+                            .core
+                            .players
+                            .iter_mut()
+                            .chain(live.shared_spells.players.iter_mut())
+                            .filter(|player| player.entity_index == owner)
+                        {
+                            player.projectile_attempts = player.projectile_attempts.wrapping_add(1);
+                            if hit {
+                                player.projectile_hits = player.projectile_hits.wrapping_add(1);
+                            }
+                        }
+                        if live.shared_spells.local_player.entity_index == owner
+                            && let Some(player) = live
+                                .shared_spells
+                                .players
+                                .iter()
+                                .find(|row| row.entity_index == owner)
+                        {
+                            live.shared_spells.local_player = player.clone();
+                        }
                     }
                     if let (Some(owner), Some(family)) =
                         (step.direct_hit_owner, step.direct_hit_family)
@@ -20035,7 +20058,7 @@ impl Mc2Simulation {
                 // Family-0's class/action keyed handler owns the
                 // producer transition; the higher-slot Fireball callback
                 // receives the ordinary dynamic-arena dispatch below.
-                if self.rival_holder_owner(source_slot, usize::from(FIREBALL_SPELL_FAMILY)).is_some() {
+                if self.is_rival_holder(source_slot) {
                     self.step_level2_nyphur_fireball_holder_source_slot(source_slot);
                 } else {
                     self.step_level2_fireball_holder_source_slot(source_slot);
@@ -24757,6 +24780,8 @@ impl Mc2Simulation {
                     &self.session.definition.presentation.particles,
                     source_slot,
                     context,
+                    &[],
+                    0,
                 ) {
                     Ok(step) => step,
                     Err(message) => {
