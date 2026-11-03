@@ -1,5 +1,10 @@
 # Shared-engine delivery plan
 
+Current installed checkpoint: Morph runtime `fbaf38b9`, native `dd16bf15937e`.
+The requested Possession → Fireball → Morph sequence is delivered. Remaining
+shared-engine acceptance stays in the existing open beads; do not restart these
+completed capability batches.
+
 Oliver resumed implementation on 2026-11-01 with two Terra 6.1/xhigh workers
 and one Sol 6.1/xhigh integrator. Finish Castle/mana and Alliance end to end,
 then Army and status spells. Commit, push and install working batches. The full
@@ -114,8 +119,8 @@ census check still fails at 13148 versus 12648, reproduced unchanged on the
 pre-batch status binary; its broader cause is unproven and no assertion was
 weakened. The package format check still has legacy drift; changed-hunk UBS
 review found no critical candidate defect, not a clean whole-file scan.
-The two Terra workers hit model capacity and remain stopped; root and the Sol
-integrator continue Fireball next, then Morph, without replacement retries.
+The two Terra workers hit model capacity and remained stopped; root and the Sol
+integrator completed the sequential batches without replacement retries.
 
 Fireball checkpoint delivered on 2026-11-03: runtime `9ccd9815`, installed
 native `8afc2bf1ac9a`. Actual acquired casts cover all three tiers and a typed
@@ -140,6 +145,36 @@ Human combat, hardware audio/performance and full missions remain unverified;
 legacy formatting and whole-file UBS backlog remain, with no critical defect
 identified in the changed hunks.
 
+Morph checkpoint delivered on 2026-11-03: runtime `fbaf38b9`, installed native
+`dd16bf15937e`. Acquired/carry casts cover Day Bee, Night/Cave Firefly, Cymmerian
+and Wyvern, plus a typed Cave-tier0 Wyvern override. Actual control, current
+parent following, original presentation, natural 201/301/455-visit expiry,
+following-pass generation reclaim and reset pass. Fixed current A4 colour and
+Castle reads, local/rival control isolation and flicker, award/charge ordering,
+parent/holder replacement aliases and current word36 cleanup. Morph shares the
+ordinary/Army Wyvern and Cymmerian constructors/counters; the typed Bee remains
+its authoritative body rather than activating a duplicate raw shadow.
+
+Root independently reran the six-case path (88.24s), replacement-address controls
+and the constructor/counter/position-alias check. Relevant existing Army consumers,
+native entity DTO/reset, scheduler, workspace all-target check and native build
+pass. All 443 Rust inputs, native copies and the player's mapped library match
+candidate7. The installed player loaded the original map, loading artwork and
+NightSpire terrain/HUD; its test player/display were stopped. No Unity or art
+changes were required. Evidence: `research/private/generated/morph-20261103-integration/`
+and `research/private/remc2-unity-native/Builds/delivery-morph-20261103-batch1/`.
+
+`mc-k5k.8` retains its full acceptance and open creature dependencies. Carry,
+resources and positions are declared check controls, not earned campaign
+progression. The native DTO check is not a Morph C ABI cast or human playthrough.
+Human Morph combat, hardware audio/performance and full creature/mission coverage
+remain unverified. Prior economy/rival failures above remain unresolved. Package
+formatting still has legacy drift; scoped UBS review found no critical changed-hunk
+defect, not a clean whole-file scan. Superseded proof executables were preserved
+with hash-checked relocation receipts under `/tmp/magiccarpet-*`; source, warm
+caches, installed player and immediate previous native were preserved. The Sol
+integrator has stood down; no new implementation batch is dispatched.
+
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
 handoff complete. Continue useful work; do not produce a read-receipt report.
@@ -162,7 +197,7 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Execute the existing plan
 
-1. Use the delivered Castle/mana, Alliance, Army, status and Possession checkpoints above.
+1. Use the delivered Castle/mana, Alliance, Army, status, Possession, Fireball and Morph checkpoints above.
    Other preserved work remains in scope for later batches. Check live source
    and ownership first; do not restart a component already delivered.
 2. Each feature owner follows the entire remc2-to-Rust chain: properties/assets,

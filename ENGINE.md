@@ -80,6 +80,14 @@ and `source_target.rs`. Shared impact construction and following-pass lifetime
 remain in `native_world/effects.rs` and `world/effects.rs`; FireSpheres use the
 same canonical source-slot allocator as their ordinary descendants.
 
+Morph's ordered holder transition and rival flicker are in
+`spell_activation/morph.rs`; its typed creature choices are in
+`sim-definition/src/level_definition/morph.rs`. Controlled bodies are owned by
+`native_world/creatures/morph.rs` and the canonical Bee owner. Wyvern and
+Cymmerian construction shares the ordinary/Army constructors and counters.
+The simulation adapter reads current A4 colour, holder and parent records;
+generation-bound body relationships own expiry and following-pass reclaim.
+
 Each playable feature moves its relevant canonical state and behavior to its
 owner, then leaves thin registrations in shared roots. A module with unrestricted
 whole-session access or only methods on the same god object does not satisfy this
