@@ -1,19 +1,20 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: Steal Mana `73bf009f`, native `c1a7b623aca7`.
+Current installed checkpoint: Duel `cd65b670`, native `955cf9b7df8e`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
 
 Oliver resumed the core team on 2026-11-03: two Terra 6.1/xhigh workers and
 one Sol 6.1/xhigh integrator, with root coordination and independent checks.
-Next order is the connected mana economy, rival combat, Lightning, Steal Mana,
-then Duel; finish and install each capability before advancing. The mana economy
-and rival checkpoints below are installed; Lightning7 and Steal Mana13 are installed too.
-Duel14 (`mc-k5k.2`) is next. The economy
-path is actual kill/reward → Possession/collection → balloon → Castle deposit
-→ paid spending, including the reported settlement census discrepancy. Trace
-the real source and consumers; distinguish a faulty check from a runtime defect.
+The requested mana economy → rival combat → Lightning → Steal Mana → Duel
+sequence is delivered in the installed checkpoints below. Do not restart those
+completed paths. The full shared-engine acceptance remains in the open beads.
+Next concrete boundary: mana-sphere contention/current owner → actual defender
+or Scavenger collection → Castle deposit under `mc-bhq.10`. Two existing focused
+checks are unresolved; establish fixture versus production cause against the real
+source and connected consumer before changing code or assertions. Preserve the
+remaining shared effects/actor acceptance in its existing prerequisites.
 CalmBeaver owns the sole build/push/install slot; MaroonMarsh implements shared
 joins with the feature owners. VioletGrove and WildSpring are the Terra workers.
 Use exclusive file windows. Original-client delivery uses the verified isolated
@@ -22,6 +23,26 @@ Modern renderer work is present in the canonical Unity source.
 Keep the bead's wider acceptance and dependencies open. Existing delivered
 Castle spell tiers remain the baseline. Disk headroom is restored before heavy
 stages; preserve warm caches, current player and immediate previous native.
+
+Duel checkpoint delivered on 2026-11-03: runtime `cd65b670`, native
+`955cf9b7df8e`. Actual secret34 group23 pickup → inventory carry → public
+all-tier cast reaches a real rival, tether movement and tier drains, source
+payment/XP/presentation, holder/death/range release and natural cleanup/reset.
+Corrected the zero source projectile axis, per-visit current holder/target reads,
+normal/dying human consequence publication and current dying-rival consumers.
+Local and rival flight now read the canonical Duel rules. Ordinary Nyphur1
+preserves its source no-op. Triggers/resources/positions and lethal pulses are
+explicit controls; the acquired cast/tether itself is real.
+
+The acquired check, affected tether/source controls, actual Steal regression,
+workspace all-target check and native build pass. All443 Rust and162 upstream
+inputs independently match rig and the installed receipt. Root viewed original
+map/loading/NightSpire scene/HUD with the matching mapped library and stopped
+smoke processes. No Unity/art edits. Human gameplay/audio/FPS/full missions and
+old-save migration remain unverified. Alive unknown nonplayer tier2 A4 aliases
+remain explicitly unsupported/unverified; no speculative model was invented.
+The full `mc-k5k.2` and its broader dependencies stay open. Evidence:
+`research/private/generated/duel-20261103-integration/candidate-1/`.
 
 Steal Mana checkpoint delivered on 2026-11-03: runtime `73bf009f`, native
 `c1a7b623aca7`. Actual acquired/public all-tier casts reach a genuine rival,
@@ -42,7 +63,7 @@ identically on the pre-Cave binary; fixture versus production cause is unproven,
 assertions unchanged and broader acceptance remains open. Existing formatting
 and whole-file UBS debt are not clean-scan claims. Evidence:
 `research/private/generated/steal-mana-20261103-integration/candidate-5/`.
-The full `mc-k5k.2` and dependencies stay open. Duel14 is next.
+The full `mc-k5k.2` and dependencies stay open; follow the current checkpoint.
 
 Lightning checkpoint delivered on 2026-11-03: runtime `0369d2f7`, native
 `f89eef7e4f49`. Actual acquired/public casts pass all three tiers through
