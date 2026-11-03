@@ -3426,6 +3426,8 @@ impl Level2EconomyState {
             velocity_y: velocity.y.cast_signed(),
             vertical_velocity,
             yaw,
+            roll: 0,
+            actual_speed: speed,
             max_life: 300,
             life: 300,
             mana: sphere_mana,
@@ -4452,8 +4454,23 @@ impl Level2EconomyState {
         entities: &mut [crate::native_world::EntitySnapshot],
         color_base_for_owner: impl Fn(u16) -> u16,
     ) -> bool {
+        let attraction_target = self.spheres.iter()
+            .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot
+                && sphere.control_flags & 0x800 == 0)
+            .map(|sphere| sphere.attraction_source_entity_index)
+            .filter(|slot| *slot != 0)
+            .and_then(|slot| {
+                let arena = crate::campaign::source_arena::SourceArena::new(
+                    entities.to_vec().into_boxed_slice(), self.clone(),
+                );
+                super::source_target::read(&arena, Default::default(), slot)
+                    .expect("test sphere attraction has its current source carrier")
+                    .map(|target| target.position)
+                    .or_else(|| arena.entities.first().map(|sentinel| sentinel.position))
+            });
         self.step_mana_sphere_slot_with_owner_resources(sphere_slot, terrain, entities,
-            color_base_for_owner, |economy, rows, slot| economy.current_owner_resources(rows, slot))
+            color_base_for_owner, |economy, rows, slot| economy.current_owner_resources(rows, slot),
+            attraction_target)
     }
 
     pub(crate) fn step_mana_sphere_slot_with_owner_resources(
@@ -4463,6 +4480,7 @@ impl Level2EconomyState {
         entities: &mut [EntitySnapshot],
         color_base_for_owner: impl Fn(u16) -> u16,
         owner_resources: impl Fn(&Level2EconomyState, &[EntitySnapshot], u16) -> (u8, i32),
+        attraction_target: Option<Position>,
     ) -> bool {
         let Some(sphere_index) = self
             .spheres
@@ -4519,9 +4537,8 @@ impl Level2EconomyState {
             });
         }
         // `TransformArcherToMana_35940` consumes the source-linked attraction
-        // mailbox before the ordinary sphere physics and clears it after one
-        // movement attempt. A field that expired before this row's cursor
-        // visit is treated as a stale relation and cleared without movement.
+        // mailbox into its XY velocity before the ordinary sphere physics.
+        // The nonzero mailbox also suppresses Cave recovery for this visit.
         let attraction = {
             let sphere = self.spheres[sphere_index];
             (
@@ -4530,14 +4547,10 @@ impl Level2EconomyState {
             )
         };
         if attraction.0 != 0 {
-            if let Some(field) = self
-                .mana_attraction_fields
-                .iter()
-                .find(|field| field.active && field.source_entity_index == attraction.0)
-            {
+            if let Some(target_position) = attraction_target {
                 let heading = i16::try_from(heading_for_positions(
                     self.spheres[sphere_index].position,
-                    field.position,
+                    target_position,
                 ))
                 .expect("Level 2 attraction heading fits i16");
                 let mut displacement = Position::default();
@@ -4548,14 +4561,8 @@ impl Level2EconomyState {
                     i16::try_from(attraction.1).expect("Level 2 attraction step fits i16"),
                 );
                 let sphere = &mut self.spheres[sphere_index];
-                sphere.position.x = sphere
-                    .position
-                    .x
-                    .wrapping_add_signed(displacement.x.cast_signed());
-                sphere.position.y = sphere
-                    .position
-                    .y
-                    .wrapping_add_signed(displacement.y.cast_signed());
+                sphere.velocity_x = displacement.x.cast_signed();
+                sphere.velocity_y = displacement.y.cast_signed();
                 sphere.yaw = heading;
             }
             let sphere = &mut self.spheres[sphere_index];
@@ -4732,28 +4739,76 @@ impl Level2EconomyState {
         let grounded;
         {
             let sphere = &mut self.spheres[sphere_index];
+            let previous = sphere.position;
             sphere.velocity_x = sphere
                 .velocity_x
                 .clamp(-MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_MAX_XY_VELOCITY);
             sphere.velocity_y = sphere
                 .velocity_y
                 .clamp(-MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_MAX_XY_VELOCITY);
-            sphere.position.x = sphere.position.x.wrapping_add_signed(sphere.velocity_x);
-            sphere.position.y = sphere.position.y.wrapping_add_signed(sphere.velocity_y);
-            sphere.position.z = sphere.position.z.wrapping_add(sphere.vertical_velocity);
+            let mut predicted = Position {
+                x: previous.x.wrapping_add_signed(sphere.velocity_x),
+                y: previous.y.wrapping_add_signed(sphere.velocity_y),
+                z: previous.z.wrapping_add(sphere.vertical_velocity),
+            };
             sphere.vertical_velocity = sphere.vertical_velocity.wrapping_sub(MANA_SPHERE_GRAVITY);
             if sphere.vertical_velocity < MANA_SPHERE_TERMINAL_VELOCITY {
                 sphere.vertical_velocity = MANA_SPHERE_TERMINAL_VELOCITY;
             }
-            let ground = terrain.ground_height(sphere.position);
-            if sphere.position.z < ground {
-                sphere.position.z = ground;
+            let fov = sphere.collision_fov;
+            // sub_11E70 ignores predicted Z and compares promoted source
+            // words strictly. Model39 retains NewEvent descriptor59, whose
+            // word_c is zero. This handler does not test the map angle bit.
+            let cave_blocked = |position| terrain.ceiling_height(position).is_some_and(|ceiling| {
+                i32::from(fov) + i32::from(terrain.ground_height(position)) > i32::from(ceiling)
+            });
+            if terrain.map_type == MapType::Cave && cave_blocked(predicted) {
+                if attraction.0 != 0 {
+                    predicted = previous;
+                } else {
+                    sphere.actual_speed = 256;
+                    let mut recovered = false;
+                    'search: for offset in (170..=1_020).step_by(170) {
+                        for signed_offset in [offset, -offset] {
+                            let heading = ((i32::from(sphere.yaw) + 512 + signed_offset) & 0x07ff) as i16;
+                            predicted = previous;
+                            crate::move_entity(&mut predicted, heading, 0, sphere.actual_speed);
+                            predicted.z = terrain.ground_height(predicted);
+                            if !cave_blocked(predicted) {
+                                sphere.yaw = heading;
+                                sphere.roll = heading;
+                                recovered = true;
+                                break 'search;
+                            }
+                        }
+                    }
+                    if !recovered {
+                        sphere.velocity_x = 64;
+                        sphere.velocity_y = 64;
+                        predicted.x = previous.x.wrapping_add(64);
+                        predicted.y = previous.y.wrapping_add(64);
+                        // Source retains the final failed probe's ground Z.
+                    }
+                }
+                sphere.vertical_velocity = -128;
+            }
+            let ground = terrain.ground_height(predicted);
+            if predicted.z < ground {
+                predicted.z = ground;
                 sphere.vertical_velocity = -(sphere.vertical_velocity / 4);
                 if sphere.vertical_velocity <= 16 {
                     sphere.vertical_velocity = 0;
                 }
             }
-            grounded = sphere.position.z == ground;
+            if let Some(ceiling) = terrain.ceiling_height(predicted) {
+                let cap = ceiling.wrapping_sub(sphere.collision_fov);
+                if cap < predicted.z {
+                    sphere.vertical_velocity = -sphere.vertical_velocity.abs();
+                    predicted.z = cap;
+                }
+            }
+            sphere.position = predicted;
+            grounded = predicted.z == ground;
             if grounded {
                 let [_, tile_x] = sphere.position.x.to_le_bytes();
                 let [_, tile_y] = sphere.position.y.to_le_bytes();
@@ -6785,6 +6840,8 @@ impl Level2EconomyState {
                 velocity_y: 0,
                 vertical_velocity,
                 yaw: 0,
+                roll: 0,
+                actual_speed: (sphere_rng % 0x30 + 16) as i16,
                 max_life: 300,
                 life: 300,
                 mana: sphere_mana,

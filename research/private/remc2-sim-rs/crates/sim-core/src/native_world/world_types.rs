@@ -385,6 +385,8 @@ impl EntitySnapshot {
         self.set_position(source.position);
         self.set_entity_rng(source.entity_rng);
         self.set_yaw(source.yaw);
+        self.set_source_roll(source.roll);
+        self.set_actual_speed(source.actual_speed);
         self.set_life(source.life);
         self.set_max_life(source.max_life);
         self.set_phase(source.phase);

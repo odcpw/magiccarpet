@@ -5175,6 +5175,9 @@ pub struct ManaSphere {
     pub velocity_y: i16,
     pub vertical_velocity: i16,
     pub yaw: i16,
+    /// Source orientation and speed retained by Cave recovery.
+    pub roll: i16,
+    pub actual_speed: i16,
     /// Source `NewEvent_4A050` initializes both words to 300 and every
     /// model-39 constructor used by the recovered routes retains that value.
     /// The fading/protected branch of `TransformArcherToMana_35940` then
@@ -9259,6 +9262,8 @@ impl Level1MissionState {
                 hash.u16(sphere.collision_pitch.cast_unsigned());
                 hash.u16(sphere.collision_roll.cast_unsigned());
                 hash.u16(sphere.collision_fov.cast_unsigned());
+                hash.u16(sphere.roll.cast_unsigned());
+                hash.u16(sphere.actual_speed.cast_unsigned());
                 if sphere.action != 41 {
                     hash.bytes(b"mana-sphere-current-action\0");
                     hash.u8(sphere.action);
@@ -10323,6 +10328,8 @@ impl Level1MissionState {
             velocity_y: velocity.y.cast_signed(),
             vertical_velocity,
             yaw,
+            roll: 0,
+            actual_speed: speed,
             max_life: 300,
             life: 300,
             mana,
@@ -10487,6 +10494,8 @@ impl Level1MissionState {
             velocity_y: velocity.y.cast_signed(),
             vertical_velocity,
             yaw,
+            roll: 0,
+            actual_speed: speed,
             max_life: 300,
             life: 300,
             mana,
@@ -17396,7 +17405,7 @@ impl Level1MissionState {
         self.source_slots[usize::from(sphere_slot)].phase = phase;
         let sphere_rng = next_rng16(self.source_slots[usize::from(sphere_slot)].entity_rng);
         self.source_slots[usize::from(sphere_slot)].entity_rng = sphere_rng;
-        let _source_act_speed =
+        let source_act_speed =
             i16::try_from(sphere_rng % 0x30 + 16).expect("Castle overflow sphere speed fits i16");
         let height_above_ground = i32::from(self.castle_position.z)
             - i32::from(world.ground_height(self.castle_position));
@@ -17422,6 +17431,8 @@ impl Level1MissionState {
             velocity_y: 0,
             vertical_velocity,
             yaw: 0,
+            roll: 0,
+            actual_speed: source_act_speed,
             max_life: 300,
             life: 300,
             mana,

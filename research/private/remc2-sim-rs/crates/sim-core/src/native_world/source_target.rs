@@ -79,6 +79,9 @@ pub(crate) fn status_parent(
     if let Some(yaw) = view.yaw {
         parent.set_yaw(yaw);
     }
+    if kind == Some(Kind::ManaSphere) && let Some(roll) = view.roll {
+        parent.set_source_roll(roll);
+    }
     if let Some(shape) = view.collision {
         for (offset, value) in [
             (86, shape.vertical_offset),
@@ -162,6 +165,11 @@ pub(crate) fn status_parent(
             mana.ok_or_else(|| format!("status parent {slot} lost its current mana owner"))?,
         );
         let speed = match kind {
+            Kind::ManaSphere => economy
+                .spheres
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| (0, row.actual_speed)),
             Kind::FireballProjectile => economy
                 .fireball_projectiles
                 .iter()
@@ -488,6 +496,7 @@ pub(crate) fn commit_status_speed(
         };
     }
     match kind {
+        Some(Kind::ManaSphere) => set_speed!(economy.spheres),
         Some(Kind::FireballProjectile) => set_speed!(economy.fireball_projectiles),
         Some(Kind::CastleProjectile) => set_speed!(economy.castle_projectiles),
         Some(Kind::PossessionProjectile) => set_speed!(economy.possession_projectiles),
@@ -2469,7 +2478,7 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
     match kind {
         Kind::ManaSphere => arena.economy.spheres.iter()
             .find(|row| row.active && row.source_entity_index == slot)
-            .map(|row| (Some(row.yaw), None))
+            .map(|row| (Some(row.yaw), Some(row.roll)))
             .unwrap_or((None, None)),
         Kind::FireballProjectile => angles!(arena.economy.fireball_projectiles),
         Kind::BeeCreature => angles!(arena.economy.bee_creatures),
@@ -2889,9 +2898,15 @@ mod tests {
         let sphere = arena.economy.spheres.iter_mut()
             .find(|row| row.active && row.source_entity_index == sphere_slot).unwrap();
         sphere.yaw = 753;
+        sphere.roll = 377;
+        sphere.actual_speed = 256;
         arena.entities[usize::from(sphere_slot)].set_yaw(-321);
+        arena.entities[usize::from(sphere_slot)].set_source_roll(-322);
+        arena.entities[usize::from(sphere_slot)].set_actual_speed(17);
         let target = read(&arena, Context::default(), sphere_slot).unwrap().unwrap();
-        assert_eq!((target.class, target.model, target.yaw), (10, 39, Some(753)));
+        assert_eq!((target.class, target.model, target.yaw, target.roll), (10, 39, Some(753), Some(377)));
+        let parent = status_parent(&arena, Context::default(), sphere_slot).unwrap().unwrap();
+        assert_eq!((parent.source_roll(), parent.actual_speed), (377, 256));
         arena.economy.spheres.iter_mut().find(|row| row.source_entity_index == sphere_slot).unwrap().yaw = 754;
         assert_eq!(read(&arena, Context::default(), sphere_slot).unwrap().unwrap().yaw, Some(754));
 

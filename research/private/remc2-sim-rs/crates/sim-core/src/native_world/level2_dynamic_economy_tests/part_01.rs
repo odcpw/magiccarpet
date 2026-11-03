@@ -3543,6 +3543,8 @@ fn level_two_possession_new_rows_follow_the_remaining_ascending_source_cursor() 
                 velocity_y: 0,
                 vertical_velocity: 0,
                 yaw: 0,
+                roll: 0,
+                actual_speed: 32,
                 max_life: 300,
                 life: 300,
                 mana: 512,

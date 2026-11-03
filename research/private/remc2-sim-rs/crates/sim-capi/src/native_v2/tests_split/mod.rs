@@ -828,6 +828,8 @@ fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
             velocity_y: 2,
             vertical_velocity: 3,
             yaw: 4,
+            roll: 0,
+            actual_speed: 32,
             max_life: 300,
             life: 300,
             mana: 5,

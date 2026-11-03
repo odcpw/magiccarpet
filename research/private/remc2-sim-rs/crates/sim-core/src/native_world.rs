@@ -1424,6 +1424,8 @@ fn level2_static_mana_spheres_from_entities(
                 velocity_y: 0,
                 vertical_velocity: 0,
                 yaw: entity.yaw,
+                roll: entity.source_roll(),
+                actual_speed: entity.actual_speed,
                 max_life: entity.max_life,
                 life: entity.life,
                 mana: entity.mana,

@@ -2577,6 +2577,8 @@ impl Level2EconomyState {
             // authored spheres before their later source rows are visited.
             vertical_velocity: 128,
             yaw: 0,
+            roll: 0,
+            actual_speed: 32,
             max_life: 300,
             life: 300,
             mana: AUTHORED_MANA,
@@ -7129,6 +7131,8 @@ impl Level2EconomyState {
             hasher.update(sphere.velocity_y.to_le_bytes());
             hasher.update(sphere.vertical_velocity.to_le_bytes());
             hasher.update(sphere.yaw.to_le_bytes());
+            hasher.update(sphere.roll.to_le_bytes());
+            hasher.update(sphere.actual_speed.to_le_bytes());
             hasher.update(sphere.max_life.to_le_bytes());
             hasher.update(sphere.life.to_le_bytes());
             hasher.update(sphere.mana.to_le_bytes());

@@ -69,6 +69,13 @@ pub(crate) struct DirectionalMailboxOutcome {
     pub steal_attacker_resolved: bool,
 }
 
+/// Publish the ordered actor-side source effects at their original boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DirectionalFeedback {
+    Duel(DuelTetherBinding),
+    Steal(u16),
+}
+
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
 }
@@ -789,13 +796,17 @@ pub(crate) fn install_duel_tether_binding(
 /// consumed by the existing FlightState tether path first; Steal Mana then
 /// mutates the real actors/Castle and produces model-39 sphere sidecars for
 /// the normal economy scheduler.
-pub(crate) fn consume_actor_mailbox(
+pub(crate) fn consume_actor_mailbox_with_feedback<F>(
     shared: &mut Level2SharedSpellResetSession,
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     actor_slot: u16,
     castle_slots: &[(u16, u16)],
-) -> Result<DirectionalMailboxOutcome, String> {
+    mut feedback: F,
+) -> Result<DirectionalMailboxOutcome, String>
+where
+    F: FnMut(&mut Level2SharedSpellResetSession, &SourceArena, DirectionalFeedback) -> Result<(), String>,
+{
     let target_row = arena
         .entities
         .get(usize::from(actor_slot))
@@ -825,6 +836,7 @@ pub(crate) fn consume_actor_mailbox(
             duel_actor(arena, actor_slot),
         ) && let Some(binding) = bind_tether(hit.payload, caster, target, holder_slot)
         {
+            feedback(shared, arena, DirectionalFeedback::Duel(binding))?;
             outcome.duel = Some(binding);
         }
     }
@@ -838,6 +850,9 @@ pub(crate) fn consume_actor_mailbox(
         if let (Some(mut thief), Some(mut victim)) =
             (actor(arena, caster_slot), actor(arena, actor_slot))
         {
+            // sub_61050 awards the caster's XP before any Castle debit or
+            // sphere allocation can replace a fixed arena address.
+            feedback(shared, arena, DirectionalFeedback::Steal(caster_slot))?;
             let thief_castle_slot = castle_slot(arena, castle_slots, caster_slot);
             let victim_castle_slot = castle_slot(arena, castle_slots, actor_slot);
             let mut thief_castle = castle_mana(arena, thief_castle_slot);
@@ -861,13 +876,23 @@ pub(crate) fn consume_actor_mailbox(
                         ));
                     }
                 }
-                if let Some(spawn_castle_slot) = thief_castle_slot {
+                if let Some(spawn_castle_slot) = thief_castle_slot
+                    && let Some(castle) = castle_projection(arena, spawn_castle_slot)
+                {
+                    // 61050 calculates the source Castle's radius once,
+                    // before attempting any of the individual NewEvents.
+                    let pitch = i64::from(castle.pitch);
+                    let roll = i64::from(castle.roll);
+                    let radius = crate::legacy_sqrt(
+                        u32::try_from(pitch * pitch + roll * roll).unwrap_or(u32::MAX),
+                    );
                     for grant in &result.mana_spheres {
                         let _ = spawn_steal_mana_sphere(
                             arena,
                             terrain,
                             actor_slot,
                             spawn_castle_slot,
+                            radius,
                             grant.mana,
                             grant.player_entity_index,
                         )?;
@@ -897,11 +922,25 @@ pub(crate) fn consume_actor_mailbox(
     Ok(outcome)
 }
 
+#[cfg(test)]
+fn consume_actor_mailbox(
+    shared: &mut Level2SharedSpellResetSession,
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    actor_slot: u16,
+    castle_slots: &[(u16, u16)],
+) -> Result<DirectionalMailboxOutcome, String> {
+    consume_actor_mailbox_with_feedback(
+        shared, arena, terrain, actor_slot, castle_slots, |_, _, _| Ok(()),
+    )
+}
+
 fn spawn_steal_mana_sphere(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     hit_actor_slot: u16,
     caster_castle_slot: u16,
+    radius: u32,
     mana: i32,
     player_entity_index: u16,
 ) -> Result<Option<u16>, String> {
@@ -914,9 +953,6 @@ fn spawn_steal_mana_sphere(
         return Ok(None);
     };
 
-    let pitch = i64::from(castle.pitch);
-    let roll = i64::from(castle.roll);
-    let radius = crate::legacy_sqrt(u32::try_from(pitch * pitch + roll * roll).unwrap_or(u32::MAX));
     let source_rng = target_actor
         .entity_rng
         .wrapping_mul(9_377)
@@ -929,7 +965,7 @@ fn spawn_steal_mana_sphere(
         &mut position,
         angle,
         0,
-        i16::try_from(radius).unwrap_or(i16::MAX),
+        (radius as u16).cast_signed(),
     );
     position.z = terrain.ground_height(position).wrapping_add(1_024);
 
@@ -953,6 +989,9 @@ fn spawn_steal_mana_sphere(
         .ok_or("Steal Mana NewEvent lost its model-39 sphere carrier")?;
     sphere.position = position;
     sphere.mana = mana;
+    // sub_61050 sets the new sphere's vertical speed after allocation;
+    // death-sphere initialization otherwise derives zero at this altitude.
+    sphere.vertical_velocity = 128;
     let entity_rng = sphere.entity_rng;
     arena.economy.source_rng.insert(slot, entity_rng);
     if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
@@ -1447,6 +1486,267 @@ pub(super) mod tests {
         root
     }
 
+    fn scheduled_castle_from_source_flyer(
+        simulation: &mut super::super::Mc2Simulation,
+        owner: u16,
+    ) -> u16 {
+        let live = &mut simulation.session.state.live;
+        // This controlled Castle flyer needs the same owner BUILD bank that
+        // the ordinary Castle-spell entry binds. The acquired Level16 carry
+        // need not contain Castle, so bind the canonical data explicitly.
+        if !live.economy.economy.has_castle_stage_footprint(1) {
+            eprintln!("controlled Castle flyer: canonical stage-one BUILD footprint was absent");
+            for (stage, footprint) in super::super::campaign_castle_stage_footprints()
+                .expect("source Castle BUILD footprints")
+            {
+                assert!(live.economy.economy.set_castle_stage_footprint(stage, footprint));
+            }
+        }
+        let position = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+            x: x * 2_048, y: y * 2_048, z: 0,
+        })).find(|position| {
+            !live.economy.economy.castle_projectile_site_blocked(*position,
+                &live.economy.entities, &live.terrain)
+                && live.economy.economy.live_castles().all(|castle|
+                    crate::distance_3d_wrapped(Position { z: castle.position.z, ..*position },
+                        castle.position) > 25_000)
+        }).expect("owner terrain has an admissible Castle flyer site");
+        let ground = live.terrain.ground_height(position);
+        let payload = super::super::level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
+            position: Position { z: ground.wrapping_add(1), ..position },
+            axis_position: Position { z: ground.wrapping_sub(1), ..position },
+            yaw: 0, pitch: 0, source_id_entity_index: owner,
+            source_subspell_index: 0, source_mana: 0, source_a4_byte_154: 0,
+        };
+        let flyer = live.economy.economy.spawn_castle_projectile_with_payload(payload, 0, 0, &live.terrain)
+            .unwrap_or_else(|| panic!("controlled source Castle flyer allocation failed: owner={owner}, footprint={}, free_slots={}",
+                live.economy.economy.has_castle_stage_footprint(1), live.economy.economy.free_source_slots().len()));
+        for _ in 0..32 {
+            simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(simulation.dispatch_events().iter().all(|event|
+                !matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                "Castle flyer {flyer} dispatch: {:?}", simulation.dispatch_events());
+            if let Some(root) = simulation.session.state.live.economy.economy.castle_for_owner(owner) {
+                return root.source_entity_index;
+            }
+        }
+        panic!("scheduled source Castle flyer {flyer} did not produce owner {owner}'s Castle");
+    }
+
+    #[test]
+    fn authored_steal_mana_pickup_and_public_hand_reach_real_nyphur() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::combat::actors::PlayerEffectLane;
+        let packages = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj");
+        let mut source = CampaignSession::open(packages.join("level16"),
+            CampaignSelection::ordinary(16).unwrap()).expect("unfiltered Level 16 opens");
+        let source_player = source.simulation().state.entity_index;
+        let pickup = source.simulation().session.state.live.economy.entities.iter()
+            .find(|row| row.active && (row.class, row.model, row.action) == (15, 13, 41))
+            .cloned().expect("authored persistent Steal Mana pickup");
+        assert_eq!(pickup.index, 164);
+        for _ in 0..12 {
+            let simulation = source.simulation_mut();
+            let position = simulation.session.state.live.economy.entities[usize::from(pickup.index)].position;
+            simulation.set_level2_entity_position(source_player, position).unwrap();
+            simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(simulation.dispatch_events().iter().all(|event|
+                !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+            if simulation.shared_spells().local_player().enabled_spell_holders[13] != 0 { break; }
+        }
+        let learned = source.simulation().shared_spells().local_player().enabled_spell_holders
+            .iter().enumerate().filter_map(|(family, holder)|
+                (*holder != 0).then_some(family as u8)).collect::<Vec<_>>();
+        assert_eq!(source.simulation().shared_spells().local_player().enabled_spell_holders[13], pickup.index,
+            "ordinary overlap acquired the real Steal Mana pickup");
+
+        for tier in 0_u8..=2 {
+            // The acquired inventory is carried into a real rival mission;
+            // destination, resources, and combat positions are test controls.
+            let mut campaign = CampaignSession::open(packages.join("level2"), CampaignSelection::LEVEL2)
+                .expect("unfiltered Level 2 opens");
+            assert_eq!(campaign.rebuild_for_spell_carry(&learned, Some(13)).unwrap(), Some(13));
+            let simulation = campaign.simulation_mut();
+            let caster = simulation.state.entity_index;
+            let target = simulation.session.state.live.economy.entities.iter()
+                .find(|row| row.active && (row.class, row.model, row.action) == (3, 1, 1))
+                .expect("ordinary Level 2 has a live rival").index;
+            let target_handle = simulation.session.state.live.economy.handle(target).unwrap();
+            let castle = scheduled_castle_from_source_flyer(simulation, caster);
+            let target_castle = (tier == 2).then(|| scheduled_castle_from_source_flyer(simulation, target));
+            // Protection is source state: let the real rival upkeep expire it.
+            for _ in 0..256 {
+                let live = &simulation.session.state.live;
+                let row = &live.economy.entities[usize::from(target)];
+                assert_eq!(live.economy.handle(target), Some(target_handle));
+                let rival = live.nyphur_dispatcher.get(target_handle).unwrap();
+                if rival.common_upkeep(row.phase).word_0x159 == 0 { break; }
+                simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(simulation.dispatch_events().iter().all(|event|
+                    !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+            }
+            {
+                let live = &simulation.session.state.live;
+                let row = &live.economy.entities[usize::from(target)];
+                assert_eq!(live.nyphur_dispatcher.get(target_handle).unwrap().common_upkeep(row.phase).word_0x159, 0,
+                    "ordinary rival visits expire Castle protection");
+            }
+            let rule = crate::level_definition::STEAL_MANA_TIERS[usize::from(tier)];
+            {
+                let live = &mut simulation.session.state.live;
+                assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(castle,
+                    rule.castle_mana_required.max(rule.mana_cost) + 10_000));
+                if let Some(target_castle) = target_castle {
+                    assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(target_castle, 12_345));
+                }
+                let parent = &mut live.economy.entities[usize::from(caster)];
+                parent.max_mana = rule.mana_cost + 10_000;
+                parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+                parent.set_mana(parent.max_mana);
+                parent.set_mana_regen(0);
+                let parent = parent.clone();
+                live.shared_spells.sync_player_entity_from_authority(&parent);
+                live.shared_spells.player_mana = parent.mana;
+                live.shared_spells.caster.mana = parent.mana;
+                live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+                if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+                let target_row = &mut live.economy.entities[usize::from(target)];
+                target_row.max_mana = 10_000;
+                target_row.record[144..148].copy_from_slice(&10_000_i32.to_le_bytes());
+                target_row.set_mana(8_000);
+                target_row.set_mana_regen(0);
+                let target_row = target_row.clone();
+                let rival = live.nyphur_dispatcher.get_mut_in_arena(&live.economy, target).unwrap();
+                assert!(rival.sync_support_parent_resources(&target_row, false));
+                live.economy.economy.refresh_owner_mana_rows();
+            }
+            let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 13).unwrap() as i8;
+            simulation.step_outer_turn(crate::PlayerCommand { opcode: 31, argument_1: ui,
+                argument_2: tier as i8, ..Default::default() }, 0);
+            let holder = simulation.shared_spells().local_player().enabled_spell_holders[13];
+            assert_eq!(simulation.shared_spells().pickup(holder).unwrap().level_gate, tier as i8);
+            {
+                let live = &mut simulation.session.state.live;
+                let parent = live.economy.entities[usize::from(caster)].clone();
+                let actor = area_damage::source_actor(&mut live.economy, None, target).unwrap();
+                let mut position = parent.position;
+                move_entity(&mut position, parent.yaw, parent.pitch, 1_536);
+                position.z = parent.position.z.wrapping_add(parent.array_fov())
+                    .wrapping_sub(actor.shape.vertical_offset);
+                live.economy.entities[usize::from(target)].set_position(position);
+                crate::world::effects::sync_position(&mut live.economy, &mut live.terrain,
+                    target, position, true, true).unwrap();
+            }
+            let xp_before = simulation.shared_spells().spell_experience()[13];
+            let mut saw_flyer = false;
+            let mut saw_field = false;
+            let mut submitted = false;
+            let mut consumed = false;
+            let mut charged = false;
+            let mut launch_sound = false;
+            let mut projectile_presented = false;
+            let mut stages = [None; 2];
+            let mut hidden = [false; 2];
+            let mut reclaimed = [false; 2];
+            let mut previous_mana = simulation.session.state.live.economy.entities[usize::from(caster)].mana;
+            let mut previous_target_mana = simulation.session.state.live.economy.entities[usize::from(target)].mana;
+            let mut previous_target_castle_mana = target_castle.map(|slot|
+                simulation.session.state.live.economy.economy.castle_at(slot).unwrap().mana);
+            let mut prior_lane = None;
+            let mut trace = Vec::new();
+            for turn in 0..96 {
+                simulation.step_outer_turn(if turn == 0 { crate::PlayerCommand { flags: 0x10, ..Default::default() } }
+                    else { crate::PlayerCommand::default() }, 0);
+                let live = &simulation.session.state.live;
+                let caster_mana = live.economy.entities[usize::from(caster)].mana;
+                charged |= previous_mana - caster_mana == rule.mana_cost;
+                previous_mana = caster_mana;
+                let products = live.economy.entities.iter().filter(|row| row.active && row.source_id == caster
+                    && matches!((row.class, row.model), (9, 8) | (10, 25)))
+                    .map(|row| (row.index, row.class, row.model, row.action, row.life, row.drawing_disabled()))
+                    .collect::<Vec<_>>();
+                saw_flyer |= products.iter().any(|row| (row.1, row.2) == (9, 8));
+                saw_field |= products.iter().any(|row| (row.1, row.2) == (10, 25));
+                for product in &products {
+                    let stage = if product.1 == 9 { 0 } else { 1 };
+                    stages[stage].get_or_insert((product.0, live.economy.economy.slot_generation(product.0)));
+                }
+                for (stage, saved) in stages.iter().enumerate() {
+                    if let Some((slot, generation)) = *saved {
+                        let row = &live.economy.entities[usize::from(slot)];
+                        let same_generation = live.economy.economy.slot_generation(slot) == generation;
+                        hidden[stage] |= same_generation && row.active && row.drawing_disabled();
+                        reclaimed[stage] |= !same_generation || live.economy.economy.free_source_slots().contains(&slot);
+                    }
+                }
+                for event in live.economy.economy.events() {
+                    if let super::super::Level2EconomyEvent::PreparedSound { entity_index, sound_id: 15, .. } = event {
+                        launch_sound |= *entity_index == caster;
+                    }
+                }
+                for view in simulation.campaign_entity_presentations(0).expect("campaign sprite projection") {
+                    let row = &live.economy.entities[usize::from(view.entity_index)];
+                    if row.source_id == caster && (row.class, row.model, row.action) == (9, 8, 8) {
+                        assert_eq!((view.source_id, view.position, view.render_parameter_index),
+                            (caster, row.position, STEAL_MANA_PARTICLE));
+                        assert_eq!(view.base_tmap, simulation.session.definition.presentation.particles
+                            [usize::from(STEAL_MANA_PARTICLE)].base_tmap);
+                        projectile_presented = true;
+                    }
+                }
+                let row = &live.economy.entities[usize::from(target)];
+                let lane = row.pending_player_effect(PlayerEffectLane::StealMana);
+                submitted |= lane.is_some_and(|hit| hit.attacker == caster && hit.payload == i32::from(tier));
+                let target_castle_mana = target_castle.and_then(|slot| live.economy.economy.castle_at(slot).map(|root| root.mana));
+                let resource_debit = if tier == 2 {
+                    target_castle_mana.zip(previous_target_castle_mana).is_some_and(|(now, before)| now < before)
+                } else { row.mana < previous_target_mana };
+                let accepted = live.economy.handle(target) == Some(target_handle)
+                    && prior_lane.is_some_and(|hit: crate::combat::actors::PlayerEffectHit|
+                        hit.attacker == caster && hit.payload == i32::from(tier))
+                    && lane.is_none() && resource_debit
+                    && simulation.shared_spells().spell_experience()[13] > xp_before;
+                if accepted && tier == 2 {
+                    let before = previous_target_castle_mana.unwrap();
+                    let after = target_castle_mana.unwrap();
+                    let amount = before.wrapping_mul(i32::from(rule.power)) / 100;
+                    assert_eq!(before - after, amount, "the rival Castle pays the source percentage");
+                    let grants = live.economy.economy.events().iter().filter_map(|event| match event {
+                        super::super::Level2EconomyEvent::ManaSphereSpawned { sphere_id, source_entity_index, mana }
+                            if *source_entity_index == target => Some((*sphere_id, *mana)),
+                        _ => None,
+                    }).collect::<Vec<_>>();
+                    assert_eq!(grants.iter().map(|(_, mana)| *mana).sum::<i32>(), amount,
+                        "actual scheduled model39 spheres carry the stolen Castle mana");
+                    assert!(grants.iter().all(|(id, mana)| *mana > 0 && *mana <= 500
+                        && live.economy.economy.spheres().iter().any(|sphere|
+                            sphere.id == *id && sphere.player_entity_index == 0)));
+                }
+                consumed |= accepted;
+                prior_lane = lane;
+                previous_target_mana = row.mana;
+                previous_target_castle_mana = target_castle_mana;
+                let errors = simulation.dispatch_events().iter().filter(|event|
+                    matches!(event, super::super::Mc2DispatchEvent::Error { .. })).collect::<Vec<_>>();
+                trace.push(format!("turn={turn} products={products:?} target_mana={} lane={lane:?} xp={} errors={errors:?}",
+                    row.mana, simulation.shared_spells().spell_experience()[13]));
+                assert!(errors.is_empty(), "tier {tier}: {}", trace.join("\n"));
+                if saw_flyer && saw_field && submitted && consumed && charged && launch_sound
+                    && projectile_presented && reclaimed.iter().all(|reclaimed| *reclaimed)
+                    && simulation.shared_spells().pickup(holder).unwrap().active_value == 0 { break; }
+            }
+            assert!(saw_flyer && saw_field && submitted && consumed && charged && launch_sound
+                    && projectile_presented && hidden.iter().all(|hidden| *hidden)
+                    && reclaimed.iter().all(|reclaimed| *reclaimed)
+                    && simulation.shared_spells().pickup(holder).unwrap().active_value == 0,
+                "tier {tier} acquired spell must reach the scheduled opposing actor:\n{}", trace.join("\n"));
+            campaign.reset();
+            assert_ne!(campaign.simulation().shared_spells().local_player().enabled_spell_holders[13], 0,
+                "reset restores the carried inventory at entry");
+        }
+    }
+
     #[test]
     fn duel_holder_reads_caster_target_only_for_an_admitted_late_pulse() {
         for (phase, target, admitted, expected, spawns) in [
@@ -1648,14 +1948,36 @@ pub(super) mod tests {
                 .accepted_target_slots,
             [target_slot]
         );
-        let result = consume_actor_mailbox(
+        assert!(live.economy.entities[usize::from(target_slot)].submit_player_effect_contact(
+            crate::combat::actors::PlayerEffectLane::Duel, 0, parent_slot, true));
+        let mut flight = crate::FlightState::default();
+        let mut callback_order = Vec::new();
+        let result = consume_actor_mailbox_with_feedback(
             &mut live.shared_spells,
             &mut live.economy,
             &mut live.terrain,
             target_slot,
             &[],
+            |_, arena, feedback| {
+                match feedback {
+                    DirectionalFeedback::Duel(binding) => {
+                        install_duel_tether_binding(&mut flight, binding);
+                        callback_order.push("duel");
+                    }
+                    DirectionalFeedback::Steal(owner) => {
+                        assert_eq!(owner, parent_slot);
+                        assert_eq!(flight.tether_target_index, target_slot,
+                            "Duel is published before Steal consumption");
+                        assert_eq!(arena.entities[usize::from(target_slot)].mana, 8_000,
+                            "Steal feedback precedes the actual transfer");
+                        callback_order.push("steal");
+                    }
+                }
+                Ok(())
+            },
         )
         .unwrap();
+        assert_eq!(callback_order, ["duel", "steal"]);
         assert_eq!(result.steal_mana.unwrap().result.fixed_transfer, 2_000);
         assert_eq!(live.economy.entities[usize::from(target_slot)].mana, 6_000);
     }
@@ -2174,7 +2496,8 @@ pub(super) mod tests {
             [target_slot]
         );
 
-        let consumed = consume_actor_mailbox(
+        let mut feedback_before_consequence = None;
+        let consumed = consume_actor_mailbox_with_feedback(
             &mut live.shared_spells,
             &mut live.economy,
             &mut live.terrain,
@@ -2183,8 +2506,19 @@ pub(super) mod tests {
                 (parent_slot, caster_castle_slot),
                 (target_slot, target_castle_slot),
             ],
+            |shared, arena, feedback| {
+                if let DirectionalFeedback::Steal(owner) = feedback {
+                    feedback_before_consequence = Some((owner,
+                        arena.economy.castle_at(target_castle_slot).unwrap().mana,
+                        arena.economy.spheres.len()));
+                    shared.award_spell_experience(owner, STEAL_MANA_FAMILY, 1);
+                }
+                Ok(())
+            },
         )
         .unwrap();
+        assert_eq!(feedback_before_consequence, Some((parent_slot, 12_345, sphere_count)),
+            "61050 awards the caster before debiting the Castle or allocating spheres");
         let result = consumed
             .steal_mana
             .expect("tier-two actor lane consumes through its Castle route");
@@ -2219,6 +2553,7 @@ pub(super) mod tests {
                 && sphere.player_entity_index == 0
                 && sphere.max_life == 300
                 && sphere.life == 300
+                && sphere.vertical_velocity == 128
                 && !sphere.pending_delete
                 && crate::distance_3d_wrapped(sphere.position, caster_castle_position) < 4_096
                 && crate::distance_3d_wrapped(sphere.position, target_castle_position) > 20_000

@@ -38,8 +38,9 @@ pub struct StealManaOutcome {
 
 /// Consume one admitted family-13 actor hit. `thief` is the source-id owner in
 /// the per-target lane; `victim` is the actor whose callback consumes it.
-/// Returns `None` for an invalid tier, actor, or self-hit without changing
-/// either actor or castle.
+/// Returns `None` for an invalid tier or actor without changing either actor
+/// or castle. The field's source-id gate is applied by its producer; numeric
+/// addresses can still alias when an occupant's source identity differs.
 pub fn apply_steal_mana(
     tier: u8,
     thief: &mut ManaActor,
@@ -48,13 +49,7 @@ pub fn apply_steal_mana(
     victim_castle: Option<&mut CastleMana>,
 ) -> Option<StealManaOutcome> {
     let rule = *STEAL_MANA_TIERS.get(usize::from(tier))?;
-    if !thief.active
-        || !victim.active
-        || thief.class != 3
-        || victim.class != 3
-        || victim.life < 0
-        || thief.entity_index == victim.entity_index
-    {
+    if !thief.active || !victim.active || thief.class != 3 || victim.class != 3 || victim.life < 0 {
         return None;
     }
 
@@ -71,7 +66,11 @@ pub fn apply_steal_mana(
         // sub_61050 drains the hit actor's Castle, then emits model-39 spheres
         // around the casting actor's Castle. The raw source player relation is
         // set only for product 2; current tier 2 has product 1 and remains 0.
-        let sphere_total = (i64::from(victim_castle.mana) * i64::from(rule.power) / 100) as i32;
+        // Both source operands are signed 32-bit values; widening the product
+        // before multiplication changes the original fixed-width behavior.
+        // The C++ expression has signed-overflow UB, so model the source
+        // machine's low 32 bits explicitly before signed division.
+        let sphere_total = victim_castle.mana.wrapping_mul(i32::from(rule.power)) / 100;
         victim_castle.mana = victim_castle.mana.wrapping_sub(sphere_total);
         target_castle_mana_after = Some(victim_castle.mana);
         fixed_transfer = 0;
@@ -91,12 +90,28 @@ pub fn apply_steal_mana(
         }
     }
 
-    if fixed_transfer != 0 {
-        thief.mana = thief.mana.wrapping_add(fixed_transfer);
-        victim.mana = victim.mana.wrapping_sub(fixed_transfer);
+    if thief.entity_index == victim.entity_index {
+        // Both writes in 61050 dereference the same address. Apply them in
+        // source order to one carrier before the two sequential clamps.
+        let mut mana = victim.mana;
+        if fixed_transfer != 0 {
+            mana = mana
+                .wrapping_add(fixed_transfer)
+                .wrapping_sub(fixed_transfer);
+        }
+        mana = mana.max(0).min(victim.max_mana);
+        thief.mana = mana;
+        victim.mana = mana;
+    } else {
+        if fixed_transfer != 0 {
+            thief.mana = thief.mana.wrapping_add(fixed_transfer);
+            victim.mana = victim.mana.wrapping_sub(fixed_transfer);
+        }
+        // 61050 applies these comparisons in sequence, including when a
+        // retained or configured record contains a negative maximum.
+        thief.mana = thief.mana.max(0).min(thief.max_mana);
+        victim.mana = victim.mana.max(0).min(victim.max_mana);
     }
-    thief.mana = thief.mana.clamp(0, thief.max_mana.max(0));
-    victim.mana = victim.mana.clamp(0, victim.max_mana.max(0));
 
     Some(StealManaOutcome {
         tier,
@@ -223,6 +238,54 @@ mod tests {
         assert_eq!((thief.mana, victim.mana), (1_010, 90));
         assert_eq!(thief_castle.mana, 9_000);
         assert_eq!(victim_castle.mana, 12_345);
+    }
+
+    #[test]
+    fn tier_two_uses_wrapped_signed_product_before_division() {
+        let (mut thief, mut victim) = (actor(111, 4_000), actor(207, 6_000));
+        let mut thief_castle = CastleMana {
+            entity_index: 301,
+            active: true,
+            mana: 1,
+        };
+        let mut victim_castle = CastleMana {
+            entity_index: 302,
+            active: true,
+            mana: 214_748_365,
+        };
+        let outcome = apply_steal_mana(
+            2,
+            &mut thief,
+            &mut victim,
+            Some(&mut thief_castle),
+            Some(&mut victim_castle),
+        )
+        .unwrap();
+        assert_eq!(victim_castle.mana, 236_223_201);
+        assert_eq!(outcome.target_castle_mana_after, Some(236_223_201));
+        assert_eq!(outcome.fixed_transfer, 0);
+        assert!(
+            outcome.mana_spheres.is_empty(),
+            "negative wrapped total skips the source loop"
+        );
+        assert_eq!((thief.mana, victim.mana), (4_000, 6_000));
+    }
+
+    #[test]
+    fn source_clamp_compares_the_signed_maximum_after_zero_clamp() {
+        let (mut thief, mut victim) = (actor(111, 100), actor(207, 1_000));
+        thief.max_mana = -7;
+        victim.max_mana = -3;
+        apply_steal_mana(0, &mut thief, &mut victim, None, None).unwrap();
+        assert_eq!((thief.mana, victim.mana), (-7, -3));
+    }
+
+    #[test]
+    fn aliased_actor_address_applies_both_writes_to_one_carrier() {
+        let (mut thief, mut victim) = (actor(111, 9_900), actor(111, 9_900));
+        let outcome = apply_steal_mana(0, &mut thief, &mut victim, None, None).unwrap();
+        assert_eq!(outcome.fixed_transfer, 2_000);
+        assert_eq!((thief.mana, victim.mana), (9_900, 9_900));
     }
 
     #[test]

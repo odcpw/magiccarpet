@@ -16390,35 +16390,49 @@ impl Mc2Simulation {
                 })
                 .map(|castle| (castle.owner_entity_index, castle.source_entity_index))
                 .collect::<Vec<_>>();
-            crate::native_world::directional_spells::consume_actor_mailbox(
+            let core = &mut live.core;
+            let nyphurs = &mut live.nyphur_dispatcher;
+            crate::native_world::directional_spells::consume_actor_mailbox_with_feedback(
                 &mut live.shared_spells,
                 &mut live.economy,
                 &mut live.terrain,
                 actor_slot,
                 &castle_slots,
+                |shared, arena, feedback| {
+                    use crate::native_world::directional_spells::DirectionalFeedback;
+                    let (owner, family) = match feedback {
+                        DirectionalFeedback::Duel(binding) => {
+                            let owner = binding.caster_entity_index;
+                            if owner == core.state.entity_index {
+                                crate::native_world::directional_spells::install_duel_tether_binding(
+                                    &mut core.state,
+                                    binding,
+                                );
+                            } else {
+                                let caster = nyphurs.get_mut_in_arena(arena, owner)
+                                    .ok_or_else(|| format!("Duel caster {owner} has no current source carrier"))?;
+                                if !caster.install_duel_tether(binding) {
+                                    return Err(format!("Duel caster {owner} rejected its source tether"));
+                                }
+                            }
+                            (owner, 14)
+                        }
+                        DirectionalFeedback::Steal(owner) => (owner, 13),
+                    };
+                    award_family_spell_experience(
+                        arena,
+                        shared,
+                        &mut core.players,
+                        core.context.spell_fire.as_mut(),
+                        owner,
+                        family,
+                    );
+                    Ok(())
+                },
             )?
         };
         let live = &mut self.session.state.live;
-        if let Some(binding) = outcome.duel {
-            award_source_spell_experience(live, binding.caster_entity_index, 14);
-            if binding.caster_entity_index == live.core.state.entity_index {
-                crate::native_world::directional_spells::install_duel_tether_binding(
-                    &mut live.core.state,
-                    binding,
-                );
-            } else {
-                let caster = live.nyphur_dispatcher
-                    .get_mut_in_arena(&live.economy, binding.caster_entity_index)
-                    .ok_or_else(|| format!("Duel caster {} has no current source carrier", binding.caster_entity_index))?;
-                if !caster.install_duel_tether(binding) {
-                    return Err(format!("Duel caster {} rejected its source tether", binding.caster_entity_index));
-                }
-            }
-        }
         if let Some(consumption) = &outcome.steal_mana {
-            if consumption.result.experience_awarded {
-                award_source_spell_experience(live, consumption.caster_entity_index, 13);
-            }
             for owner in [
                 consumption.caster_entity_index,
                 consumption.target_entity_index,
@@ -24889,6 +24903,25 @@ impl Mc2Simulation {
                 "campaign owner color is out of bounds",
             ));
         }
+        let attraction_slot = live.economy.economy.spheres().iter()
+            .find(|sphere| sphere.active && sphere.source_entity_index == source_slot
+                && sphere.control_flags & 0x800 == 0)
+            .map_or(0, |sphere| sphere.attraction_source_entity_index);
+        let attraction_target = if attraction_slot == 0 {
+            None
+        } else {
+            let context = source_target::Context {
+                spells: Some(&live.shared_spells),
+                particles: Some(&self.session.definition.presentation.particles),
+                map_type: Some(live.terrain.map_type()),
+                player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+            };
+            source_target::read(&live.economy, context, attraction_slot)
+                .map_err(NativeWorldError::new)?
+                .map(|target| target.position)
+                .or_else(|| live.economy.entities.first().map(|sentinel| sentinel.position))
+        };
         Ok(live.economy.economy.step_mana_sphere_slot_with_owner_resources(
             source_slot,
             &live.terrain,
@@ -24902,6 +24935,7 @@ impl Mc2Simulation {
                     })
             },
             |economy, rows, slot| economy.current_owner_resources(rows, slot),
+            attraction_target,
         ))
     }
 

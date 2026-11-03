@@ -2657,6 +2657,154 @@ fn level_two_mana_sphere_vertical_velocity_uses_signed_source_adjustment() {
 }
 
 #[test]
+fn cave_mana_sphere_source_dispatch_preserves_recovery_and_current_projection() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level16");
+    let mut campaign = CampaignSession::open(package, CampaignSelection::ordinary(16).unwrap())
+        .expect("unfiltered Cave mission opens");
+    let origin = Position { x: 8_192, y: 8_192, z: 100 };
+    let slot = {
+        let live = &mut campaign.simulation_mut().session.state.live;
+        assert_eq!(live.terrain.map_type, MapType::Cave);
+        // Controlled collision planes isolate sub_35940's literal boundaries.
+        live.terrain.planes.ground_heights.fill(0);
+        live.terrain.planes.secondary_heights.fill(255);
+        live.terrain.planes.angles.fill(8);
+        let slot = live.economy.allocate_source_slot_with_terrain(&mut live.terrain).unwrap();
+        live.economy.economy.initialize_death_mana_sphere_at_slot(
+            slot, live.core.state.entity_index, origin, 0, 500, 0, &live.terrain,
+        );
+        crate::world::effects::sync_position(&mut live.economy, &mut live.terrain,
+            slot, origin, true, true).unwrap();
+        let sphere = live.economy.economy.spheres.iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        sphere.velocity_x = 64;
+        sphere.velocity_y = 64;
+        sphere.vertical_velocity = 128; // 61050's post-constructor write.
+        sphere.yaw = 0;
+        sphere.roll = 7;
+        sphere.actual_speed = 37;
+        slot
+    };
+    let baseline = campaign.simulation().clone();
+    let step = |simulation: &mut Mc2Simulation| {
+        let before = *simulation.session.state.live.economy.economy.spheres.iter()
+            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        let handle = simulation.session.state.live.economy.handle(slot).unwrap();
+        assert!(simulation.step_level2_dynamic_arena(0, slot, Level2DynamicArenaKind::ManaSphere));
+        let live = &simulation.session.state.live;
+        assert_eq!(live.economy.handle(slot), Some(handle));
+        let sphere = *live.economy.economy.spheres.iter()
+            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        let view = source_target::read(&live.economy, Default::default(), slot).unwrap().unwrap();
+        let row = source_target::status_parent(&live.economy, Default::default(), slot).unwrap().unwrap();
+        assert_eq!((view.position, view.yaw, view.roll),
+            (sphere.position, Some(sphere.yaw), Some(sphere.roll)));
+        assert_eq!((row.position, row.source_roll(), row.actual_speed),
+            (sphere.position, sphere.roll, sphere.actual_speed));
+        assert_eq!((sphere.entity_rng, sphere.mana), (before.entity_rng, before.mana),
+            "Cave movement consumes no RNG or mana");
+        sphere
+    };
+
+    let mut equality = baseline.clone();
+    {
+        let live = &mut equality.session.state.live;
+        live.terrain.planes.secondary_heights.fill(1); // ceiling32
+        let sphere = live.economy.economy.spheres.iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        sphere.collision_fov = 32; // controlled exact-equality source extent
+        sphere.velocity_x = 0;
+        sphere.velocity_y = 0;
+    }
+    let sphere = step(&mut equality);
+    assert_eq!((sphere.position, sphere.vertical_velocity),
+        (Position { z: 0, ..origin }, -112), "equal clearance permits movement, then roof caps it");
+    assert_eq!((sphere.yaw, sphere.roll, sphere.actual_speed), (0, 7, 37),
+        "strict equality and angle bit8 do not enter recovery");
+
+    let mut retry = baseline.clone();
+    {
+        let live = &mut retry.session.state.live;
+        // sub_B5D68 samples tile_x+2 on the even x_fraction>y_fraction
+        // triangle, so closing only the four geometric corners is insufficient.
+        for (x, y) in [(32, 32), (33, 32), (34, 32), (32, 33), (33, 33), (34, 33)] {
+            live.terrain.planes.secondary_heights[terrain_index(x, y)] = 0;
+        }
+        let mut first = origin;
+        crate::move_entity(&mut first, 682, 0, 256);
+        let mut second = origin;
+        crate::move_entity(&mut second, 342, 0, 256);
+        assert!(live.terrain.ceiling_height(first).unwrap() < 28);
+        assert!(live.terrain.ceiling_height(second).unwrap() >= 28);
+    }
+    let sphere = step(&mut retry);
+    let mut recovered = origin;
+    crate::move_entity(&mut recovered, 342, 0, 256);
+    recovered.z = 0;
+    assert_eq!((sphere.position, sphere.yaw, sphere.roll, sphere.actual_speed),
+        (recovered, 342, 342, 256), "+170 fails; -170 is the first open retry");
+    assert_eq!(sphere.vertical_velocity, -128);
+
+    let mut blocked = baseline.clone();
+    blocked.session.state.live.terrain.planes.secondary_heights.fill(0);
+    let sphere = step(&mut blocked);
+    assert_eq!(sphere.position, Position { x: origin.x + 64, y: origin.y + 64, z: -28 });
+    assert_eq!((sphere.velocity_x, sphere.velocity_y, sphere.vertical_velocity), (64, 64, -128),
+        "all retries fail; roof cap follows ground and prevents grounded damping");
+    assert_eq!((sphere.yaw, sphere.roll, sphere.actual_speed), (0, 7, 256));
+
+    let mut attracted = baseline;
+    let former_field = {
+        let live = &mut attracted.session.state.live;
+        let field = live.economy.economy.allocate_mana_attraction_field(
+            u16::MAX, Position { x: origin.x - 2_000, ..origin }, 1, MANA_ATTRACTION_ACTION,
+        ).unwrap();
+        live.economy.economy.mana_attraction_fields.iter_mut()
+            .find(|row| row.source_entity_index == field).unwrap().life = -1;
+        field
+    };
+    let _ = attracted.step_level2_dynamic_arena(0, former_field, Level2DynamicArenaKind::ManaAttraction);
+    {
+        let live = &mut attracted.session.state.live;
+        live.terrain.planes.secondary_heights.fill(0);
+        assert!(live.economy.economy.mana_attraction_fields.iter()
+            .any(|row| row.source_entity_index == former_field && !row.active));
+        let old_generation = live.economy.slot_generation(former_field);
+        live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &[]).unwrap();
+        // Controlled source allocation consumes the real free-stack prefix
+        // until NewEvent reuses the expired field's exact numeric address.
+        let mut reused = false;
+        for _ in 0..live.economy.entities.len() {
+            let next = live.economy.allocate_source_slot_with_terrain(&mut live.terrain).unwrap();
+            assert_ne!(next, slot);
+            if next == former_field {
+                reused = true;
+                break;
+            }
+        }
+        assert!(reused);
+        assert_ne!(live.economy.slot_generation(former_field), old_generation);
+        live.economy.entities[usize::from(former_field)] = crate::world::terrain::cave_features::new_event(
+            former_field, live.economy.economy.new_event_rng(former_field),
+            Position { x: origin.x + 2_000, ..origin },
+        );
+        let sphere = live.economy.economy.spheres.iter_mut()
+            .find(|sphere| sphere.source_entity_index == slot).unwrap();
+        sphere.attraction_source_entity_index = former_field;
+        sphere.attraction_step = 42;
+    }
+    let sphere = step(&mut attracted);
+    assert_eq!(sphere.position, Position { z: -28, ..origin },
+        "an attracted blocked sphere rolls back instead of searching");
+    assert_eq!((sphere.velocity_x, sphere.velocity_y), (42, 0),
+        "the current fixed-address occupant supplies attraction direction");
+    assert_eq!((sphere.yaw, sphere.roll, sphere.actual_speed), (512, 7, 37));
+    assert_eq!(sphere.attraction_source_entity_index, 0);
+}
+
+#[test]
 fn level_two_castle_spawn_carrier_accepts_source_launch_payload_and_hashes_relation() {
     let package = level_two_fixture_path();
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

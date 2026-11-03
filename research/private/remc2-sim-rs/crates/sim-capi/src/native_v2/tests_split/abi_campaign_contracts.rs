@@ -949,6 +949,8 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
         velocity_y: 0,
         vertical_velocity: 0,
         yaw: 0,
+        roll: 0,
+        actual_speed: 32,
         max_life: 300,
         life: 300,
         mana: 321,
