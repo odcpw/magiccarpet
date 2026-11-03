@@ -3335,6 +3335,19 @@ impl RivalWizardRoster {
             .map(|entry| &entry.dispatcher)
     }
 
+    /// A holder dereferences the current PlayerState A4 even after its body
+    /// is reclaimed. The caller must first resolve that actual A4 relation;
+    /// NewEvent's GlobalSpecialState must never inherit these values.
+    pub(crate) fn retained_speed_a4(&self, slot: u16) -> Option<(i16, i16)> {
+        self.entries.get(&slot).map(|entry| entry.dispatcher.speed_holder_inputs())
+    }
+
+    pub(crate) fn set_retained_speed_a4(&mut self, slot: u16, speed: i16) -> bool {
+        let Some(entry) = self.entries.get_mut(&slot) else { return false };
+        entry.dispatcher.apply_holder_target_speed(speed);
+        true
+    }
+
     pub(crate) fn get_in_arena(
         &self,
         arena: &SourceArena,

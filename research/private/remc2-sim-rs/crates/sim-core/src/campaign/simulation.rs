@@ -5694,6 +5694,10 @@ impl Mc2Simulation {
         self.session.rebase();
     }
 
+    pub(crate) fn apply_speed_multipliers(&mut self, values: [i32; 3]) {
+        std::sync::Arc::make_mut(&mut self.session.definition).bind_speed_multipliers(values);
+    }
+
     /// Bind the immutable compiled Goat policy to the package-decoded
     /// behavior configuration before the session generation is exposed.
     pub(crate) fn bind_enemy_goat_policy(
@@ -18371,13 +18375,19 @@ impl Mc2Simulation {
                             && holder.action == holder.model * 3
                     })
                 {
-                    self.validate_status_holder_owner(source_slot)?;
+                    if self.session.state.live.shared_spells.pickup(source_slot)
+                        .is_some_and(|holder| !matches!(holder.model, 6 | 11 | 12))
+                    {
+                        self.validate_status_holder_owner(source_slot)?;
+                    }
                     let live = &mut self.session.state.live;
                     let parent_feedback = support_spells::step_source_slot(
                         &mut live.shared_spells,
                         &mut live.economy,
                         &mut live.core,
                         source_slot,
+                        Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                            .with_particles(&self.session.definition.presentation.particles)),
                     )?;
                     live.player_life = live.shared_spells.player_entity.life;
                     self.commit_support_parent_feedback(parent_feedback);
@@ -19590,13 +19600,19 @@ impl Mc2Simulation {
                             && holder.action == holder.model * 3
                     })
                 {
-                    self.validate_status_holder_owner(source_slot)?;
+                    if self.session.state.live.shared_spells.pickup(source_slot)
+                        .is_some_and(|holder| !matches!(holder.model, 6 | 11 | 12))
+                    {
+                        self.validate_status_holder_owner(source_slot)?;
+                    }
                     let live = &mut self.session.state.live;
                     let parent_feedback = support_spells::step_source_slot(
                         &mut live.shared_spells,
                         &mut live.economy,
                         &mut live.core,
                         source_slot,
+                        Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                            .with_particles(&self.session.definition.presentation.particles)),
                     )?;
                     live.player_life = live.shared_spells.player_entity.life;
                     self.commit_support_parent_feedback(parent_feedback);
@@ -22515,12 +22531,56 @@ impl Mc2Simulation {
         remains_live
     }
 
+    /// Publish a source speed write through the current A4 and body owners.
+    fn write_speed_parent_speed(&mut self, parent: &EntitySnapshot, speed: i16) {
+        let live = &mut self.session.state.live;
+        match parent.special_relation {
+            EntitySpecialRelation::GlobalSpecialState => {
+                live.shared_spells.global_special_state.speed = speed
+            }
+            EntitySpecialRelation::PlayerState(index) => {
+                if index == live.shared_spells.local_player.slot {
+                    live.core.state.target_speed = speed;
+                } else if let Some(player) = live.shared_spells.players.get_mut(usize::from(index)) {
+                    if !live
+                        .nyphur_dispatcher
+                        .set_retained_speed_a4(player.entity_index, speed)
+                    {
+                        player.record[20..22].copy_from_slice(&speed.to_le_bytes());
+                    }
+                }
+            }
+            _ => {}
+        }
+        source_target::commit_status_speed(
+            &mut live.economy,
+            Some(area_damage::ActorDomains::new(
+                &mut live.goats,
+                &mut live.ordinary,
+            )),
+            parent,
+            speed,
+        );
+        if parent.active
+            && parent.class == 3
+            && matches!(parent.model, 0 | 1)
+            && live.economy.economy.live_arena_kind(parent.index).is_none()
+            && live.shared_spells.players.iter().any(|player| {
+                player.entity_index == parent.index
+                    && parent.special_relation == EntitySpecialRelation::PlayerState(player.slot)
+            })
+        {
+            if parent.index == live.core.state.entity_index {
+                live.core.state.actual_speed = speed;
+            }
+            live.shared_spells
+                .sync_player_entity_from_authority(&live.economy.entities[usize::from(parent.index)]);
+        }
+    }
+
     /// Dispatch the acquired family-3 holder through `GetScroll_69DB0` at
     /// its real numeric source slot.
     fn step_speed_holder_source_slot(&mut self, source_slot: u16) -> bool {
-        if self.validate_status_holder_owner(source_slot).is_err() {
-            return false;
-        }
         let Some(holder) = self
             .session
             .state
@@ -22535,52 +22595,78 @@ impl Mc2Simulation {
             return false;
         };
         let parent_entity_index = u16::from_le_bytes([holder.record[44], holder.record[45]]);
-        let parent = self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .get(usize::from(parent_entity_index))
-            .filter(|entity| {
-                entity.index == parent_entity_index
-                    && entity.active
-                    && entity.class == 3
-                    && matches!(entity.model, 0 | 1)
-            })
-            .cloned();
-        let owner_is_local = parent_entity_index == self.session.state.live.core.state.entity_index;
-        let (target_speed, speed_changed) = if owner_is_local {
+        let live = &self.session.state.live;
+        let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+        context.spells = Some(&live.shared_spells);
+        let Ok(parent) = source_target::status_parent(&live.economy, context, parent_entity_index)
+        else {
+            return false;
+        };
+        let current_player = parent.as_ref().is_some_and(|parent| {
+            parent.active
+                && parent.class == 3
+                && matches!(parent.model, 0 | 1)
+                && live
+                    .economy
+                    .economy
+                    .live_arena_kind(parent_entity_index)
+                    .is_none()
+                && live.shared_spells.players.iter().any(|player| {
+                    player.entity_index == parent_entity_index
+                        && parent.special_relation == EntitySpecialRelation::PlayerState(player.slot)
+                })
+        });
+        let owner_is_local = current_player && parent_entity_index == live.core.state.entity_index;
+        let local_a4 = parent.as_ref().is_some_and(|parent| {
+            parent.special_relation
+                == EntitySpecialRelation::PlayerState(live.shared_spells.local_player.slot)
+        });
+        let player_a4 = parent
+            .as_ref()
+            .and_then(|parent| match parent.special_relation {
+                EntitySpecialRelation::PlayerState(index) => {
+                    live.shared_spells.players.get(usize::from(index))
+                }
+                _ => None,
+            });
+        let a4_owner = player_a4.map(|player| player.entity_index);
+        let global_a4 = parent
+            .as_ref()
+            .is_some_and(|parent| parent.special_relation == EntitySpecialRelation::GlobalSpecialState);
+        let (target_speed, speed_changed) = if global_a4 {
+            let global = live.shared_spells.global_special_state;
+            (global.speed, global.speed_changed != 0)
+        } else if local_a4 {
             let state = &self.session.state.live.core.state;
             (state.target_speed, state.speed_changed_flag != 0)
-        } else if let Some(dispatcher) = self
-            .session
-            .state
-            .live
-            .nyphur_dispatcher
-            .get_in_arena(&self.session.state.live.economy, parent_entity_index)
+        } else if let Some(dispatcher) =
+            a4_owner.and_then(|owner| live.nyphur_dispatcher.retained_speed_a4(owner))
         {
-            let (speed, changed) = dispatcher.speed_holder_inputs();
+            let (speed, changed) = dispatcher;
             (speed, changed != 0)
-        } else if parent.is_some() {
-            return false;
         } else {
-            (0, false)
+            // A reclaimed player retains its original A4 until NewEvent.
+            // Read that compact player carrier even without a live body.
+            player_a4.map_or((0, false), |player| {
+                (
+                    i16::from_le_bytes([player.record[20], player.record[21]]),
+                    false,
+                )
+            })
         };
         let first_active_tick = holder.active_value == holder.activation_value.cast_signed();
-        let castle_mana = self
-            .session
-            .state
-            .live
-            .economy
-            .economy
-            .castle_for_owner(parent_entity_index)
-            .map(|castle| castle.mana);
+        let castle_mana = match parent
+            .as_ref()
+            .map(|parent| source_target::status_castle_mana(&live.economy, &live.shared_spells, parent))
+            .transpose()
+        {
+            Ok(mana) => mana.flatten(),
+            Err(_) => return false,
+        };
         let source_gate_passed = parent.as_ref().is_some_and(|parent| {
             parent.life >= 0
                 && parent.mana >= 0
-                && (holder.mana_regen == 0
-                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
+                && (holder.mana_regen == 0 || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
                 && (!first_active_tick || parent.mana >= holder.max_mana)
         });
         let presentation_timer = u16::from_le_bytes([holder.record[58], holder.record[59]]);
@@ -22588,8 +22674,12 @@ impl Mc2Simulation {
         let minimum_speed = parent
             .as_ref()
             .map_or(PLAYER_MIN_SPEED, EntitySnapshot::minimum_speed);
-        let transition = crate::spell_activation::step_speed_spell(
-            crate::spell_activation::SpeedSpellStepInput {
+        let Some(tier) = level2_applied_tier(holder.level_gate).filter(|tier| *tier < 3) else {
+            return false;
+        };
+        let multiplier = self.session.definition.speed_multipliers[usize::from(tier)];
+        let transition =
+            crate::spell_activation::step_speed_spell(crate::spell_activation::SpeedSpellStepInput {
                 active_value: holder.active_value,
                 activation_value: holder.activation_value.cast_signed(),
                 holder_phase: holder.phase,
@@ -22600,10 +22690,8 @@ impl Mc2Simulation {
                 speed_changed,
                 direction: if target_speed < 0 { -1 } else { 1 },
                 minimum_speed,
-                first_multiplier: i16::try_from(holder.subspell_index)
-                    .unwrap_or(i16::MAX)
-                    .wrapping_add(1),
-                sustain_multiplier: i16::try_from(holder.subspell_index).unwrap_or(i16::MAX),
+                first_multiplier: multiplier.wrapping_add(1) as i16,
+                sustain_multiplier: multiplier as i16,
                 parent_mana_regen,
                 mana_cost: holder.max_mana,
                 latch_clear_offset: if parent.as_ref().is_some_and(|parent| parent.model == 1) {
@@ -22611,8 +22699,7 @@ impl Mc2Simulation {
                 } else {
                     2
                 },
-            },
-        );
+            });
 
         if transition.prepare_sound_19 {
             mark_source_audio_call(SourceAudioCallTag::SpeedSpellActivation);
@@ -22628,58 +22715,120 @@ impl Mc2Simulation {
                     sound_id: 19,
                 });
         }
-        if transition.award_experience {
+        if transition.award_experience
+            && parent
+                .as_ref()
+                .is_some_and(|parent| (parent.class, parent.model) == (3, 0))
+        {
             let live = &mut self.session.state.live;
-            live.shared_spells.award_speed_experience(parent_entity_index, 1);
+            live.shared_spells
+                .award_speed_experience(parent_entity_index, 1);
             publish_spell_progression(live, parent_entity_index, 3);
         }
-        if let Some(speed) = transition.requested_speed {
-            let live = &mut self.session.state.live;
-            if owner_is_local {
-                live.core.state.target_speed = speed;
-            } else if let Some(dispatcher) = live
-                .nyphur_dispatcher
-                .get_mut_in_arena(&live.economy, parent_entity_index)
-            {
-                dispatcher.apply_holder_target_speed(speed);
-            }
-        }
-        if let Some(speed) = transition.actual_speed {
-            if owner_is_local {
-                self.session.state.live.core.state.actual_speed = speed;
-            }
-            let live = &mut self.session.state.live;
-            if let Some(entity) = live.economy.entities.get_mut(usize::from(parent_entity_index))
-            {
-                entity.set_actual_speed(speed);
-                live.shared_spells.sync_player_entity_from_authority(entity);
-            }
+        let pulsed =
+            holder.active_value > 0 && parent.is_some() && source_gate_passed && !speed_changed;
+        let direction = if target_speed < 0 { -1_i16 } else { 1_i16 };
+        if pulsed {
+            let speed = direction
+                .wrapping_mul(minimum_speed)
+                .wrapping_mul(if first_active_tick {
+                    multiplier.wrapping_add(1) as i16
+                } else {
+                    multiplier as i16
+                });
+            self.write_speed_parent_speed(parent.as_ref().unwrap(), speed);
         }
         if transition.request_trail
             && let Some(parent) = parent.as_ref()
         {
-            let position = parent.position;
-            let _ = self
-                .session
-                .state
-                .live
+            let live = &mut self.session.state.live;
+            if let Some(slot) = live
                 .economy
-                .economy
-                .allocate_speed_trail(position, parent.source_id);
+                .allocate_source_slot_with_terrain(&mut live.terrain)
+            {
+                // NewAdd0A02 reads its position pointer after NewEvent. The
+                // source argument aliases cleared storage if it reuses parent.
+                let (position, source_id) = if slot == parent_entity_index {
+                    let current = &live.economy.entities[usize::from(slot)];
+                    (current.position, current.source_id)
+                } else {
+                    (parent.position, parent.source_id)
+                };
+                live.economy
+                    .economy
+                    .initialize_speed_trail_at(slot, position, source_id);
+            }
         }
-        if let Some(mana_regen) = transition.parent_mana_regen {
-            self.commit_spell_parent_mana_regen(parent_entity_index, mana_regen);
+        let live = &self.session.state.live;
+        let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+        context.spells = Some(&live.shared_spells);
+        let Ok(current_parent) =
+            source_target::status_parent(&live.economy, context, parent_entity_index)
+        else {
+            return false;
+        };
+        if pulsed && let Some(current) = current_parent.as_ref() {
+            let regen = if first_active_tick {
+                Some(if current.mana_regen >= 0 {
+                    holder.max_mana.wrapping_neg()
+                } else {
+                    current.mana_regen.wrapping_sub(holder.max_mana)
+                })
+            } else {
+                (current.mana_regen > 0).then_some(0)
+            };
+            if let Some(regen) = regen {
+                let live = &mut self.session.state.live;
+                let is_player = current.active
+                    && current.class == 3
+                    && matches!(current.model, 0 | 1)
+                    && live
+                        .economy
+                        .economy
+                        .live_arena_kind(current.index)
+                        .is_none()
+                    && live.shared_spells.players.iter().any(|player| {
+                        player.entity_index == current.index
+                            && current.special_relation
+                                == EntitySpecialRelation::PlayerState(player.slot)
+                    });
+                if is_player {
+                    self.commit_spell_parent_mana_regen(current.index, regen);
+                } else {
+                    let mut after = current.clone();
+                    after.set_mana_regen(regen);
+                    if source_target::commit_status_parent(
+                        &mut live.economy,
+                        &mut live.shared_spells,
+                        None,
+                        current,
+                        &after,
+                    )
+                    .is_err()
+                    {
+                        return false;
+                    }
+                }
+            }
         }
-        let queued_profile = transition.expired.then(|| {
-            let queued = u16::from_le_bytes([holder.record[48], holder.record[49]]);
-            let tier = u8::try_from(queued.checked_sub(1)?).ok()?;
-            let profile = self
-                .session
-                .state
-                .live
-                .source_spell_profile(3, tier, parent_entity_index)?;
-            Some((tier, profile))
-        }).flatten();
+        if transition.expired
+            && let Some(current) = current_parent.as_ref()
+        {
+            self.write_speed_parent_speed(current, direction.wrapping_mul(current.minimum_speed()));
+        }
+        let queued_profile = transition
+            .expired
+            .then(|| {
+                let queued = i16::from_le_bytes([holder.record[48], holder.record[49]]);
+                let tier = (queued > 0).then(|| queued.saturating_sub(1).min(2) as u8)?;
+                let profile =
+                    self.session
+                        .state
+                        .live
+                        .source_spell_profile(3, tier, parent_entity_index)?;
+                Some((tier, profile))
+            })
+            .flatten();
         if let Some(authoritative) = self
             .session
             .state
@@ -22690,8 +22839,7 @@ impl Mc2Simulation {
             authoritative.active_value = transition.active_value;
             authoritative.record[50..52].copy_from_slice(&transition.active_value.to_le_bytes());
             authoritative.set_control_flags(transition.holder_control_flags);
-            authoritative.record[58..60]
-                .copy_from_slice(&transition.presentation_timer.to_le_bytes());
+            authoritative.record[58..60].copy_from_slice(&transition.presentation_timer.to_le_bytes());
             if let Some((tier, profile)) = queued_profile {
                 authoritative.record[48..50].fill(0);
                 authoritative.apply_nyphur_spell_profile(profile, tier);
@@ -22699,14 +22847,14 @@ impl Mc2Simulation {
         }
         if owner_is_local
             && let Some(speed_holder) = self
-            .session
-            .state
-            .live
-            .core
-            .context
-            .speed_spell_holder
-            .as_mut()
-            .filter(|holder| holder.entity_index == source_slot)
+                .session
+                .state
+                .live
+                .core
+                .context
+                .speed_spell_holder
+                .as_mut()
+                .filter(|holder| holder.entity_index == source_slot)
         {
             speed_holder.active_value = transition.active_value;
         }
@@ -22721,7 +22869,6 @@ impl Mc2Simulation {
         }
         true
     }
-
     fn step_dynamic_castle_holder(&mut self, pass: u8, source_slot: u16) -> bool {
         self.step_level2_castle_holder_source_slot(source_slot);
         if let Some(holder) = self
@@ -27839,6 +27986,169 @@ mod tests {
     use super::*;
 
     #[test]
+    fn speed_trail_parent_allocation_alias_charges_and_expires_the_current_record() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-1pb-16-level2-full-build-v2");
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        let mut base = campaign.simulation().clone();
+        base.apply_carried_spell_families(&[3], Some(3)).unwrap();
+        let owner = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player().enabled_spell_holders[3];
+        for tier in 0..=2 {
+            for last_pulse in [false, true] {
+                let mut simulation = base.clone();
+                let live = &mut simulation.session.state.live;
+                let cached_player = live.shared_spells.player_entity.clone();
+                let experience = live.shared_spells.local_player.runtime_spell_experience[3];
+                live.core.state.target_speed = -7;
+                live.core.state.speed_changed_flag = 0;
+                live.shared_spells.global_special_state.speed = 777;
+                live.shared_spells.global_special_state.speed_changed = 0;
+                let profile = crate::spell_activation::level2_set_spell_profile(3, tier).unwrap();
+                let mut holder = live.shared_spells.pickup(holder_slot).unwrap().clone();
+                holder.apply_nyphur_spell_profile(profile, tier);
+                // Controlled first/last counter boundaries and passed Castle
+                // prerequisite; preserve the tier's real pulse cost.
+                holder.active_value = if last_pulse { 1 } else { 2 };
+                holder.activation_value = 2;
+                holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                holder.record[52..54].copy_from_slice(&2_u16.to_le_bytes());
+                holder.set_phase(0);
+                holder.set_mana_regen(0);
+                live.shared_spells.sync_pickup_from_authority(&holder);
+                live.economy.entities[usize::from(holder_slot)] = holder;
+                live.economy.finish_source_group();
+                crate::world::terrain::cave_features::reclaim(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    owner,
+                );
+                let parent = &mut live.economy.entities[usize::from(owner)];
+                parent.set_life(100);
+                parent.set_mana(profile.max_mana.max(0) + 1_000);
+                parent.set_mana_regen(-17);
+                parent.record[136..138].copy_from_slice(&40_i16.to_le_bytes());
+                parent.source_id = 999;
+                parent.record[30..32].copy_from_slice(&999_u16.to_le_bytes());
+                parent.set_position(Position {
+                    x: 700,
+                    y: 800,
+                    z: 900,
+                });
+                assert!(simulation.step_speed_holder_source_slot(holder_slot));
+                let live = &simulation.session.state.live;
+                assert_eq!(
+                    live.economy.economy.live_arena_kind(owner),
+                    Some(Level2DynamicArenaKind::SpeedTrail)
+                );
+                let trail = live
+                    .economy
+                    .economy
+                    .speed_trails
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == owner)
+                    .unwrap();
+                assert_eq!(
+                    (trail.position, trail.source_id, trail.life),
+                    (Position::default(), owner, 32)
+                );
+                let current = &live.economy.entities[usize::from(owner)];
+                assert_eq!(
+                    current.special_relation,
+                    EntitySpecialRelation::GlobalSpecialState
+                );
+                assert_eq!(
+                    current.mana_regen,
+                    if last_pulse {
+                        0
+                    } else {
+                        profile.max_mana.wrapping_neg()
+                    }
+                );
+                assert_eq!(current.actual_speed, if last_pulse { 0 } else { 16 });
+                assert_eq!(
+                    live.shared_spells.global_special_state.speed,
+                    if last_pulse { 0 } else { 777 }
+                );
+                assert_eq!(live.shared_spells.player_entity, cached_player);
+                assert_eq!(
+                    live.shared_spells.local_player.runtime_spell_experience[3], experience,
+                    "source6D8B0 cannot award a reclaimed class-zero parent"
+                );
+                assert_eq!(
+                    live.shared_spells.pickup(holder_slot).unwrap().active_value,
+                    if last_pulse { 0 } else { 1 }
+                );
+            }
+        }
+    }
+    #[test]
+    fn speed_holder_reads_retained_player_and_reused_shared_a4_and_clamps_queued_tier() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-1pb-16-level2-full-build-v2");
+        let campaign = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        let mut base = campaign.simulation().clone();
+        base.apply_carried_spell_families(&[3], Some(3)).unwrap();
+        base.apply_speed_multipliers([65_538, 3, 4]);
+        let owner = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player().enabled_spell_holders[3];
+        for reused in [false, true] {
+            let mut simulation = base.clone();
+            let live = &mut simulation.session.state.live;
+            let old_pose = live.core.state.position;
+            let old_cache = live.shared_spells.player_entity.clone();
+            live.core.state.target_speed = -91;
+            live.core.state.speed_changed_flag = 0;
+            if reused {
+                live.economy.finish_source_group();
+                crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, owner);
+                let allocated = crate::native_world::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain)
+                    .expect("ordinary NewEvent replaces the reclaimed player address");
+                assert_eq!(allocated, owner);
+                live.shared_spells.global_special_state.speed = -7;
+                live.shared_spells.global_special_state.speed_changed = 0;
+            } else {
+                live.economy.entities[usize::from(owner)].reclaim_source_row();
+            }
+            // Controlled positive source record and free-use profile isolate
+            // the A4 pointer/low-word arithmetic from earned resources.
+            let parent = &mut live.economy.entities[usize::from(owner)];
+            parent.set_life(100);
+            parent.set_mana(0);
+            parent.record[136..138].copy_from_slice(&40_i16.to_le_bytes());
+            let mut holder = live.shared_spells.pickup(holder_slot).unwrap().clone();
+            holder.active_value = 2;
+            holder.activation_value = 2;
+            holder.record[50..52].copy_from_slice(&2_i16.to_le_bytes());
+            holder.record[52..54].copy_from_slice(&2_u16.to_le_bytes());
+            holder.max_mana = 0;
+            holder.record[144..148].fill(0);
+            holder.set_mana_regen(0);
+            holder.set_source_word_2c(129);
+            live.shared_spells.sync_pickup_from_authority(&holder);
+            live.economy.entities[usize::from(holder_slot)] = holder;
+            assert!(simulation.step_speed_holder_source_slot(holder_slot));
+            let live = &simulation.session.state.live;
+            assert_eq!(live.economy.entities[usize::from(owner)].actual_speed, -120,
+                "i32 table multiplier uses source low-word arithmetic");
+            assert_eq!(live.shared_spells.pickup(holder_slot).unwrap().active_value, 1);
+            assert_eq!(live.core.state.position, old_pose);
+            assert_eq!(live.shared_spells.player_entity, old_cache,
+                "a retained/replaced address cannot republish the old player cache");
+            if reused {
+                assert_eq!(live.shared_spells.global_special_state.speed, -120);
+                assert_eq!(live.core.state.target_speed, -91);
+            } else {
+                assert_eq!(live.core.state.target_speed, -120);
+            }
+            assert!(simulation.step_speed_holder_source_slot(holder_slot));
+            let holder = simulation.shared_spells().pickup(holder_slot).unwrap();
+            assert_eq!((holder.active_value, holder.level_gate, holder.source_word_2c()), (0, 2, 0));
+            assert_eq!(simulation.entities()[usize::from(owner)].actual_speed, -40);
+        }
+    }
+
+    #[test]
     fn source_family_feedback_updates_owner_progression_and_rejects_non_human_owner() {
         let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-1pb-16-level2-full-build-v2");
@@ -32608,6 +32918,7 @@ mod tests {
                     economy.set_castle_mana_prerequisite_for_test(castle, profile.max_mana * 2)
                 );
             }
+            live.session.state.live.sync_castle_player_relations();
             live.shared_spells_mut()
                 .set_local_player_mana_for_test(profile.max_mana * 2);
             live.session.state.live.economy.entities[usize::from(player_entity_index)]

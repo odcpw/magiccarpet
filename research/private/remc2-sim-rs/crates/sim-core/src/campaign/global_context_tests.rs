@@ -37,6 +37,8 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         input_pitch: -11,
         cast_auxiliary: 9,
         castle_entity_index: 19,
+        speed: -37,
+        speed_changed: 2,
     };
     original
         .session_mut()
@@ -66,6 +68,8 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         input_pitch: 13,
         cast_auxiliary: 17,
         castle_entity_index: 23,
+        speed: 91,
+        speed_changed: -1,
     };
     let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(81803).unwrap();
     let guard = loaded.identity().guard();

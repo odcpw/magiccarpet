@@ -2,7 +2,7 @@
 
 use super::{
     CREATURE_POLICY_CAPABILITY_ID, DefinitionErrorCode, FIREBALL_MANA_COST_CAPABILITY_ID,
-    GameDefinition, Result, SemanticId, SemanticValue,
+    GameDefinition, Result, SPEED_MULTIPLIERS_CAPABILITY_ID, SemanticId, SemanticValue,
 };
 use crate::{FlightTuning, goat::GoatBehaviorConfig};
 use sim_definition::adapter::definition_error;
@@ -12,6 +12,11 @@ pub const PLAYER_MAX_FORWARD_SPEED_ID: &str = "flight.player.max_forward_speed";
 pub const PLAYER_FORWARD_ACCELERATION_ID: &str = "flight.player.forward_acceleration";
 pub const FIREBALL_MANA_COST_ID: &str = "spell.fireball.mana_cost";
 pub const ENEMY_DEFAULT_POLICY_ID: &str = "ai.enemy.default.policy";
+pub const SPEED_MULTIPLIER_IDS: [&str; 3] = [
+    "spell.speed.tier0.multiplier",
+    "spell.speed.tier1.multiplier",
+    "spell.speed.tier2.multiplier",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DefinitionFlightBinding {
@@ -21,6 +26,56 @@ pub struct DefinitionFlightBinding {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DefinitionFireballBinding {
     mana_cost: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DefinitionSpeedBinding {
+    multipliers: [i32; 3],
+}
+
+impl DefinitionSpeedBinding {
+    /// Resolve the package-qualified Speed table used by scheduled holders.
+    pub fn from_definition(definition: &GameDefinition) -> Result<Option<Self>> {
+        if !definition
+            .required_capabilities()
+            .iter()
+            .any(|requirement| {
+                requirement.id.as_str() == SPEED_MULTIPLIERS_CAPABILITY_ID
+                    && requirement.exact_version == 1
+            })
+        {
+            return Ok(None);
+        }
+        let mut multipliers = [0; 3];
+        for (index, name) in SPEED_MULTIPLIER_IDS.into_iter().enumerate() {
+            let id = SemanticId::parse(name)?;
+            let Some(SemanticValue::Integer(value)) = definition.value(&id) else {
+                return Err(definition_error(
+                    DefinitionErrorCode::TypeMismatch,
+                    name,
+                    "Speed multiplier is not an integer",
+                ));
+            };
+            multipliers[index] = i32::try_from(*value).map_err(|_| {
+                definition_error(
+                    DefinitionErrorCode::OutOfRange,
+                    name,
+                    "Speed multiplier does not fit the source i32 carrier",
+                )
+            })?;
+        }
+        Ok(Some(Self { multipliers }))
+    }
+
+    #[must_use]
+    pub const fn multipliers(self) -> [i32; 3] {
+        self.multipliers
+    }
+
+    #[must_use]
+    pub fn consumes(id: &SemanticId) -> bool {
+        SPEED_MULTIPLIER_IDS.contains(&id.as_str())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

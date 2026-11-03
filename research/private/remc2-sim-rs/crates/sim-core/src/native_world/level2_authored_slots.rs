@@ -1333,6 +1333,18 @@ impl Level2EconomyState {
         source_id: u16,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_speed_trail_at(source_entity_index, position, source_id);
+        Some(source_entity_index)
+    }
+
+    /// Complete the same source constructor after SourceArena has performed
+    /// NewEvent and published any replacement's map unlink.
+    pub(crate) fn initialize_speed_trail_at(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+        source_id: u16,
+    ) {
         let entity_rng = self.new_event_rng(source_entity_index);
         self.speed_trails.push(SpeedTrailEffect {
             source_entity_index,
@@ -1349,7 +1361,6 @@ impl Level2EconomyState {
             active: true,
         });
         self.source_rng.insert(source_entity_index, entity_rng);
-        Some(source_entity_index)
     }
 
     /// Dispatch `CastSpeedSpell_31100`. The disabled row remains reserved for

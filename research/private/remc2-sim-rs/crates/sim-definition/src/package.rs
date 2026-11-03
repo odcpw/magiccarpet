@@ -17,6 +17,7 @@ use std::{
 /// Exact compiled capability required by packages whose local player owns a
 /// reset-time Fireball mana-cost carrier.
 pub const FIREBALL_MANA_COST_CAPABILITY_ID: &str = "engine.spell.fireball.mana_cost";
+pub const SPEED_MULTIPLIERS_CAPABILITY_ID: &str = "engine.spell.speed.multipliers";
 
 /// Exact compiled capability required by packages which bind the ordinary
 /// creature perceive/decide/act policy.
@@ -295,6 +296,10 @@ pub fn engine_capabilities() -> Result<CompiledCapabilityRegistry> {
             (
                 FIREBALL_MANA_COST_CAPABILITY_ID,
                 "Package-bound local-player Fireball affordability and source charge.",
+            ),
+            (
+                SPEED_MULTIPLIERS_CAPABILITY_ID,
+                "Package-bound per-tier Speed movement multipliers.",
             ),
         ]
         .into_iter()

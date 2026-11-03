@@ -13,6 +13,429 @@ use crate::villager::VillagerFamily;
 
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
 
+fn status_kind(arena: &SourceArena, slot: u16) -> Option<Kind> {
+    if let Some(kind) = arena.economy.live_arena_kind(slot) {
+        return Some(kind);
+    }
+    if arena.economy.free_source_slots().contains(&slot) {
+        return None;
+    }
+    // Match read_current's retained flyer owners until the next reclaim
+    // prologue. Hidden drawing does not invalidate a source parent pointer.
+    if arena
+        .economy
+        .fireball_projectiles
+        .iter()
+        .any(|row| row.source_entity_index == slot && !row.active && row.drawing_disabled)
+    {
+        Some(Kind::FireballProjectile)
+    } else if arena
+        .economy
+        .castle_projectiles
+        .iter()
+        .any(|row| row.source_entity_index == slot && !row.active && row.drawing_disabled)
+    {
+        Some(Kind::CastleProjectile)
+    } else if arena
+        .economy
+        .possession_projectiles
+        .iter()
+        .any(|row| row.source_entity_index == slot && !row.active)
+    {
+        Some(Kind::PossessionProjectile)
+    } else {
+        None
+    }
+}
+
+/// Status callbacks dereference a fixed source address, including a retained
+/// free row. Fields without a typed owner (A4 and the charge accumulator)
+/// remain in the current incarnation's NewEvent record.
+pub(crate) fn status_parent(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<EntitySnapshot>, String> {
+    let Some(view) = read(arena, context, slot)? else {
+        return Ok(None);
+    };
+    let mut parent = arena.entities[usize::from(slot)].clone();
+    let kind = status_kind(arena, slot);
+    let retained = kind.is_some() && arena.economy.live_arena_kind(slot).is_none();
+    if matches!(kind, Some(Kind::SpellPickup | Kind::SpellReplacement)) {
+        parent = context
+            .spells
+            .and_then(|shared| shared.pickup(slot))
+            .cloned()
+            .ok_or_else(|| format!("status parent {slot} lost its current spell record"))?;
+    }
+    parent.active = view.active;
+    parent.class = view.class;
+    parent.model = view.model;
+    parent.source_id = view.source_id;
+    parent.position = view.position;
+    parent.set_life(view.life);
+    parent.set_control_flags(view.control_flags);
+    if let Some(kind) = kind {
+        let economy = &arena.economy;
+        // NewEvent initializes mana to zero. Only these typed carriers own a
+        // mutable mana field; another carrier cannot inherit the old player.
+        let mana = match kind {
+            Kind::FireballProjectile => economy
+                .fireball_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| row.source_mana),
+            Kind::CastleProjectile => economy
+                .castle_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| row.source_mana),
+            Kind::ManaSphere => economy
+                .spheres
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::ManaCarrier => economy
+                .carriers
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.carried_mana),
+            Kind::CastleRoot => economy.castle_at(slot).map(|row| row.mana),
+            Kind::CastleChild | Kind::CastleController | Kind::CastleDefender => economy
+                .castle_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::CastleAuxiliary => economy
+                .castle_defenders
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::AuthoredClass5 => economy
+                .authored_class5
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::AuthoredDragonPart => economy
+                .authored_dragon_parts
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::AuthoredClass5Model3Child => economy
+                .authored_class5_model3_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::AuthoredModel45 => economy
+                .authored_model45
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::HouseResident => economy
+                .house_residents
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::BeeCreature => economy
+                .bee_creatures
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.mana),
+            Kind::SpellPickup | Kind::SpellReplacement => Some(parent.mana),
+            _ => Some(0),
+        };
+        parent.set_mana(
+            mana.ok_or_else(|| format!("status parent {slot} lost its current mana owner"))?,
+        );
+        let speed = match kind {
+            Kind::FireballProjectile => economy
+                .fireball_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::CastleProjectile => economy
+                .castle_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::PossessionProjectile => economy
+                .possession_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::AuthoredClass5 => economy
+                .authored_class5
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::AuthoredClass5Model3Child => economy
+                .authored_class5_model3_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::AuthoredClass5ArcherChild => economy
+                .authored_class5_archer_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::BeeCreature => economy
+                .bee_creatures
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::HouseResident => economy
+                .house_residents
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::AuthoredModel45 => economy
+                .authored_model45
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::AuthoredModel76 => economy
+                .authored_model76
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::Model76Child => economy
+                .model76_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.minimum_speed, row.actual_speed)),
+            Kind::Model6SpawnedChild => economy
+                .model6_spawned_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (row.min_speed, row.actual_speed)),
+            _ => None,
+        };
+        if let Some((minimum, actual)) = speed {
+            parent.record[136..138].copy_from_slice(&minimum.to_le_bytes());
+            parent.set_actual_speed(actual);
+        }
+    }
+    let external = context
+        .goats
+        .and_then(|family| {
+            family.goats().iter().find(|row| {
+                row.active
+                    && row.entity_index == slot
+                    && (view.class, view.model) == (super::GOAT_CLASS, super::GOAT_MODEL)
+            })
+        })
+        .map(|row| (row.mana, row.minimum_speed, row.actual_speed))
+        .or_else(|| {
+            context
+                .villagers
+                .and_then(|family| {
+                    family.villagers().iter().find(|row| {
+                        row.source_retained()
+                            && row.entity_index == slot
+                            && (view.class, view.model) == (5, row.model)
+                    })
+                })
+                .map(|row| (row.mana, row.minimum_speed, row.actual_speed))
+        });
+    if let Some((mana, minimum, actual)) = external {
+        parent.set_mana(mana);
+        parent.record[136..138].copy_from_slice(&minimum.to_le_bytes());
+        parent.set_actual_speed(actual);
+    }
+    Ok(Some(parent))
+}
+
+pub(crate) fn commit_status_speed(
+    arena: &mut SourceArena,
+    domains: Option<area_damage::ActorDomains<'_>>,
+    parent: &EntitySnapshot,
+    speed: i16,
+) {
+    let slot = parent.index;
+    if let Some(mut domains) = domains {
+        domains.set_status_speed(slot, parent.class, parent.model, speed);
+    }
+    let kind = status_kind(arena, slot);
+    let retained = kind.is_some() && arena.economy.live_arena_kind(slot).is_none();
+    let economy = &mut arena.economy;
+    macro_rules! set_speed {
+        ($rows:expr) => {
+            if let Some(row) = $rows
+                .iter_mut()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+            {
+                row.actual_speed = speed;
+            }
+        };
+    }
+    match kind {
+        Some(Kind::FireballProjectile) => set_speed!(economy.fireball_projectiles),
+        Some(Kind::CastleProjectile) => set_speed!(economy.castle_projectiles),
+        Some(Kind::PossessionProjectile) => set_speed!(economy.possession_projectiles),
+        Some(Kind::BeeCreature) => set_speed!(economy.bee_creatures),
+        Some(Kind::AuthoredClass5) => set_speed!(economy.authored_class5),
+        Some(Kind::AuthoredClass5Model3Child) => {
+            set_speed!(economy.authored_class5_model3_children)
+        }
+        Some(Kind::AuthoredClass5ArcherChild) => {
+            set_speed!(economy.authored_class5_archer_children)
+        }
+        Some(Kind::HouseResident) => set_speed!(economy.house_residents),
+        Some(Kind::AuthoredModel45) => set_speed!(economy.authored_model45),
+        Some(Kind::AuthoredModel76) => set_speed!(economy.authored_model76),
+        Some(Kind::Model76Child) => set_speed!(economy.model76_children),
+        Some(Kind::Model13SpawnedChild) => set_speed!(economy.model13_spawned_children),
+        Some(Kind::Model6SpawnedChild) => set_speed!(economy.model6_spawned_children),
+        Some(Kind::AuthoredModel59) => set_speed!(economy.authored_model59),
+        Some(Kind::Model59SmokeChild) => set_speed!(economy.model59_smoke_children),
+        Some(Kind::AuthoredModel53) => set_speed!(economy.authored_model53),
+        Some(Kind::BeyondSightPulseEffect) => set_speed!(economy.beyond_sight_effects),
+        _ => {}
+    }
+    if let Some(raw) = arena.entities.get_mut(usize::from(slot)) {
+        raw.set_actual_speed(speed);
+    }
+}
+
+pub(crate) fn status_castle_mana(
+    arena: &SourceArena,
+    shared: &super::Level2SharedSpellResetSession,
+    parent: &EntitySnapshot,
+) -> Result<Option<i32>, String> {
+    let slot = match parent.special_relation {
+        super::EntitySpecialRelation::PlayerState(index) => {
+            let player = shared.players.get(usize::from(index)).ok_or_else(|| {
+                format!("status parent {} has no PlayerState {index}", parent.index)
+            })?;
+            u16::from_le_bytes([player.record[42], player.record[43]])
+        }
+        super::EntitySpecialRelation::GlobalSpecialState => {
+            shared.global_special_state.castle_entity_index
+        }
+        _ => 0,
+    };
+    Ok(status_parent(
+        arena,
+        Context {
+            spells: Some(shared),
+            ..Context::default()
+        },
+        slot,
+    )?
+    .map(|castle| castle.mana))
+}
+
+/// Commit just the two parent fields written by 6A480/6B1C0/6B310. In
+/// particular a typed replacement must not receive the old player's pose,
+/// life, identity or cache when a holder still points at its numeric slot.
+pub(crate) fn commit_status_parent(
+    arena: &mut SourceArena,
+    shared: &mut super::Level2SharedSpellResetSession,
+    domains: Option<&mut area_damage::ActorDomains<'_>>,
+    before: &EntitySnapshot,
+    after: &EntitySnapshot,
+) -> Result<(), String> {
+    let slot = before.index;
+    if slot == 0 || slot != after.index || usize::from(slot) >= arena.entities.len() {
+        return Err("status parent publication changed its fixed source address".into());
+    }
+    let mask = before.control_flags ^ after.control_flags;
+    let flags = after.control_flags;
+    let kind = status_kind(arena, slot);
+    let retained = kind.is_some() && arena.economy.live_arena_kind(slot).is_none();
+    if matches!(kind, Some(Kind::SpellPickup | Kind::SpellReplacement)) {
+        let row = shared
+            .pickup_mut(slot)
+            .ok_or_else(|| format!("status parent {slot} lost its spell owner"))?;
+        row.set_control_flags((row.control_flags & !mask) | (flags & mask));
+        row.set_mana_regen(after.mana_regen);
+    } else if mask != 0
+        && !domains.is_some_and(|domains| {
+            domains.set_status_flags(slot, before.class, before.model, mask, flags)
+        })
+    {
+        let economy = &mut arena.economy;
+        macro_rules! set_flags {
+            ($rows:expr) => {
+                if let Some(row) = $rows
+                    .iter_mut()
+                    .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                {
+                    row.control_flags = (row.control_flags & !mask) | (flags & mask);
+                }
+            };
+        }
+        macro_rules! set_state_flags {
+            ($rows:expr) => {
+                if let Some(row) = $rows.iter_mut().find(|row| row.source_entity_index == slot) {
+                    row.control_flags = (row.control_flags & !mask) | (flags & mask);
+                }
+            };
+        }
+        match kind {
+            Some(Kind::FireballProjectile) => set_flags!(economy.fireball_projectiles),
+            Some(Kind::CastleProjectile) => set_flags!(economy.castle_projectiles),
+            Some(Kind::CastleRoot) => {
+                if let Some(row) = economy.castle_at_mut(slot) {
+                    row.control_flags = (row.control_flags & !mask) | (flags & mask);
+                }
+            }
+            Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender) => {
+                set_flags!(economy.castle_children)
+            }
+            Some(Kind::CastleAuxiliary) => set_flags!(economy.castle_defenders),
+            Some(Kind::ManaSphere) => set_flags!(economy.spheres),
+            Some(Kind::BeeCreature) => set_flags!(economy.bee_creatures),
+            Some(Kind::AuthoredDragonPart) => set_flags!(economy.authored_dragon_parts),
+            Some(Kind::AuthoredClass5Model3Child) => {
+                set_flags!(economy.authored_class5_model3_children)
+            }
+            Some(Kind::AuthoredClass5ArcherChild) => {
+                set_flags!(economy.authored_class5_archer_children)
+            }
+            Some(Kind::AuthoredClass5) => {
+                set_state_flags!(economy.authored_class5_archer);
+                set_state_flags!(economy.authored_fireflies);
+                set_state_flags!(economy.authored_dragons);
+                set_state_flags!(economy.authored_class5_model3);
+            }
+            Some(Kind::HouseResident) => set_flags!(economy.house_residents),
+            Some(Kind::DeathBurst) => set_flags!(economy.death_bursts),
+            Some(Kind::PlayerDeathMarker) => set_flags!(economy.player_death_markers),
+            Some(Kind::SpeedTrail) => set_flags!(economy.speed_trails),
+            Some(Kind::TerrainStripCloseTrigger) => {
+                set_flags!(economy.terrain_strip_close_triggers)
+            }
+            Some(Kind::AuthoredModel1) => set_flags!(economy.authored_model1),
+            Some(Kind::AuthoredModel45) => set_flags!(economy.authored_model45),
+            Some(Kind::AuthoredModel13) => set_flags!(economy.authored_model13),
+            Some(Kind::Model13SpawnedChild) => set_flags!(economy.model13_spawned_children),
+            Some(Kind::AuthoredModel6) => set_flags!(economy.authored_model6),
+            Some(Kind::Model6SpawnedChild) => set_flags!(economy.model6_spawned_children),
+            Some(Kind::AuthoredModel17) => set_flags!(economy.authored_model17),
+            Some(Kind::Model17SpawnedChild) => set_flags!(economy.model17_spawned_children),
+            Some(Kind::AuthoredModel22) => set_flags!(economy.fields.authored_model22),
+            Some(Kind::AuthoredModel76) => set_flags!(economy.authored_model76),
+            Some(Kind::Model76Child) => set_flags!(economy.model76_children),
+            Some(Kind::Model76TailSpawn) => set_flags!(economy.model76_tail_spawns),
+            Some(Kind::AuthoredModel32) => set_flags!(economy.authored_model32),
+            Some(Kind::AuthoredModel59) => set_flags!(economy.authored_model59),
+            Some(Kind::Model59SmokeChild) => set_flags!(economy.model59_smoke_children),
+            Some(Kind::AuthoredModel53) => set_flags!(economy.authored_model53),
+            Some(Kind::AuthoredModel5WaterSplash) => {
+                set_flags!(economy.authored_model5_water_splashes)
+            }
+            // These carriers do not model mutable protection flags. Their
+            // NewEvent scalar record remains the owner of those status bits.
+            _ => {}
+        }
+    }
+    let raw = &mut arena.entities[usize::from(slot)];
+    raw.set_control_flags((raw.control_flags & !mask) | (flags & mask));
+    raw.set_mana_regen(after.mana_regen);
+    Ok(())
+}
 pub(crate) fn bind_castle_upgrade_record(
     arena: &mut SourceArena,
     slot: u16,
@@ -473,6 +896,37 @@ pub(crate) fn arrow_collision_frame(
 /// Read the current fixed-address occupant; allocation is separate from a
 /// source pointer's validity.
 pub(crate) fn read(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<View>, String> {
+    let mut view = read_current(arena, context, slot)?;
+    if let Some(view) = view.as_mut() {
+        view.control_flags = status_flags(arena, slot, view.control_flags);
+    }
+    Ok(view)
+}
+
+/// Carriers with no mutable flag field retain these source scalar fields in
+/// their cold NewEvent record. Allocation retires that record before reuse.
+pub(crate) fn status_flags(arena: &SourceArena, slot: u16, flags: u32) -> u32 {
+    let raw_owned = match status_kind(arena, slot) {
+        Some(Kind::ManaCarrier | Kind::PossessionProjectile | Kind::PossessionEffect
+            | Kind::AuthoredSwitchProducer | Kind::AuthoredClass14
+            | Kind::Model22SpawnedChild | Kind::ManaAttraction | Kind::BeyondSightPulseEffect) => true,
+        Some(Kind::AuthoredClass5) => arena.economy.authored_class5.iter()
+            .any(|row| row.active && row.source_entity_index == slot && matches!(row.model, 9 | 14)),
+        _ => false,
+    };
+    if !raw_owned { return flags; }
+    flags | arena.entities.get(usize::from(slot)).map_or(0, |row| {
+        row.control_flags & (crate::spell_activation::SHIELD_MANA_STATUS_BIT
+            | crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT
+            | crate::spell_activation::INVISIBLE_STATUS_BIT)
+    })
+}
+
+fn read_current(
     arena: &SourceArena,
     context: Context<'_>,
     slot: u16,
@@ -1351,6 +1805,255 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_publication_does_not_write_an_old_external_actor_at_a_reused_address() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let mut goats = session.session.state.live.goats.clone();
+        let mut ordinary = session.session.state.live.ordinary.clone();
+        let mut shared = session.session.state.live.shared_spells.clone();
+        let old = goats.goats().iter().find(|row| row.active).unwrap().clone();
+        // Retain the old external projection as an explicit boundary control.
+        // Current arena metadata, not that stale family row, owns the address.
+        crate::world::terrain::cave_features::reclaim(&mut arena, &mut terrain, old.entity_index);
+        let slot = arena
+            .economy
+            .spawn_fireball_projectile_with_payload(
+                super::super::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                    origin: super::super::FireballProjectileOrigin::PlayerSpell,
+                    position: old.position,
+                    yaw: 0,
+                    pitch: 0,
+                    axis_position: Position::default(),
+                    source_id_entity_index: session.state.entity_index,
+                    holder_entity_index: 0,
+                    source_subspell_index: 100,
+                    source_mana: 50,
+                    source_dword_0x10: 0,
+                    target_source_entity_index: 0,
+                    target_class: 0,
+                    target_model: 0,
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(slot, old.entity_index);
+        arena.retire_previous_source_projection(slot);
+        let context = Context::from_ordinary(&goats, &ordinary);
+        let parent = status_parent(&arena, context, slot).unwrap().unwrap();
+        assert_eq!((parent.class, parent.model), (9, 0));
+        let mut after = parent.clone();
+        after.set_control_flags(parent.control_flags | crate::spell_activation::SHIELD_MANA_STATUS_BIT);
+        let mut domains = area_damage::ActorDomains::new(&mut goats, &mut ordinary);
+        commit_status_parent(&mut arena, &mut shared, Some(&mut domains), &parent, &after).unwrap();
+        commit_status_speed(&mut arena, Some(domains), &parent, -13);
+        assert_eq!(
+            goats
+                .goats()
+                .iter()
+                .find(|row| row.entity_index == slot)
+                .unwrap(),
+            &old
+        );
+        let current = status_parent(&arena, Context::from_ordinary(&goats, &ordinary), slot)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            current.control_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            0
+        );
+        assert_eq!(current.actual_speed, -13);
+    }
+
+    #[test]
+    fn status_parent_reads_and_writes_hidden_flyers_until_their_allocator_release() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut shared = session.session.state.live.shared_spells.clone();
+        let fireball = arena
+            .economy
+            .spawn_fireball_projectile_with_payload(
+                super::super::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                    origin: super::super::FireballProjectileOrigin::PlayerSpell,
+                    position: session.state.position,
+                    yaw: 21,
+                    pitch: 22,
+                    axis_position: Position::default(),
+                    source_id_entity_index: session.state.entity_index,
+                    holder_entity_index: 0,
+                    source_subspell_index: 100,
+                    source_mana: 50,
+                    source_dword_0x10: 0,
+                    target_source_entity_index: 0,
+                    target_class: 0,
+                    target_model: 0,
+                },
+                0,
+            )
+            .unwrap();
+        let castle = arena
+            .economy
+            .spawn_castle_projectile_with_payload(
+                super::super::level2_dynamic_economy::Level2CastleProjectileLaunchPayload {
+                    position: session.state.position,
+                    axis_position: session.state.position,
+                    yaw: 21,
+                    pitch: 22,
+                    source_id_entity_index: session.state.entity_index,
+                    source_subspell_index: 0,
+                    source_mana: 70,
+                    source_a4_byte_154: 0,
+                },
+                0,
+                0,
+                &session.session.state.live.terrain,
+            )
+            .unwrap();
+        let possession = arena
+            .economy
+            .spawn_possession_projectile(
+                session.state.position,
+                session.state.entity_index,
+                0,
+                21,
+                22,
+                0,
+                session.state.position,
+            )
+            .unwrap();
+        for (slot, mana) in [(fireball, 50), (castle, 70), (possession, 0)] {
+            arena.retire_previous_source_projection(slot);
+            let before = status_parent(&arena, Context::default(), slot)
+                .unwrap()
+                .unwrap();
+            assert_eq!(before.mana, mana);
+            let mut protected = before.clone();
+            protected.set_control_flags(
+                before.control_flags | crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            );
+            commit_status_parent(&mut arena, &mut shared, None, &before, &protected).unwrap();
+            if slot == fireball {
+                let row = arena
+                    .economy
+                    .fireball_projectiles
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot)
+                    .unwrap();
+                row.active = false;
+                row.drawing_disabled = true;
+            } else if slot == castle {
+                let row = arena
+                    .economy
+                    .castle_projectiles
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot)
+                    .unwrap();
+                row.active = false;
+                row.drawing_disabled = true;
+            } else {
+                arena
+                    .economy
+                    .possession_projectiles
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot)
+                    .unwrap()
+                    .active = false;
+            }
+            assert!(arena.economy.live_arena_kind(slot).is_none());
+            let hidden = status_parent(&arena, Context::default(), slot)
+                .unwrap()
+                .unwrap();
+            assert!(!hidden.active);
+            assert_eq!(
+                hidden.mana, mana,
+                "hidden source parent retains its actual mana"
+            );
+            assert_eq!(hidden.minimum_speed(), before.minimum_speed());
+            assert_ne!(
+                hidden.control_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+                0
+            );
+            let mut expired = hidden.clone();
+            expired.set_control_flags(
+                hidden.control_flags & !crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            );
+            commit_status_parent(&mut arena, &mut shared, None, &hidden, &expired).unwrap();
+            commit_status_speed(&mut arena, None, &hidden, -13);
+            let current = status_parent(&arena, Context::default(), slot)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                current.control_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+                0
+            );
+            assert_eq!(current.actual_speed, -13);
+            assert_eq!(current.position, before.position);
+            // Controlled allocator release, not a complete hide/reclaim
+            // scenario: after release the fixed physical row is authoritative.
+            arena.economy.release_slot(slot, None);
+            let released = status_parent(&arena, Context::default(), slot)
+                .unwrap()
+                .unwrap();
+            assert_eq!(released.mana, arena.entities[usize::from(slot)].mana);
+            assert_eq!(released.class, arena.entities[usize::from(slot)].class);
+        }
+    }
+    #[test]
+    fn status_publication_uses_current_typed_fields_and_new_event_scalar_retirement() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut shared = session.session.state.live.shared_spells.clone();
+        let cached_player = shared.player_entity.clone();
+        let slot = arena.economy.spawn_possession_projectile(
+            session.state.position, session.state.entity_index, 0, 21, 0, 0, session.state.position,
+        ).expect("ordinary Possession NewEvent");
+        arena.retire_previous_source_projection(slot);
+        let parent = status_parent(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((parent.class, parent.model), (9, 1));
+        assert_eq!(parent.special_relation, super::super::EntitySpecialRelation::GlobalSpecialState);
+        let pose = parent.position;
+        let mut after = parent.clone();
+        after.set_control_flags(parent.control_flags | crate::spell_activation::SHIELD_MANA_STATUS_BIT);
+        after.set_mana_regen(-77);
+        commit_status_parent(&mut arena, &mut shared, None, &parent, &after).unwrap();
+        let read_back = status_parent(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!(read_back.control_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            crate::spell_activation::SHIELD_MANA_STATUS_BIT);
+        assert_eq!((read_back.position, read_back.mana_regen), (pose, -77));
+        assert_eq!(shared.player_entity, cached_player);
+        assert_eq!(status_castle_mana(&arena, &shared, &read_back).unwrap(), None);
+        let mut expired = read_back.clone();
+        expired.set_control_flags(expired.control_flags & !crate::spell_activation::SHIELD_MANA_STATUS_BIT);
+        commit_status_parent(&mut arena, &mut shared, None, &read_back, &expired).unwrap();
+        assert_eq!(read(&arena, Context::default(), slot).unwrap().unwrap().control_flags
+            & crate::spell_activation::SHIELD_MANA_STATUS_BIT, 0);
+
+        let bee = arena.economy.allocate_authored_bee(1, pose, None, 3000, &session.session.state.live.terrain)
+            .expect("ordinary Bee NewEvent");
+        let bee_slot = bee.source_entity_index;
+        arena.retire_previous_source_projection(bee_slot);
+        let parent = status_parent(&arena, Context::default(), bee_slot).unwrap().unwrap();
+        let mut protected = parent.clone();
+        protected.set_control_flags(protected.control_flags | crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT);
+        commit_status_parent(&mut arena, &mut shared, None, &parent, &protected).unwrap();
+        assert_ne!(area_damage::read_arena_actor(&arena, bee_slot).unwrap().control_flags
+            & crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT, 0);
+        let actual = arena.economy.bee_creatures.iter().find(|row| row.source_entity_index == bee_slot).unwrap();
+        assert_ne!(actual.control_flags & crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT, 0);
+        let mut replacement = parent.clone();
+        replacement.set_control_flags(parent.control_flags);
+        commit_status_parent(&mut arena, &mut shared, None, &protected, &replacement).unwrap();
+        assert_eq!(area_damage::read_arena_actor(&arena, bee_slot).unwrap().control_flags
+            & crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT, 0);
+        // The same NewEvent retirement used by actual slot replacement drops
+        // scalar status even for a carrier without a mutable flag field.
+        arena.retire_previous_source_projection(slot);
+        let cold = status_parent(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!(cold.mana_regen, 0);
+        assert_eq!(cold.control_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT, 0);
+    }
 
     #[test]
     fn current_typed_creature_overrides_retained_raw_target_bytes() {

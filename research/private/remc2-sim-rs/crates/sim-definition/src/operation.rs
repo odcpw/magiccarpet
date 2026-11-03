@@ -14,8 +14,9 @@ use crate::{
     EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID,
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GameDefinition,
     HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
-    SKELETON_MAX_LIFE_CAPABILITY_ID, SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID,
-    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
+    SKELETON_MAX_LIFE_CAPABILITY_ID, SPEED_MULTIPLIERS_CAPABILITY_ID, SemanticId, SemanticValue,
+    TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID,
+    creature_max_life_capability_id,
     level_definition::{LevelEntityId, TilePosition, is_private_source_identity_segment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
@@ -71,6 +72,12 @@ pub enum IntegerParameter {
     PlayerForwardAcceleration,
     #[serde(rename = "spell.fireball.mana_cost")]
     FireballManaCost,
+    #[serde(rename = "spell.speed.tier0.multiplier")]
+    SpeedTier0Multiplier,
+    #[serde(rename = "spell.speed.tier1.multiplier")]
+    SpeedTier1Multiplier,
+    #[serde(rename = "spell.speed.tier2.multiplier")]
+    SpeedTier2Multiplier,
 }
 
 impl IntegerParameter {
@@ -80,6 +87,9 @@ impl IntegerParameter {
             Self::PlayerMaxForwardSpeed => "flight.player.max_forward_speed",
             Self::PlayerForwardAcceleration => "flight.player.forward_acceleration",
             Self::FireballManaCost => "spell.fireball.mana_cost",
+            Self::SpeedTier0Multiplier => "spell.speed.tier0.multiplier",
+            Self::SpeedTier1Multiplier => "spell.speed.tier1.multiplier",
+            Self::SpeedTier2Multiplier => "spell.speed.tier2.multiplier",
         }
     }
 
@@ -216,6 +226,9 @@ impl DefinitionOperation {
                         IntegerParameter::PlayerMaxForwardSpeed.as_str(),
                         IntegerParameter::PlayerForwardAcceleration.as_str(),
                         IntegerParameter::FireballManaCost.as_str(),
+                        IntegerParameter::SpeedTier0Multiplier.as_str(),
+                        IntegerParameter::SpeedTier1Multiplier.as_str(),
+                        IntegerParameter::SpeedTier2Multiplier.as_str(),
                     ],
                     "parameter_requirements": {
                         IntegerParameter::FireballManaCost.as_str(): {
@@ -223,6 +236,18 @@ impl DefinitionOperation {
                                 "id": FIREBALL_MANA_COST_CAPABILITY_ID,
                                 "exact_version": 1,
                             },
+                            "writable_when": "the active definition requires this exact capability",
+                        },
+                        IntegerParameter::SpeedTier0Multiplier.as_str(): {
+                            "required_capability": { "id": SPEED_MULTIPLIERS_CAPABILITY_ID, "exact_version": 1 },
+                            "writable_when": "the active definition requires this exact capability",
+                        },
+                        IntegerParameter::SpeedTier1Multiplier.as_str(): {
+                            "required_capability": { "id": SPEED_MULTIPLIERS_CAPABILITY_ID, "exact_version": 1 },
+                            "writable_when": "the active definition requires this exact capability",
+                        },
+                        IntegerParameter::SpeedTier2Multiplier.as_str(): {
+                            "required_capability": { "id": SPEED_MULTIPLIERS_CAPABILITY_ID, "exact_version": 1 },
                             "writable_when": "the active definition requires this exact capability",
                         },
                     },
@@ -525,6 +550,30 @@ impl DefinitionOperation {
                 "definition has no package-qualified Fireball mana-cost runtime consumer",
             ));
         }
+        let is_speed_operation = matches!(
+            self,
+            Self::SetInteger {
+                parameter: IntegerParameter::SpeedTier0Multiplier
+                    | IntegerParameter::SpeedTier1Multiplier
+                    | IntegerParameter::SpeedTier2Multiplier,
+                ..
+            }
+        );
+        if is_speed_operation
+            && !definition
+                .required_capabilities()
+                .iter()
+                .any(|requirement| {
+                    requirement.id.as_str() == SPEED_MULTIPLIERS_CAPABILITY_ID
+                        && requirement.exact_version == 1
+                })
+        {
+            return Err(DefinitionError::new(
+                DefinitionErrorCode::DependencyFailed,
+                self.target_id().as_str(),
+                "definition has no package-qualified Speed multiplier runtime consumer",
+            ));
+        }
         let policy_descriptor = matches!(self, Self::SelectOption { .. }).then(|| {
             crate::default_catalog().and_then(|catalog| {
                 definition
@@ -587,6 +636,7 @@ impl DefinitionOperation {
                 | Self::PutObjective { .. }
                 | Self::SetMechanicCountdown { .. }
         ) || is_fireball_cost_operation
+            || is_speed_operation
             || matches!(self, Self::BindAsset { .. } | Self::SelectOption { .. });
         if definition.level_definition().is_some() && !playable_operation_is_supported {
             return Err(DefinitionError::new(
@@ -1095,6 +1145,36 @@ mod tests {
     };
     use crate::{GamePackage, default_catalog, engine_capabilities};
     use std::path::PathBuf;
+
+    #[test]
+    fn speed_multiplier_publication_requires_a_real_runtime_consumer() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/custom-synthetic-v1");
+        let catalog = default_catalog().unwrap();
+        let definition = GameDefinition::from_package(
+            GamePackage::load(root).unwrap(),
+            &engine_capabilities().unwrap(),
+            &catalog,
+        )
+        .unwrap();
+        for parameter in [
+            IntegerParameter::SpeedTier0Multiplier,
+            IntegerParameter::SpeedTier1Multiplier,
+            IntegerParameter::SpeedTier2Multiplier,
+        ] {
+            let descriptor = definition
+                .semantic_descriptor(&catalog, &parameter.semantic_id())
+                .unwrap();
+            assert_eq!(descriptor.access, Access::ReadOnly);
+            let operation = DefinitionOperation::SetInteger {
+                parameter,
+                value: 5,
+                expected_value: None,
+            };
+            let error = operation.resolve(&definition).unwrap_err();
+            assert_eq!(error.code, DefinitionErrorCode::DependencyFailed);
+        }
+    }
 
     #[test]
     fn operation_json_is_closed_against_raw_selectors_and_unimplemented_structure() {

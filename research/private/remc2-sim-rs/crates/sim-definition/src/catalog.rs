@@ -951,6 +951,41 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
             "Mana affordability threshold consumed by the ordinary cast path.",
         )?,
     ];
+    for (id, default) in [
+        ("spell.speed.tier0.multiplier", 2),
+        ("spell.speed.tier1.multiplier", 3),
+        ("spell.speed.tier2.multiplier", 4),
+    ] {
+        let mut speed = descriptor(
+            id,
+            DescriptorKind::Rule,
+            ValueType::Integer,
+            Some("speed_multiplier"),
+            SemanticValue::Integer(default),
+            (Some(i64::from(i32::MIN)), Some(i64::from(i32::MAX))),
+            &[],
+            MutationTiming::SessionReset,
+            "sim-core/speed-holder-movement",
+            "sha256:3b01de678aff9f8662ef22a4790d5a47cb152de25592c3eeb42183e4783c503f",
+            Some(TemporalContract {
+                dispatch_phase: "source_entity_visit".to_owned(),
+                dispatch_key: "speed_holder".to_owned(),
+                ordinary_producer: "acquired Speed holder".to_owned(),
+                handler: "selected tier drives signed player speed".to_owned(),
+                same_pass_epilogue: "optional trail and mana charge".to_owned(),
+                following_pass_cleanup: "holder expiry restores normal speed".to_owned(),
+                authoritative_reads: vec![
+                    "selected_speed_tier".to_owned(),
+                    "minimum_speed".to_owned(),
+                ],
+                authoritative_writes: vec!["target_speed".to_owned(), "actual_speed".to_owned()],
+                rng_and_event_effects: "trail allocation follows the source cadence".to_owned(),
+            }),
+            "Per-tier signed multiplier consumed by the ordinary Speed holder.",
+        )?;
+        speed.access = Access::Writable;
+        descriptors.push(speed);
+    }
     let flight_id = SemanticId::parse("flight.player.max_forward_speed")?;
     let acceleration_id = SemanticId::parse("flight.player.forward_acceleration")?;
     let enemy_policy_id = SemanticId::parse("ai.enemy.default.policy")?;
@@ -994,6 +1029,9 @@ pub fn default_catalog() -> Result<SemanticCatalog> {
         writable_presentation_asset_binding("presentation.spell.fireball.projectile_asset")?,
         writable_presentation_asset_binding(crate::FIREBALL_LAUNCH_SOUND_ASSET_SLOT_ID)?,
         writable_definition_binding("spell.fireball.mana_cost")?,
+        writable_definition_binding("spell.speed.tier0.multiplier")?,
+        writable_definition_binding("spell.speed.tier1.multiplier")?,
+        writable_definition_binding("spell.speed.tier2.multiplier")?,
     ];
     SemanticCatalog::try_from_parts(descriptors, bindings)
 }

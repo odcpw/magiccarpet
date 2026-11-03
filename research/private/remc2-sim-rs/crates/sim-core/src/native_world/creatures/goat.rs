@@ -2045,6 +2045,14 @@ impl GoatFamily {
         true
     }
 
+    pub(crate) fn set_status_speed(&mut self, slot: u16, speed: i16) -> bool {
+        let Some(goat) = self.goats.iter_mut().find(|row| row.active && row.entity_index == slot) else {
+            return false;
+        };
+        goat.actual_speed = speed;
+        true
+    }
+
     /// Gravity's sub_3A200 writes an absolute accumulated bounty and owner,
     /// independently of the ordinary/contact damage writer's replace rules.
     pub(crate) fn set_gravity_bounty(&mut self, slot: u16, payload: i32, owner: u16) -> bool {

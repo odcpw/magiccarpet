@@ -50,10 +50,11 @@ use crate::{
     game_definition::{
         AREA_ENTRY_OVERLAP_EXTENT_CAPABILITY_ID, AREA_EXIT_OVERLAP_EXTENT_CAPABILITY_ID,
         ArtifactKind, DefinitionError, DefinitionErrorCode, DefinitionFireballBinding,
-        DefinitionFlightBinding, DefinitionGoatPolicyBinding, ENEMY_DEFAULT_POLICY_ID,
-        EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID, EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID,
-        FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition, HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID,
-        HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID, RequiredCapability, SemanticCatalog, SemanticId,
+        DefinitionFlightBinding, DefinitionGoatPolicyBinding, DefinitionSpeedBinding,
+        ENEMY_DEFAULT_POLICY_ID, EXIT_SEQUENCE_OVERLAP_EXTENT_CAPABILITY_ID,
+        EXPERIENCE_SCROLL_AWARD_CAPABILITY_ID, FIREBALL_MANA_COST_CAPABILITY_ID, GameDefinition,
+        HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
+        RequiredCapability, SPEED_MULTIPLIERS_CAPABILITY_ID, SemanticCatalog, SemanticId,
         creature_max_life_capability_id, default_catalog, engine_capabilities,
     },
     game_session::{
@@ -311,6 +312,7 @@ fn load_mc2_campaign_internal(
     ));
     let mut requirement_ids = vec![
         crate::game_definition::CREATURE_POLICY_CAPABILITY_ID,
+        SPEED_MULTIPLIERS_CAPABILITY_ID,
         "engine.flight.fixed_point",
         "engine.spell.projectile",
     ];
@@ -2934,6 +2936,7 @@ pub struct Mc2CampaignBackend {
     package_campaign: CampaignSession,
     flight_binding: DefinitionFlightBinding,
     fireball_binding: Option<DefinitionFireballBinding>,
+    speed_binding: Option<DefinitionSpeedBinding>,
     fireball_projectile_asset: Option<GameAssetReference>,
     fireball_launch_sound_choices: BTreeMap<String, u16>,
     goat_policy_binding: Option<DefinitionGoatPolicyBinding>,
@@ -3132,6 +3135,8 @@ impl GameAdapter for Mc2CampaignAdapter {
             .map_err(CampaignBackendError::Definition)?;
         let fireball_binding = DefinitionFireballBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let speed_binding = DefinitionSpeedBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
         let fireball_projectile_asset = fireball_projectile_asset_reference(definition)?;
@@ -3181,6 +3186,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             definition,
             &catalog,
             fireball_binding.is_some(),
+            speed_binding.is_some(),
             goat_policy_binding.is_some(),
             consumes_fireball_projectile_asset(definition),
             fireball_launch_sound_id.is_some(),
@@ -3215,6 +3221,9 @@ impl GameAdapter for Mc2CampaignAdapter {
                     CampaignBackendError::Open(CampaignOpenError::Materialization(error))
                 })?;
         }
+        if let Some(binding) = speed_binding {
+            campaign.apply_speed_multipliers(binding.multipliers());
+        }
         if let Some(source_sound_id) = fireball_launch_sound_id {
             campaign.apply_fireball_launch_sound(source_sound_id);
         }
@@ -3223,6 +3232,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             package_campaign,
             flight_binding,
             fireball_binding,
+            speed_binding,
             fireball_projectile_asset,
             fireball_launch_sound_choices,
             goat_policy_binding,
@@ -3243,6 +3253,7 @@ fn require_catalog_defaults(
     definition: &GameDefinition,
     catalog: &SemanticCatalog,
     consumes_fireball_cost: bool,
+    consumes_speed: bool,
     consumes_goat_policy: bool,
     consumes_fireball_projectile_asset: bool,
     consumes_fireball_launch_sound: bool,
@@ -3250,6 +3261,7 @@ fn require_catalog_defaults(
     for descriptor in catalog.descriptors() {
         if DefinitionFlightBinding::consumes(&descriptor.id)
             || (consumes_fireball_cost && DefinitionFireballBinding::consumes(&descriptor.id))
+            || (consumes_speed && DefinitionSpeedBinding::consumes(&descriptor.id))
             || (consumes_goat_policy && DefinitionGoatPolicyBinding::consumes(&descriptor.id))
             || (consumes_fireball_projectile_asset
                 && descriptor.id.as_str() == "presentation.spell.fireball.projectile_asset")
@@ -3674,6 +3686,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
             .map_err(CampaignBackendError::Definition)?;
         let fireball_binding = DefinitionFireballBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
+        let speed_binding = DefinitionSpeedBinding::from_definition(definition)
+            .map_err(CampaignBackendError::Definition)?;
         let goat_policy_binding = DefinitionGoatPolicyBinding::from_definition(definition)
             .map_err(CampaignBackendError::Definition)?;
         let fireball_projectile_asset = fireball_projectile_asset_reference(definition)?;
@@ -3684,6 +3698,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
             definition,
             &catalog,
             fireball_binding.is_some(),
+            speed_binding.is_some(),
             goat_policy_binding.is_some(),
             consumes_fireball_projectile_asset(definition),
             !self.fireball_launch_sound_choices.is_empty(),
@@ -3713,6 +3728,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
                     CampaignBackendError::Open(CampaignOpenError::Materialization(error))
                 })?;
         }
+        if let Some(binding) = speed_binding {
+            campaign.apply_speed_multipliers(binding.multipliers());
+        }
         if let Some(source_sound_id) = fireball_launch_sound_id {
             campaign.apply_fireball_launch_sound(source_sound_id);
         }
@@ -3730,6 +3748,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign = campaign;
         self.flight_binding = flight_binding;
         self.fireball_binding = fireball_binding;
+        self.speed_binding = speed_binding;
         self.fireball_projectile_asset = fireball_projectile_asset;
         self.goat_policy_binding = goat_policy_binding;
         self.replay_operations.clear();
@@ -3955,6 +3974,9 @@ impl Mc2CampaignBackend {
                         message: format!("cannot reapply carried Fireball binding: {error}"),
                     }
                 })?;
+        }
+        if let Some(binding) = self.speed_binding {
+            campaign.apply_speed_multipliers(binding.multipliers());
         }
         campaign.apply_fireball_launch_sound(self.campaign.simulation().fireball_launch_sound_id);
         let installed = Self::semantic_spell_carry_from_campaign(&campaign)?;
@@ -27706,6 +27728,312 @@ pub(crate) mod tests {
         // No-Claim: this is the same real Level 1 activation boundary as the
         // accepted-cost gate. It does not prove arbitrary mana sources,
         // mid-session edits, higher tiers, or other spell families.
+    }
+
+    #[test]
+    fn campaign_backend_speed_binding_reaches_acquired_public_cast_and_reset() {
+        fn holder_timers(simulation: &crate::campaign::Mc2Simulation, slot: u16) -> (i16, i16) {
+            let shared = simulation.shared_spells();
+            let holder = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|row| row.index == slot)
+                .expect("acquired Speed holder");
+            (holder.active_value, holder.activation_value as i16)
+        }
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let root = generated.join("mc-bhq8-level1-collision-v5-night");
+        let cache = generated.join("mc-oi62-environment-level1-v2");
+        let catalog = default_catalog().unwrap();
+        let base = load_mc2_campaign_with_owner_cache(&root, &cache, &catalog).unwrap();
+        let workspace = temporary_workspace_path("campaign-speed-multiplier");
+        let store =
+            WorkspaceStore::create(&workspace, "campaign-speed-authoring", base.clone()).unwrap();
+        let change = ChangeSetBuilder::new(
+            "campaign-speed-authoring",
+            &base,
+            "speed-tier0-multiplier",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::SpeedTier0Multiplier, 65_541)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let authored = store.active_definition().unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base),
+            61,
+            Mc2CampaignInputs::with_owner_cache(&root, &cache),
+        )
+        .unwrap();
+        let default_receipt = crate::campaign::state::CampaignDefinition::from_simulation(
+            session.backend().campaign.simulation(),
+        )
+        .identity_receipt;
+        session.reopen(guard(&session), Arc::new(authored)).unwrap();
+        let authored_definition = crate::campaign::state::CampaignDefinition::from_simulation(
+            session.backend().campaign.simulation(),
+        );
+        assert_eq!(authored_definition.speed_multipliers, [65_541, 3, 4]);
+        assert_ne!(authored_definition.identity_receipt, default_receipt);
+
+        let (holder_slot, player_slot, minimum_speed) = {
+            let simulation = session.backend_mut().campaign.simulation_mut();
+            simulation
+                .activate_authored_group_prerequisite_for_test(11)
+                .unwrap();
+            let pickup = simulation
+                .economy()
+                .spell_pickups()
+                .iter()
+                .find(|source| source.authored_index == 100)
+                .copied()
+                .expect("authored Speed pickup");
+            let player = simulation.state.entity_index;
+            simulation
+                .set_level2_entity_position(player, pickup.position)
+                .unwrap();
+            (
+                pickup.source_entity_index,
+                player,
+                i16::from_le_bytes(
+                    simulation.entities()[usize::from(player)].record[136..138]
+                        .try_into()
+                        .unwrap(),
+                ),
+            )
+        };
+        for _ in 0..8 {
+            if session.backend().campaign.simulation().players()[0].enabled_spell_holders[3]
+                == holder_slot
+            {
+                break;
+            }
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        assert_eq!(
+            session.backend().campaign.simulation().players()[0].enabled_spell_holders[3],
+            holder_slot
+        );
+        {
+            let simulation = session.backend_mut().campaign.simulation_mut();
+            simulation
+                .shared_spells_mut()
+                .set_local_player_mana_for_test(10_000);
+            let parent =
+                &mut simulation.session.state.live.economy.entities[usize::from(player_slot)];
+            parent.mana = 10_000;
+            parent.record[148..152].copy_from_slice(&10_000_i32.to_le_bytes());
+            if let Some(fire) = simulation
+                .session
+                .state
+                .live
+                .core
+                .context
+                .spell_fire
+                .as_mut()
+            {
+                fire.caster.mana = 10_000;
+            }
+            simulation
+                .set_level2_entity_position(
+                    player_slot,
+                    crate::Position {
+                        x: 0x6000,
+                        y: 0x6000,
+                        z: 10_000,
+                    },
+                )
+                .unwrap();
+        }
+        session
+            .step(
+                guard(&session),
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.speed").unwrap()),
+                    cast_selected: true,
+                    ..GameCommand::default()
+                },
+            )
+            .unwrap();
+        let (active, activation) =
+            holder_timers(session.backend().campaign.simulation(), holder_slot);
+        if active == activation {
+            session
+                .step(guard(&session), GameCommand::default())
+                .unwrap();
+        }
+        let simulation = session.backend().campaign.simulation();
+        assert_eq!(holder_timers(simulation, holder_slot).0, activation - 1);
+        assert_eq!(simulation.state.target_speed, minimum_speed.wrapping_mul(6));
+        assert_eq!(simulation.state.actual_speed, minimum_speed.wrapping_mul(6));
+        session
+            .step(guard(&session), GameCommand::default())
+            .unwrap();
+        let simulation = session.backend().campaign.simulation();
+        assert_eq!(simulation.state.target_speed, minimum_speed.wrapping_mul(5));
+        assert_eq!(simulation.state.actual_speed, minimum_speed.wrapping_mul(5));
+
+        session.reset(guard(&session)).unwrap();
+        let restored = crate::campaign::state::CampaignDefinition::from_simulation(
+            session.backend().campaign.simulation(),
+        );
+        assert_eq!(restored.speed_multipliers, [65_541, 3, 4]);
+        assert_eq!(
+            restored.identity_receipt,
+            authored_definition.identity_receipt
+        );
+        // Carry admission is a destination-entry operation; Level 1 already
+        // has its direct-start holders. Use the established Level 2 entry
+        // constructor before any destination holder allocation.
+        let destination_root = generated.join("level2-day-block32-campaign-v2");
+        let destination_base = load_mc2_campaign(&destination_root, &catalog).unwrap();
+        let destination_workspace = temporary_workspace_path("campaign-speed-carry");
+        let destination_store = WorkspaceStore::create(
+            &destination_workspace,
+            "campaign-speed-carry",
+            destination_base.clone(),
+        )
+        .unwrap();
+        let change = ChangeSetBuilder::new(
+            "campaign-speed-carry",
+            &destination_base,
+            "speed-carry-multiplier",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::SpeedTier0Multiplier, 65_541)
+        .build()
+        .unwrap();
+        let validation = destination_store
+            .validate(&catalog, change.clone())
+            .unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        destination_store
+            .apply(
+                &catalog,
+                change,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let mut destination = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(destination_store.active_definition().unwrap()),
+            62,
+            Mc2CampaignInputs::new(&destination_root),
+        )
+        .unwrap();
+        let before_carry = crate::campaign::state::CampaignDefinition::from_simulation(
+            destination.backend().campaign.simulation(),
+        );
+        let carried = vec![SpellKind::Speed];
+        assert_ne!(
+            destination
+                .backend()
+                .semantic_spell_state_for_test()
+                .unwrap(),
+            (carried.clone(), Some(SpellKind::Speed))
+        );
+        destination
+            .backend_mut()
+            .install_semantic_spell_carry_for_test(carried, Some(SpellKind::Speed))
+            .unwrap();
+        let after_carry = crate::campaign::state::CampaignDefinition::from_simulation(
+            destination.backend().campaign.simulation(),
+        );
+        assert_eq!(after_carry.speed_multipliers, [65_541, 3, 4]);
+        assert_eq!(after_carry.identity_receipt, before_carry.identity_receipt);
+    }
+
+    #[test]
+    fn campaign_backend_speed_binding_survives_same_revision_replay() {
+        use crate::game_runtime::GameRuntime;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let root = generated.join("mc-bhq8-level1-collision-v5-night");
+        let cache = generated.join("mc-oi62-environment-level1-v2");
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::with_owner_cache(&root, &cache),
+            Mc2CampaignInputs::new(
+                generated.join("mc-cf02-campaign-package-v2-b/qualified-level2"),
+            ),
+            Mc2CampaignInputs::new(
+                generated.join("mc-cf14-campaign-package-v1-a/qualified-level3"),
+            ),
+        ])
+        .unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(891).unwrap();
+        let runtime_guard = runtime.identity().guard();
+        let loading = resolver.new_game(&mut runtime, runtime_guard).unwrap();
+        resolver
+            .open_pending(&mut runtime, loading.guard(), 891)
+            .unwrap();
+        let base = runtime.session().unwrap().definition().as_ref().clone();
+        let catalog = default_catalog().unwrap();
+        let workspace = temporary_workspace_path("campaign-speed-replay");
+        let store =
+            WorkspaceStore::create(&workspace, "campaign-speed-replay", base.clone()).unwrap();
+        let change = ChangeSetBuilder::new(
+            "campaign-speed-replay",
+            &base,
+            "speed-replay-value",
+            RequestedTiming::SessionReset,
+        )
+        .set_integer(IntegerParameter::SpeedTier1Multiplier, -7)
+        .build()
+        .unwrap();
+        let validation = store.validate(&catalog, change.clone()).unwrap();
+        assert!(validation.accepted, "{:?}", validation.diagnostics);
+        store
+            .apply(
+                &catalog,
+                change,
+                &validation.receipt_hash,
+                PublicationFault::None,
+            )
+            .unwrap();
+        let authored = Arc::new(store.active_definition().unwrap());
+        {
+            let session = runtime.session_mut().unwrap();
+            session.reopen(guard(session), authored.clone()).unwrap();
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+        }
+        let expected = runtime.session().unwrap().snapshot().value;
+        let saved = resolver.save_replay(&runtime).unwrap();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(892).unwrap();
+        let guard = restored.identity().guard();
+        resolver
+            .load_replay(&mut restored, guard, 892, &saved)
+            .unwrap();
+        let restored_session = restored.session().unwrap();
+        assert_eq!(
+            restored_session.definition().definition_hash(),
+            authored.definition_hash()
+        );
+        assert_eq!(restored_session.snapshot().value, expected);
+        assert_eq!(
+            crate::campaign::state::CampaignDefinition::from_simulation(
+                restored_session.backend().campaign.simulation()
+            )
+            .speed_multipliers,
+            [2, -7, 4]
+        );
     }
 
     #[test]

@@ -307,7 +307,11 @@ fn step_status_holder(
                     life
                 ));
                 state.parent_status_flags = flags;
-                let step = state.step();
+                let castle_gate_passed = holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen);
+                let life_mode = crate::spell_activation::shield_tier_profile(tier)
+                    .expect("validated Shield tier").life_mode;
+                let step = state.step(castle_gate_passed, life_mode);
                 (
                     StatusProjection::Shield(state),
                     state.active_value,
@@ -398,6 +402,7 @@ pub(super) fn step_source_slot(
     arena: &mut SourceArena,
     core: &mut CanonicalRuntimeState,
     source_slot: u16,
+    mut domains: Option<super::area_damage::ActorDomains<'_>>,
 ) -> Result<Option<(u16, bool)>, String> {
     let mut holder = shared
         .pickup(source_slot)
@@ -410,15 +415,38 @@ pub(super) fn step_source_slot(
         .cloned()
         .ok_or_else(|| format!("support spell holder {source_slot} is not live"))?;
     let parent_slot = holder.source_spell_parent_entity_index();
-    let mut parent = arena
-        .entities
-        .get(usize::from(parent_slot))
-        .filter(|parent| parent_slot != 0 && parent.active && parent.class == 3)
-        .cloned();
+    let is_status = matches!(holder.model, 6 | 11 | 12);
+    let mut parent = if is_status {
+        let mut context = domains.as_ref().map_or_else(
+            super::source_target::Context::default,
+            super::area_damage::ActorDomains::source_target_context,
+        );
+        context.spells = Some(shared);
+        super::source_target::status_parent(arena, context, parent_slot)?
+    } else {
+        arena
+            .entities
+            .get(usize::from(parent_slot))
+            .filter(|parent| parent_slot != 0 && parent.active && parent.class == 3)
+            .cloned()
+    };
+    let parent_before = parent.clone();
+    // A fixed source address may now belong to a different kind of entity.
+    // Its callback writes the current carrier, never the old player's cache.
+    let current_player = parent.as_ref().is_some_and(|actor| {
+        actor.active
+            && actor.class == 3
+            && matches!(actor.model, 0 | 1)
+            && shared.players.iter().any(|player| {
+                player.entity_index == actor.index
+                    && actor.special_relation == super::EntitySpecialRelation::PlayerState(player.slot)
+            })
+    });
     // The accepted Shield hit mailbox is consumed at this holder's visit.
     // Refresh its parent cache from the current arena first, and carry the
     // damage result into the same raw parent that the pulse will publish.
     if holder.model == 6
+        && current_player
         && let Some(actor) = parent.as_ref()
         && actor.index == shared.player_entity.index
         && shared
@@ -428,10 +456,18 @@ pub(super) fn step_source_slot(
         shared.sync_player_entity_from_authority(actor);
         shared.sync_typed_spell_parent_caches_from_player_entity();
         if shared.consume_shield_damage_mailbox(source_slot).is_some() {
-            parent = Some(shared.player_entity.clone());
+            let damaged = shared.player_entity.clone();
+            // This accepted hit owns life/mana writes; the subsequent status
+            // pulse publishes only its flags and charge accumulator.
+            let current = &mut arena.entities[usize::from(parent_slot)];
+            current.set_life(damaged.life);
+            current.set_mana(damaged.mana);
+            parent = Some(damaged);
         }
     }
-    let parent_feedback = parent.as_ref().map(|_| parent_slot);
+    let parent_feedback = parent.as_ref()
+        .filter(|_| !is_status || current_player)
+        .map(|_| parent_slot);
     let player_color = shared
         .players
         .iter()
@@ -459,6 +495,12 @@ pub(super) fn step_source_slot(
         if player.entity_index == parent_slot {
             castle_mana = castle.map(|(_, mana)| mana);
         }
+    }
+    if is_status {
+        castle_mana = match parent.as_ref() {
+            Some(actor) => super::source_target::status_castle_mana(arena, shared, actor)?,
+            None => None,
+        };
     }
     // Source6B310 publishes XP before 68D50. Refresh the actual holder
     // afterwards so a threshold's queued SetSpell survives this pulse.
@@ -491,7 +533,7 @@ pub(super) fn step_source_slot(
         let queued_profile = holder
             .source_word_2c()
             .checked_sub(1)
-            .and_then(|tier| u8::try_from(tier).ok())
+            .and_then(|tier| (tier >= 0).then_some(tier.min(2) as u8))
             .and_then(|tier| {
                 shared
                     .physical_spell_profile(holder.model, tier, parent_slot, None)
@@ -524,7 +566,7 @@ pub(super) fn step_source_slot(
             None,
         )
     };
-    if parent_slot == core.state.entity_index {
+    if parent_slot == core.state.entity_index && (!is_status || current_player) {
         macro_rules! current_profile {
             ($state:ident) => {
                 $state.tier = level2_applied_tier(holder.level_gate)
@@ -573,9 +615,21 @@ pub(super) fn step_source_slot(
         }
     }
     if let Some(parent) = parent {
-        shared.sync_player_entity_from_authority(&parent);
-        arena.entities[usize::from(parent_slot)] = parent.clone();
-        if parent_slot == core.state.entity_index {
+        if is_status {
+            super::source_target::commit_status_parent(
+                arena,
+                shared,
+                domains.as_mut(),
+                parent_before.as_ref().expect("a status parent was read before its pulse"),
+                &parent,
+            )?;
+        } else {
+            arena.entities[usize::from(parent_slot)] = parent.clone();
+        }
+        if !is_status || current_player {
+            shared.sync_player_entity_from_authority(&parent);
+        }
+        if parent_slot == core.state.entity_index && (!is_status || current_player) {
             core.state.position = parent.position;
             if result.stop_player {
                 core.state.target_speed = 0;
@@ -585,12 +639,14 @@ pub(super) fn step_source_slot(
             shared.player_mana = parent.mana;
             shared.sync_typed_spell_parent_caches_from_player_entity();
         }
-        arena.map_chains.sync_entity(RenderableMapSeed {
-            entity_index: parent_slot,
-            active: parent.active,
-            x: parent.position.x,
-            y: parent.position.y,
-        })?;
+        if !is_status {
+            arena.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: parent_slot,
+                active: parent.active,
+                x: parent.position.x,
+                y: parent.position.y,
+            })?;
+        }
         if result.stop_player {
             for player in shared
                 .players
@@ -630,7 +686,7 @@ pub(super) fn step_source_slot(
             }
         }
         if let Some(fire) = core.context.spell_fire.as_mut() {
-            if fire.caster.entity_index == parent_slot {
+            if fire.caster.entity_index == parent_slot && (!is_status || current_player) {
                 fire.caster.control_flags = parent.control_flags;
                 fire.caster.mana = parent.mana;
                 fire.spell_experience[usize::from(holder.model)] =
@@ -1099,6 +1155,25 @@ mod tests {
                     caches.invisible.unwrap().parent_status_flags,
                     parent.control_flags
                 );
+                // sub_5F7B0 clears direction bits in byte 1, not the two
+                // unrelated low bits in byte 0 of the authoritative player.
+                let flags = parent.control_flags | 0x3;
+                let caster = crate::spell_activation::SpellCasterState {
+                    entity_index: owner, mana: parent.mana, control_flags: flags,
+                    ..Default::default()
+                };
+                for family in [6, 11] {
+                    let holder = crate::spell_activation::SpellActivationHolder {
+                        entity_index: slot, model: family, ..Default::default()
+                    };
+                    if family == 6 {
+                        caches.sync_shield_from_spell_fire(caster, &[holder]);
+                    } else {
+                        caches.sync_invisible_from_spell_fire(caster, &[holder]);
+                    }
+                    assert_eq!(caches.player_entity.control_flags, flags,
+                        "family {family} must retain unrelated byte-0 flags");
+                }
             }
         }
 
@@ -1117,7 +1192,15 @@ mod tests {
         .simulation()
         .clone();
         for family in [6_u8, 11, 12] {
-            for affordable in [true, false] {
+            for (affordable, requirement, castle_balance) in [
+                (true, 0, 50_000),
+                (false, 0, 50_000),
+                (true, 1_000, 1_000),
+                (true, 1_000, 999),
+            ] {
+                if family != 6 && requirement != 0 {
+                    continue;
+                }
                 let mut session = status_base.clone();
                 let live = &mut session.session.state.live;
                 let rival = live
@@ -1132,12 +1215,15 @@ mod tests {
                 assert_eq!((holder.class, holder.model), (15, family));
                 let profile = level2_set_spell_profile(family, 0).unwrap();
                 holder.apply_nyphur_spell_profile(profile, 0);
+                holder.set_mana_regen(requirement);
                 holder.set_source_action(family * 3);
                 holder.active_value = holder.activation_value.cast_signed();
                 holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
                 holder.record[58..60].copy_from_slice(&64_i16.to_le_bytes());
-                if !affordable {
-                    holder.set_source_word_2c(2);
+                let admitted = affordable && castle_balance >= requirement;
+                if !admitted {
+                    // Positive out-of-range queued SetSpell clamps at tier 2.
+                    holder.set_source_word_2c(if affordable { 5 } else { 2 });
                 }
                 let cost = holder.max_mana;
                 live.shared_spells.sync_pickup_from_authority(&holder);
@@ -1153,8 +1239,9 @@ mod tests {
                 assert!(
                     live.economy
                         .economy
-                        .set_castle_mana_prerequisite_for_test(castle, 50_000)
+                        .set_castle_mana_prerequisite_for_test(castle, castle_balance)
                 );
+                live.sync_castle_player_relations();
                 let local_before = (
                     live.shared_spells.shield,
                     live.shared_spells.invisible,
@@ -1172,11 +1259,12 @@ mod tests {
                     &mut live.economy,
                     &mut live.core,
                     slot,
+                    None,
                 )
                 .unwrap();
                 assert_eq!(feedback, Some((owner, false)));
                 let current = live.shared_spells.pickup(slot).unwrap();
-                if affordable {
+                if admitted {
                     assert_eq!(current.active_value, holder.active_value - 1);
                     assert!(live.economy.entities[usize::from(owner)].mana_regen <= 0);
                     if family == 6 {
@@ -1195,9 +1283,13 @@ mod tests {
                     assert_eq!(current.active_value, 0);
                     assert_eq!(current.source_word_2c(), 0);
                     assert_eq!(
-                        current.level_gate, 1,
+                        current.level_gate, if affordable { 2 } else { 1 },
                         "expiry applies the actual queued profile"
                     );
+                    if affordable {
+                        assert_eq!(live.economy.entities[usize::from(owner)].mana_regen, 100,
+                            "a failed Castle gate must not charge the owner");
+                    }
                 }
                 assert_eq!(current.record[50..52], current.active_value.to_le_bytes());
                 assert_eq!(current.record[58..60], 63_i16.to_le_bytes());
@@ -1221,6 +1313,44 @@ mod tests {
                     "sub6D8B0 awards source class3/model0 only"
                 );
             }
+        }
+        // The source callbacks dereference a nonzero fixed address even after
+        // its player leaves the live list. Keep those physical writes separate
+        // from the no-longer-current player projection.
+        for family in [6_u8, 11, 12] {
+            let mut session = status_base.clone();
+            let live = &mut session.session.state.live;
+            let player = live.shared_spells.players.iter().find(|row| row.is_ai).unwrap();
+            let owner = player.entity_index;
+            let slot = player.enabled_spell_holders[usize::from(family)];
+            let cached_parent = live.shared_spells.player_entities.iter()
+                .find(|row| row.index == owner).unwrap().clone();
+            let mut holder = live.shared_spells.pickup(slot).unwrap().clone();
+            holder.apply_nyphur_spell_profile(level2_set_spell_profile(family, 0).unwrap(), 0);
+            holder.set_mana_regen(0);
+            holder.set_source_action(family * 3);
+            holder.active_value = 2;
+            holder.record[50..52].copy_from_slice(&2_i16.to_le_bytes());
+            holder.record[58..60].copy_from_slice(&(-1_i16).to_le_bytes());
+            holder.set_control_flags(holder.control_flags | crate::spell_activation::INVISIBLE_STATUS_BIT);
+            live.shared_spells.sync_pickup_from_authority(&holder);
+            live.economy.entities[usize::from(slot)] = holder;
+            let parent = &mut live.economy.entities[usize::from(owner)];
+            parent.active = false;
+            parent.set_life(100);
+            parent.set_mana(10_000);
+            parent.set_mana_regen(100);
+            let feedback = step_source_slot(
+                &mut live.shared_spells, &mut live.economy, &mut live.core, slot, None,
+            ).unwrap();
+            assert_eq!(feedback, None, "retained address is not a live player feedback owner");
+            let holder = live.shared_spells.pickup(slot).unwrap();
+            assert_eq!(holder.active_value, 1, "family {family} visits the retained parent");
+            assert_eq!(holder.record[58..60], (-2_i16).to_le_bytes());
+            assert_eq!(live.economy.entities[usize::from(owner)].mana_regen, 0);
+            assert!(!live.economy.entities[usize::from(owner)].active);
+            assert_eq!(live.shared_spells.player_entities.iter()
+                .find(|row| row.index == owner).unwrap(), &cached_parent);
         }
         // Castle callbacks address the actual owner's retained holder, not
         // the first family-2 row in the shared spell projection.

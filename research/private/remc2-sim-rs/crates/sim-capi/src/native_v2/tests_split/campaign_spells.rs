@@ -1,3 +1,124 @@
+/// Complete the actual objective-produced BUILD21 -> BUILD54 reward chain.
+/// Damage is an explicit setup control; vault construction, successor birth,
+/// reward-group publication and later pickup/casting use the real scheduler.
+fn finish_objective_vault_rewards_with_controlled_damage(
+    handle: u64,
+    input: McCampaignStepInputV2,
+    required_authored_rows: &[u16],
+    mut observe_step: impl FnMut(),
+) {
+    let mut vaults = Vec::new();
+    for _ in 0..64 {
+        vaults = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| house.active && house.building_index == 21)
+                .copied()
+                .collect::<Vec<_>>())
+        })
+        .expect("read actual objective-produced vaults");
+        if !vaults.is_empty()
+            && vaults
+                .iter()
+                .all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
+        {
+            break;
+        }
+        let _ = step_level2_campaign_public(handle, input);
+        observe_step();
+    }
+    assert!(!vaults.is_empty(), "the real objective must construct its vaults");
+    assert!(vaults.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION));
+    with_campaign_session_mut(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        let attacker = reset.state.entity_index as i16;
+        for house in &vaults {
+            reset
+                .ordinary_mut()
+                .inject_house_damage(house.entity_index, house.life + 1, attacker)
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?;
+        }
+        Ok(())
+    })
+    .expect("submit controlled damage to the real live vaults");
+    let mut successors = Vec::new();
+    for _ in 0..64 {
+        successors = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .ordinary()
+                .houses()
+                .iter()
+                .filter(|house| {
+                    house.active
+                        && vaults.iter().any(|vault| {
+                            house.building_index == vault.parameter.destruction_successor
+                                && house.position.x == vault.position.x
+                                && house.position.y == vault.position.y
+                        })
+                })
+                .copied()
+                .collect::<Vec<_>>())
+        })
+        .expect("read real vault demolition successors");
+        if successors.len() == vaults.len()
+            && successors
+                .iter()
+                .all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
+        {
+            break;
+        }
+        let _ = step_level2_campaign_public(handle, input);
+        observe_step();
+    }
+    assert_eq!(successors.len(), vaults.len());
+    assert!(successors.iter().all(|house| {
+        house.action == sim_core::house::HOUSE_LIVE_ACTION
+            && house.parameter.destruction_successor == 0
+    }));
+    with_campaign_session_mut(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
+            unreachable!("campaign fixture opened as Level 2")
+        };
+        let attacker = reset.state.entity_index as i16;
+        for house in &successors {
+            reset
+                .ordinary_mut()
+                .inject_house_damage(house.entity_index, house.life + 1, attacker)
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?;
+        }
+        Ok(())
+    })
+    .expect("submit controlled damage to the actual final vault successors");
+    let mut ready = false;
+    for _ in 0..64 {
+        ready = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(required_authored_rows.iter().all(|index| {
+                reset.economy().spell_pickups().iter().any(|source| source.authored_index == *index)
+            }))
+        })
+        .expect("observe the real vault reward producer");
+        if ready {
+            break;
+        }
+        let _ = step_level2_campaign_public(handle, input);
+        observe_step();
+    }
+    assert!(ready, "real final vault successors must publish all requested authored rewards");
+}
+
 fn sphere_lineage_descendants(
     source_id: u32,
     merge_lineage: &BTreeSet<(u32, u32)>,
@@ -709,9 +830,9 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
     );
     assert_eq!(castle_snapshot.generation, castle_armed_snapshot.generation);
 
-    // Objective stage two materialises the authored row-156 acquisition
-    // source. Its dynamic arena slot is intentionally read from the public
-    // pickup endpoint rather than treated as a stable test fixture.
+    // The objective builds vaults; their real destruction successors publish
+    // the reward. Damage is controlled here; status acquisition and casting
+    // remain public. Preserve every economy receipt across those source turns.
     let (objective_x, objective_y) = level2_objective_point(handle);
     input.player_x = objective_x;
     input.player_y = objective_y;
@@ -731,6 +852,14 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
         &mut castle_collected_sphere_ids,
     );
     retain_castle_defender_receipts(&economy_events, &mut defender_events);
+    finish_objective_vault_rewards_with_controlled_damage(handle, input, &[156], || {
+        let economy_events = campaign_economy_events_with_mana_lineage(
+            handle,
+            &mut merge_lineage,
+            &mut castle_collected_sphere_ids,
+        );
+        retain_castle_defender_receipts(&economy_events, &mut defender_events);
+    });
     let invisible_source = campaign_spell_pickups_public(handle, pickup_snapshot.generation)
         .into_iter()
         .find(|source| source.authored_index == 156)
@@ -2356,112 +2485,7 @@ fn level2_campaign_invisible_state_and_activation_guard_are_cabi_reachable() {
         ),
         MC_STATUS_OK
     );
-    // The real objective producer builds the BUILD21 vaults; its reward is
-    // not an immediate family-11 pickup. Use the complete owner BUILD closure
-    // and let those vaults finish their normal construction before supplying
-    // a controlled destruction mailbox. This checks acquisition/API guards,
-    // not earned combat or mission completion.
-    let mut vaults = Vec::new();
-    for _ in 0..64 {
-        vaults = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
-                unreachable!("campaign fixture opened as Level 2")
-            };
-            Ok(reset
-                .ordinary()
-                .houses()
-                .iter()
-                .filter(|house| house.active && house.building_index == 21)
-                .copied()
-                .collect::<Vec<_>>())
-        })
-        .expect("read actual objective-produced vaults");
-        if !vaults.is_empty()
-            && vaults.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
-        {
-            break;
-        }
-        let _ = step_level2_campaign_public(handle, input);
-    }
-    assert!(!vaults.is_empty(), "the real objective must construct its vaults");
-    assert!(vaults.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION));
-    with_campaign_session_mut(handle, |session| {
-        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
-            unreachable!("campaign fixture opened as Level 2")
-        };
-        let attacker = reset.state.entity_index as i16;
-        for house in &vaults {
-            reset
-                .ordinary_mut()
-                .inject_house_damage(house.entity_index, house.life + 1, attacker)
-                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?;
-        }
-        Ok(())
-    })
-    .expect("submit controlled damage to the real live vaults");
-    // RemoveCastleStage constructs BUILD54 before publishing the vault's
-    // reward group. That actual successor must also finish and be destroyed.
-    let mut successors = Vec::new();
-    for _ in 0..64 {
-        successors = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
-                unreachable!("campaign fixture opened as Level 2")
-            };
-            Ok(reset
-                .ordinary()
-                .houses()
-                .iter()
-                .filter(|house| {
-                    house.active
-                        && vaults.iter().any(|vault| {
-                            house.building_index == vault.parameter.destruction_successor
-                                && house.position.x == vault.position.x
-                                && house.position.y == vault.position.y
-                        })
-                })
-                .copied()
-                .collect::<Vec<_>>())
-        })
-        .expect("read real vault demolition successors");
-        if successors.len() == vaults.len()
-            && successors.iter().all(|house| house.action == sim_core::house::HOUSE_LIVE_ACTION)
-        {
-            break;
-        }
-        let _ = step_level2_campaign_public(handle, input);
-    }
-    assert_eq!(successors.len(), vaults.len());
-    assert!(successors.iter().all(|house| {
-        house.action == sim_core::house::HOUSE_LIVE_ACTION
-            && house.parameter.destruction_successor == 0
-    }));
-    with_campaign_session_mut(handle, |session| {
-        let CampaignSessionKind::Campaign { reset, .. } = &mut session.kind else {
-            unreachable!("campaign fixture opened as Level 2")
-        };
-        let attacker = reset.state.entity_index as i16;
-        for house in &successors {
-            reset
-                .ordinary_mut()
-                .inject_house_damage(house.entity_index, house.life + 1, attacker)
-                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))?;
-        }
-        Ok(())
-    })
-    .expect("submit controlled damage to the actual final vault successors");
-    for _ in 0..64 {
-        let ready = with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
-                unreachable!("campaign fixture opened as Level 2")
-            };
-            Ok(reset.economy().spell_pickups().iter().any(|source| source.authored_index == 156))
-        })
-        .expect("observe the real vault reward producer");
-        if ready {
-            break;
-        }
-        let _ = step_level2_campaign_public(handle, input);
-    }
+    finish_objective_vault_rewards_with_controlled_damage(handle, input, &[156], || {});
     let source = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
@@ -2810,7 +2834,7 @@ fn level2_campaign_opponent_state_is_cabi_reachable_and_generation_bound() {
 #[test]
 fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
     let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        .join("../../../generated/mc-level2-vault-successor-closure-20261025");
     let package = level2_package.to_string_lossy();
     let selection = McCampaignSelectionV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -2881,6 +2905,7 @@ fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         ),
         MC_STATUS_OK
     );
+    finish_objective_vault_rewards_with_controlled_damage(handle, input, &[155], || {});
     let pickup_position = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             unreachable!("campaign fixture opened as Level 2")
@@ -2956,6 +2981,39 @@ fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         MC_STATUS_STRUCT_TOO_SMALL
     );
     assert_eq!(shield, unchanged_shield);
+    // A declared injured entry avoids health-cap saturation masking ordinary
+    // healing in the paired no-hit turn. This is a controlled CABI mailbox
+    // input while Shield is inactive, not a claim of earned combat damage.
+    assert_eq!(shield.active_value, 0);
+    assert_eq!(
+        shield.parent_status_flags
+            & (sim_core::spell_activation::SHIELD_MANA_STATUS_BIT
+                | sim_core::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT),
+        0
+    );
+    let entry_life = shield.parent_life;
+    assert_eq!(
+        mc_native_campaign_shield_damage_submit(handle, 0, shield.parent_entity_index, 100, 152),
+        MC_STATUS_OK
+    );
+    let _ = step_level2_campaign_public(handle, input);
+    assert_eq!(
+        mc_native_campaign_shield_state(
+            handle,
+            0,
+            &raw mut shield,
+            struct_size::<McCampaignShieldSnapshotV2>()
+        ),
+        MC_STATUS_OK
+    );
+    assert!(
+        shield.parent_life < entry_life - 25,
+        "the controlled unprotected hit must establish healing headroom"
+    );
+    assert_eq!(
+        shield.experience_awarded, 0,
+        "inactive Shield cannot earn protection XP"
+    );
     assert_eq!(
         mc_native_campaign_shield_activate(
             handle,
@@ -3011,6 +3069,68 @@ fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         0
     );
     let life_before = shield.parent_life;
+    // This accepted-mailbox API is not a body/contact hit: ordinary player
+    // upkeep can heal before the later holder consumes it. Use the same
+    // source turn without that mailbox as the whole-turn health baseline.
+    let mut no_hit_control = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+            unreachable!()
+        };
+        Ok(reset.clone())
+    })
+    .unwrap();
+    no_hit_control.state.entity_index = shield.parent_entity_index;
+    no_hit_control.state.position = Position {
+        x: input.player_x,
+        y: input.player_y,
+        z: input.player_z,
+    };
+    let control_command = crate::native_v2::validation::player_command(input.command).unwrap();
+    match &mut no_hit_control {
+        CampaignAuthority::Legacy(simulation) => {
+            simulation.step_outer_turn(control_command, input.speed_index);
+        }
+        CampaignAuthority::Descriptor(campaign) => {
+            campaign.step(control_command, input.speed_index);
+        }
+    }
+    assert!(
+        no_hit_control
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+    );
+    let life_without_hit = no_hit_control
+        .shared_spells()
+        .shield_state()
+        .unwrap()
+        .parent_life;
+    assert!(
+        life_without_hit >= life_before,
+        "the paired ordinary turn must not contain another hit"
+    );
+    let mut damage_query = McEventQueryV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McEventQueryV2>(),
+        generation: 0,
+        cursor: 0,
+        reserved: [0; 4],
+    };
+    let mut damage_batch = McEventBatchV2::default();
+    let mut previous_damage_event = McEventV2::default();
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const damage_query,
+            &raw mut previous_damage_event,
+            1,
+            struct_size::<McEventV2>(),
+            &raw mut damage_batch,
+            struct_size::<McEventBatchV2>()
+        ),
+        MC_STATUS_OK
+    );
+    damage_query.cursor = damage_batch.event_head;
     assert_eq!(
         mc_native_campaign_shield_damage_submit(handle, 0, shield.parent_entity_index, 100, 152,),
         MC_STATUS_OK
@@ -3038,7 +3158,41 @@ fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         ),
         MC_STATUS_OK
     );
-    assert_eq!(shield.parent_life, life_before - 25);
+    let mut damage_events = vec![McEventV2::default(); 4096];
+    assert_eq!(
+        mc_native_campaign_events_copy_since(
+            handle,
+            &raw const damage_query,
+            damage_events.as_mut_ptr(),
+            damage_events.len() as u32,
+            struct_size::<McEventV2>(),
+            &raw mut damage_batch,
+            struct_size::<McEventBatchV2>()
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(damage_batch.has_more, 0);
+    damage_events.truncate(damage_batch.written as usize);
+    let hits = damage_events
+        .iter()
+        .filter(|event| {
+            event.kind == 0x101
+                && event.code & 0xff == 3
+                && event.entity_index == shield.parent_entity_index
+                && event.code >> 8 == 152
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hits.len(),
+        1,
+        "one accepted CABI hit must reach the source damage consumer"
+    );
+    assert_eq!(
+        (hits[0].value_0, hits[0].value_1),
+        (100, 25),
+        "preserve the full source Shield reduction"
+    );
+    assert_eq!(shield.parent_life, life_without_hit - 25);
     assert_eq!(shield.experience_awarded, 1);
     assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 }

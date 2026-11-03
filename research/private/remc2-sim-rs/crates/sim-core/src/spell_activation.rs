@@ -1203,7 +1203,7 @@ impl ShieldState {
             events,
         );
         self.parent_mana = caster.mana;
-        self.parent_status_flags = caster.control_flags & !0x3;
+        self.parent_status_flags = caster.control_flags;
         self.active_value = holder.active_value;
         if accepted {
             self.action = SHIELD_ACTIVE_ACTION;
@@ -1213,29 +1213,30 @@ impl ShieldState {
     }
 
     /// Advance one source `sub_6A480` pulse, including the unconditional
-    /// `word_0x36_54` countdown decrement.
-    pub fn step(&mut self) -> ShieldStep {
+    /// `word_0x36_54` countdown decrement. The caller evaluates the physical
+    /// holder's Castle-mana requirement against the current parent A4 and
+    /// supplies the current selected source-table life mode.
+    pub fn step(&mut self, castle_gate_passed: bool, life_mode: u8) -> ShieldStep {
         let active_before = self.active_value;
         let status_before = self.parent_status_flags;
         let countdown_before = self.countdown;
-        let profile = shield_tier_profile(self.tier).expect("Shield tier remains 0..=2");
         let mut sustained = false;
 
-        if self.parent_entity_index != 0 && self.active_value > 0 {
+        if self.parent_entity_index != 0 && self.active_value > 0 && life_mode <= 1 {
             // `sub_68D50` only rechecks the parent's mana on the first pulse;
             // subsequent pulses are allowed to consume the active countdown.
             let mana_ok =
                 self.active_value != self.activation_value || self.parent_mana >= self.mana_cost;
-            if self.parent_life >= 0 && self.parent_mana >= 0 && mana_ok {
+            if self.parent_life >= 0 && self.parent_mana >= 0 && mana_ok && castle_gate_passed {
                 sustained = true;
-                if profile.life_mode == 0 {
+                if life_mode == 0 {
                     self.parent_status_flags |= SHIELD_MANA_STATUS_BIT;
                 } else if self.active_value == self.activation_value {
                     self.parent_status_flags |= SHIELD_INVULNERABLE_STATUS_BIT;
                 }
                 // sub_6A480 charges life-mode 0 before its decrement. Only
                 // life-mode 1 decrements before calling sub_68DE0.
-                if profile.life_mode == 1 {
+                if life_mode == 1 {
                     self.active_value -= 1;
                 }
                 if self.active_value == self.activation_value {
@@ -1247,7 +1248,7 @@ impl ShieldState {
                 } else if self.active_value != 0 && self.parent_mana_regen > 0 {
                     self.parent_mana_regen = 0;
                 }
-                if profile.life_mode == 0 {
+                if life_mode == 0 {
                     self.active_value -= 1;
                 }
             } else {
@@ -1259,8 +1260,8 @@ impl ShieldState {
             self.parent_status_flags &= !(SHIELD_MANA_STATUS_BIT | SHIELD_INVULNERABLE_STATUS_BIT);
             self.cleanup_requested = true;
         }
-        if self.countdown > 0 {
-            self.countdown -= 1;
+        if self.countdown != 0 {
+            self.countdown = self.countdown.wrapping_sub(1);
         }
         ShieldStep {
             active_before,
@@ -1477,7 +1478,7 @@ impl InvisibleState {
             events,
         );
         self.parent_mana = caster.mana;
-        self.parent_status_flags = caster.control_flags & !0x3;
+        self.parent_status_flags = caster.control_flags;
         self.active_value = holder.active_value;
         if accepted {
             self.action = INVISIBLE_ACTIVE_ACTION;
@@ -1575,8 +1576,8 @@ impl InvisibleState {
             }
         }
 
-        if self.countdown > 0 {
-            self.countdown -= 1;
+        if self.countdown != 0 {
+            self.countdown = self.countdown.wrapping_sub(1);
         }
         InvisibleStep {
             active_before,
@@ -1868,8 +1869,8 @@ impl BeyondSightState {
                 self.cleanup_requested = true;
             }
         }
-        if self.countdown > 0 {
-            self.countdown -= 1;
+        if self.countdown != 0 {
+            self.countdown = self.countdown.wrapping_sub(1);
         }
         BeyondSightStep {
             active_before,
@@ -2377,10 +2378,12 @@ mod tests {
         );
 
         shield.parent_mana = 1_000;
+        shield.parent_status_flags = 0x3;
         events.clear();
         assert!(shield.activate(512, true, &mut events));
         assert_eq!(shield.active_value, 101);
         assert_eq!(shield.parent_status_flags & DIRECTION_BITS, 512);
+        assert_eq!(shield.parent_status_flags & 0x3, 0x3);
         assert!(events.is_empty());
     }
 
@@ -2389,7 +2392,7 @@ mod tests {
         let mut shield = ShieldState::new(0, 113, 2, 1_000, 100).expect("Shield tier");
         shield.active_value = 2;
         shield.activation_value = 2;
-        let first = shield.step();
+        let first = shield.step(true, 0);
         assert!(first.sustained);
         assert_eq!(first.active_after, 1);
         assert_eq!(
@@ -2406,7 +2409,7 @@ mod tests {
         assert_eq!(shield.parent_life, 75);
         assert_eq!(shield.parent_mana, 975);
 
-        let expired = shield.step();
+        let expired = shield.step(true, 0);
         assert!(expired.cleanup_requested);
         assert_eq!(expired.active_after, 0);
         assert_eq!(
@@ -2423,7 +2426,7 @@ mod tests {
         let mut shield = ShieldState::new(2, 113, 2, 10_000, 100).expect("Shield tier");
         shield.active_value = 2;
         shield.activation_value = 2;
-        let first = shield.step();
+        let first = shield.step(true, 1);
         assert_eq!(
             first.status_after & SHIELD_INVULNERABLE_STATUS_BIT,
             SHIELD_INVULNERABLE_STATUS_BIT
@@ -2449,12 +2452,12 @@ mod tests {
                 let mut shield = ShieldState::new(tier, 113, 2, 20_000, 100).unwrap();
                 shield.active_value = shield.activation_value;
                 shield.parent_mana_regen = old_regen;
-                let first = shield.step();
+                let first = shield.step(true, 0);
                 assert!(first.sustained);
                 assert_eq!(first.active_after, shield.activation_value - 1);
                 assert_eq!(shield.parent_mana_regen, old_regen.min(0) - cost);
                 shield.parent_mana_regen = 100;
-                shield.step();
+                shield.step(true, 0);
                 assert_eq!(shield.parent_mana_regen, 0);
             }
         }
@@ -2464,7 +2467,7 @@ mod tests {
         let mut shield = ShieldState::new(2, 113, 2, 20_000, 100).unwrap();
         shield.active_value = shield.activation_value;
         shield.parent_mana_regen = 100;
-        shield.step();
+        shield.step(true, 1);
         assert_eq!(shield.parent_mana_regen, 0);
     }
 
@@ -2473,7 +2476,7 @@ mod tests {
         let mut dead = ShieldState::new(0, 113, 2, 1_000, -1).expect("Shield tier");
         dead.active_value = 3;
         dead.parent_status_flags = SHIELD_MANA_STATUS_BIT | SHIELD_INVULNERABLE_STATUS_BIT;
-        let result = dead.step();
+        let result = dead.step(true, 0);
         assert!(!result.sustained);
         assert_eq!(result.active_after, 0);
         assert_eq!(
@@ -2484,11 +2487,44 @@ mod tests {
         let mut missing = ShieldState::new(0, 113, 0, 1_000, 100).expect("Shield tier");
         missing.active_value = 3;
         missing.parent_status_flags = SHIELD_MANA_STATUS_BIT;
-        let result = missing.step();
+        let result = missing.step(true, 0);
         assert!(!result.sustained);
         assert_eq!(result.active_after, 3);
         assert_eq!(result.countdown_after, 63);
         assert_eq!(result.status_after, SHIELD_MANA_STATUS_BIT);
+    }
+
+    #[test]
+    fn shield_failed_castle_gate_expires_each_tier_without_clearing_other_flags() {
+        for tier in 0..=2 {
+            let mut shield = ShieldState::new(tier, 113, 2, 20_000, 100).unwrap();
+            shield.active_value = 3;
+            shield.parent_mana_regen = -250;
+            shield.countdown = -1;
+            shield.parent_status_flags =
+                SHIELD_MANA_STATUS_BIT | SHIELD_INVULNERABLE_STATUS_BIT | 0x200;
+            let result = shield.step(false, u8::from(tier == 2));
+            assert!(!result.sustained);
+            assert_eq!(result.active_after, 0);
+            assert!(result.cleanup_requested);
+            assert_eq!(result.status_after, 0x200);
+            assert_eq!(shield.parent_mana_regen, -250);
+            assert_eq!(result.countdown_after, -2);
+        }
+    }
+
+    #[test]
+    fn shield_uses_current_configured_life_mode_on_each_visit() {
+        let mut shield = ShieldState::new(0, 113, 2, 20_000, 100).unwrap();
+        shield.active_value = shield.activation_value;
+        shield.parent_mana_regen = -250;
+        let first = shield.step(true, 1);
+        assert!(first.sustained);
+        assert_ne!(first.status_after & SHIELD_INVULNERABLE_STATUS_BIT, 0);
+        assert_eq!(shield.parent_mana_regen, -250);
+        let later = shield.step(true, 0);
+        assert!(later.sustained);
+        assert_ne!(later.status_after & SHIELD_MANA_STATUS_BIT, 0);
     }
 
     #[test]
@@ -2817,9 +2853,11 @@ mod tests {
         );
 
         invisible.parent_mana = 2_500;
+        invisible.parent_status_flags = 0x3;
         events.clear();
         assert!(invisible.activate(256, true, &mut events));
         assert_eq!(invisible.active_value, 183);
+        assert_eq!(invisible.parent_status_flags & 0x3, 0x3);
         assert!(events.is_empty());
 
         // A missing castle makes sub_68D50 fail at the authoritative first
@@ -2864,8 +2902,10 @@ mod tests {
         // Exhausting the short countdown clears only the owner bit.  The
         // spell-entity bit remains set until source `sub_6D880` removes it.
         invisible.active_value = 1;
+        invisible.countdown = -1;
         let end = invisible.step(Some(4_000));
         assert_eq!(end.active_after, 0);
+        assert_eq!(end.countdown_after, -2);
         assert_eq!(end.owner_flags_after & INVISIBLE_STATUS_BIT, 0);
         assert_eq!(end.owner_flags_after & 0x400, 0x400);
         assert_eq!(
@@ -2893,8 +2933,10 @@ mod tests {
         assert_eq!(beyond_sight.countdown, 63);
 
         beyond_sight.active_value = 1;
+        beyond_sight.countdown = -1;
         let end = beyond_sight.step(Some(10_000));
         assert_eq!(end.active_after, 0);
+        assert_eq!(end.countdown_after, -2);
         assert!(end.cleanup_requested);
     }
 

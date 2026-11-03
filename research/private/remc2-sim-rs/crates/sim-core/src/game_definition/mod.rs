@@ -10,8 +10,8 @@ mod runtime;
 pub use mc2_owned::{Mc2OwnedInputs, load_mc2_owned};
 pub use runtime::{
     DefinitionFireballBinding, DefinitionFlightBinding, DefinitionGoatPolicyBinding,
-    ENEMY_DEFAULT_POLICY_ID, FIREBALL_MANA_COST_ID, PLAYER_FORWARD_ACCELERATION_ID,
-    PLAYER_MAX_FORWARD_SPEED_ID,
+    DefinitionSpeedBinding, ENEMY_DEFAULT_POLICY_ID, FIREBALL_MANA_COST_ID,
+    PLAYER_FORWARD_ACCELERATION_ID, PLAYER_MAX_FORWARD_SPEED_ID,
 };
 pub use sim_definition::runtime_flow::{
     RuntimeFlowDefinition, RuntimeFlowDestination, RuntimeFlowEntry, RuntimeFlowNodeId,
@@ -34,9 +34,10 @@ pub use sim_definition::{
     OptionParameter, PackageProvenance, PackageProvenanceKind, PresentationAssetBudgets,
     PresentationAssetSlot, PublicationFault, ReadBackBinding, ReadBinding, RequestedTiming,
     RequiredCapability, Result, SEMANTIC_CONTRACT_VERSION, SKELETON_MAX_LIFE_CAPABILITY_ID,
-    SemanticBinding, SemanticCatalog, SemanticDescriptor, SemanticId, SemanticValue,
-    TRADER_MAX_LIFE_CAPABILITY_ID, TemporalContract, TransactionError, TransactionErrorCode,
-    VALIDATION_RECEIPT_SCHEMA, VILLAGER_MAX_LIFE_CAPABILITY_ID, ValidateBinding, ValidationReceipt,
-    ValueType, WORKSPACE_SCHEMA, WORM_MAX_LIFE_CAPABILITY_ID, WorkspaceInspection, WorkspaceStore,
-    creature_max_life_capability_id, default_catalog, engine_capabilities,
+    SPEED_MULTIPLIERS_CAPABILITY_ID, SemanticBinding, SemanticCatalog, SemanticDescriptor,
+    SemanticId, SemanticValue, TRADER_MAX_LIFE_CAPABILITY_ID, TemporalContract, TransactionError,
+    TransactionErrorCode, VALIDATION_RECEIPT_SCHEMA, VILLAGER_MAX_LIFE_CAPABILITY_ID,
+    ValidateBinding, ValidationReceipt, ValueType, WORKSPACE_SCHEMA, WORM_MAX_LIFE_CAPABILITY_ID,
+    WorkspaceInspection, WorkspaceStore, creature_max_life_capability_id, default_catalog,
+    engine_capabilities,
 };

@@ -3710,11 +3710,13 @@ fn nyphur_visibility_reads_player_a4_separately_from_invisible_holder_a4() {
                 .economy
                 .set_castle_mana_prerequisite_for_test(castle, required)
         );
+        live.sync_castle_player_relations();
         support_spells::step_source_slot(
             &mut live.shared_spells,
             &mut live.economy,
             &mut live.core,
             invisible_slot,
+            None,
         )
         .expect("actual per-owner Invisible callback");
     }
@@ -4679,6 +4681,7 @@ fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection(
             &mut live.economy,
             &mut live.core,
             outcome.source_slot,
+            None,
         )
         .expect("actual remote action-36 source pulse");
     }

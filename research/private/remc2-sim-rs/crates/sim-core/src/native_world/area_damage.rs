@@ -51,6 +51,40 @@ impl<'a> ActorDomains<'a> {
         }
     }
 
+    pub(crate) fn source_target_context(&self) -> super::source_target::Context<'_> {
+        super::source_target::Context {
+            goats: Some(self.goats),
+            houses: Some(self.houses),
+            villagers: Some(self.villagers),
+            particles: self.particles,
+            ..super::source_target::Context::default()
+        }
+    }
+
+    pub(crate) fn set_status_flags(&mut self, slot: u16, class: u8, model: u8, mask: u32, flags: u32) -> bool {
+        if (class, model) == (super::GOAT_CLASS, super::GOAT_MODEL)
+            && let Some(row) = self.goats.goats().iter().find(|row| row.active && row.entity_index == slot) {
+            return self.goats.set_control_flags(slot, (row.control_flags & !mask) | (flags & mask));
+        }
+        if (class, model) == (super::HOUSE_CLASS, super::HOUSE_MODEL)
+            && let Some(row) = self.houses.house_mut(slot).filter(|row| row.source_retained()) {
+            row.control_flags = (row.control_flags & !mask) | (flags & mask);
+            return true;
+        }
+        if let Some(row) = self.villagers.villagers_mut().iter_mut().find(|row| class == 5 && model == row.model && row.source_retained() && row.entity_index == slot) {
+            row.control_flags = (row.control_flags & !mask) | (flags & mask);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn set_status_speed(&mut self, slot: u16, class: u8, model: u8, speed: i16) {
+        if (class, model) == (super::GOAT_CLASS, super::GOAT_MODEL) && self.goats.set_status_speed(slot, speed) { return; }
+        if let Some(row) = self.villagers.villagers_mut().iter_mut().find(|row| class == 5 && model == row.model && row.source_retained() && row.entity_index == slot) {
+            row.actual_speed = speed;
+        }
+    }
+
     fn source_view(&self, slot: u16) -> Option<crate::level1_mission::Level1SourceEntityView> {
         self.goats
             .goats()
@@ -573,6 +607,12 @@ fn write_direct_creature_kill(
 /// Read a current arena-owned damage actor without borrowing mutation
 /// services or retaining a previous occupant's raw projection.
 pub(crate) fn read_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> {
+    let mut actor = read_current_arena_actor(arena, slot)?;
+    actor.control_flags = super::source_target::status_flags(arena, slot, actor.control_flags);
+    Some(actor)
+}
+
+fn read_current_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> {
     if slot == 0 {
         return None;
     }

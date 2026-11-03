@@ -716,6 +716,10 @@ impl CampaignSession {
             .bind_local_player_fireball_mana_cost(mana_cost)
     }
 
+    pub(crate) fn apply_speed_multipliers(&mut self, multipliers: [i32; 3]) {
+        self.simulation.apply_speed_multipliers(multipliers);
+    }
+
     pub(crate) fn apply_fireball_launch_sound(&mut self, source_sound_id: u16) {
         self.simulation.bind_fireball_launch_sound(source_sound_id);
     }

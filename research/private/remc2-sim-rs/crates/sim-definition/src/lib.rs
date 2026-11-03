@@ -34,8 +34,9 @@ pub use package::{
     FIREFLY_MAX_LIFE_CAPABILITY_ID, GOAT_MAX_LIFE_CAPABILITY_ID, GamePackage,
     HOUSE_CONSTRUCTION_VISITS_CAPABILITY_ID, HOUSE_LIFE_MANA_SCALAR_CAPABILITY_ID,
     PackageProvenance, PackageProvenanceKind, RequiredCapability, SKELETON_MAX_LIFE_CAPABILITY_ID,
-    TRADER_MAX_LIFE_CAPABILITY_ID, VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID,
-    creature_max_life_capability_id, engine_capabilities,
+    SPEED_MULTIPLIERS_CAPABILITY_ID, TRADER_MAX_LIFE_CAPABILITY_ID,
+    VILLAGER_MAX_LIFE_CAPABILITY_ID, WORM_MAX_LIFE_CAPABILITY_ID, creature_max_life_capability_id,
+    engine_capabilities,
 };
 pub use presentation_asset::{
     BoundPresentationAsset, CompatiblePresentationArtifact, INDEXED_SPRITE_SCHEMA,
@@ -231,6 +232,17 @@ impl GameDefinition {
                     && requirement.exact_version == 1
             })
         {
+            descriptor.access = Access::ReadOnly;
+        }
+        if matches!(
+            id.as_str(),
+            "spell.speed.tier0.multiplier"
+                | "spell.speed.tier1.multiplier"
+                | "spell.speed.tier2.multiplier"
+        ) && !self.required_capabilities.iter().any(|requirement| {
+            requirement.id.as_str() == SPEED_MULTIPLIERS_CAPABILITY_ID
+                && requirement.exact_version == 1
+        }) {
             descriptor.access = Access::ReadOnly;
         }
         if matches!(

@@ -66,6 +66,7 @@ pub struct CampaignDefinition {
     pub(crate) source_terrain_graphics_flags: u32,
     pub collision_masks_present: bool,
     pub identity_receipt: CanonicalDigest,
+    pub(crate) speed_multipliers: [i32; 3],
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
     authored_creature_entities: BTreeMap<u16, LevelEntityId>,
@@ -353,24 +354,15 @@ impl CampaignDefinition {
         source_terrain_graphics_flags: u32,
     ) -> Self {
         let collision_masks_present = collision_masks.is_some();
-        let identity_receipt = digest_with(|hasher| {
-            hasher.update(package_sha256.as_bytes());
-            hasher.update([0]);
-            hasher.update([u8::from(collision_masks_present)]);
-            hasher.update([u8::from(profile.cave_mode)]);
-            hasher.update(profile.terrain_reference_height.to_le_bytes());
-            hasher.update(profile.ground_clearance.to_le_bytes());
-            hasher.update(profile.ceiling_clearance.to_le_bytes());
-            hasher.update(profile.passive_vertical_step.to_le_bytes());
-            hasher.update(profile.raw_word_0x10.to_le_bytes());
-            hasher.update(profile.raw_word_0x12.to_le_bytes());
-        });
+        let identity_receipt =
+            Self::base_identity_receipt(profile, &package_sha256, collision_masks_present);
         Self {
             profile,
             package_sha256,
             source_terrain_graphics_flags,
             collision_masks_present,
             identity_receipt,
+            speed_multipliers: [2, 3, 4],
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
             authored_creature_entities: BTreeMap::new(),
@@ -399,6 +391,45 @@ impl CampaignDefinition {
             collision_masks,
             presentation,
         }
+    }
+
+    fn base_identity_receipt(
+        profile: FlightProfile,
+        package_sha256: &str,
+        collision_masks_present: bool,
+    ) -> CanonicalDigest {
+        digest_with(|hasher| {
+            hasher.update(package_sha256.as_bytes());
+            hasher.update([0]);
+            hasher.update([u8::from(collision_masks_present)]);
+            hasher.update([u8::from(profile.cave_mode)]);
+            hasher.update(profile.terrain_reference_height.to_le_bytes());
+            hasher.update(profile.ground_clearance.to_le_bytes());
+            hasher.update(profile.ceiling_clearance.to_le_bytes());
+            hasher.update(profile.passive_vertical_step.to_le_bytes());
+            hasher.update(profile.raw_word_0x10.to_le_bytes());
+            hasher.update(profile.raw_word_0x12.to_le_bytes());
+        })
+    }
+
+    pub(crate) fn bind_speed_multipliers(&mut self, multipliers: [i32; 3]) {
+        self.speed_multipliers = multipliers;
+        let base = Self::base_identity_receipt(
+            self.profile,
+            &self.package_sha256,
+            self.collision_masks_present,
+        );
+        self.identity_receipt = if multipliers == [2, 3, 4] {
+            base
+        } else {
+            digest_with(|hasher| {
+                hasher.update(base.as_bytes());
+                hasher.update(b"speed-multipliers-v1");
+                for multiplier in multipliers {
+                    hasher.update(multiplier.to_le_bytes());
+                }
+            })
+        };
     }
 
     pub(crate) fn bind_semantic_level(&mut self, bindings: SemanticLevelBindings) {

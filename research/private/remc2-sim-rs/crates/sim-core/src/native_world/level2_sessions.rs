@@ -72,6 +72,40 @@ mod castle_revival_tests {
     }
 
     #[test]
+    fn queued_status_cleanup_preserves_the_current_free_spell_profile() {
+        let (mut baseline, mut economy) = fixture();
+        baseline
+            .materialize_carried_spell_families(&mut economy, &[(6, 0), (11, 0)])
+            .expect("ordinary carried status constructors");
+        for free in [false, true] {
+            for family in [6, 11] {
+                let mut shared = baseline.clone();
+                shared.free_spell_usage = free;
+                let owner = shared.player_entity.index;
+                let holder = shared.local_player.enabled_spell_holders[usize::from(family)];
+                shared.pickup_mut(holder).unwrap().set_source_word_2c(3);
+                if family == 6 {
+                    shared.shield = Some(ShieldState::new(0, holder, owner, 10_000, 100).unwrap());
+                    shared.apply_shield_cleanup();
+                } else {
+                    shared.invisible = Some(InvisibleState::new(0, holder, owner, 10_000, 100).unwrap());
+                    shared.apply_invisible_cleanup();
+                }
+                let expected = shared.physical_spell_profile(family, 2, owner, None).unwrap();
+                let current = shared.pickup(holder).unwrap();
+                assert_eq!(current.level_gate, 2);
+                assert_eq!(current.source_word_2c(), 0);
+                assert_eq!(current.mana_regen, expected.mana_regen);
+                assert_eq!(current.max_mana, expected.max_mana);
+                assert_eq!(current.mana, expected.mana);
+                if free {
+                    assert_eq!((current.mana_regen, current.mana), (0, 1));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn castle_revival_restores_same_actor_and_rebuilds_holders_without_resetting_progress() {
         let (mut shared, mut economy) = fixture();
         // This raw reset package has no bound starting Fireball. Produce its
@@ -1863,7 +1897,7 @@ impl Level2SharedSpellResetSession {
             .unwrap_or_default();
         if queued_spell != 0 {
             let tier = queued_spell.saturating_sub(1).min(2) as u8;
-            if let Some(profile) = level2_set_spell_profile(6, tier) {
+            if let Some(profile) = self.physical_spell_profile(6, tier, shield.parent_entity_index, None) {
                 if let Some(holder) = self.pickup_mut(shield.holder_entity_index) {
                     holder.level_gate = tier.cast_signed();
                     holder.subspell_index = profile.subspell_index;
@@ -2002,7 +2036,7 @@ impl Level2SharedSpellResetSession {
         Some(damage)
     }
 
-    fn step_shield_source_slot(&mut self, source_slot: u16) {
+    fn step_shield_source_slot(&mut self, source_slot: u16, parent_castle_mana: Option<i32>) {
         if self
             .shield
             .is_none_or(|shield| shield.holder_entity_index != source_slot)
@@ -2013,8 +2047,14 @@ impl Level2SharedSpellResetSession {
         // Automatic collision does not use this side mailbox; it writes the
         // player entity mailbox and is evaluated at the player source visit.
         let _ = self.consume_shield_damage_mailbox(source_slot);
+        let castle_gate_passed = self.pickup(source_slot).is_some_and(|holder| {
+            holder.mana_regen == 0
+                || parent_castle_mana.is_some_and(|mana| mana >= holder.mana_regen)
+        });
         if let Some(shield) = self.shield.as_mut() {
-            let _step: ShieldStep = shield.step();
+            let life_mode = crate::spell_activation::shield_tier_profile(shield.tier)
+                .expect("validated Shield tier").life_mode;
+            let _step: ShieldStep = shield.step(castle_gate_passed, life_mode);
         }
         self.sync_shield_projection();
         if self.shield.is_some_and(|shield| shield.cleanup_requested) {
@@ -2180,7 +2220,7 @@ impl Level2SharedSpellResetSession {
         shield.active_value = holder.active_value;
         shield.activation_value = holder.activation_value.cast_signed();
         shield.parent_mana = caster.mana;
-        shield.parent_status_flags = caster.control_flags & !0x3;
+        shield.parent_status_flags = caster.control_flags;
         if holder.active_value != 0 {
             shield.action = SHIELD_ACTIVE_ACTION;
             shield.cleanup_requested = false;
@@ -2219,7 +2259,7 @@ impl Level2SharedSpellResetSession {
         invisible.active_value = holder.active_value;
         invisible.activation_value = holder.activation_value.cast_signed();
         invisible.parent_mana = caster.mana;
-        invisible.parent_status_flags = caster.control_flags & !0x3;
+        invisible.parent_status_flags = caster.control_flags;
         if holder.active_value != 0 {
             invisible.action = INVISIBLE_ACTIVE_ACTION;
             invisible.cleanup_requested = false;
@@ -2243,7 +2283,7 @@ impl Level2SharedSpellResetSession {
             .unwrap_or_default();
         if queued_spell != 0 {
             let tier = queued_spell.saturating_sub(1).min(2) as u8;
-            if let Some(profile) = level2_set_spell_profile(11, tier) {
+            if let Some(profile) = self.physical_spell_profile(11, tier, invisible.parent_entity_index, None) {
                 if let Some(holder) = self.pickup_mut(invisible.holder_entity_index) {
                     holder.level_gate = tier.cast_signed();
                     holder.subspell_index = profile.subspell_index;
@@ -4082,7 +4122,7 @@ impl Level2SharedSpellResetSession {
             == Some(source_action)
         {
             if family == 6 && source_action == SHIELD_ACTIVE_ACTION {
-                self.step_shield_source_slot(source_slot);
+                self.step_shield_source_slot(source_slot, parent_castle_mana);
             } else if family == 11 && source_action == INVISIBLE_ACTIVE_ACTION {
                 self.step_invisible_source_slot(source_slot, parent_castle_mana);
             } else if family == BEYOND_SIGHT_FAMILY && source_action == BEYOND_SIGHT_ACTIVE_ACTION {

@@ -67,6 +67,11 @@ pub struct GlobalSpecialState {
     pub cast_auxiliary: u8,
     #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_slot")]
     pub castle_entity_index: u16,
+    /// Current shared A4 words0xc/0xe, consumed by GetScroll_69DB0.
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_angle")]
+    pub speed: i16,
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_angle")]
+    pub speed_changed: i16,
 }
 
 impl GlobalSpecialState {
@@ -77,6 +82,11 @@ impl GlobalSpecialState {
         *self == Self::default()
     }
     pub(super) fn append_hash(self, hasher: &mut Sha256) {
+        if self.speed != 0 || self.speed_changed != 0 {
+            hasher.update(b"source-global-speed-input-v1");
+            hasher.update(self.speed.to_le_bytes());
+            hasher.update(self.speed_changed.to_le_bytes());
+        }
         if self.protection_ticks != 0 || self.visibility_mode != 0 {
             hasher.update(b"source-global-special-state-v1");
             hasher.update(self.protection_ticks.to_le_bytes());
