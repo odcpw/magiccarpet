@@ -1,9 +1,23 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: Morph runtime `fbaf38b9`, native `dd16bf15937e`.
+Current installed checkpoint: mana economy `4eef9713`, native `73d854280c95`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
+
+Oliver resumed the core team on 2026-11-03: two Terra 6.1/xhigh workers and
+one Sol 6.1/xhigh integrator, with root coordination and independent checks.
+Next order is the connected mana economy, rival combat, Lightning, Steal Mana,
+then Duel; finish and install each capability before advancing. The mana economy
+checkpoint below is installed; rival combat (`mc-1pb.17`) is next. The economy
+path is actual kill/reward → Possession/collection → balloon → Castle deposit
+→ paid spending, including the reported settlement census discrepancy. Trace
+the real source and consumers; distinguish a faulty check from a runtime defect.
+AzureIsland owns integration and the sole build slot; SageElk owns the mana
+domain and IvoryGorge the settlement/census domain with exclusive file windows.
+Keep the bead's wider acceptance and dependencies open. Existing delivered
+Castle spell tiers remain the baseline. Disk headroom is restored before heavy
+stages; preserve warm caches, current player and immediate previous native.
 
 Oliver resumed implementation on 2026-11-01 with two Terra 6.1/xhigh workers
 and one Sol 6.1/xhigh integrator. Finish Castle/mana and Alliance end to end,
@@ -173,7 +187,29 @@ formatting still has legacy drift; scoped UBS review found no critical changed-h
 defect, not a clean whole-file scan. Superseded proof executables were preserved
 with hash-checked relocation receipts under `/tmp/magiccarpet-*`; source, warm
 caches, installed player and immediate previous native were preserved. The Sol
-integrator has stood down; no new implementation batch is dispatched.
+integrator stood down at that checkpoint; the resumed work above supersedes it.
+
+Mana economy checkpoint delivered on 2026-11-03: source `4eef9713`, native
+`73d854280c95`. The real earned-mana loop already passed on the Morph baseline
+(103.27s) and passes the integrated candidate (100.145s): public Castle,
+Fireball kill, public Possession, scheduled balloon, exact deposit and paid cast.
+The two reported failures were setup/oracle defects: the explicit claim adapter
+omitted physical player ownership; the house census omitted a real neutral Archer
+born with 500 mana during demolition. Corrected those narrow paths with exact
+source-backed birth, generation and positive-census assertions; production
+Possession, Castle dispatch and scheduler behavior were not rewritten.
+
+Both original checks and the claim/reset consumer pass; root independently
+reran the two corrected cases (3.632s/.457s). Native build passes, all 443 inputs
+and native copies match, and root viewed the matching mapped player loading the
+original map, loading art and NightSpire terrain/HUD. Its test processes were
+stopped. No Unity/art change. Evidence: `generated/mana-economy-20261103-integration/`
+(under `research/private/`) and `Builds/delivery-mana-economy-20261103-batch1/`
+(under the Unity client). The earlier deposit/census negatives above are resolved
+by this evidence; the rival pursuit failure remains the next investigation.
+`mc-bhq.10` retains broader acceptance and stays open. Declared travel/progression
+are check controls, not a human campaign playthrough. Hardware audio/performance
+remain unverified; legacy package formatting and whole-file scanner backlog remain.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
