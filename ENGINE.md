@@ -73,6 +73,13 @@ The MC2 projectile/contact and death-marker adapters remain in
 `native_world/level2_dynamic_economy.rs`, with current target reads and physical
 relation transfers in `native_world/source_target.rs`.
 
+Fireball's holder timing is owned by `spell_activation/fireball.rs`, with typed
+defaults in `sim-definition/src/level_definition/fireball.rs`. Its MC2 flight,
+collision, capture and damage adapters use `native_world/level2_dynamic_economy.rs`
+and `source_target.rs`. Shared impact construction and following-pass lifetime
+remain in `native_world/effects.rs` and `world/effects.rs`; FireSpheres use the
+same canonical source-slot allocator as their ordinary descendants.
+
 Each playable feature moves its relevant canonical state and behavior to its
 owner, then leaves thin registrations in shared roots. A module with unrestricted
 whole-session access or only methods on the same god object does not satisfy this

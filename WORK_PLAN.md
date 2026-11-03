@@ -117,6 +117,29 @@ review found no critical candidate defect, not a clean whole-file scan.
 The two Terra workers hit model capacity and remain stopped; root and the Sol
 integrator continue Fireball next, then Morph, without replacement retries.
 
+Fireball checkpoint delivered on 2026-11-03: runtime `9ccd9815`, installed
+native `8afc2bf1ac9a`. Actual acquired casts cover all three tiers and a typed
+speed override through flight, damage, attributed death, original impact and
+FireSpheres descendants, natural cleanup and holder reset. Fixed current
+parent/holder reads, source launch/terrain/water order, Magic Mine selection and
+capture, canonical descendant allocation and local particle binding. Root
+independently reran the acquired scenario and self-verified the public C ABI
+flight/impact/presentation/reclaim path. Workspace all-target check and native
+build pass; all 441 inputs and installed native copies match candidate6.
+
+The matching player loaded the original map, loading art and NightSpire
+terrain/HUD; its mapped native hash matches. No Unity or art changes. Evidence:
+`research/private/generated/fireball-20261103-integration/` and
+`research/private/remc2-unity-native/Builds/delivery-fireball-20261103-batch1/`.
+Use this installation as the baseline for Morph next. The exact Castle reward
+deposit and Nyphur mode7 pursuit checks still fail, both independently reproduced
+on the pre-batch Possession binary; their broader causes remain unresolved.
+`mc-k5k.10` and shared-effects `mc-bhq.9` remain open with their full acceptance.
+Declared resources/positions are check controls, not earned campaign progress.
+Human combat, hardware audio/performance and full missions remain unverified;
+legacy formatting and whole-file UBS backlog remain, with no critical defect
+identified in the changed hunks.
+
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
 handoff complete. Continue useful work; do not produce a read-receipt report.
