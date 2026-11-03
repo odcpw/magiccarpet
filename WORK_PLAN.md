@@ -1,6 +1,6 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: mana economy `4eef9713`, native `73d854280c95`.
+Current installed checkpoint: rival combat `d5731432`, native `ac3bf6d9fe17`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
@@ -9,12 +9,15 @@ Oliver resumed the core team on 2026-11-03: two Terra 6.1/xhigh workers and
 one Sol 6.1/xhigh integrator, with root coordination and independent checks.
 Next order is the connected mana economy, rival combat, Lightning, Steal Mana,
 then Duel; finish and install each capability before advancing. The mana economy
-checkpoint below is installed; rival combat (`mc-1pb.17`) is next. The economy
+and rival checkpoints below are installed; Lightning7 (`mc-k5k.2`) is next. The economy
 path is actual kill/reward → Possession/collection → balloon → Castle deposit
 → paid spending, including the reported settlement census discrepancy. Trace
 the real source and consumers; distinguish a faulty check from a runtime defect.
-AzureIsland owns integration and the sole build slot; SageElk owns the mana
-domain and IvoryGorge the settlement/census domain with exclusive file windows.
+GreenValley owns the sole build/push/install slot; AzureIsland implements shared
+joins with the feature owners. SageElk and IvoryGorge remain the Terra workers.
+Use exclusive file windows. Original-client delivery uses the verified isolated
+`magiccarpet-original-client-70e76b9e-20261103` input snapshot while unrelated
+Modern renderer work is present in the canonical Unity source.
 Keep the bead's wider acceptance and dependencies open. Existing delivered
 Castle spell tiers remain the baseline. Disk headroom is restored before heavy
 stages; preserve warm caches, current player and immediate previous native.
@@ -210,6 +213,38 @@ by this evidence; the rival pursuit failure remains the next investigation.
 `mc-bhq.10` retains broader acceptance and stays open. Declared travel/progression
 are check controls, not a human campaign playthrough. Hardware audio/performance
 remain unverified; legacy package formatting and whole-file scanner backlog remain.
+
+Rival combat checkpoint delivered on 2026-11-03: runtime `d5731432`, native
+`ac3bf6d9fe17`. The actual authored Bee producer, ordinary rival selection,
+Fireball cast, attributed damage and natural projectile/impact reclaim pass.
+Current typed targets reach the frozen class-5 selectors without reactivating
+their raw shadows; explicit physical word94 writes reach the current owner and
+reject stale generations. AI Castle creation now uses canonical NewEvent for
+raw and typed replacements, repairs map links immediately and refreshes the
+same-pass decision tail. Normal rival Castle upgrade, allocation failure,
+neutral ownership, numeric scheduling, target reuse and reset/replay controls pass.
+
+Root ran the focused checks, workspace all-target check and native build against
+all 443 matching inputs. An independent source review found no additional defect
+in the inspected allocation/tail join. Root viewed the original map, loading art
+and NightSpire terrain/HUD with the matching mapped native, then stopped its
+private smoke processes. Source and remote push match; no Unity/art changes were
+included. Evidence is `generated/rival-combat-20261103-integration/candidate-5/`
+under `research/private/`, plus the Unity `Builds/delivery-rival-combat-20261103-batch1/`.
+The exact previous native remains in the mana-economy checkpoint.
+
+`mc-1pb.17` retains its full roster/repertoire/mission acceptance and stays open.
+The Bee check controls its objective trigger, approach and Fireball-only inventory;
+it does not prove a unique shot-to-impact correspondence among overlapping shots.
+Mode7 controls its state each visit; its detached boundary checks now preserve
+the source negative-burst refusal and explicitly ready the positive control.
+These are not human combat or full-mission proof. Hardware audio/FPS remain
+unverified. Rust1.98's large test binary compiled with `RUST_MIN_STACK=67108864`
+after recorded compiler crashes; profiles, flags and warm caches were preserved.
+Legacy formatting and whole-file UBS findings remain; no changed-hunk critical
+was identified. Original-client launches currently use the verified isolated
+`magiccarpet-original-client-70e76b9e-20261103/remc2-unity-native/run-campaign.sh`
+while unrelated Modern renderer edits are present in canonical Unity sources.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
