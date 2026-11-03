@@ -1,6 +1,6 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: rival combat `d5731432`, native `ac3bf6d9fe17`.
+Current installed checkpoint: Lightning `0369d2f7`, native `f89eef7e4f49`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
@@ -9,18 +9,42 @@ Oliver resumed the core team on 2026-11-03: two Terra 6.1/xhigh workers and
 one Sol 6.1/xhigh integrator, with root coordination and independent checks.
 Next order is the connected mana economy, rival combat, Lightning, Steal Mana,
 then Duel; finish and install each capability before advancing. The mana economy
-and rival checkpoints below are installed; Lightning7 (`mc-k5k.2`) is next. The economy
+and rival checkpoints below are installed; Lightning7 is now installed too.
+Steal Mana13, then Duel14 (`mc-k5k.2`), are next. The economy
 path is actual kill/reward → Possession/collection → balloon → Castle deposit
 → paid spending, including the reported settlement census discrepancy. Trace
 the real source and consumers; distinguish a faulty check from a runtime defect.
-GreenValley owns the sole build/push/install slot; AzureIsland implements shared
-joins with the feature owners. SageElk and IvoryGorge remain the Terra workers.
+CalmBeaver owns the sole build/push/install slot; MaroonMarsh implements shared
+joins with the feature owners. VioletGrove and WildSpring are the Terra workers.
 Use exclusive file windows. Original-client delivery uses the verified isolated
 `magiccarpet-original-client-70e76b9e-20261103` input snapshot while unrelated
 Modern renderer work is present in the canonical Unity source.
 Keep the bead's wider acceptance and dependencies open. Existing delivered
 Castle spell tiers remain the baseline. Disk headroom is restored before heavy
 stages; preserve warm caches, current player and immediate previous native.
+
+Lightning checkpoint delivered on 2026-11-03: runtime `0369d2f7`, native
+`f89eef7e4f49`. Actual acquired/public casts pass all three tiers through
+caster-attributed damage, payment, experience, original presentation and natural
+cleanup/reset. Fixed storm-shot accuracy/experience and the canonical source
+collision/status-record axis order. Unmodified Level16 now opens; its real
+Creature24 producer/death/absence objective/reclaim and authored Dolmen
+contact-to-recharge path pass. Authored Dolmen and terrain-marker constructors
+reach their actual shared consumers without filtering owner data.
+
+Focused checks and the workspace all-target check ran on rig through RCH after
+local Rust1.98 compiler crashes; profiles and caches were preserved. Native
+delivery used an isolated checkout of the committed source because another task
+is editing C API audio and Unity files. All 443 Rust inputs and the complete
+required upstream source closure match the tested/installed candidate. The
+original player loaded map, loading art and NightSpire with the matching mapped
+library; its smoke processes are stopped. Evidence is in
+`research/private/generated/lightning-20261103-integration/candidate-6/`.
+`mc-k5k.2` and `mc-1pb.11` remain open for their full acceptance. The bare Fireball
+reclaim-helper check still fails identically on the pre-batch rival binary;
+shared-effects acceptance stays open. Legacy formatting/scanner backlog and
+uninspected rare aliases remain explicit. This is not human combat, hardware
+audio, FPS or complete-mission proof. Steal Mana is the next connected batch.
 
 Oliver resumed implementation on 2026-11-01 with two Terra 6.1/xhigh workers
 and one Sol 6.1/xhigh integrator. Finish Castle/mana and Alliance end to end,
