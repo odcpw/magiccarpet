@@ -19914,7 +19914,26 @@ impl Mc2Simulation {
                         .find(|player| player.entity_index == source_slot)
                         .and_then(|player| live.economy.handle(player.enabled_spell_holders[2]))
                 };
-                let prior_allocations = self.session.state.live.economy.castle_source_allocations();
+                // Read current occupants reached from the actual pass-start
+                // heads. NewEvent can replace an address and cut its next link
+                // before this wizard's visit; direct word96 remains a pointer.
+                let class5_buckets = effect_lists.class5_current_slots(&self.session.state.live.economy);
+                let current_targets = {
+                    let live = &self.session.state.live;
+                    let mut slots = class5_buckets.iter().flatten().copied().collect::<BTreeSet<_>>();
+                    let direct = live.economy.entities[usize::from(source_slot)].source_word_96();
+                    if direct != 0 { slots.insert(direct); }
+                    let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+                    context.spells = Some(&live.shared_spells);
+                    context.particles = Some(&self.session.definition.presentation.particles);
+                    slots.into_iter().map(|slot| {
+                        source_target::rival_target_record(&live.economy, context, slot)
+                    }).collect::<std::result::Result<Vec<_>, _>>()?.into_iter().flatten().collect::<Vec<_>>()
+                };
+                let target_handles = current_targets.iter().filter_map(|row| {
+                    self.session.state.live.economy.handle(row.index).map(|handle| (row.index, handle))
+                }).collect::<BTreeMap<_, _>>();
+                let mut target_relation_writes = Vec::new();
                 let dispatch = {
                     let live = &mut self.session.state.live;
                     let castle_profile = |tier| {
@@ -19923,7 +19942,7 @@ impl Mc2Simulation {
                         })
                     };
                     let castle_profiles = [castle_profile(0)?, castle_profile(1)?, castle_profile(2)?];
-                    let terrain = &live.terrain;
+                    let terrain = &mut live.terrain;
                     let players = live.core.players.clone();
                     let source_arena = &mut live.economy;
                     // A recyclable NewEvent reset clears source list heads;
@@ -19931,19 +19950,23 @@ impl Mc2Simulation {
                     let site_class3_slots = if effect_lists.is_current(source_arena) {
                         pass_start_class3_slots
                     } else { &[] };
-                    let (entities, economy) =
-                        (&mut source_arena.entities, &mut source_arena.economy);
+                    // The dispatcher owns a callback-local read view. Keep
+                    // the actual arena available to NewEvent during mode 3.
+                    let mut entities = source_arena.entities.clone();
+                    let generations = entities.iter().map(|row| {
+                        source_arena.economy.slot_generation(row.index)
+                    }).collect::<Vec<_>>();
                     let source_id = entities[usize::from(source_slot)].source_id;
-                    let castle_handle = economy.castle_for_owner(source_slot)
-                        .map(|root| (root.source_entity_index, economy.slot_generation(root.source_entity_index)));
+                    let castle_handle = source_arena.castle_for_owner(source_slot)
+                        .map(|root| (root.source_entity_index, source_arena.slot_generation(root.source_entity_index)));
                     let castle_site_clear = castle_handle.map_or([false; 2], |(slot, _)| {
-                        economy.castle_upgrade_site_checks(slot, terrain, site_class3_slots, entities)
+                        source_arena.castle_upgrade_site_checks(slot, terrain, site_class3_slots, &entities)
                     });
                     let mut castle_site_called = false;
-                    let castles = economy
+                    let castles = source_arena
                         .live_castles()
                         .filter(|root| {
-                            economy
+                            source_arena
                                 .castle_for_owner(root.owner_entity_index)
                                 .is_some_and(|bound| {
                                     bound.source_entity_index == root.source_entity_index
@@ -19951,20 +19974,20 @@ impl Mc2Simulation {
                         })
                         .copied()
                         .collect::<Vec<_>>();
-                    let castle_children = economy.castle_children().to_vec();
+                    let castle_children = source_arena.castle_children().to_vec();
                     // The direct AI constructor needs the arena during the
                     // mode callback. Keep only a view of spheres, and merge
                     // its one mutable relation after the callback completes.
-                    let mut spheres = economy.spheres().to_vec();
+                    let mut spheres = source_arena.spheres().to_vec();
                     let sphere_relations = spheres.iter().map(|sphere| {
                         (sphere.source_entity_index,
-                         (economy.slot_generation(sphere.source_entity_index), sphere.player_entity_index))
+                         (source_arena.slot_generation(sphere.source_entity_index), sphere.player_entity_index))
                     }).collect::<BTreeMap<_, _>>();
                     let result = live.nyphur_dispatcher
                         .with_owner_mut(target_handle, |dispatcher| dispatcher.step_dispatch_with_castle_seed(
                             pass,
                             source_slot,
-                            entities,
+                            &mut entities,
                             &mut spheres,
                             &castles,
                             &castle_children,
@@ -19977,37 +20000,48 @@ impl Mc2Simulation {
                             castle_site_clear,
                             &mut castle_site_called,
                             &castle_profiles,
-                            &mut |owner, position| {
-                                let root = economy.allocate_ai_castle_root_seed(position, owner, source_id, terrain)?;
+                            &mut |owner, position, _callback_entities, seed_terrain| {
+                                let root = source_arena.allocate_ai_castle_root_seed(position, owner, source_id, seed_terrain);
                                 // sub_14E10 publishes A4 before the wizard's
                                 // remaining movement and decision tail.
-                                for player in live.core.players.iter_mut()
+                                if let Some(root) = root {
+                                    for player in live.core.players.iter_mut()
                                     .chain(live.shared_spells.players.iter_mut())
                                     .chain(std::iter::once(&mut live.shared_spells.local_player))
                                     .filter(|player| player.entity_index == owner)
-                                {
-                                    player.record[42..44].copy_from_slice(&root.source_entity_index.to_le_bytes());
+                                    {
+                                        player.record[42..44].copy_from_slice(&root.source_entity_index.to_le_bytes());
+                                    }
                                 }
-                                Some(root)
+                                level2_nyphur::NyphurCastleSeed {
+                                    castle: root,
+                                    class5_buckets: Some(effect_lists.class5_current_slots(source_arena)),
+                                }
                             },
+                            Some(level2_nyphur::NyphurTargetFrame {
+                                rows: &current_targets,
+                                class5_buckets: &class5_buckets,
+                            }),
+                            &mut target_relation_writes,
                         ))
                         .ok_or_else(|| {
                             format!("rival source slot {source_slot} lost its player dispatcher")
                         })?;
+                    source_arena.commit_rival_callback_rows(&entities, &generations);
                     if castle_site_called
                         && let Some((slot, generation)) = castle_handle
-                        && economy.slot_generation(slot) == generation
-                        && economy.castle_for_owner(source_slot).is_some_and(|root| root.source_entity_index == slot)
+                        && source_arena.slot_generation(slot) == generation
+                        && source_arena.castle_for_owner(source_slot).is_some_and(|root| root.source_entity_index == slot)
                     {
-                        economy.restore_castle_site_shifts(slot);
+                        source_arena.restore_castle_site_shifts(slot);
                     }
                     for sphere in spheres {
                         let Some(&(generation, prior_owner)) = sphere_relations.get(&sphere.source_entity_index) else {
                             continue;
                         };
                         if sphere.player_entity_index != prior_owner
-                            && economy.slot_generation(sphere.source_entity_index) == generation
-                            && let Some(current) = economy.spheres_mut().iter_mut().find(|current| {
+                            && source_arena.slot_generation(sphere.source_entity_index) == generation
+                            && let Some(current) = source_arena.spheres_mut().iter_mut().find(|current| {
                                 current.active && current.source_entity_index == sphere.source_entity_index
                             })
                         {
@@ -20017,8 +20051,16 @@ impl Mc2Simulation {
                     }
                     result
                 };
-                self.session.state.live.economy
-                    .retire_new_castle_source_projections(&prior_allocations);
+                if dispatch.is_ok() {
+                    let live = &mut self.session.state.live;
+                    for (slot, relation) in target_relation_writes {
+                        if let Some(&handle) = target_handles.get(&slot) {
+                            source_target::commit_rival_target_relation(
+                                &mut live.economy, &mut live.ordinary, handle, relation,
+                            )?;
+                        }
+                    }
+                }
                 // Mode-3 SetSpell writes the physical row, including a
                 // queued tier. The later Castle-holder callback consumes
                 // the shared view of that same current arena generation.

@@ -17,6 +17,22 @@ use super::{
 use crate::campaign::source_arena::{SourceArena, SourceEntityHandle, SourceEntityView};
 use std::collections::BTreeMap;
 
+/// Current typed target records and the source pass's ordered class-5 list.
+/// The records are read-only callback projections, never replacement owners.
+#[derive(Clone, Copy)]
+pub(super) struct NyphurTargetFrame<'a> {
+    pub rows: &'a [EntitySnapshot],
+    pub class5_buckets: &'a [Vec<u16>; 29],
+}
+
+/// Source-list heads after the Castle seed attempt, including allocation
+/// failure. `None` leaves detached test callers' original frame unchanged.
+#[derive(Default)]
+pub(super) struct NyphurCastleSeed {
+    pub castle: Option<Level2CastleState>,
+    pub class5_buckets: Option<[Vec<u16>; 29]>,
+}
+
 /// Pinned `sub_15790` spell-family order, including its zero-terminated tail
 /// and the source's unsigned `0xff` sentinel. These rows are deliberately
 /// separate from the later `sub_15910` order: the first helper has one
@@ -886,11 +902,22 @@ impl Level2NyphurCommonUpkeep {
     /// for the caller's source `word_0x96_150`/`word_0x98_152` pair; this
     /// helper itself reads the indexed rows, players, and the common Watcom
     /// stream, and does not mutate the source entity.
+    #[cfg(test)]
     fn step_sub_13ce0(
         &mut self,
         source: &EntitySnapshot,
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
+    ) -> Option<u16> {
+        self.step_sub_13ce0_with_buckets(source, entities, players, None)
+    }
+
+    fn step_sub_13ce0_with_buckets(
+        &mut self,
+        source: &EntitySnapshot,
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+        class5_buckets: Option<&[Vec<u16>; 29]>,
     ) -> Option<u16> {
         if self.sub_146c0(1, entities).is_none() {
             return None;
@@ -901,7 +928,7 @@ impl Level2NyphurCommonUpkeep {
             return None;
         }
 
-        self.sub_148e0_target(source, entities, players)
+        self.sub_148e0_target(source, entities, players, class5_buckets)
     }
 
     /// The qualified fall-through of `sub_12E70` reaches `sub_14630`. Keep
@@ -1943,6 +1970,7 @@ impl Level2NyphurCommonUpkeep {
         source: &EntitySnapshot,
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
+        class5_buckets: Option<&[Vec<u16>; 29]>,
     ) -> Option<u16> {
         const CLASS3_TARGET_DISTANCE: u32 = 0x0190_0000;
 
@@ -2054,14 +2082,14 @@ impl Level2NyphurCommonUpkeep {
         }
 
         if best.is_none() {
-            for candidate_index in level2_nyphur_class5_bucket_order(entities)
-                .into_iter()
-                .filter(|index| {
-                    entities
-                        .get(usize::from(*index))
-                        .is_some_and(|candidate| candidate.model == 22)
-                })
-            {
+            let slots = if let Some(buckets) = class5_buckets {
+                buckets[22].clone()
+            } else {
+                level2_nyphur_class5_bucket_order(entities).into_iter()
+                    .filter(|index| entities.get(usize::from(*index))
+                        .is_some_and(|candidate| candidate.model == 22)).collect()
+            };
+            for candidate_index in slots {
                 let Some(candidate) = entities.get(usize::from(candidate_index)) else {
                     continue;
                 };
@@ -3986,10 +4014,11 @@ impl Level2NyphurDispatcher {
         let profiles = std::array::from_fn(|tier| {
             level2_set_spell_profile(2, tier as u8).expect("Castle source tier exists")
         });
+        let mut test_terrain = terrain.clone();
         self.step_dispatch_with_castle_seed(
             pass, source_slot, entities, mana_spheres, castles, castle_children, players,
-            terrain, presentation, move_speed_flag, active_level_color_index, prelude,
-            [false; 2], &mut false, &profiles, &mut |_, _| None,
+            &mut test_terrain, presentation, move_speed_flag, active_level_color_index, prelude,
+            [false; 2], &mut false, &profiles, &mut |_, _, _, _| NyphurCastleSeed::default(), None, &mut Vec::new(),
         )
     }
 
@@ -4003,7 +4032,7 @@ impl Level2NyphurDispatcher {
         castles: &[Level2CastleState],
         castle_children: &[Level2CastleChild],
         players: &[PlayerSnapshot],
-        terrain: &SessionTerrain,
+        terrain: &mut SessionTerrain,
         presentation: &PresentationSelectors,
         move_speed_flag: u8,
         active_level_color_index: u8,
@@ -4011,7 +4040,9 @@ impl Level2NyphurDispatcher {
         castle_site_clear: [bool; 2],
         castle_site_called: &mut bool,
         castle_profiles: &[Level2SetSpellProfile; 3],
-        castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
+        castle_seed: &mut dyn FnMut(u16, Position, &[EntitySnapshot], &mut SessionTerrain) -> NyphurCastleSeed,
+        target_frame: Option<NyphurTargetFrame<'_>>,
+        target_relation_writes: &mut Vec<(u16, u16)>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
         // Castle construction/destruction changes A4 after reset. The
         // composition layer supplies generation-validated current roots,
@@ -4145,6 +4176,26 @@ impl Level2NyphurDispatcher {
             projected_carrier = true;
         }
 
+        // External/typed actor owners supply current-address read views for
+        // the frozen class-5 list and direct relation. They remain borrowed
+        // projections and must never be copied back into the raw shadow.
+        if let Some(frame) = target_frame {
+            for row in frame.rows {
+                let slot = usize::from(row.index);
+                if row.index == source_slot || seen_projected_slots.contains(&row.index) {
+                    continue;
+                }
+                let Some(projected) = projected_entities.get_mut(slot) else {
+                    return Err(NativeWorldError::new("Nyphur target projection is outside the entity arena"));
+                };
+                if projected.index != row.index {
+                    return Err(NativeWorldError::new("Nyphur target projection has a mismatched source slot"));
+                }
+                *projected = row.clone();
+                projected_dynamic_slots.insert(slot);
+            }
+        }
+
         // Imported class-10/model-39 rows are the package seed for the typed
         // sphere arena, not a second live authority. Mask any seed whose typed
         // row has retired so relation cleanup and target scans cannot revive a
@@ -4162,6 +4213,7 @@ impl Level2NyphurDispatcher {
                 level2_nyphur_rebuild_class10_source_order(&mut projected_entities);
             }
             let mut newborn_slot = None;
+            let mut relation_write = None;
             let result = self.step_dispatch_inner(
                 pass,
                 source_slot,
@@ -4178,11 +4230,23 @@ impl Level2NyphurDispatcher {
                 castle_profiles,
                 castle_seed,
                 &mut newborn_slot,
+                target_frame.map(|frame| frame.class5_buckets),
+                &mut relation_write,
             );
             if let Some(slot) = newborn_slot {
                 projected_dynamic_slots.insert(usize::from(slot));
             }
             if result.is_ok() {
+                // sub_135C0 can explicitly write word94 of its current
+                // target. Surface that one write for the owning typed domain;
+                // never copy the rest of a projected target into its shadow.
+                if let (Some(frame), Some((slot, relation))) = (target_frame, relation_write)
+                    && slot != source_slot
+                    && !seen_spheres.contains(&slot)
+                    && frame.rows.iter().any(|row| row.index == slot)
+                {
+                    target_relation_writes.push((slot, relation));
+                }
                 // `sub_135C0` writes the selected model-39 row's
                 // playerEntityIndex relation after a successful family-1
                 // activation. The projected EntitySnapshot is only a
@@ -4228,7 +4292,7 @@ impl Level2NyphurDispatcher {
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         players: &[PlayerSnapshot],
-        terrain: &SessionTerrain,
+        terrain: &mut SessionTerrain,
         presentation: &PresentationSelectors,
         move_speed_flag: u8,
         active_level_color_index: u8,
@@ -4237,9 +4301,12 @@ impl Level2NyphurDispatcher {
         castle_site_called: &mut bool,
         castle_current_axes: Option<(i16, i16)>,
         castle_profiles: &[Level2SetSpellProfile; 3],
-        castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
+        castle_seed: &mut dyn FnMut(u16, Position, &[EntitySnapshot], &mut SessionTerrain) -> NyphurCastleSeed,
         newborn_slot: &mut Option<u16>,
+        class5_buckets: Option<&[Vec<u16>; 29]>,
+        target_relation_write: &mut Option<(u16, u16)>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
+        let mut post_seed_class5_buckets = None;
         let snapshot = self.common_upkeep.step(
             source_slot,
             entities,
@@ -4264,10 +4331,11 @@ impl Level2NyphurDispatcher {
             2 => Self::step_nmemneed(),
             3 => self.step_sub_13100(
                 source_slot, entities, terrain, castle_profiles, castle_seed, newborn_slot,
+                &mut post_seed_class5_buckets,
             )?,
             4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
-            6 => self.step_sub_135c0(source_slot, entities, terrain, presentation)?,
+            6 => self.step_sub_135c0_with_write(source_slot, entities, terrain, presentation, target_relation_write)?,
             7 => self.step_sub_13710(source_slot, entities, terrain, presentation)?,
             8 => self.step_sub_13830(source_slot, entities, players, terrain, presentation)?,
             9 => self.step_sub_13870(source_slot, entities, players, terrain, presentation)?,
@@ -4282,6 +4350,7 @@ impl Level2NyphurDispatcher {
             self.step_sub_12e70_with_castle_site(
                 source_slot, entities, players, presentation, castle_site_clear,
                 castle_site_called, castle_current_axes,
+                post_seed_class5_buckets.as_ref().or(class5_buckets),
             )?;
         }
         Ok((
@@ -4294,12 +4363,13 @@ impl Level2NyphurDispatcher {
     /// it, approach through the 1024/3072 distance gate, activate only the
     /// source-owned family-1 holder, and publish the target's player relation
     /// only after that activation succeeds within the 28-angle handoff.
-    fn step_sub_135c0(
+    fn step_sub_135c0_with_write(
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
         terrain: &SessionTerrain,
         presentation: &PresentationSelectors,
+        target_relation_write: &mut Option<(u16, u16)>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -4355,6 +4425,7 @@ impl Level2NyphurDispatcher {
                 {
                     entities[target_index]
                         .set_source_player_entity_index(entities[source_index].source_id);
+                    *target_relation_write = Some((target.index, entities[source_index].source_id));
                 }
                 return self.step_sub_16580(source_index, entities, terrain);
             }
@@ -4687,7 +4758,13 @@ impl Level2NyphurDispatcher {
     /// primary and then the nearest candidate in `unk_D3F91x` bucket order.
     /// The direct SetSpell write precedes the source slot/identity write just
     /// as in the C++ helper; every malformed carrier fails closed.
+    #[cfg(test)]
     fn step_sub_15fc0(&mut self, source_slot: u16, entities: &mut [EntitySnapshot]) -> bool {
+        self.step_sub_15fc0_with_buckets(source_slot, entities, None)
+    }
+
+    fn step_sub_15fc0_with_buckets(&mut self, source_slot: u16, entities: &mut [EntitySnapshot],
+        class5_buckets: Option<&[Vec<u16>; 29]>) -> bool {
         let Some(source_index) = entities
             .iter()
             .position(|entity| entity.index == source_slot)
@@ -4734,8 +4811,14 @@ impl Level2NyphurDispatcher {
 
         let mut nearest_bucket = None;
         let mut nearest_bucket_distance = u32::MAX;
-        for (candidate_index, bucket_model) in level2_nyphur_sub_15fc0_class5_source_order(entities)
-        {
+        let candidates = if let Some(buckets) = class5_buckets {
+            LEVEL2_NYPHUR_SUB_15FC0_BUCKETS.iter().flat_map(|&model| {
+                buckets[usize::from(model)].iter().copied().map(move |slot| (slot, model))
+            }).collect()
+        } else {
+            level2_nyphur_sub_15fc0_class5_source_order(entities)
+        };
+        for (candidate_index, bucket_model) in candidates {
             let Some(candidate) = entities.get(usize::from(candidate_index)) else {
                 continue;
             };
@@ -4948,10 +5031,11 @@ impl Level2NyphurDispatcher {
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
-        terrain: &SessionTerrain,
+        terrain: &mut SessionTerrain,
         castle_profiles: &[Level2SetSpellProfile; 3],
-        castle_seed: &mut dyn FnMut(u16, Position) -> Option<Level2CastleState>,
+        castle_seed: &mut dyn FnMut(u16, Position, &[EntitySnapshot], &mut SessionTerrain) -> NyphurCastleSeed,
         newborn_slot: &mut Option<u16>,
+        class5_buckets: &mut Option<[Vec<u16>; 29]>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -4991,7 +5075,11 @@ impl Level2NyphurDispatcher {
             // still a successful activation in the source.
             source_control_flags &= !0x100;
             entities[source_index].set_control_flags(source_control_flags);
-            if let Some(castle) = castle_seed(source_slot, axis) {
+            let seed = castle_seed(source_slot, axis, entities, terrain);
+            if let Some(buckets) = seed.class5_buckets {
+                *class5_buckets = Some(buckets);
+            }
+            if let Some(castle) = seed.castle {
                 let slot = castle.source_entity_index;
                 let entity = entities.get_mut(usize::from(slot)).ok_or_else(|| {
                     NativeWorldError::new(
@@ -5660,7 +5748,7 @@ impl Level2NyphurDispatcher {
         presentation: &PresentationSelectors,
     ) -> Result<()> {
         self.step_sub_12e70_with_castle_site(
-            source_slot, entities, players, presentation, [false; 2], &mut false, None,
+            source_slot, entities, players, presentation, [false; 2], &mut false, None, None,
         )
     }
 
@@ -5673,6 +5761,7 @@ impl Level2NyphurDispatcher {
         castle_site_clear: [bool; 2],
         castle_site_called: &mut bool,
         castle_current_axes: Option<(i16, i16)>,
+        class5_buckets: Option<&[Vec<u16>; 29]>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -5769,13 +5858,13 @@ impl Level2NyphurDispatcher {
         // Pinned `sub_15FC0` follows the model-2/model-3 selectors and
         // precedes `sub_13CE0`. Its family-4 carrier and target bucket are
         // handled by this lane; absent or malformed carriers fail closed.
-        if self.step_sub_15fc0(source_slot, entities) {
+        if self.step_sub_15fc0_with_buckets(source_slot, entities, class5_buckets) {
             self.state_byte = 14;
             return Ok(());
         }
         if let Some(target_index) =
             self.common_upkeep
-                .step_sub_13ce0(&entities[source_index], entities, players)
+                .step_sub_13ce0_with_buckets(&entities[source_index], entities, players, class5_buckets)
         {
             let target = entities
                 .get(usize::from(target_index))
@@ -5786,7 +5875,7 @@ impl Level2NyphurDispatcher {
             return Ok(());
         }
         let source_snapshot = entities[source_index].clone();
-        if let Some(target_index) = self.sub_14530_target(&source_snapshot, entities) {
+        if let Some(target_index) = self.sub_14530_target_with_slots(&source_snapshot, entities, class5_buckets) {
             let target = entities
                 .get(usize::from(target_index))
                 .cloned()
@@ -6141,10 +6230,16 @@ impl Level2NyphurDispatcher {
     /// target slot and its `sub_14C40` identity. The later mode body remains
     /// outside this packet, but the shared tail must select this target before
     /// it can fall through.
-    fn sub_14530_target(
+    #[cfg(test)]
+    fn sub_14530_target(&self, source: &EntitySnapshot, entities: &[EntitySnapshot]) -> Option<u16> {
+        self.sub_14530_target_with_slots(source, entities, None)
+    }
+
+    fn sub_14530_target_with_slots(
         &self,
         source: &EntitySnapshot,
         entities: &[EntitySnapshot],
+        class5_buckets: Option<&[Vec<u16>; 29]>,
     ) -> Option<u16> {
         if !self.common_upkeep.sub_15e60() {
             return None;
@@ -6158,7 +6253,12 @@ impl Level2NyphurDispatcher {
         };
         let mut best = None;
         let mut best_distance = u32::MAX;
-        for candidate_index in level2_nyphur_class5_bucket_order(entities) {
+        let slots = if let Some(buckets) = class5_buckets {
+            buckets.iter().flatten().copied().collect::<Vec<_>>()
+        } else {
+            level2_nyphur_class5_bucket_order(entities)
+        };
+        for candidate_index in slots {
             let Some(candidate) = entities.get(usize::from(candidate_index)) else {
                 continue;
             };

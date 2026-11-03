@@ -1051,6 +1051,34 @@ impl SourceArena {
         self.clear_raw_creature_part_bindings_for_slot(slot);
     }
 
+    /// Publish the rival callback's ordinary writes after its Castle allocator
+    /// has had access to this arena. NewEvent's current generation and map/list
+    /// links win over the callback's earlier view of the same address.
+    pub(crate) fn commit_rival_callback_rows(
+        &mut self,
+        rows: &[EntitySnapshot],
+        generations: &[u32],
+    ) {
+        for (index, (row, &generation)) in rows.iter().zip(generations).enumerate() {
+            if self.entities[index] == *row
+                || self.economy.slot_generation(row.index) != generation
+                || self.economy.live_arena_kind(row.index).is_some()
+            {
+                continue;
+            }
+            let current = &mut self.entities[index];
+            let next = current.next_relation;
+            let mut next_bytes = [0; 4];
+            next_bytes.copy_from_slice(&current.record[4..8]);
+            let mut map_links = [0; 4];
+            map_links.copy_from_slice(&current.record[26..30]);
+            *current = row.clone();
+            current.next_relation = next;
+            current.record[4..8].copy_from_slice(&next_bytes);
+            current.record[26..30].copy_from_slice(&map_links);
+        }
+    }
+
     /// Preserve the current fixed-address target fields before its typed
     /// Castle carrier is reclaimed. sub57F20 clears class, not pose/model or
     /// next_0; a later flyer still dereferences that same physical record.

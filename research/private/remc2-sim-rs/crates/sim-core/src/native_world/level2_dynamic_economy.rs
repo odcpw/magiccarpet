@@ -132,6 +132,33 @@ impl Level2OrdinaryResetSession {
 }
 
 impl crate::campaign::source_arena::SourceArena {
+    /// `sub_14E10` constructs through NewEvent's fixed raw/typed replacement
+    /// cursor. Retirement and old-cell publication precede the rival's tail.
+    pub(crate) fn allocate_ai_castle_root_seed(
+        &mut self,
+        position: Position,
+        owner_entity_index: u16,
+        source_id: u16,
+        terrain: &mut SessionTerrain,
+    ) -> Option<Level2CastleState> {
+        let footprint = self.economy.castle_stage_footprints.get(&1)?;
+        let (root_position, anchor) = level2_castle_root_positions(terrain, footprint, position);
+        let slot = self.allocate_source_slot_with_terrain(terrain)?;
+        // The fallback cursor retires its previous class; this typed
+        // constructor also needs NewEvent's fresh zeroed fixed packet.
+        self.retire_previous_source_projection(slot);
+        let rng = self.economy.new_event_rng(slot);
+        self.economy.source_rng.insert(slot, rng);
+        self.economy.install_castle_root(
+            slot, root_position, anchor, owner_entity_index, true, false, false,
+        )?;
+        self.economy.castle_at_mut(slot)?.source_id_entity_index = source_id;
+        self.economy.link_castle_owner(owner_entity_index, slot);
+        crate::world::effects::sync_position(self, terrain, slot, root_position, true, false)
+            .expect("allocated AI Castle has a valid fixed map slot");
+        self.economy.castle_at(slot).copied()
+    }
+
     /// Resolve the actual fixed-address actor mailbox alongside the typed
     /// house and mana owners visited by the same Possession pulse.
     pub(super) fn step_possession_effect_source(
@@ -6362,23 +6389,6 @@ impl Level2EconomyState {
             false,
             true,
         )
-    }
-
-    /// `sub_14E10` creates the same source seed as flyer landing, but binds
-    /// its AI owner immediately, before the wizard's remaining callback.
-    pub(crate) fn allocate_ai_castle_root_seed(
-        &mut self,
-        position: Position,
-        owner_entity_index: u16,
-        source_id: u16,
-        terrain: &SessionTerrain,
-    ) -> Option<Level2CastleState> {
-        let footprint = self.castle_stage_footprints.get(&1)?;
-        let (root_position, anchor) = level2_castle_root_positions(terrain, footprint, position);
-        let slot = self.allocate_castle_root_seed(root_position, anchor, owner_entity_index)?;
-        self.castle_at_mut(slot)?.source_id_entity_index = source_id;
-        self.link_castle_owner(owner_entity_index, slot);
-        self.castle_at(slot).copied()
     }
 
     pub(super) fn build_castle_at(

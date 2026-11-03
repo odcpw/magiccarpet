@@ -931,6 +931,7 @@ pub(crate) struct EffectLists {
     model45_chain: crate::campaign::source_arena::SourceSlotChain,
     mana_chain: crate::campaign::source_arena::SourceManaChain,
     model22_chain: crate::campaign::source_arena::SourceSlotChain,
+    class5_chains: [crate::campaign::source_arena::SourceSlotChain; 29],
     epoch: u32,
 }
 
@@ -1110,6 +1111,22 @@ pub(crate) fn retire_hidden_player_death_markers(
 }
 
 impl EffectLists {
+    /// Current fixed records reached from the pass-start class-5 heads.
+    /// Preserve NewEvent's next-link cut and source-list reset epoch.
+    pub(crate) fn class5_current_slots(&self, arena: &SourceArena) -> [Vec<u16>; 29] {
+        self.class5_current_slots_after_allocation(&arena.economy, &arena.entities)
+    }
+
+    pub(crate) fn class5_current_slots_after_allocation(
+        &self,
+        economy: &super::Level2EconomyState,
+        entities: &[super::EntitySnapshot],
+    ) -> [Vec<u16>; 29] {
+        std::array::from_fn(|model| {
+            self.class5_chains[model].current_slots(economy, entities)
+        })
+    }
+
     pub(crate) fn possession_guidance_slots(
         &self,
         arena: &SourceArena,
@@ -1230,15 +1247,20 @@ pub(crate) fn capture_effect_lists(
     let model45_chain = crate::campaign::source_arena::SourceSlotChain::capture(
         targets.arena, model45.clone(),
     );
-    let model22_slots = targets.arena.rebuilt_class5_model_slots()[22].clone();
-    let model22_chain =
-        crate::campaign::source_arena::SourceSlotChain::capture(targets.arena, model22_slots);
+    let class5_slots = targets.arena.rebuilt_class5_model_slots();
+    let class5_chains = std::array::from_fn(|model| {
+        crate::campaign::source_arena::SourceSlotChain::capture(
+            targets.arena, class5_slots[model].clone(),
+        )
+    });
+    let model22_chain = class5_chains[22].clone();
     EffectLists {
         class3,
         model45,
         class3_chain,
         model45_chain,
         model22_chain,
+        class5_chains,
         mana_chain: {
             let mut slots = targets
                 .arena
@@ -1826,6 +1848,111 @@ impl ArenaTargets<'_, '_> {
 mod tests {
     use super::*;
     use crate::world::terrain::disasters::{RingProfile, mc2};
+
+    #[test]
+    fn rival_class5_heads_follow_real_castle_seed_allocation() {
+        let session = super::super::tests::level_two_campaign_session();
+        for case in ["normal", "typed replacement", "raw replacement", "failure"] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.session.state.live.terrain.clone();
+            let position = session.state.position;
+            for row in &mut arena.entities {
+                row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+            }
+            let old_tile = (0..=u16::MAX)
+                .find(|tile| arena.economy.map_chains.tile_head(*tile) == 0).unwrap();
+            let old_position = Position {
+                x: ((old_tile as u8 as u16) << 8) + 128,
+                y: ((old_tile >> 8) << 8) + 128,
+                z: 128,
+            };
+            let raw_slot = if case == "raw replacement" {
+                let slot = crate::world::effects::allocate(
+                    &mut arena, &mut terrain,
+                    sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+                    old_position, &session.session.definition.presentation.particles,
+                ).unwrap().unwrap();
+                assert!(arena.economy.typed_replacement_candidate().is_none(),
+                    "the raw-only control has no typed allocation alternative");
+                Some(slot)
+            } else if case == "typed replacement" {
+                // CreateManaSphere starts with flags12 and is not a
+                // replacement candidate. SetSmoke4 explicitly produces bit17.
+                let slot = arena.allocate_smoke13_with_terrain(old_position, &mut terrain).unwrap();
+                let smoke = arena.economy.model59_smoke_children().iter()
+                    .find(|row| row.source_entity_index == slot).unwrap();
+                assert_eq!(smoke.control_flags & crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+                    crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+                assert_eq!(arena.economy.typed_replacement_candidate(), Some(slot));
+                None
+            } else {
+                let sphere = arena.allocate_authored_model39(0, 0, position).unwrap();
+                assert_eq!(sphere.control_flags, 12,
+                    "the ordinary sphere constructor does not produce a replaceable row");
+                None
+            };
+            arena.rebuild_source_free_arena();
+            let lists = capture_effect_lists(&mut arena, None);
+            let before = lists.class5_current_slots(&arena);
+            assert!(before.iter().any(|bucket| !bucket.is_empty()));
+            let epoch = arena.economy.source_list_epoch();
+            let recycle = matches!(case, "typed replacement" | "raw replacement");
+            let fail = case == "failure";
+            let replacement = if recycle {
+                raw_slot.or_else(|| arena.economy.typed_replacement_candidate())
+            } else { None };
+            if recycle {
+                // Reserve actual free addresses without adding another
+                // replaceable row. This isolates the real fallback allocator.
+                while arena.economy.free_slot_count() != 0 {
+                    arena.allocate_source_slot().unwrap();
+                }
+            } else if fail {
+                arena.economy.exhaust_new_event_capacity_for_test();
+                arena.finish_source_group();
+            }
+            let callback_rows = arena.entities.clone();
+            let generations = callback_rows.iter().map(|row| arena.slot_generation(row.index))
+                .collect::<Vec<_>>();
+            let root = arena.allocate_ai_castle_root_seed(
+                position, 112, 112, &mut terrain,
+            );
+            assert_eq!(root.is_none(), fail, "{case}");
+            let after = lists.class5_current_slots_after_allocation(
+                &arena.economy, &arena.entities,
+            );
+            if recycle {
+                assert_eq!(Some(root.unwrap().source_entity_index), replacement);
+                assert_ne!(arena.economy.source_list_epoch(), epoch);
+                assert!(after.iter().all(Vec::is_empty),
+                    "NewEvent fallback clears the actual source heads before the rival tail");
+            } else {
+                assert_eq!(arena.economy.source_list_epoch(), epoch);
+                assert_eq!(after, before,
+                    "ordinary allocation or clean failure retains pass-start membership");
+            }
+            // The callback's older ordinary view cannot undo NewEvent or
+            // restore its predecessor's map links when it returns.
+            arena.commit_rival_callback_rows(&callback_rows, &generations);
+            if let Some(root) = root {
+                let slot = root.source_entity_index;
+                assert_eq!(arena.economy.live_arena_kind(slot), Some(super::super::Level2DynamicArenaKind::CastleRoot));
+                assert!(!arena.entities[usize::from(slot)].active);
+                assert_eq!(arena.entities[usize::from(slot)].class, 0);
+                assert_eq!(arena.entities[usize::from(slot)].source_dword_10(), 0);
+                let tile = arena.economy.map_chains.tile_of(slot);
+                assert_eq!(terrain.planes().entity_indices[usize::from(tile)],
+                    arena.economy.map_chains.tile_head(tile) as i16);
+                if let Some(raw_slot) = raw_slot {
+                    assert_eq!(slot, raw_slot);
+                    assert_eq!(arena.slot_generation(slot), generations[usize::from(slot)].wrapping_add(1));
+                    assert_ne!(tile, old_tile);
+                    assert_eq!(arena.economy.map_chains.tile_head(old_tile), 0);
+                    assert_eq!(terrain.planes().entity_indices[usize::from(old_tile)], 0);
+                }
+            }
+        }
+    }
 
     #[test]
     fn encounter_kill_uses_frozen_creatures_and_preserves_attackers_and_mailboxes() {

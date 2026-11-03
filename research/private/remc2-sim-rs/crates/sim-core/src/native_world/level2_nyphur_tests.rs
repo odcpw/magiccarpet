@@ -3364,7 +3364,9 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
 
     let mut clear_terrain = base.canonical_terrain().clone();
     clear_terrain.planes.terrain_types.fill(0);
-    for (angle, expected_relation) in [(27_i16, 777_u16), (28_i16, 0_u16)] {
+    for (angle, initial_relation, expected_relation, wrote) in
+        [(27_i16, 0_u16, 777_u16, true), (28, 0, 0, false), (27, 777, 777, true)]
+    {
         let mut candidate = base.clone();
         let source_position = Position {
             x: 20_000,
@@ -3381,7 +3383,7 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
         candidate.session.state.live.economy.entities[112].record[30..32]
             .copy_from_slice(&777_u16.to_le_bytes());
         candidate.session.state.live.economy.entities[70].set_position(target_position);
-        candidate.session.state.live.economy.entities[70].set_source_player_entity_index(0);
+        candidate.session.state.live.economy.entities[70].set_source_player_entity_index(initial_relation);
         let target = candidate.session.state.live.economy.entities[70].clone();
         candidate.session.state.live.economy.entities[112].set_source_relation(&target);
         let heading = i16::try_from(heading_for_positions(source_position, target_position))
@@ -3403,16 +3405,18 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
             .common_upkeep
             .word_0x1a2 = 0;
         let presentation = candidate.session.definition.presentation.clone();
+        let mut relation_write = None;
         candidate
             .session
             .state
             .live
             .nyphur_dispatcher
-            .step_sub_135c0(
+            .step_sub_135c0_with_write(
                 112,
                 &mut candidate.session.state.live.economy.entities,
                 &clear_terrain,
                 &presentation,
+                &mut relation_write,
             )
             .expect("state-6 relation boundary");
         assert_eq!(
@@ -3420,6 +3424,8 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
             expected_relation,
             "relation handoff boundary {angle}"
         );
+        assert_eq!(relation_write, wrote.then_some((70, 777)),
+            "receipt follows the actual source write even when its value is unchanged");
     }
 }
 
@@ -4282,6 +4288,20 @@ fn level_two_ai_shared_tail_owned_rows_are_exact() {
             .sub_14530_target(&source, &session.economy.entities),
         Some(70)
     );
+    // Source sub_14530 follows the prepass bucket pointers and reads the
+    // current occupant's id, mana and position. It does not re-admit rows by
+    // their current class, action or life, or add rows absent from the list.
+    let mut current = session.economy.entities.clone();
+    current[70].class = 10;
+    current[70].life = -1;
+    current[70].action = 0xea;
+    current[70].mana = 1;
+    current[70].set_position(source.position);
+    let mut frozen: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    frozen[2].push(70);
+    assert_eq!(session.nyphur_dispatcher.sub_14530_target_with_slots(&source, &current, Some(&frozen)), Some(70));
+    frozen[2].clear();
+    assert_eq!(session.nyphur_dispatcher.sub_14530_target_with_slots(&source, &current, Some(&frozen)), None);
     let mut active_holder_entities = session.session.state.live.economy.entities.clone();
     active_holder_entities[113].active_value = 1;
     active_holder_entities[113].record[50..52].copy_from_slice(&1_i16.to_le_bytes());
@@ -6027,6 +6047,177 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
 /// charge, the `word_0x1A2` burst counter, the terminal callback, the
 /// following-pass reclaim, and reset/replay isolation.
 #[test]
+fn mode3_castle_seed_refreshes_following_tail_buckets() {
+    let base = level_two_campaign_session();
+    let terrain = base.canonical_terrain().clone();
+    let position = base.economy.entities[112].position;
+    let mut castle_world = base.clone();
+    let castle_slot = castle_world.economy_mut().build_castle(position, 112)
+        .expect("real Castle constructor supplies the successful-seed control");
+    let castle = *castle_world.economy().castle_at(castle_slot).expect("constructed Castle");
+    let profiles = std::array::from_fn(|tier| level2_set_spell_profile(2, tier as u8).unwrap());
+
+    // The callback controls model the result returned by the allocator: a
+    // failed allocation and a normal free-slot allocation retain the list;
+    // exhausted-slot recycling clears it. The real allocator/list join has
+    // its own source-scheduled check.
+    for (name, seeded, clear_lists) in [("failure", false, false), ("normal", true, false), ("recycle", true, true)] {
+        let mut candidate = base.clone();
+        let mut case_terrain = terrain.clone();
+        let live = &mut candidate.session.state.live;
+        let source = &mut live.economy.entities[112];
+        level2_nyphur_set_axis_position(source, position);
+        let ai = &mut live.nyphur_dispatcher.common_upkeep;
+        ai.spell_holder_indices[2] = 113;
+        ai.spell_levels[2] = 0;
+        ai.spell_enabled[2] = 0;
+        ai.castle_entity_index = 0;
+        ai.max_mana = 100_000;
+        ai.mana = 100_000;
+        let mut original: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        original[1].push(70);
+        let mut current = Some(original.clone());
+        let mut newborn = None;
+        let mut called = false;
+        let mut seed = |owner: u16, axis: Position, _: &[EntitySnapshot], _: &mut SessionTerrain| {
+            called = true;
+            assert_eq!((owner, axis), (112, position));
+            NyphurCastleSeed {
+                castle: seeded.then_some(castle),
+                class5_buckets: Some(if clear_lists { std::array::from_fn(|_| Vec::new()) } else { original.clone() }),
+            }
+        };
+        live.nyphur_dispatcher.step_sub_13100(112, &mut live.economy.entities, &mut case_terrain,
+            &profiles, &mut seed, &mut newborn, &mut current).expect("mode3 seed callback");
+        assert!(called, "{name} must reach the seed attempt");
+        assert_eq!(newborn, seeded.then_some(castle_slot));
+        let selected = live.nyphur_dispatcher.sub_14530_target_with_slots(
+            &live.economy.entities[112], &live.economy.entities, current.as_ref());
+        assert_eq!(selected, (!clear_lists).then_some(70), "{name} following-tail list");
+    }
+}
+
+#[test]
+fn ordinary_rival_selects_typed_bee_and_fireball_reaches_damage_and_reclaim() {
+    let mut session = level_two_campaign_session();
+    // Activate the actual authored group-21 source. This stages the objective
+    // condition only; the producer, Bee, rival and spell remain scheduled.
+    let producer = session.economy.entities().iter().find(|row| {
+        row.active && row.class == 11 && row.model == 32 && row.action == 32
+            && row.source_id == 21 && !row.drawing_disabled()
+    }).expect("ordinary group-21 producer");
+    let producer_slot = producer.index;
+    let stage = usize::try_from(producer.level_gate).expect("producer objective stage");
+    for index in 0..session.runtime.objectives.len() {
+        session.runtime.set_level2_objective_stage_selector_for(index, stage, 2);
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 21, .. }
+            if *source_slot == producer_slot)));
+    let bees = session.economy().bee_creatures().iter()
+        .filter(|bee| bee.active && bee.authored_index().is_some())
+        .map(|bee| (session.source_arena().handle(bee.source_entity_index).unwrap(), bee.life, bee.position))
+        .collect::<Vec<_>>();
+    assert!(!bees.is_empty(), "the source producer creates a typed Bee");
+
+    // Declare a Fireball-only rival inventory for this combat check. The
+    // ordinary package also grants Possession, whose higher-priority sphere
+    // pursuit otherwise takes the rival away before it can select the Bee.
+    // Keep both authoritative player projections and their records in sync.
+    {
+        let live = &mut session.session.state.live;
+        for player in live.core.players.iter_mut().chain(live.shared_spells.players.iter_mut())
+            .filter(|player| player.entity_index == 112)
+        {
+            assert!(player.set_enabled_spell_holder_index(1, 0));
+        }
+    }
+    // A declared approach positions the actual rival near the produced group.
+    // Target selection, mode, cadence, damage and products are not staged.
+    let approach = Position {
+        x: bees[0].2.x.wrapping_add(1_280),
+        y: bees[0].2.y,
+        z: bees[0].2.z.wrapping_add(512),
+    };
+    session.set_level2_entity_position(112, approach).expect("rival approach");
+    let mut selected = None;
+    let mut launched = None;
+    let mut impact = None;
+    let mut damaged = None;
+    let mut observations = Vec::new();
+    for turn in 0..600 {
+        let source = &session.economy.entities[112];
+        if turn % 55 == 0 {
+            observations.push((turn, session.nyphur_dispatch_state_byte(), source.position,
+                source.source_word_96(), session.nyphur_common_upkeep().unwrap().mana,
+                session.economy().bee_creatures().iter().map(|bee|
+                    (bee.source_entity_index, bee.position, bee.life, bee.action)).collect::<Vec<_>>()));
+        }
+        let target_before = source.source_word_96();
+        let existing = session.economy().fireball_projectiles().iter()
+            .filter_map(|row| session.source_arena().handle(row.source_entity_index))
+            .collect::<Vec<_>>();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event,
+            Mc2DispatchEvent::Error { source_slot: 112, .. })));
+        for (handle, _, _) in &bees {
+            if session.source_arena().handle(handle.source_slot) == Some(*handle) {
+                assert!(!session.economy.entities[usize::from(handle.source_slot)].active,
+                    "rival callback must not reactivate the typed Bee's raw shadow");
+            }
+        }
+        let source = &session.economy.entities[112];
+        if session.nyphur_dispatch_state_byte() == 13 {
+            if let Some((handle, _, _)) = bees.iter().find(|(handle, _, _)|
+                handle.source_slot == source.source_word_96()
+                    && session.source_arena().handle(handle.source_slot) == Some(*handle))
+            {
+                selected.get_or_insert(*handle);
+            }
+        }
+        if let Some(selected_handle) = selected {
+            if launched.is_none() && target_before == selected_handle.source_slot {
+                launched = session.economy().fireball_projectiles().iter()
+                    .filter(|row| row.owner_entity_index == 112
+                        && row.holder_entity_index == LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX)
+                    .filter_map(|row| session.source_arena().handle(row.source_entity_index))
+                    .find(|handle| !existing.contains(handle));
+            }
+            if launched.is_some() && impact.is_none() {
+                impact = session.entities().iter().find(|row| row.active && row.class == 10
+                    && row.model == 0 && row.source_id == 112
+                    && row.source_word_96() == selected_handle.source_slot)
+                    .and_then(|row| session.source_arena().handle(row.index));
+            }
+            if impact.is_some() {
+                damaged = session.dispatch_events().iter().find_map(|event| match event {
+                    Mc2DispatchEvent::Economy { source_slot, event: super::super::Level2EconomyEvent::DamageApplied {
+                        target_entity_index, attacker_entity_index: 112, damage, ..
+                    }, .. } if *source_slot == selected_handle.source_slot
+                        && *target_entity_index == selected_handle.source_slot && *damage > 0 => Some(*damage),
+                    _ => None,
+                }).or(damaged);
+            }
+            if let (Some(flyer), Some(impact_handle), Some(_)) = (launched, impact, damaged) {
+                if session.source_arena().handle(flyer.source_slot) != Some(flyer)
+                    && session.source_arena().handle(impact_handle.source_slot) != Some(impact_handle)
+                { break; }
+            }
+        }
+    }
+    let selected = selected.unwrap_or_else(|| panic!("ordinary rival selector must target the produced Bee: {observations:?}"));
+    let flyer = launched.unwrap_or_else(|| panic!("ordinary selected Bee must lead to a real family-0 flyer: {observations:?}"));
+    let impact = impact.unwrap_or_else(|| panic!("rival flyer {flyer:?} must impact selected Bee {selected:?}: {observations:?}"));
+    assert!(damaged.is_some(), "scheduled Bee must consume rival Fireball damage: {observations:?}");
+    let initial_life = bees.iter().find(|(handle, _, _)| *handle == selected).unwrap().1;
+    assert!(session.economy().bee_creatures().iter().find(|bee|
+        bee.source_entity_index == selected.source_slot).is_none_or(|bee| bee.life < initial_life));
+    assert_ne!(session.source_arena().handle(flyer.source_slot), Some(flyer), "flyer generation reclaims");
+    assert_ne!(session.source_arena().handle(impact.source_slot), Some(impact), "impact generation reclaims");
+}
+
+#[test]
 fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() {
     let mut session = level_two_campaign_session();
     let baseline_campaign_hash = session.campaign_state_hash();
@@ -6189,11 +6380,11 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
                     player_index: -1,
                     sound_id: 9,
                     ..
-                } if *entity_index == projectile.source_entity_index
+                } if *entity_index == 112
             ))
             .count(),
         1,
-        "the successful source allocation emits exactly one launch sound bound to the new row"
+        "the successful source allocation emits exactly one launch sound bound to its parent"
     );
     let schedule_receipts = session.cf10_production_schedule_receipts();
     let callback_position = |slot| {
@@ -6349,9 +6540,14 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     let mut crossed_2048 = None;
     let mut near_visits_without_cast = 0_u16;
     let mut activation = None;
+    let mut saw_tail_retarget = false;
     for turn in 1..=120_u16 {
         session.session.state.live.nyphur_dispatcher.state_byte = 7;
         replay.session.state.live.nyphur_dispatcher.state_byte = 7;
+        let source_before = &session.economy.entities[112];
+        let visit_target = source_before.source_word_96();
+        let visit_handle = session.source_arena().handle(visit_target)
+            .expect("the source target exists before this visit");
         let phase_before = session.economy.entities[112].phase;
         let burst_before = session.nyphur_common_upkeep().unwrap().word_0x1a2;
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -6376,9 +6572,20 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
             }
         )));
         let source = &session.economy.entities[112];
+        saw_tail_retarget |= source.source_word_96() != visit_target;
+        // The mode callback reads word96 before its following 12E70 tail.
+        // Measure the same generation only when that relation survived the
+        // visit; a later selector can replace it before this observation.
+        if source.source_word_96() != visit_target
+            || session.source_arena().handle(visit_target) != Some(visit_handle)
+        {
+            continue;
+        }
+        let target = &session.economy.entities[usize::from(visit_target)];
+        assert!(level2_nyphur_source_identity_matches(source, target));
         let distance = level2_wrapping_target_distance(
             source.position,
-            session.economy.entities[target_index].position,
+            target.position,
         );
         if distance <= 2_048 {
             crossed_2048.get_or_insert(turn);
@@ -6390,14 +6597,15 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
             activation = Some((turn, distance, phase_before, burst_before));
             break;
         }
-        if crossed_2048.is_some() {
-            // Every near visit before the reflex cadence tick refuses the
-            // cast; the state-13 body would already have cast here.
+        if distance <= 2_048 {
+            // The target may leave and re-enter range while the source
+            // eases its speed. Only a near visit tests this branch.
             near_visits_without_cast += 1;
             assert_eq!(common.speed, 0, "the near branch parks the source");
             assert_eq!(common.word_0xe_14, 1);
         }
     }
+    assert!(saw_tail_retarget, "the source tail replaces the initial target during this scenario");
     let crossed_2048 = crossed_2048.expect("mode-7 pursuit crosses the 2048 gate");
     let (activation_turn, activation_distance, activation_phase, burst_before) =
         activation.expect("the mode-7 cadence tick activates the family-0 holder");
@@ -6441,11 +6649,18 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         .copied()
         .expect("the mode-7 cast reaches the genuine holder-113 producer");
     assert!(projectile.active);
+    // NewEvent seeds byte3e from the slot. UpdateEntities scans numeric
+    // addresses: a birth below holder113 waits for the following pass.
+    let same_pass = projectile.source_entity_index > LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX;
     assert_eq!(
         projectile.phase,
-        (projectile.source_entity_index as u8).wrapping_add(1),
-        "the scheduled class-9 consumer advances its NewEvent slot-seeded byte 0x3e once on the same pass"
+        (projectile.source_entity_index as u8).wrapping_add(u8::from(same_pass)),
+        "the phase reflects whether the numeric scan reached the newborn slot"
     );
+    let callback_seen = session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::DynamicArena { source_slot, kind: super::super::Level2DynamicArenaKind::FireballProjectile, .. }
+            if *source_slot == projectile.source_entity_index));
+    assert_eq!(callback_seen, same_pass, "newborn Fireball dispatch follows source slot order");
     assert_eq!(
         session
             .shared_spells()
@@ -6458,7 +6673,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
                     player_index: -1,
                     sound_id: 9,
                     ..
-                } if *entity_index == projectile.source_entity_index
+                } if *entity_index == 112
             ))
             .count(),
         1
@@ -6532,6 +6747,21 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
     inclusive_cast.session.state.live.economy.entities[target_index]
         .set_position(inclusive_target_position);
     let inclusive_terrain = inclusive_cast.canonical_terrain().clone();
+    // The ordinary prelude can arrive with a negative burst counter after
+    // earlier casts. Source 14E10 refuses while it is negative, even at the
+    // inclusive distance and cadence; prove that before testing the boundary
+    // with an explicitly cold burst counter.
+    let mut locked_cast = inclusive_cast.clone();
+    let locked_before = locked_cast.nyphur_dispatcher.common_upkeep.word_0x1a2;
+    assert!(locked_before < 0, "the observed prelude carries burst lockout");
+    locked_cast.session.state.live.nyphur_dispatcher.step_sub_13710(
+        112, &mut locked_cast.session.state.live.economy.entities,
+        &inclusive_terrain, &locked_cast.session.definition.presentation,
+    ).expect("locked mode-7 cadence visit");
+    assert_eq!(locked_cast.nyphur_dispatcher.common_upkeep.spell_enabled[0], 0);
+    assert_eq!(locked_cast.nyphur_dispatcher.common_upkeep.word_0x1a2, locked_before);
+    inclusive_cast.nyphur_dispatcher.common_upkeep.word_0x1a2 = 0;
+    let prior_burst = inclusive_cast.nyphur_dispatcher.common_upkeep.word_0x1a2;
     inclusive_cast
         .session
         .state
@@ -6553,7 +6783,6 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         inclusive_cast.economy.entities[112].position.z, source_position.z,
         "a successful cast skips the altitude branch"
     );
-    let prior_burst = related.nyphur_dispatcher.common_upkeep.word_0x1a2;
     assert_eq!(
         inclusive_cast.nyphur_dispatcher.common_upkeep.word_0x1a2,
         if prior_burst == 7 {

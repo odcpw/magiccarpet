@@ -319,6 +319,151 @@ pub(crate) fn status_parent(
     Ok(Some(parent))
 }
 
+/// Resolve the current typed occupant of an address used by a rival's frozen
+/// class-5 list or direct target pointer. Membership remains the caller's
+/// pass-start source list; this reads the occupant at the time of the visit.
+/// Imported rows return `None` and continue to use their physical record.
+pub(crate) fn rival_target_record(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<EntitySnapshot>, String> {
+    let Some(cursor) = arena.economy.live_arena_cursor_row(slot) else {
+        return Ok(None);
+    };
+    let (class, action) = arena.economy.live_arena_class_action(slot, cursor.kind)
+        .ok_or_else(|| format!("rival target {slot} lost its current action"))?;
+    let mut target = status_parent(arena, context, slot)?
+        .ok_or_else(|| format!("rival target {slot} lost its current record"))?;
+    if target.class != class {
+        return Err(format!("rival target {slot} class changed during current read"));
+    }
+    // The inherited raw row is a cold NewEvent record for this address, not
+    // the actor authority. Publish the fields the rival reads into the local
+    // callback view; the caller must never copy this typed view back to it.
+    target.authority = super::EntityAuthority::FrozenObserved;
+    target.record[0..2].copy_from_slice(&slot.to_le_bytes());
+    target.record[2] = u8::from(target.active);
+    target.record[30..32].copy_from_slice(&target.source_id.to_le_bytes());
+    target.record[67] = target.class;
+    target.record[68] = target.model;
+    target.set_position(target.position);
+    target.set_source_action(action);
+    target.set_source_player_entity_index(rival_target_relation(arena, context, slot, cursor.kind));
+    Ok(Some(target))
+}
+
+/// The source's playerEntityIndex word may belong to a typed carrier rather
+/// than its cold raw packet. This is a physical source relation, not an
+/// instruction to claim the target or alter its other ownership state.
+fn rival_target_relation(arena: &SourceArena, context: Context<'_>, slot: u16, kind: Kind) -> u16 {
+    let economy = &arena.economy;
+    let typed = match kind {
+        Kind::ManaSphere => economy.spheres.iter().find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| row.player_entity_index),
+        Kind::CastleRoot => economy.castle_at(slot).map(|row| row.player_entity_index),
+        Kind::CastleChild | Kind::CastleController | Kind::CastleDefender => economy.castle_children.iter()
+            .find(|row| row.active && row.source_entity_index == slot).map(|row| row.player_entity_index),
+        Kind::CastleAuxiliary => economy.castle_defenders.iter()
+            .find(|row| row.active && row.source_entity_index == slot).map(|row| row.player_entity_index),
+        Kind::PlayerDeathMarker => economy.player_death_markers.iter()
+            .find(|row| row.active && row.source_entity_index == slot).map(|row| row.player_entity_index),
+        Kind::HouseResident => economy.house_residents.iter()
+            .find(|row| row.active && row.source_entity_index == slot).map(|row| row.owner_entity_index),
+        Kind::AuthoredClass5Model3Child => economy.authored_class5_model3_children.iter()
+            .find(|row| row.active && row.source_entity_index == slot).map(|row| row.player_owner_entity_index),
+        Kind::AuthoredModel45 => context.houses.and_then(|houses| houses.houses().iter()
+            .find(|row| row.source_retained() && row.entity_index == slot).map(|row| row.owner_entity_index)),
+        Kind::AuthoredClass5 => context.villagers.and_then(|villagers| villagers.villagers().iter()
+            .find(|row| row.source_retained() && row.entity_index == slot
+                && economy.authored_class5.iter().any(|source| source.active
+                    && source.source_entity_index == slot && source.model == row.model))
+            .map(|row| row.owner_entity_index)),
+        _ => None,
+    };
+    if let Some(relation) = typed {
+        relation
+    } else if matches!(kind, Kind::AuthoredClass5 | Kind::BeeCreature | Kind::AuthoredDragonPart | Kind::HouseResident) {
+        // These carriers treat a missing owner-map entry as the source's
+        // neutral zero, never as permission to read an old raw projection.
+        economy.source_owner(slot)
+    } else {
+        economy.source_owner.get(&slot).copied()
+            .unwrap_or_else(|| arena.entities[usize::from(slot)].source_player_entity_index())
+    }
+}
+
+/// Commit only sub_135C0's word94 write to the same typed generation that
+/// supplied its callback view. A replaced address must not receive the write.
+pub(crate) fn commit_rival_target_relation(
+    arena: &mut SourceArena,
+    ordinary: &mut super::Level2OrdinaryResetSession,
+    handle: crate::campaign::source_arena::SourceEntityHandle,
+    owner: u16,
+) -> Result<bool, String> {
+    let slot = handle.source_slot;
+    if arena.handle(slot) != Some(handle) {
+        return Ok(false);
+    }
+    let Some(kind) = arena.economy.live_arena_kind(slot) else {
+        return Ok(false);
+    };
+    match kind {
+        Kind::ManaSphere => {
+            let row = arena.economy.spheres.iter_mut().find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its mana sphere"))?;
+            row.player_entity_index = owner;
+        }
+        Kind::CastleRoot => arena.economy.castle_at_mut(slot)
+            .ok_or_else(|| format!("rival target {slot} lost its Castle"))?.player_entity_index = owner,
+        Kind::CastleChild | Kind::CastleController | Kind::CastleDefender => {
+            arena.economy.castle_children.iter_mut().find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its Castle child"))?.player_entity_index = owner;
+        }
+        Kind::CastleAuxiliary => {
+            arena.economy.castle_defenders.iter_mut().find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its Castle auxiliary"))?.player_entity_index = owner;
+        }
+        Kind::PlayerDeathMarker => {
+            arena.economy.player_death_markers.iter_mut().find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its death marker"))?.player_entity_index = owner;
+        }
+        Kind::HouseResident => {
+            arena.economy.house_residents.iter_mut().find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its resident"))?.owner_entity_index = owner;
+        }
+        Kind::AuthoredClass5Model3Child => {
+            arena.economy.authored_class5_model3_children.iter_mut().find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its creature child"))?.player_owner_entity_index = owner;
+        }
+        Kind::AuthoredModel45 => {
+            if let Some(house) = ordinary.houses.house_mut(slot) {
+                house.owner_entity_index = owner;
+            }
+        }
+        Kind::AuthoredClass5 => {
+            let model = arena.economy.authored_class5.iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("rival target {slot} lost its creature"))?.model;
+            if let Some(villager) = ordinary.villagers.villagers_mut().iter_mut()
+                .find(|row| row.source_retained() && row.entity_index == slot && row.model == model)
+            {
+                villager.owner_entity_index = owner;
+            }
+        }
+        _ => {}
+    }
+    if matches!(kind, Kind::AuthoredClass5 | Kind::BeeCreature | Kind::AuthoredDragonPart | Kind::HouseResident) {
+        // These families read word94 through this map, including constructors
+        // which leave its neutral zero implicit until the first write.
+        arena.economy.source_owner.insert(slot, owner);
+    } else if let Some(relation) = arena.economy.source_owner.get_mut(&slot) {
+        *relation = owner;
+    }
+    arena.entities[usize::from(slot)].set_source_player_entity_index(owner);
+    Ok(true)
+}
+
 pub(crate) fn commit_status_speed(
     arena: &mut SourceArena,
     domains: Option<area_damage::ActorDomains<'_>>,
@@ -2354,6 +2499,13 @@ mod tests {
         let mut ordinary = session.session.state.live.ordinary.clone();
         let mut shared = session.session.state.live.shared_spells.clone();
         let old = goats.goats().iter().find(|row| row.active).unwrap().clone();
+        let old_generation = arena.economy.slot_generation(old.entity_index);
+        let old_handle = arena.handle(old.entity_index).unwrap();
+        assert!(rival_target_record(
+            &arena,
+            Context::from_ordinary(&goats, &ordinary),
+            old.entity_index,
+        ).unwrap().is_none(), "imported actors retain their physical raw row");
         // Retain the old external projection as an explicit boundary control.
         // Current arena metadata, not that stale family row, owns the address.
         crate::world::terrain::cave_features::reclaim(&mut arena, &mut terrain, old.entity_index);
@@ -2380,6 +2532,28 @@ mod tests {
             .unwrap();
         assert_eq!(slot, old.entity_index);
         arena.retire_previous_source_projection(slot);
+        assert_ne!(arena.economy.slot_generation(slot), old_generation);
+        // A poisoned retired packet cannot stand in for the replacement.
+        let raw = &mut arena.entities[usize::from(slot)];
+        raw.class = 5;
+        raw.model = 1;
+        raw.set_position(Position { x: 1, y: 2, z: 3 });
+        raw.set_mana(999);
+        raw.set_source_action(99);
+        let target = rival_target_record(&arena, Context::from_ordinary(&goats, &ordinary), slot)
+            .unwrap().unwrap();
+        assert_eq!((target.class, target.model, target.action, target.mana), (9, 0, 0, 50));
+        assert_eq!(target.source_id, session.state.entity_index);
+        assert_eq!(target.position, old.position);
+        assert!(!arena.entities[usize::from(slot)].active,
+            "a callback-local target view must not resurrect the raw shadow");
+        let current_handle = arena.handle(slot).unwrap();
+        assert!(!commit_rival_target_relation(&mut arena, &mut ordinary, old_handle, 777).unwrap());
+        assert_eq!(arena.entities[usize::from(slot)].source_player_entity_index(), 0,
+            "a stale generation cannot write the replacement");
+        assert!(commit_rival_target_relation(&mut arena, &mut ordinary, current_handle, 777).unwrap());
+        assert_eq!(rival_target_record(&arena, Context::from_ordinary(&goats, &ordinary), slot)
+            .unwrap().unwrap().source_player_entity_index(), 777);
         let context = Context::from_ordinary(&goats, &ordinary);
         let parent = status_parent(&arena, context, slot).unwrap().unwrap();
         assert_eq!((parent.class, parent.model), (9, 0));
@@ -2404,6 +2578,23 @@ mod tests {
             0
         );
         assert_eq!(current.actual_speed, -13);
+
+        // The model-9 constructor leaves a neutral owner-map entry implicit.
+        // A real word94 write must create it for later creature consumers.
+        let skeleton = arena.economy.allocate_authored_class5(900, 9, old.position, &terrain)
+            .expect("ordinary model-9 constructor");
+        let skeleton_slot = skeleton.source_entity_index;
+        arena.retire_previous_source_projection(skeleton_slot);
+        assert!(!arena.economy.source_owner.contains_key(&skeleton_slot));
+        arena.entities[usize::from(skeleton_slot)].set_source_player_entity_index(444);
+        assert_eq!(rival_target_record(&arena, Context::from_ordinary(&goats, &ordinary), skeleton_slot)
+            .unwrap().unwrap().source_player_entity_index(), 0,
+            "an implicit neutral owner must not borrow a stale raw word");
+        let skeleton_handle = arena.handle(skeleton_slot).unwrap();
+        assert!(commit_rival_target_relation(&mut arena, &mut ordinary, skeleton_handle, 777).unwrap());
+        assert_eq!(arena.economy.source_owner(skeleton_slot), 777);
+        assert_eq!(rival_target_record(&arena, Context::from_ordinary(&goats, &ordinary), skeleton_slot)
+            .unwrap().unwrap().source_player_entity_index(), 777);
     }
 
     #[test]
