@@ -285,9 +285,6 @@ fn cave_owner_arena() -> (
     SessionTerrain,
     Box<[crate::native_world::ParticleParameter]>,
 ) {
-    use crate::native_world::{
-        Level2EconomyState, parse_entities, parse_presentation, parse_runtime, parse_terrain,
-    };
     let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
         || {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -295,9 +292,25 @@ fn cave_owner_arena() -> (
         },
         std::path::PathBuf::from,
     );
+    owner_cave_arena(root, 21)
+}
+
+fn owner_cave_arena(
+    root: std::path::PathBuf,
+    level: u16,
+) -> (
+    crate::campaign::spec::DecodedCampaignPackage,
+    crate::campaign::source_arena::SourceArena,
+    crate::native_world::RuntimeSnapshot,
+    SessionTerrain,
+    Box<[crate::native_world::ParticleParameter]>,
+) {
+    use crate::native_world::{
+        Level2EconomyState, parse_entities, parse_presentation, parse_runtime, parse_terrain,
+    };
     let package = crate::campaign::spec::DecodedCampaignPackage::decode(
-        root.join("level21"),
-        crate::campaign::spec::CampaignSelection::ordinary(21).unwrap(),
+        root.join(format!("level{level}")),
+        crate::campaign::spec::CampaignSelection::ordinary(level).unwrap(),
     )
     .unwrap();
     let entities = parse_entities(package.member("entities.bin").unwrap())
@@ -328,6 +341,75 @@ fn cave_owner_arena() -> (
     .unwrap();
     let arena = crate::campaign::source_arena::SourceArena::new(entities, economy);
     (package, arena, runtime, terrain, presentation.particles)
+}
+
+#[test]
+fn level16_objective_creature_death_leaves_frozen_model_list_then_reclaims() {
+    use crate::level_definition::CreatureKind;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj");
+    let (package, mut arena, mut runtime, mut terrain, particles) = owner_cave_arena(root, 16);
+    let feature = crate::level1_mission::parse_authored_features(package.authored_bytes()).unwrap()[404];
+    assert_eq!(
+        (feature.kind, feature.subtype, feature.activation_group),
+        (5, 24, 23)
+    );
+    let player = arena.entities.iter().find(|r| r.active && r.class == 3 && r.model == 0)
+        .unwrap().index;
+    let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+    let slot = mc2::allocate_authored(
+        &mut arena, &mut runtime, &mut terrain, &particles, position, 16000, None, feature.index,
+    ).unwrap().unwrap();
+    let handle = arena.handle(slot).unwrap();
+    let authored = std::collections::BTreeMap::from([(feature.index, CreatureKind::Creature24)]);
+    assert!(arena.creature_runtime_identity(slot, &Default::default(), &authored).unwrap().living);
+    let frozen = arena.rebuilt_class5_model_slots();
+    assert!(frozen[24].contains(&slot));
+    crate::native_world::area_damage::contact(&mut arena, None, slot, 16001, player).unwrap();
+    let mut killed = false;
+    let mut excluded_before_hide = false;
+    for _ in 0..24 {
+        let pass_start = arena.rebuilt_class5_model_slots();
+        let outcome = mc2::step_row(
+            &mut arena, &mut runtime, &mut terrain, &particles, slot, &[player], &pass_start,
+        ).unwrap();
+        let row = &mut arena.entities[usize::from(slot)];
+        if row.life < 0 && !row.drawing_disabled() {
+            excluded_before_hide = true;
+            assert!(!arena.rebuilt_class5_model_slots()[24].contains(&slot));
+        }
+        if outcome.kill {
+            killed = true;
+            break;
+        }
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_phase(row.phase.wrapping_add(1));
+    }
+    assert!(killed && excluded_before_hide);
+    assert!(frozen[24].contains(&slot), "the earlier pass list remains frozen");
+    assert!(!arena.rebuilt_class5_model_slots()[24].contains(&slot));
+    assert!(!arena.creature_runtime_identity(slot, &Default::default(), &authored).unwrap().living);
+    assert!(arena.resolve(handle).is_some(), "hide defers reclamation");
+    arena.rebuild_source_arena_with_terrain(&mut terrain, &[]).unwrap();
+    assert!(arena.resolve(handle).is_none());
+    // 49F90 reconstructs the free stack in descending address order. Level16
+    // has lower free addresses than this root, so consume that real prefix
+    // before requiring reuse rather than assuming the freed address is first.
+    let mut previous = 0;
+    let reused = loop {
+        let next = mc2::allocate_authored(
+            &mut arena, &mut runtime, &mut terrain, &particles, position, 16000, None, feature.index,
+        ).unwrap().expect("the reclaimed root remains in the free stack");
+        assert!(next > previous && next <= slot, "unexpected free-stack order: {previous} -> {next}, root {slot}");
+        assert!(arena.resolve(handle).is_none(), "stale generation must stay dead");
+        if next == slot {
+            break next;
+        }
+        previous = next;
+    };
+    assert_ne!(arena.handle(reused).unwrap().generation, handle.generation);
+    assert!(arena.rebuilt_class5_model_slots()[24].contains(&reused));
+    eprintln!("Level16 authored 404 group 23 slot={slot} reclaimed and reused; frozen model24 membership tracked death");
 }
 
 #[test]

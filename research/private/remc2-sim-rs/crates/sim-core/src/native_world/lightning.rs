@@ -420,6 +420,8 @@ fn storm_shot(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: 
 ) -> Result<guided_projectile::StepOutcome, String> {
     let mut outcome = guided_projectile::StepOutcome::default();
     let mut row = arena.entities[usize::from(slot)].clone();
+    // sub_66FD0 captures this fixed address before acquisition for sub_65780.
+    let original_target = word(&row, 154);
     if word(&row, 154) == 0 && row.control_flags & 2 == 0 {
         row.set_control_flags(row.control_flags | 2);
         let captured = if let Some(targets) = targets { guided_projectile::acquire_capture(arena, &mut row, targets, context)? } else { false };
@@ -471,9 +473,10 @@ fn storm_shot(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: 
     }
     let Some(storm) = construct(arena, terrain, particles, Product::Storm, position)? else { return Ok(outcome); };
     let row = arena.entities[usize::from(slot)].clone();
-    if let Some((target, _)) = hit {
-        if let Some(parent) = arena.entities.get_mut(usize::from(row.source_id))
-            && parent.class == 3 && matches!(parent.model, 0 | 1) { put(parent, 154, target); }
+    outcome.accuracy = guided_projectile::source_accuracy(
+        arena, row.model, row.source_id, hit.map(|(target, _)| target), original_target,
+    );
+    if hit.is_some() && source_player_owner(arena, row.source_id) {
         outcome.experience = Some((row.source_id, 7, 1));
     }
     let effect = &mut arena.entities[usize::from(storm)];

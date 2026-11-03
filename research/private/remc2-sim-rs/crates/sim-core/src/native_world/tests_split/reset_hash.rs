@@ -1105,12 +1105,26 @@ fn level_two_ordinary_census_rejects_wrong_rows_hashes_and_presentation() {
     right.position.z = left.position.z;
     right.position.x = 2;
     for entity in [&mut left, &mut right] {
-        for (offset, value) in [(86, 16_i16), (88, 16), (90, 0), (92, 16)] {
+        // sub_10630: source yaw is vertical offset, pitch/roll are X/Y
+        // half widths, and fov is the vertical half height.
+        for (offset, value) in [(86, 0_i16), (88, 16), (90, 16), (92, 16)] {
             entity.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
         }
     }
     assert!(level2_source_intersects(&left, &right));
-    right.position.x = 32;
+    right.position.x = left.position.x.wrapping_add(32);
+    assert!(!level2_source_intersects(&left, &right), "exact X edge is outside");
+    right.position.x = left.position.x.wrapping_add(31);
+    assert!(level2_source_intersects(&left, &right), "wrapped X just inside");
+    right.position.y = left.position.y.wrapping_add(32);
+    assert!(!level2_source_intersects(&left, &right), "exact Y edge is outside");
+    right.position.y = left.position.y;
+    left.position.z = 100;
+    right.position.z = 420;
+    left.record[86..88].copy_from_slice(&120_i16.to_le_bytes());
+    right.record[86..88].copy_from_slice(&(-200_i16).to_le_bytes());
+    assert!(level2_source_intersects(&left, &right), "source yaw aligns vertical centres");
+    right.position.z += 32;
     assert!(!level2_source_intersects(&left, &right));
 }
 

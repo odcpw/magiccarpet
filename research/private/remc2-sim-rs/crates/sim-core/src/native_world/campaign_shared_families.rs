@@ -138,6 +138,24 @@ pub(super) fn construct_stone_source(
     }
 }
 
+/// `AddDolmen_4ADF0` shares NewEvent and map defaults with the stone, then
+/// selects action 6, particle 39 and the fixed 1024-unit collision extents.
+pub(super) fn construct_dolmen_source(
+    source_slot: u16,
+    entity_rng: u16,
+    position: Position,
+    particle_pose: ParticlePose,
+) -> EntitySnapshot {
+    let mut row = construct_stone_source(source_slot, entity_rng, position, (0, 0), particle_pose);
+    row.model = 2;
+    row.action = 6;
+    row.particle_parameter_index = Some(39);
+    row.record[68] = 2;
+    row.record[73] = 6;
+    row.record[94..96].copy_from_slice(&39_i16.to_le_bytes());
+    row
+}
+
 /// Lossless `sub_4BBB0` row, after NewEvent and before its placement probe.
 pub(super) fn construct_skeleton_source(
     source_slot: u16,

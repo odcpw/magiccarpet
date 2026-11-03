@@ -4996,6 +4996,48 @@ impl Level2SharedSpellResetSession {
 }
 
 impl Level2OrdinaryResetSession {
+    /// Materialize an authored dolmen into the shared arena and the existing
+    /// action-6 carrier. Allocation and map links use the live source arena.
+    pub(crate) fn allocate_authored_dolmen(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &mut SessionTerrain,
+        particles: &[ParticleParameter],
+        position: Position,
+    ) -> std::result::Result<Option<u16>, String> {
+        let particle = particles.get(39).ok_or("dolmen requires particle 39")?;
+        let animation_limit = campaign_shared_families::particle_animation_limit(particle.render_mode)
+            .ok_or("dolmen particle 39 has an invalid animation mode")?;
+        let array_yaw = i16::try_from(particle.rotation_speed / 2)
+            .map_err(|_| "dolmen particle 39 rotation exceeds source range")?;
+        let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+            return Ok(None);
+        };
+        let rng = arena.new_event_rng(slot);
+        let pose = campaign_shared_families::ParticlePose {
+            animation_limit,
+            array_yaw,
+            array_pitch: 1024,
+            array_roll: 1024,
+            array_fov: 1024,
+        };
+        arena.entities[usize::from(slot)] =
+            campaign_shared_families::construct_dolmen_source(slot, rng, position, pose);
+        arena.economy.source_rng.insert(slot, rng);
+        crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+        let entity = arena.entities[usize::from(slot)].clone();
+        let dolmen = Level2Dolmen {
+            baseline: entity.clone(),
+            entity,
+            map_cell: ((position.x >> 8) as u8, (position.y >> 8) as u8),
+        };
+        let mut dolmens = self.dolmens.to_vec();
+        dolmens.retain(|old| old.entity.index != slot);
+        dolmens.push(dolmen);
+        self.dolmens = dolmens.into_boxed_slice();
+        Ok(Some(slot))
+    }
+
     pub(super) fn from_campaign_parts(
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
@@ -5672,6 +5714,56 @@ impl Level2OrdinaryResetSession {
         self.villagers
             .inject_damage(source_slot, damage, attacker)
             .map_err(NativeWorldError::new)
+    }
+
+    /// Resolve each configured player address at the callback's current
+    /// source boundary. These are fixed addresses, so an intervening NewEvent
+    /// occupant wins over any cached player identity.
+    pub(crate) fn dolmen_source_contacts(
+        &self,
+        arena: &crate::campaign::source_arena::SourceArena,
+        context: source_target::Context<'_>,
+        source_slot: u16,
+        player_slots: &[u16],
+    ) -> std::result::Result<Vec<EntitySnapshot>, String> {
+        let dolmen = self.dolmens.iter().find(|row| row.entity.index == source_slot)
+            .ok_or_else(|| format!("unknown dolmen source slot {source_slot}"))?;
+        let mut contacts = Vec::new();
+        for &slot in player_slots {
+            let Some(player) = source_target::read(arena, context, slot)? else {
+                continue;
+            };
+            if player.life < 0 {
+                continue;
+            }
+            let shape = player.collision.ok_or_else(|| {
+                format!("dolmen contact target {slot} has no current collision axes")
+            })?;
+            let stone = &dolmen.entity;
+            let dx = i32::from(player.position.x.wrapping_sub(stone.position.x).cast_signed()).abs();
+            let dy = i32::from(player.position.y.wrapping_sub(stone.position.y).cast_signed()).abs();
+            let dz = (i32::from(player.position.z) + i32::from(shape.vertical_offset)
+                - i32::from(stone.position.z) - i32::from(stone.array_yaw())).abs();
+            if dx < i32::from(shape.half_width) + i32::from(stone.array_pitch())
+                && dy < i32::from(shape.half_depth) + i32::from(stone.array_roll())
+                && dz < i32::from(shape.half_height) + i32::from(stone.array_fov())
+                && let Some(parent) = source_target::status_parent(arena, context, slot)?
+            {
+                contacts.push(parent);
+            }
+        }
+        Ok(contacts)
+    }
+
+    /// The action-6 pose update follows contact publication.
+    pub(crate) fn step_dolmen_source_pose(
+        &mut self,
+        source_slot: u16,
+        terrain: &SessionTerrain,
+    ) -> std::result::Result<Level2DolmenStep, String> {
+        self.dolmens.iter_mut().find(|row| row.entity.index == source_slot)
+            .map(|row| row.step_action_6(terrain))
+            .ok_or_else(|| format!("unknown dolmen source slot {source_slot}"))
     }
 
     pub fn step_dolmen_action_6(

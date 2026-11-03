@@ -352,6 +352,10 @@ fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
         ).expect("actual Level 16 owner package opens");
         let session = campaign.simulation_mut();
         let player = session.state.entity_index;
+        let baseline_products = session.session.state.live.economy.entities.iter()
+            .filter(|row| row.active && row.source_id == player
+                && matches!((row.class, row.model), (9, 9 | 12) | (10, 23 | 38)))
+            .map(|row| (row.index, row.class, row.model, row.action)).collect::<Vec<_>>();
         let source = session.session.state.live.economy.entities.iter()
             .find(|row| row.active && (row.class, row.model, row.action) == (15, 7, 23))
             .cloned().expect("actual persistent Lightning pickup");
@@ -410,17 +414,86 @@ fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
         let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(position, target.position);
         session.set_level2_player_aim_for_test(yaw, pitch);
         let target_handle = session.session.state.live.economy.handle(target.index).unwrap();
+        let experience_before = session.shared_spells().spell_experience()[7];
+        let mut previous_mana = session.session.state.live.economy.entities[usize::from(player)].mana;
+        let mut charged = false;
+        let mut launch_sound = false;
+        let mut endpoint_sound = false;
+        let mut particles_seen = [false; 3];
+        let mut projected_projectile = false;
+        let mut projected_storm = false;
+        // Track one observed incarnation of each stage, not all later rays
+        // spawned by the storm. Generations distinguish reclaim from reuse.
+        let mut tracked = [None; 4];
+        let mut hidden = [false; 4];
+        let mut reclaimed = [false; 4];
         let mut saw_ray = false;
         let mut saw_shot = false;
         let mut saw_storm = false;
         let mut saw_endpoint = false;
         let mut damaged = false;
+        let mut previous_target_life = target.life;
         let mut trace = Vec::new();
-        for turn in 0..96 {
+        for turn in 0..160 {
             let command = if turn == 0 { crate::PlayerCommand { flags: 0x10, ..Default::default() } }
                 else { crate::PlayerCommand::default() };
             session.step_outer_turn(command, 0);
             let live = &session.session.state.live;
+            let current_mana = live.economy.entities[usize::from(player)].mana;
+            charged |= previous_mana - current_mana == rule.mana_cost;
+            previous_mana = current_mana;
+            for event in live.economy.economy.events() {
+                if let super::super::Level2EconomyEvent::PreparedSound { entity_index, sound_id, .. } = event {
+                    launch_sound |= *entity_index == player && *sound_id == if tier == 0 { 23 } else { 9 };
+                    endpoint_sound |= *sound_id == 24
+                        && live.economy.entities.get(usize::from(*entity_index)).is_some_and(|row|
+                            row.active && row.source_id == player
+                                && (row.class, row.model, row.action) == (10, 23, 23));
+                }
+            }
+            for row in live.economy.entities.iter().filter(|row| row.active && row.source_id == player) {
+                let stage = match (row.class, row.model, row.action) {
+                    (9, 9, 9) => Some(0),
+                    (9, 12, 12) => Some(1),
+                    (10, 38, 40) => Some(2),
+                    (10, 23, 23) => Some(3),
+                    _ => None,
+                };
+                if let Some(stage) = stage {
+                    tracked[stage].get_or_insert((row.index, live.economy.economy.slot_generation(row.index)));
+                    let particle = match stage { 0 | 1 => 216, 2 => 272, _ => 7 };
+                    if row.particle_parameter_index == Some(particle) {
+                        particles_seen[if stage <= 1 { 0 } else { stage - 1 }] = true;
+                    }
+                }
+            }
+            let presentations = session.campaign_entity_presentations(0)
+                .expect("Lightning products reach the campaign presentation projection");
+            for presentation in &presentations {
+                let row = &live.economy.entities[usize::from(presentation.entity_index)];
+                if row.source_id != player { continue; }
+                let expected = match (row.class, row.model, row.action) {
+                    (9, 9, 9 | 14) | (9, 12, 12) => Some((216, false)),
+                    (10, 38, 40) => Some((272, true)),
+                    _ => None,
+                };
+                if let Some((particle, storm)) = expected {
+                    assert_eq!(presentation.source_id, player);
+                    assert_eq!(presentation.position, row.position);
+                    assert_eq!(presentation.render_parameter_index, particle);
+                    assert_eq!(presentation.base_tmap,
+                        session.session.definition.presentation.particles[usize::from(particle)].base_tmap);
+                    if storm { projected_storm = true; } else { projected_projectile = true; }
+                }
+            }
+            for (stage, tracked_slot) in tracked.iter().enumerate() {
+                if let Some((slot, generation)) = *tracked_slot {
+                    let row = &live.economy.entities[usize::from(slot)];
+                    hidden[stage] |= live.economy.economy.slot_generation(slot) == generation
+                        && row.active && row.drawing_disabled();
+                    reclaimed[stage] |= source_slot_cleanup_state(session, slot, generation).1;
+                }
+            }
             let relevant = live.economy.entities.iter().filter(|row| row.active && row.source_id == player
                 && matches!((row.class, row.model), (9, 9 | 12) | (10, 23 | 38)))
                 .map(|row| (row.index, row.class, row.model, row.action, row.life, row.drawing_disabled()))
@@ -430,17 +503,48 @@ fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
             saw_storm |= relevant.iter().any(|row| (row.1, row.2) == (10, 38));
             saw_endpoint |= relevant.iter().any(|row| (row.1, row.2) == (10, 23));
             if live.economy.handle(target.index) == Some(target_handle) {
-                damaged |= live.economy.entities[usize::from(target.index)].life < target.life;
+                let target = &live.economy.entities[usize::from(target.index)];
+                damaged |= target.life < previous_target_life && target.word_26() == player;
+                previous_target_life = target.life;
             }
             let errors = session.dispatch_events().iter().filter(|event|
                 matches!(event, super::super::Mc2DispatchEvent::Error { .. })).collect::<Vec<_>>();
             trace.push(format!("turn={turn} target_life={} relevant={relevant:?} errors={errors:?}",
                 live.economy.entities[usize::from(target.index)].life));
             assert!(errors.is_empty(), "tier={tier}: {}", trace.join("\n"));
-            if saw_ray && saw_endpoint && damaged && (tier == 0 || saw_shot && saw_storm) { break; }
+            let cleaned = reclaimed[0] && reclaimed[3]
+                && (tier == 0 || reclaimed[1] && reclaimed[2]);
+            if saw_ray && saw_endpoint && damaged && (tier == 0 || saw_shot && saw_storm)
+                && charged && launch_sound && endpoint_sound && cleaned
+                && session.shared_spells().pickup(holder).unwrap().active_value == 0
+                && session.shared_spells().spell_experience()[7] > experience_before { break; }
         }
         assert!(saw_ray && saw_endpoint && damaged && (tier == 0 || saw_shot && saw_storm),
             "ordinary tier {tier} must reach its scheduled Lightning damage consumer:\n{}", trace.join("\n"));
+        assert!(charged, "tier {tier} must debit its source mana cost");
+        assert!(launch_sound && endpoint_sound, "tier {tier} must prepare launch and endpoint sounds");
+        assert!(particles_seen[0] && particles_seen[2] && (tier == 0 || particles_seen[1]),
+            "tier {tier} must bind the projectile, emitter, and endpoint presentation particles");
+        assert!(projected_projectile && (tier == 0 || projected_storm),
+            "tier {tier} visible projectile and emitter reach the campaign sprite consumer");
+        assert!(session.shared_spells().spell_experience()[7] > experience_before,
+            "tier {tier} damage must award Lightning experience");
+        assert_eq!(session.shared_spells().pickup(holder).unwrap().active_value, 0,
+            "tier {tier} holder must naturally finish its cast");
+        for stage in if tier == 0 { &[0, 3][..] } else { &[0, 1, 2, 3][..] } {
+            assert!(hidden[*stage] && reclaimed[*stage],
+                "tier {tier} stage {stage} must hide and be reclaimed; tracked={tracked:?}");
+        }
+        campaign.reset();
+        let reset = campaign.simulation();
+        assert_eq!(reset.shared_spells().local_player().enabled_spell_holders[7], 0,
+            "reset restores the pre-acquisition Lightning holder state");
+        let reset_products = reset.session.state.live.economy.entities.iter()
+            .filter(|row| row.active && row.source_id == player
+                && matches!((row.class, row.model), (9, 9 | 12) | (10, 23 | 38)))
+            .map(|row| (row.index, row.class, row.model, row.action)).collect::<Vec<_>>();
+        assert_eq!(reset_products, baseline_products,
+            "reset removes this cast's products and restores the source baseline");
     }
 }
 
@@ -481,6 +585,52 @@ fn lightning_missing_or_replaced_parent_only_advances_holder_timers() {
         let holder = live.shared_spells.pickup(slot).unwrap();
         assert_eq!(holder.active_value, active_before - 1);
         assert_eq!(word(holder, 58), 2);
+    }
+}
+
+#[test]
+fn lightning_storm_shot_attributes_accuracy_and_xp_only_to_player_owners() {
+    for is_player in [true, false] {
+        let (mut session, _, parent) = ready_lightning(1);
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let arena = &mut live.economy;
+        let target = arena.entities.iter().filter(|row| row.active && row.index != parent)
+            .find_map(|row| {
+                let view = source_target::read(arena, source_target::Context::default(), row.index).ok()??;
+                (view.control_flags & 8 != 0 && view.control_flags & 0x8010 == 0
+                    && view.source_id != parent && view.collision.is_some())
+                    .then_some(view)
+            }).expect("campaign fixture has an unshielded collidable target");
+        let target_slot = target.slot;
+        let shape = target.collision.unwrap();
+        let position = guided_projectile::centre(target.position, target.model, shape.vertical_offset);
+        let shot = construct(arena, &mut live.terrain, &particles, Product::StormShot, position)
+            .unwrap().unwrap();
+        {
+            let row = &mut arena.entities[usize::from(shot)];
+            owner(row, parent);
+            row.set_actual_speed(0);
+            put(row, 136, 0);
+            put(row, 154, target_slot);
+            row.record[69] = target.class;
+            row.record[70] = target.model;
+        }
+        if !is_player {
+            let row = &mut arena.entities[usize::from(parent)];
+            row.class = 10;
+            row.model = 57;
+            row.record[67] = 10;
+            row.record[68] = 57;
+        }
+        let old_parent_target = word(&arena.entities[usize::from(parent)], 154);
+        let outcome = step(arena, &mut live.terrain, &particles, shot, None,
+            source_target::Context::default()).unwrap();
+        assert!(outcome.impact_slot.is_some(), "collision must produce the storm emitter");
+        assert_eq!(outcome.experience, is_player.then_some((parent, 7, 1)));
+        assert_eq!(outcome.accuracy, is_player.then_some((parent, true)));
+        assert_eq!(word(&arena.entities[usize::from(parent)], 154), old_parent_target,
+            "66FD0 does not call the guided projectile's owner-target update");
     }
 }
 

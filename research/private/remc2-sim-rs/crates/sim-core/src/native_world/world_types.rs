@@ -1172,11 +1172,11 @@ pub(super) fn level2_source_intersects(left: &EntitySnapshot, right: &EntitySnap
     };
     let dx = i32::from(right.position.x.wrapping_sub(left.position.x).cast_signed());
     let dy = i32::from(right.position.y.wrapping_sub(left.position.y).cast_signed());
-    let dz = i32::from(left.position.z) + i32::from(i16_at(left, 90))
+    let dz = i32::from(left.position.z) + i32::from(i16_at(left, 86))
         - i32::from(right.position.z)
-        - i32::from(i16_at(right, 90));
-    dx.abs() < i32::from(i16_at(left, 86)) + i32::from(i16_at(right, 86))
-        && dy.abs() < i32::from(i16_at(left, 88)) + i32::from(i16_at(right, 88))
+        - i32::from(i16_at(right, 86));
+    dx.abs() < i32::from(i16_at(left, 88)) + i32::from(i16_at(right, 88))
+        && dy.abs() < i32::from(i16_at(left, 90)) + i32::from(i16_at(right, 90))
         && dz.abs() < i32::from(i16_at(left, 92)) + i32::from(i16_at(right, 92))
 }
 

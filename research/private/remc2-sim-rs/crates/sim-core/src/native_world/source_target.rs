@@ -81,9 +81,9 @@ pub(crate) fn status_parent(
     }
     if let Some(shape) = view.collision {
         for (offset, value) in [
-            (86, shape.half_width),
-            (88, shape.half_depth),
-            (90, shape.vertical_offset),
+            (86, shape.vertical_offset),
+            (88, shape.half_width),
+            (90, shape.half_depth),
             (92, shape.half_height),
         ] {
             parent.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -2765,6 +2765,12 @@ mod tests {
         let bee_slot = bee.source_entity_index;
         arena.retire_previous_source_projection(bee_slot);
         let parent = status_parent(&arena, Context::default(), bee_slot).unwrap().unwrap();
+        let shape = read(&arena, Context::default(), bee_slot).unwrap().unwrap().collision.unwrap();
+        assert_eq!(
+            (parent.array_yaw(), parent.array_pitch(), parent.array_roll(), parent.array_fov()),
+            (shape.vertical_offset, shape.half_width, shape.half_depth, shape.half_height),
+            "lossless status records retain source yaw/pitch/roll/fov field order",
+        );
         let mut protected = parent.clone();
         protected.set_control_flags(protected.control_flags | crate::spell_activation::SHIELD_INVULNERABLE_STATUS_BIT);
         commit_status_parent(&mut arena, &mut shared, None, &parent, &protected).unwrap();

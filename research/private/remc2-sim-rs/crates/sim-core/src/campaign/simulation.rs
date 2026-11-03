@@ -11841,7 +11841,7 @@ impl Mc2Simulation {
             })
             && !matches!(
                 (feature.kind, feature.subtype),
-                (2, 0 | 1 | 6 | 7)
+                (2, 0 | 1 | 2 | 6 | 7)
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 27 | 28)
                     | (
                         10,
@@ -12050,6 +12050,20 @@ impl Mc2Simulation {
                 }
                 (2, 1) => {
                     let _ = self.allocate_authored_stone_feature(feature);
+                }
+                (2, 2) => {
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = live.ordinary.allocate_authored_dolmen(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        position,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
                 }
                 (2, 7) | (10, 80..=86) => {
                     let properties = self
@@ -12690,6 +12704,20 @@ impl Mc2Simulation {
                         position,
                     );
                 }
+                (10, 64) => {
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = crate::world::terrain::disasters::mc2::runtime::construct_marker(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                        64,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
+                }
                 (10, 76) => {
                     if self
                         .allocate_level2_authored_model76(feature.index)
@@ -12852,7 +12880,10 @@ impl Mc2Simulation {
                         )
                         .map_err(|error| error.to_string())?;
                 }
-                _ => unreachable!("authored group constructor was preflighted"),
+                _ => return Err(format!(
+                    "authored group {target_group} has no publisher for preflighted constructor {}/{} at row {}",
+                    feature.kind, feature.subtype, feature.index,
+                )),
             }
             if feature.kind == 5 {
                 let live = &mut self.session.state.live;
@@ -18666,21 +18697,29 @@ impl Mc2Simulation {
                 });
             }
             (ExistingHandler::Dolmen, SourceRoute::Dolmen) => {
-                let terrain = &self.session.state.live.terrain;
-                match self
-                    .session
-                    .state
-                    .live
-                    .ordinary
-                    .step_dolmen_action_6(source_slot, terrain)
-                {
-                    Ok(step) => self.push_dispatch_effect(Mc2DispatchEvent::Dolmen { pass, step }),
-                    Err(error) => self.push_dispatch_effect(Mc2DispatchEvent::Error {
-                        pass,
+                let contacts = {
+                    let live = &self.session.state.live;
+                    let player_slots = live.core.players.iter()
+                        .take(usize::from(live.core.runtime.player_count))
+                        .map(|player| player.entity_index).collect::<Vec<_>>();
+                    live.ordinary.dolmen_source_contacts(
+                        &live.economy,
+                        source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        },
                         source_slot,
-                        message: error.to_string(),
-                    }),
+                        &player_slots,
+                    )?
+                };
+                for parent in contacts {
+                    self.commit_source_parent_control(&parent, parent.control_flags | 0x1000)
+                        .map_err(|error| error.to_string())?;
                 }
+                let live = &mut self.session.state.live;
+                let step = live.ordinary.step_dolmen_source_pose(source_slot, &live.terrain)?;
+                self.push_dispatch_effect(Mc2DispatchEvent::Dolmen { pass, step });
             }
             (ExistingHandler::CastleRoot, SourceRoute::CastleRoot) => {
                 {
@@ -22333,7 +22372,7 @@ impl Mc2Simulation {
             }
             if let Some(current_parent) = parent.as_mut() {
                 let flags = current_parent.control_flags | 0x21;
-                self.commit_morph_parent_control(current_parent, flags)?;
+                self.commit_source_parent_control(current_parent, flags)?;
                 current_parent.set_control_flags(flags);
                 if !self.morph_parent_is_local(current_parent)? {
                     self.set_morph_body_hidden(slot, false);
@@ -22420,7 +22459,7 @@ impl Mc2Simulation {
                     } else {
                         current_parent.control_flags | 1
                     };
-                    self.commit_morph_parent_control(current_parent, flags)?;
+                    self.commit_source_parent_control(current_parent, flags)?;
                     current_parent.set_control_flags(flags);
                 }
             }
@@ -22442,7 +22481,7 @@ impl Mc2Simulation {
                 } else {
                     current_parent.control_flags & !0x21
                 };
-                self.commit_morph_parent_control(current_parent, flags)?;
+                self.commit_source_parent_control(current_parent, flags)?;
                 if local {
                     mark_source_audio_call(SourceAudioCallTag::MorphSpellExpiry);
                     self.session.state.live.shared_spells.emit_flight_effect(
@@ -22731,7 +22770,7 @@ impl Mc2Simulation {
         }
     }
 
-    fn commit_morph_parent_control(&mut self, parent: &EntitySnapshot, flags: u32) -> Result<()> {
+    fn commit_source_parent_control(&mut self, parent: &EntitySnapshot, flags: u32) -> Result<()> {
         let mut after = parent.clone();
         after.set_control_flags(flags);
         let live = &mut self.session.state.live;
@@ -28317,6 +28356,151 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level16_creature24_production_death_and_reclaim_reach_real_absence_objective() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level16");
+        let mut campaign = CampaignSession::open(
+            package,
+            CampaignSelection::ordinary(16).unwrap(),
+        )
+        .expect("unmodified Level16 package opens with its real task5");
+        let session = campaign.simulation_mut();
+        let stage_index = session.session.definition.semantic_level().unwrap()
+            .objectives().iter().position(|objective| {
+                objective.condition() == ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature24)
+            }).expect("actual task5 targets authored record404's Creature24 family");
+        assert_eq!(stage_index, 4);
+        let feature = session.session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.index == 404).copied().unwrap();
+        assert_eq!((feature.kind, feature.subtype, feature.activation_group), (5, 24, 23));
+        // Travel/progression are controls: use the real group and objective,
+        // while constructors, damage, schedule, death and reclaim stay live.
+        let dolmen_count = session.ordinary().dolmens().len();
+        let dolmen_feature = session.session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.index == 524).copied().unwrap();
+        assert_eq!((dolmen_feature.kind, dolmen_feature.subtype, dolmen_feature.activation_group), (2, 2, 23));
+        let dolmen_position = dolmen_feature.world_position(
+            session.canonical_terrain().ground_height(dolmen_feature.world_position(0)),
+        );
+        session.activate_authored_group_prerequisite_for_test(23).unwrap();
+        assert_eq!(session.ordinary().dolmens().len(), dolmen_count + 1);
+        let dolmen = session.ordinary().dolmens().iter()
+            .find(|dolmen| dolmen.entity.position == dolmen_position)
+            .expect("the same real group23 publishes its Dolmen alongside the creature family");
+        let dolmen_slot = dolmen.entity.index;
+        let dolmen_phase = dolmen.entity.phase;
+        assert_eq!((dolmen.entity.class, dolmen.entity.model, dolmen.entity.action), (2, 2, 6));
+        assert_eq!(dolmen.entity.particle_parameter_index, Some(39));
+        let player = session.state.entity_index;
+        let objective_index = session.session.state.live.core.players.iter()
+            .find(|owner| owner.entity_index == player).unwrap().player_color_index() as usize;
+        {
+            let runtime = &mut session.session.state.live.core.runtime;
+            for index in 0..runtime.objectives.len() {
+                for selector in 0..runtime.objectives[index].stage_selectors.len() {
+                    runtime.set_level2_objective_stage_selector_for(index, selector, 0);
+                }
+                runtime.set_level2_objective_level_end_for(index, 0);
+            }
+            runtime.set_level2_objective_text_selector_for(objective_index, stage_index);
+            runtime.set_level2_objective_stage_selector_for(objective_index, stage_index, 1);
+        }
+        let roots = session.session.state.live.economy.entities.iter()
+            .filter(|row| row.active && row.class == 5 && row.model == 24 && row.life >= 0)
+            .map(|row| session.session.state.live.economy.handle(row.index).unwrap())
+            .collect::<Vec<_>>();
+        assert!(!roots.is_empty(), "ordinary group23 produces real Creature24 roots");
+        assert!(session.session.state.live.authored_features_consumed.contains(&404));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "live Creature24 source dispatch errors: {:?}", session.dispatch_events());
+        assert_eq!(session.runtime().objectives[objective_index].stage_selectors[stage_index], 1,
+            "living roots keep the real source model-head absence predicate false");
+        assert_eq!(session.ordinary().dolmens().iter()
+            .find(|dolmen| dolmen.entity.index == dolmen_slot).unwrap().entity.phase,
+            dolmen_phase.wrapping_add(crate::entity_passes_for_speed_index(0)),
+            "the authored Dolmen reaches every ordinary source callback");
+        {
+            let live = &mut session.session.state.live;
+            for handle in &roots {
+                assert!(live.economy.resolve(*handle).is_some(), "same living source generation");
+                let row = &live.economy.entities[usize::from(handle.source_slot)];
+                let damage = u16::try_from(row.life + 1).expect("source life fits damage payload");
+                area_damage::contact(&mut live.economy, None, handle.source_slot, damage, player).unwrap();
+            }
+        }
+        let mut completed = false;
+        let mut reclaimed = false;
+        for _ in 0..24 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "death/reclaim source dispatch errors: {:?}", session.dispatch_events());
+            completed |= session.runtime().objectives[objective_index].stage_selectors[stage_index] == 2;
+            reclaimed = roots.iter().all(|handle| session.session.state.live.economy.resolve(*handle).is_none());
+            if completed && reclaimed { break; }
+        }
+        assert!(completed, "ordinary callbacks update the frozen list consumed by actual task5");
+        assert!(reclaimed, "following source prologues reclaim every killed generation");
+        assert!(session.session.state.live.economy.rebuilt_class5_model_slots()[24].is_empty());
+        // Stage only travel and empty resources. The actual newly authored
+        // Dolmen contact must select and deliver the next player visit's rate.
+        session.set_level2_entity_position(player, dolmen_position).unwrap();
+        {
+            let live = &mut session.session.state.live;
+            live.core.state.actual_speed = 0;
+            live.core.state.target_speed = 0;
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.max_mana = 20_000;
+            parent.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());
+            parent.set_mana(0);
+            parent.set_mana_regen(0);
+            parent.set_actual_speed(0);
+            parent.set_control_flags(parent.control_flags & !0x1000);
+            let parent = parent.clone();
+            live.shared_spells.sync_player_entity_from_authority(&parent);
+            live.shared_spells.player_mana = 0;
+            live.shared_spells.caster.mana = 0;
+            live.shared_spells.caster.control_flags = parent.control_flags;
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = 0;
+                fire.caster.control_flags = parent.control_flags;
+            }
+        }
+        let mut contact_seen = false;
+        let mut high_rate = false;
+        let mut recharge_trace = Vec::new();
+        for turn in 0..3 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Dolmen recharge source dispatch errors: {:?}", session.dispatch_events());
+            let parent = &session.session.state.live.economy.entities[usize::from(player)];
+            // A lower Dolmen sets the bit before the player consumes it in
+            // this pass; a higher Dolmen leaves it latched for the next pass.
+            let latched = parent.control_flags & 0x1000 != 0;
+            contact_seen |= if dolmen_slot < player {
+                parent.mana_regen == 1_000 && !latched
+            } else {
+                latched
+            };
+            high_rate |= parent.mana_regen == 1_000;
+            recharge_trace.push(format!("turn={turn} player={player} dolmen={dolmen_slot} count={} class={}/{} action={} life={} pos={:?} mana={} rate={} flags={:#x} dolmen_pos={:?}",
+                session.runtime().player_count, parent.class, parent.model, parent.action,
+                parent.life, parent.position, parent.mana, parent.mana_regen,
+                parent.control_flags, session.ordinary().dolmens().iter()
+                    .find(|dolmen| dolmen.entity.index == dolmen_slot).unwrap().entity.position));
+            if contact_seen && high_rate { break; }
+        }
+        assert!(contact_seen && high_rate, "current Dolmen contact reaches real player upkeep: {recharge_trace:?}");
+        let before_mana = session.session.state.live.economy.entities[usize::from(player)].mana;
+        session.set_level2_entity_position(player, Position {
+            x: dolmen_position.x.wrapping_add(4096), ..dolmen_position
+        }).unwrap();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.session.state.live.economy.entities[usize::from(player)].mana,
+            before_mana + 1_000, "following player visit consumes the selected Dolmen rate");
+    }
 
     #[test]
     fn speed_trail_parent_allocation_alias_charges_and_expires_the_current_record() {
