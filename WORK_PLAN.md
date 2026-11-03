@@ -1,6 +1,6 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: Lightning `0369d2f7`, native `f89eef7e4f49`.
+Current installed checkpoint: Steal Mana `73bf009f`, native `c1a7b623aca7`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
@@ -9,8 +9,8 @@ Oliver resumed the core team on 2026-11-03: two Terra 6.1/xhigh workers and
 one Sol 6.1/xhigh integrator, with root coordination and independent checks.
 Next order is the connected mana economy, rival combat, Lightning, Steal Mana,
 then Duel; finish and install each capability before advancing. The mana economy
-and rival checkpoints below are installed; Lightning7 is now installed too.
-Steal Mana13, then Duel14 (`mc-k5k.2`), are next. The economy
+and rival checkpoints below are installed; Lightning7 and Steal Mana13 are installed too.
+Duel14 (`mc-k5k.2`) is next. The economy
 path is actual kill/reward → Possession/collection → balloon → Castle deposit
 → paid spending, including the reported settlement census discrepancy. Trace
 the real source and consumers; distinguish a faulty check from a runtime defect.
@@ -22,6 +22,27 @@ Modern renderer work is present in the canonical Unity source.
 Keep the bead's wider acceptance and dependencies open. Existing delivered
 Castle spell tiers remain the baseline. Disk headroom is restored before heavy
 stages; preserve warm caches, current player and immediate previous native.
+
+Steal Mana checkpoint delivered on 2026-11-03: runtime `73bf009f`, native
+`c1a7b623aca7`. Actual acquired/public all-tier casts reach a genuine rival,
+source payment/XP, real two-Castle tier2 debit/spheres, presentation and natural
+flyer/field cleanup. Fixed signed32 percentage order, pre-allocation XP, sphere
+launch velocity, and the connected shared Cave sphere movement/attraction path.
+Sphere roll/speed now reach canonical constructors, observations and hashes.
+Actual Cave dispatcher controls pass alongside the real acquired path. Test
+positions/resources/carry destination and collision planes are explicit controls.
+
+The workspace all-target check passes after two CAPI test-literal updates;
+production core sources match the tested candidate. All443 native Rust inputs
+and162 upstream inputs independently match rig and the committed artifact.
+The original client loaded map, loading art and NightSpire scene/HUD with the
+matching mapped native; smoke processes stopped. No Unity/art edits. Human
+combat/audio/FPS/full missions remain unverified. Two sphere checks still fail
+identically on the pre-Cave binary; fixture versus production cause is unproven,
+assertions unchanged and broader acceptance remains open. Existing formatting
+and whole-file UBS debt are not clean-scan claims. Evidence:
+`research/private/generated/steal-mana-20261103-integration/candidate-5/`.
+The full `mc-k5k.2` and dependencies stay open. Duel14 is next.
 
 Lightning checkpoint delivered on 2026-11-03: runtime `0369d2f7`, native
 `f89eef7e4f49`. Actual acquired/public casts pass all three tiers through
