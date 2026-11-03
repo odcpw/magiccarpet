@@ -48,6 +48,8 @@ mod possession;
 pub use possession::{POSSESSION_PROPERTIES, PossessionProperties, PossessionTierProperties};
 mod fireball;
 pub use fireball::{FIREBALL_PROPERTIES, FireballProperties, FireballTierProperties};
+mod morph;
+pub use morph::{MORPH_PROPERTIES, MorphProperties, MorphTierProperties};
 mod lightning;
 pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;

@@ -54,12 +54,17 @@ pub(crate) fn allocate_morph(
         return None;
     }
     let slot = arena.allocate_source_slot_with_terrain(terrain)?;
+    let position = if slot == parent_slot {
+        Position::default()
+    } else {
+        position
+    };
     let source = arena.economy.initialize_bee_creature_at_slot(
         slot,
         BeeCreatureOrigin::MorphSpell { holder_slot },
         position,
-        parent_slot,
-        parent_id,
+        if slot == parent_slot { 0 } else { parent_slot },
+        if slot == parent_slot { slot } else { parent_id },
         23,
         0,
         12,
@@ -69,7 +74,9 @@ pub(crate) fn allocate_morph(
     )?;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
         .expect("Bee initializer already validated this source map slot");
-    if let (Some(child), Some(parent)) = (arena.handle(slot), arena.handle(parent_slot)) {
+    if let (Some(child), Some(parent)) = (arena.handle(slot), arena.handle(parent_slot))
+        && child != parent
+    {
         arena.bind_creature_parent(child, parent);
     }
     Some(source)

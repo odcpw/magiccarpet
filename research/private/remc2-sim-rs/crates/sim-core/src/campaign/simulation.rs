@@ -5675,6 +5675,12 @@ impl Mc2Simulation {
         std::sync::Arc::make_mut(&mut self.session.definition).bind_fireball_properties(properties);
     }
 
+    /// Bind an immutable Morph product table before exposing this session.
+    pub(crate) fn apply_morph_properties(&mut self, properties: crate::level_definition::MorphProperties) -> Result<()> {
+        std::sync::Arc::make_mut(&mut self.session.definition).bind_morph_properties(properties)
+            .map_err(NativeWorldError::new)
+    }
+
     /// Bind the immutable compiled Goat policy to the package-decoded
     /// behavior configuration before the session generation is exposed.
     pub(crate) fn bind_enemy_goat_policy(
@@ -14477,6 +14483,10 @@ impl Mc2Simulation {
                 .economy
                 .live_arena_class_action(source_slot, row.kind)
                 .map(|(class, action)| (SourceRoute::Dynamic(row), class, action))
+        } else if let Some(holder) = live.economy.entities.get(usize::from(source_slot))
+            .filter(|row| row.active && row.class == 15 && row.model == 4 && row.action == 12)
+        {
+            Some((SourceRoute::ImportedSpellSource, holder.class, holder.action))
         } else if let Some(pickup) = live
             .shared_spells
             .pickups()
@@ -14757,6 +14767,10 @@ impl Mc2Simulation {
 
     fn level2_source_phase(&self, source_slot: u16, route: SourceRoute) -> Option<u8> {
         let live = &self.session.state.live;
+        if route == SourceRoute::ImportedSpellSource && self.morph_holder_is_raw(source_slot)
+            && let Some(row) = live.economy.entities.get(usize::from(source_slot))
+                .filter(|row| row.active && row.class == 15 && row.model == 4 && row.action == 12)
+        { return Some(row.phase); }
         match route {
             SourceRoute::Player | SourceRoute::Nyphur | SourceRoute::ExitSwitch => live
                 .economy
@@ -16434,8 +16448,32 @@ impl Mc2Simulation {
             .get(usize::from(source_slot))
             .is_some_and(creatures::morph::is_body)
         {
+            let parent_slot = self.session.state.live.economy.entities[usize::from(source_slot)]
+                .source_spell_parent_entity_index();
+            let parent = self.current_morph_parent(parent_slot).map_err(|error| error.to_string())?;
             let live = &mut self.session.state.live;
-            creatures::morph::step(&mut live.economy, &mut live.terrain, source_slot)?;
+            creatures::morph::step(&mut live.economy, &mut live.terrain, source_slot, parent.as_ref())?;
+            return Ok(());
+        }
+        if visit.handler == ExistingHandler::SpellHolderAndPickup
+            && self.session.state.live.economy.entities.get(usize::from(source_slot))
+                .is_some_and(|row| row.active && row.class == 15 && row.model == 4 && row.action == 12)
+        {
+            let raw = self.morph_holder_is_raw(source_slot);
+            self.step_morph_holder_source_slot(source_slot).map_err(|error| error.to_string())?;
+            let live = &mut self.session.state.live;
+            if raw {
+                let row = &mut live.economy.entities[usize::from(source_slot)];
+                row.set_phase(row.phase.wrapping_add(1));
+            } else if live.economy.entities[usize::from(source_slot)].class == 15 {
+                if let Some(row) = live.shared_spells.pickup_mut(source_slot) {
+                    row.set_phase(row.phase.wrapping_add(1));
+                }
+                self.commit_imported_spell_source_projection(source_slot).map_err(|error| error.to_string())?;
+            } else {
+                let row = &mut live.economy.entities[usize::from(source_slot)];
+                row.set_phase(row.phase.wrapping_add(1));
+            }
             return Ok(());
         }
         match (visit.handler, visit.route) {
@@ -22061,160 +22099,204 @@ impl Mc2Simulation {
         remains_live
     }
 
-    /// Dispatch the acquired family-4 holder through remc2 `sub_6A030` at
-    /// its real numeric source slot.
+    /// Fixed-address parent input for sub_6A030, including retained and typed
+    /// occupants. The holder never substitutes a cached player singleton.
+    fn current_morph_parent(&self, owner: u16) -> Result<Option<EntitySnapshot>> {
+        let live = &self.session.state.live;
+        let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+        context.spells = Some(&live.shared_spells);
+        context.particles = Some(&self.session.definition.presentation.particles);
+        source_target::status_parent(&live.economy, context, owner).map_err(NativeWorldError::new)
+    }
+
+    fn morph_parent_is_local(&self, parent: &EntitySnapshot) -> Result<bool> {
+        let live = &self.session.state.live;
+        let color = match parent.special_relation {
+            EntitySpecialRelation::PlayerState(index) => live
+                .shared_spells
+                .players
+                .iter()
+                .chain(live.core.players.iter())
+                .find(|player| player.slot == index)
+                .map(PlayerSnapshot::player_color_index)
+                .ok_or_else(|| {
+                    NativeWorldError::new("Morph current parent A4 player record is absent")
+                })?,
+            // NewEvent uses the static zero-initialized unk_F42B0x. Source
+            // writes playerColorIndex only in the player constructor.
+            EntitySpecialRelation::GlobalSpecialState => 0,
+            EntitySpecialRelation::None => {
+                return Err(NativeWorldError::new(
+                    "Morph current parent has no A4 relation",
+                ));
+            }
+        };
+        Ok(color == live.shared_spells.local_player.slot)
+    }
+
+    fn morph_holder_is_raw(&self, slot: u16) -> bool {
+        self.session
+            .state
+            .live
+            .shared_spells
+            .local_player
+            .enabled_spell_holders[4]
+            != slot
+    }
+
+    /// One active Morph holder visit, with the source award → constructor →
+    /// current-address control/payment → flicker → countdown/expiry order.
     fn step_morph_holder_source_slot(&mut self, source_slot: u16) -> Result<bool> {
-        const MORPH_FAMILY: u8 = 4;
-        let holder = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .pickup(source_slot)
-            .filter(|holder| holder.active && holder.model == MORPH_FAMILY && holder.action == 12)
-            .cloned()
-            .ok_or_else(|| NativeWorldError::new("Morph holder source row is not live"))?;
-        let parent_entity_index = holder.source_spell_parent_entity_index();
-        let parent = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .player_entities
-            .iter()
-            .find(|entity| entity.index == parent_entity_index && entity.active)
-            .cloned();
-        let first_pulse = holder.active_value == holder.activation_value.cast_signed();
-        let castle_mana = self
-            .session
-            .state
-            .live
-            .economy
-            .economy
-            .castle_for_owner(parent_entity_index)
-            .map(|castle| castle.mana);
-        let source_gate_passed = parent.as_ref().is_some_and(|parent| {
+        let raw = self.morph_holder_is_raw(source_slot);
+        let live = &self.session.state.live;
+        let holder = if raw {
+            live.economy.entities.get(usize::from(source_slot))
+        } else {
+            live.shared_spells.pickup(source_slot)
+        }
+        .filter(|row| row.active && row.class == 15 && row.model == 4 && row.action == 12)
+        .cloned()
+        .ok_or_else(|| NativeWorldError::new("Morph holder source row is not live"))?;
+        let owner = holder.source_spell_parent_entity_index();
+        let mut parent = self.current_morph_parent(owner)?;
+        let first = holder.active_value == holder.activation_value.cast_signed();
+        let castle = parent
+            .as_ref()
+            .map(|parent| {
+                source_target::status_castle_mana(&live.economy, &live.shared_spells, parent)
+            })
+            .transpose()
+            .map_err(NativeWorldError::new)?
+            .flatten();
+        let gate = parent.as_ref().is_some_and(|parent| {
             parent.life >= 0
                 && parent.mana >= 0
-                && (holder.mana_regen == 0
-                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
-                && (!first_pulse || parent.mana >= holder.max_mana)
+                && (holder.mana_regen == 0 || castle.is_some_and(|mana| mana >= holder.mana_regen))
+                && (!first || parent.mana >= holder.max_mana)
         });
-        let tier = u8::try_from(holder.level_gate).map_err(|_| {
-            NativeWorldError::new(format!(
-                "Morph holder has invalid tier {}",
-                holder.level_gate
-            ))
-        })?;
-        let presentation_timer = u16::from_le_bytes([holder.record[58], holder.record[59]]);
         let transition = crate::spell_activation::step_morph_spell(
             crate::spell_activation::MorphSpellStepInput {
                 active_value: holder.active_value,
                 activation_value: holder.activation_value.cast_signed(),
-                presentation_timer,
+                presentation_timer: u16::from_le_bytes([holder.record[58], holder.record[59]]),
                 parent_valid: parent.is_some(),
-                source_gate_passed,
-                parent_mana_regen: parent.as_ref().map_or(0, |parent| parent.mana_regen),
+                source_gate_passed: gate,
+                parent_mana_regen: parent.as_ref().map_or(0, |row| row.mana_regen),
                 mana_cost: holder.max_mana,
             },
         );
-
+        let holder_handle = live.economy.handle(source_slot);
         if transition.award_experience {
-            self.session
-                .state
-                .live
-                .shared_spells
-                .award_spell_experience(parent_entity_index, MORPH_FAMILY, 1);
-            if let Some(source_player) = self
-                .session
-                .state
-                .live
-                .shared_spells
-                .players
-                .iter()
-                .find(|player| player.entity_index == parent_entity_index)
-                .cloned()
-                && let Some(player) = self
-                    .session
-                    .state
-                    .live
-                    .core
-                    .players
-                    .iter_mut()
-                    .find(|player| player.entity_index == parent_entity_index)
-            {
-                player.sync_spell_progression_family_from(&source_player, MORPH_FAMILY as usize);
-            }
-            if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
-                fire.spell_experience[MORPH_FAMILY as usize] =
-                    self.session.state.live.shared_spells.spell_experience[MORPH_FAMILY as usize];
-                fire.spell_levels[MORPH_FAMILY as usize] =
-                    self.session.state.live.shared_spells.spell_levels[MORPH_FAMILY as usize];
-            }
+            award_source_spell_experience(&mut self.session.state.live, owner, 4);
         }
-
-        let mut spawned_slot = None;
+        let mut spawned = None;
         if transition.request_creature
-            && let Some(parent) = parent.as_ref()
+            && let Some(before) = parent.as_ref()
         {
-            let product = creatures::morph::product(self.session.state.live.terrain.map_type, tier)
-                .ok_or_else(|| {
-                    NativeWorldError::new(format!(
-                        "Morph tier {tier} has no product for {:?}",
-                        self.session.state.live.terrain.map_type
-                    ))
-                })?;
-            let position = if parent_entity_index == self.session.state.live.core.state.entity_index
-            {
-                self.session.state.live.core.state.position
-            } else {
-                parent.position
-            };
+            let tier = u8::try_from(holder.level_gate)
+                .ok()
+                .filter(|tier| *tier < 3)
+                .ok_or_else(|| NativeWorldError::new("Morph holder has invalid physical tier"))?;
+            let product = creatures::morph::select_product(
+                self.session.state.live.terrain.map_type,
+                tier,
+                self.session.definition.morph_properties,
+            )
+            .ok_or_else(|| NativeWorldError::new("Morph has no configured source product"))?;
             let live = &mut self.session.state.live;
-            spawned_slot = if product == 2 {
+            spawned = if product == 2 {
                 creatures::bee::mc2::allocate_morph(
                     &mut live.economy,
                     &mut live.terrain,
                     source_slot,
-                    parent_entity_index,
-                    parent.source_id,
-                    position,
+                    owner,
+                    before.source_id,
+                    before.position,
                 )
-                .map(|source| source.source_entity_index)
+                .map(|body| body.source_entity_index)
             } else {
                 creatures::morph::allocate(
                     &mut live.economy,
+                    &mut live.core.runtime,
                     &mut live.terrain,
                     &self.session.definition.presentation.particles,
                     product,
-                    parent,
-                    position,
+                    before,
+                    before.position,
                 )
                 .map_err(NativeWorldError::new)?
             };
+            // NewEvent may replace either pointer. The source reads both again
+            // after construction instead of copying the predecessor's payload.
+            parent = self.current_morph_parent(owner)?;
         }
-
-        if let Some(spawned_slot) = spawned_slot {
-            let arena = &mut self.session.state.live.economy;
-            let body = arena.handle(spawned_slot).ok_or_else(|| {
-                NativeWorldError::new("Morph constructor lost its allocated body")
-            })?;
-            let holder = crate::campaign::source_arena::SourceEntityHandle {
-                source_slot,
-                generation: arena.slot_generation(source_slot),
-            };
-            arena.economy.morph.bind_body(holder, body);
-            if let Some(authoritative) = self
-                .session
-                .state
-                .live
-                .shared_spells
-                .pickup_mut(source_slot)
+        let current_holder = if spawned == Some(source_slot) {
+            self.current_morph_parent(source_slot)?.ok_or_else(|| {
+                NativeWorldError::new("Morph replacement holder address is absent")
+            })?
+        } else {
+            holder.clone()
+        };
+        let mut active = if gate {
+            current_holder.active_value
+        } else if parent.is_some() && holder.active_value > 0 {
+            1
+        } else {
+            holder.active_value
+        };
+        let mut child_slot = current_holder.source_word_96();
+        if let Some(slot) = spawned {
+            let live = &mut self.session.state.live;
+            let parent_id = parent.as_ref().map_or(0, |row| row.source_id);
+            let child_parent = current_holder.source_spell_parent_entity_index();
+            let body = &mut live.economy.entities[usize::from(slot)];
+            let model = live
+                .economy
+                .economy
+                .bee_creatures
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map_or(body.model, |row| row.model);
+            body.set_source_action(model.wrapping_mul(8).wrapping_add(7));
+            body.record[77] = 12;
+            body.record[44..46].copy_from_slice(&child_parent.to_le_bytes());
+            body.source_id = parent_id;
+            body.record[30..32].copy_from_slice(&parent_id.to_le_bytes());
+            body.set_control_flags(body.control_flags | 1);
+            if let Some(bee) = live
+                .economy
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|row| row.active && row.source_entity_index == slot)
             {
-                authoritative.set_source_word_96(spawned_slot);
+                bee.parent_entity_index = child_parent;
+                bee.entity_id = parent_id;
+                bee.control_flags |= 1;
             }
-            let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) | 0x21;
-            self.commit_morph_parent_control(parent_entity_index, control_flags);
+            if let (Some(child), Some(parent)) =
+                (live.economy.handle(slot), live.economy.handle(child_parent))
+            {
+                live.economy.bind_creature_parent(child, parent);
+            }
+            child_slot = slot;
+            if let (Some(holder_handle), Some(body_handle)) =
+                (holder_handle, live.economy.handle(slot))
+                && live.economy.resolve(holder_handle).is_some()
+            {
+                live.economy
+                    .economy
+                    .morph
+                    .bind_body(holder_handle, body_handle);
+            }
+            if let Some(current_parent) = parent.as_mut() {
+                let flags = current_parent.control_flags | 0x21;
+                self.commit_morph_parent_control(current_parent, flags)?;
+                current_parent.set_control_flags(flags);
+                if !self.morph_parent_is_local(current_parent)? {
+                    self.set_morph_body_hidden(slot, false);
+                }
+            }
             mark_source_audio_call(SourceAudioCallTag::MorphSpellStart);
             self.session
                 .state
@@ -22223,102 +22305,197 @@ impl Mc2Simulation {
                 .emit_flight_effect(FlightEvent::PrepareSound {
                     #[cfg(test)]
                     audio_site: crate::MissionAudioSite::MorphSpellActivation,
-                    entity_index: parent_entity_index,
+                    entity_index: owner,
                     player_index: -1,
                     sound_id: 60,
                 });
         }
-
-        if let Some(mana_regen) = transition.parent_mana_regen {
-            self.commit_spell_parent_mana_regen(parent_entity_index, mana_regen);
-        }
-        let mut expired_creature_slot = 0;
-        let mut queued_tier = 0;
-        if let Some(authoritative) = self
-            .session
-            .state
-            .live
-            .shared_spells
-            .pickup_mut(source_slot)
+        if holder.active_value > 0
+            && let Some(current_parent) = parent.as_mut()
         {
-            authoritative.active_value = transition.active_value;
-            authoritative.record[50..52].copy_from_slice(&transition.active_value.to_le_bytes());
-            authoritative.record[58..60]
-                .copy_from_slice(&transition.presentation_timer.to_le_bytes());
-            if transition.expired {
-                expired_creature_slot = authoritative.source_word_96();
-                authoritative.clear_source_word_96();
-                queued_tier = authoritative.source_word_2c();
+            if gate {
+                let fresh =
+                    current_holder.active_value == current_holder.activation_value.cast_signed();
+                if fresh || current_parent.mana_regen > 0 {
+                    let regen = if fresh {
+                        if current_parent.mana_regen >= 0 {
+                            current_holder.max_mana.wrapping_neg()
+                        } else {
+                            current_parent
+                                .mana_regen
+                                .wrapping_sub(current_holder.max_mana)
+                        }
+                    } else {
+                        0
+                    };
+                    let mut after = current_parent.clone();
+                    after.set_mana_regen(regen);
+                    let live = &mut self.session.state.live;
+                    source_target::commit_status_parent(
+                        &mut live.economy,
+                        &mut live.shared_spells,
+                        None,
+                        current_parent,
+                        &after,
+                    )
+                    .map_err(NativeWorldError::new)?;
+                    if current_parent.class == 3
+                        && matches!(current_parent.model, 0 | 1)
+                        && live.economy.economy.live_arena_kind(owner).is_none()
+                        && matches!(current_parent.special_relation, EntitySpecialRelation::PlayerState(index)
+                            if live.shared_spells.players.get(usize::from(index)).is_some_and(|player| player.entity_index == owner))
+                    {
+                        self.commit_spell_parent_mana_regen(owner, regen);
+                    }
+                    current_parent.set_mana_regen(regen);
+                }
             }
-        }
-        if transition.expired {
-            let arena = &mut self.session.state.live.economy;
-            let holder = crate::campaign::source_arena::SourceEntityHandle {
-                source_slot,
-                generation: arena.slot_generation(source_slot),
-            };
-            let body = arena.economy.morph.take_body(holder)
-                .filter(|body| body.source_slot == expired_creature_slot)
-                .filter(|body| arena.resolve(*body).is_some());
-            if let Some(body) = body {
-                creatures::morph::expire(
-                    &mut self.session.state.live.economy,
-                    body.source_slot,
+            let local = self.morph_parent_is_local(current_parent)?;
+            let body_current = holder_handle.is_some_and(|handle| {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .economy
+                    .morph
+                    .bodies
+                    .get(&source_slot)
+                    .is_some_and(|(generation, child)| {
+                        *generation == handle.generation
+                            && child.source_slot == child_slot
+                            && self.session.state.live.economy.resolve(*child).is_some()
+                    })
+            });
+            if !local && body_current {
+                let hidden = crate::spell_activation::morph::remote_body_hidden(
+                    active,
+                    current_holder.activation_value.cast_signed(),
                 );
-                let _ = self
-                    .session
-                    .state
-                    .live
-                    .economy
-                    .economy
-                    .disable_morph_bee(body.source_slot);
+                if let Some(hidden) = hidden {
+                    self.set_morph_body_hidden(child_slot, hidden);
+                    let flags = if hidden {
+                        current_parent.control_flags & !1
+                    } else {
+                        current_parent.control_flags | 1
+                    };
+                    self.commit_morph_parent_control(current_parent, flags)?;
+                    current_parent.set_control_flags(flags);
+                }
             }
-            let control_flags = parent.as_ref().map_or(0, |parent| parent.control_flags) & !0x20;
-            self.commit_morph_parent_control(parent_entity_index, control_flags);
-            mark_source_audio_call(SourceAudioCallTag::MorphSpellExpiry);
-            self.session
-                .state
-                .live
-                .shared_spells
-                .emit_flight_effect(FlightEvent::PrepareSound {
-                    #[cfg(test)]
-                    audio_site: crate::MissionAudioSite::MorphSpellActivation,
-                    entity_index: parent_entity_index,
-                    player_index: -1,
-                    sound_id: 60,
-                });
-            if queued_tier != 0 {
-                let tier = u8::try_from(queued_tier - 1).map_err(|_| {
-                    NativeWorldError::new(format!(
-                        "Morph holder has invalid queued tier {queued_tier}"
-                    ))
-                })?;
-                let profile = level2_set_spell_profile(MORPH_FAMILY, tier).ok_or_else(|| {
-                    NativeWorldError::new(format!(
-                        "Morph holder has unsupported queued tier {tier}"
-                    ))
-                })?;
-                if let Some(authoritative) = self
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .pickup_mut(source_slot)
-                {
-                    authoritative.set_source_word_2c(0);
-                    authoritative.apply_nyphur_spell_profile(profile, tier);
+            active = active.wrapping_sub(1);
+            if active == 0 {
+                let live = &mut self.session.state.live;
+                let body = holder_handle
+                    .and_then(|handle| live.economy.economy.morph.take_body(handle))
+                    .filter(|body| {
+                        body.source_slot == child_slot && live.economy.resolve(*body).is_some()
+                    });
+                if let Some(body) = body {
+                    creatures::morph::expire(&mut live.economy, body.source_slot);
+                    let _ = live.economy.economy.disable_morph_bee(body.source_slot);
+                }
+                child_slot = 0;
+                let flags = if local {
+                    current_parent.control_flags & !0x20
+                } else {
+                    current_parent.control_flags & !0x21
+                };
+                self.commit_morph_parent_control(current_parent, flags)?;
+                if local {
+                    mark_source_audio_call(SourceAudioCallTag::MorphSpellExpiry);
+                    self.session.state.live.shared_spells.emit_flight_effect(
+                        FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::MorphSpellActivation,
+                            entity_index: owner,
+                            player_index: -1,
+                            sound_id: 60,
+                        },
+                    );
                 }
             }
         }
-        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
+        let presentation_timer = if spawned == Some(source_slot) {
+            u16::from_le_bytes([current_holder.record[58], current_holder.record[59]])
+                .saturating_sub(1)
+        } else {
+            transition.presentation_timer
+        };
+        let queued_profile = if active == 0
+            && holder.active_value > 0
+            && parent.is_some()
+            && current_holder.source_word_2c() != 0
+        {
+            let tier = u8::try_from(current_holder.source_word_2c() - 1)
+                .ok()
+                .filter(|tier| *tier < 3)
+                .ok_or_else(|| NativeWorldError::new("Morph holder has invalid queued tier"))?;
+            Some((
+                tier,
+                self.session
+                    .state
+                    .live
+                    .source_spell_profile(
+                        4,
+                        tier,
+                        current_holder.source_spell_parent_entity_index(),
+                    )
+                    .ok_or_else(|| NativeWorldError::new("Morph queued profile is absent"))?,
+            ))
+        } else {
+            None
+        };
+        let live = &mut self.session.state.live;
+        let row = if raw || spawned == Some(source_slot) {
+            live.economy.entities.get_mut(usize::from(source_slot))
+        } else {
+            live.shared_spells.pickup_mut(source_slot)
+        };
+        if let Some(row) = row {
+            row.active_value = active;
+            row.record[50..52].copy_from_slice(&active.to_le_bytes());
+            row.record[58..60].copy_from_slice(&presentation_timer.to_le_bytes());
+            row.set_source_word_96(child_slot);
+            if let Some((tier, profile)) = queued_profile {
+                row.set_source_word_2c(0);
+                row.apply_nyphur_spell_profile(profile, tier);
+            }
+        }
+        if !raw
+            && spawned != Some(source_slot)
+            && let Some(fire) = live.core.context.spell_fire.as_mut()
             && let Some(holder) = fire
                 .holders
                 .iter_mut()
                 .find(|holder| holder.entity_index == source_slot)
         {
-            holder.active_value = transition.active_value;
+            holder.active_value = active;
         }
         Ok(true)
+    }
+
+    fn set_morph_body_hidden(&mut self, slot: u16, hidden: bool) {
+        let live = &mut self.session.state.live;
+        if let Some(body) = live.economy.entities.get_mut(usize::from(slot)) {
+            body.set_control_flags(if hidden {
+                body.control_flags | 1
+            } else {
+                body.control_flags & !1
+            });
+        }
+        if let Some(body) = live
+            .economy
+            .economy
+            .bee_creatures
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            if hidden {
+                body.control_flags |= 1;
+            } else {
+                body.control_flags &= !1;
+            }
+        }
     }
 
     fn current_dragon_projectile_threats(
@@ -22512,35 +22689,39 @@ impl Mc2Simulation {
         }
     }
 
-    fn commit_morph_parent_control(&mut self, parent_entity_index: u16, control_flags: u32) {
-        self.session.state.live.shared_spells.caster.control_flags = control_flags;
-        self.session
-            .state
-            .live
-            .shared_spells
-            .player_entity
-            .set_control_flags(control_flags);
-        for entity in &mut self.session.state.live.shared_spells.player_entities {
-            if entity.index == parent_entity_index {
-                entity.set_control_flags(control_flags);
+    fn commit_morph_parent_control(&mut self, parent: &EntitySnapshot, flags: u32) -> Result<()> {
+        let mut after = parent.clone();
+        after.set_control_flags(flags);
+        let live = &mut self.session.state.live;
+        source_target::commit_status_parent(
+            &mut live.economy,
+            &mut live.shared_spells,
+            Some(&mut area_damage::ActorDomains::new(
+                &mut live.goats,
+                &mut live.ordinary,
+            )),
+            parent,
+            &after,
+        )
+        .map_err(NativeWorldError::new)?;
+        // Only the current player incarnation can update player-only caches.
+        if parent.class == 3
+            && matches!(parent.model, 0 | 1)
+            && live.economy.economy.live_arena_kind(parent.index).is_none()
+            && matches!(parent.special_relation, EntitySpecialRelation::PlayerState(index)
+                if live.shared_spells.players.get(usize::from(index)).is_some_and(|player| player.entity_index == parent.index))
+        {
+            live.shared_spells.sync_player_entity_from_authority(&after);
+            if parent.index == live.shared_spells.player_entity.index {
+                live.shared_spells.caster.control_flags = flags;
+            }
+            if let Some(fire) = live.core.context.spell_fire.as_mut()
+                && fire.caster.entity_index == parent.index
+            {
+                fire.caster.control_flags = flags;
             }
         }
-        if let Some(entity) = self
-            .session
-            .state
-            .live
-            .economy
-            .entities
-            .iter_mut()
-            .find(|entity| entity.index == parent_entity_index)
-        {
-            entity.set_control_flags(control_flags);
-        }
-        if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut()
-            && fire.caster.entity_index == parent_entity_index
-        {
-            fire.caster.control_flags = control_flags;
-        }
+        Ok(())
     }
 
     fn step_dynamic_morph_holder(&mut self, pass: u8, source_slot: u16) -> bool {
@@ -30166,17 +30347,390 @@ mod tests {
     }
 
     #[test]
-    fn level_four_public_morph_cast_runs_all_constructor_tiers_follow_expire_and_reclaim() {
-        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq8-level4-collision-v2-cave");
-        for (tier, model, life, particle) in [
-            (0_u8, 19, 600, 287),
-            (1, 25, 7_500, 290),
-            (2, 16, 60_000, 207),
-        ] {
-            let mut campaign =
-                CampaignSession::open(&package, CampaignSelection::ordinary(4).unwrap()).unwrap();
+    fn morph_constructor_rereads_replaced_parent_and_holder_addresses() {
+        use crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        for replace_holder in [false, true] {
+            let mut campaign = CampaignSession::open(
+                level_one_descriptor_fixture_path(),
+                CampaignSelection::LEVEL1,
+            )
+            .unwrap();
             let session = campaign.simulation_mut();
+            session
+                .apply_carried_spell_families(&[0, 1, 4], Some(4))
+                .unwrap();
+            let player = session.state.entity_index;
+            let slot = session.shared_spells().local_player.enabled_spell_holders[4];
+            let victim = if replace_holder { slot } else { player };
+            let old_handle = session.session.state.live.economy.handle(victim).unwrap();
+            {
+                let live = &mut session.session.state.live;
+                live.economy.economy.exhaust_new_event_capacity_for_test();
+                for row in &mut live.economy.entities {
+                    row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+                }
+                let parent = &mut live.economy.entities[usize::from(player)];
+                parent.set_position(Position {
+                    x: 40_000,
+                    y: 41_000,
+                    z: 2_000,
+                });
+                parent.set_life(1_000);
+                parent.set_mana(20_000);
+                parent.set_mana_regen(17);
+                parent.source_id = 777;
+                parent.record[30..32].copy_from_slice(&777_u16.to_le_bytes());
+                let holder = live.shared_spells.pickup_mut(slot).unwrap();
+                holder.active_value = holder.activation_value as i16;
+                holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                holder.set_mana_regen(0);
+                holder.record[58..60].copy_from_slice(&5_u16.to_le_bytes());
+                if replace_holder {
+                    holder.set_control_flags(holder.control_flags | SOURCE_REPLACEABLE_FLAG);
+                }
+                live.economy.entities[usize::from(slot)] = holder.clone();
+                let row = &mut live.economy.entities[usize::from(victim)];
+                row.set_control_flags(row.control_flags | SOURCE_REPLACEABLE_FLAG);
+                live.economy.rebuild_source_free_arena();
+                live.economy.economy.free_slots.clear();
+            }
+            session.step_morph_holder_source_slot(slot).unwrap();
+            let current = &session.entities()[usize::from(victim)];
+            assert_ne!(
+                session.session.state.live.economy.handle(victim),
+                Some(old_handle)
+            );
+            assert_eq!(
+                (
+                    current.class,
+                    current.model,
+                    current.action,
+                    current.record[77]
+                ),
+                (5, 19, 159, 12)
+            );
+            if replace_holder {
+                assert_eq!(
+                    current.active_value, -1,
+                    "source tail decrements current NewEvent timer"
+                );
+                assert_eq!(current.source_spell_parent_entity_index(), 0);
+                assert_eq!(
+                    u16::from_le_bytes(current.record[58..60].try_into().unwrap()),
+                    0,
+                    "word36 is read from the replacement NewEvent after the source tail"
+                );
+                assert_eq!(current.source_word_96(), slot);
+                assert_eq!(
+                    session.entities()[usize::from(player)].mana_regen,
+                    0,
+                    "source payment reads the replacement holder's zero cost"
+                );
+            } else {
+                assert_eq!(
+                    current.position,
+                    Position::default(),
+                    "constructor consumes reset current parent position"
+                );
+                assert_eq!(
+                    current.source_id, player,
+                    "source ID is the current NewEvent ID"
+                );
+                assert_eq!(current.mana_regen, -5_000);
+                assert!(
+                    session.morph_parent_is_local(current).unwrap(),
+                    "global A4 colour0 matches this local source colour"
+                );
+                assert_eq!(
+                    current.control_flags & 1,
+                    1,
+                    "the local controlled body is not remotely flickered"
+                );
+                assert_ne!(
+                    session.shared_spells().caster.control_flags & 0x20,
+                    0x20,
+                    "a reused creature parent cannot change the predecessor player cache"
+                );
+                assert_eq!(
+                    session.shared_spells().pickup(slot).unwrap().active_value,
+                    200
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn morph_remote_flicker_parent_loss_failure_charge_and_queued_expiry_are_isolated() {
+        let mut simulation = crate::native_world::tests::level_two_campaign_session();
+        let session = &mut simulation;
+        let carried = [0_u8, 1, 4];
+        session
+            .apply_carried_spell_families(&carried, Some(4))
+            .unwrap();
+        let slot = session.shared_spells().local_player.enabled_spell_holders[4];
+        let owner = LEVEL2_NYPHUR_ENTITY_INDEX;
+        let local_flags = session.shared_spells().caster.control_flags;
+        let profile = level2_set_spell_profile(4, 0).unwrap();
+        {
+            let live = &mut session.session.state.live;
+            let parent = &mut live.economy.entities[usize::from(owner)];
+            assert_eq!((parent.class, parent.model), (3, 1));
+            parent.set_life(1_000);
+            parent.set_mana(20_000);
+            parent.set_mana_regen(100);
+            parent.set_position(Position {
+                x: 15_000,
+                y: 16_000,
+                z: 2_000,
+            });
+            let mut holder = live.shared_spells.pickup(slot).unwrap().clone();
+            holder.apply_nyphur_spell_profile(profile, 0);
+            holder.record[44..46].copy_from_slice(&owner.to_le_bytes());
+            holder.set_mana_regen(0); // Declared Castle prerequisite for this isolated remote control check.
+            holder.active_value = profile.word_0x30 as i16;
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            holder.record[58..60].copy_from_slice(&5_u16.to_le_bytes());
+            live.economy.entities[usize::from(slot)] = holder;
+            live.shared_spells.local_player.enabled_spell_holders[4] = 0;
+        }
+        let mut same_color = session.clone();
+        {
+            let live = &mut same_color.session.state.live;
+            let index = match live.economy.entities[usize::from(owner)].special_relation {
+                EntitySpecialRelation::PlayerState(index) => index,
+                _ => panic!("real rival has a player A4"),
+            };
+            assert_ne!(index, live.shared_spells.local_player.slot);
+            live.shared_spells
+                .players
+                .iter_mut()
+                .find(|row| row.slot == index)
+                .unwrap()
+                .record[40] = live.shared_spells.local_player.slot;
+        }
+        same_color.step_morph_holder_source_slot(slot).unwrap();
+        let same_body = same_color.entities()[usize::from(slot)].source_word_96();
+        assert_eq!(
+            same_color
+                .current_morph_parent(same_body)
+                .unwrap()
+                .unwrap()
+                .control_flags
+                & 1,
+            1,
+            "source local control compares the dereferenced A4 colour, not its relation index"
+        );
+        let mut exhausted = session.clone();
+        exhausted
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test();
+        for row in &mut exhausted.session.state.live.economy.entities {
+            row.set_control_flags(
+                row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+            );
+        }
+        exhausted.step_morph_holder_source_slot(slot).unwrap();
+        assert_eq!(exhausted.entities()[usize::from(slot)].source_word_96(), 0);
+        assert_eq!(exhausted.entities()[usize::from(slot)].active_value, 200);
+        assert_eq!(
+            exhausted.entities()[usize::from(owner)].mana_regen,
+            -5_000,
+            "allocation failure still executes the source payment tail"
+        );
+        assert_eq!(exhausted.shared_spells().caster.control_flags, local_flags);
+
+        session.step_morph_holder_source_slot(slot).unwrap();
+        let body = session.entities()[usize::from(slot)].source_word_96();
+        assert_ne!(body, 0);
+        let body_handle = session.session.state.live.economy.handle(body).unwrap();
+        assert_eq!(
+            (
+                session.current_morph_parent(body).unwrap().unwrap().model,
+                session
+                    .current_morph_parent(body)
+                    .unwrap()
+                    .unwrap()
+                    .control_flags
+                    & 1
+            ),
+            (2, 0)
+        );
+        assert_eq!(
+            session.entities()[usize::from(owner)].control_flags & 0x21,
+            0x21
+        );
+        assert_eq!(session.shared_spells().caster.control_flags, local_flags);
+        let particle = session
+            .economy()
+            .bee_creatures()
+            .iter()
+            .find(|row| row.source_entity_index == body)
+            .unwrap()
+            .particle_index;
+        assert!(
+            session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == body && row.render_parameter_index == particle),
+            "the source-visible remote body reaches the actual client presentation projection"
+        );
+        session.step_morph_holder_source_slot(slot).unwrap();
+        assert_eq!(
+            session
+                .current_morph_parent(body)
+                .unwrap()
+                .unwrap()
+                .control_flags
+                & 1,
+            1
+        );
+        assert!(
+            !session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == body),
+            "the alternate remote flicker phase is hidden in the same client projection"
+        );
+        assert_eq!(session.entities()[usize::from(owner)].control_flags & 1, 0);
+        assert_eq!(session.shared_spells().caster.control_flags, local_flags);
+        let active = session.entities()[usize::from(slot)].active_value;
+        session.session.state.live.economy.entities[usize::from(slot)].record[44..46].fill(0);
+        session.step_morph_holder_source_slot(slot).unwrap();
+        assert_eq!(
+            session.entities()[usize::from(slot)].active_value,
+            active,
+            "source6A030 freezes the active countdown when parent pointer is null"
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                session.entities()[usize::from(slot)].record[58..60]
+                    .try_into()
+                    .unwrap()
+            ),
+            2
+        );
+        {
+            let row = &mut session.session.state.live.economy.entities[usize::from(slot)];
+            row.record[44..46].copy_from_slice(&owner.to_le_bytes());
+            row.active_value = 1;
+            row.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            row.set_source_word_2c(2);
+        }
+        session.step_morph_holder_source_slot(slot).unwrap();
+        assert_eq!(session.entities()[usize::from(slot)].source_word_96(), 0);
+        assert_eq!(session.entities()[usize::from(slot)].active_value, 0);
+        assert_eq!(session.entities()[usize::from(slot)].activation_value, 301);
+        assert_eq!(session.entities()[usize::from(slot)].level_gate, 1);
+        assert_eq!(session.entities()[usize::from(slot)].source_word_2c(), 0);
+        assert!(
+            session
+                .current_morph_parent(body)
+                .unwrap()
+                .unwrap()
+                .drawing_disabled()
+        );
+        assert_eq!(
+            session.entities()[usize::from(owner)].control_flags & 0x21,
+            0
+        );
+        assert_eq!(session.shared_spells().caster.control_flags, local_flags);
+        session.step_level2_source_pass(0);
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .economy
+                .resolve(body_handle)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn level_four_public_morph_cast_runs_all_constructor_tiers_follow_expire_and_reclaim() {
+        for (level, suffix, tier, model, life, particle, custom) in [
+            (
+                2,
+                "mc-bhq8-level2-collision-v2-day",
+                0_u8,
+                2,
+                3_000,
+                Some(3),
+                false,
+            ),
+            (
+                1,
+                "mc-bhq8-level1-collision-v5-night",
+                0,
+                19,
+                600,
+                Some(287),
+                false,
+            ),
+            (
+                4,
+                "mc-bhq8-level4-collision-v2-cave",
+                0,
+                19,
+                600,
+                Some(287),
+                false,
+            ),
+            (
+                4,
+                "mc-bhq8-level4-collision-v2-cave",
+                1,
+                25,
+                7_500,
+                Some(290),
+                false,
+            ),
+            (
+                4,
+                "mc-bhq8-level4-collision-v2-cave",
+                2,
+                16,
+                60_000,
+                Some(207),
+                false,
+            ),
+            (
+                4,
+                "mc-bhq8-level4-collision-v2-cave",
+                0,
+                16,
+                60_000,
+                Some(207),
+                true,
+            ),
+        ] {
+            let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated")
+                .join(suffix);
+            let mut campaign =
+                CampaignSession::open(&package, CampaignSelection::ordinary(level).unwrap())
+                    .unwrap();
+            let session = campaign.simulation_mut();
+            if custom {
+                let mut properties = crate::level_definition::MORPH_PROPERTIES;
+                properties.tiers[0].night_cave_product =
+                    crate::level_definition::CreatureKind::Wyvern;
+                let original = session.clone();
+                let identity = original.session.definition.identity_receipt;
+                session.apply_morph_properties(properties).unwrap();
+                assert_ne!(session.session.definition.identity_receipt, identity);
+                assert_eq!(
+                    original.session.definition.morph_properties,
+                    crate::level_definition::MORPH_PROPERTIES
+                );
+                assert_eq!(original.session.definition.identity_receipt, identity);
+            }
             let player = session.state.entity_index;
             // Standalone Level4 has no carried abilities. Exercise the real
             // SetSpell carry constructor used after Level3 acquisition; the
@@ -30225,6 +30779,17 @@ mod tests {
                 // pass; otherwise player upkeep clamps the injected mana to
                 // the reset capacity before a higher-slot holder can pulse.
                 live.economy.refresh_owner_mana_rows();
+                for row in live
+                    .shared_spells
+                    .players
+                    .iter_mut()
+                    .chain(live.core.players.iter_mut())
+                    .filter(|row| row.entity_index == player)
+                {
+                    row.record[42..44].copy_from_slice(&castle.to_le_bytes());
+                }
+                live.shared_spells.local_player.record[42..44]
+                    .copy_from_slice(&castle.to_le_bytes());
                 for row in &mut live.shared_spells.player_entities {
                     if row.index == player {
                         row.set_mana(20_000);
@@ -30298,16 +30863,50 @@ mod tests {
                 session.session.state.live.core.context.spell_fire,
                 session.dispatch_events()
             );
-            let body = &session.session.state.live.economy.entities[usize::from(body_slot)];
+            let body = session.current_morph_parent(body_slot).unwrap().unwrap();
             assert_eq!(
                 (body.class, body.model, body.action, body.record[77]),
                 (5, model, model * 8 + 7, 12)
             );
             assert_eq!(
-                (body.max_life, body.life, body.particle_parameter_index),
-                (life, life, Some(particle))
+                (
+                    if model == 2 {
+                        session
+                            .economy()
+                            .bee_creatures()
+                            .iter()
+                            .find(|row| row.source_entity_index == body_slot)
+                            .unwrap()
+                            .max_life
+                    } else {
+                        body.max_life
+                    },
+                    body.life,
+                    if model == 2 {
+                        Some(
+                            session
+                                .economy()
+                                .bee_creatures()
+                                .iter()
+                                .find(|row| row.source_entity_index == body_slot)
+                                .unwrap()
+                                .particle_index,
+                        )
+                    } else {
+                        body.particle_parameter_index
+                    }
+                ),
+                (life, life, particle)
             );
             assert_eq!(body.source_spell_parent_entity_index(), player);
+            assert!(
+                !session
+                    .campaign_entity_presentations(0)
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.entity_index == body_slot),
+                "source local Morph body hide bit reaches the actual presentation projection"
+            );
             assert_ne!(
                 session.session.state.live.economy.entities[usize::from(player)].control_flags
                     & 0x20,
@@ -30342,22 +30941,39 @@ mod tests {
                 })
             .max(0) as i16;
             assert_eq!(
-                session.session.state.live.economy.entities[usize::from(body_slot)].position,
-                expected
+                session
+                    .current_morph_parent(body_slot)
+                    .unwrap()
+                    .unwrap()
+                    .position,
+                expected,
+                "the actual current body follows the source parent's numeric-visit position"
             );
             // The real acquired holder must not expire a new occupant of its
             // former body's numeric slot, even if that occupant looks alike.
+            let mut replacement_snapshot =
+                session.current_morph_parent(body_slot).unwrap().unwrap();
+            replacement_snapshot.active = true;
+            replacement_snapshot.record[2] = 1;
+            replacement_snapshot.record[67] = replacement_snapshot.class;
+            replacement_snapshot.record[68] = replacement_snapshot.model;
             let mut reused = session.clone();
             {
                 let live = &mut reused.session.state.live;
                 let old_body = live.economy.handle(body_slot).unwrap();
                 let holder_generation = live.economy.slot_generation(holder_slot);
-                assert_eq!(live.economy.economy.morph.bodies.get(&holder_slot),
-                    Some(&(holder_generation, old_body)));
-                let replacement = live.economy.entities[usize::from(body_slot)].clone();
+                assert_eq!(
+                    live.economy.economy.morph.bodies.get(&holder_slot),
+                    Some(&(holder_generation, old_body))
+                );
+                let replacement = replacement_snapshot;
                 live.economy.entities[usize::from(body_slot)].reclaim_source_row();
                 live.economy.economy.release_slot(body_slot, None);
-                assert_eq!(live.economy.allocate_source_slot_with_terrain(&mut live.terrain), Some(body_slot));
+                assert_eq!(
+                    live.economy
+                        .allocate_source_slot_with_terrain(&mut live.terrain),
+                    Some(body_slot)
+                );
                 live.economy.entities[usize::from(body_slot)] = replacement;
                 assert_ne!(live.economy.handle(body_slot), Some(old_body));
                 let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
@@ -30365,27 +30981,60 @@ mod tests {
                 holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
             }
             reused.step_morph_holder_source_slot(holder_slot).unwrap();
-            assert!(!reused.session.state.live.economy.entities[usize::from(body_slot)].drawing_disabled(),
-                "holder expiry cannot hide a replacement Morph body generation");
-            assert_eq!(reused.shared_spells().pickup(holder_slot).unwrap().source_word_96(), 0);
-            {
-                let raw =
-                    &mut session.session.state.live.economy.entities[usize::from(holder_slot)];
-                raw.active_value = 1;
-                raw.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
-                let holder = session
-                    .session
-                    .state
-                    .live
-                    .shared_spells
-                    .pickup_mut(holder_slot)
-                    .unwrap();
-                holder.active_value = 1;
-                holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
-            }
-            session.step_level2_source_pass(0);
             assert!(
-                session.session.state.live.economy.entities[usize::from(body_slot)]
+                !reused.session.state.live.economy.entities[usize::from(body_slot)]
+                    .drawing_disabled(),
+                "holder expiry cannot hide a replacement Morph body generation"
+            );
+            assert_eq!(
+                reused
+                    .shared_spells()
+                    .pickup(holder_slot)
+                    .unwrap()
+                    .source_word_96(),
+                0
+            );
+            let body_handle = session
+                .session
+                .state
+                .live
+                .economy
+                .handle(body_slot)
+                .unwrap();
+            let remaining = session
+                .shared_spells()
+                .pickup(holder_slot)
+                .unwrap()
+                .active_value;
+            assert!(
+                remaining > 190,
+                "the natural lifetime retains its source duration"
+            );
+            for expected in (0..remaining).rev() {
+                session.step_level2_source_pass(0);
+                assert!(
+                    !session
+                        .dispatch_events()
+                        .iter()
+                        .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "level{level} tier{tier} Morph lifecycle error: {:?}",
+                    session.dispatch_events()
+                );
+                assert_eq!(
+                    session
+                        .shared_spells()
+                        .pickup(holder_slot)
+                        .unwrap()
+                        .active_value,
+                    expected,
+                    "source Morph lifetime at level{level} tier{tier}, model{model}"
+                );
+            }
+            assert!(
+                session
+                    .current_morph_parent(body_slot)
+                    .unwrap()
+                    .unwrap()
                     .drawing_disabled()
             );
             assert_eq!(
@@ -30402,7 +31051,20 @@ mod tests {
                 0
             );
             session.step_level2_source_pass(1);
-            assert!(!session.session.state.live.economy.entities[usize::from(body_slot)].active);
+            assert!(
+                session
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .resolve(body_handle)
+                    .is_none(),
+                "following boundary reclaims the actual Morph body generation"
+            );
+            assert!(
+                session.shared_spells().pickup(holder_slot).unwrap().active,
+                "the inventory holder survives expiry"
+            );
             campaign.reset();
             assert_eq!(campaign.state_hash(), reset_hash);
         }

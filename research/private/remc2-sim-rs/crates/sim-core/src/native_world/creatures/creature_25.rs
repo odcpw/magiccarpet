@@ -741,6 +741,7 @@ pub(crate) fn construct_row(
     row.record[60] = 1;
     row.record[61] = 64;
     row.record[69] = 3;
+    row.record[70] = 0;
     row.set_phase(phase);
     row.parameter_relation = Some(DESCRIPTOR);
     row.record[164..168].copy_from_slice(&(u32::from(DESCRIPTOR) + 1).to_le_bytes());

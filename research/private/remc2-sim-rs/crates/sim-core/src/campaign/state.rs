@@ -69,6 +69,7 @@ pub struct CampaignDefinition {
     pub(crate) speed_multipliers: [i32; 3],
     pub(crate) possession_properties: crate::level_definition::PossessionProperties,
     pub(crate) fireball_properties: crate::level_definition::FireballProperties,
+    pub(crate) morph_properties: crate::level_definition::MorphProperties,
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
     authored_creature_entities: BTreeMap<u16, LevelEntityId>,
@@ -367,6 +368,7 @@ impl CampaignDefinition {
             speed_multipliers: [2, 3, 4],
             possession_properties: crate::level_definition::POSSESSION_PROPERTIES,
             fireball_properties: crate::level_definition::FIREBALL_PROPERTIES,
+            morph_properties: crate::level_definition::MORPH_PROPERTIES,
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
             authored_creature_entities: BTreeMap::new(),
@@ -438,6 +440,16 @@ impl CampaignDefinition {
         self.refresh_rule_identity();
     }
 
+    pub(crate) fn bind_morph_properties(
+        &mut self,
+        properties: crate::level_definition::MorphProperties,
+    ) -> Result<(), &'static str> {
+        properties.validate()?;
+        self.morph_properties = properties;
+        self.refresh_rule_identity();
+        Ok(())
+    }
+
     fn refresh_rule_identity(&mut self) {
         let base = Self::base_identity_receipt(
             self.profile,
@@ -479,7 +491,7 @@ impl CampaignDefinition {
                     }
                 })
             };
-        self.identity_receipt =
+        let fireball_identity =
             if self.fireball_properties == crate::level_definition::FIREBALL_PROPERTIES {
                 possession_identity
             } else {
@@ -504,6 +516,20 @@ impl CampaignDefinition {
                     hasher.update(self.fireball_properties.local_render_index.to_le_bytes());
                 })
             };
+        self.identity_receipt = if self.morph_properties == crate::level_definition::MORPH_PROPERTIES {
+            fireball_identity
+        } else {
+            digest_with(|hasher| {
+                hasher.update(fireball_identity.as_bytes());
+                hasher.update(b"morph-properties-v1");
+                for tier in self.morph_properties.tiers {
+                    hasher.update(tier.day_product.as_str().as_bytes());
+                    hasher.update([0]);
+                    hasher.update(tier.night_cave_product.as_str().as_bytes());
+                    hasher.update([0]);
+                }
+            })
+        };
     }
 
     pub(crate) fn bind_semantic_level(&mut self, bindings: SemanticLevelBindings) {
