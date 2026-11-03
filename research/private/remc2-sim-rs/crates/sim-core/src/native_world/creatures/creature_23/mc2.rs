@@ -115,9 +115,7 @@ pub(crate) fn construct_row(
     row.record[60] = 1;
     row.record[61] = 64;
     row.record[69] = 3;
-    row.record[70] = 0;
-    row.record[71] = 0;
-    row.record[72] = 0;
+    row.set_source_byte_46(0);
     row.set_phase(phase);
     row.parameter_relation = Some(DESCRIPTOR);
     row.record[164..168].copy_from_slice(&(u32::from(DESCRIPTOR) + 1).to_le_bytes());
@@ -295,6 +293,7 @@ pub(crate) fn step_row(
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
+    mana_slots: &[u16],
 ) -> Result<Effects, String> {
     let Some(mut actor_row) = arena
         .entities
@@ -306,12 +305,24 @@ pub(crate) fn step_row(
     };
     let source_prekill = actor_row.action == 188;
     let targets = target_views(&arena.entities, arena);
+    let mut mana_candidates = Vec::with_capacity(mana_slots.len());
+    for &candidate_slot in mana_slots {
+        if let Some(current) = crate::native_world::source_target::read(
+            arena, crate::native_world::source_target::Context::default(), candidate_slot,
+        )? && current.model == 39 {
+            mana_candidates.push(super::ManaCandidate {
+                slot: candidate_slot,
+                position: current.position,
+            });
+        }
+    }
     let source_generation = arena.slot_generation(slot);
     let mut effects = {
         let (entities, economy) = (&mut arena.entities, &mut arena.economy);
         let mut context = Context {
             terrain,
             targets: &targets,
+            mana_candidates: &mana_candidates,
             class3,
             families,
             entities,

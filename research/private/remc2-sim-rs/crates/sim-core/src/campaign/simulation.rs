@@ -16982,6 +16982,9 @@ impl Mc2Simulation {
                         }
                         (None, None, outcome.feedback, outcome.sound, None)
                     } else if visit.handler == ExistingHandler::Creature23 {
+                        let mana_slots = effect_lists.mana_chain().current_slots(
+                            &live.economy, &live.economy.entities,
+                        );
                         let outcome = creatures::creature_23::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
@@ -16990,6 +16993,7 @@ impl Mc2Simulation {
                             source_slot,
                             players,
                             models,
+                            &mana_slots,
                         )?;
                         (
                             None,
@@ -19991,9 +19995,13 @@ impl Mc2Simulation {
                 // heads. NewEvent can replace an address and cut its next link
                 // before this wizard's visit; direct word96 remains a pointer.
                 let class5_buckets = effect_lists.class5_current_slots(&self.session.state.live.economy);
+                let mana_slots = effect_lists.mana_chain().current_slots(
+                    &self.session.state.live.economy, &self.session.state.live.economy.entities,
+                );
                 let current_targets = {
                     let live = &self.session.state.live;
                     let mut slots = class5_buckets.iter().flatten().copied().collect::<BTreeSet<_>>();
+                    slots.extend(mana_slots.iter().copied());
                     let direct = live.economy.entities[usize::from(source_slot)].source_word_96();
                     if direct != 0 { slots.insert(direct); }
                     let mut context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
@@ -20089,11 +20097,13 @@ impl Mc2Simulation {
                                 level2_nyphur::NyphurCastleSeed {
                                     castle: root,
                                     class5_buckets: Some(effect_lists.class5_current_slots(source_arena)),
+                                    mana_slots: Some(effect_lists.mana_chain().current_slots(source_arena, &source_arena.entities)),
                                 }
                             },
                             Some(level2_nyphur::NyphurTargetFrame {
                                 rows: &current_targets,
                                 class5_buckets: &class5_buckets,
+                                mana_slots: &mana_slots,
                             }),
                             &mut target_relation_writes,
                         ))

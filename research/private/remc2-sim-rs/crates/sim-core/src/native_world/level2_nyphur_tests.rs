@@ -2284,6 +2284,46 @@ fn level_two_nyphur_sub_148e0_source_order_and_fail_closed_are_exact() {
             .is_none()
     );
     assert_eq!(model57_selector.watcom_rand_state, expected_rng);
+
+    // A genuine model39 constructor between UpdateEntities' list capture
+    // and this callback must wait for the next pass's head. Projection of
+    // its current typed row must not itself admit the new address.
+    let mut born = session.clone();
+    let players = born.players.clone();
+    let live = &mut born.session.state.live;
+    let before_birth = crate::campaign::source_arena::SourceManaChain::capture(
+        &mut live.economy, Vec::new(),
+    );
+    let sphere_slot = live.economy.economy.spawn_mana_sphere_from_death(
+        source.index, source.position, 0, 0x1234, 300, 0, &live.terrain,
+    ).expect("real death-sphere constructor") as u16;
+    let sphere = *live.economy.spheres().iter()
+        .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot).unwrap();
+    let mut current_entities = live.economy.entities.clone();
+    level2_nyphur_project_mana_sphere(
+        &mut current_entities[usize::from(sphere_slot)], sphere, sphere.id as u16,
+    );
+    level2_nyphur_rebuild_class10_source_order(&mut current_entities);
+    let empty_class5: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let old_head = before_birth.current_slots(&live.economy, &live.economy.entities);
+    assert!(old_head.is_empty());
+    let mut selector = no_target.clone();
+    let rng = selector.watcom_rand_state;
+    assert_eq!(selector.step_sub_13ce0_with_buckets(
+        &source, &current_entities, &players, Some(&empty_class5), Some(&old_head),
+    ), None, "a mid-pass birth is absent from the frozen source mana head");
+    assert_eq!(selector.watcom_rand_state, rng);
+    let following = crate::campaign::source_arena::SourceManaChain::capture(
+        &mut live.economy, vec![sphere_slot],
+    );
+    let current_head = following.current_slots(&live.economy, &live.economy.entities);
+    assert_eq!(selector.step_sub_13ce0_with_buckets(
+        &source, &current_entities, &players, Some(&empty_class5), Some(&current_head),
+    ), Some(sphere_slot), "the following pass admits the same real sphere");
+    current_entities[usize::from(sphere_slot)].set_control_flags(crate::native_world::ENTITY_DRAW_DISABLED_BIT);
+    assert_eq!(selector.step_sub_13ce0_with_buckets(
+        &source, &current_entities, &players, Some(&empty_class5), Some(&current_head),
+    ), Some(sphere_slot), "sub148E0 still reads a current hidden member without a draw-flag gate");
 }
 
 #[test]
@@ -2306,9 +2346,9 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
     let local_player = session.state.entity_index;
     let row11_position = feature_position(11);
 
-    // The player input reaches the imported row-11 switch through the public
-    // campaign route. It is not a target setter and does not rewrite any
-    // Nyphur or target position.
+    // The player reaches the imported row-11 switch through the public
+    // campaign route. The switch constructs the genuine group below;
+    // no target relation, AI state or sphere ownership is assigned.
     session
         .set_level2_entity_position(local_player, row11_position)
         .expect("public player input for authored row 11");
@@ -2327,19 +2367,98 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
         .map(|sphere| sphere.source_entity_index)
         .collect::<BTreeSet<_>>();
     assert_eq!(authored_model39_slots.len(), 28);
+    let authored_handles = authored_model39_slots.iter().map(|&slot| {
+        (slot, session.source_arena().handle(slot).expect("authored sphere generation"))
+    }).collect::<BTreeMap<_, _>>();
 
     let mut selected = None;
+    let mut traveled = false;
     for _ in 0..282 {
+        // sub148E0 chooses from the entire live source head, including real
+        // death rewards. It has no preference for this authored group.
+        // Declare travel near one still-live original member on the next
+        // natural decision cadence; the unfiltered selector must choose it.
+        let live = &session.session.state.live;
+        let phase = live.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)].phase;
+        if !traveled && u16::from(phase) % live.nyphur_dispatcher.common_upkeep.cadence_period() == 0 {
+            let sphere = live.economy.spheres().iter().filter(|sphere| {
+                sphere.active && !sphere.pending_delete && sphere.player_entity_index == 0
+                    && authored_handles.get(&sphere.source_entity_index)
+                        .is_some_and(|handle| live.economy.handle(sphere.source_entity_index) == Some(*handle))
+            }).min_by_key(|sphere| sphere.position.x)
+                .expect("a genuine neutral group1 sphere remains before the decision");
+            // Stay outside the whole cluster, rather than just one sphere.
+            // The margin covers two 80-unit wizard moves and two clamped
+            // 64-per-axis sphere moves before the neutral state6 observation.
+            let clearance = 3_328_u32 + 512;
+            let (mut approach, nearest_slot, nearest_distance) = [4_096_u16, 6_144, 8_192]
+                .into_iter().find_map(|offset| {
+                    let position = Position {
+                        x: sphere.position.x.wrapping_sub(offset),
+                        z: sphere.position.z.wrapping_add(512),
+                        ..sphere.position
+                    };
+                    let nearest = live.economy.spheres().iter().filter(|row| row.active)
+                        .min_by_key(|row| (level2_nyphur_source_distance_xy_euclidean_sq(position, row.position), row.source_entity_index))?;
+                    let distance = level2_nyphur_source_distance_xy_euclidean_sq(position, nearest.position);
+                    (distance > clearance * clearance && nearest.player_entity_index == 0
+                        && !nearest.pending_delete && nearest.life == 300
+                        && authored_handles.get(&nearest.source_entity_index)
+                            .is_some_and(|handle| live.economy.handle(nearest.source_entity_index) == Some(*handle)))
+                        .then_some((position, nearest.source_entity_index, distance))
+                }).expect("travel outside every current sphere keeps an original authored member nearest");
+            approach.z = approach.z.max(live.terrain.ground_height(approach).wrapping_add(256));
+            eprintln!("authored mana travel: position={approach:?} nearest={nearest_slot} wrapped_xy_squared={nearest_distance} clearance_squared={}", clearance * clearance);
+            // Leave the switch after its actual activation. The unchanged
+            // Fireball+Possession inventory can attack a nearby human before
+            // considering mana: parameter67's player perception is 8192 + 10.
+            // Declared travel keeps that competing player outside its range.
+            let mut departure = Position {
+                x: approach.x.wrapping_add(16_384),
+                y: approach.y.wrapping_add(16_384),
+                z: 0,
+            };
+            departure.z = live.terrain.ground_height(departure).wrapping_add(512);
+            session.set_level2_entity_position(local_player, departure)
+                .expect("declared player travel away from the authored mana cluster");
+            session.set_level2_entity_position(LEVEL2_NYPHUR_ENTITY_INDEX, approach)
+                .expect("declared rival travel near the real authored sphere");
+            traveled = true;
+        }
         session.step_outer_turn(PlayerCommand::default(), 0);
         let target_slot = session.session.state.live.economy.entities
             [usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)]
         .source_word_96();
-        if authored_model39_slots.contains(&target_slot) {
+        if authored_handles.get(&target_slot)
+            .is_some_and(|handle| session.source_arena().handle(target_slot) == Some(*handle)) {
             selected = Some(target_slot);
             break;
         }
     }
-    let selected_slot = selected.expect("ordinary sub_148E0 selects an authored model-39 row");
+    let selected_slot = selected.unwrap_or_else(|| {
+        let live = &session.session.state.live;
+        let source = &live.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)];
+        let mut arena = live.economy.clone();
+        let lists = super::super::area_damage::capture_effect_lists(&mut arena, None);
+        let slots = lists.mana_chain().current_slots(&arena, &arena.entities);
+        let mut entities = arena.entities.clone();
+        for sphere in arena.spheres().iter().filter(|sphere| sphere.active) {
+            level2_nyphur_project_mana_sphere(
+                &mut entities[usize::from(sphere.source_entity_index)], *sphere, sphere.id as u16,
+            );
+        }
+        let mut ai = live.nyphur_dispatcher.common_upkeep.clone();
+        let holder1 = ai.sub_146c0(1, &entities).map(|row|
+            (row.index, row.active, row.life, row.max_mana, row.active_value));
+        let holder2 = ai.sub_146c0(2, &entities).map(|row|
+            (row.index, row.active, row.life, row.max_mana, row.active_value));
+        let buckets = lists.class5_current_slots(&arena);
+        let admitted = ai.step_sub_13ce0_with_buckets(source, &entities, &live.core.players,
+            Some(&buckets), Some(&slots));
+        panic!("ordinary sub_148E0 selects an authored model-39 row: mana_slots={slots:?} admitted={admitted:?} state={} holder1={holder1:?} holder2={holder2:?} ai={:?} source={source:?} traces={:?}",
+            live.nyphur_dispatcher.state_byte(), ai.snapshot(source.phase), session.nyphur_dispatch_traces());
+    });
+    assert!(traveled, "the declared selection prerequisite must have run");
     let selected_sphere = session
         .session
         .state
@@ -6085,12 +6204,16 @@ fn mode3_castle_seed_refreshes_following_tail_buckets() {
             NyphurCastleSeed {
                 castle: seeded.then_some(castle),
                 class5_buckets: Some(if clear_lists { std::array::from_fn(|_| Vec::new()) } else { original.clone() }),
+                mana_slots: Some(if clear_lists { Vec::new() } else { vec![1, 2] }),
             }
         };
+        let mut current_mana = Some(vec![1, 2]);
         live.nyphur_dispatcher.step_sub_13100(112, &mut live.economy.entities, &mut case_terrain,
-            &profiles, &mut seed, &mut newborn, &mut current).expect("mode3 seed callback");
+            &profiles, &mut seed, &mut newborn, &mut current, &mut current_mana).expect("mode3 seed callback");
         assert!(called, "{name} must reach the seed attempt");
         assert_eq!(newborn, seeded.then_some(castle_slot));
+        assert_eq!(current_mana.as_deref(), Some(if clear_lists { &[][..] } else { &[1, 2][..] }),
+            "{name} preserves the source mana-head allocation cut for the following tail");
         let selected = live.nyphur_dispatcher.sub_14530_target_with_slots(
             &live.economy.entities[112], &live.economy.entities, current.as_ref());
         assert_eq!(selected, (!clear_lists).then_some(70), "{name} following-tail list");

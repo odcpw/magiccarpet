@@ -485,6 +485,107 @@ fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
     eprintln!("earned-mana Goat death: goat={goat_slot} shots={shots} sphere={reward_slot} position={:?} mana={} generation={reward_handle:?}", sphere.position, sphere.mana);
     let capacity_before = campaign.simulation().shared_spells().player_entity().max_mana;
     let castle_mana_before = campaign.simulation().economy().castle_for_owner(player).unwrap().mana;
+    // Position the actual rival near the real neutral death sphere and limit
+    // its available inventory to Possession. Its selector, target relation,
+    // holder activation and provisional owner write remain source-scheduled.
+    let rival_possession_holder = {
+        let live = &mut campaign.simulation_mut().session.state.live;
+        let rival_player = live.core.players.iter()
+            .find(|row| row.entity_index == rival && row.is_ai)
+            .expect("the other actual owner's player row");
+        let holder = rival_player.enabled_spell_holders[1];
+        assert_ne!(holder, 0, "the actual rival owns a Possession holder");
+        for player in live.core.players.iter_mut().chain(live.shared_spells.players.iter_mut())
+            .filter(|row| row.entity_index == rival)
+        {
+            for family in 0..player.enabled_spell_holders.len() {
+                if family != 1 {
+                    assert!(player.set_enabled_spell_holder_index(family, 0));
+                }
+            }
+            player.spell_unlocked_levels[1] = 0;
+            player.record[502 + 1] = 0;
+            player.family_selected_tiers[1] = 0;
+            player.record[528 + 1] = 0;
+            // Keep the declared one-holder inventory and both selected hands
+            // coherent with InitialiseSpells' normal menu-order projection.
+            player.left_spell_slot_raw = 1;
+            player.left_spell_slot = 1;
+            player.right_spell_slot_raw = -1;
+            player.right_spell_slot = 0;
+            player.left_subspell_index = 0;
+            player.right_subspell_index = 0;
+            player.selected_subspell_index = 0;
+            player.selected_spell_ui_index = crate::SOURCE_SPELL_INDEX_MAP.iter()
+                .position(|family| *family == 1).unwrap() as u8;
+            player.record[554..556].copy_from_slice(&1_i16.to_le_bytes());
+            player.record[556..558].copy_from_slice(&(-1_i16).to_le_bytes());
+            player.record[558..560].fill(0);
+            player.record[561] = player.selected_spell_ui_index;
+            player.record[562] = 0;
+        }
+        holder
+    };
+    let mut rival_approach = Position {
+        x: sphere.position.x.wrapping_sub(1_536),
+        y: sphere.position.y,
+        z: sphere.position.z.wrapping_add(512),
+    };
+    rival_approach.z = rival_approach.z.max(
+        campaign.simulation().canonical_terrain().ground_height(rival_approach).wrapping_add(256));
+    campaign.simulation_mut().set_level2_entity_position(rival, rival_approach).unwrap();
+    let (rival_yaw, _) = crate::level1_mission::projectile_guidance_angles(rival_approach, sphere.position);
+    campaign.simulation_mut().session.state.live.economy.entities[usize::from(rival)].set_yaw(rival_yaw);
+    let mut saw_rival_mode6 = false;
+    let mut saw_rival_flyer = false;
+    let mut saw_rival_relation = false;
+    let mut rival_states = Vec::new();
+    for _ in 0..256 {
+        campaign.step(PlayerCommand::default(), 0);
+        let sim = campaign.simulation();
+        assert_eq!(sim.source_arena().handle(reward_slot), Some(reward_handle),
+            "the contested reward must remain the original sphere generation");
+        saw_rival_mode6 |= sim.nyphur_dispatch_traces().iter().any(|trace|
+            trace.source_slot == rival && trace.state_byte == 6);
+        for trace in sim.nyphur_dispatch_traces().iter().filter(|trace| trace.source_slot == rival) {
+            let observation = (trace.state_byte, sim.entities()[usize::from(rival)].source_word_96());
+            if rival_states.last() != Some(&observation) { rival_states.push(observation); }
+        }
+        saw_rival_flyer |= sim.economy().possession_projectiles().iter().any(|row|
+            row.source_id_entity_index == rival && row.holder_entity_index == rival_possession_holder);
+        saw_rival_relation |= sim.economy().spheres().iter().any(|row|
+            row.active && row.source_entity_index == reward_slot && row.player_entity_index == rival);
+        if saw_rival_mode6 && saw_rival_flyer && saw_rival_relation { break; }
+    }
+    assert!(saw_rival_mode6 && saw_rival_flyer && saw_rival_relation,
+        "the actual rival must select, cast at and contest this death sphere: mode6={saw_rival_mode6} flyer={saw_rival_flyer} relation={saw_rival_relation} states={rival_states:?} upkeep={:?} inventory={:?} rival={:?} sphere={:?}",
+        campaign.simulation().nyphur_common_upkeep(),
+        campaign.simulation().players().iter().find(|row| row.entity_index == rival),
+        campaign.simulation().entities()[usize::from(rival)],
+        campaign.simulation().economy().spheres().iter().find(|row| row.source_entity_index == reward_slot));
+    // Move the actual rival away after its successful contest; its projectile
+    // and impact continue under the ordinary scheduler.
+    let mut rival_departure = rival_approach;
+    rival_departure.x = rival_departure.x.wrapping_add(16_384);
+    rival_departure.z = rival_departure.z.max(
+        campaign.simulation().canonical_terrain().ground_height(rival_departure).wrapping_add(512));
+    campaign.simulation_mut().set_level2_entity_position(rival, rival_departure).unwrap();
+    for _ in 0..256 {
+        if !campaign.simulation().economy().possession_projectiles().iter().any(|row|
+            row.source_id_entity_index == rival && row.active)
+            && !campaign.simulation().economy().possession_effects().iter().any(|row|
+                row.source_id_entity_index == rival && row.active) { break; }
+        campaign.step(PlayerCommand::default(), 0);
+    }
+    assert!(!campaign.simulation().economy().possession_projectiles().iter().any(|row|
+        row.source_id_entity_index == rival && row.active)
+        && !campaign.simulation().economy().possession_effects().iter().any(|row|
+            row.source_id_entity_index == rival && row.active),
+        "the rival's actual flyer and effect must finish before the public reclaim");
+    assert_eq!(campaign.simulation().source_arena().handle(reward_slot), Some(reward_handle));
+    assert!(campaign.simulation().economy().spheres().iter().any(|row|
+        row.active && row.source_entity_index == reward_slot && row.player_entity_index == rival),
+        "the same generation remains contested before the human reclaims it");
     let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 1).unwrap() as i8;
     let possession_holder = campaign.simulation().shared_spells().local_player().enabled_spell_holders[1];
     for _ in 0..64 {
@@ -536,6 +637,9 @@ fn ordinary_public_creature_reward_reaches_owned_castle_and_funds_spell() {
         row.source_entity_index == reward_slot && row.active
             && row.owner_entity_index == player && row.player_entity_index == player
     }), "the claimed generation must carry the actual player's source relations");
+    // Publish the new relation through the next source census before checking
+    // owner-capacity rows; the claim itself can occur after the prior census.
+    campaign.step(PlayerCommand::default(), 0);
     eprintln!("earned-mana public claim: root={} sphere={} owner={player}", root.source_entity_index, reward_slot);
     let mut collected = None;
     let mut deposited = false;
@@ -2393,6 +2497,13 @@ fn level_two_mana_sphere_reclaims_contended_raw_relation_before_defender_selecti
         .iter()
         .find(|sphere| sphere.source_entity_index == target_slot)
         .unwrap();
+    // The direct callbacks below run within an UpdateEntities source pass:
+    // its prologue links model-39 records before either callback observes them.
+    session.economy_mut().rebuild_possession_guidance_source_slots();
+    assert!(session
+        .economy()
+        .possession_guidance_source_slots
+        .contains(&target_slot));
     let events_before = session.economy().events().len();
     assert_ne!(
         session

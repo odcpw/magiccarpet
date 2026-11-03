@@ -56,23 +56,19 @@ impl Actor<'_> {
     }
 
     fn mode(&self) -> u8 {
-        self.row.record[70]
+        self.row.record[74]
     }
 
     fn set_mode(&mut self, mode: u8) {
-        self.row.record[70] = mode;
+        self.row.set_source_byte_46(mode);
     }
 
     fn timer(&self) -> i32 {
-        i32::from_le_bytes(
-            self.row.record[16..20]
-                .try_into()
-                .expect("fixed source timer dword"),
-        )
+        self.row.source_dword_10()
     }
 
     fn set_timer(&mut self, timer: i32) {
-        self.row.record[16..20].copy_from_slice(&timer.to_le_bytes());
+        self.row.set_source_dword_10(timer);
     }
 
     fn target_height(&self) -> i16 {
@@ -131,11 +127,19 @@ impl Target {
 pub(crate) struct Context<'a> {
     pub terrain: &'a SessionTerrain,
     pub targets: &'a [Target],
+    /// Frozen mana-chain addresses resolved to their current model39 owners.
+    pub mana_candidates: &'a [ManaCandidate],
     pub class3: &'a [u16],
     pub families: &'a [Vec<u16>],
     pub entities: &'a mut [EntitySnapshot],
     pub spheres: &'a mut [crate::level1_mission::ManaSphere],
     pub runtime: &'a mut dyn StageRuntime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ManaCandidate {
+    pub slot: u16,
+    pub position: Position,
 }
 
 impl Context<'_> {
@@ -148,13 +152,6 @@ impl Context<'_> {
                     .copied()
             })
             .flatten()
-    }
-
-    fn target_by_source_id(&self, source_id: u16) -> Option<Target> {
-        self.targets
-            .iter()
-            .find(|target| target.source_id == source_id)
-            .copied()
     }
 
     fn sphere(&self, slot: u16) -> Option<crate::level1_mission::ManaSphere> {
@@ -202,6 +199,14 @@ fn xy_distance(a: Position, b: Position) -> u32 {
     crate::legacy_sqrt(dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32)
 }
 
+// Despite its name, remc2's EuclideanDistXY_584D0 returns the squared
+// wrapped XY distance. Selecting by the square avoids square-root ties.
+fn xy_distance_squared(a: Position, b: Position) -> u32 {
+    let dx = i32::from(a.x.wrapping_sub(b.x) as i16);
+    let dy = i32::from(a.y.wrapping_sub(b.y) as i16);
+    dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+}
+
 fn distance(a: Position, b: Position) -> u32 {
     crate::legacy_sqrt(crate::native_world::level2_wrapping_source_distance_3d(
         a, b,
@@ -218,16 +223,13 @@ fn living_sphere(sphere: crate::level1_mission::ManaSphere) -> bool {
 fn nearest_sphere(
     actor: &Actor<'_>,
     ctx: &Context<'_>,
-) -> Option<crate::level1_mission::ManaSphere> {
+) -> Option<ManaCandidate> {
     let mut best = None;
     let mut shortest = RULES.mana_sphere_range;
-    for sphere in ctx
-        .spheres
-        .iter()
-        .copied()
-        .filter(|sphere| living_sphere(*sphere))
-    {
-        let d = xy_distance(actor.row.position, sphere.position);
+    // sub_28000 checks model only on the frozen list's current occupants;
+    // sub_28420 validates life, hide and class on the later target visit.
+    for sphere in ctx.mana_candidates.iter().copied() {
+        let d = xy_distance_squared(actor.row.position, sphere.position);
         if d < shortest {
             shortest = d;
             best = Some(sphere);
@@ -245,7 +247,7 @@ fn nearest_victim(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
         .filter_map(|slot| ctx.target(*slot))
         .filter(|target| target.source_candidate())
     {
-        let d = xy_distance(actor.row.position, target.position);
+        let d = xy_distance_squared(actor.row.position, target.position);
         if d < shortest {
             shortest = d;
             best = Some(target);
@@ -268,6 +270,13 @@ fn move_forward(actor: &mut Actor<'_>, ctx: &Context<'_>) {
         position.z = ceiling.wrapping_sub(actor.row.array_fov());
     }
     actor.row.set_position(position);
+    // sub_1B8C0 turns toward roll after committing movement. Descriptor91
+    // supplies the source 0x100 angular step.
+    let yaw = actor.row.yaw;
+    let roll = actor.row.source_roll();
+    actor.row.set_yaw(crate::wrap_angle(
+        i32::from(yaw) + i32::from(crate::turn_toward(yaw, roll, 0x100)),
+    ));
 }
 
 fn neighbor_avoidance(actor: &mut Actor<'_>, ctx: &Context<'_>) {
@@ -302,44 +311,54 @@ fn neighbor_avoidance(actor: &mut Actor<'_>, ctx: &Context<'_>) {
 }
 
 fn approach(actor: &mut Actor<'_>, ctx: &Context<'_>, target: Position) -> bool {
-    if distance(actor.row.position, target) > 128 {
-        actor
-            .row
-            .set_yaw(heading_for_positions(actor.row.position, target) as i16);
-        actor.row.set_source_roll(actor.row.yaw);
+    // remc2's EuclideanDistXYZ_58490 uses XY only; Z has a separate
+    // target+640 test. Both tests use the position before their adjustment.
+    let mut ready = true;
+    if xy_distance(actor.row.position, target) > 128 {
+        ready = false;
+        actor.row.set_source_roll(heading_for_positions(actor.row.position, target) as i16);
         move_forward(actor, ctx);
     }
-    let desired_z = target.z.wrapping_add(RULES.lift_spacing);
-    let delta = desired_z.wrapping_sub(actor.row.position.z);
-    if delta.unsigned_abs() > RULES.lift_tolerance as u16 {
-        actor.row.position.z = actor.row.position.z.wrapping_add(if delta < 0 {
+    let delta = i32::from(target.z) + i32::from(RULES.lift_spacing)
+        - i32::from(actor.row.position.z);
+    if delta.unsigned_abs() > u32::from(RULES.lift_tolerance as u16) {
+        ready = false;
+        let mut position = actor.row.position;
+        position.z = position.z.wrapping_add(if delta < 0 {
             -RULES.lift_step
         } else {
             RULES.lift_step
         });
+        actor.row.set_position(position);
     }
-    distance(actor.row.position, target) <= 128
-        && actor.row.position.z.wrapping_sub(desired_z).unsigned_abs()
-            <= RULES.lift_tolerance as u16
+    ready
 }
 
 fn action_idle(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
-    actor.row.set_actual_speed(RULES.maximum_speed);
     move_forward(actor, ctx);
     neighbor_avoidance(actor, ctx);
+    let height_delta = i32::from(actor.row.position.z) - i32::from(actor.target_height());
+    if height_delta.unsigned_abs() >= 256 {
+        let mut position = actor.row.position;
+        position.z = position.z.wrapping_add(if height_delta <= 0 { 32 } else { -32 });
+        actor.row.set_position(position);
+    }
     match actor.mode() {
         0 => {
+            actor.row.set_actual_speed(RULES.maximum_speed);
             let timer = actor.timer();
             actor.set_timer(timer.wrapping_sub(1));
             if timer == 0 {
                 actor.set_mode(1);
+                actor.set_timer(0);
             }
         }
         1 => {
             if let Some(sphere) = nearest_sphere(actor, ctx) {
                 actor.set_target_height(RULES.maximum_lift);
-                actor.set_target(sphere.source_entity_index);
+                actor.set_target(sphere.slot);
                 actor.set_mode(2);
+                actor.set_timer(0);
             } else {
                 let ground = ctx.terrain.ground_height(actor.row.position);
                 actor.set_target_height(ground.wrapping_add(7 * 256));
@@ -356,15 +375,13 @@ fn action_idle(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
                 actor.set_timer(0);
                 return;
             };
-            actor
-                .row
-                .set_yaw(heading_for_positions(actor.row.position, sphere.position) as i16);
-            if actor.row.phase & 3 == 0
-                && distance(actor.row.position, sphere.position) < RULES.approach_range as u32
-            {
-                actor.set_action(185);
-                actor.set_mode(0);
-                actor.set_timer(500);
+            if actor.row.phase & 3 == 0 {
+                actor.row.set_source_roll(heading_for_positions(actor.row.position, sphere.position) as i16);
+                if xy_distance(actor.row.position, sphere.position) < RULES.approach_range as u32 {
+                    actor.set_action(185);
+                    actor.set_mode(0);
+                    actor.set_timer(500);
+                }
             }
         }
         _ => {}
@@ -397,7 +414,9 @@ fn crowded_above(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
             && dz.abs() < height
             && actor.row.position.z >= other.position.z
         {
-            actor.row.position.z = actor.row.position.z.wrapping_add(16);
+            let mut position = actor.row.position;
+            position.z = position.z.wrapping_add(16);
+            actor.row.set_position(position);
             return true;
         }
     }
@@ -405,20 +424,34 @@ fn crowded_above(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
 }
 
 fn action_approach_sphere(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
+    if actor.mode() != 0 {
+        if actor.mode() == 1 {
+            if actor.row.position.z >= RULES.maximum_lift {
+                actor.set_action(184);
+                actor.set_mode(0);
+                actor.set_timer(80);
+            } else {
+                let mut position = actor.row.position;
+                position.z = position.z.wrapping_add(32);
+                actor.row.set_position(position);
+            }
+        }
+        return;
+    }
     actor.row.set_actual_speed(RULES.minimum_speed);
-    let timer = actor.timer();
-    actor.set_timer(timer.wrapping_sub(1));
+    let timer = actor.timer().wrapping_sub(1);
+    actor.set_timer(timer);
     let Some(sphere) = ctx
         .sphere(actor.target())
         .filter(|sphere| living_sphere(*sphere))
     else {
-        actor.set_action(184);
         actor.set_mode(1);
+        actor.set_timer(0);
         return;
     };
-    if timer <= 1 || crowded_above(actor, ctx) {
-        actor.set_action(184);
+    if timer == 0 || crowded_above(actor, ctx) {
         actor.set_mode(1);
+        actor.set_timer(0);
         return;
     }
     if approach(actor, ctx, sphere.position) {
@@ -438,7 +471,9 @@ fn detach_sphere(actor: &Actor<'_>, ctx: &mut Context<'_>) {
     else {
         return;
     };
-    if sphere.control_flags & MANA_SPHERE_CLAIMED != 0 {
+    if sphere.control_flags & MANA_SPHERE_CLAIMED != 0
+        && sphere.assigned_defender_slot == actor.row.index
+    {
         sphere.control_flags &= !MANA_SPHERE_CLAIMED;
         sphere.assigned_carrier_id = 0;
         sphere.assigned_defender_slot = 0;
@@ -473,9 +508,9 @@ fn action_absorb_sphere(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
     } else if mode == 3 {
         actor.set_target(0);
         if let Some(sphere) = nearest_sphere(actor, ctx)
-            && distance(actor.row.position, sphere.position) <= RULES.vulnerable_target_range
+            && xy_distance(actor.row.position, sphere.position) <= RULES.vulnerable_target_range
         {
-            actor.set_target(sphere.source_entity_index);
+            actor.set_target(sphere.slot);
             actor.set_action(185);
             actor.set_mode(0);
             actor.set_timer(500);
@@ -487,11 +522,13 @@ fn action_absorb_sphere(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
     }
 
     if actor.target() == 0 {
+        actor.set_action(185);
         actor.set_mode(1);
+        actor.set_timer(0);
         return;
     }
-    let timer = actor.timer();
-    actor.set_timer(timer.wrapping_sub(1));
+    let timer = actor.timer().wrapping_sub(1);
+    actor.set_timer(timer);
     let Some(sphere_snapshot) = ctx
         .sphere(actor.target())
         .filter(|sphere| living_sphere(*sphere))
@@ -499,7 +536,7 @@ fn action_absorb_sphere(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
         actor.set_mode(3);
         return;
     };
-    if timer <= 1 {
+    if timer == 0 {
         actor.set_mode(3);
         return;
     }
@@ -524,7 +561,7 @@ fn action_absorb_sphere(actor: &mut Actor<'_>, ctx: &mut Context<'_>) {
     actor.set_target_height(actor.target_height().wrapping_add(10));
     let overlaps = crate::native_world::level2_model76_sub106c0_matches(
         actor.row.position,
-        actor.row.yaw,
+        actor.row.array_yaw(),
         actor.row.array_pitch(),
         actor.row.array_roll(),
         actor.row.array_fov(),
@@ -603,33 +640,34 @@ fn combat_tail(actor: &mut Actor<'_>, ctx: &mut Context<'_>, effects: &mut Effec
     let mut pending = actor.word(102);
     let mut attacker = actor.word(42);
     let mut life = actor.row.life;
-    let hit =
-        crate::combat::actors::consume_damage(&mut life, &mut damage, &mut pending, &mut attacker);
+    if actor.row.record[61] != 0 {
+        let _ = crate::combat::actors::consume_damage(
+            &mut life, &mut damage, &mut pending, &mut attacker,
+        );
+    }
     actor.row.set_life(life);
     actor.row.record[98..102].copy_from_slice(&damage.to_le_bytes());
     actor.put(102, pending);
     actor.put(42, attacker);
-    if let Some(hit) = hit {
-        if let Some(target) = ctx.target_by_source_id(hit.attacker)
-            && target.class == 3
-        {
-            detach_sphere(actor, ctx);
-            actor.set_target(target.slot);
-            actor.set_action(186);
-        }
-    }
+    // Pinned sub_28110 initializes its attacker-class lookup to slot 0.
+    // A normal player hit therefore does not enter the retaliation branch;
+    // the independent phase-gated nearest-victim scan below still runs.
     if life < 0 {
         actor.put(40, attacker);
         actor.set_action(188);
+        actor.set_mode(0);
+        actor.set_timer(0);
         return;
     }
-    if hit.is_none() && actor.row.phase & 0x1f == 0 {
+    if actor.row.phase & 0x1f == 0 {
         if let Some(target) = nearest_victim(actor, ctx)
             && distance(actor.row.position, target.position) < RULES.target_range
         {
             detach_sphere(actor, ctx);
             actor.set_target(target.slot);
             actor.set_action(186);
+            actor.set_mode(0);
+            actor.set_timer(0);
         }
     }
 }

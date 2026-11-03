@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 pub(super) struct NyphurTargetFrame<'a> {
     pub rows: &'a [EntitySnapshot],
     pub class5_buckets: &'a [Vec<u16>; 29],
+    pub mana_slots: &'a [u16],
 }
 
 /// Source-list heads after the Castle seed attempt, including allocation
@@ -31,6 +32,7 @@ pub(super) struct NyphurTargetFrame<'a> {
 pub(super) struct NyphurCastleSeed {
     pub castle: Option<Level2CastleState>,
     pub class5_buckets: Option<[Vec<u16>; 29]>,
+    pub mana_slots: Option<Vec<u16>>,
 }
 
 /// Pinned `sub_15790` spell-family order, including its zero-terminated tail
@@ -909,7 +911,7 @@ impl Level2NyphurCommonUpkeep {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
     ) -> Option<u16> {
-        self.step_sub_13ce0_with_buckets(source, entities, players, None)
+        self.step_sub_13ce0_with_buckets(source, entities, players, None, None)
     }
 
     fn step_sub_13ce0_with_buckets(
@@ -918,6 +920,7 @@ impl Level2NyphurCommonUpkeep {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         class5_buckets: Option<&[Vec<u16>; 29]>,
+        mana_slots: Option<&[u16]>,
     ) -> Option<u16> {
         if self.sub_146c0(1, entities).is_none() {
             return None;
@@ -928,7 +931,7 @@ impl Level2NyphurCommonUpkeep {
             return None;
         }
 
-        self.sub_148e0_target(source, entities, players, class5_buckets)
+        self.sub_148e0_target(source, entities, players, class5_buckets, mana_slots)
     }
 
     /// The qualified fall-through of `sub_12E70` reaches `sub_14630`. Keep
@@ -1971,12 +1974,22 @@ impl Level2NyphurCommonUpkeep {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         class5_buckets: Option<&[Vec<u16>; 29]>,
+        mana_slots: Option<&[u16]>,
     ) -> Option<u16> {
         const CLASS3_TARGET_DISTANCE: u32 = 0x0190_0000;
 
         let mut best = None;
         let mut best_distance = u32::MAX;
-        for candidate_index in level2_nyphur_class10_target_source_order(entities) {
+        // Production supplies the current walk from UpdateEntities' frozen
+        // dword38523 head. A NewEvent birth is not added halfway through the
+        // pass; a retained or replaced address is still read at its source
+        // position in that walk. Detached callers rebuild their own frame.
+        let rebuilt;
+        let candidates = if let Some(slots) = mana_slots { slots } else {
+            rebuilt = level2_nyphur_class10_target_source_order(entities);
+            &rebuilt
+        };
+        for &candidate_index in candidates {
             let Some(candidate) = entities.get(usize::from(candidate_index)) else {
                 continue;
             };
@@ -4251,6 +4264,7 @@ impl Level2NyphurDispatcher {
                 castle_seed,
                 &mut newborn_slot,
                 target_frame.map(|frame| frame.class5_buckets),
+                target_frame.map(|frame| frame.mana_slots),
                 &mut relation_write,
             );
             if let Some(slot) = newborn_slot {
@@ -4324,9 +4338,11 @@ impl Level2NyphurDispatcher {
         castle_seed: &mut dyn FnMut(u16, Position, &[EntitySnapshot], &mut SessionTerrain) -> NyphurCastleSeed,
         newborn_slot: &mut Option<u16>,
         class5_buckets: Option<&[Vec<u16>; 29]>,
+        mana_slots: Option<&[u16]>,
         target_relation_write: &mut Option<(u16, u16)>,
     ) -> Result<(Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchTrace)> {
         let mut post_seed_class5_buckets = None;
+        let mut post_seed_mana_slots = None;
         let snapshot = self.common_upkeep.step(
             source_slot,
             entities,
@@ -4352,6 +4368,7 @@ impl Level2NyphurDispatcher {
             3 => self.step_sub_13100(
                 source_slot, entities, terrain, castle_profiles, castle_seed, newborn_slot,
                 &mut post_seed_class5_buckets,
+                &mut post_seed_mana_slots,
             )?,
             4 => self.step_sub_131f0(source_slot, entities, terrain)?,
             5 => Self::step_nmemneed0(),
@@ -4371,6 +4388,7 @@ impl Level2NyphurDispatcher {
                 source_slot, entities, players, presentation, castle_site_clear,
                 castle_site_called, castle_current_axes,
                 post_seed_class5_buckets.as_ref().or(class5_buckets),
+                post_seed_mana_slots.as_deref().or(mana_slots),
             )?;
         }
         Ok((
@@ -5056,6 +5074,7 @@ impl Level2NyphurDispatcher {
         castle_seed: &mut dyn FnMut(u16, Position, &[EntitySnapshot], &mut SessionTerrain) -> NyphurCastleSeed,
         newborn_slot: &mut Option<u16>,
         class5_buckets: &mut Option<[Vec<u16>; 29]>,
+        mana_slots: &mut Option<Vec<u16>>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -5098,6 +5117,9 @@ impl Level2NyphurDispatcher {
             let seed = castle_seed(source_slot, axis, entities, terrain);
             if let Some(buckets) = seed.class5_buckets {
                 *class5_buckets = Some(buckets);
+            }
+            if let Some(slots) = seed.mana_slots {
+                *mana_slots = Some(slots);
             }
             if let Some(castle) = seed.castle {
                 let slot = castle.source_entity_index;
@@ -5768,7 +5790,7 @@ impl Level2NyphurDispatcher {
         presentation: &PresentationSelectors,
     ) -> Result<()> {
         self.step_sub_12e70_with_castle_site(
-            source_slot, entities, players, presentation, [false; 2], &mut false, None, None,
+            source_slot, entities, players, presentation, [false; 2], &mut false, None, None, None,
         )
     }
 
@@ -5782,6 +5804,7 @@ impl Level2NyphurDispatcher {
         castle_site_called: &mut bool,
         castle_current_axes: Option<(i16, i16)>,
         class5_buckets: Option<&[Vec<u16>; 29]>,
+        mana_slots: Option<&[u16]>,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -5884,7 +5907,7 @@ impl Level2NyphurDispatcher {
         }
         if let Some(target_index) =
             self.common_upkeep
-                .step_sub_13ce0_with_buckets(&entities[source_index], entities, players, class5_buckets)
+                .step_sub_13ce0_with_buckets(&entities[source_index], entities, players, class5_buckets, mana_slots)
         {
             let target = entities
                 .get(usize::from(target_index))

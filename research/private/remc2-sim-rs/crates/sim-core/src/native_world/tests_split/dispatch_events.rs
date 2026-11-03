@@ -160,17 +160,20 @@ fn imported_mana_sphere_retains_particle_and_axes_until_current_owner_callback()
 
 #[test]
 fn scheduled_mana_sphere_uses_model23_raw_lift_and_rejects_a_reused_holder_slot() {
-    let mut session = level_two_campaign_session();
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    ).expect("actual Mission18 supplies an authored model23").simulation().clone();
     session.step_level2_source_pass(0);
-    let ground = session.canonical_terrain().ground_height(Position {
-        x: 20_000,
-        y: 20_000,
-        z: 0,
-    });
     let holder_position = Position {
         x: 20_000,
         y: 20_000,
-        z: ground.saturating_add(4_000),
+        z: 8_192,
     };
     let sphere = session
         .economy_mut()
@@ -187,25 +190,25 @@ fn scheduled_mana_sphere_uses_model23_raw_lift_and_rejects_a_reused_holder_slot(
     let holder_slot = session
         .entities()
         .iter()
-        .find(|entity| !entity.active && entity.index != 0 && entity.index != sphere_slot)
+        .find(|entity| entity.active && entity.class == 5 && entity.model == 23 && entity.index == 29)
         .map(|entity| entity.index)
-        .expect("source arena retains an unused raw holder slot");
+        .expect("authored root29 is a genuine model23 holder");
     {
         let raw = &mut session.session.state.live.economy.entities[usize::from(holder_slot)];
-        raw.active = true;
-        raw.index = holder_slot;
-        raw.source_id = holder_slot;
-        raw.class = 5;
-        raw.model = 23;
-        raw.position = holder_position;
-        raw.control_flags = 0;
-        raw.set_source_action(0);
-        raw.set_life(300);
-        raw.set_max_life(300);
-        raw.record[67] = 5;
-        raw.record[68] = 23;
-        raw.record[44..46].copy_from_slice(&0x1234_u16.to_le_bytes());
+        raw.set_position(holder_position);
+        raw.set_source_action(185);
+        raw.set_actual_speed(14);
+        raw.set_source_byte_46(1);
+        raw.record[76] = 0;
+        raw.record[77] = 0;
+        raw.set_source_dword_10(80);
         raw.record[48..50].copy_from_slice(&48_i16.to_le_bytes());
+    }
+    {
+        let live = &mut session.session.state.live;
+        crate::world::effects::sync_position(
+            &mut live.economy, &mut live.terrain, holder_slot, holder_position, true, false,
+        ).expect("controlled authored holder position stays map-linked");
     }
     {
         let mut economy = session.economy_mut();
@@ -243,12 +246,27 @@ fn scheduled_mana_sphere_uses_model23_raw_lift_and_rejects_a_reused_holder_slot(
     );
     assert_ne!(lifted.control_flags & 0x40, 0);
 
-    // Reusing the same numeric holder slot as another class/model rejects
-    // the attraction on the next scheduled visit without same-pass rolling.
+    // Hide and reclaim the real holder through the next source pass, then
+    // allocate a genuine model39 into that same address. Reserve any lower
+    // free slots first so the normal allocator can reach root29.
     {
-        let raw = &mut session.session.state.live.economy.entities[usize::from(holder_slot)];
-        raw.model = 2;
-        raw.record[68] = 2;
+        session.session.state.live.economy.entities[usize::from(holder_slot)].disable_drawing();
+    }
+    session.step_level2_source_pass(2);
+    {
+        let live = &mut session.session.state.live;
+        let replacement_slot = loop {
+            let slot = live.economy.allocate_source_slot_with_terrain(&mut live.terrain)
+                .expect("source allocator reaches the reclaimed holder");
+            if slot == holder_slot { break slot; }
+        };
+        let replacement_position = Position {
+            x: holder_position.x.wrapping_add(20_000),
+            y: holder_position.y.wrapping_add(20_000),
+            z: holder_position.z,
+        };
+        live.economy.economy.initialize_authored_model39(replacement_slot, 0, replacement_position)
+            .expect("ordinary sphere constructor reuses the holder slot");
     }
     {
         let mut economy = session.economy_mut();
@@ -278,7 +296,7 @@ fn scheduled_mana_sphere_uses_model23_raw_lift_and_rejects_a_reused_holder_slot(
         .find(|row| row.source_entity_index == sphere_slot)
         .unwrap()
         .phase;
-    session.step_level2_source_pass(2);
+    session.step_level2_source_pass(3);
     let rejected = session
         .economy()
         .spheres()
@@ -321,14 +339,9 @@ fn model23_source_claim_lifts_scheduled_sphere_then_absorbs_and_reclaims_it() {
         .find(|row| row.active && row.class == 5 && row.model == 23 && row.index == 29)
         .expect("Mission18 source root29 has genuine initial creature identity")
         .index;
-    let holder_position = Position {
-        z: crate::native_world::creatures::creature_23::RULES.maximum_lift,
-        ..holder_xy
-    };
-    let sphere_position = Position {
-        z: holder_position.z - 1_000,
-        ..holder_xy
-    };
+    let ground = session.canonical_terrain().ground_height(holder_xy);
+    let holder_position = Position { z: ground.wrapping_add(640), ..holder_xy };
+    let sphere_position = Position { z: ground, ..holder_xy };
     let sphere = session
         .economy_mut()
         .allocate_authored_model39(0, 0, sphere_position)
@@ -355,14 +368,18 @@ fn model23_source_claim_lifts_scheduled_sphere_then_absorbs_and_reclaims_it() {
         raw_sphere.record[68] = 39;
         raw_sphere.record[154..156].copy_from_slice(&0_u16.to_le_bytes());
 
+        let sphere_row = live.economy.economy.spheres_mut().iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot).unwrap();
+        // Controlled initial placement, after which ordinary physics runs.
+        sphere_row.vertical_velocity = 0;
         let mut actor = live.economy.entities[usize::from(actor_slot)].clone();
         actor.set_position(holder_position);
-        actor.record[48..50].copy_from_slice(&holder_position.z.to_le_bytes());
-        actor.set_source_action(187);
-        actor.record[70] = 0;
+        actor.set_source_action(184);
+        actor.set_source_byte_46(0);
+        actor.set_source_dword_10(0);
         actor.record[76] = 0;
         actor.record[77] = 0;
-        actor.record[154..156].copy_from_slice(&sphere_slot.to_le_bytes());
+        actor.record[154..156].copy_from_slice(&0_u16.to_le_bytes());
         let actor_position = actor.position;
         live.economy.entities[usize::from(actor_slot)] = actor;
         crate::world::effects::sync_position(
@@ -385,39 +402,14 @@ fn model23_source_claim_lifts_scheduled_sphere_then_absorbs_and_reclaims_it() {
         .expect("model23 source position is linked");
     }
 
-    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
-    families[23].push(actor_slot);
     let mana_before = session.entities()[usize::from(actor_slot)].mana;
     let mut absorbed = false;
+    let mut saw_selection = false;
+    let mut saw_approach = false;
+    let mut saw_claim = false;
+    let mut saw_lift = false;
     let mut next_pass = 2_u8;
-    let before_first = session
-        .economy()
-        .spheres()
-        .iter()
-        .find(|row| row.source_entity_index == sphere_slot)
-        .copied()
-        .expect("source constructor retains the sphere before dispatch");
-    session.step_level2_source_pass(1);
-    let after_first = session
-        .economy()
-        .spheres()
-        .iter()
-        .find(|row| row.source_entity_index == sphere_slot)
-        .copied()
-        .expect("the first source pass retains the claimed sphere");
-    assert_ne!(after_first.phase, before_first.phase);
-    assert_eq!(after_first.assigned_defender_slot, actor_slot);
-    assert_eq!(after_first.position.z, sphere_position.z + 28);
-    assert_eq!(
-        i16::from_le_bytes([
-            session.entities()[usize::from(actor_slot)].record[48],
-            session.entities()[usize::from(actor_slot)].record[49],
-        ]),
-        28,
-        "action187 stores its rising lift value in raw word0x2C"
-    );
-
-    for pass in 2..=24_u8 {
+    for pass in 1..=128_u8 {
         let before = session
             .economy()
             .spheres()
@@ -430,6 +422,10 @@ fn model23_source_claim_lifts_scheduled_sphere_then_absorbs_and_reclaims_it() {
         }
         let before = before.expect("live sphere exists before its scheduled callback");
         session.step_level2_source_pass(pass);
+        let actor = &session.entities()[usize::from(actor_slot)];
+        let target = u16::from_le_bytes([actor.record[154], actor.record[155]]);
+        saw_selection |= target == sphere_slot;
+        saw_approach |= actor.action == 185 && target == sphere_slot;
         let after = session
             .economy()
             .spheres()
@@ -445,20 +441,32 @@ fn model23_source_claim_lifts_scheduled_sphere_then_absorbs_and_reclaims_it() {
             next_pass = pass.wrapping_add(1);
             break;
         }
-        assert!(
-            after.is_some_and(|row| row.position.z > before.position.z),
-            "the scheduled sphere callback reads model23 word0x2C from raw record48"
-        );
+        let after = after.unwrap();
+        if after.assigned_defender_slot == actor_slot && after.control_flags & 0x40 != 0 {
+            saw_claim = true;
+            if crate::native_world::level2_wrapping_target_distance(before.position, actor.position) < 16
+                && before.position.z < actor.position.z
+            {
+                let lift = actor.source_word_2c();
+                let lifted_z = before.position.z.wrapping_add(lift);
+                let ground = session.canonical_terrain().ground_height(after.position);
+                assert_eq!(after.position.z, lifted_z.max(ground),
+                    "the scheduled sphere uses the current Scavenger word0x2C");
+                saw_lift |= lift > 0 && after.position.z > before.position.z;
+            }
+        }
         next_pass = pass.wrapping_add(1);
     }
 
+    assert!(saw_selection && saw_approach && saw_claim && saw_lift,
+        "ordinary idle selection, approach, claim and scheduled lift all occurred");
     assert!(
         absorbed,
         "model23 eventually consumes its lifted mana sphere"
     );
     assert!(
-        session.entities()[usize::from(actor_slot)].mana > mana_before,
-        "absorption transfers sphere mana into the producer"
+        session.entities()[usize::from(actor_slot)].mana == mana_before + sphere.mana,
+        "absorption transfers exactly the real sphere mana into the Scavenger"
     );
     assert!(
         session

@@ -154,6 +154,37 @@ fn target_height_uses_source_word_0x2c_at_record_offset_48() {
 }
 
 #[test]
+fn frozen_mana_order_selects_hidden_equal_distance_before_target_validation() {
+    let terrain = terrain();
+    let position = Position { x: 20_000, y: 20_000, z: 8_192 };
+    let mut hidden = mana_sphere(12, position, 350);
+    hidden.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+    let mut spheres = [hidden, mana_sphere(13, position, 350)];
+    let candidates = [
+        ManaCandidate { slot: 12, position },
+        ManaCandidate { slot: 13, position },
+    ];
+    let mut entities = source_rows(16);
+    let families = empty_families();
+    let mut runtime = EmptyRoutes;
+    let mut row = actor(184, position);
+    row.set_source_byte_46(1);
+    let mut context = Context {
+        terrain: &terrain, targets: &[], mana_candidates: &candidates,
+        class3: &[], families: &families, entities: &mut entities,
+        spheres: &mut spheres, runtime: &mut runtime,
+    };
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(u16::from_le_bytes([row.record[154], row.record[155]]), 12,
+        "sub_28000 chooses the first equal-distance model39 even when hidden");
+    assert_eq!(row.record[74], 2);
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(row.record[74], 1,
+        "the later sub_28420 visit rejects the hidden target");
+    assert!(!context.spheres[1].pending_delete);
+}
+
+#[test]
 fn live_victim_emits_lightning_and_dead_victim_does_not_consume_a_live_sphere() {
     let terrain = terrain();
     let position = Position {
@@ -173,6 +204,7 @@ fn live_victim_emits_lightning_and_dead_victim_does_not_consume_a_live_sphere() 
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
+        mana_candidates: &[],
         class3: &class3,
         families: &families,
         entities: &mut entities,
@@ -203,6 +235,7 @@ fn live_victim_emits_lightning_and_dead_victim_does_not_consume_a_live_sphere() 
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
+        mana_candidates: &[],
         class3: &class3,
         families: &families,
         entities: &mut entities,
@@ -499,8 +532,14 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
                     && !sphere_slots_before_death.contains(&sphere.source_entity_index)
             })
             .expect("model23 death produces a new mana sphere");
-        let reward_row = &live.economy.entities[usize::from(reward.source_entity_index)];
+        let reward_row = crate::native_world::source_target::read(
+            &live.economy,
+            crate::native_world::source_target::Context::default(),
+            reward.source_entity_index,
+        ).unwrap().expect("newborn sphere has a current source occupant");
         assert_eq!((reward_row.class, reward_row.model), (10, 39));
+        assert_eq!(reward_row.life, reward.life);
+        assert_eq!(reward_row.position, reward.position);
         reward.source_entity_index
     };
 
@@ -557,8 +596,8 @@ fn mission18_contact_kill_reclaims_model23_after_the_living_root_census() {
         .expect("the source constructor allocates a collection actor");
         let row = &mut live.economy.entities[usize::from(collector)];
         row.set_source_action(187);
-        row.record[70] = 1;
-        row.record[16..20].copy_from_slice(&2_i32.to_le_bytes());
+        row.set_source_byte_46(1);
+        row.set_source_dword_10(2);
         row.record[154..156].copy_from_slice(&reward_slot.to_le_bytes());
         row.position = Position {
             z: reward.position.z.wrapping_sub(32),
@@ -614,12 +653,13 @@ fn claimed_mana_sphere_is_consumed_and_its_source_row_is_hidden_for_reclaim() {
     )];
     let mut runtime = EmptyRoutes;
     let mut row = actor(187, position);
-    row.record[70] = 1;
-    row.record[16..20].copy_from_slice(&2_i32.to_le_bytes());
+    row.set_source_byte_46(1);
+    row.set_source_dword_10(2);
     row.record[154..156].copy_from_slice(&12_u16.to_le_bytes());
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
+        mana_candidates: &[],
         class3: &class3,
         families: &families,
         entities: &mut entities,
@@ -667,12 +707,13 @@ fn claimed_mana_sphere_mirrors_the_source_word96_holder_relation() {
     let mut runtime = EmptyRoutes;
     let mut row = actor(187, position);
     let predator_slot = row.index;
-    row.record[70] = 1;
-    row.record[16..20].copy_from_slice(&2_i32.to_le_bytes());
+    row.set_source_byte_46(1);
+    row.set_source_dword_10(2);
     row.record[154..156].copy_from_slice(&12_u16.to_le_bytes());
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
+        mana_candidates: &[],
         class3: &class3,
         families: &families,
         entities: &mut entities,
@@ -705,14 +746,20 @@ fn claimed_mana_sphere_mirrors_the_source_word96_holder_relation() {
 }
 
 #[test]
-fn damage_by_a_class3_attacker_detaches_the_predator_from_its_claimed_sphere() {
+fn damage_retains_claim_until_source_nearest_victim_scan_detaches_it() {
     let terrain = terrain();
     let position = Position {
         x: 20_000,
         y: 20_000,
         z: 8_192,
     };
-    let targets = [target(9, 10_000)];
+    let mut victim = target(9, 10_000);
+    victim.castle = Some(Castle {
+        position: Position { x: 30_000, y: 30_000, z: position.z },
+        half_x: 384,
+        half_y: 384,
+    });
+    let targets = [victim];
     let class3 = [9];
     let families = empty_families();
     let mut entities = source_rows(16);
@@ -722,19 +769,22 @@ fn damage_by_a_class3_attacker_detaches_the_predator_from_its_claimed_sphere() {
     entities[12].model = 39;
     entities[12].set_control_flags(MANA_SPHERE_CLAIMED);
     entities[12].record[154..156].copy_from_slice(&7_u16.to_le_bytes());
-    let mut claimed = mana_sphere(12, position, 350);
+    let mut claimed = mana_sphere(12, Position { z: 7_000, ..position }, 350);
     claimed.control_flags = MANA_SPHERE_CLAIMED;
     claimed.assigned_carrier_id = 7;
     claimed.assigned_defender_slot = 7;
     let mut spheres = [claimed];
     let mut runtime = EmptyRoutes;
-    let mut row = actor(186, position);
+    let mut row = actor(187, position);
+    row.set_source_byte_46(1);
+    row.set_source_dword_10(4);
     row.record[154..156].copy_from_slice(&12_u16.to_le_bytes());
     row.record[98..102].copy_from_slice(&10_i32.to_le_bytes());
     row.record[102..104].copy_from_slice(&9_u16.to_le_bytes());
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
+        mana_candidates: &[],
         class3: &class3,
         families: &families,
         entities: &mut entities,
@@ -743,9 +793,16 @@ fn damage_by_a_class3_attacker_detaches_the_predator_from_its_claimed_sphere() {
     };
 
     let _ = step(&mut Actor { row: &mut row }, &mut context).unwrap();
-
-    let sphere = context.spheres[0];
     assert_eq!(row.life, RULES.max_life - 10);
+    assert_eq!(u16::from_le_bytes([row.record[154], row.record[155]]), 12);
+    assert_ne!(context.spheres[0].control_flags & MANA_SPHERE_CLAIMED, 0,
+        "pinned sub_28110's slot-zero attacker lookup does not force retaliation");
+
+    // The independent normal 1-in-32 nearest-victim scan can still select
+    // a visible player outside Castle protection and release this claim.
+    row.set_phase(0);
+    let _ = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    let sphere = context.spheres[0];
     assert_eq!(
         u16::from_le_bytes([row.record[154], row.record[155]]),
         targets[0].slot
@@ -778,6 +835,7 @@ fn source_disabled_action190_is_rejected() {
     let mut context = Context {
         terrain: &terrain,
         targets: &targets,
+        mana_candidates: &[],
         class3: &class3,
         families: &families,
         entities: &mut entities,
