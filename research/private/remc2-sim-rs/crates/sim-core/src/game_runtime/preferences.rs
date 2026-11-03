@@ -554,8 +554,23 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
     pub fn step_player_with_preferences(
         &mut self,
         guard: sim_session::SessionGuard,
-        mut command: sim_session::GameCommand,
+        command: sim_session::GameCommand,
     ) -> Result<sim_session::SessionObservation<B::Snapshot>, PreferenceStepError<B::Error>> {
+        self.advance_player_with_preferences(guard, command)?;
+        Ok(self
+            .session()
+            .expect("an accepted player step retains its Playing session")
+            .snapshot())
+    }
+
+    /// Advance through the same preference and rollback boundary when the
+    /// transport obtains its campaign observation in a separate read.
+    #[doc(hidden)]
+    pub fn advance_player_with_preferences(
+        &mut self,
+        guard: sim_session::SessionGuard,
+        mut command: sim_session::GameCommand,
+    ) -> Result<(), PreferenceStepError<B::Error>> {
         if self.identity().mode != super::RuntimeMode::Playing {
             self.player_preferences.reset_input();
             return Err(PreferenceStepError::Unavailable);
@@ -594,7 +609,7 @@ impl<B: super::GameSessionBackend<Command = sim_session::GameCommand>> super::Ga
         let result = self
             .session_mut()
             .ok_or(PreferenceStepError::Unavailable)?
-            .step(guard, command)
+            .advance(guard, command)
             .map_err(PreferenceStepError::Session);
         if result.is_err() {
             self.player_preferences.assistance = previous_assistance;
@@ -685,6 +700,166 @@ impl FlightAssistance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advance_preferences_matches_observed_steps_and_rolls_back_rejections() {
+        use crate::{
+            campaign::backend::{
+                Mc2CampaignAdapter, Mc2CampaignBackend, Mc2CampaignInputs, load_mc2_campaign,
+            },
+            game_definition::{SemanticId, default_catalog},
+            game_runtime::GameRuntime,
+        };
+        use sim_session::{GameCommand, GameSessionError, SessionGuard};
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq8-level1-collision-v5-night");
+        let definition =
+            Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+        let open = || {
+            let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(7137).unwrap();
+            let loading = runtime
+                .new_game(runtime.identity().guard(), Arc::clone(&definition))
+                .unwrap();
+            runtime
+                .open_level(
+                    loading.guard(),
+                    &Mc2CampaignAdapter,
+                    Mc2CampaignInputs::new(&package),
+                    7137,
+                )
+                .unwrap();
+            let guard = runtime.session().unwrap().identity().guard();
+            runtime.player_preferences.current.flight_assistance = true;
+            // Put the real preference producer one accepted observation from
+            // recentering, without running 48 unrelated gameplay frames.
+            runtime.player_preferences.assistance.unchanged = 48;
+            runtime.player_preferences.input_generation =
+                Some((runtime.generation, guard.generation));
+            runtime
+        };
+        let assistance = |runtime: &GameRuntime<Mc2CampaignBackend>| {
+            let preferences = &runtime.player_preferences;
+            (
+                preferences.assistance.previous,
+                preferences.assistance.unchanged,
+                preferences.assistance_sequence,
+                preferences.input_generation,
+            )
+        };
+        let mut observed = open();
+        let mut advanced = open();
+        let guard = observed.session().unwrap().identity().guard();
+        let before = observed.session().unwrap().snapshot();
+        let before_assistance = assistance(&observed);
+        for (rejected_guard, command, backend_rejection) in [
+            (
+                SessionGuard {
+                    expected_tick: 1,
+                    ..guard
+                },
+                GameCommand::default(),
+                false,
+            ),
+            (
+                SessionGuard {
+                    generation: guard.generation + 1,
+                    ..guard
+                },
+                GameCommand::default(),
+                false,
+            ),
+            (
+                guard,
+                GameCommand {
+                    select_spell: Some(SemanticId::parse("spell.castle").unwrap()),
+                    ..GameCommand::default()
+                },
+                true,
+            ),
+        ] {
+            let observed_error = observed
+                .step_player_with_preferences(rejected_guard, command.clone())
+                .unwrap_err();
+            let advanced_error = advanced
+                .advance_player_with_preferences(rejected_guard, command)
+                .unwrap_err();
+            assert_eq!(format!("{observed_error:?}"), format!("{advanced_error:?}"));
+            if backend_rejection {
+                assert!(matches!(
+                    advanced_error,
+                    PreferenceStepError::Session(GameSessionError::Backend(_))
+                ));
+            } else {
+                assert!(matches!(
+                    advanced_error,
+                    PreferenceStepError::Session(GameSessionError::Guard(_))
+                ));
+            }
+            for runtime in [&observed, &advanced] {
+                assert_eq!(assistance(runtime), before_assistance);
+                assert_eq!(runtime.session().unwrap().snapshot(), before);
+                assert_eq!(
+                    runtime
+                        .session()
+                        .unwrap()
+                        .backend()
+                        .replay_operation_count(),
+                    0
+                );
+            }
+        }
+
+        let stepped = observed
+            .step_player_with_preferences(guard, GameCommand::default())
+            .unwrap();
+        advanced
+            .advance_player_with_preferences(guard, GameCommand::default())
+            .unwrap();
+        assert_eq!(advanced.session().unwrap().snapshot(), stepped);
+        assert_eq!(assistance(&advanced), assistance(&observed));
+        assert_eq!(advanced.player_preferences.assistance_sequence, 1);
+        assert_eq!(advanced.player_preferences.assistance.unchanged, 0);
+        for runtime in [&mut observed, &mut advanced] {
+            assert_eq!(
+                runtime
+                    .session()
+                    .unwrap()
+                    .backend()
+                    .replay_operation_count(),
+                1
+            );
+            runtime.pause(runtime.identity().guard()).unwrap();
+        }
+        let paused = advanced.session().unwrap().snapshot();
+        let paused_operations = advanced
+            .session()
+            .unwrap()
+            .backend()
+            .replay_operation_count();
+        let paused_guard = paused.identity.guard();
+        assert!(matches!(
+            observed.step_player_with_preferences(paused_guard, GameCommand::default()),
+            Err(PreferenceStepError::Unavailable)
+        ));
+        assert!(matches!(
+            advanced.advance_player_with_preferences(paused_guard, GameCommand::default()),
+            Err(PreferenceStepError::Unavailable)
+        ));
+        for runtime in [&observed, &advanced] {
+            assert_eq!(runtime.session().unwrap().snapshot(), paused);
+            assert_eq!(
+                runtime
+                    .session()
+                    .unwrap()
+                    .backend()
+                    .replay_operation_count(),
+                paused_operations
+            );
+            assert_eq!(runtime.player_preferences.input_generation, None);
+            assert_eq!(runtime.player_preferences.assistance.unchanged, 0);
+        }
+    }
 
     #[test]
     fn original_render_options_default_enabled_for_existing_profiles() {

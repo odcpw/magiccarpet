@@ -102,7 +102,9 @@ impl CampaignRuntimeAudio {
                 16_384,
             )
             .map_err(campaign_effect_page_error)?;
-        let state_hash = campaign.state_hash();
+        // Music-only and empty pages need no gameplay fingerprint. The
+        // campaign is immutably borrowed for this entire synchronization.
+        let mut state_hash = None;
         let mut music_updates = Vec::new();
         for record in &page.records {
             if let sim_core::campaign::journal::CampaignEffect::Flight(FlightEvent::UpdateMusic {
@@ -136,7 +138,7 @@ impl CampaignRuntimeAudio {
             let mut command = audio_command_record(
                 generation,
                 sequence,
-                state_hash,
+                *state_hash.get_or_insert_with(|| campaign.state_hash()),
                 u32::from(sound_id),
                 sound_id,
                 entity_index,

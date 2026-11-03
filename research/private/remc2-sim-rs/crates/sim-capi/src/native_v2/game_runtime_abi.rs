@@ -211,8 +211,7 @@ impl RuntimeRecord {
         let previous = self.bind_campaign_preferences(guard)?;
         let result = self
             .runtime
-            .step_player_with_preferences(guard, command)
-            .map(|_| ())
+            .advance_player_with_preferences(guard, command)
             .map_err(|error| match error {
                 sim_core::game_runtime::preferences::PreferenceStepError::Unavailable => {
                     AbiError::new(

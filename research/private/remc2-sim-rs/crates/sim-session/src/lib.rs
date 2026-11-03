@@ -913,12 +913,27 @@ impl<B: GameSessionBackend> GameSession<B> {
         guard: SessionGuard,
         command: B::Command,
     ) -> Result<SessionObservation<B::Snapshot>, GameSessionError<B::Error>> {
+        self.advance(guard, command)?;
+        Ok(self.snapshot())
+    }
+
+    /// Apply the same guarded step when a transport reads its observation
+    /// separately. This does not construct or discard a backend snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same guard and backend errors as [`Self::step`].
+    #[doc(hidden)]
+    pub fn advance(
+        &mut self,
+        guard: SessionGuard,
+        command: B::Command,
+    ) -> Result<(), GameSessionError<B::Error>> {
         self.validate_guard(guard)
             .map_err(GameSessionError::Guard)?;
         self.backend
             .step(command)
-            .map_err(GameSessionError::Backend)?;
-        Ok(self.snapshot())
+            .map_err(GameSessionError::Backend)
     }
 
     /// Service one package-declared paused frame after exact nested guard
@@ -1064,7 +1079,7 @@ mod tests {
         ChangeSetBuilder, IntegerParameter, PublicationFault, RequestedTiming, WorkspaceStore,
         default_catalog, engine_capabilities,
     };
-    use std::{convert::Infallible, path::PathBuf};
+    use std::{cell::Cell, convert::Infallible, path::PathBuf};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct ProbeSnapshot {
@@ -1079,6 +1094,9 @@ mod tests {
         definition_hash: String,
         command_total: i64,
         reject_next_reset: bool,
+        reject_steps: bool,
+        step_calls: usize,
+        snapshot_reads: Cell<usize>,
     }
 
     impl GameSessionBackend for ProbeBackend {
@@ -1095,6 +1113,7 @@ mod tests {
         }
 
         fn snapshot(&self) -> Self::Snapshot {
+            self.snapshot_reads.set(self.snapshot_reads.get() + 1);
             ProbeSnapshot {
                 tick: self.tick,
                 definition_hash: self.definition_hash.clone(),
@@ -1118,6 +1137,10 @@ mod tests {
         }
 
         fn step(&mut self, command: Self::Command) -> Result<(), Self::Error> {
+            self.step_calls += 1;
+            if self.reject_steps {
+                return Err("injected step rejection");
+            }
             self.command_total += command;
             self.tick += 1;
             Ok(())
@@ -1156,6 +1179,9 @@ mod tests {
                 definition_hash: definition.definition_hash().to_owned(),
                 command_total: 0,
                 reject_next_reset: false,
+                reject_steps: false,
+                step_calls: 0,
+                snapshot_reads: Cell::new(0),
             })
         }
     }
@@ -1177,6 +1203,72 @@ mod tests {
             session_id: identity.session_id,
             generation: identity.generation,
             expected_tick: identity.tick,
+        }
+    }
+
+    #[test]
+    fn advance_matches_step_without_constructing_an_observation() {
+        let definition = Arc::new(definition());
+        let mut observed =
+            GameSession::open(&ProbeAdapter, Arc::clone(&definition), 7, ()).unwrap();
+        let mut advanced = GameSession::open(&ProbeAdapter, definition, 7, ()).unwrap();
+        for command in [4, -2, 9] {
+            let reads_before = advanced.backend.snapshot_reads.get();
+            let stepped = observed.step(guard(&observed), command).unwrap();
+            advanced.advance(guard(&advanced), command).unwrap();
+            assert_eq!(advanced.backend.snapshot_reads.get(), reads_before);
+            assert_eq!(
+                observed.backend.snapshot_reads.get(),
+                observed.backend.step_calls
+            );
+            assert_eq!(advanced.backend.step_calls, observed.backend.step_calls);
+            assert_eq!(advanced.snapshot(), stepped);
+        }
+    }
+
+    #[test]
+    fn advance_and_step_reject_before_observation_and_preserve_state() {
+        for observe in [false, true] {
+            let mut session =
+                GameSession::open(&ProbeAdapter, Arc::new(definition()), 7, ()).unwrap();
+            let before = session.snapshot();
+            let valid = guard(&session);
+            for stale in [
+                SessionGuard {
+                    session_id: 8,
+                    ..valid
+                },
+                SessionGuard {
+                    generation: valid.generation + 1,
+                    ..valid
+                },
+                SessionGuard {
+                    expected_tick: valid.expected_tick + 1,
+                    ..valid
+                },
+            ] {
+                let result = if observe {
+                    session.step(stale, 4).map(|_| ())
+                } else {
+                    session.advance(stale, 4)
+                };
+                assert!(matches!(result, Err(GameSessionError::Guard(_))));
+                assert_eq!(session.backend.step_calls, 0);
+                assert_eq!(session.backend.snapshot_reads.get(), 1);
+            }
+            session.backend.reject_steps = true;
+            let result = if observe {
+                session.step(valid, 4).map(|_| ())
+            } else {
+                session.advance(valid, 4)
+            };
+            assert!(matches!(
+                result,
+                Err(GameSessionError::Backend("injected step rejection"))
+            ));
+            assert_eq!(session.backend.step_calls, 1);
+            assert_eq!(session.backend.snapshot_reads.get(), 1);
+            assert_eq!(session.snapshot(), before);
         }
     }
 

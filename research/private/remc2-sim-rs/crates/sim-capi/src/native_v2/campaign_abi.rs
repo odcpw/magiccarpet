@@ -1977,7 +1977,9 @@ pub extern "C" fn mc_native_campaign_events_copy_since(
                     "campaign effect output buffer is null",
                 ));
             }
-            let current_state_hash = campaign.state_hash();
+            // Retained event hashes already identify their production state;
+            // compute the current fallback only if an output row needs it.
+            let mut current_state_hash = None;
             let rows = page
                 .records
                 .iter()
@@ -1988,7 +1990,9 @@ pub extern "C" fn mc_native_campaign_events_copy_since(
                             .effect_state_hashes
                             .get(&record.sequence)
                             .copied()
-                            .unwrap_or(current_state_hash),
+                            .unwrap_or_else(|| {
+                                *current_state_hash.get_or_insert_with(|| campaign.state_hash())
+                            }),
                         record,
                     )
                 })
