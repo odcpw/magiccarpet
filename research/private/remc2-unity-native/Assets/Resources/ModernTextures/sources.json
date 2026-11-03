@@ -1,0 +1,44 @@
+[
+  {
+    "file": "RockAlbedo.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/mossy_rock/mossy_rock_diff_2k.jpg",
+    "license": "CC0-1.0",
+    "asset_page": "https://polyhaven.com/a/mossy_rock",
+    "sha256": "98ecbd1d19953433f5909b79958992b1da2b45addbee772d1d4c27287f368499"
+  },
+  {
+    "file": "RockNormal.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/mossy_rock/mossy_rock_nor_gl_2k.jpg",
+    "license": "CC0-1.0",
+    "asset_page": "https://polyhaven.com/a/mossy_rock",
+    "sha256": "78c05b52eb78617fcce4fde7a9ac4872a9725fb2d13aff33248cbdb9c6330563"
+  },
+  {
+    "file": "RockRoughness.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/mossy_rock/mossy_rock_rough_2k.jpg",
+    "license": "CC0-1.0",
+    "asset_page": "https://polyhaven.com/a/mossy_rock",
+    "sha256": "341c4f85e9b350738d30e82e616177316cc5fcbc3e8b5ee9777db47dfc5e6b7a"
+  },
+  {
+    "file": "GroundAlbedo.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/forrest_ground_03/forrest_ground_03_diff_2k.jpg",
+    "license": "CC0-1.0",
+    "asset_page": "https://polyhaven.com/a/forrest_ground_03",
+    "sha256": "187a8e33773473939c0e85b5e10ae94eb9e8d91463ab8b74e122d833d2d84dc6"
+  },
+  {
+    "file": "GroundNormal.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/forrest_ground_03/forrest_ground_03_nor_gl_2k.jpg",
+    "license": "CC0-1.0",
+    "asset_page": "https://polyhaven.com/a/forrest_ground_03",
+    "sha256": "dcc26b4fd27a8e1f1f14558214fbaf1d68a61d9b569eee805793498e4b30098c"
+  },
+  {
+    "file": "GroundRoughness.jpg",
+    "source": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/forrest_ground_03/forrest_ground_03_rough_2k.jpg",
+    "license": "CC0-1.0",
+    "asset_page": "https://polyhaven.com/a/forrest_ground_03",
+    "sha256": "b3b04dddd8ed6f441dc0271c3e6e4ac4d6ba882ab9c1028d13b08ddd39f091fa"
+  }
+]

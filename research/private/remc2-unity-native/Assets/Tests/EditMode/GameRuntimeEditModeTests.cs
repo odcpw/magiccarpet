@@ -3160,6 +3160,105 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(180000)]
+        public void ProductionPausedMenuReloadRebindsMusicBeforeInstallingPreferences()
+        {
+            var nativeSessions = NativeSession.ActiveSessionCount;
+            var campaignSessions = NativeCampaignSession.ActiveSessionCount;
+            var save = Path.Combine(Path.GetTempPath(), $"mc-paused-reload-{Guid.NewGuid():N}.json");
+            var root = new GameObject("paused menu replay with live audio owner");
+            root.SetActive(false);
+            var runtime = root.AddComponent<MagicCarpetRuntime>();
+            try
+            {
+                runtime.QualificationInitializeGameRuntimeProductionFromArguments(new[] {
+                    "-mc-game-runtime", "-mc-runtime-package", Path.Combine(PrivateRoot,
+                        "generated/mc-bhq8-level1-collision-v5-night"),
+                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
+                        "generated/mc-b9s2-cursor-level1-20261029"),
+                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
+                        "generated/mc2-level1-night-cache-v2"),
+                    "-mc-runtime-loading-cache", Path.Combine(PrivateRoot,
+                        "generated/mc2-level1-night-cache-v2"),
+                    "-mc-runtime-replay-save", save,
+                    "-mc-runtime-package", Path.Combine(PrivateRoot,
+                        "generated/mc-level2-vault-successor-closure-20261025"),
+                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
+                        "generated/mc-b9s2-cursor-level2-vault-20261029"),
+                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
+                        "generated/level2-vault-successor-owner-cache-20261025"),
+                    "-mc-runtime-package", Path.Combine(PrivateRoot,
+                        "generated/level3-day-block32-campaign-recipe-v2"),
+                    "-mc-runtime-owner-cache", Path.Combine(PrivateRoot,
+                        "generated/mc-b9s2-cursor-level3-20261029"),
+                    "-mc-runtime-presentation-cache", Path.Combine(PrivateRoot,
+                        "generated/level3-day-spell-owner-cache-audio-v4") });
+                runtime.QualificationDriveGameRuntimeFrames(3);
+                var saved = runtime.GameRuntimeProductionCampaignSnapshot;
+                runtime.QualificationSaveGameRuntimeProductionReplayToPath(save);
+                runtime.QualificationPauseGameRuntimeProduction();
+                var previous = runtime.GameRuntimeProductionIdentity;
+                var previousSurface = (CampaignPresentationSurface)typeof(MagicCarpetRuntime).GetField(
+                    "gameRuntimeNightSurface", System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                var previousRoot = previousSurface.Root;
+                Assert.That(previousRoot != null, Is.True);
+
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.True,
+                    "the real paused-menu load must install preferences with a current audio reader");
+                Assert.That(previousRoot == null, Is.True,
+                    "replacing a paused world must destroy its previous presentation root");
+                var loaded = runtime.GameRuntimeProductionIdentity;
+                Assert.That(loaded.runtime_id, Is.Not.EqualTo(previous.runtime_id));
+                Assert.That(loaded.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+                Assert.That(loaded.session.tick, Is.EqualTo(saved.identity.tick));
+                Assert.That(loaded.player_preferences.installed, Is.True);
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                Assert.That(runtime.Level2ProductionDayMusic.generation,
+                    Is.EqualTo(ulong.Parse(loaded.session.generation)));
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose),
+                    Is.EqualTo(JsonUtility.ToJson(saved.value.player_pose)));
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("4"));
+                Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions + 1));
+                // Borrowed projections do not own or count an additional native handle.
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
+                var borrowed = (NativeCampaignSession)typeof(MagicCarpetRuntime).GetField(
+                    "campaignSession", System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic).GetValue(runtime);
+                Assert.That(borrowed.Handle.ToString(), Is.EqualTo(loaded.session.session_id));
+                Assert.That(borrowed.Generation, Is.EqualTo(ulong.Parse(loaded.session.generation)));
+
+                runtime.QualificationPauseGameRuntimeProduction();
+                // Ordinary paused frames service audio generation changes before
+                // the next UI action; direct native pause/resume alone skips that consumer.
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                var beforeRejectedLoad = runtime.GameRuntimeProductionIdentity;
+                var beforeRejectedPose = JsonUtility.ToJson(runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose);
+                // This disposable save belongs to this test. Rejection must occur
+                // before any live owner or presentation is replaced.
+                File.WriteAllText(save, "{}");
+                Assert.That(runtime.ExecuteGameRuntimeMenuAction(CampaignMenuPresenter.Action.Load), Is.False);
+                Assert.That(runtime.GameRuntimeProductionIdentity.runtime_id, Is.EqualTo(beforeRejectedLoad.runtime_id));
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo(beforeRejectedLoad.session.tick));
+                Assert.That(runtime.GameRuntimeProductionStartupReady, Is.True);
+                Assert.That(JsonUtility.ToJson(runtime.GameRuntimeProductionCampaignSnapshot.value.player_pose),
+                    Is.EqualTo(beforeRejectedPose));
+                runtime.QualificationResumeGameRuntimeProduction();
+                runtime.QualificationDriveGameRuntimeFrames(1);
+                Assert.That(runtime.GameRuntimeProductionIdentity.session.tick, Is.EqualTo("5"));
+            }
+            finally
+            {
+                runtime.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+                if (File.Exists(save)) File.Delete(save);
+            }
+            Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(nativeSessions));
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(campaignSessions));
+        }
+
+        [Test]
+        [Timeout(180000)]
         public void ProductionMagicCarpetRuntimeRestoresItsReplayIntoOneFreshOwner()
         {
             var nativeSessions = NativeSession.ActiveSessionCount;
@@ -3555,9 +3654,10 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(title.runtime_id, Is.EqualTo(playing.runtime_id));
                 Assert.That(ulong.Parse(title.generation), Is.EqualTo(runtimeGeneration + 1));
                 Assert.That(title.mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
-                Assert.That(title.session.session_id, Is.Null.Or.Empty);
-                Assert.That(title.pending_definition.definition_hash, Is.Null.Or.Empty);
-                Assert.That(title.active_runtime_flow?.game_id, Is.Null.Or.Empty);
+                Assert.That(title.session, Is.Null);
+                Assert.That(title.pending_definition, Is.Null);
+                Assert.That(title.active_runtime_flow, Is.Null);
+                Assert.That(runtime.GameRuntimeProductionCampaignSnapshot, Is.Null);
                 Assert.That(runtime.GameRuntimeProductionStartupReady, Is.False);
                 Assert.That(runtime.GameRuntimeProductionFireballTexture, Is.Null);
                 Assert.That(runtime.GameRuntimeProductionFireballMarkerCount, Is.Zero);

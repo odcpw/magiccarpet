@@ -30,6 +30,8 @@ The existing -mc-runtime-* resource/save options are also accepted. Paths are
 relative to the current directory. Use -- before unparsed Unity arguments.
 MC_CAMPAIGN_SAVE and MC_CAMPAIGN_REPLAY set save/load defaults; explicit options
 take precedence. MC_WIDTH, MC_HEIGHT and MC_FULLSCREEN set the window defaults.
+MC_PLAYER_PROJECT selects a separately qualified player's project; owner resources
+still come from this launcher's canonical generated directory.
 """
 
 
@@ -216,7 +218,13 @@ def main(arguments):
                    '-screen-height', os.environ.get('MC_HEIGHT', '900'),
                    '-logFile', str(run_dir / 'player.log')))
     # No shell parsing: each caller-supplied path remains exactly one argument.
-    os.execv('/bin/sh', ['sh', str(PROJECT / 'run-player.sh'), *native, *player])
+    original_project = PROJECT / 'Builds/Original'
+    default_project = (original_project if original_project.exists() or original_project.is_symlink()
+                       else PROJECT)
+    player_project = Path(os.environ.get('MC_PLAYER_PROJECT') or str(default_project)).absolute()
+    if not (player_project / 'run-player.sh').is_file():
+        raise LaunchError(f'Missing qualified player launcher: {player_project / "run-player.sh"}')
+    os.execv('/bin/sh', ['sh', str(player_project / 'run-player.sh'), *native, *player])
 
 
 try:

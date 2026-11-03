@@ -851,7 +851,7 @@ namespace MagicCarpet.Native
             return written;
         }
 
-        private static void MaterializeMapCross(byte[] frame, byte[] tables, byte colour)
+        internal static void MaterializeMapCross(byte[] frame, byte[] tables, byte colour)
         {
             void Blend(int x, int y) { var offset = y * 320 + x; frame[offset] = tables[0x4000 + (colour << 8) + frame[offset]]; }
             Blend(94, 100);

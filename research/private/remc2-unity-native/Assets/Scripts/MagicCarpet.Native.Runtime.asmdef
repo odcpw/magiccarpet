@@ -1,7 +1,7 @@
 {
   "name": "MagicCarpet.Native.Runtime",
   "rootNamespace": "MagicCarpet.Native",
-  "references": ["Unity.InputSystem"],
+  "references": ["Unity.InputSystem", "Unity.RenderPipelines.Universal.Runtime", "Unity.RenderPipelines.Core.Runtime"],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

@@ -12,6 +12,164 @@ namespace MagicCarpet.Native.Tests
     public sealed class EngineSessionEditModeTests
     {
         [Serializable]
+        private sealed class JsonReadProbe
+        {
+            public string value;
+        }
+
+        [Test]
+        public void NeutralJsonReadUsesOneNativeCallWhenTheObservationFits()
+        {
+            var bytes = Encoding.UTF8.GetBytes("{\"value\":\"small observation\"}");
+            var calls = 0;
+            int Read(IntPtr buffer, uint capacity, out uint length)
+            {
+                calls++;
+                Assert.That(buffer, Is.Not.EqualTo(IntPtr.Zero));
+                Assert.That(capacity, Is.GreaterThan((uint)bytes.Length));
+                Marshal.Copy(bytes, 0, buffer, bytes.Length);
+                Marshal.WriteByte(buffer, bytes.Length, 0xff);
+                length = (uint)bytes.Length;
+                return NativeSim.Ok;
+            }
+
+            var result = EngineSessionTransport.ReadJson<JsonReadProbe>(Read, "small JSON test");
+            Assert.That(result.value, Is.EqualTo("small observation"));
+            Assert.That(calls, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void NeutralJsonReadRetriesALargerObservationWithoutTruncatingIt()
+        {
+            var expected = new string('x', 70_000) + " tail";
+            var bytes = Encoding.UTF8.GetBytes(JsonUtility.ToJson(new JsonReadProbe { value = expected }));
+            var calls = 0;
+            int Read(IntPtr buffer, uint capacity, out uint length)
+            {
+                calls++;
+                length = (uint)bytes.Length;
+                if (calls == 1)
+                {
+                    Assert.That(capacity, Is.LessThan(length));
+                    return NativeSim.Bounds;
+                }
+                Assert.That(capacity, Is.EqualTo(length));
+                Marshal.Copy(bytes, 0, buffer, bytes.Length);
+                return NativeSim.Ok;
+            }
+
+            var result = EngineSessionTransport.ReadJson<JsonReadProbe>(Read, "large JSON test");
+            Assert.That(result.value, Is.EqualTo(expected));
+            Assert.That(calls, Is.EqualTo(2));
+        }
+
+        [TestCase(NativeSim.Ok, 0)]
+        [TestCase(NativeSim.Ok, 65_537)]
+        [TestCase(NativeSim.Bounds, 0)]
+        [TestCase(NativeSim.Bounds, 65_536)]
+        [TestCase(NativeSim.Bounds, 16 * 1024 * 1024 + 1)]
+        public void NeutralJsonReadRejectsInvalidNativeLengthsBeforeCopy(int status, int reportedLength)
+        {
+            var calls = 0;
+            int Read(IntPtr buffer, uint capacity, out uint length)
+            {
+                calls++;
+                length = (uint)reportedLength;
+                return status;
+            }
+
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                EngineSessionTransport.ReadJson<JsonReadProbe>(Read, "invalid JSON length test"));
+            Assert.That(error.Message, Does.Contain("invalid byte length"));
+            Assert.That(calls, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void NeutralJsonReadPropagatesNativeErrorsWithoutRetrying()
+        {
+            var calls = 0;
+            int Read(IntPtr buffer, uint capacity, out uint length)
+            {
+                calls++;
+                length = 70_000;
+                return NativeSim.InvalidArgument;
+            }
+
+            var error = Assert.Throws<EngineSessionTransport.CommandException>(() =>
+                EngineSessionTransport.ReadJson<JsonReadProbe>(Read, "failed JSON test"));
+            Assert.That(error.Status, Is.EqualTo(NativeSim.InvalidArgument));
+            Assert.That(calls, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void NeutralJsonReadRejectsAnObservationWhoseLengthChangesDuringRetry()
+        {
+            var calls = 0;
+            int Read(IntPtr buffer, uint capacity, out uint length)
+            {
+                calls++;
+                length = calls == 1 ? 70_000u : 69_999u;
+                return calls == 1 ? NativeSim.Bounds : NativeSim.Ok;
+            }
+
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                EngineSessionTransport.ReadJson<JsonReadProbe>(Read, "changing JSON test"));
+            Assert.That(error.Message, Does.Contain("changed length during copy"));
+            Assert.That(calls, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void NeutralManagedGameplayMenuActionsReachTheNativeAdmissionContract()
+        {
+            var transport = MagicCarpetRuntime.OpenEngineSessionForPackage(
+                LevelOneCampaignPackagePath, null, null);
+            try
+            {
+                var observation = transport.CampaignSnapshot();
+                Assert.Throws<ArgumentException>(() => EngineSessionTransport.StepHandle(
+                    transport.Handle, observation.identity, 0, 0, 0, 0, 0,
+                    transport.NegotiatedContract.limits.maximum_command_json_bytes,
+                    abandonAction: "unknown_menu_action"));
+                var unchanged = transport.CampaignSnapshot();
+                Assert.That(unchanged.identity.tick, Is.EqualTo(observation.identity.tick));
+                Assert.That(unchanged.value.state_hash, Is.EqualTo(observation.value.state_hash));
+
+                foreach (var expected in new[] {
+                    (action: "toggle_gameplay_map", map: true, spells: false, information: false),
+                    (action: "show_player_information", map: true, spells: false, information: true),
+                    (action: "hide_player_information", map: true, spells: false, information: false),
+                    (action: "open_spell_menu", map: true, spells: true, information: false),
+                    (action: "close_spell_menu", map: true, spells: false, information: false),
+                    (action: "close_gameplay_menus", map: false, spells: false, information: false),
+                    (action: "open_abandon_confirmation", map: false, spells: false, information: false),
+                    (action: "cancel_abandon_confirmation", map: false, spells: false, information: false),
+                    (action: "open_abandon_confirmation", map: false, spells: false, information: false),
+                    (action: "confirm_abandon", map: false, spells: false, information: false),
+                })
+                {
+                    EngineSessionTransport.StepHandle(
+                        transport.Handle, observation.identity, 0, 0, 0, 0, 0,
+                        transport.NegotiatedContract.limits.maximum_command_json_bytes,
+                        abandonAction: expected.action);
+                    observation = transport.CampaignSnapshot();
+                    var admission = observation.value.source_menu_admission;
+                    Assert.That(admission, Is.Not.Null, expected.action);
+                    Assert.That(admission.action, Is.EqualTo(expected.action));
+                    Assert.That(admission.admitted, Is.True, expected.action);
+                    Assert.That(admission.tick, Is.EqualTo(observation.identity.tick));
+                    Assert.That(admission.map_open, Is.EqualTo(expected.map), expected.action);
+                    Assert.That(admission.spells_open, Is.EqualTo(expected.spells), expected.action);
+                    Assert.That(admission.player_information_open, Is.EqualTo(expected.information), expected.action);
+                }
+                Assert.That(observation.value.return_to_title_requested, Is.True);
+            }
+            finally
+            {
+                transport.Destroy();
+            }
+        }
+
+        [Serializable]
         private sealed class Corpus
         {
             public Suite[] suites;

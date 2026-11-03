@@ -31,7 +31,7 @@ namespace MagicCarpet.Native
             { "snapshot", "step", "reset", "events", "presentation_assets",
               "presentation_entities", "semantic_spell_selection", "spell_observations" };
 
-        private delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
+        internal delegate int JsonRead(IntPtr buffer, uint capacity, out uint length);
 
         [Serializable]
         internal sealed class Contract
@@ -651,9 +651,12 @@ namespace MagicCarpet.Native
                 (abandonAction != null ? 1 : 0) > 1)
                 throw new ArgumentException("menu operations require separate commands");
             if (abandonAction != null && abandonAction != "toggle_gameplay_map" &&
+                abandonAction != "open_spell_menu" && abandonAction != "close_spell_menu" &&
+                abandonAction != "show_player_information" && abandonAction != "hide_player_information" &&
+                abandonAction != "close_gameplay_menus" &&
                 abandonAction != "open_abandon_confirmation" &&
                 abandonAction != "confirm_abandon" && abandonAction != "cancel_abandon_confirmation")
-                throw new ArgumentException("unknown abandon confirmation action", nameof(abandonAction));
+                throw new ArgumentException("unknown gameplay menu action", nameof(abandonAction));
             Command command = abandonAction != null ? new AbandonActionCommand { abandon_action = abandonAction }
                 : mark != null ? new SpellMarkCommand { mark_spell = mark }
                 : cycle != null ? new MarkedSpellCycleCommand { cycle_marked_spell = cycle }
@@ -1111,21 +1114,29 @@ namespace MagicCarpet.Native
             }
         }
 
-        private static T ReadJson<T>(JsonRead read, string operation) where T : class
+        internal static T ReadJson<T>(JsonRead read, string operation) where T : class
         {
-            Check(read(IntPtr.Zero, 0, out var required), operation + " size", NativeSim.Bounds);
-            if (required == 0 || required > 16 * 1024 * 1024)
-            {
-                throw new InvalidOperationException(operation + " returned an invalid byte length");
-            }
-            var buffer = Marshal.AllocHGlobal(checked((int)required));
+            // A size probe builds and hashes the entire native snapshot too.
+            // Most observations fit here; larger ones retain the bounded retry.
+            const uint maximum = 16 * 1024 * 1024;
+            uint capacity = 64 * 1024;
+            var buffer = Marshal.AllocHGlobal(checked((int)capacity));
             try
             {
-                Check(read(buffer, required, out var written), operation);
-                if (written != required)
+                var status = read(buffer, capacity, out var written);
+                if (status == NativeSim.Bounds)
                 {
-                    throw new InvalidOperationException(operation + " changed length during copy");
+                    if (written <= capacity || written > maximum)
+                        throw new InvalidOperationException(operation + " returned an invalid byte length");
+                    capacity = written;
+                    buffer = Marshal.ReAllocHGlobal(buffer, new IntPtr(checked((int)capacity)));
+                    Check(read(buffer, capacity, out written), operation);
+                    if (written != capacity)
+                        throw new InvalidOperationException(operation + " changed length during copy");
                 }
+                else Check(status, operation);
+                if (written == 0 || written > capacity)
+                    throw new InvalidOperationException(operation + " returned an invalid byte length");
                 var bytes = new byte[checked((int)written)];
                 Marshal.Copy(buffer, bytes, 0, checked((int)written));
                 var value = JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes));

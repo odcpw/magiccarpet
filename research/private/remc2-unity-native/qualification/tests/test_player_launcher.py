@@ -23,7 +23,7 @@ class PlayerLauncherTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "unity project"
         self.root.mkdir()
-        for script in ("run-player.sh", "build-player.sh", "run-campaign.sh"):
+        for script in ("run-player.sh", "build-player.sh", "run-campaign.sh", "run-modern.sh"):
             shutil.copy2(SOURCE / script, self.root / script)
         for directory in ("Assets/Scenes", "Packages", "ProjectSettings"):
             (self.root / directory).mkdir(parents=True)
@@ -85,6 +85,66 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertEqual(invalid.returncode, 2)
         self.assertEqual(invalid.stdout, "")
         self.assertIn("MC_WINDOW_BACKEND", invalid.stderr)
+
+    def test_modern_pointer_selects_qualified_project_and_preserves_arguments(self):
+        generated = self.campaign_resources()
+        qualified = Path(self.temporary.name) / "qualified modern project"
+        qualified.mkdir()
+        launcher = qualified / "run-player.sh"
+        launcher.write_text("#!/bin/sh\nprintf 'QUALIFIED_PLAYER\\n'\nprintf '%s\\n' \"$@\"\n")
+        launcher.chmod(0o700)
+        (self.root / "Builds/Modern").symlink_to(qualified, target_is_directory=True)
+        save = generated / "a path with spaces.json"
+        arguments = ["--new-game", "--save", str(save), "--", "-force-vulkan"]
+        original_payload = self.api["payload"](self.binary.parent)
+        result = subprocess.run([str(self.root / "run-modern.sh"), *arguments],
+                                text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        forwarded = lines[lines.index("QUALIFIED_PLAYER") + 1:]
+        self.assertIn("-mc-modern", forwarded)
+        self.assertEqual(forwarded[-1], "-force-vulkan")
+        self.assertEqual(forwarded[forwarded.index("-mc-runtime-replay-save") + 1], str(save))
+        self.assertEqual(forwarded[forwarded.index("-mc-runtime-owner-cache") + 1],
+                         str(generated / "mc-b9s2-cursor-level1-20261029"))
+        self.assertEqual(original_payload, self.api["payload"](self.binary.parent))
+
+    def test_broken_modern_pointer_fails_without_falling_back_to_original(self):
+        (self.root / "Builds/Modern").symlink_to(self.root / "absent project", target_is_directory=True)
+        result = subprocess.run([str(self.root / "run-modern.sh"), "--help"],
+                                text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Modern installation is unavailable", result.stderr)
+
+    def test_original_pointer_preserves_resources_and_explicit_modern_selection(self):
+        generated = self.campaign_resources()
+        qualified = Path(self.temporary.name) / "qualified original project"
+        qualified.mkdir()
+        launcher = qualified / "run-player.sh"
+        launcher.write_text("#!/bin/sh\nprintf 'QUALIFIED_ORIGINAL\\n'\nprintf '%s\\n' \"$@\"\n")
+        launcher.chmod(0o700)
+        (self.root / "Builds/Original").symlink_to(qualified, target_is_directory=True)
+        save = generated / "original save.json"
+        result = subprocess.run([str(self.root / "run-campaign.sh"), "--new-game", "--save", str(save)],
+                                text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        forwarded = lines[lines.index("QUALIFIED_ORIGINAL") + 1:]
+        self.assertNotIn("-mc-modern", forwarded)
+        self.assertEqual(forwarded[forwarded.index("-mc-runtime-owner-cache") + 1],
+                         str(generated / "mc-b9s2-cursor-level1-20261029"))
+        # The modern selector must win even while an original pointer exists.
+        self.test_modern_pointer_selects_qualified_project_and_preserves_arguments()
+
+    def test_broken_original_pointer_fails_without_using_an_unqualified_player(self):
+        self.campaign_resources()
+        (self.root / "Builds/Original").symlink_to(self.root / "absent original", target_is_directory=True)
+        result = subprocess.run([str(self.root / "run-campaign.sh"), "--new-game"],
+                                text=True, capture_output=True, check=False, timeout=10)
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("Missing qualified player launcher", result.stderr)
+        self.assertNotIn("Native plugin SHA256", result.stdout)
 
     def test_missing_and_tampered_install_are_rejected(self):
         self.plugin.write_bytes(b"different plugin")
@@ -235,7 +295,7 @@ class PlayerLauncherTests(unittest.TestCase):
 
     def campaign(self, *arguments, environment=None):
         env = {**os.environ, "MC_WINDOW_BACKEND": "default"}
-        for name in ("MC_CAMPAIGN_REPLAY", "MC_CAMPAIGN_SAVE"):
+        for name in ("MC_CAMPAIGN_REPLAY", "MC_CAMPAIGN_SAVE", "MC_PLAYER_PROJECT"):
             env.pop(name, None)
         env.update(environment or {})
         return subprocess.run(["sh", str(self.root / "run-campaign.sh"), *arguments],

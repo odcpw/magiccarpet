@@ -1,0 +1,63 @@
+import bpy, collections, math, numpy as np
+from mathutils import Matrix
+bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(use_global=False)
+bpy.ops.import_scene.fbx(filepath='/tmp/magiccarpet-nature-stage/tree_small_02_1k.fbx')
+source=next(o for o in bpy.context.scene.objects if o.type=='MESH'); data=source.data
+parent=list(range(len(data.vertices)))
+def find(x):
+ while parent[x]!=x:
+  parent[x]=parent[parent[x]]; x=parent[x]
+ return x
+for edge in data.edges:
+ a,b=edge.vertices; a=find(a); b=find(b)
+ if a!=b:parent[b]=a
+selected={}; uvdata=data.uv_layers.active.data
+for poly in data.polygons:
+ if poly.material_index!=1: continue
+ root=find(poly.vertices[0]); h=(root*2654435761)&0xffffffff
+ if h % 6: continue
+ group=selected.setdefault(root, [])
+ for loop in poly.loop_indices:
+  l=data.loops[loop]; p=data.vertices[l.vertex_index].co; uv=uvdata[loop].uv
+  group.append((uv.x,uv.y,p.x,p.y,p.z))
+verts=[];faces=[];uvs=[]
+for group in selected.values():
+ a=np.asarray(group,dtype=np.float64)
+ if len(a)<3:continue
+ bounds=(a[:,0].min(),a[:,0].max(),a[:,1].min(),a[:,1].max())
+ if bounds[1]-bounds[0]<1e-5 or bounds[3]-bounds[2]<1e-5:continue
+ design=np.column_stack((a[:,:2],np.ones(len(a))))
+ coeff,_,rank,_=np.linalg.lstsq(design,a[:,2:5],rcond=None)
+ if rank<3:continue
+ corners=[(bounds[0],bounds[2]),(bounds[1],bounds[2]),(bounds[1],bounds[3]),(bounds[0],bounds[3])]
+ points=np.column_stack((np.array(corners),np.ones(4))) @ coeff
+ start=len(verts);verts.extend(map(tuple,points));faces.extend([(start,start+1,start+2),(start,start+2,start+3)]);uvs.extend([corners[0],corners[1],corners[2],corners[0],corners[2],corners[3]])
+leafmesh=bpy.data.meshes.new('scanned_leaf_cards');leafmesh.from_pydata(verts,[],faces);leafmesh.update();layer=leafmesh.uv_layers.new(name='UVMap')
+for i,uv in enumerate(uvs):layer.data[i].uv=uv
+leaf=bpy.data.objects.new('tree_leaves',leafmesh);bpy.context.collection.objects.link(leaf);leaf.matrix_world=source.matrix_world.copy(); leafmesh.materials.append(data.materials[1])
+print('LEAVES',len(selected),len(faces),flush=True)
+parts=[leaf]
+for material_index,name,target in [(0,'tree_branches',4500),(2,'tree_trunk',2500)]:
+ lookup={}; vertices=[]; faces=[]; uvcoords=[]
+ for poly in data.polygons:
+  if poly.material_index!=material_index:continue
+  face=[]
+  for loop in poly.loop_indices:
+   vi=data.loops[loop].vertex_index
+   if vi not in lookup:lookup[vi]=len(vertices);vertices.append(tuple(data.vertices[vi].co))
+   face.append(lookup[vi]);uvcoords.append(tuple(uvdata[loop].uv))
+  faces.append(face)
+ mesh=bpy.data.meshes.new(name);mesh.from_pydata(vertices,[],faces);mesh.update();layer=mesh.uv_layers.new(name='UVMap')
+ for i,uv in enumerate(uvcoords):layer.data[i].uv=uv
+ mesh.materials.append(data.materials[material_index]);obj=bpy.data.objects.new(name,mesh);bpy.context.collection.objects.link(obj);obj.matrix_world=source.matrix_world.copy()
+ for poly in mesh.polygons:poly.use_smooth=True
+ bpy.context.view_layer.objects.active=obj;obj.select_set(True)
+ tris=sum(len(p.vertices)-2 for p in mesh.polygons)
+ mod=obj.modifiers.new('Provenance: reduce source scan triangles','DECIMATE');mod.ratio=min(1.0,target/tris);bpy.ops.object.modifier_apply(modifier=mod.name)
+ obj.select_set(False);parts.append(obj)
+ print(name,'source_tris',tris,'derived_tris',sum(len(p.vertices)-2 for p in obj.data.polygons),flush=True)
+bpy.ops.object.select_all(action='DESELECT')
+for obj in parts:obj.select_set(True)
+bpy.context.view_layer.objects.active=parts[0]
+bpy.ops.export_scene.fbx(filepath='/tmp/magiccarpet-nature-stage/tree_small_02_derived.fbx',use_selection=True,object_types={'MESH'},add_leaf_bones=False,bake_anim=False,path_mode='AUTO')
+print('DONE',flush=True)

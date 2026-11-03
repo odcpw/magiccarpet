@@ -245,7 +245,7 @@ def main():
             stage = logs / 'Linux'
             environment = dict(os.environ, MC_PLAYER_BUILD_OUTPUT=str(stage))
             command([str(editor), '-batchmode', '-nographics', '-quit', '-projectPath', str(PROJECT),
-                     '-executeMethod', 'MagicCarpet.Native.Editor.BuildNativePlayer.BuildLinuxPlayer',
+                     '-executeMethod', 'MagicCarpet.Native.Editor.BuildModernPlayer.BuildLinuxPlayer',
                      '-logFile', str(logs / 'unity.log')], PROJECT, logs / 'unity-command.log', environment,
                     diagnostic_log=logs / 'unity.log')
             # Rust source may advance after the checked native artifact was captured.
