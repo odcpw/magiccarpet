@@ -28,12 +28,27 @@ The matching installed player loaded the campaign map, original loading screen,
 and NightSpire terrain/HUD; its native library and all 437 Rust inputs match the
 tested candidate. No Unity or original-art changes were required.
 
-Use this Alliance installation as the current baseline; the Castle native and
-receipt remain in the local rollback. `mc-k5k.5` stays open for its combined
-families22/23/24 acceptance. These bounded checks do not establish every eligible
-creature's complete mission playability; Oliver's human spell playthrough,
-hardware audio and performance remain unverified. Existing package-formatting
-debt remains unchanged. This batch stops here; Army and status spells are next.
+`mc-k5k.5` stays open for its combined families22/23/24 acceptance. Its bounded
+checks do not establish every eligible creature's complete mission playability.
+
+Army checkpoint delivered on 2026-11-03: runtime `c83fe2f4`, installed native
+`85fc99aca629`. The acquired spell's nine-case owner-data route passes: source
+payment/cooldown/recast, 9/24 flight, 10/72 rings, all three tiers and the four
+Bee/Firefly/Cymmerian/Wyvern products, actual attributed outgoing damage, and
+representative natural expiry/death/split/landing/reclaim. The original eight
+cases remain; real Cymmerian and Wyvern rival-damage checks were added.
+Fixed current parent/A4/target reads, Firefly current-position/distance reads,
+allocation-failure charging and the queued-profile zero-counter update order.
+The installed player loaded the original campaign map, loading artwork and
+NightSpire terrain/HUD; native copies, the loaded library and all 437 Rust inputs
+match the tested candidate. No Unity or original-art changes were required.
+
+Use this Army installation as the current baseline; the exact Alliance native
+and receipt remain in the local rollback. `mc-k5k.4` stays open for combined
+families19/20/21 acceptance. Progression/resources and some positions are explicit
+test controls, not earned campaign progression or a human playthrough. Hardware
+audio/performance remain unverified; the package-wide format check still fails
+on broad formatting drift. This batch stops here; status spells are next.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
@@ -57,9 +72,9 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Execute the existing plan
 
-1. Finish the current connected batch: Castle/mana and Alliance, then Army and
-   status spells through their actual gameplay consumers. Other preserved work
-   remains in scope for later batches. Check live source and ownership first;
+1. Use the delivered Castle/mana, Alliance and Army checkpoints above. Next
+   finish status spells through their actual gameplay consumers. Other preserved
+   work remains in scope for later batches. Check live source and ownership first;
    do not restart a component already delivered.
 2. Each feature owner follows the entire remc2-to-Rust chain: properties/assets,
    ordinary producer, schedule/dispatch, behavior and interactions, same-pass
