@@ -4389,10 +4389,20 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        if sphere.owner_entity_index == owner_entity_index {
+        if sphere.owner_entity_index == owner_entity_index
+            && sphere.player_entity_index == owner_entity_index
+        {
             return false;
         }
         sphere.owner_entity_index = owner_entity_index;
+        // The staged claim represents the result of the source possession
+        // mailbox: Castle and balloon consumers read playerEntityIndex, not
+        // the economy's owner projection. An ownership change also cancels
+        // the previous defender's attraction, as TransformArcherToMana does.
+        if sphere.player_entity_index != owner_entity_index {
+            sphere.player_entity_index = owner_entity_index;
+            sphere.control_flags &= !0x40;
+        }
         self.events.push(Level2EconomyEvent::ManaSphereClaimed {
             sphere_id: sphere.id,
             owner_entity_index,

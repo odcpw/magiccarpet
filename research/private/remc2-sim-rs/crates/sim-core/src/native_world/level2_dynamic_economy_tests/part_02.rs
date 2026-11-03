@@ -3793,6 +3793,13 @@ fn level_two_house_possession_reaches_castle_projection_at_next_source_boundary(
         .expect("disabled House owner row")
         .mana;
     let baseline_global = session.economy().owner_mana_global();
+    let baseline_positive_rows = session.economy().owner_mana_rows.iter()
+        .filter(|row| row.active && row.mana > 0)
+        .map(|row| {
+            (row.source_entity_index,
+                (row.source_class, row.source_model, row.player_entity_index, row.mana))
+        })
+        .collect::<BTreeMap<_, _>>();
     let baseline_campaign_hash = session.campaign_state_hash();
     session
         .ordinary_mut()
@@ -3842,6 +3849,23 @@ fn level_two_house_possession_reaches_castle_projection_at_next_source_boundary(
     assert!(disabled_raw.active);
     assert_eq!(disabled_raw.class, HOUSE_CLASS);
     assert!(disabled_raw.drawing_disabled());
+    // RemoveCastleStage creates an Archer for the remaining occupants.
+    // AddArchers sets mana to half its 1,000 max life; this new class-5
+    // entity enters sub_60F00 on the next boundary, not its birth pass.
+    let newborns = session.economy().authored_class5().iter()
+        .filter(|row| row.active && row.model == 4
+            && !baseline_positive_rows.contains_key(&row.source_entity_index))
+        .collect::<Vec<_>>();
+    assert_eq!(newborns.len(), 1, "demolition produces one new Archer");
+    let newborn = newborns[0];
+    let newborn_slot = newborn.source_entity_index;
+    let newborn_generation = session.economy().slot_generation(newborn_slot);
+    assert_eq!(newborn.mana, 500);
+    assert_eq!(session.economy().source_owner(newborn_slot), 0);
+    assert_eq!(
+        session.economy().owner_mana_global(), baseline_global,
+        "the birth pass retains its pre-demolition census"
+    );
     session.step_outer_turn(PlayerCommand::default(), 0);
     assert_eq!(
         session.economy().source_owner(disabled_house.entity_index),
@@ -3866,9 +3890,37 @@ fn level_two_house_possession_reaches_castle_projection_at_next_source_boundary(
             .iter()
             .any(|row| row.source_entity_index == disabled_house.entity_index)
     );
+    assert_eq!(session.economy().slot_generation(newborn_slot), newborn_generation);
+    let newborn_rows = session.economy().owner_mana_rows.iter()
+        .filter(|row| row.source_entity_index == newborn_slot)
+        .collect::<Vec<_>>();
+    assert_eq!(newborn_rows.len(), 1, "the newborn is counted exactly once");
+    assert_eq!(
+        (newborn_rows[0].source_class, newborn_rows[0].source_model,
+            newborn_rows[0].player_entity_index, newborn_rows[0].mana),
+        (5, 4, 0, 500)
+    );
+    let mut expected_positive_rows = baseline_positive_rows;
+    assert!(expected_positive_rows.remove(&disabled_house.entity_index).is_some());
+    assert!(expected_positive_rows.insert(newborn_slot, (5, 4, 0, 500)).is_none());
+    let current_positive_rows = session.economy().owner_mana_rows.iter()
+        .filter(|row| row.active && row.mana > 0)
+        .map(|row| {
+            (row.source_entity_index,
+                (row.source_class, row.source_model, row.player_entity_index, row.mana))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        current_positive_rows.len(), expected_positive_rows.len(),
+        "no positive-mana source is duplicated"
+    );
+    assert_eq!(
+        current_positive_rows.into_iter().collect::<BTreeMap<_, _>>(), expected_positive_rows,
+        "the House removal and actual Archer birth are the only positive-mana changes"
+    );
     assert_eq!(
         session.economy().owner_mana_global(),
-        baseline_global - disabled_mana,
+        baseline_global - disabled_mana + 500,
         "house={} disabled_mana={} baseline={} current rows={:?} events={:?}",
         disabled_house.entity_index,
         disabled_mana,
