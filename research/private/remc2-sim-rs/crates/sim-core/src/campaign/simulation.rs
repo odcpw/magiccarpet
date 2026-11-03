@@ -16366,6 +16366,87 @@ impl Mc2Simulation {
         Ok(())
     }
 
+    /// sub_5DE30 follows the current A4 holder and fixed target address on
+    /// every flight visit, including action2. The binding retains only the
+    /// target, initial distance and tier; holder identity is not latched.
+    fn prepare_level2_duel_tether(&mut self) -> std::result::Result<Option<crate::TetherTarget>, String> {
+        let live = &mut self.session.state.live;
+        live.core.context.tether = crate::TetherContext::default();
+        let target_index = live.core.state.tether_target_index;
+        if live.core.state.skip_flight_once || target_index == 0 {
+            return Ok(None);
+        }
+        let context = source_target::Context {
+            spells: Some(&live.shared_spells),
+            particles: Some(&self.session.definition.presentation.particles),
+            map_type: Some(live.terrain.map_type()),
+            player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        let Some(row) = source_target::status_parent(&live.economy, context, target_index)? else {
+            return Ok(None);
+        };
+        let holder_index = live.shared_spells.local_player.enabled_spell_holders[14];
+        let holder = source_target::status_parent(&live.economy, context, holder_index)?
+            .map(|holder| crate::SpellHolder {
+                entity_index: holder_index,
+                active_value: holder.active_value,
+            });
+        live.core.state.tether_holder_index = holder_index;
+        let rule = crate::spells::directional::duel::tether_rule(
+            u8::try_from(live.core.state.tether_tier)
+                .map_err(|_| "Duel tether has invalid source tier".to_owned())?,
+        ).ok_or_else(|| "Duel tether has invalid source tier".to_owned())?;
+        let admitted = holder.is_some_and(|holder| holder.active_value != 0)
+            && row.life >= 0
+            && crate::distance_3d_wrapped(live.core.state.position, row.position) < u32::from(rule.range);
+        let life_regen = if admitted && rule.drains_life {
+            if row.index == live.core.state.entity_index {
+                live.shared_spells.player_life_regen as i16
+            } else if let Some(dispatcher) = live.nyphur_dispatcher.get_in_arena(&live.economy, row.index) {
+                dispatcher.common_upkeep(row.phase).life_regen
+            } else {
+                return Err(format!("Duel target {} has no authoritative player resource carrier", row.index));
+            }
+        } else { 0 };
+        let target = crate::TetherTarget {
+            entity_index: row.index, position: row.position, life: row.life,
+            mana: row.mana, mana_regen: row.mana_regen, life_regen,
+        };
+        live.core.context.tether = crate::TetherContext { holder, target: Some(target) };
+        Ok(Some(target))
+    }
+
+    fn commit_level2_duel_tether_target(&mut self, before: Option<crate::TetherTarget>) {
+        let live = &mut self.session.state.live;
+        let Some(target) = live.core.context.tether.target else { return };
+        if !before.is_some_and(|before| before.entity_index == target.entity_index
+            && (before.life != target.life || before.mana != target.mana))
+        {
+            return;
+        }
+        let Some(authority) = live.economy.entities.get_mut(usize::from(target.entity_index)) else { return };
+        authority.set_life(target.life);
+        authority.set_mana(target.mana);
+        let handle = crate::campaign::source_arena::SourceEntityHandle {
+            source_slot: authority.index,
+            generation: live.economy.economy.slot_generation(authority.index),
+        };
+        if let Some(dispatcher) = live.nyphur_dispatcher.get_mut(handle) {
+            dispatcher.sync_spell_target_resources(authority);
+        }
+        live.shared_spells.sync_player_entity_from_authority(authority);
+        if target.entity_index == live.core.state.entity_index {
+            live.player_life = target.life;
+            live.shared_spells.player_mana = target.mana;
+            live.shared_spells.caster.mana = target.mana;
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = target.mana;
+            }
+        }
+    }
+
     fn consume_directional_actor_mailbox(
         &mut self,
         pass: u8,
@@ -18044,6 +18125,7 @@ impl Mc2Simulation {
                         // command is latched while the player is dying.
                         let profile = self.session.definition.profile;
                         let context_event_start = self.session.state.live.core.context.events.len();
+                        let tether_before = self.prepare_level2_duel_tether()?;
                         let body = {
                             let campaign = &mut self.session.state;
                             let core = &mut campaign.live.core;
@@ -18055,6 +18137,7 @@ impl Mc2Simulation {
                                 &mut core.context,
                             )
                         };
+                        self.commit_level2_duel_tether_target(tether_before);
                         let context_events = self.session.state.live.core.context.events
                             [context_event_start..]
                             .to_vec();
@@ -18079,84 +18162,21 @@ impl Mc2Simulation {
                         self.refresh_level2_spell_fire_holder_projection();
                         let profile = self.session.definition.profile;
                         let context_event_start = self.session.state.live.core.context.events.len();
-                        let (flight_evidence, tether_target_after) = {
+                        let tether_before = self.prepare_level2_duel_tether()?;
+                        let flight_evidence = {
                             let live = &mut self.session.state.live;
-                            let target_index = live.core.state.tether_target_index;
-                            let holder_index = live.core.state.tether_holder_index;
-                            let holder = live
-                                .shared_spells
-                                .pickup(holder_index)
-                                .filter(|holder| holder.active && holder.index == holder_index)
-                                .map(|holder| crate::SpellHolder {
-                                    entity_index: holder.index,
-                                    active_value: holder.active_value,
-                                });
-                            let target = live
-                                .economy
-                                .entities
-                                .get(usize::from(target_index))
-                                .filter(|row| {
-                                    target_index != 0
-                                        && row.active
-                                        && row.index == target_index
-                                        && row.class == 3
-                                })
-                                .map(|row| {
-                                    let life_regen = if row.index == live.core.state.entity_index {
-                                        live.shared_spells.player_life_regen as i16
-                                    } else if let Some(dispatcher) = live.nyphur_dispatcher.get_in_arena(&live.economy, row.index)
-                                    {
-                                        dispatcher.common_upkeep(row.phase).life_regen
-                                    } else {
-                                        return Err(format!(
-                                            "Duel target {} has no authoritative player upkeep carrier",
-                                            row.index
-                                        ));
-                                    };
-                                    Ok(crate::TetherTarget {
-                                        entity_index: row.index,
-                                        position: row.position,
-                                        life: row.life,
-                                        mana: row.mana,
-                                        mana_regen: row.mana_regen,
-                                        life_regen,
-                                    })
-                                })
-                                .transpose()?;
-                            live.core.context.tether = crate::TetherContext { holder, target };
                             let terrain = &live.terrain;
-                            let result = crate::step_entity_pass_with_context_and_tuning(
+                            crate::step_entity_pass_with_context_and_tuning(
                                 &mut live.core.state,
                                 latched_command,
                                 profile,
                                 terrain,
                                 &mut live.core.context,
                                 flight_tuning,
-                            );
-                            (result, live.core.context.tether.target)
+                            )
                         };
                         evidence.push(flight_evidence);
-                        if let Some(target) = tether_target_after {
-                            let live = &mut self.session.state.live;
-                            if let Some(authority) = live
-                                .economy
-                                .entities
-                                .get_mut(usize::from(target.entity_index))
-                                .filter(|row| row.active && row.index == target.entity_index)
-                            {
-                                authority.set_life(target.life);
-                                authority.set_mana(target.mana);
-                                let handle = crate::campaign::source_arena::SourceEntityHandle {
-                                    source_slot: authority.index,
-                                    generation: live.economy.economy.slot_generation(authority.index),
-                                };
-                                if let Some(dispatcher) = live.nyphur_dispatcher.get_mut(handle) {
-                                    dispatcher.sync_spell_target_resources(authority);
-                                }
-                                live.shared_spells
-                                    .sync_player_entity_from_authority(authority);
-                            }
-                        }
+                        self.commit_level2_duel_tether_target(tether_before);
                         let context_events = self.session.state.live.core.context.events
                             [context_event_start..]
                             .to_vec();

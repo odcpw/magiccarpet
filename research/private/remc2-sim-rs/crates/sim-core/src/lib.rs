@@ -2065,9 +2065,12 @@ pub(crate) fn step_rival_entity_body_with_context<W: FlightWorld>(
             && context.tether.holder.is_some_and(|holder| {
                 holder.entity_index == state.tether_holder_index && holder.active_value != 0
             })
-            && TETHER_SPELLS.get(usize::from(state.tether_tier)).is_some_and(|spell| {
-                distance_3d_wrapped(state.position, target.position) < spell.range as u32
-            })
+            && u8::try_from(state.tether_tier)
+                .ok()
+                .and_then(crate::spells::directional::duel::tether_rule)
+                .is_some_and(|spell| {
+                    distance_3d_wrapped(state.position, target.position) < u32::from(spell.range)
+                })
     });
     if tether_will_move && (limit <= 0 || limit > 1_024) {
         return Err(format!("rival tether has invalid source speed limit {limit}"));
@@ -2488,28 +2491,6 @@ fn journal_distance_loop(
     });
 }
 
-#[derive(Clone, Copy)]
-struct TetherSpellSpec {
-    range: i32,
-    effect: u8,
-}
-
-// `SPELLS_BEGIN_BUFFER_str[14]` in the hash-pinned `Spells.cpp`.
-const TETHER_SPELLS: [TetherSpellSpec; 3] = [
-    TetherSpellSpec {
-        range: 0x1432,
-        effect: 0,
-    },
-    TetherSpellSpec {
-        range: 0x1e28,
-        effect: 1,
-    },
-    TetherSpellSpec {
-        range: 0x1e28,
-        effect: 2,
-    },
-];
-
 fn apply_tether(
     state: &mut FlightState,
     authoritative_position: Position,
@@ -2528,10 +2509,9 @@ fn apply_tether(
         // does not resolve beyond the sentinel.
         return;
     };
-    let tier = usize::from(state.tether_tier);
-    let spell = TETHER_SPELLS
-        .get(tier)
-        .copied()
+    let spell = u8::try_from(state.tether_tier)
+        .ok()
+        .and_then(crate::spells::directional::duel::tether_rule)
         .expect("source-valid tether tier is in 0..=2");
     let distance = distance_3d_wrapped(authoritative_position, target.position);
     let holder_is_active = state.tether_holder_index != 0
@@ -2539,7 +2519,7 @@ fn apply_tether(
             holder.entity_index == state.tether_holder_index && holder.active_value != 0
         });
     if !holder_is_active
-        || distance >= u32::try_from(spell.range).expect("spell range is non-negative")
+        || distance >= u32::from(spell.range)
         || target.life < 0
     {
         state.tether_target_index = 0;
@@ -2559,12 +2539,12 @@ fn apply_tether(
     state.yaw = wrap_angle(i32::from(state.yaw) + i32::from(turn_toward(state.yaw, heading, 0x82)));
     move_entity(proposed, heading, state.display_pitch, tether_speed);
 
-    if spell.effect == 2 {
+    if spell.drains_life {
         target.life = target
             .life
             .wrapping_sub(i32::from(target.life_regen).wrapping_add(2));
     }
-    if spell.effect == 1 || spell.effect == 2 {
+    if spell.drains_mana {
         target.mana = target.mana.wrapping_sub(target.mana_regen.wrapping_add(8));
         if target.mana < 0 {
             target.mana = 0;

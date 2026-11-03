@@ -129,7 +129,8 @@ pub fn tether_rule(tier: u8) -> Option<DuelTetherRule> {
     };
     Some(DuelTetherRule {
         range: row.power,
-        drains_mana: row.product >= 1,
+        // sub_5DE30 returns after movement for any product above 2.
+        drains_mana: matches!(row.product, 1 | 2),
         drains_life: row.product == 2,
     })
 }

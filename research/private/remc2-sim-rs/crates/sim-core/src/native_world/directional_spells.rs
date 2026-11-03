@@ -359,7 +359,9 @@ fn construct_projectile(
     projectile.set_position(position);
     let yaw = parent.yaw.wrapping_add(input.aim_yaw) & 2047;
     let pitch = parent.pitch.wrapping_add(input.aim_pitch);
-    let mut axis = parent.position;
+    // 6B610 moves NewEvent's zeroed axis directly; unlike 6B3E0 it does
+    // not first copy the parent's position into that field.
+    let mut axis = if family == DUEL_FAMILY { Position::default() } else { parent.position };
     move_entity(&mut axis, yaw, pitch, axis_distance);
     put(
         &mut projectile,
@@ -1748,6 +1750,317 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn authored_duel_pickup_and_public_hand_reach_real_nyphur_tether() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::combat::actors::PlayerEffectLane;
+
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let mut source = CampaignSession::open(
+            base.join("mc-paj2-source-secret-34-campaign-package"),
+            CampaignSelection::secret_destination(34).unwrap(),
+        ).expect("unfiltered secret internal34 owner package opens");
+        let player = source.simulation().state.entity_index;
+        let feature = source.simulation().session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.index == 755).copied().expect("authored Duel row755");
+        assert_eq!((feature.kind, feature.subtype, feature.activation_group, feature.stage_tag),
+            (15, 14, 23, 1));
+        // Controlled arrival at the real source group, without filtering its
+        // other authored constructors or manufacturing the spell pickup.
+        source.simulation_mut().activate_authored_group_prerequisite_for_test(23)
+            .expect("real secret group23 publishes its authored Duel pickup");
+        let pickup = *source.simulation().shared_spells().authored_pickup_slots().get(&755)
+            .expect("row755 allocated an actual source pickup");
+        let pickup_row = source.simulation().shared_spells().pickup(pickup)
+            .expect("authored Duel pickup has its live spell carrier");
+        assert_eq!((pickup_row.class, pickup_row.model, pickup_row.action), (15, 14, 43));
+        for _ in 0..12 {
+            let simulation = source.simulation_mut();
+            let position = simulation.shared_spells().pickup(pickup).unwrap().position;
+            simulation.set_level2_entity_position(player, position).unwrap();
+            simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(simulation.dispatch_events().iter().all(|event|
+                !matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                "Duel pickup dispatch errors: {:?}", simulation.dispatch_events());
+            if simulation.shared_spells().local_player().enabled_spell_holders[14] != 0 { break; }
+        }
+        assert_ne!(source.simulation().shared_spells().local_player().enabled_spell_holders[14], 0,
+            "ordinary overlap must acquire the real Duel pickup");
+        let learned = source.simulation().shared_spells().local_player().enabled_spell_holders
+            .iter().enumerate().filter_map(|(family, holder)|
+                (*holder != 0).then_some(family as u8)).collect::<Vec<_>>();
+
+        for tier in 0_u8..=2 {
+            // Secret34 has no rival; carry the acquired inventory to an
+            // unfiltered Level2 entry. Resources and combat poses are controls.
+            let mut campaign = CampaignSession::open(
+                base.join("mc-bhq6-ordinary-20261025-zclu5fjj/level2"), CampaignSelection::LEVEL2,
+            ).expect("unfiltered Level2 opens");
+            assert_eq!(campaign.rebuild_for_spell_carry(&learned, Some(14)).unwrap(), Some(14));
+            let simulation = campaign.simulation_mut();
+            let caster = simulation.state.entity_index;
+            let target = simulation.session.state.live.economy.entities.iter()
+                .find(|row| row.active && (row.class, row.model, row.action) == (3, 1, 1))
+                .expect("real Level2 rival").index;
+            let target_handle = simulation.session.state.live.economy.handle(target).unwrap();
+            let castle = scheduled_castle_from_source_flyer(simulation, caster);
+            for _ in 0..256 {
+                let live = &simulation.session.state.live;
+                let row = &live.economy.entities[usize::from(target)];
+                assert_eq!(live.economy.handle(target), Some(target_handle));
+                if live.nyphur_dispatcher.get(target_handle).unwrap().common_upkeep(row.phase).word_0x159 == 0 { break; }
+                simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(simulation.dispatch_events().iter().all(|event|
+                    !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+            }
+            {
+                let live = &simulation.session.state.live;
+                let row = &live.economy.entities[usize::from(target)];
+                assert_eq!(live.nyphur_dispatcher.get(target_handle).unwrap().common_upkeep(row.phase).word_0x159, 0,
+                    "ordinary rival visits expire protection");
+            }
+            let rule = crate::level_definition::DUEL_TIERS[usize::from(tier)];
+            {
+                let live = &mut simulation.session.state.live;
+                assert!(live.economy.economy.set_castle_mana_prerequisite_for_test(castle,
+                    rule.castle_mana_required.max(rule.mana_cost) + 10_000));
+                let parent = &mut live.economy.entities[usize::from(caster)];
+                parent.max_mana = rule.mana_cost + 10_000;
+                parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+                parent.set_mana(parent.max_mana);
+                parent.set_mana_regen(0);
+                let parent = parent.clone();
+                live.shared_spells.sync_player_entity_from_authority(&parent);
+                live.shared_spells.player_mana = parent.mana;
+                live.shared_spells.caster.mana = parent.mana;
+                live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+                if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+                let target_row = &mut live.economy.entities[usize::from(target)];
+                target_row.max_mana = 10_000;
+                target_row.record[144..148].copy_from_slice(&10_000_i32.to_le_bytes());
+                target_row.set_mana(8_000);
+                target_row.set_mana_regen(0);
+                let target_row = target_row.clone();
+                assert!(live.nyphur_dispatcher.get_mut_in_arena(&live.economy, target).unwrap()
+                    .sync_support_parent_resources(&target_row, false));
+                live.economy.economy.refresh_owner_mana_rows();
+            }
+            let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 14).unwrap() as i8;
+            simulation.step_outer_turn(crate::PlayerCommand { opcode: 31, argument_1: ui,
+                argument_2: tier as i8, ..Default::default() }, 0);
+            let holder = simulation.shared_spells().local_player().enabled_spell_holders[14];
+            assert_eq!(simulation.shared_spells().pickup(holder).unwrap().level_gate, tier as i8);
+            {
+                let live = &mut simulation.session.state.live;
+                let parent = live.economy.entities[usize::from(caster)].clone();
+                let actor = area_damage::source_actor(&mut live.economy, None, target).unwrap();
+                let mut position = parent.position;
+                move_entity(&mut position, parent.yaw, parent.pitch, 1_536);
+                position.z = parent.position.z.wrapping_add(parent.array_fov())
+                    .wrapping_sub(actor.shape.vertical_offset);
+                live.economy.entities[usize::from(target)].set_position(position);
+                crate::world::effects::sync_position(&mut live.economy, &mut live.terrain,
+                    target, position, true, true).unwrap();
+            }
+            let xp_before = simulation.shared_spells().spell_experience()[14];
+            let mut prior_mana = simulation.session.state.live.economy.entities[usize::from(caster)].mana;
+            let mut prior_lane = None;
+            let mut saw_flyer = false;
+            let mut saw_field = false;
+            let mut saw_lane = false;
+            let mut saw_tether = false;
+            let mut charged = false;
+            let mut launch_sound = false;
+            let mut presented = false;
+            let mut stages = [None; 2];
+            let mut hidden = [false; 2];
+            let mut reclaimed = [false; 2];
+            let mut trace = Vec::new();
+            for turn in 0..96 {
+                simulation.step_outer_turn(if turn == 0 { crate::PlayerCommand { flags: 0x10, ..Default::default() } }
+                    else { crate::PlayerCommand::default() }, 0);
+                let live = &simulation.session.state.live;
+                let caster_mana = live.economy.entities[usize::from(caster)].mana;
+                charged |= prior_mana - caster_mana == rule.mana_cost;
+                prior_mana = caster_mana;
+                let products = live.economy.entities.iter().filter(|row| row.active && row.source_id == caster
+                    && matches!((row.class, row.model), (9, 7) | (10, 26)))
+                    .map(|row| (row.index, row.class, row.model, row.action, row.life, row.drawing_disabled()))
+                    .collect::<Vec<_>>();
+                saw_flyer |= products.iter().any(|row| (row.1, row.2) == (9, 7));
+                saw_field |= products.iter().any(|row| (row.1, row.2) == (10, 26));
+                for product in &products {
+                    let stage = if product.1 == 9 { 0 } else { 1 };
+                    stages[stage].get_or_insert((product.0, live.economy.economy.slot_generation(product.0)));
+                }
+                for (stage, saved) in stages.iter().enumerate() {
+                    if let Some((slot, generation)) = *saved {
+                        let row = &live.economy.entities[usize::from(slot)];
+                        let same = live.economy.economy.slot_generation(slot) == generation;
+                        hidden[stage] |= same && row.active && row.drawing_disabled();
+                        reclaimed[stage] |= !same || live.economy.economy.free_source_slots().contains(&slot);
+                    }
+                }
+                for event in live.economy.economy.events() {
+                    if let super::super::Level2EconomyEvent::PreparedSound { source_entity_index, entity_index, sound_id: 9, .. } = event {
+                        launch_sound |= *entity_index == caster
+                            && products.iter().any(|product| product.0 == *source_entity_index && product.1 == 9);
+                    }
+                }
+                for view in simulation.campaign_entity_presentations(0).expect("Duel sprite projection") {
+                    let row = &live.economy.entities[usize::from(view.entity_index)];
+                    if row.source_id == caster && matches!((row.class, row.model), (9, 7) | (10, 26)) {
+                        assert_eq!((view.source_id, view.position, view.render_parameter_index),
+                            (caster, row.position, DUEL_PARTICLE));
+                        assert_eq!(view.base_tmap, simulation.session.definition.presentation.particles
+                            [usize::from(DUEL_PARTICLE)].base_tmap);
+                        presented = true;
+                    }
+                }
+                let victim = &live.economy.entities[usize::from(target)];
+                let lane = victim.pending_player_effect(PlayerEffectLane::Duel);
+                saw_lane |= lane.is_some_and(|hit| hit.attacker == caster && hit.payload == i32::from(tier));
+                saw_tether |= live.economy.handle(target) == Some(target_handle)
+                    && prior_lane.is_some_and(|hit: crate::combat::actors::PlayerEffectHit|
+                        hit.attacker == caster && hit.payload == i32::from(tier))
+                    && lane.is_none() && live.core.state.tether_target_index == target
+                    && live.core.state.tether_holder_index == holder
+                    && live.core.state.tether_tier == u16::from(tier)
+                    && simulation.shared_spells().spell_experience()[14] > xp_before;
+                prior_lane = lane;
+                let errors = simulation.dispatch_events().iter().filter(|event|
+                    matches!(event, super::super::Mc2DispatchEvent::Error { .. })).collect::<Vec<_>>();
+                trace.push(format!("turn={turn} products={products:?} lane={lane:?} tether={} holder={} victim=({},{}) xp={} errors={errors:?}",
+                    live.core.state.tether_target_index, live.shared_spells.pickup(holder).unwrap().active_value,
+                    victim.life, victim.mana, live.shared_spells.spell_experience()[14]));
+                assert!(errors.is_empty(), "tier {tier}: {}", trace.join("\n"));
+                if saw_flyer && saw_field && saw_lane && saw_tether && charged && launch_sound && presented
+                    && reclaimed.iter().all(|value| *value) { break; }
+            }
+            assert!(saw_flyer && saw_field && saw_lane && saw_tether && charged && launch_sound && presented
+                    && hidden.iter().all(|value| *value) && reclaimed.iter().all(|value| *value),
+                "tier {tier} real Duel cast must produce its tether and clean up: {}", trace.join("\n"));
+
+            // Move the actual rival within source range so the live flight
+            // callback must apply a measurable tether displacement/drain.
+            let parent = simulation.session.state.live.economy.entities[usize::from(caster)].clone();
+            let mut position = parent.position;
+            move_entity(&mut position, parent.yaw, parent.pitch, 4_096);
+            simulation.set_level2_entity_position(target, position).unwrap();
+            let mut untethered = simulation.clone();
+            untethered.session.state.live.core.state.tether_target_index = 0;
+            let victim_before = simulation.session.state.live.economy.entities[usize::from(target)].clone();
+            simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+            untethered.step_outer_turn(crate::PlayerCommand::default(), 0);
+            let live = &simulation.session.state.live;
+            let victim_after = &live.economy.entities[usize::from(target)];
+            assert_eq!(live.core.state.tether_target_index, target, "the live tether remains bound");
+            assert_ne!(live.core.state.position, untethered.session.state.live.core.state.position,
+                "the real caster flight consumer applies tether movement");
+            if tier >= 1 { assert!(victim_after.mana < victim_before.mana, "tier {tier} drains rival mana"); }
+            if tier == 2 { assert!(victim_after.life < victim_before.life, "tier2 drains rival life"); }
+
+            if tier == 2 {
+                // The caster's current A4 holder selector is authoritative
+                // on every visit, even if the previously bound holder lives.
+                let mut no_current_holder = simulation.clone();
+                {
+                    let live = &mut no_current_holder.session.state.live;
+                    assert!(live.shared_spells.pickup(holder).unwrap().active_value > 0);
+                    assert!(live.shared_spells.local_player.set_enabled_spell_holder_index(14, 0));
+                    for player in live.shared_spells.players.iter_mut()
+                        .chain(live.core.players.iter_mut()).filter(|player| player.entity_index == caster)
+                    {
+                        assert!(player.set_enabled_spell_holder_index(14, 0));
+                    }
+                }
+                no_current_holder.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(no_current_holder.dispatch_events().iter().all(|event|
+                    !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+                assert_eq!(no_current_holder.session.state.live.core.state.tether_target_index, 0,
+                    "a cleared current A4 holder releases the actual live tether");
+                assert!(no_current_holder.shared_spells().pickup(holder).unwrap().active_value > 0,
+                    "the formerly selected holder remains active during the control");
+
+                // Preserve the actual acquired/cast tether. This control
+                // places the caster airborne in source action2, then compares
+                // its real dying flight visit with an otherwise identical
+                // unbound visit. No new tether or mailbox is fabricated.
+                let mut dying_caster = simulation.clone();
+                let mut high = dying_caster.session.state.live.core.state.position;
+                high.z = dying_caster.session.state.live.terrain.ground_height(high).wrapping_add(4_000);
+                dying_caster.set_level2_entity_position(caster, high).unwrap();
+                let mut nearby = high;
+                move_entity(&mut nearby, dying_caster.session.state.live.core.state.yaw, 0, 2_048);
+                dying_caster.set_level2_entity_position(target, nearby).unwrap();
+                {
+                    let live = &mut dying_caster.session.state.live;
+                    let row = &mut live.economy.entities[usize::from(caster)];
+                    row.set_source_action(2);
+                    row.set_life(-1);
+                    row.set_source_word_2c(-10);
+                    live.player_life = -1;
+                    let row = row.clone();
+                    live.shared_spells.sync_player_entity_from_authority(&row);
+                }
+                let mut unbound_dying = dying_caster.clone();
+                unbound_dying.session.state.live.core.state.tether_target_index = 0;
+                dying_caster.step_outer_turn(crate::PlayerCommand::default(), 0);
+                unbound_dying.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(dying_caster.dispatch_events().iter().all(|event|
+                    !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+                let live = &dying_caster.session.state.live;
+                let victim = &live.economy.entities[usize::from(target)];
+                let unbound_victim = &unbound_dying.session.state.live.economy.entities[usize::from(target)];
+                assert_eq!(live.economy.entities[usize::from(caster)].action, 2,
+                    "the airborne source caster remains in the dying flight action");
+                assert_eq!(live.core.state.tether_target_index, target);
+                assert!(victim.mana < unbound_victim.mana && victim.life < unbound_victim.life,
+                    "actual dying-flight tether publishes tier2 mana and life drain");
+            }
+
+            // A separate controlled damage pulse uses the actual rival death
+            // callback; the caster must release that dying target naturally.
+            let mut dying = simulation.clone();
+            let damage = u16::try_from(dying.session.state.live.economy.entities[usize::from(target)].life + 1)
+                .expect("rival life fits a source damage pulse");
+            area_damage::contact(&mut dying.session.state.live.economy, None, target, damage, caster).unwrap();
+            let mut saw_dead = false;
+            for _ in 0..8 {
+                dying.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(dying.dispatch_events().iter().all(|event|
+                    !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+                let live = &dying.session.state.live;
+                saw_dead |= live.economy.handle(target) == Some(target_handle)
+                    && live.economy.entities[usize::from(target)].life < 0;
+                if saw_dead && live.core.state.tether_target_index == 0 { break; }
+            }
+            assert!(saw_dead && dying.session.state.live.core.state.tether_target_index == 0,
+                "real rival death must clear the caster's Duel tether");
+
+            // Move beyond the source range; the ordinary flight visit clears
+            // the tether and the holder's post-28-pulse abort reaches zero.
+            let parent = live.economy.entities[usize::from(caster)].clone();
+            let mut far = parent.position;
+            move_entity(&mut far, parent.yaw, 0, 12_000);
+            simulation.set_level2_entity_position(target, far).unwrap();
+            for _ in 0..64 {
+                simulation.step_outer_turn(crate::PlayerCommand::default(), 0);
+                assert!(simulation.dispatch_events().iter().all(|event|
+                    !matches!(event, super::super::Mc2DispatchEvent::Error { .. })));
+                if simulation.session.state.live.core.state.tether_target_index == 0
+                    && simulation.shared_spells().pickup(holder).unwrap().active_value == 0 { break; }
+            }
+            assert_eq!(simulation.session.state.live.core.state.tether_target_index, 0,
+                "range exit clears the caster's source tether");
+            assert_eq!(simulation.shared_spells().pickup(holder).unwrap().active_value, 0,
+                "the unbound holder naturally completes its source abort");
+            campaign.reset();
+            assert_ne!(campaign.simulation().shared_spells().local_player().enabled_spell_holders[14], 0,
+                "reset restores the actual carried Duel holder");
+        }
+    }
+
+    #[test]
     fn duel_holder_reads_caster_target_only_for_an_admitted_late_pulse() {
         for (phase, target, admitted, expected, spawns) in [
             ("idle", None, true, Some(0), false),
@@ -2142,9 +2455,9 @@ pub(super) mod tests {
         assert_eq!(flyer.subspell_index, 5_170);
         assert_eq!(&flyer.record[71..73], &[10, DUEL_FIELD_MODEL]);
         assert_eq!(flyer.record[74], 0);
-        let mut expected_axis = parent.position;
+        let mut expected_axis = Position::default();
         move_entity(&mut expected_axis, parent.yaw, parent.pitch, 10_240);
-        assert_eq!(source_axis(&flyer), expected_axis);
+        assert_eq!(source_axis(&flyer), expected_axis, "6B610 moves the NewEvent-zeroed axis");
 
         let (target_slot, field_slot) =
             fly_into_target(&mut simulation, projectile_slot, parent_slot, 3);

@@ -3046,20 +3046,25 @@ impl RivalWizardRoster {
             arena.entities[usize::from(source_slot)].set_control_flags(flags);
             return Ok(predicted);
         }
-        let Some(binding) = self.get(handle).and_then(|dispatcher| dispatcher.duel_tether()) else {
+        let Some(mut binding) = self.get(handle).and_then(|dispatcher| dispatcher.duel_tether()) else {
             return Ok(predicted);
         };
         let caster = &arena.entities[usize::from(source_slot)];
-        let holder_active_value = players.iter()
-            .find(|player| player.entity_index == source_slot && player.is_ai)
-            .and_then(|player| self.bound_live_holder(handle, player, arena, 14))
-            .filter(|holder| holder.source_slot == binding.holder_entity_index)
-            .map(|holder| arena.entities[usize::from(holder.source_slot)].active_value);
+        binding.holder_entity_index = players.iter()
+            .find(|player| player.entity_index == source_slot)
+            .map_or(0, |player| player.enabled_spell_holders[14]);
+        let source_context = super::source_target::Context { spells: Some(shared), ..Default::default() };
+        let holder_active_value = super::source_target::status_parent(
+            arena, source_context, binding.holder_entity_index,
+        )?.map(|holder| holder.active_value);
         let target_handle = arena.handle(binding.target_entity_index);
-        let target = arena.entities.get(usize::from(binding.target_entity_index))
-            .filter(|row| target_handle.is_some() && row.active && row.class == 3 && matches!(row.model, 0 | 1))
+        let rule = crate::spells::directional::duel::tether_rule(binding.tier)
+            .ok_or_else(|| "Duel tether has invalid source tier".to_owned())?;
+        let target = super::source_target::status_parent(arena, source_context, binding.target_entity_index)?
             .map(|row| {
-                let life_regen = if row.index == local_owner {
+                let admitted = row.life >= 0 && holder_active_value.is_some_and(|value| value != 0)
+                    && crate::distance_3d_wrapped(caster.position, row.position) < u32::from(rule.range);
+                let life_regen = if !admitted || !rule.drains_life { 0 } else if row.index == local_owner {
                     shared.player_life_regen as i16
                 } else {
                     self.get_in_arena(arena, row.index)
@@ -3071,6 +3076,7 @@ impl RivalWizardRoster {
                     mana: row.mana, mana_regen: row.mana_regen, life_regen,
                 })
             }).transpose()?;
+        let target_before = target;
         let outcome = crate::spells::directional::duel::step_tether(
             crate::spells::directional::duel::DuelTetherStepInput {
                 binding, caster_position: caster.position, predicted_position: predicted,
@@ -3085,6 +3091,7 @@ impl RivalWizardRoster {
             }
         }
         if let Some(target) = outcome.target
+            && target_before.is_some_and(|before| before.life != target.life || before.mana != target.mana)
             && arena.handle(target.entity_index) == target_handle
             && let Some(row) = arena.entities.get_mut(usize::from(target.entity_index))
         {
@@ -3132,16 +3139,27 @@ impl RivalWizardRoster {
         let dispatcher = self.get(handle).ok_or_else(|| format!("dying rival {source_slot} has no current carrier"))?;
         let common = &dispatcher.common_upkeep;
         let binding = dispatcher.duel_tether();
-        let holder = binding.and_then(|binding| self.bound_live_holder(handle, player, arena, 14)
-            .filter(|holder| holder.source_slot == binding.holder_entity_index))
-            .map(|holder| crate::SpellHolder { entity_index: holder.source_slot, active_value: arena.entities[usize::from(holder.source_slot)].active_value });
+        let holder_index = player.enabled_spell_holders[14];
+        let source_context = super::source_target::Context { spells: Some(shared), ..Default::default() };
+        let holder = if binding.is_some() {
+            super::source_target::status_parent(arena, source_context, holder_index)?
+                .map(|holder| crate::SpellHolder { entity_index: holder_index, active_value: holder.active_value })
+        } else { None };
         let speed_holder = self.bound_live_holder(handle, player, arena, 3)
             .map(|holder| arena.entities[usize::from(holder.source_slot)].clone());
         let target_handle = binding.and_then(|binding| arena.handle(binding.target_entity_index));
-        let target = binding.and_then(|binding| arena.entities.get(usize::from(binding.target_entity_index)))
-            .filter(|row| target_handle.is_some() && row.active && row.class == 3 && matches!(row.model, 0 | 1))
+        let target = binding.map(|binding| super::source_target::status_parent(
+            arena, source_context, binding.target_entity_index,
+        )).transpose()?.flatten()
             .map(|row| {
-                let life_regen = if row.index == local_owner {
+                let drains_life = binding.is_some_and(|binding| {
+                    crate::spells::directional::duel::tether_rule(binding.tier).is_some_and(|rule| {
+                        rule.drains_life && row.life >= 0
+                            && holder.is_some_and(|holder| holder.active_value != 0)
+                            && crate::distance_3d_wrapped(actor.position, row.position) < u32::from(rule.range)
+                    })
+                });
+                let life_regen = if !drains_life { 0 } else if row.index == local_owner {
                     shared.player_life_regen as i16
                 } else {
                     self.get_in_arena(arena, row.index)
@@ -3168,7 +3186,7 @@ impl RivalWizardRoster {
             immobilize_subcounter: common.flight_immobilize_subcounter,
             tether_prior_distance: binding.map_or(0, |value| value.prior_distance),
             tether_target_index: binding.map_or(0, |value| value.target_entity_index),
-            tether_holder_index: binding.map_or(0, |value| value.holder_entity_index),
+            tether_holder_index: holder_index,
             tether_tier: binding.map_or(0, |value| u16::from(value.tier)),
             speed_spell_holder_index: speed_holder.as_ref().map_or(0, |value| value.index),
             entity_phase: actor.phase, player_color_index: common.player_color_index,
@@ -3177,6 +3195,7 @@ impl RivalWizardRoster {
             skip_flight_once: actor.control_flags & 0x800 != 0,
             ..crate::FlightState::default()
         };
+        let target_before = target;
         let mut flight_context = crate::FlightContext {
             tether: crate::TetherContext { holder, target },
             speed_spell_holder: speed_holder.as_ref().map(|row| crate::SpellHolder {
@@ -3239,6 +3258,7 @@ impl RivalWizardRoster {
             if let Some(shared_holder) = shared.pickup_mut(holder.entity_index) { *shared_holder = row.clone(); }
         }
         if let Some(target) = flight_context.tether.target
+            && target_before.is_some_and(|before| before.life != target.life || before.mana != target.mana)
             && arena.handle(target.entity_index) == target_handle
             && let Some(row) = arena.entities.get_mut(usize::from(target.entity_index))
         {
