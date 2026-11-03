@@ -256,10 +256,13 @@ pub(crate) fn step_charge_in_arena(
         .find(|row| row.active && row.source_entity_index == slot && row.model == FIREFLY_MODEL)
         .ok_or_else(|| format!("Firefly {slot} lost its attack source after movement"))?
         .word_0x96_150;
+    let summoned = arena.economy.authored_fireflies.iter()
+        .find(|state| state.source_entity_index == slot)
+        .is_some_and(|state| matches!(state.stage_var2, 13 | 16 | 17));
     let allowed = alliance_attack_target_allowed(arena, slot, target_slot, context)?;
     let target = if allowed {
         match crate::native_world::source_target::read(arena, context, target_slot)? {
-            Some(row) if row.active && row.life >= 0 && !row.drawing_disabled() => {
+            Some(row) if (row.active || summoned) && row.life >= 0 && !row.drawing_disabled() => {
                 let yaw = row.yaw.ok_or_else(|| format!("Firefly target {target_slot} has no current yaw"))?;
                 Some(FireflyAttackTarget {
                     entity_index: target_slot, class: row.class, model: row.model,
@@ -563,7 +566,7 @@ pub(crate) struct FireflyStageStep {
 pub(crate) fn step_summoned_stage_slot(
     arena: &mut SourceArena,
     source_slot: u16,
-    players: &[GoatPlayerTarget],
+    _players: &[GoatPlayerTarget],
     pass_start_class3_slots: &[u16],
     frozen_model19_slots: &[u16],
     terrain: &mut SessionTerrain,
@@ -612,13 +615,11 @@ pub(crate) fn step_summoned_stage_slot(
             )?
                 .filter(|row| {
                     source.word_0x96_150 != 0
-                        && row.active
                         && row.life >= 0
                         && !row.drawing_disabled()
                 });
             if let Some(target) = target {
-                let position =
-                    firefly_stage_position(source.word_0x96_150, target.position, players);
+                let position = target.position;
                 source.roll =
                     i16::try_from(crate::heading_for_positions(source.position, position))
                         .expect("Firefly launch heading fits i16");
@@ -650,15 +651,15 @@ pub(crate) fn step_summoned_stage_slot(
 
     let parent_slot = state.parent_entity_index;
     let parent =
-        if parent_slot != 0 && arena.slot_generation(parent_slot) == state.parent_generation {
+        if parent_slot != 0 {
             crate::native_world::source_target::read(arena, target_context, parent_slot)?
         } else {
             None
         }
-        .filter(|parent| parent.active && parent.life >= 0 && !parent.drawing_disabled())
+        .filter(|parent| parent.life >= 0 && !parent.drawing_disabled())
         .map(|parent| FireflyStageTarget {
             source_id: parent.source_id,
-            position: firefly_stage_position(parent_slot, parent.position, players),
+            position: parent.position,
         });
 
     if parent.is_some() && state.stage_var2 == 13 {
@@ -719,16 +720,14 @@ pub(crate) fn step_summoned_stage_slot(
         format!("summoned Firefly slot {source_slot} lost its parent before expiry")
     })?;
 
-    let mut target = firefly_live_stage_target(arena, target_context, source.word_0x96_150, players)?;
+    let mut target = firefly_live_stage_target(arena, target_context, source.word_0x96_150)?;
     if target.is_none() {
         source.word_0x96_150 = 0;
         if source.source_byte_3e & 7 == 0 {
             target = nearest_firefly_stage_target(
                 arena,
-                parent_slot,
                 parent,
                 pass_start_class3_slots,
-                players,
                 target_context,
             )?;
             source.word_0x96_150 = target.map_or(0, |(slot, _)| slot);
@@ -926,41 +925,27 @@ struct FireflyStageTarget {
     position: Position,
 }
 
-fn firefly_stage_position(
-    source_slot: u16,
-    fallback: Position,
-    players: &[GoatPlayerTarget],
-) -> Position {
-    players
-        .iter()
-        .find(|player| player.entity_index == source_slot)
-        .map_or(fallback, |player| player.position)
-}
-
 fn firefly_live_stage_target(
     arena: &SourceArena,
     context: crate::native_world::source_target::Context<'_>,
     target_slot: u16,
-    players: &[GoatPlayerTarget],
 ) -> std::result::Result<Option<(u16, FireflyStageTarget)>, String> {
     let Some(row) = crate::native_world::source_target::read(arena, context, target_slot)? else {
         return Ok(None);
     };
-    Ok((target_slot != 0 && row.active && row.life > 0 && !row.drawing_disabled()).then_some((
+    Ok((target_slot != 0 && row.life > 0 && !row.drawing_disabled()).then_some((
         target_slot,
         FireflyStageTarget {
             source_id: row.source_id,
-            position: firefly_stage_position(target_slot, row.position, players),
+            position: row.position,
         },
     )))
 }
 
 fn nearest_firefly_stage_target(
     arena: &SourceArena,
-    parent_slot: u16,
     parent: FireflyStageTarget,
     pass_start_class3_slots: &[u16],
-    players: &[GoatPlayerTarget],
     context: crate::native_world::source_target::Context<'_>,
 ) -> std::result::Result<Option<(u16, FireflyStageTarget)>, String> {
     let mut nearest = None;
@@ -969,15 +954,13 @@ fn nearest_firefly_stage_target(
         let Some(row) = crate::native_world::source_target::read(arena, context, *target_slot)? else {
             continue;
         };
-        if row.class != 3
-            || !matches!(row.model, 0 | 1)
+        if !matches!(row.model, 0 | 1)
             || row.source_id == parent.source_id
-            || *target_slot == parent_slot
         {
             continue;
         }
-        let position = firefly_stage_position(*target_slot, row.position, players);
-        let distance = crate::legacy_sqrt(squared_wrapping_xy_distance(parent.position, position));
+        let position = row.position;
+        let distance = squared_wrapping_xy_distance(parent.position, position);
         if distance < nearest_distance {
             nearest_distance = distance;
             nearest = Some((
@@ -3692,7 +3675,7 @@ mod tests {
     }
 
     #[test]
-    fn summoned_firefly_expires_when_parent_slot_is_reused() {
+    fn summoned_firefly_follows_reused_parent_until_it_dies() {
         let session = crate::native_world::tests::level_two_campaign_session();
         let mut arena = session.source_arena().clone();
         let mut runtime = session.session.state.live.core.runtime.clone();
@@ -3733,6 +3716,31 @@ mod tests {
             .unwrap()
             .entity_id ^= 1;
         assert_ne!(arena.reset_hash_with_terrain(&terrain), other_id.reset_hash_with_terrain(&terrain));
+
+        // A prepass player snapshot may point in the opposite direction from
+        // the parent's current record by the time this child is visited.
+        let mut current_parent = arena.clone();
+        let mut current_terrain = terrain.clone();
+        let mut current_position = session.state.position;
+        current_position.x = current_position.x.wrapping_add(4096);
+        current_parent.entities[usize::from(parent)].set_position(current_position);
+        let mut stale_position = session.state.position;
+        stale_position.x = stale_position.x.wrapping_sub(4096);
+        let stale_players = [GoatPlayerTarget {
+            entity_index: parent,
+            position: stale_position,
+            control_flags: 0,
+        }];
+        current_parent.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap().source_byte_3e = 8;
+        step_summoned_stage_slot(
+            &mut current_parent, child.source_slot, &stale_players, &[], &[], &mut current_terrain,
+            particles, Default::default(),
+        ).unwrap();
+        let followed = current_parent.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap();
+        assert_eq!(i32::from(followed.roll), crate::heading_for_positions(followed.position, current_position));
+        assert_ne!(i32::from(followed.roll), crate::heading_for_positions(followed.position, stale_position));
 
         // Use the actual summoned carrier and scheduled stage entry: hostile
         // and parent hits differ only in the attacker, and fatal damage must
@@ -3879,6 +3887,66 @@ mod tests {
             assert!(!dying.economy.map_chains.entity_chain(tile as u8, (tile >> 8) as u8).contains(&slot));
             assert_eq!(world.planes().entity_indices[usize::from(tile)], dying.economy.map_chains.tile_head(tile) as i16);
         }
+        // sub_1E580 follows the selected fixed record even after it is freed;
+        // its positive life keeps the target, so the no-target penalty does not run.
+        let mut targeted = arena.clone();
+        let mut target_terrain = terrain.clone();
+        let nearer_parent = FireflyStageTarget { source_id: parent, position: session.state.position };
+        let mut candidates = Vec::new();
+        for (dx, dy) in [(2, 1), (2, 0)] {
+            let candidate_slot = targeted.allocate_source_slot_with_terrain(&mut target_terrain).unwrap();
+            let mut position = session.state.position;
+            position.x = position.x.wrapping_add(dx);
+            position.y = position.y.wrapping_add(dy);
+            let mut candidate = crate::native_world::cave_features::new_event(candidate_slot, 5, position);
+            candidate.class = 3;
+            candidate.model = 0;
+            candidate.record[67] = 3;
+            candidate.source_id = parent.wrapping_add(1);
+            targeted.entities[usize::from(candidate_slot)] = candidate;
+            candidates.push(candidate_slot);
+        }
+        let selected = nearest_firefly_stage_target(
+            &targeted, nearer_parent, &candidates, Default::default(),
+        ).unwrap().unwrap().0;
+        assert_eq!(selected, candidates[1], "squared distances 5 and 4 must not tie");
+        let target_slot = targeted.allocate_source_slot_with_terrain(&mut target_terrain).unwrap();
+        let mut target = crate::native_world::cave_features::new_event(target_slot, 5, session.state.position);
+        target.class = 3;
+        target.record[67] = 3;
+        target.set_life(1_000);
+        targeted.entities[usize::from(target_slot)] = target;
+        targeted.entities[usize::from(target_slot)].reclaim_source_row();
+        targeted.economy.release_slot(target_slot, None);
+        let source = targeted.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap();
+        source.source_byte_3e = 1;
+        source.word_0x96_150 = target_slot;
+        step_summoned_stage_slot(
+            &mut targeted, child.source_slot, &[], &[], &[], &mut target_terrain, particles, Default::default(),
+        ).unwrap();
+        assert_eq!(targeted.economy.authored_fireflies.iter()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap().word_0x2e, 249);
+        assert_eq!(targeted.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap().word_0x96_150, target_slot);
+        let source = targeted.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap();
+        source.action = FIREFLY_ATTACK_ACTION;
+        step_charge_in_arena(&mut targeted, &mut target_terrain, child.source_slot, &[], Default::default()).unwrap();
+        assert_eq!(targeted.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap().action, FIREFLY_ATTACK_ACTION,
+            "source attack reads the retained positive-life target record");
+
+        let mut freed = arena.clone();
+        let mut freed_terrain = terrain.clone();
+        freed.entities[usize::from(parent)].set_life(0);
+        freed.entities[usize::from(parent)].reclaim_source_row();
+        freed.economy.release_slot(parent, None);
+        step_summoned_stage_slot(
+            &mut freed, child.source_slot, &[], &[], &[], &mut freed_terrain, particles, Default::default(),
+        ).unwrap();
+        assert!(freed.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap().drawing_enabled);
         let old_parent = arena.handle(parent).unwrap();
         arena.economy.release_slot(parent, None);
         assert_eq!(
@@ -3913,6 +3981,13 @@ mod tests {
             .iter()
             .find(|row| row.source_entity_index == child.source_slot)
             .unwrap();
+        assert!(source.active && source.drawing_enabled);
+        arena.entities[usize::from(parent)].set_life(-1);
+        assert!(step_summoned_stage_slot(
+            &mut arena, child.source_slot, &[], &[], &[], &mut terrain, particles, Default::default()
+        ).unwrap().retained_for_epilogue);
+        let source = arena.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == child.source_slot).unwrap();
         assert!(source.active && !source.drawing_enabled);
         let position = source.position;
         let tile = ((position.x >> 8) as u8, (position.y >> 8) as u8);

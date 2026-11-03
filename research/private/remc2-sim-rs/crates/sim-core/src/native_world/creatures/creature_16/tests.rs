@@ -693,7 +693,7 @@ fn army_ring_allocates_a_real_summoned_wyvern_with_holder_provenance() {
 }
 
 #[test]
-fn summoned_wyvern_expires_when_the_original_parent_slot_is_reused() {
+fn summoned_wyvern_follows_reused_parent_and_expires_when_it_dies() {
     let (mut arena, mut runtime, mut terrain, particles, parent_slot, feature) =
         mission_eighteen_source_parts();
     let parent = arena.handle(parent_slot).unwrap();
@@ -732,6 +732,18 @@ fn summoned_wyvern_expires_when_the_original_parent_slot_is_reused() {
     assert!(!living_row.drawing_disabled());
     assert!(u16::from_le_bytes(living_row.record[50..52].try_into().unwrap()) < 250);
 
+    let mut freed = arena.clone();
+    let mut freed_runtime = runtime.clone();
+    let mut freed_terrain = terrain.clone();
+    freed.entities[usize::from(parent_slot)].set_life(0);
+    freed.entities[usize::from(parent_slot)].reclaim_source_row();
+    freed.economy.release_slot(parent_slot, None);
+    let result = mc2::step_row(
+        &mut freed, &mut freed_runtime, &mut freed_terrain, &particles,
+        child.source_slot, &[], &families,
+    ).unwrap();
+    assert!(!result.expire, "a reclaimed fixed parent record with zero life remains readable");
+
     let replacement = arena.entities[usize::from(parent_slot)].clone();
     arena.entities[usize::from(parent_slot)].reclaim_source_row();
     arena.economy.release_slot(parent_slot, None);
@@ -740,6 +752,17 @@ fn summoned_wyvern_expires_when_the_original_parent_slot_is_reused() {
     assert_ne!(arena.handle(parent_slot).unwrap(), parent);
     assert_eq!(arena.creature_parent(child), None);
     assert_eq!(arena.creature_parent_binding(child), Some(parent));
+    let followed = mc2::step_row(
+        &mut arena, &mut runtime, &mut terrain, &particles, child.source_slot, &[], &families,
+    ).unwrap();
+    assert!(!followed.expire, "a current living replacement is the source parent");
+    assert!(!arena.entities[usize::from(child.source_slot)].drawing_disabled());
+    arena.entities[usize::from(parent_slot)].set_life(0);
+    let zero = mc2::step_row(
+        &mut arena, &mut runtime, &mut terrain, &particles, child.source_slot, &[], &families,
+    ).unwrap();
+    assert!(!zero.expire, "the source parent predicate accepts zero life");
+    arena.entities[usize::from(parent_slot)].set_life(-1);
     let expired = mc2::step_row(
         &mut arena,
         &mut runtime,

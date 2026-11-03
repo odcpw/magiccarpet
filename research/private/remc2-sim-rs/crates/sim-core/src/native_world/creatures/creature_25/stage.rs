@@ -477,11 +477,8 @@ pub(crate) fn step_action_207(
                 .iter()
                 .filter_map(|slot| ctx.target(*slot))
                 .filter(|candidate| {
-                    candidate.slot != actor.row.index
-                        && candidate.source_id != parent.source_id
+                    candidate.source_id != parent.source_id
                         && matches!(candidate.model, 0 | 1)
-                        && candidate.life > 0
-                        && candidate.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0
                 })
                 .min_by_key(|candidate| distance_squared(parent.position, candidate.position));
             if let Some(target) = target {

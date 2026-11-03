@@ -655,11 +655,15 @@ pub(crate) fn step_in_arena(
         .ok_or_else(|| format!("Bee source slot {slot} is absent"))?;
     let source_generation = arena.slot_generation(slot);
     let before = arena.economy.bee_creatures[index];
-    if before.stage_var2 == 14 {
-        let mut pointers = vec![before.parent_entity_index, before.target_entity_index.unwrap_or(0), before.damage_attacker_entity_index];
-        if let Some(parent) = crate::native_world::source_target::read(arena, Default::default(), before.parent_entity_index)? {
-            pointers.extend([parent.relations.target.unwrap_or(0), parent.relations.attacker.unwrap_or(0)]);
-        }
+    if matches!(before.stage_var2, 13 | 14 | 16 | 17) {
+        // The typed Bee owns these fields; its retained raw row is only a shadow.
+        let mut shadow = arena.entities[usize::from(slot)].clone();
+        shadow.record[77] = before.stage_var2;
+        shadow.record[44..46].copy_from_slice(&before.parent_entity_index.to_le_bytes());
+        shadow.record[154..156].copy_from_slice(&before.target_entity_index.unwrap_or(0).to_le_bytes());
+        shadow.record[102..104].copy_from_slice(&before.damage_attacker_entity_index.to_le_bytes());
+        let mut pointers = crate::native_world::source_target::alliance_direct_references(arena, &shadow)?;
+        pointers.extend(crate::native_world::source_target::summoned_direct_references(arena, &shadow)?);
         for pointer in pointers {
             if rows.iter().any(|row| row.slot == pointer) { continue; }
             let Some(parent) = level2_class5::archer::alliance_parent_relation(arena, pointer)? else { continue };
@@ -680,10 +684,8 @@ pub(crate) fn step_in_arena(
         }
     }
     let child = arena.handle(slot);
-    let generation_bound_stage = (matches!(before.origin, BeeCreatureOrigin::MorphSpell { .. })
-        && before.stage_var2 == 12)
-        || (matches!(before.origin, BeeCreatureOrigin::SummonedSpell { .. })
-        && before.stage_var2 == 13);
+    let generation_bound_stage = matches!(before.origin, BeeCreatureOrigin::MorphSpell { .. })
+        && before.stage_var2 == 12;
     if generation_bound_stage
         && child.is_none_or(|child| {
             arena
@@ -691,7 +693,7 @@ pub(crate) fn step_in_arena(
                 .is_none_or(|parent| parent.source_slot != before.parent_entity_index)
         })
     {
-        // Retain the existing Morph and Army lifetime binding.
+        // Retain the existing Morph lifetime binding.
         rows.retain(|row| row.slot != before.parent_entity_index);
     }
     let stage = runtime.descriptor(before.stage_var1);

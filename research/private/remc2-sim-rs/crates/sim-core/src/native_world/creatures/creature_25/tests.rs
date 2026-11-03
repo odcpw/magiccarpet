@@ -921,7 +921,7 @@ fn army_ring_allocates_a_real_summoned_cymmerian_with_holder_provenance() {
 }
 
 #[test]
-fn summoned_cymmerian_rejects_reused_parent_slot_and_hides() {
+fn summoned_cymmerian_follows_reused_parent_until_it_dies() {
     let (mut arena, mut runtime, mut terrain, particles, parent_slot, owner_id, position) =
         summoned_source_parts();
     let holder = arena.allocate_source_slot().unwrap();
@@ -939,6 +939,19 @@ fn summoned_cymmerian_rejects_reused_parent_slot_and_hides() {
     .unwrap();
     let parent = arena.handle(parent_slot).unwrap();
     assert_eq!(arena.creature_parent(child), Some(parent));
+
+    let mut freed = arena.clone();
+    let mut freed_runtime = runtime.clone();
+    let mut freed_terrain = terrain.clone();
+    freed.entities[usize::from(parent_slot)].set_life(0);
+    freed.entities[usize::from(parent_slot)].reclaim_source_row();
+    freed.economy.release_slot(parent_slot, None);
+    let families = family_with_cymmerian(child.source_slot);
+    mc2::step_row(
+        &mut freed, &mut freed_runtime, &mut freed_terrain, &particles, child.source_slot,
+        &[], &families, crate::native_world::source_target::Context::default(),
+    ).unwrap();
+    assert!(!freed.entities[usize::from(child.source_slot)].drawing_disabled());
 
     arena.economy.release_slot(parent_slot, None);
     assert_eq!(
@@ -966,6 +979,12 @@ fn summoned_cymmerian_rejects_reused_parent_slot_and_hides() {
         crate::native_world::source_target::Context::default(),
     )
     .unwrap();
+    assert!(!arena.entities[usize::from(child.source_slot)].drawing_disabled());
+    arena.entities[usize::from(parent_slot)].set_life(-1);
+    mc2::step_row(
+        &mut arena, &mut runtime, &mut terrain, &particles, child.source_slot,
+        &[], &families, crate::native_world::source_target::Context::default(),
+    ).unwrap();
     assert!(arena.entities[usize::from(child.source_slot)].drawing_disabled());
 }
 
@@ -1692,6 +1711,28 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
     .unwrap()
     .unwrap()
     .source_slot;
+
+    // sub_16FC0 selects from the pass-start class-3 chain without a life or
+    // visibility test; the selected record is validated on the next visit.
+    let mut selected = arena.clone();
+    let mut selected_runtime = runtime.clone();
+    let mut selected_terrain = terrain.clone();
+    let target_slot = selected.allocate_source_slot_with_terrain(&mut selected_terrain).unwrap();
+    let mut target = crate::native_world::cave_features::new_event(target_slot, 5, position);
+    target.class = 3;
+    target.model = 0;
+    target.record[67] = 3;
+    target.source_id = owner_id.wrapping_add(1);
+    target.set_life(-1);
+    selected.entities[usize::from(target_slot)] = target;
+    selected.entities[usize::from(slot)].set_phase(0);
+    mc2::step_row(
+        &mut selected, &mut selected_runtime, &mut selected_terrain, &particles, slot,
+        &[target_slot], &family_with_cymmerian(slot),
+        crate::native_world::source_target::Context::default(),
+    ).unwrap();
+    assert_eq!(u16::from_le_bytes(selected.entities[usize::from(slot)].record[154..156].try_into().unwrap()), target_slot);
+    assert_eq!(u16::from_le_bytes(selected.entities[usize::from(slot)].record[50..52].try_into().unwrap()), 249);
 
     arena.entities[usize::from(slot)].set_phase(1);
     let families = family_with_cymmerian(slot);

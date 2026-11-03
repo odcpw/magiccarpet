@@ -1027,7 +1027,7 @@ fn army_ring_allocates_a_generation_bound_summoned_bee_with_source_fields() {
 }
 
 #[test]
-fn summoned_bee_expires_when_parent_slot_is_reused() {
+fn summoned_bee_follows_reused_parent_until_it_dies() {
     // Exercise the real acquired Morph producer as well as the Army path:
     // the same numeric player address may later name another incarnation.
     let (morph, _, morph_slot) = public_day_morph_bee();
@@ -1082,6 +1082,17 @@ fn summoned_bee_expires_when_parent_slot_is_reused() {
     .unwrap();
     let parent = arena.handle(parent_slot).unwrap();
     assert_eq!(arena.creature_parent(child), Some(parent));
+    let mut freed = arena.clone();
+    let mut freed_terrain = terrain.clone();
+    freed.entities[usize::from(parent_slot)].set_life(0);
+    freed.entities[usize::from(parent_slot)].reclaim_source_row();
+    freed.economy.release_slot(parent_slot, None);
+    let models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let result = mc2::step_in_arena(
+        &mut freed, &runtime, &mut freed_terrain, particles, child.source_slot,
+        &models, &[], None, None,
+    ).unwrap();
+    assert!(!result.summon_expire_effect, "reclaimed zero-life parent remains readable");
     arena.economy.release_slot(parent_slot, None);
     assert_eq!(
         arena.allocate_source_slot_with_terrain(&mut terrain),
@@ -1109,6 +1120,13 @@ fn summoned_bee_expires_when_parent_slot_is_reused() {
         None,
     )
     .unwrap();
+    assert!(!effects.summon_expire_effect);
+    assert!(arena.economy.bee_creatures.iter().find(|bee| bee.source_entity_index == child.source_slot).unwrap().drawing_enabled);
+    arena.entities[usize::from(parent_slot)].set_life(-1);
+    let effects = mc2::step_in_arena(
+        &mut arena, &runtime, &mut terrain, particles, child.source_slot, &models,
+        &[parent_slot], None, None,
+    ).unwrap();
     assert!(effects.summon_expire_effect);
     assert!(
         !arena

@@ -3365,8 +3365,8 @@ impl Mc2Simulation {
             .pickup(source_slot)
             .ok_or("Meteor source holder disappeared")?
             .source_spell_parent_entity_index();
-        let alliance_global_a4 = live.shared_spells.pickup(source_slot)
-            .is_some_and(|holder| holder.model == 24)
+        let current_global_a4 = live.shared_spells.pickup(source_slot)
+            .is_some_and(|holder| matches!(holder.model, 19 | 24))
             && live.economy.entities.get(usize::from(parent_slot))
                 .is_some_and(|parent| parent.special_relation == EntitySpecialRelation::GlobalSpecialState);
         let owner = live
@@ -3375,7 +3375,10 @@ impl Mc2Simulation {
             .iter()
             .find(|player| player.entity_index == parent_slot);
         let auxiliary = owner.and_then(PlayerSnapshot::type_str_164_auxiliary);
-        let (aim_yaw, aim_pitch) = if parent_slot == live.shared_spells.player_entity.index {
+        let (aim_yaw, aim_pitch) = if current_global_a4 {
+            let input = live.shared_spells.global_special_state;
+            (input.input_yaw, input.input_pitch)
+        } else if parent_slot == live.shared_spells.player_entity.index {
             let aim = live.shared_spells.beyond_sight_auxiliary();
             (aim.next_entity, aim.entity_index2)
         } else {
@@ -3392,7 +3395,7 @@ impl Mc2Simulation {
                     )
                 })
         };
-        let castle_mana = if alliance_global_a4 {
+        let castle_mana = if current_global_a4 {
             let slot = live.shared_spells.global_special_state.castle_entity_index;
             (slot != 0).then(|| live.economy.castle_at(slot).map(|castle| castle.mana)
                 .or_else(|| live.economy.entities.get(usize::from(slot)).map(|row| row.mana))).flatten()
@@ -3402,7 +3405,11 @@ impl Mc2Simulation {
         let input = meteor::CastInput {
             aim_yaw,
             aim_pitch,
-            auxiliary_byte: auxiliary.map_or(0, |aux| aux.byte_0x154_340),
+            auxiliary_byte: if current_global_a4 {
+                live.shared_spells.global_special_state.cast_auxiliary
+            } else {
+                auxiliary.map_or(0, |aux| aux.byte_0x154_340)
+            },
             castle_mana,
         };
         let family = live
@@ -28440,6 +28447,8 @@ mod tests {
 
     #[test]
     fn level_four_public_army_cast_schedules_rings_and_real_summoned_creatures() {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+
         for (tier, model, expected_count, level, package_name, check_expiry) in [
             (
                 0_u8,
@@ -28470,6 +28479,7 @@ mod tests {
             (1, 25, 4, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
             (0, 19, 8, 1, "mc-bhq6-ordinary-20261025-zclu5fjj/level1", false),
             (0, 19, 8, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
+            (2, 16, 2, 7, "mc-bhq6-ordinary-20261025-zclu5fjj/level7", false),
         ] {
             let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../generated")
@@ -28757,6 +28767,74 @@ mod tests {
                 }
                 assert!(targeted, "a real Army Firefly selects the owner-data rival");
                 assert!(damaged, "Firefly contact or projectile reaches the rival's attributed damage consumer");
+            }
+            if level == 7 && matches!(model, 16 | 25) {
+                // Night7 supplies actual opposing rivals for both ranged
+                // Army products. Preserve the existing Cave4 Wyvern lifetime
+                // case; it has no opposing class3 actor to acquire naturally.
+                // Resources/progression were staged above. Only the real
+                // player's position is controlled here, with ordinary cast,
+                // creature actions, projectiles and damage left to scheduling.
+                let mut attack = campaign.clone();
+                let owner_id = attack.simulation().entities()[usize::from(player)].source_id;
+                let rival = attack.simulation().entities().iter().find(|row| {
+                    row.active && row.class == 3 && row.model == 1 && row.life > 0
+                        && row.source_id != owner_id
+                }).expect("Night7 contains a living opposing rival");
+                let rival_slot = rival.index;
+                let rival_life = rival.life;
+                let rival_handle = attack.simulation().source_arena().handle(rival_slot).unwrap();
+                let nearby = Position { x: rival.position.x.wrapping_add(1024),
+                    y: rival.position.y, z: rival.position.z.saturating_add(512) };
+                attack.simulation_mut().set_level2_entity_position(player, nearby).unwrap();
+                let (kind, origin, attack_action) = if model == 25 {
+                    (CreatureKind::Cymmerian, FireballProjectileOrigin::Cymmerian, 202)
+                } else {
+                    (CreatureKind::Wyvern, FireballProjectileOrigin::Wyvern, 130)
+                };
+                assert!(!attack.simulation().economy().fireball_projectiles().iter().any(|shot|
+                    shot.active && shot.origin == origin && shot.owner_entity_index == owner_id),
+                    "the encounter starts without a competing same-owner product projectile");
+                let mut combat_roots = BTreeMap::new();
+                let mut targeted = false;
+                let mut shots = Vec::new();
+                let mut consumed = None;
+                for turn in 0..480 {
+                    attack.step(if turn == 0 { PlayerCommand { opcode: 6, argument_1: 19,
+                        flags: 0x40, ..PlayerCommand::default() } } else { PlayerCommand::default() }, 0);
+                    let current = attack.simulation();
+                    assert!(!current.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                        "Army model{model} combat turn{turn}: {:?}", current.dispatch_events());
+                    let arena = current.source_arena();
+                    let census = current.creature_runtime_census();
+                    for identity in census.roots_of_kind(kind) {
+                        let actor = &arena.entities[usize::from(identity.handle.source_slot)];
+                        if actor.source_id != owner_id { continue; }
+                        assert_eq!(identity.origin, CreatureRootOrigin::SummonedSpell { holder_slot: holder },
+                            "every competing same-owner product root must belong to this actual Army cast");
+                        combat_roots.insert(identity.handle.source_slot, identity.handle);
+                        targeted |= actor.active && actor.action == attack_action
+                            && actor.source_word_96() == rival_slot;
+                    }
+                    for shot in arena.economy.fireball_projectiles().iter().filter(|shot|
+                        shot.active && shot.origin == origin && shot.owner_entity_index == owner_id
+                            && shot.target_source_entity_index == rival_slot)
+                    {
+                        if let Some(handle) = arena.handle(shot.source_entity_index)
+                            && !shots.contains(&handle)
+                        { shots.push(handle); }
+                    }
+                    let rival = &arena.entities[usize::from(rival_slot)];
+                    assert_eq!(arena.handle(rival_slot), Some(rival_handle),
+                        "combat must affect the original real rival generation");
+                    if targeted && !shots.is_empty() && rival.life < rival_life
+                        && rival.word_26() == owner_id
+                    { consumed = Some((turn, rival.life)); break; }
+                }
+                assert!(targeted && !shots.is_empty() && consumed.is_some(),
+                    "actual Army model{model} must select, fire and damage the real rival: roots={combat_roots:?} targeted={targeted} shots={shots:?} consumed={consumed:?} rival={:?}",
+                    attack.simulation().entities()[usize::from(rival_slot)]);
+                eprintln!("Army model{model} roots={combat_roots:?} rival={rival_slot} life={rival_life}->{consumed:?} shots={shots:?}");
             }
             if level == 7 && model == 25 {
                 crate::native_world::creatures::creature_25::tests::assert_night_army_cymmerian_lifetime(

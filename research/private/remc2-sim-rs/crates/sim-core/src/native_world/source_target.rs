@@ -383,10 +383,29 @@ pub(crate) fn alliance_direct_references(
     arena: &SourceArena,
     source: &EntitySnapshot,
 ) -> Result<std::collections::BTreeSet<u16>, String> {
-    let mut referenced = std::collections::BTreeSet::new();
     if source.record[77] != 14 {
-        return Ok(referenced);
+        return Ok(std::collections::BTreeSet::new());
     }
+    direct_creature_references(arena, source)
+}
+
+/// sub_1E580 and sub_1E320 read fixed parent/selected-target records in the
+/// Army follow and pursuit modes, independently of frozen search membership.
+pub(crate) fn summoned_direct_references(
+    arena: &SourceArena,
+    source: &EntitySnapshot,
+) -> Result<std::collections::BTreeSet<u16>, String> {
+    if !matches!(source.record[77], 13 | 16 | 17) {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    direct_creature_references(arena, source)
+}
+
+fn direct_creature_references(
+    arena: &SourceArena,
+    source: &EntitySnapshot,
+) -> Result<std::collections::BTreeSet<u16>, String> {
+    let mut referenced = std::collections::BTreeSet::new();
     let mut pending = vec![
         source.source_spell_parent_entity_index(),
         source.source_word_96(),

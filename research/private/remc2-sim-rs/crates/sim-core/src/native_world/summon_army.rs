@@ -5,8 +5,8 @@
 //! creature owner allocate and bind a real `SummonedSpell` root.
 
 use super::{
-    EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, RuntimeSnapshot,
-    SessionTerrain,
+    EntitySnapshot, EntitySpecialRelation, Level2SharedSpellResetSession, ParticleParameter,
+    RuntimeSnapshot, SessionTerrain,
 };
 use crate::campaign::source_arena::{
     CreatureRootOrigin, CreatureRuntimeRole, SourceArena, SourceEntityHandle,
@@ -71,6 +71,7 @@ pub(crate) struct RingGroupOutcome {
 struct FlyerEmission {
     event_slot: u16,
     parent_slot: u16,
+    uses_global_a4: bool,
 }
 
 impl RingGroupOutcome {
@@ -229,15 +230,13 @@ fn emit_flyer(
     input: CastInput,
     properties: SummonArmyProperties,
 ) -> Result<Option<FlyerEmission>, String> {
-    // The raw source parent field is only a slot. Preserve its generation
-    // before NewEvent can allocate or otherwise change the arena.
-    let original_parent = arena
-        .handle(initial_parent_slot)
-        .ok_or("Summon Army caster has no live source handle")?;
+    // The source parent is a fixed address, including when its record was
+    // reclaimed. A live handle is retained only as historical provenance.
+    let original_parent = arena.handle(initial_parent_slot);
     let initial_position = arena
         .entities
         .get(usize::from(initial_parent_slot))
-        .filter(|row| row.active)
+        .filter(|row| initial_parent_slot != 0 && row.index == initial_parent_slot)
         .map(|parent| parent.position)
         .ok_or("Summon Army caster disappeared before flyer construction")?;
     let particle = particles
@@ -252,6 +251,13 @@ fn emit_flyer(
     }
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
+    };
+    // The position argument points into the parent record. If NewEvent reuses
+    // that address, the constructor clears it before the argument is read.
+    let initial_position = if slot == initial_parent_slot {
+        Position::default()
+    } else {
+        initial_position
     };
     let mut flyer =
         super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), initial_position);
@@ -291,15 +297,24 @@ fn emit_flyer(
     let parent = arena
         .entities
         .get(usize::from(parent_slot))
-        .filter(|row| row.active)
+        .filter(|row| parent_slot != 0 && row.index == parent_slot)
         .cloned()
         .ok_or("Summon Army caster disappeared during flyer construction")?;
     let caster_handle = if parent_slot == initial_parent_slot {
         original_parent
     } else {
-        arena
-            .handle(parent_slot)
-            .ok_or("Summon Army replacement caster has no live source handle")?
+        arena.handle(parent_slot)
+    };
+    let uses_global_a4 = parent.special_relation == EntitySpecialRelation::GlobalSpecialState;
+    let input = if uses_global_a4 {
+        CastInput {
+            aim_yaw: shared.global_special_state.input_yaw,
+            aim_pitch: shared.global_special_state.input_pitch,
+            auxiliary_byte: shared.global_special_state.cast_auxiliary,
+            ..input
+        }
+    } else {
+        input
     };
     let selector = family_selector(holder.level_gate, input.map_type, properties)?;
 
@@ -335,12 +350,16 @@ fn emit_flyer(
     let flyer_handle = arena
         .handle(slot)
         .ok_or("Summon Army flyer lost its source handle")?;
-    if !arena.bind_carried_creature_parent(flyer_handle, caster_handle) {
-        return Err("Summon Army flyer lost its caster generation".to_owned());
+    if let Some(caster_handle) = caster_handle
+        && caster_handle != flyer_handle
+        && !arena.bind_carried_creature_parent(flyer_handle, caster_handle)
+    {
+        return Err("Summon Army flyer lost its caster provenance".to_owned());
     }
     Ok(Some(FlyerEmission {
         event_slot: slot,
         parent_slot,
+        uses_global_a4,
     }))
 }
 
@@ -395,7 +414,11 @@ pub(crate) fn step_holder(
                     outcome.event_slot = emission.map(|emission| emission.event_slot);
                     outcome.emission_failed = outcome.event_slot.is_none();
                     if let Some(emission) = emission {
-                        outcome.clear_player_aux = Some(emission.parent_slot);
+                        if emission.uses_global_a4 {
+                            shared.global_special_state.cast_auxiliary = 0;
+                        } else {
+                            outcome.clear_player_aux = Some(emission.parent_slot);
+                        }
                         outcome.sound = Some((emission.event_slot, 9));
                     }
                 }
@@ -426,13 +449,18 @@ pub(crate) fn step_holder(
         }
 
         holder.active_value = holder.active_value.wrapping_sub(1);
+        // sub_6C170 writes word2E before calling sub_6D880; SetSpell must
+        // observe the zero boundary and apply the deferred profile now.
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
         if holder.active_value == 0 {
             let deferred = holder.source_word_2c();
             if deferred != 0 {
-                let tier =
-                    crate::spell_activation::level2_applied_tier(deferred.wrapping_sub(1) as i8)
-                        .ok_or("Summon Army deferred tier is negative")?;
-                let profile = crate::spell_activation::level2_set_spell_profile(HOLDER_MODEL, tier)
+                let tier = deferred
+                    .checked_sub(1)
+                    .and_then(|value| u8::try_from(value.min(2)).ok())
+                    .ok_or("Summon Army deferred tier is negative")?;
+                let profile = shared
+                    .physical_spell_profile(HOLDER_MODEL, tier, parent_slot, None)
                     .ok_or("Summon Army deferred tier has no source profile")?;
                 holder.apply_nyphur_spell_profile(profile, tier);
                 holder.set_source_word_2c(0);
@@ -984,6 +1012,277 @@ pub(crate) fn step_ring_with_family(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn holder_reused_parent_reads_post_allocation_a4_and_charges() {
+        let mut simulation = crate::native_world::tests::level_two_campaign_session();
+        simulation
+            .apply_carried_spell_families(&[19], Some(19))
+            .unwrap();
+        let parent_slot = simulation.state.entity_index;
+        let holder_slot = simulation
+            .shared_spells()
+            .local_player
+            .enabled_spell_holders[19];
+        simulation
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test();
+        let particles = simulation.session.definition.presentation.particles.clone();
+        let live = &mut simulation.session.state.live;
+        live.economy.finish_source_group();
+        let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+        holder.active_value = holder.activation_value.cast_signed();
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        let cost = holder.max_mana;
+        let castle_requirement = holder.mana_regen;
+        crate::world::terrain::cave_features::reclaim(
+            &mut live.economy,
+            &mut live.terrain,
+            parent_slot,
+        );
+        let parent = &mut live.economy.entities[usize::from(parent_slot)];
+        parent.set_life(100);
+        parent.set_mana(cost);
+        parent.set_mana_regen(13);
+        live.shared_spells.global_special_state.input_yaw = 37;
+        live.shared_spells.global_special_state.input_pitch = -21;
+        live.shared_spells.global_special_state.cast_auxiliary = 11;
+        let outcome = step_holder(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            holder_slot,
+            CastInput {
+                map_type: MapType::Day,
+                aim_yaw: 120,
+                aim_pitch: 55,
+                auxiliary_byte: 7,
+                castle_mana: Some(castle_requirement),
+            },
+            crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES,
+        )
+        .unwrap();
+        assert_eq!(outcome.event_slot, Some(parent_slot));
+        assert_eq!(outcome.clear_player_aux, None);
+        assert_eq!(outcome.sound, Some((parent_slot, 9)));
+        assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 0);
+        let flyer = &live.economy.entities[usize::from(parent_slot)];
+        assert_eq!((flyer.class, flyer.model, flyer.action), (9, 24, 25));
+        assert_eq!(flyer.position, Position::default());
+        assert_eq!(
+            (flyer.yaw, flyer.pitch, flyer.source_dword_10()),
+            (37, -21, 11)
+        );
+        assert_eq!(flyer.actual_speed, FLYER_SPEED.wrapping_mul(2));
+        assert_eq!(flyer.mana_regen, -cost);
+    }
+
+    #[test]
+    fn holder_failed_allocation_charges_and_deferred_tier_clamps() {
+        let mut simulation = crate::native_world::tests::level_two_campaign_session();
+        simulation
+            .apply_carried_spell_families(&[19], Some(19))
+            .unwrap();
+        let parent_slot = simulation.state.entity_index;
+        let holder_slot = simulation
+            .shared_spells()
+            .local_player
+            .enabled_spell_holders[19];
+        simulation
+            .session
+            .state
+            .live
+            .economy
+            .economy
+            .exhaust_new_event_capacity_for_test();
+        let particles = simulation.session.definition.presentation.particles.clone();
+        let live = &mut simulation.session.state.live;
+        let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+        holder.active_value = holder.activation_value.cast_signed();
+        holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+        let cost = holder.max_mana;
+        let requirement = holder.mana_regen;
+        let parent = &mut live.economy.entities[usize::from(parent_slot)];
+        parent.set_life(100);
+        parent.set_mana(cost);
+        parent.set_mana_regen(13);
+        live.shared_spells.global_special_state.cast_auxiliary = 11;
+        let input = CastInput {
+            map_type: MapType::Day,
+            aim_yaw: 0,
+            aim_pitch: 0,
+            auxiliary_byte: 7,
+            castle_mana: Some(requirement),
+        };
+        let outcome = step_holder(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            holder_slot,
+            input,
+            crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES,
+        )
+        .unwrap();
+        assert!(outcome.emission_failed);
+        assert_eq!(outcome.clear_player_aux, None);
+        assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 11);
+        assert_eq!(
+            live.economy.entities[usize::from(parent_slot)].mana_regen,
+            -cost
+        );
+
+        live.shared_spells.free_spell_usage = true;
+        let expected = live
+            .shared_spells
+            .physical_spell_profile(19, 2, parent_slot, None)
+            .unwrap();
+        let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+        holder.active_value = 1;
+        holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+        holder.set_source_word_2c(129);
+        let outcome = step_holder(
+            &mut live.shared_spells,
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            holder_slot,
+            input,
+            crate::level_definition::MC2_SOURCE_SUMMON_ARMY_PROPERTIES,
+        )
+        .unwrap();
+        assert!(outcome.expired);
+        let holder = live.shared_spells.pickup(holder_slot).unwrap();
+        assert_eq!(holder.level_gate, 2);
+        assert_eq!(holder.source_word_2c(), 0);
+        assert_eq!(
+            (holder.max_mana, holder.mana_regen, holder.mana),
+            (expected.max_mana, expected.mana_regen, expected.mana)
+        );
+    }
+
+    #[test]
+    fn scheduled_holder_uses_already_reused_parents_shared_a4_and_castle() {
+        let mut base = crate::native_world::tests::level_two_campaign_session();
+        let earlier_slot = {
+            let live = &mut base.session.state.live;
+            super::super::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain)
+                .expect("reserve a source slot before the holder")
+        };
+        base.apply_carried_spell_families(&[19], Some(19)).unwrap();
+        let parent_slot = base.state.entity_index;
+        let holder_slot = base.shared_spells().local_player.enabled_spell_holders[19];
+        assert!(earlier_slot < holder_slot && earlier_slot != parent_slot);
+        let castle = base
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                parent_slot,
+                false,
+                true,
+            )
+            .expect("controlled owner Castle");
+        let requirement = base.shared_spells().pickup(holder_slot).unwrap().mana_regen;
+        assert!(requirement > 0);
+        assert!(
+            base.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, requirement)
+        );
+        let cost;
+        {
+            let live = &mut base.session.state.live;
+            live.economy.finish_source_group();
+            crate::world::terrain::cave_features::reclaim(
+                &mut live.economy,
+                &mut live.terrain,
+                parent_slot,
+            );
+            let slot = super::super::alliance_spell::construct_impact(
+                &mut live.economy,
+                &mut live.terrain,
+            )
+            .expect("actual impact reuses the parent");
+            assert_eq!(slot, parent_slot);
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.active_value = holder.activation_value.cast_signed();
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            cost = holder.max_mana;
+            live.economy.entities[usize::from(holder_slot)] = holder.clone();
+            let parent = &mut live.economy.entities[usize::from(parent_slot)];
+            parent.set_life(100);
+            parent.set_mana(cost);
+            crate::world::terrain::cave_features::reclaim(
+                &mut live.economy,
+                &mut live.terrain,
+                earlier_slot,
+            );
+            live.shared_spells.global_special_state.cast_auxiliary = 11;
+        }
+        for (castle_slot, should_launch) in [(0, false), (castle, true)] {
+            let mut simulation = base.clone();
+            simulation
+                .session
+                .state
+                .live
+                .shared_spells
+                .global_special_state
+                .castle_entity_index = castle_slot;
+            simulation.step_outer_turn(
+                crate::PlayerCommand {
+                    argument_6: 37,
+                    argument_8: (-21_i16).cast_unsigned(),
+                    ..Default::default()
+                },
+                0,
+            );
+            assert!(
+                !simulation
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                "{:?}",
+                simulation.dispatch_events()
+            );
+            let live = &simulation.session.state.live;
+            assert_eq!(
+                (
+                    live.shared_spells.global_special_state.input_yaw,
+                    live.shared_spells.global_special_state.input_pitch
+                ),
+                (37, -21)
+            );
+            let flyer = live.economy.entities.iter().find(|row| {
+                row.active
+                    && (row.class, row.model, row.action) == (9, 24, 25)
+                    && word(row, 42) == holder_slot
+            });
+            assert_eq!(
+                flyer.is_some(),
+                should_launch,
+                "current A4 Castle controls the gate"
+            );
+            if let Some(flyer) = flyer {
+                assert_ne!(flyer.index, parent_slot);
+                assert_eq!(
+                    (flyer.yaw, flyer.pitch, flyer.source_dword_10()),
+                    (37, -21, 11)
+                );
+                assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 0);
+                assert_eq!(
+                    live.economy.entities[usize::from(parent_slot)].mana_regen,
+                    -cost
+                );
+            } else {
+                assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 11);
+            }
+        }
+    }
 
     pub(crate) fn assert_terrain_death_reclaims(
         original: &super::super::Mc2Simulation,
@@ -1563,9 +1862,15 @@ pub(crate) mod tests {
                     .find(|state| state.source_entity_index == creature.source_slot)
                     .expect("Firefly has its authored-family sidecar");
                 assert_eq!((carrier.model, carrier.action), (19, 159));
-                assert_eq!(sidecar.entity_id, 42, "sub_3A5B0 copies the caster source id");
-                assert_eq!(arena.economy.source_owner(creature.source_slot), 0,
-                    "NewEvent leaves the independent playerEntityIndex at zero");
+                assert_eq!(
+                    sidecar.entity_id, 42,
+                    "sub_3A5B0 copies the caster source id"
+                );
+                assert_eq!(
+                    arena.economy.source_owner(creature.source_slot),
+                    0,
+                    "NewEvent leaves the independent playerEntityIndex at zero"
+                );
                 assert_eq!(sidecar.authored_index, None);
                 assert_eq!(sidecar.parent_entity_index, 6);
                 assert_eq!(sidecar.word_0x2e, SUMMONED_REMAINING_LIFETIME);
