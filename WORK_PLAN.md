@@ -20,6 +20,11 @@ joins with the feature owners. VioletGrove and WildSpring are the Terra workers.
 Use exclusive file windows. Original-client delivery uses the verified isolated
 `magiccarpet-original-client-70e76b9e-20261103` input snapshot while unrelated
 Modern renderer work is present in the canonical Unity source.
+The canonical launcher's source-qualification check currently rejects the
+original install against that unrelated working source. Verified original launch:
+`/home/oliver/Projects/odcpw/magiccarpet-original-client-70e76b9e-20261103/remc2-unity-native/run-campaign.sh`.
+Keep its gate intact; retire this exception after the separate launcher owner
+makes the ordinary installed-original route qualify without mixing Modern inputs.
 Keep the bead's wider acceptance and dependencies open. Existing delivered
 Castle spell tiers remain the baseline. Disk headroom is restored before heavy
 stages; preserve warm caches, current player and immediate previous native.
