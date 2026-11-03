@@ -1,6 +1,7 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: Duel `cd65b670`, native `955cf9b7df8e`.
+Current installed checkpoint: mana contention/collection `a9d4fb80`, native
+`115137a73a34`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
@@ -10,21 +11,42 @@ one Sol 6.1/xhigh integrator, with root coordination and independent checks.
 The requested mana economy → rival combat → Lightning → Steal Mana → Duel
 sequence is delivered in the installed checkpoints below. Do not restart those
 completed paths. The full shared-engine acceptance remains in the open beads.
-Next concrete boundary: mana-sphere contention/current owner → actual defender
-or Scavenger collection → Castle deposit under `mc-bhq.10`. Two existing focused
-checks are unresolved; establish fixture versus production cause against the real
-source and connected consumer before changing code or assertions. Preserve the
-remaining shared effects/actor acceptance in its existing prerequisites.
+The connected mana boundary is delivered: actual earned death sphere → rival
+selection/contest → public reclaim → defender collection → exact Castle deposit
+and another paid cast. Actual authored Scavenger selection → approach → claim →
+lift → consumption → reclaim also passes. The Scavenger credits its own mana;
+it does not deposit to a Castle. Fixed its record offsets, horizontal distance,
+source movement/transition order, collision offset and frozen-list/current-row
+selection. Nyphur uses the same actual mana head and current ownership.
+Existing invalid control setups were corrected without relaxing their source
+expectations. The authored target check retains its identity, death, retirement,
+HUD and neutral handoff assertions, with explicit travel prerequisites.
+
+The owner-data gameplay checks, source-order controls and workspace all-target
+check pass; final test-only geometry does not change verified production code.
+All443 Rust and162 upstream inputs match rig and the installed original client.
+Root viewed the normal launcher → original map/loading → NightSpire scene/HUD
+with the matching mapped native and stopped the owned smoke processes. Human
+combat, FPS, hardware audio, complete missions and old-save migration remain
+unverified. Wider `mc-bhq.10` and shared-engine acceptance stay open. Evidence:
+`research/private/generated/mana-collection-20261104-integration/`.
+
+Next connected boundary is the existing `mc-bhq.9` shared fire/impact/transient
+capability: ordinary impact → actual child damage/presentation → retained hidden
+occupant → scheduled reclaim/reuse. Its existing
+`hidden_fireball_remains_current_until_the_source_reclaim_boundary` negative is
+an entry point for distinguishing invalid setup from a real lifecycle gap;
+fixing a bare helper alone is not delivery. Preserve completed public Fireball
+behavior and all existing family acceptance. No new planning round or test suite.
 CalmBeaver owns the sole build/push/install slot; MaroonMarsh implements shared
 joins with the feature owners. VioletGrove and WildSpring are the Terra workers.
 Use exclusive file windows. Original-client delivery uses the verified isolated
 `magiccarpet-original-client-70e76b9e-20261103` input snapshot while unrelated
 Modern renderer work is present in the canonical Unity source.
-The canonical launcher's source-qualification check currently rejects the
-original install against that unrelated working source. Verified original launch:
-`/home/oliver/Projects/odcpw/magiccarpet-original-client-70e76b9e-20261103/remc2-unity-native/run-campaign.sh`.
-Keep its gate intact; retire this exception after the separate launcher owner
-makes the ordinary installed-original route qualify without mixing Modern inputs.
+The canonical launcher now selects the qualified original client through
+`Builds/Original` (launcher commit `841c4709`); explicit Modern selection remains
+separate. Root verified this normal route with the matching installed native.
+Source/native qualification gates remain intact.
 Keep the bead's wider acceptance and dependencies open. Existing delivered
 Castle spell tiers remain the baseline. Disk headroom is restored before heavy
 stages; preserve warm caches, current player and immediate previous native.
