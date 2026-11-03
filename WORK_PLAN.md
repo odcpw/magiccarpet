@@ -43,12 +43,46 @@ The installed player loaded the original campaign map, loading artwork and
 NightSpire terrain/HUD; native copies, the loaded library and all 437 Rust inputs
 match the tested candidate. No Unity or original-art changes were required.
 
-Use this Army installation as the current baseline; the exact Alliance native
-and receipt remain in the local rollback. `mc-k5k.4` stays open for combined
+The exact Army native and install receipt are preserved as the status batch's
+rollback; the earlier Alliance rollback remains available. `mc-k5k.4` stays open for combined
 families19/20/21 acceptance. Progression/resources and some positions are explicit
 test controls, not earned campaign progression or a human playthrough. Hardware
 audio/performance remain unverified; the package-wide format check still fails
-on broad formatting drift. This batch stops here; status spells are next.
+on broad formatting drift.
+
+Status checkpoint delivered on 2026-11-03: runtime `11b49428`, installed native
+`d87e112bc161`. Acquired/public casts pass all supported Speed, Shield, Invisible
+and Beyond Sight tiers through movement, genuine Bee damage, actual Nyphur
+selection and observation, with natural expiry and the real Bee death/drop/reuse
+route. Source fixed-record/A4 publication now reaches current typed and retained
+actors; Shield checks current Castle funding, queued free profiles survive cleanup,
+and Speed preserves post-trail-allocation alias/payment/expiry order. Typed i32
+Speed multipliers reach actual public movement, reset, carry and same-revision
+replay without changing MC2 defaults. The source Invisible holder/A4 anomaly and
+Bee exception remain explicit; latched attacks are not universally erased.
+
+Final immutable candidate9 reuses the byte-identical core8 binary. All 437 source
+inputs match its receipt and the installed native. Focused controls, acquired
+consumers, affected C ABI acquisition/damage/labels, workspace all-target check
+and native build pass; independent checks cover the new lifetime boundaries and
+exact C ABI Shield damage. C ABI vault rewards use declared controlled BUILD21/54
+damage; Shield's accepted mailbox is not claimed as natural combat. The installed
+player loaded the original map, loading art and NightSpire terrain/HUD with the
+matching mapped library. No Unity or original-art changes were required.
+
+Use this status installation as the current baseline. New definition keys reject
+older-definition saves/replays; no migration or relaxed identity gate was added.
+The exact Army native `85fc99aca629` and its receipt remain under
+`research/private/generated/status-20261103-integration/candidate-6/rollback-army/`.
+`mc-k5k.12` and parent `mc-k5k.7` retain their full acceptance and open dependencies.
+The shared-effects dependency `mc-bhq.9` remains open, including an adjacent bare
+reclaim-helper test failure reproduced on the pre-batch Army binary; its fixture
+versus production-lifecycle cause remains unproven. Formatting is still non-clean;
+UBS changed-hunk review found no critical candidate defect, not a clean whole-file
+scan. Human flight/combat, hardware audio/performance and full missions remain
+unverified. Evidence is in `research/private/generated/status-20261103-integration/`
+and `research/private/remc2-unity-native/Builds/delivery-status-20261103-batch1/`.
+This batch stops here.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
@@ -72,10 +106,9 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Execute the existing plan
 
-1. Use the delivered Castle/mana, Alliance and Army checkpoints above. Next
-   finish status spells through their actual gameplay consumers. Other preserved
-   work remains in scope for later batches. Check live source and ownership first;
-   do not restart a component already delivered.
+1. Use the delivered Castle/mana, Alliance, Army and status checkpoints above.
+   Other preserved work remains in scope for later batches. Check live source
+   and ownership first; do not restart a component already delivered.
 2. Each feature owner follows the entire remc2-to-Rust chain: properties/assets,
    ordinary producer, schedule/dispatch, behavior and interactions, same-pass
    tail, following-pass cleanup, and actual gameplay/presentation consumers.
