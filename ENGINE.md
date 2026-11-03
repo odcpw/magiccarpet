@@ -67,6 +67,12 @@ projection, while `MagicCarpetRuntime.cs` combines several client responsibiliti
 Raw line counts include substantial tests and are not a sound production-size
 metric.
 
+Possession's holder timing is owned by `spell_activation/possession.rs`; its
+typed defaults are in `sim-definition/src/level_definition/possession.rs`.
+The MC2 projectile/contact and death-marker adapters remain in
+`native_world/level2_dynamic_economy.rs`, with current target reads and physical
+relation transfers in `native_world/source_target.rs`.
+
 Each playable feature moves its relevant canonical state and behavior to its
 owner, then leaves thin registrations in shared roots. A module with unrestricted
 whole-session access or only methods on the same god object does not satisfy this

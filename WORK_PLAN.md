@@ -70,7 +70,7 @@ damage; Shield's accepted mailbox is not claimed as natural combat. The installe
 player loaded the original map, loading art and NightSpire terrain/HUD with the
 matching mapped library. No Unity or original-art changes were required.
 
-Use this status installation as the current baseline. New definition keys reject
+This status installation was the pre-Possession baseline. New definition keys reject
 older-definition saves/replays; no migration or relaxed identity gate was added.
 The exact Army native `85fc99aca629` and its receipt remain under
 `research/private/generated/status-20261103-integration/candidate-6/rollback-army/`.
@@ -82,7 +82,40 @@ UBS changed-hunk review found no critical candidate defect, not a clean whole-fi
 scan. Human flight/combat, hardware audio/performance and full missions remain
 unverified. Evidence is in `research/private/generated/status-20261103-integration/`
 and `research/private/remc2-unity-native/Builds/delivery-status-20261103-batch1/`.
-This batch stops here.
+Oliver resumed on 2026-11-03 with three sequential shared-engine batches:
+Possession (`mc-k5k.11`), then Fireball and its required shared impact/damage
+consumers (`mc-k5k.10`, `mc-bhq.9`), then Morph (`mc-k5k.8`). Finish the real
+acquired-cast path, consequences and cleanup, verify, commit/push and install
+each coherent batch before advancing. Keep the existing acceptance and unresolved
+dependencies open. The installed status checkpoint is the starting baseline.
+
+Possession checkpoint delivered on 2026-11-03: runtime `fae4f54f`, installed
+native `ea88eadd5c89`. Actual acquired/public casts cover all three tiers,
+House and authored mana ownership, stronger ownership pulses, attraction,
+partial allocation, source timing/queued profiles, current parent state and
+natural cleanup. Source-scheduled checks also cover model22, death-marker
+relation transfer and Fool's Mana retaliation. Typed launch speed reaches
+actual movement without changing the MC2 default. Root independently reran the
+scheduled death-marker/model22 consumers and self-verified the public C ABI
+House path. The workspace all-target check and matching native build pass.
+
+All 439 Rust inputs, native copies and the live player's mapped library match
+candidate8. The installed player loaded the original map, loading artwork and
+NightSpire terrain/HUD; no Unity or art changes were required. One initial
+smoke inherited Wayland instead of its private display, received no input and
+was stopped; the corrected private-display load passed and its processes were
+stopped. This proves launch/load, not human Possession combat, hardware audio,
+performance or full missions. Use this Possession installation as the current
+baseline; evidence is in `research/private/generated/possession-20261103-integration/`
+and `research/private/remc2-unity-native/Builds/delivery-possession-20261103-batch1/`.
+
+`mc-k5k.11` retains its open `mc-bhq.10` dependency. The exact adjacent house
+census check still fails at 13148 versus 12648, reproduced unchanged on the
+pre-batch status binary; its broader cause is unproven and no assertion was
+weakened. The package format check still has legacy drift; changed-hunk UBS
+review found no critical candidate defect, not a clean whole-file scan.
+The two Terra workers hit model capacity and remain stopped; root and the Sol
+integrator continue Fireball next, then Morph, without replacement retries.
 
 Read this plan and your current bead before each assignment, follow-up, resumed
 work session or heartbeat. Also reread after compaction and before declaring a
@@ -106,7 +139,7 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Execute the existing plan
 
-1. Use the delivered Castle/mana, Alliance, Army and status checkpoints above.
+1. Use the delivered Castle/mana, Alliance, Army, status and Possession checkpoints above.
    Other preserved work remains in scope for later batches. Check live source
    and ownership first; do not restart a component already delivered.
 2. Each feature owner follows the entire remc2-to-Rust chain: properties/assets,
