@@ -76,6 +76,19 @@ pub(crate) fn status_parent(
     parent.position = view.position;
     parent.set_life(view.life);
     parent.set_control_flags(view.control_flags);
+    if let Some(yaw) = view.yaw {
+        parent.set_yaw(yaw);
+    }
+    if let Some(shape) = view.collision {
+        for (offset, value) in [
+            (86, shape.half_width),
+            (88, shape.half_depth),
+            (90, shape.vertical_offset),
+            (92, shape.half_height),
+        ] {
+            parent.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
     if let Some(kind) = kind {
         let economy = &arena.economy;
         // NewEvent initializes mana to zero. Only these typed carriers own a
@@ -215,6 +228,57 @@ pub(crate) fn status_parent(
             parent.record[136..138].copy_from_slice(&minimum.to_le_bytes());
             parent.set_actual_speed(actual);
         }
+        let pitch = match kind {
+            Kind::FireballProjectile => economy
+                .fireball_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::CastleProjectile => economy
+                .castle_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::PossessionProjectile => economy
+                .possession_projectiles
+                .iter()
+                .find(|row| (row.active || retained) && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::AuthoredClass5 => economy
+                .authored_class5
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::AuthoredClass5Model3Child => economy
+                .authored_class5_model3_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::AuthoredClass5ArcherChild => economy
+                .authored_class5_archer_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::BeeCreature => economy
+                .bee_creatures
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::AuthoredModel76 => economy
+                .authored_model76
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            Kind::Model76Child => economy
+                .model76_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.pitch),
+            _ => None,
+        };
+        if let Some(pitch) = pitch {
+            parent.set_pitch(pitch);
+        }
     }
     let external = context
         .goats
@@ -242,6 +306,15 @@ pub(crate) fn status_parent(
         parent.set_mana(mana);
         parent.record[136..138].copy_from_slice(&minimum.to_le_bytes());
         parent.set_actual_speed(actual);
+    }
+    if let Some(villager) = context.villagers.and_then(|family| {
+        family.villagers().iter().find(|row| {
+            row.source_retained()
+                && row.entity_index == slot
+                && (view.class, view.model) == (5, row.model)
+        })
+    }) {
+        parent.set_pitch(villager.pitch);
     }
     Ok(Some(parent))
 }
@@ -518,6 +591,160 @@ pub(crate) fn collector_target(
     }))
 }
 
+/// sub_36AE0 rewrites the current word94 at every fixed address, including
+/// retained rows. Semantic IDs and sphere/Castle ownership are distinct.
+pub(crate) fn transfer_possession_player_relations(
+    arena: &mut SourceArena,
+    houses: &mut HouseFamily,
+    villagers: &mut VillagerFamily,
+    from: u16,
+    to: u16,
+) -> Result<usize, String> {
+    let mut changed = 0;
+    for index in 1..arena.entities.len().min(1_000) {
+        let slot = index as u16;
+        let Some(view) = read(
+            arena,
+            Context {
+                houses: Some(houses),
+                villagers: Some(villagers),
+                ..Context::default()
+            },
+            slot,
+        )?
+        else {
+            continue;
+        };
+        let kind = arena.economy.live_arena_kind(slot);
+        let raw_relation = arena.entities[index].source_player_entity_index();
+        let relation = match kind {
+            Some(Kind::ManaSphere) => arena
+                .economy
+                .spheres
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.player_entity_index),
+            Some(Kind::CastleRoot) => arena
+                .economy
+                .castle_at(slot)
+                .map(|row| row.player_entity_index),
+            Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender) => arena
+                .economy
+                .castle_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.player_entity_index),
+            Some(Kind::CastleAuxiliary) => arena
+                .economy
+                .castle_defenders
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.player_entity_index),
+            Some(Kind::PlayerDeathMarker) => arena
+                .economy
+                .player_death_markers
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| row.player_entity_index),
+            _ => None,
+        }
+        .or_else(|| {
+            (view.class == 10 && view.model == 45)
+                .then(|| {
+                    houses
+                        .houses()
+                        .iter()
+                        .find(|row| row.source_retained() && row.entity_index == slot)
+                        .map(|row| row.owner_entity_index)
+                })
+                .flatten()
+        })
+        .or_else(|| {
+            (view.class == 5)
+                .then(|| {
+                    villagers
+                        .villagers()
+                        .iter()
+                        .find(|row| {
+                            row.source_retained()
+                                && row.entity_index == slot
+                                && row.model == view.model
+                        })
+                        .map(|row| row.owner_entity_index)
+                })
+                .flatten()
+        })
+        .unwrap_or(raw_relation);
+        if relation != from {
+            continue;
+        }
+        arena.entities[index].set_source_player_entity_index(to);
+        match kind {
+            Some(Kind::ManaSphere) => {
+                if let Some(row) = arena
+                    .economy
+                    .spheres
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                {
+                    row.player_entity_index = to;
+                }
+            }
+            Some(Kind::CastleRoot) => {
+                if let Some(row) = arena.economy.castle_at_mut(slot) {
+                    row.player_entity_index = to;
+                }
+            }
+            Some(Kind::CastleChild | Kind::CastleController | Kind::CastleDefender) => {
+                if let Some(row) = arena
+                    .economy
+                    .castle_children
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                {
+                    row.player_entity_index = to;
+                }
+            }
+            Some(Kind::CastleAuxiliary) => {
+                if let Some(row) = arena
+                    .economy
+                    .castle_defenders
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                {
+                    row.player_entity_index = to;
+                }
+            }
+            Some(Kind::PlayerDeathMarker) => {
+                if let Some(row) = arena
+                    .economy
+                    .player_death_markers
+                    .iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                {
+                    row.player_entity_index = to;
+                }
+            }
+            _ => {}
+        }
+        if view.class == 10
+            && view.model == 45
+            && let Some(row) = houses.house_mut(slot)
+        {
+            row.owner_entity_index = to;
+        }
+        if view.class == 5
+            && let Some(row) = villagers.villagers_mut().iter_mut().find(|row| {
+                row.source_retained() && row.entity_index == slot && row.model == view.model
+            })
+        {
+            row.owner_entity_index = to;
+        }
+        changed += 1;
+    }
+    Ok(changed)
+}
+
 /// A callback-local pointer view plus the raw record domain. Economy-owned
 /// mutations go to their current carrier; retained free rows stay physical.
 pub(crate) struct CastleCollectorConsumer<'a> {
@@ -609,6 +836,8 @@ pub(crate) struct Context<'a> {
     pub(crate) player_orientation: Option<(i16, i16)>,
     pub(crate) particles: Option<&'a [ParticleParameter]>,
     pub(crate) map_type: Option<super::MapType>,
+    pub(crate) house_parameters:
+        Option<&'a std::collections::BTreeMap<u8, crate::house::HouseParameter>>,
 }
 
 impl<'a> Context<'a> {
@@ -631,7 +860,10 @@ impl<'a> Context<'a> {
         goats: &'a GoatFamily,
         ordinary: &'a super::Level2OrdinaryResetSession,
     ) -> Self {
-        Self::new(goats, &ordinary.houses, &ordinary.villagers)
+        Self {
+            house_parameters: Some(&ordinary.house_parameters),
+            ..Self::new(goats, &ordinary.houses, &ordinary.villagers)
+        }
     }
 
     fn external(self, slot: u16) -> Option<View> {
@@ -688,6 +920,299 @@ impl<'a> Context<'a> {
                 half_height: (particle.rotation_speed / 2) as i16,
             })
     }
+}
+
+/// One eligible current occupant for `sub_108B0`. Search order belongs to
+/// the live map chain; this callback-local frame supplies only current fields.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PossessionCollisionTarget {
+    pub(crate) slot: u16,
+    pub(crate) source_id: u16,
+    pub(crate) model: u8,
+    pub(crate) position: Position,
+    pub(crate) shape: Shape,
+}
+
+pub(crate) struct PossessionCollisionFrame {
+    pub(crate) targets: Vec<PossessionCollisionTarget>,
+    pub(crate) guidance: Option<Position>,
+    pub(crate) guidance_source_id: Option<u16>,
+    pub(crate) acquisition_candidates: Vec<(u16, Position)>,
+}
+
+pub(crate) fn possession_collision_frame(
+    arena: &SourceArena,
+    context: Context<'_>,
+    projectile_slot: u16,
+    terrain: &super::SessionTerrain,
+    lists: Option<&area_damage::EffectLists>,
+) -> Result<PossessionCollisionFrame, String> {
+    let Some(projectile) = arena
+        .economy
+        .possession_projectiles
+        .iter()
+        .find(|row| row.active && row.source_entity_index == projectile_slot)
+    else {
+        return Ok(PossessionCollisionFrame {
+            targets: Vec::new(),
+            guidance: None,
+            guidance_source_id: None,
+            acquisition_candidates: Vec::new(),
+        });
+    };
+    let owner = projectile.source_id_entity_index;
+    let guidance_view = if projectile.target_source_entity_index == 0 {
+        None
+    } else {
+        read(arena, context, projectile.target_source_entity_index)?
+    };
+    let guidance_source_id = guidance_view.map(|view| view.source_id);
+    let guidance = guidance_view.map(|view| Position {
+        z: view.position.z.wrapping_add(if view.model == 2 {
+            0
+        } else {
+            view.collision.map_or(0, |shape| shape.vertical_offset)
+        }),
+        ..view.position
+    });
+    let (mana_slots, house_slots, model22_slots) = lists.map_or_else(
+        || {
+            (
+                arena.economy.possession_guidance_source_slots.clone(),
+                Vec::new(),
+                Vec::new(),
+            )
+        },
+        |lists| lists.possession_guidance_slots(arena),
+    );
+    let mut acquisition_candidates = Vec::new();
+    let top = |view: View| Position {
+        z: view.position.z.wrapping_add(if view.model == 2 {
+            0
+        } else {
+            view.collision.map_or(0, |shape| shape.vertical_offset)
+        }),
+        ..view.position
+    };
+    for slot in mana_slots {
+        let Some(view) = read(arena, context, slot)? else {
+            continue;
+        };
+        let raw = &arena.entities[usize::from(slot)];
+        let relation = if view.model == 39 {
+            arena
+                .economy
+                .spheres
+                .iter()
+                .find(|row| row.source_entity_index == slot && row.active)
+                .map_or(raw.source_player_entity_index(), |row| {
+                    row.player_entity_index
+                })
+        } else if view.model == 57 {
+            raw.source_spell_parent_entity_index()
+        } else {
+            continue;
+        };
+        if raw.record[61] != 0 && relation != owner {
+            acquisition_candidates.push((slot, top(view)));
+        }
+    }
+    for &slot in &house_slots {
+        let Some(view) = read(arena, context, slot)? else {
+            continue;
+        };
+        let raw = &arena.entities[usize::from(slot)];
+        if raw.record[61] == 0 {
+            continue;
+        }
+        let house = context.houses.and_then(|family| {
+            family.houses().iter().find(|row| {
+                row.source_retained()
+                    && row.entity_index == slot
+                    && view.class == 10
+                    && view.model == 45
+            })
+        });
+        let (relation, blocked) = if let Some(house) = house {
+            (
+                house.owner_entity_index,
+                house.parameter.possession_blocked(),
+            )
+        } else {
+            let selector = arena
+                .economy
+                .authored_model45
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map_or(raw.record[74], |row| row.byte_0x46);
+            let blocked = context
+                .house_parameters
+                .and_then(|parameters| parameters.get(&selector))
+                .ok_or_else(|| {
+                    format!("Possession guidance slot {slot} lacks current BLDGPRM {selector}")
+                })?
+                .possession_blocked();
+            (raw.source_player_entity_index(), blocked)
+        };
+        if relation != owner && !blocked {
+            acquisition_candidates.push((slot, top(view)));
+        }
+    }
+    for parent_slot in model22_slots {
+        let raw = &arena.entities[usize::from(parent_slot)];
+        if raw.record[61] == 0 {
+            continue;
+        }
+        let Some(parent) = read(arena, context, parent_slot)? else {
+            continue;
+        };
+        let mut slot = parent.relations.next.unwrap_or(0);
+        let mut visited = std::collections::BTreeSet::new();
+        while slot != 0 && visited.insert(slot) {
+            let Some(view) = read(arena, context, slot)? else {
+                break;
+            };
+            acquisition_candidates.push((slot, top(view)));
+            slot = view.relations.next.unwrap_or(0);
+        }
+    }
+    let moved = arena
+        .economy
+        .possession_projectile_moved(
+            projectile_slot,
+            terrain,
+            context.houses.map_or(&[], |family| family.houses()),
+            &house_slots,
+            &arena.entities,
+            Some(guidance),
+            Some(&acquisition_candidates),
+        )
+        .ok_or("Possession collision frame lost its current flyer")?;
+    let mut targets = Vec::new();
+    for slot in crate::level1_mission::source_map_search_slots(
+        &arena.economy.map_chains,
+        moved.position,
+        &super::LEVEL2_POSSESSION_PROJECTILE_SEARCH_OFFSETS,
+    ) {
+        let index = usize::from(slot);
+        let kind = arena.economy.live_arena_kind(slot);
+        let Some(raw) = arena.entities.get(index) else {
+            continue;
+        };
+        // Most slots cannot satisfy sub_108B0's narrow class/model gate.
+        // Inspect the current typed header before projecting any actor, so
+        // unrelated families need no collision binding for this callback.
+        let candidate_header = match kind {
+            Some(
+                Kind::ManaSphere
+                | Kind::ManaCarrier
+                | Kind::PlayerDeathMarker
+                | Kind::AuthoredModel45,
+            ) => true,
+            Some(Kind::AuthoredClass5) => arena
+                .economy
+                .authored_class5
+                .iter()
+                .any(|row| row.active && row.source_entity_index == slot && row.model == 22),
+            Some(_) => false,
+            None => matches!((raw.class, raw.model), (5, 22) | (10, 39 | 40 | 45 | 57)),
+        };
+        if !candidate_header {
+            continue;
+        }
+        let Some(view) = read(arena, context, slot)? else {
+            continue;
+        };
+        if view.control_flags & 8 == 0 {
+            continue;
+        }
+        let mut relation = raw.source_player_entity_index();
+        let eligible = match (view.class, view.model) {
+            (5, 22) => true,
+            (10, 39) => {
+                if let Some(row) = arena.economy.spheres.iter().find(|row| {
+                    kind == Some(Kind::ManaSphere) && row.active && row.source_entity_index == slot
+                }) {
+                    relation = row.player_entity_index;
+                }
+                true
+            }
+            (10, 40) => {
+                if let Some(row) = arena.economy.player_death_markers.iter().find(|row| {
+                    kind == Some(Kind::PlayerDeathMarker)
+                        && row.active
+                        && row.source_entity_index == slot
+                }) {
+                    relation = row.player_entity_index;
+                } else if let Some(row) = arena.economy.carriers.iter().find(|row| {
+                    kind == Some(Kind::ManaCarrier) && row.active && row.source_entity_index == slot
+                }) {
+                    relation = row.owner_entity_index;
+                }
+                true
+            }
+            (10, 45) => {
+                if let Some(house) = context.houses.and_then(|houses| {
+                    houses
+                        .houses()
+                        .iter()
+                        .find(|house| house.entity_index == slot && house.source_retained())
+                }) {
+                    relation = house.owner_entity_index;
+                    !house.parameter.possession_blocked()
+                } else {
+                    let selector = arena
+                        .economy
+                        .authored_model45
+                        .iter()
+                        .find(|row| {
+                            kind == Some(Kind::AuthoredModel45)
+                                && row.active
+                                && row.source_entity_index == slot
+                        })
+                        .map_or(raw.record[74], |row| row.byte_0x46);
+                    !context
+                        .house_parameters
+                        .and_then(|parameters| parameters.get(&selector))
+                        .ok_or_else(|| {
+                            format!(
+                                "Possession model45 slot {slot} lacks current BLDGPRM {selector}"
+                            )
+                        })?
+                        .possession_blocked()
+                }
+            }
+            (10, 57) => {
+                view.relations
+                    .parent
+                    .unwrap_or_else(|| raw.source_spell_parent_entity_index())
+                    != owner
+            }
+            _ => false,
+        };
+        if !eligible
+            || (view.model != 57 || view.class != 10)
+                && (view.source_id == owner || relation == owner)
+        {
+            continue;
+        }
+        let shape = view
+            .collision
+            .ok_or_else(|| format!("Possession target {slot} lacks current collision axes"))?;
+        targets.push(PossessionCollisionTarget {
+            slot,
+            source_id: view.source_id,
+            model: view.model,
+            position: view.position,
+            shape,
+        });
+    }
+    Ok(PossessionCollisionFrame {
+        targets,
+        guidance,
+        guidance_source_id,
+        acquisition_candidates,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1346,15 +1871,29 @@ fn dynamic(
             row.life,
             row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
         ),
-        Kind::AuthoredModel45 => carrier!(
-            economy.authored_model45,
-            row,
-            row.source_class,
-            row.model,
-            slot,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
+        Kind::AuthoredModel45 => {
+            let mut view = carrier!(
+                economy.authored_model45,
+                row,
+                row.source_class,
+                row.model,
+                slot,
+                row.life,
+                row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
+            );
+            let row = economy
+                .authored_model45
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .expect("current model45 carrier was resolved above");
+            view.collision = Some(Shape {
+                half_width: row.view_pitch,
+                half_depth: row.view_roll,
+                vertical_offset: row.view_yaw,
+                half_height: row.view_fov,
+            });
+            view
+        }
         Kind::AuthoredModel13 => carrier!(
             economy.authored_model13,
             row,
@@ -2567,5 +3106,665 @@ mod tests {
         assert_eq!((target.yaw, target.roll), retained_orientation);
         assert!(read(&arena, context, 0).unwrap().is_none());
         assert!(read(&arena, context, u16::MAX).unwrap().is_none());
+    }
+
+    #[test]
+    fn possession_frame_uses_current_sphere_and_model57_parent_instead_of_raw_predecessor() {
+        let session = super::super::tests::level_two_campaign_session();
+        let live = &session.session.state.live;
+        let mut arena = session.source_arena().clone();
+        let owner = session.state.entity_index;
+        let position = session.state.position;
+        let sphere = arena
+            .economy
+            .spawn_mana_sphere_from_death(999, position, 0, 0x1234, 512, 0, &live.terrain)
+            .expect("ordinary sphere constructor") as u16;
+        let mut terrain = live.terrain.clone();
+        crate::world::effects::sync_position(
+            &mut arena,
+            &mut terrain,
+            sphere,
+            position,
+            true,
+            false,
+        )
+        .unwrap();
+        let projectile = arena
+            .economy
+            .spawn_possession_projectile(position, owner, 116, 0, 0, 0, position)
+            .expect("ordinary Possession constructor");
+        arena
+            .economy
+            .possession_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == projectile)
+            .unwrap()
+            .target_source_entity_index = sphere;
+        // The current sphere is authoritative even when an old wizard record
+        // survives at the same physical address before publication.
+        let raw = &mut arena.entities[usize::from(sphere)];
+        raw.class = 3;
+        raw.model = 1;
+        raw.source_id = owner;
+        raw.set_position(Position { x: 1, y: 2, z: 3 });
+        let context = Context::from_ordinary(&live.goats, &live.ordinary);
+        let frame =
+            possession_collision_frame(&arena, context, projectile, &terrain, None).unwrap();
+        let target = frame.targets.iter().find(|row| row.slot == sphere).unwrap();
+        assert_eq!(target.model, 39);
+        assert_eq!(target.source_id, sphere);
+        assert_eq!(target.position, position);
+        assert_eq!(frame.guidance_source_id, Some(sphere));
+        assert_eq!(frame.guidance.unwrap().x, position.x);
+        assert!(!frame.targets.iter().any(|row| row.slot == owner));
+
+        let decoy = arena
+            .allocate_source_slot()
+            .expect("ordinary free source address");
+        let row = &mut arena.entities[usize::from(decoy)];
+        row.active = true;
+        row.class = 10;
+        row.model = 57;
+        row.set_control_flags(8);
+        row.set_position(position);
+        row.source_id = owner;
+        row.record[152..154].copy_from_slice(&owner.to_le_bytes());
+        row.record[44..46].copy_from_slice(&owner.to_le_bytes());
+        crate::world::effects::sync_position(
+            &mut arena,
+            &mut terrain,
+            decoy,
+            position,
+            true,
+            false,
+        )
+        .unwrap();
+        let frame =
+            possession_collision_frame(&arena, context, projectile, &terrain, None).unwrap();
+        assert!(
+            !frame.targets.iter().any(|row| row.slot == decoy),
+            "own Fool's Mana is excluded by parent"
+        );
+        arena.entities[usize::from(decoy)].record[44..46].copy_from_slice(&999_u16.to_le_bytes());
+        let frame =
+            possession_collision_frame(&arena, context, projectile, &terrain, None).unwrap();
+        assert!(
+            frame.targets.iter().any(|row| row.slot == decoy),
+            "foreign Fool's Mana ignores ordinary id/player exclusions"
+        );
+    }
+
+    #[test]
+    fn possession_launch_reads_current_bee_pose_and_shape_over_old_raw_bytes() {
+        let mut session = super::super::tests::level_two_campaign_session();
+        let holder_slot = session.shared_spells().local_player.enabled_spell_holders[1];
+        let origin = session.state.position;
+        let (bee_slot, position, height) = {
+            let live = &mut session.session.state.live;
+            let bee = live
+                .economy
+                .economy
+                .allocate_authored_bee(1, origin, None, 3_000, &live.terrain)
+                .expect("ordinary Bee constructor");
+            let slot = bee.source_entity_index;
+            live.economy.retire_previous_source_projection(slot);
+            let current = live
+                .economy
+                .economy
+                .bee_creatures
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            current.position.z = current.position.z.wrapping_add(2_000);
+            current.yaw = 128;
+            current.pitch = 64;
+            let position = current.position;
+            let shape = read(&live.economy, Context::default(), slot)
+                .unwrap()
+                .unwrap()
+                .collision
+                .expect("current Bee collision shape");
+            let raw = &mut live.economy.entities[usize::from(slot)];
+            raw.set_yaw(999);
+            raw.set_pitch(-999);
+            raw.record[92..94].copy_from_slice(&1_i16.to_le_bytes());
+            live.shared_spells.global_special_state.input_yaw = 0;
+            live.shared_spells.global_special_state.input_pitch = 0;
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.record[44..46].copy_from_slice(&slot.to_le_bytes());
+            holder.active_value = holder.activation_value.cast_signed();
+            (slot, position, shape.half_height)
+        };
+        let born = session
+            .step_level2_possession_holder_source_slot(holder_slot)
+            .expect("real holder launches from current typed Bee parent");
+        let flyer = session
+            .economy()
+            .possession_projectiles()
+            .iter()
+            .find(|row| row.source_entity_index == born)
+            .unwrap();
+        assert_eq!(flyer.source_id_entity_index, bee_slot);
+        assert_eq!((flyer.yaw, flyer.pitch), (128, 64));
+        assert_eq!(
+            flyer.position,
+            Position {
+                z: position.z.wrapping_add(height),
+                ..position
+            }
+        );
+    }
+
+    #[test]
+    fn acquired_possession_all_tiers_reach_real_ownership_and_auxiliary_consumers() {
+        use crate::native_world::simulation::CarriedSpellProgress;
+        use crate::{FlightWorld as _, PlayerCommand};
+
+        for (tier, configured) in [(0_u8, false), (1, false), (2, false), (0, true)] {
+            let mut session = super::super::tests::level_two_campaign_session();
+            if configured {
+                let original = session.clone();
+                let before = session.session.definition.identity_receipt;
+                session.apply_possession_projectile_speed(512);
+                session.session.rebase();
+                assert_ne!(session.session.definition.identity_receipt, before);
+                assert_eq!(original.session.definition.identity_receipt, before);
+                assert_eq!(
+                    original
+                        .session
+                        .definition
+                        .possession_properties
+                        .projectile_speed,
+                    384
+                );
+            }
+            session.select_level2_campaign_entry_stage();
+            let player = session.state.entity_index;
+            let holder = session.shared_spells().local_player.enabled_spell_holders[1];
+            assert_ne!(holder, 0, "ordinary startup acquires Possession");
+            assert_eq!(
+                session
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .source_spell_parent_entity_index(),
+                player
+            );
+            // These are explicit progression/resource/position controls. The
+            // held source, public request, constructor, map search, contact,
+            // House mailbox, auxiliary and cleanup all run normally.
+            session
+                .apply_carried_spell_progression(&[CarriedSpellProgress {
+                    family: 1,
+                    persistent_experience: super::super::LEVEL2_SPELL_TIER_THRESHOLDS[1]
+                        [usize::from(tier)],
+                    runtime_experience: 0,
+                    unlocked_tier: tier as i8,
+                    selected_tier: tier as i8,
+                }])
+                .unwrap();
+            let switch = session
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == 11)
+                .unwrap()
+                .world_position(256);
+            session.set_level2_entity_position(player, switch).unwrap();
+            let mut house = None;
+            for _ in 0..16 {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    !session
+                        .dispatch_events()
+                        .iter()
+                        .any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                    "{:?}",
+                    session.dispatch_events()
+                );
+                house = session
+                    .ordinary()
+                    .houses()
+                    .iter()
+                    .filter(|house| {
+                        house.active
+                            && house.action == crate::house::HOUSE_LIVE_ACTION
+                            && !house.parameter.possession_blocked()
+                            && house.owner_entity_index == 0
+                    })
+                    .min_by_key(|house| {
+                        session
+                            .economy()
+                            .spheres()
+                            .iter()
+                            .filter(|sphere| sphere.active && sphere.player_entity_index == 0)
+                            .map(|sphere| {
+                                super::super::level2_wrapping_xy_distance(
+                                    house.position,
+                                    sphere.position,
+                                )
+                            })
+                            .min()
+                            .unwrap_or(u32::MAX)
+                    })
+                    .copied();
+                if house.is_some() {
+                    break;
+                }
+            }
+            let house = house.expect("actual authored group produces a neutral live House");
+            let neutral_spheres = session
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| sphere.active && sphere.player_entity_index == 0)
+                .map(|sphere| sphere.id)
+                .collect::<std::collections::BTreeSet<_>>();
+            let sphere_target = (tier > 0).then(|| {
+                session
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .filter(|sphere| sphere.active && neutral_spheres.contains(&sphere.id))
+                    .min_by_key(|sphere| {
+                        (
+                            sphere.id != 141,
+                            i32::from(sphere.velocity_x).abs() + i32::from(sphere.velocity_y).abs(),
+                            sphere.id,
+                        )
+                    })
+                    .copied()
+                    .expect("real authored neutral mana target")
+            });
+            let target_position = sphere_target.map_or(house.position, |sphere| sphere.position);
+            let target_offset = sphere_target.map_or(house.collision_vertical_offset, |sphere| {
+                sphere.collision_yaw
+            });
+            let origin = Position {
+                y: target_position.y.wrapping_add(1_024),
+                z: target_position.z.wrapping_add(256),
+                ..target_position
+            };
+            let castle_position = Position {
+                x: origin.x.wrapping_add(0x4000),
+                y: origin.y.wrapping_add(0x4000),
+                ..origin
+            };
+            let castle = session
+                .economy_mut()
+                .build_castle(castle_position, player)
+                .unwrap();
+            assert!(
+                session
+                    .economy_mut()
+                    .set_castle_mana_prerequisite_for_test(castle, 2_000)
+            );
+            {
+                let live = &mut session.session.state.live;
+                live.economy.refresh_owner_mana_rows();
+                let raw = &mut live.economy.entities[usize::from(player)];
+                raw.set_mana(2_000);
+                raw.set_mana_regen(0);
+                let snapshot = raw.clone();
+                live.shared_spells
+                    .sync_player_entity_from_authority(&snapshot);
+                for state in live
+                    .shared_spells
+                    .players
+                    .iter_mut()
+                    .chain(live.core.players.iter_mut())
+                    .filter(|state| state.entity_index == player)
+                {
+                    state.record[42..44].copy_from_slice(&castle.to_le_bytes());
+                }
+            }
+            session.set_level2_entity_position(player, origin).unwrap();
+            let target_top = Position {
+                z: target_position.z.wrapping_add(target_offset),
+                ..target_position
+            };
+            let launch = Position {
+                x: origin.x.wrapping_sub(256),
+                z: origin
+                    .z
+                    .wrapping_add(session.entities()[usize::from(player)].array_fov()),
+                ..origin
+            };
+            let (yaw, pitch) =
+                crate::level1_mission::projectile_guidance_angles(launch, target_top);
+            session.set_level2_player_aim_for_test(yaw, pitch);
+            let mut saw_flyer = false;
+            let mut saw_flash = false;
+            let mut saw_auxiliary = false;
+            let mut saw_ownership_callback = false;
+            let mut saw_presentation = false;
+            let mut saw_attraction = false;
+            let mut captured_slots = std::collections::BTreeMap::new();
+            session.step_outer_turn(
+                PlayerCommand {
+                    opcode: 6,
+                    argument_1: 1,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                },
+                0,
+            );
+            // The 128-life auxiliary gets its final producer visit at zero,
+            // hides on the next visit and reclaims at the following boundary.
+            let cleanup_bound = 128
+                + usize::try_from(
+                    session
+                        .session
+                        .definition
+                        .possession_properties
+                        .projectile_lifetime,
+                )
+                .unwrap()
+                + 3;
+            for _ in 0..cleanup_bound {
+                assert!(
+                    !session
+                        .dispatch_events()
+                        .iter()
+                        .any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+                    "tier {tier}: {:?}",
+                    session.dispatch_events()
+                );
+                for row in session
+                    .economy()
+                    .possession_projectiles()
+                    .iter()
+                    .filter(|row| row.source_id_entity_index == player)
+                {
+                    saw_flyer = true;
+                    captured_slots.insert(
+                        row.source_entity_index,
+                        session.economy().slot_generation(row.source_entity_index),
+                    );
+                    assert_eq!(
+                        (row.source_class, row.source_model, row.action),
+                        if tier == 0 { (9, 1, 1) } else { (9, 17, 18) }
+                    );
+                    assert_eq!(row.minimum_speed, if configured { 512 } else { 384 });
+                    if row.active {
+                        let presentation = session
+                            .campaign_entity_presentations(0)
+                            .unwrap()
+                            .into_iter()
+                            .find(|view| view.entity_index == row.source_entity_index)
+                            .expect("the real flyer reaches its presentation binding");
+                        assert_eq!(
+                            (presentation.source_id, presentation.render_parameter_index),
+                            (player, 209)
+                        );
+                        saw_presentation = true;
+                    }
+                }
+                for row in session
+                    .economy()
+                    .possession_effects()
+                    .iter()
+                    .filter(|row| row.source_id_entity_index == player)
+                {
+                    saw_flash = true;
+                    captured_slots.insert(
+                        row.source_entity_index,
+                        session.economy().slot_generation(row.source_entity_index),
+                    );
+                    assert_eq!(
+                        (row.source_model, row.action),
+                        if tier == 2 { (70, 77) } else { (12, 12) }
+                    );
+                }
+                for row in session.economy().mana_attraction_fields() {
+                    if session.economy().source_owner(row.source_entity_index) == player {
+                        saw_auxiliary = true;
+                        captured_slots.insert(
+                            row.source_entity_index,
+                            session.economy().slot_generation(row.source_entity_index),
+                        );
+                        assert_eq!((row.action, row.max_life), (59, 128));
+                        if !saw_attraction
+                            && let Some(sphere) =
+                                session.economy().spheres().iter().find(|sphere| {
+                                    sphere.active
+                                        && sphere.attraction_source_entity_index
+                                            == row.source_entity_index
+                                        && super::super::level2_wrapping_xy_distance(
+                                            row.position,
+                                            sphere.position,
+                                        ) < row.radius_squared
+                                        && super::super::level2_wrapping_xy_distance(
+                                            row.position,
+                                            sphere.position,
+                                        ) != 0
+                                })
+                        {
+                            // The source consumes and clears this mailbox in
+                            // the same pass. Compare real scheduled movement
+                            // against an otherwise identical zero-radius
+                            // control. An earlier authored field can win the
+                            // mailbox, so select this actual field's recipient;
+                            // no target, projectile or outcome is injected.
+                            let sphere_slot = sphere.source_entity_index;
+                            let generation = session.economy().slot_generation(sphere_slot);
+                            let mut actual = session.clone();
+                            let mut control = session.clone();
+                            // Both snapshots can inherit this producer's
+                            // already queued move. Clear it in both probe
+                            // initial states so the next ordinary field visit
+                            // is the sole source of the measured displacement.
+                            for branch in [&mut actual, &mut control] {
+                                for sphere in &mut branch.session.state.live.economy.spheres {
+                                    if sphere.attraction_source_entity_index
+                                        == row.source_entity_index
+                                    {
+                                        sphere.attraction_source_entity_index = 0;
+                                        sphere.attraction_step = 0;
+                                        sphere.attraction_distance_high = 0;
+                                    }
+                                }
+                            }
+                            control
+                                .session
+                                .state
+                                .live
+                                .economy
+                                .mana_attraction_fields
+                                .iter_mut()
+                                .find(|field| field.source_entity_index == row.source_entity_index)
+                                .unwrap()
+                                .radius_squared = 0;
+                            for _ in 0..2 {
+                                actual.step_outer_turn(PlayerCommand::default(), 0);
+                                control.step_outer_turn(PlayerCommand::default(), 0);
+                                for branch in [&actual, &control] {
+                                    assert!(
+                                        !branch.dispatch_events().iter().any(|event| matches!(
+                                            event,
+                                            super::super::Mc2DispatchEvent::Error { .. }
+                                        )),
+                                        "{:?}",
+                                        branch.dispatch_events()
+                                    );
+                                }
+                                let a = actual.economy().spheres().iter().find(|sphere| {
+                                    sphere.active && sphere.source_entity_index == sphere_slot
+                                });
+                                let b = control.economy().spheres().iter().find(|sphere| {
+                                    sphere.active && sphere.source_entity_index == sphere_slot
+                                });
+                                if actual.economy().slot_generation(sphere_slot) == generation
+                                    && control.economy().slot_generation(sphere_slot) == generation
+                                    && a.zip(b).is_some_and(|(a, b)| {
+                                        (a.position.x, a.position.y, a.yaw)
+                                            != (b.position.x, b.position.y, b.yaw)
+                                    })
+                                {
+                                    saw_attraction = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                saw_ownership_callback |= session.dispatch_events().iter().any(|event| match event {
+                    super::super::Mc2DispatchEvent::House { events, .. } => events.iter().any(|event| matches!(event,
+                        crate::house::HouseStepEvent::Possessed { entity_index, owner_entity_index, .. }
+                            if tier == 0 && *entity_index == house.entity_index && *owner_entity_index == player)),
+                    super::super::Mc2DispatchEvent::Economy { event: super::super::Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }, .. } =>
+                        tier > 0 && *owner_entity_index == player && neutral_spheres.contains(sphere_id),
+                    _ => false,
+                });
+                if saw_ownership_callback
+                    && session.shared_spells().pickup(holder).unwrap().active_value == 0
+                    && captured_slots.iter().all(|(&slot, &generation)| {
+                        session.economy().slot_generation(slot) != generation
+                            || !matches!(
+                                session.economy().live_arena_kind(slot),
+                                Some(
+                                    Kind::PossessionProjectile
+                                        | Kind::PossessionEffect
+                                        | Kind::ManaAttraction
+                                )
+                            )
+                    })
+                {
+                    break;
+                }
+                session.step_outer_turn(PlayerCommand::default(), 0);
+            }
+            let owned = session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == house.entity_index)
+                .unwrap();
+            if tier == 0 {
+                assert_eq!(
+                    owned.owner_entity_index,
+                    player,
+                    "tier{tier}, configured={configured}, flyer={saw_flyer}, flash={saw_flash}, auxiliary={saw_auxiliary}, house={owned:?}, dispatch={:?}",
+                    session.dispatch_events()
+                );
+            } else {
+                assert!(
+                    session
+                        .economy()
+                        .spheres()
+                        .iter()
+                        .any(|sphere| sphere.active && sphere.player_entity_index == player),
+                    "the actual claimed mana has a live player-owned consumer"
+                );
+            }
+            assert!(
+                saw_flyer && saw_flash && saw_ownership_callback && saw_presentation,
+                "tier {tier}: flyer={saw_flyer}, flash={saw_flash}, ownership={saw_ownership_callback}, presentation={saw_presentation}"
+            );
+            assert_eq!(saw_auxiliary, tier > 0);
+            assert_eq!(
+                saw_attraction,
+                tier > 0,
+                "tier {tier}: higher-tier auxiliary reaches actual authored mana movement"
+            );
+            assert_eq!(
+                session.shared_spells().pickup(holder).unwrap().active_value,
+                0
+            );
+            assert!(
+                captured_slots.into_iter().all(|(slot, generation)| session
+                    .economy()
+                    .slot_generation(slot)
+                    != generation
+                    || !matches!(
+                        session.economy().live_arena_kind(slot),
+                        Some(
+                            Kind::PossessionProjectile
+                                | Kind::PossessionEffect
+                                | Kind::ManaAttraction
+                        )
+                    )),
+                "tier {tier} leaves no current generation of its flyer, flash or auxiliary allocated"
+            );
+        }
+    }
+
+    #[test]
+    fn marker_transfer_updates_current_word94_and_retained_rows_without_changing_ids() {
+        let mut session = super::super::tests::level_two_campaign_session();
+        let position = session.state.position;
+        let owner = session.state.entity_index;
+        let live = &mut session.session.state.live;
+        let from = 999;
+        let to = 998;
+        let sphere = live
+            .economy
+            .spawn_mana_sphere_from_death(991, position, 0, 0x1234, 512, owner, &live.terrain)
+            .unwrap() as u16;
+        let castle = live
+            .economy
+            .build_castle(position, owner, &live.terrain)
+            .unwrap();
+        live.economy
+            .spheres
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere)
+            .unwrap()
+            .player_entity_index = from;
+        live.economy
+            .castle_at_mut(castle)
+            .unwrap()
+            .player_entity_index = from;
+        // Old raw projections must neither prevent the typed transfer nor
+        // replace the current source's separate ID and semantic owner.
+        live.economy.entities[usize::from(sphere)].set_source_player_entity_index(123);
+        live.economy.entities[usize::from(castle)].set_source_player_entity_index(123);
+        let inactive = live.economy.allocate_source_slot().unwrap();
+        live.economy.entities[usize::from(inactive)].active = false;
+        live.economy.entities[usize::from(inactive)].set_source_player_entity_index(from);
+        let castle_before = *live.economy.castle_at(castle).unwrap();
+        assert!(
+            transfer_possession_player_relations(
+                &mut live.economy,
+                &mut live.ordinary.houses,
+                &mut live.ordinary.villagers,
+                from,
+                to,
+            )
+            .unwrap()
+                >= 3
+        );
+        let sphere_after = live
+            .economy
+            .spheres
+            .iter()
+            .find(|row| row.source_entity_index == sphere)
+            .unwrap();
+        assert_eq!(
+            (
+                sphere_after.player_entity_index,
+                sphere_after.owner_entity_index
+            ),
+            (to, owner)
+        );
+        let castle_after = live.economy.castle_at(castle).unwrap();
+        assert_eq!(castle_after.player_entity_index, to);
+        assert_eq!(
+            (
+                castle_after.source_id_entity_index,
+                castle_after.owner_entity_index
+            ),
+            (
+                castle_before.source_id_entity_index,
+                castle_before.owner_entity_index
+            )
+        );
+        for slot in [sphere, castle, inactive] {
+            assert_eq!(
+                live.economy.entities[usize::from(slot)].source_player_entity_index(),
+                to
+            );
+        }
+        assert!(!live.economy.entities[usize::from(inactive)].active);
     }
 }

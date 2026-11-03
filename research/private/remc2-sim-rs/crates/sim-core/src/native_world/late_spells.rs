@@ -657,3 +657,103 @@ pub(crate) fn step_sphere_slot(
 pub(crate) const HOLDER_SELECTOR: (u8, u8, u8) = (15, 22, 66);
 pub(crate) const SPHERE_SELECTOR: (u8, u8, u8) = (SPHERE_CLASS, SPHERE_MODEL, SPHERE_ACTION);
 pub(crate) const FOOLS_MANA_FAMILY: u8 = FOOLS_MANA_PROPERTIES.family;
+
+#[cfg(test)]
+mod possession_tests {
+    use super::*;
+
+    #[test]
+    fn actual_possession_contact_reaches_fools_mana_retaliation_and_hide() {
+        let session = super::super::tests::level_two_campaign_session();
+        let live = &session.session.state.live;
+        let mut arena = live.economy.clone();
+        let mut terrain = live.terrain.clone();
+        let mut shared = live.shared_spells.clone();
+        let mut houses = live.ordinary.houses.clone();
+        let particles = &session.session.definition.presentation.particles;
+        let claimant = session.state.entity_index;
+        let trap_parent = arena
+            .entities
+            .iter()
+            .find(|row| row.active && row.class == 3 && row.index != claimant)
+            .expect("the owner package retains another real class3 caster")
+            .index;
+        let position = Position {
+            x: session.state.position.x.wrapping_add(0x4000),
+            y: session.state.position.y,
+            z: 8192,
+        };
+        let trap = arena.allocate_source_slot().unwrap();
+        let mut sphere = construct_mana_sphere(&arena, trap, particles, position).unwrap();
+        put_word(&mut sphere, 44, trap_parent);
+        arena.entities[usize::from(trap)] = sphere;
+        crate::world::effects::sync_position(&mut arena, &mut terrain, trap, position, true, false)
+            .unwrap();
+        let shape_offset = signed_word(&arena.entities[usize::from(trap)], 86);
+        let origin = Position {
+            y: position.y.wrapping_add(384),
+            z: position
+                .z
+                .wrapping_add(shape_offset)
+                .wrapping_sub(super::super::POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET),
+            ..position
+        };
+        let projectile = arena
+            .economy
+            .spawn_possession_projectile(origin, claimant, 0, 0, 0, 0, position)
+            .unwrap();
+        let frame = super::super::source_target::possession_collision_frame(
+            &arena,
+            super::super::source_target::Context {
+                houses: Some(&houses),
+                particles: Some(particles),
+                ..Default::default()
+            },
+            projectile,
+            &terrain,
+            None,
+        )
+        .unwrap();
+        arena.step_possession_projectile_source_with_frame(
+            &mut terrain,
+            houses.houses(),
+            &[],
+            projectile,
+            &frame,
+        );
+        let effect = arena
+            .economy
+            .possession_effects()
+            .iter()
+            .find(|row| row.projectile_entity_index == projectile)
+            .expect("actual source collision constructs the Possession pulse")
+            .source_entity_index;
+        arena.step_possession_effect_source(effect, &mut houses);
+        assert_eq!(
+            word(&arena.entities[usize::from(trap)], 108),
+            claimant,
+            "the real contact pulse must reach the existing trap mailbox"
+        );
+        let outcome = step_sphere_slot(
+            &mut shared,
+            &mut arena,
+            &mut terrain,
+            particles,
+            trap,
+            super::super::source_target::Context {
+                houses: Some(&houses),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let retaliation = outcome.projectile.expect("the scheduled trap retaliates");
+        assert!(outcome.hidden && arena.entities[usize::from(trap)].drawing_disabled());
+        let shot = arena
+            .economy
+            .fireball_projectiles()
+            .iter()
+            .find(|row| row.source_entity_index == retaliation)
+            .unwrap();
+        assert_eq!(shot.target_source_entity_index, claimant);
+    }
+}

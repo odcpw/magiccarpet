@@ -3868,7 +3868,13 @@ fn level_two_house_possession_reaches_castle_projection_at_next_source_boundary(
     );
     assert_eq!(
         session.economy().owner_mana_global(),
-        baseline_global - disabled_mana
+        baseline_global - disabled_mana,
+        "house={} disabled_mana={} baseline={} current rows={:?} events={:?}",
+        disabled_house.entity_index,
+        disabled_mana,
+        baseline_global,
+        session.economy().owner_mana_rows,
+        session.economy().events()
     );
     assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
     session.reset();

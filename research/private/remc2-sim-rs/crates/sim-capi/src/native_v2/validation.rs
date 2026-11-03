@@ -1939,11 +1939,12 @@ pub(super) fn mana_sphere_snapshot(sphere: &ManaSphere) -> McManaSphereSnapshotV
         assigned_carrier_id: sphere.assigned_carrier_id,
         // Additive Level 2 mailbox projection. The public struct remains the
         // sealed 64-byte record; reserved words carry the source attraction
-        // relation and the two source radial words.
+        // relation, the two source radial words, and current word94 player
+        // relation (distinct from the constructor's semantic owner above).
         reserved: [
             u32::from(sphere.attraction_source_entity_index),
             u32::from(sphere.attraction_step) | (u32::from(sphere.attraction_distance_high) << 16),
-            0,
+            u32::from(sphere.player_entity_index),
         ],
     }
 }

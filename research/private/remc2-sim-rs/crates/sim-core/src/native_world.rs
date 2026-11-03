@@ -1088,6 +1088,9 @@ pub struct Level2PossessionProjectile {
     pub action: u8,
     pub output_class: u8,
     pub output_model: u8,
+    /// Source holder mana and squared subspell radius copied by sub_69640.
+    pub source_mana: i32,
+    pub source_dword_10: i32,
     /// Source `word_0x96`: the arena slot selected by the one-shot
     /// `sub_67CB0` acquisition. Zero is the sentinel; keeping only the slot
     /// deliberately preserves source reuse semantics.
@@ -1520,6 +1523,10 @@ pub struct Level2PlayerDeathMarker {
     pub source_entity_index: u16,
     pub entity_rng: u16,
     pub trigger_player_entity_index: u16,
+    /// Physical source word94, independent of the marker's trigger identity.
+    pub player_entity_index: u16,
+    pub pending_possession_owner: u16,
+    pub pending_possession_payload: u32,
     pub position: Position,
     pub dispatch_phase: u8,
     pub constructor_phase: u32,

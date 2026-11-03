@@ -44,6 +44,8 @@ pub use summon_army::{
 };
 mod meteor;
 pub use meteor::{METEOR_PROPERTIES, MeteorProperties, MeteorTier};
+mod possession;
+pub use possession::{POSSESSION_PROPERTIES, PossessionProperties, PossessionTierProperties};
 mod lightning;
 pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;

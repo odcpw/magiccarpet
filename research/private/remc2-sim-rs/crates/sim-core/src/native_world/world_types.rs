@@ -1413,6 +1413,11 @@ pub(super) fn level2_first_possession_target(
     houses: &[HouseState],
     projectile: Level2PossessionProjectile,
 ) -> Option<(u16, Position)> {
+    let half_height = if projectile.source_model == 17 {
+        2 * POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET
+    } else {
+        POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT
+    };
     for candidate_slot in source_map_search_slots(
         map_chains,
         projectile.position,
@@ -1429,7 +1434,7 @@ pub(super) fn level2_first_possession_target(
             POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
-            POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
+            half_height,
         ) {
             return Some((
                 candidate_slot,
@@ -1450,7 +1455,7 @@ pub(super) fn level2_first_possession_target(
             projectile.position,
             POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
             POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
-            POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
+            half_height,
         ) {
             return Some((candidate_slot, possession_house_target_top(house)));
         }

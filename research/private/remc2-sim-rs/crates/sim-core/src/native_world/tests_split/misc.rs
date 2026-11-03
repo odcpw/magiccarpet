@@ -5532,6 +5532,11 @@ fn level_two_possession_holder_dispatch_phase_advances_once_and_replays_after_re
         ..PlayerCommand::default()
     };
     session.state.entity_fov = 29;
+    // sub_69900 adds the parent's collision array fov, not its separate
+    // orientation fov. Set the source field to the same fixture value.
+    let parent_slot = session.state.entity_index;
+    session.session.state.live.economy.entities[usize::from(parent_slot)].record[92..94]
+        .copy_from_slice(&29_i16.to_le_bytes());
     let mut expected_launch = session.state.position;
     crate::move_entity(
         &mut expected_launch,
@@ -5641,6 +5646,8 @@ fn level_two_possession_holder_dispatch_phase_advances_once_and_replays_after_re
     assert_eq!(holder(&session), baseline_holder);
 
     session.state.entity_fov = 29;
+    session.session.state.live.economy.entities[usize::from(parent_slot)].record[92..94]
+        .copy_from_slice(&29_i16.to_le_bytes());
     session.step_outer_turn(request, 0);
     assert_eq!(holder(&session), armed_holder);
     assert_eq!(

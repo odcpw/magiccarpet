@@ -958,7 +958,7 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
         collision_roll: 28,
         collision_fov: 28,
         owner_entity_index: 111,
-        player_entity_index: 111,
+        player_entity_index: 59,
         incoming_owner_entity_index: 0,
         incoming_possession_payload: 0,
         ordinary_damage_payload: 0,
@@ -974,7 +974,7 @@ fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_chang
         pending_delete: false,
     });
     assert_eq!(size_of::<McManaSphereSnapshotV2>(), 64);
-    assert_eq!(snapshot.reserved, [877, 42 | (3 << 16), 0]);
+    assert_eq!(snapshot.reserved, [877, 42 | (3 << 16), 59]);
     assert_eq!(
         (
             snapshot.owner_entity_index,

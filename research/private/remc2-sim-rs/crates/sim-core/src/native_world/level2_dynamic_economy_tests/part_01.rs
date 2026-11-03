@@ -1,4 +1,60 @@
 #[test]
+fn possession_death_marker_requires_current_class3_but_always_consumes_the_mailbox() {
+    let session = level_two_possession_lifecycle_session();
+    for (class, relation, expected) in [
+        (Some(3), 0, Some(111)),
+        (Some(5), 0, None),
+        (None, 0, None),
+        (Some(3), 77, None),
+    ] {
+        let mut economy = session.session.state.live.economy.economy.clone();
+        let marker = economy
+            .allocate_player_death_marker(59, session.state.position)
+            .unwrap();
+        {
+            let row = economy
+                .player_death_markers
+                .iter_mut()
+                .find(|row| row.source_entity_index == marker.source_entity_index)
+                .unwrap();
+            row.player_entity_index = relation;
+            row.pending_possession_owner = 111;
+            row.pending_possession_payload = 1;
+        }
+        assert_eq!(
+            economy.step_player_death_marker_possession(
+                marker.source_entity_index,
+                &session.session.state.live.terrain,
+                class,
+            ),
+            expected
+        );
+        let row = economy
+            .player_death_markers
+            .iter()
+            .find(|row| row.source_entity_index == marker.source_entity_index)
+            .unwrap();
+        assert_eq!(row.pending_possession_owner, 0);
+        assert_eq!(
+            row.pending_possession_payload, 1,
+            "36AE0 clears only the owner word"
+        );
+        assert_eq!(row.trigger_player_entity_index, 59);
+        assert_eq!(row.player_entity_index, relation);
+        assert!(
+            row.active && row.control_flags & ENTITY_DRAW_DISABLED_BIT != 0,
+            "hide retains its typed row until the next source boundary"
+        );
+        assert!(economy.map_chains.is_linked(marker.source_entity_index));
+        assert!(
+            !economy
+                .free_source_slots()
+                .contains(&marker.source_entity_index)
+        );
+    }
+}
+
+#[test]
 fn ordinary_public_death_marker_merge_retains_living_claimant() {
     use crate::campaign::spec::CampaignSelection;
 
@@ -3199,6 +3255,7 @@ fn level_two_possession_guidance_acquires_once_turns_then_keeps_stale_slot() {
 #[test]
 fn level_two_possession_holder_charges_once_then_clears_positive_cooldown_regen() {
     let mut session = level_two_possession_lifecycle_session();
+    let player_slot = session.state.entity_index;
     let holder_index = 116;
     let (activation_value, mana_cost) = {
         let mut shared_view = session.shared_spells_mut();
@@ -3227,6 +3284,7 @@ fn level_two_possession_holder_charges_once_then_clears_positive_cooldown_regen(
             }
         }
     }
+    session.economy.entities[usize::from(player_slot)].set_mana_regen(37);
 
     session.step_level2_possession_holder_source_slot(holder_index);
     assert_eq!(
@@ -3268,6 +3326,7 @@ fn level_two_possession_holder_charges_once_then_clears_positive_cooldown_regen(
             }
         }
     }
+    session.economy.entities[usize::from(player_slot)].set_mana_regen(37);
     session.step_level2_possession_holder_source_slot(holder_index);
     assert_eq!(
         session.shared_spells().player_entity.mana_regen,
@@ -3503,7 +3562,8 @@ fn level_two_possession_new_rows_follow_the_remaining_ascending_source_cursor() 
                 attraction_distance_high: 0,
                 assigned_carrier_id: 0,
                 assigned_defender_slot: 0,
-                control_flags: 0,
+                // NewAdd0A27 carries source collision bit8 and map bit4.
+                control_flags: 12,
                 phase: 0,
                 active: true,
                 pending_delete: false,
@@ -3520,6 +3580,8 @@ fn level_two_possession_new_rows_follow_the_remaining_ascending_source_cursor() 
                     action: POSSESSION_PROJECTILE_ACTION,
                     output_class: POSSESSION_IMPACT_CLASS,
                     output_model: POSSESSION_IMPACT_MODEL,
+                    source_mana: 0,
+                    source_dword_10: 0,
                     target_source_entity_index: 0,
                     acquisition_attempted: false,
                     threat_accounted: false,

@@ -2992,6 +2992,13 @@ fn qualified_level2_campaign_package() -> PathBuf {
 
 fn open_level2_campaign_handle_with_asset_cache(cache: &Path) -> u64 {
     let level2_package = qualified_level2_campaign_package();
+    open_level2_campaign_handle_with_package_and_asset_cache(&level2_package, cache)
+}
+
+fn open_level2_campaign_handle_with_package_and_asset_cache(
+    level2_package: &Path,
+    cache: &Path,
+) -> u64 {
     let package = level2_package.to_string_lossy();
     let cache = cache.to_string_lossy();
     let selection = McCampaignSelectionV2 {
@@ -3014,7 +3021,9 @@ fn open_level2_campaign_handle_with_asset_cache(cache: &Path) -> u64 {
             &raw const selection,
             &raw mut handle,
         ),
-        MC_STATUS_OK
+        MC_STATUS_OK,
+        "campaign package/cache open failed: {}",
+        LAST_ERROR.with(|error| error.borrow().clone())
     );
     handle
 }
@@ -3507,11 +3516,16 @@ fn drive_level2_public_group1_possession_claims_with_expected(
                 ));
             };
             let auxiliary = reset.shared_spells().beyond_sight_auxiliary();
+            // sub_69900 adds array_0x52.fov to the launch position. The
+            // flight state's entity_fov is the distinct orientation word.
+            let parent = &reset.entities()[usize::from(reset.state.entity_index)];
+            let collision_fov =
+                i16::from_le_bytes([parent.record_bytes()[92], parent.record_bytes()[93]]);
             Ok((
                 reset.state.yaw,
                 reset.state.effective_pitch,
                 reset.state.actual_speed,
-                reset.state.entity_fov,
+                collision_fov,
                 auxiliary.next_entity,
                 auxiliary.entity_index2,
             ))

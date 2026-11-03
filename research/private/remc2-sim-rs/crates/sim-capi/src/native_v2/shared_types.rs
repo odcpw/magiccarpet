@@ -1633,6 +1633,8 @@ pub struct McManaSphereSnapshotV2 {
     pub logical_height: u16,
     pub mana: i32,
     pub assigned_carrier_id: u32,
+    /// Attraction source, packed radial words, and current source word94
+    /// player relation. The latter can differ from `owner_entity_index`.
     pub reserved: [u32; 3],
 }
 

@@ -3679,6 +3679,37 @@ impl Level2EconomyState {
         shift_rot_y: i16,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_class10_model0_effect(
+            source_entity_index,
+            parent_entity_index,
+            parent_entity_id,
+            parent_yaw,
+            parent_pitch,
+            position,
+            subspell_index,
+            target_source_entity_index,
+            control_flags,
+            shift_rot_x,
+            shift_rot_y,
+        )
+    }
+
+    /// Initialize NewAdd0A00 in an already allocated source-arena slot.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn initialize_class10_model0_effect(
+        &mut self,
+        source_entity_index: u16,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        parent_yaw: i16,
+        parent_pitch: i16,
+        position: Position,
+        subspell_index: u16,
+        target_source_entity_index: u16,
+        control_flags: u32,
+        shift_rot_x: i16,
+        shift_rot_y: i16,
+    ) -> Option<u16> {
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains
@@ -7126,6 +7157,15 @@ impl Level2EconomyState {
             hasher.update(marker.source_entity_index.to_le_bytes());
             hasher.update(marker.entity_rng.to_le_bytes());
             hasher.update(marker.trigger_player_entity_index.to_le_bytes());
+            if marker.player_entity_index != 0
+                || marker.pending_possession_owner != 0
+                || marker.pending_possession_payload != 0
+            {
+                hasher.update(b"player-death-marker-possession-v1");
+                hasher.update(marker.player_entity_index.to_le_bytes());
+                hasher.update(marker.pending_possession_owner.to_le_bytes());
+                hasher.update(marker.pending_possession_payload.to_le_bytes());
+            }
             hasher.update(marker.position.x.to_le_bytes());
             hasher.update(marker.position.y.to_le_bytes());
             hasher.update(marker.position.z.to_le_bytes());
@@ -8341,6 +8381,8 @@ impl Level2EconomyState {
             hasher.update(projectile.entity_rng.to_le_bytes());
             hasher.update(projectile.source_id_entity_index.to_le_bytes());
             hasher.update(projectile.holder_entity_index.to_le_bytes());
+            hasher.update(projectile.source_mana.to_le_bytes());
+            hasher.update(projectile.source_dword_10.to_le_bytes());
             hasher.update(projectile.target_source_entity_index.to_le_bytes());
             hasher.update([
                 projectile.source_class,

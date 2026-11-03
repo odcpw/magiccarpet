@@ -67,6 +67,7 @@ pub struct CampaignDefinition {
     pub collision_masks_present: bool,
     pub identity_receipt: CanonicalDigest,
     pub(crate) speed_multipliers: [i32; 3],
+    pub(crate) possession_properties: crate::level_definition::PossessionProperties,
     semantic_level: Option<LevelDefinition>,
     authored_creature_kinds: BTreeMap<u16, CreatureKind>,
     authored_creature_entities: BTreeMap<u16, LevelEntityId>,
@@ -363,6 +364,7 @@ impl CampaignDefinition {
             collision_masks_present,
             identity_receipt,
             speed_multipliers: [2, 3, 4],
+            possession_properties: crate::level_definition::POSSESSION_PROPERTIES,
             semantic_level: None,
             authored_creature_kinds: BTreeMap::new(),
             authored_creature_entities: BTreeMap::new(),
@@ -414,22 +416,59 @@ impl CampaignDefinition {
 
     pub(crate) fn bind_speed_multipliers(&mut self, multipliers: [i32; 3]) {
         self.speed_multipliers = multipliers;
+        self.refresh_rule_identity();
+    }
+
+    /// Bind the family definition before resetting or replaying a session.
+    pub(crate) fn bind_possession_properties(
+        &mut self,
+        properties: crate::level_definition::PossessionProperties,
+    ) {
+        self.possession_properties = properties;
+        self.refresh_rule_identity();
+    }
+
+    fn refresh_rule_identity(&mut self) {
         let base = Self::base_identity_receipt(
             self.profile,
             &self.package_sha256,
             self.collision_masks_present,
         );
-        self.identity_receipt = if multipliers == [2, 3, 4] {
+        let speed_identity = if self.speed_multipliers == [2, 3, 4] {
             base
         } else {
             digest_with(|hasher| {
                 hasher.update(base.as_bytes());
                 hasher.update(b"speed-multipliers-v1");
-                for multiplier in multipliers {
+                for multiplier in self.speed_multipliers {
                     hasher.update(multiplier.to_le_bytes());
                 }
             })
         };
+        self.identity_receipt =
+            if self.possession_properties == crate::level_definition::POSSESSION_PROPERTIES {
+                speed_identity
+            } else {
+                digest_with(|hasher| {
+                    hasher.update(speed_identity.as_bytes());
+                    hasher.update(b"possession-properties-v1");
+                    for tier in self.possession_properties.tiers {
+                        hasher.update(tier.power.to_le_bytes());
+                        hasher.update(tier.cooldown.to_le_bytes());
+                        hasher.update(tier.castle_mana_required.to_le_bytes());
+                        hasher.update(tier.mana_cost.to_le_bytes());
+                        hasher.update([tier.source_life]);
+                    }
+                    for value in [
+                        self.possession_properties.projectile_speed,
+                        self.possession_properties.projectile_lifetime,
+                        self.possession_properties.basic_aim_distance,
+                        self.possession_properties.tiered_aim_distance,
+                    ] {
+                        hasher.update(value.to_le_bytes());
+                    }
+                })
+            };
     }
 
     pub(crate) fn bind_semantic_level(&mut self, bindings: SemanticLevelBindings) {

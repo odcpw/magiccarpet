@@ -930,6 +930,7 @@ pub(crate) struct EffectLists {
     class3_chain: crate::campaign::source_arena::SourceSlotChain,
     model45_chain: crate::campaign::source_arena::SourceSlotChain,
     mana_chain: crate::campaign::source_arena::SourceManaChain,
+    model22_chain: crate::campaign::source_arena::SourceSlotChain,
     epoch: u32,
 }
 
@@ -1064,6 +1065,9 @@ pub(crate) fn publish_player_death_marker(
     row.set_life(marker.life);
     row.set_control_flags(marker.control_flags);
     row.record[60] = marker.byte_38;
+    row.set_source_player_entity_index(marker.player_entity_index);
+    row.record[104..108].copy_from_slice(&marker.pending_possession_payload.to_le_bytes());
+    row.record[108..110].copy_from_slice(&marker.pending_possession_owner.to_le_bytes());
     crate::world::terrain::cave_features::bind_particle(
         &mut row,
         marker.particle_parameter_index,
@@ -1106,6 +1110,19 @@ pub(crate) fn retire_hidden_player_death_markers(
 }
 
 impl EffectLists {
+    pub(crate) fn possession_guidance_slots(
+        &self,
+        arena: &SourceArena,
+    ) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+        (
+            self.mana_chain
+                .current_slots(&arena.economy, &arena.entities),
+            self.model45_chain
+                .current_slots(&arena.economy, &arena.entities),
+            self.model22_chain
+                .current_slots(&arena.economy, &arena.entities),
+        )
+    }
     pub(crate) fn castle_site_rows(
         &self,
         arena: &SourceArena,
@@ -1213,11 +1230,15 @@ pub(crate) fn capture_effect_lists(
     let model45_chain = crate::campaign::source_arena::SourceSlotChain::capture(
         targets.arena, model45.clone(),
     );
+    let model22_slots = targets.arena.rebuilt_class5_model_slots()[22].clone();
+    let model22_chain =
+        crate::campaign::source_arena::SourceSlotChain::capture(targets.arena, model22_slots);
     EffectLists {
         class3,
         model45,
         class3_chain,
         model45_chain,
+        model22_chain,
         mana_chain: {
             let mut slots = targets
                 .arena

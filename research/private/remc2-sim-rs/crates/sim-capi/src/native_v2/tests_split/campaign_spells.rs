@@ -315,8 +315,168 @@ fn level2_source_valid_castle_route(handle: u64) -> (Position, (u16, u16)) {
 }
 
 #[test]
+fn campaign_public_possession_claims_an_authored_house_through_the_shared_runtime() {
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let handle = open_level2_campaign_handle_with_package_and_asset_cache(
+        &generated.join("mc-level2-vault-successor-closure-20261025"),
+        &generated.join("mc-b9s2-cursor-level2-vault-20261029"),
+    );
+    let (switch, player) = with_campaign_session(handle, |session| {
+        let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+            unreachable!("the campaign ABI owns the shared simulation")
+        };
+        let switch = reset
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|row| row.index == 11)
+            .expect("ordinary group-1 switch")
+            .world_position(0);
+        Ok((switch, reset.state.entity_index))
+    })
+    .unwrap();
+    let mut input = McCampaignStepInputV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignStepInputV2>(),
+        generation: 0,
+        command: valid_command(),
+        player_slot: 0,
+        player_x: switch.x,
+        player_y: switch.y,
+        player_z: 256,
+        ..McCampaignStepInputV2::default()
+    };
+    // Position is the declared setup control. The actual switch and source
+    // construction visits supply the target; no house or ownership is injected.
+    let mut target = None;
+    for _ in 0..64 {
+        step_level2_campaign_public(handle, input);
+        target = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                unreachable!()
+            };
+            Ok(reset
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| {
+                    house.active
+                        && house.action == sim_core::house::HOUSE_LIVE_ACTION
+                        && house.control_flags & 8 != 0
+                        && !house.parameter.possession_blocked()
+                        && house.owner_entity_index != player
+                        && house.source_id != player
+                })
+                .copied())
+        })
+        .unwrap();
+        if target.is_some() {
+            break;
+        }
+    }
+    let target = target.expect("the actual package produces a live source-eligible house");
+    input.player_x = target.position.x;
+    input.player_y = target.position.y.wrapping_add(512);
+    input.player_z = target.position.z;
+    input.command = McCommandV2 {
+        flags: 0x40,
+        requested_spell: 1,
+        ..valid_command()
+    };
+    let mut saw_flyer = false;
+    let mut saw_effect = false;
+    let mut captured = false;
+    let mut trace = Vec::new();
+    for _ in 0..32 {
+        let (snapshot, _) = step_level2_campaign_public(handle, input);
+        input.command = valid_command();
+        let (owned, flyers, effects, holder_active, published_owner, mailbox) =
+            with_campaign_session(handle, |session| {
+                let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                    unreachable!()
+                };
+                let house = reset
+                    .ordinary()
+                    .houses()
+                    .iter()
+                    .find(|house| house.entity_index == target.entity_index)
+                    .unwrap();
+                let source = &reset.entities()[usize::from(target.entity_index)];
+                let flyers = reset
+                    .economy()
+                    .possession_projectiles()
+                    .iter()
+                    .filter(|row| row.source_id_entity_index == player)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let effects = reset
+                    .economy()
+                    .possession_effects()
+                    .iter()
+                    .filter(|row| row.source_id_entity_index == player)
+                    .copied()
+                    .collect::<Vec<_>>();
+                Ok((
+                    house.owner_entity_index == player,
+                    flyers,
+                    effects,
+                    reset
+                        .shared_spells()
+                        .dynamic_pickups()
+                        .iter()
+                        .chain(reset.shared_spells().pickups())
+                        .find(|row| row.model == 1 && row.class == 15)
+                        .map(|row| row.active_value),
+                    source.source_player_entity_index(),
+                    house.pending_possession_owner,
+                ))
+            })
+            .unwrap();
+        saw_flyer |= !flyers.is_empty();
+        saw_effect |= !effects.is_empty();
+        trace.push((
+            snapshot.revision,
+            flyers,
+            effects,
+            holder_active,
+            published_owner,
+            mailbox,
+        ));
+        if owned {
+            assert_eq!(
+                published_owner, player,
+                "the house consumer must publish its current owner"
+            );
+            captured = true;
+            break;
+        }
+    }
+    assert!(
+        saw_flyer && saw_effect && captured,
+        "the public hand must reach actual flight, contact and house ownership: target={target:?}, trace={trace:#?}"
+    );
+    let public_house = campaign_entities_public(handle)
+        .into_iter()
+        .find(|row| row.entity_index == target.entity_index)
+        .unwrap();
+    assert_eq!(
+        (
+            public_house.active,
+            public_house.class_id,
+            public_house.model
+        ),
+        (1, 10, 45)
+    );
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn level2_campaign_public_tier0_possession_claims_group1_mana_from_strict_target_flight() {
-    let handle = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let handle = open_level2_campaign_handle_with_package_and_asset_cache(
+        &generated.join("mc-level2-vault-successor-closure-20261025"),
+        &generated.join("mc-b9s2-cursor-level2-vault-20261029"),
+    );
     let row11_position = with_campaign_session(handle, |session| {
         let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
             return Err(AbiError::new(
@@ -1395,8 +1555,11 @@ fn level2_campaign_public_invisible_casts_after_castle_reaches_live_mana_gate() 
 
 #[test]
 fn level2_campaign_public_possession_reset_replays_hash_without_cross_session_leakage() {
-    let first = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
-    let second = open_level2_campaign_handle_with_asset_cache(&qualified_level2_day_owner_cache());
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = generated.join("mc-level2-vault-successor-closure-20261025");
+    let cache = generated.join("mc-b9s2-cursor-level2-vault-20261029");
+    let first = open_level2_campaign_handle_with_package_and_asset_cache(&package, &cache);
+    let second = open_level2_campaign_handle_with_package_and_asset_cache(&package, &cache);
     let initial_first_hash = campaign_world_hash_public(first);
     let initial_second_hash = campaign_world_hash_public(second);
     assert_eq!(initial_first_hash, initial_second_hash);

@@ -118,6 +118,14 @@ impl SourceManaChain {
         self.0.slots()
     }
 
+    pub(crate) fn current_slots(
+        &self,
+        economy: &Level2EconomyState,
+        entities: &[EntitySnapshot],
+    ) -> Vec<u16> {
+        self.0.current_slots(economy, entities)
+    }
+
     pub(crate) fn rows(
         &self,
         economy: &Level2EconomyState,
