@@ -12,8 +12,7 @@ objective consumers and original presentation/assets. Preserve the delivered
 spell checkpoints and already qualified creature paths; repair shared defects
 in their canonical owner when a real connected failure exposes them.
 
-- [x] Wyvern16 — `mc-1pb.5` (installed checkpoint; original Fireball
-      dependency remains open, so the bead remains open).
+- [x] Wyvern16 — `mc-1pb.5`.
 - [x] Castle defenders15 — `mc-1pb.4`.
 - [ ] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
 - [ ] Archer4 — `mc-1pb.21`; Skeleton9 — `mc-1pb.22`;
@@ -90,13 +89,73 @@ changed paths; package formatting remains non-clean, without a clean-format clai
 
 The batch owners handed back frozen source: Terra BoldHollow/AmberOtter, Sol
 CrimsonGlacier/BrownMountain. Root AmberWolf independently verified and delivered
-the integrated batch. The finite defender `.4` acceptance is qualified; full
-`.24` and Wyvern `.5` with its original Fireball dependency stay open. Next
+the integrated batch. Finite defender `.4` and Wyvern `.5` acceptance is
+qualified. The original Fireball `.10` prerequisite is closed after a current
+bounded source/acceptance assessment by Sol and root against its actual
+acquired all-tier, capacity/alias, water/expiry and public CAPI evidence; no
+unchanged old positive was rerun merely for closure. The next affected Bee
+batch will exercise that shared boundary again. Full `.24` stays open. Next
 connected families are Dragon `.19` and Bee `.20`. Unresolved
 Level23 initial Castle3/2 identity at0,0 remains in `mc-bhq.8` comment99; the
 fresh whole package is structurally/exporter-qualified, not runtime-qualified.
 No human combat/FPS/hardware audio, all missions, old-save or arbitrary custom
 particle-override claim. Retired pane maps and the deleted heartbeat stay retired.
+
+### Preserved next batch: Dragon and Bee
+
+Dragon ScarletValley, Bee LavenderAnchor and integrator CrimsonGlacier have
+stopped writes and released their exact leases. Their new source is preserved
+but **uncompiled, unrun, uncommitted and uninstalled**. Frozen copies, hashes
+and the owned patch are under
+`generated/dragon-bee-20261105-integration/preserved-source/`. Full `.19`,
+`.20` and `.24` acceptance remains open; Fireball `.10` is already closed.
+
+Dragon fixes source4B240 admission/partial body allocation, source-ID threat
+comparison, promoted vertical arithmetic and each handler's distinct coordinate
+promotion/separation. Bee production was unchanged; its new connected gate
+uses actual group21, contact/audio, public paid Fireballs, all three deaths,
+credit, hide/reclaim and the original absence objective. The shared definition
+now admits source signed-dword Bee health instead of rejecting values above
+32767. Backend gates add real body targeting/damage, current projectile
+reaction, kill credit, natural cleanup and the original guardian objective.
+
+Resume the exact existing-module gates after a safe shared build window:
+
+- `sim-definition`: `level_definition::tests::bee_authored_health_admission_preserves_source_dword_range`.
+- `sim-core`: `native_world::creatures::bee::tests::authored_day_bees_contact_player_and_public_fireball_drives_absence`.
+- Dragon prefix `native_world::level2_class5::dragon::lightning_consumer_tests::`:
+  `dragon_constructor_respects_source_free_stack_and_partial_chain`,
+  `selected_dragon_tracks_current_projectile_and_clears_hidden_threat`,
+  `dragon_separation_uses_source_ids_and_each_callback_axis_rules`, and
+  `dragon_boss_level25_natural_summon_and_expiry`.
+- Backend prefix `campaign::backend::tests::`:
+  `campaign_backend_carried_fireball_hits_one_real_level_three_dragon_row_through_public_command`
+  and `campaign_backend_level_three_public_guardian_exchange_reaches_reveal_objective`.
+
+Bee uses the qualified Level2 package (`MC_CAMPAIGN_PACKAGE` or its existing
+default); backend uses existing real Day3 descriptors/seed65. Set
+`MC_LEVEL25_PACKAGE` explicitly to the existing whole
+`generated/mc-bhq10-owner-v3-level25-20261029` for the boss check: the all-spells
+ordinary-package root contains only Level18. Boss group29 is a declared prior
+progression control, not a claim of the preceding BUILD mission chain. Actual
+boss RNG/selection,17→16 and natural expiry are unrun. Backend reaction is
+sampled at outer-turn boundaries; any missed transient needs a faithful source
+observation seam, not a weakened assertion. Recheck the affected acquired
+all-tier Fireball consumer on the coherent batch; do not repeat unrelated long
+creature/effects checks.
+
+**Build resource stop:** concurrent local scheduler tests and a separate
+Modern-performance baseline Cargo build reduced root free space below5GB
+(observed low0.56GB; later4.31GB), below both the floor and measured core5.45GB /
+native5.75GB stage budgets. No new expensive checks were started by this team.
+GrayElk holds the external `simulation.rs` performance reservation; root sent
+Mail16235/16236 requesting source/resource handback. His raw-slot lookup edits,
+other CAPI/campaign instrumentation and Modern/Library work are unrelated and
+must remain untouched/uncommitted by this team. No destructive cleanup or
+retry loop was attempted. Resume only with sufficient measured headroom and a
+serialized concrete source/build window, retaining the current Original player
+and immediate previous native. The latest qualified installation stays793b7ef6
+/ecbf0969. Only `git diff --check` has passed on the preserved new source.
 
 ## Delivered request: remaining spell E2E paths
 
