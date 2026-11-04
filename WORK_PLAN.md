@@ -1,37 +1,48 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: authored ambient smoke and spell-thief consumers
-`bae0a599`, native `a911fd3b0eee`.
+Current installed checkpoint: ordinary checkpoint smoke lifecycle
+`ee6fd24c`, native `69410e96a7fe`.
 
-Delivered on 2026-11-04: AmbientSmoke60 now leaves each DarkSmoke child's own
-NewEvent identity intact; other effect producers retain their source-required
-parent attribution. The real Level6 nested groups remain unfiltered: group13
-creates all six authored model26 roots and group16 creates its actual smoke
-controller. Its children reach original sprite descriptors and unshortened
-natural hide/reclaim; the source 32-free-slot constructor gate remains intact.
+Delivered on 2026-11-04: ordinary model59/action64 now uses the shared emitter
+callback and canonical Smoke13 constructor. Pure adoption retains the existing
+typed child without another allocation or RNG draw. Natural parent expiry now
+hides the current occupant, preserves its final packet and common phase, and
+reclaims its address at the following owning boundary. Children retain their
+own NewEvent identity and reach original sprite selectors. The source 32-free
+constructor gate and success-only parent RNG tail remain intact.
 
-Fixed model26's missing shared admission and its real theft consumer: current
-player A4 supplies held spells, commit validation and hand publication, rather
-than unrelated word94. Genuine Speed acquisition, theft, detached return and
-remembered-hand recovery pass. All 19 existing owner checks pass in candidate5;
-Ambient/Volcano/source-order results from candidate3 use byte-identical production
-code. Only the theft check's declared pickup geometry changed: one real Army
-neighbor is relocated, preserving its identity/lifecycle, so unrelated pickups
-cannot invalidate the intended scenario. RNG, lifetime and hand expectations
-were preserved.
+The actual descriptor-backed row342 → group23 → row343 path passes through its
+unshortened 800..899 lifetime, original DTOs, child hide/reclaim, parent hidden
+packet and following scheduled reclaim (55.814s). Canonical RNG/admission,
+source-order and actual Ambient65 lifecycle checks also pass on byte-identical
+candidate2 production. Candidate4 differs only in the existing gameplay check:
+it now uses the production CampaignSession descriptor, with identical authored,
+entity and terrain inputs. The previous export-only reset lacked semantic
+bindings and failed identically on the installed baseline. No runtime fallback,
+filtered group, shortened timer or weakened expectation was introduced.
 
-Source is committed/pushed and the matching native installed. All 443 Rust and
-162 upstream inputs match rig and the original client. Root viewed its normal
-map/loading/NightSpire terrain/HUD with the mapped matching native, then stopped
-the smoke processes. No Unity/art changes. Evidence:
-`research/private/generated/ambient-smoke-20261104-integration/candidate-5/`.
+Also restored the existing authored model4 FOV-width copy to match remc2; no
+shipped MC2 producer for that dormant route was established or invented.
+Fresh bounded source review found no additional concrete defect in the changed
+checkpoint path. Source is verified, committed and pushed; the matching native
+is installed. All 443 Rust and 162 upstream inputs match rig and the original
+client. Root viewed normal map/loading/NightSpire terrain/HUD with the matching
+mapped library and stopped its smoke processes. No Unity/art changes. Evidence:
+`research/private/generated/checkpoint-smoke-20261104-integration/candidate-4/`.
 
-Full `mc-bhq.9` and `mc-1pb.13` acceptance/dependencies remain open. This is not
-unmodified mission travel, human combat, FPS, hardware audio, complete missions
-or old-save proof. Formatting and whole-file scanner debt remain; no critical
-changed-hunk defect was identified. Continue unmet real paths, not these completed
-checkpoints. The prior effect/contact checkpoint `b395b5e4`/`e739c2ff0f23` remains
-delivered; its evidence is under `generated/effect-state-20261104-integration/`.
+Full `mc-bhq.9` and shared-engine acceptance remain open pending the finite
+family acceptance assessment. A reclaimed address's eligibility is checked;
+later NewEvent reuse of that exact parent address is not asserted. Human
+checkpoint visuals/combat, FPS, hardware audio, full missions and old saves
+remain unverified. Package formatting and whole-file scanner debt remain.
+
+Previous Ambient/theft checkpoint `bae0a599`/`a911fd3b0eee` stays delivered:
+unfiltered Level6 groups, six authored model26 roots, Ambient60 children and
+natural lifetimes; current-A4 theft, detached return and remembered-hand pickup;
+all 19 existing model26 owner checks pass. `mc-1pb.13` remains open. Evidence is
+under `generated/ambient-smoke-20261104-integration/candidate-5/`. Prior
+effect/contact `b395b5e4`/`e739c2ff0f23` also remains delivered. Do not restart
+these checkpoints.
 
 Previous ordinary Cave smoke checkpoint: `3555793f`, native `fa95bcc1ff52`.
 
