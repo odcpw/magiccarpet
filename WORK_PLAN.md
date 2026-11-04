@@ -1,7 +1,33 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: shared effects/lifetime `e72f6c58`, native
-`9b9911936657`.
+Current installed checkpoint: ordinary Cave smoke `3555793f`, native
+`fa95bcc1ff52`.
+
+Ordinary Cave smoke checkpoint delivered on 2026-11-04: implemented the missing
+`sub_58630` ambient producer after `sub_159E0` and before `sub_60F00` and numeric
+dispatch, with the source player/turn gates, wrapped scan and RNG order. Its
+Ground86 callback now uses the canonical FadingSmoke87 constructor and preserves the
+current parent position, sound, decrement and animation after allocation. Cave
+map surgery preserves retired packets' own link words.
+
+The actual unmodified Cave4 source-pass check covers ordinary birth, declared
+turn/RNG prerequisites, normal and captured/exhausted allocation, same-pass tail,
+original sprite/audio descriptors and natural hide/reclaim (7.84s). Five affected
+constructor/RNG/Cave/order checks, workspace all-target check and native build
+pass. All 443 Rust and 162 upstream inputs match rig and the original client.
+Runtime `3555793f` is committed/pushed; native `fa95bcc1ff52` is installed. Root
+viewed the normal map/loading/NightSpire scene/HUD with the matching mapped
+library, then stopped its smoke processes. No Unity/art changes. Evidence:
+`research/private/generated/ground-smoke-20261104-integration/candidate-1/`.
+
+Full `mc-bhq.9` and shared-engine acceptance remain open. Exhaustion, snapshot,
+candidate isolation and observer positions are explicit check controls, not a
+natural owner-package exhaustion claim. Native Cave visuals, human gameplay,
+FPS, hardware audio, whole missions and old-save migration remain unverified.
+Package formatting and whole-file scanner debt remain; no critical changed-hunk
+defect was found. Continue remaining real producers/consumers; do not restart
+this delivered path.
+
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
@@ -413,23 +439,14 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Coordination and prompts
 
-The current fleet uses Terra 6.1/xhigh workers and Sol 6.1/xhigh integrators.
-Discover live NTM panes and Mail identities rather than trusting old names.
-The current coordinator owns acceptance and tracker updates. The Sol integrator
-implements shared joins and dispatches the sole Cargo/Unity build slot, coherent
-commits/push and matching native/player installation. Discover actual identities
-from the live session. Preserve dirty source, staged work, warm caches and current
-installations.
-
-- `engine-economy`: actual per-owner Castle lifecycle, directional/resource/late
-  spells, shared damage/mana consumers. First remove singleton Castle production.
-- `engine-creatures`: finish ordinary and summoned creature lifecycles and boss
-  integration; prioritize missing model18/21/27 and the existing Army consumers.
-- `engine-world`: real fire/projectile/effect descendants, fields/disasters,
-  authored spawning, switches and objective evaluation. Implement prerequisites.
-- `engine-delivery`: shared secret/session/save-carry routes, original controls
-  and presentation/assets, matching native/Unity delivery. Keep one member on
-  the existing opening consumer; no automated playthroughs.
+The current team uses native collaboration: two Terra 6.1/xhigh workers and
+one Sol 6.1/xhigh integrator. Discover actual agent status and Mail identities
+before resuming them. The earlier four-team NTM sessions are retired; do not
+resurrect their panes or credentials. Use NTM only if live state warrants it.
+Root CalmBeaver owns acceptance, tracker updates and sole Cargo/RCH, commit/push
+and native installation. MaroonMarsh implements shared joins with the feature
+owners; VioletGrove and WildSpring are the workers. Preserve dirty source,
+staged work, warm caches and current installations.
 
 Integrator ownership includes implementation of shared joins. Never hold a
 shared-root reservation while waiting on another family: negotiate brief exact
@@ -445,8 +462,9 @@ the current player, immediate rollback and warm caches.
 Every dispatch/follow-up must say: reread this plan and the bead; the positive
 runtime result; the exact remaining link and owned surface; the integration
 owner; the focused evidence and handoff boundary. Reference existing details
-instead of repeating manuals or stale status. Use literal canonical `%N` pane
-IDs and verify receipt through acknowledgment or actual work. Never print tokens.
+instead of repeating manuals or stale status. Verify native-agent receipt through
+acknowledgment or actual work. If using live NTM, use literal canonical `%N` pane
+IDs. Never print tokens.
 
 The coordinator rereads this plan every tick, checks live work and messages,
 and acts on specific blockers or idle actionable owners. No blind nudges or
