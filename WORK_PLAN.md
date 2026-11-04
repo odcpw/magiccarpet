@@ -1,9 +1,10 @@
 # Shared-engine delivery plan
 
-Active next capability: `mc-bhq.8` terrain disasters, starting with actual
-Tremor acquisition → cast → scheduled deformation/damage → player clearance →
-natural cleanup. MaroonMarsh owns that path through integration. CalmBeaver owns
-the missing source585D0 post-dispatch clearance join and sole builds/install.
+Current delivered subcapability: actual Tremor acquisition → cast → scheduled
+deformation/damage → player clearance → natural cleanup, under `mc-bhq.8`.
+Continue that bead's remaining original terrain acceptance; select a concrete
+unmet producer/consumer from source before dispatch. MaroonMarsh is stopped and
+available for the next bounded capability. CalmBeaver owns sole builds/install.
 The actual Creature17 prerequisite is corrected: all 12 owner checks pass on
 candidate5, including real melee after natural initial protection, slowdown,
 stance, follow/expiry and retained addresses. Its real Level9 absence sensor
@@ -25,10 +26,19 @@ The existing test-only damage observer now reads the actual typed Goat mailbox,
 with raw fallback, matching its real writer; receipt predicates are unchanged.
 Source-order, acquired Fireball and workspace all-target checks pass on the
 byte-identical candidate5 production. Fresh bounded review supports these joins.
-This batch is verified in Rust, pending commit/native installation. Full terrain
-and creature acceptance/dependencies remain open; do not restart delivered work.
+Runtime `ddfb0188` is verified, committed and pushed; matching native
+`6a9ce089c86a` is installed in the qualified original client. All 443 Rust and
+162 upstream inputs match rig and installation. Root viewed the normal original
+map, loading artwork and NightSpire terrain/HUD with the matching mapped native,
+then stopped its smoke processes. Spawn flash is present in the scene capture;
+this is launch/load proof, not a native Tremor demonstration, human combat, FPS,
+hardware audio, full missions or old-save proof. No Unity/art changes in this
+batch. A separate Modern performance commit is independent of this installation.
+Full terrain and creature acceptance/dependencies remain open. Legacy package
+formatting and whole-file scanner debt remain; no changed-hunk critical defect
+was found. Evidence: `generated/tremor-20261104-integration/candidate-7/`.
 
-Current installed checkpoint: ordinary checkpoint smoke lifecycle
+Previous installed checkpoint: ordinary checkpoint smoke lifecycle
 `ee6fd24c`, native `69410e96a7fe`.
 
 Delivered on 2026-11-04: ordinary model59/action64 now uses the shared emitter
