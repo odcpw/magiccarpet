@@ -46,7 +46,7 @@ namespace MagicCarpet.Native.Editor
             }
             pipeline.supportsHDR = true;
             pipeline.supportsCameraDepthTexture = true;
-            pipeline.supportsCameraOpaqueTexture = true;
+            pipeline.supportsCameraOpaqueTexture = false;
             pipeline.msaaSampleCount = 4;
             pipeline.renderScale = 1f;
             pipeline.mainLightShadowmapResolution = 4096;

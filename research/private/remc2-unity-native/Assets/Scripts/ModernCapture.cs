@@ -17,6 +17,7 @@ namespace MagicCarpet.Native
         internal static readonly bool HideHud = Arguments.Contains("-mc-modern-hide-hud");
         internal static readonly bool Measure = Arguments.Contains("-mc-modern-metrics");
         internal static readonly bool VisualDebug = Arguments.Contains("-mc-modern-visual-debug");
+        internal static readonly bool ProceduralClouds = Arguments.Contains("-mc-modern-procedural-clouds");
         internal static int EntityVisibility { get; private set; }
         internal static bool IsolateSmoke { get; private set; }
         internal static int SmokeDebug { get; private set; }

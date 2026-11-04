@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -155,6 +156,186 @@ namespace MagicCarpet.Native.Tests
                 fresh.Dispose();
                 UnityEngine.Object.DestroyImmediate(otherParent);
             }
+        }
+
+        [Test]
+        public void DistantLodStitchesLandWaterAndChunkEdgesAndTracksDeformation()
+        {
+            // A large lake supplies both shoreline transitions and homogeneous
+            // interior water; the wrapped water cell from SetUp is retained.
+            for (var z = 4; z < 28; z++)
+            for (var x = 4; x < 28; x++) water[Index(x, z)] = 8;
+            terrain.Update(heights, types, water, 1, 1);
+            terrain.ViewDistance = 650f;
+            terrain.Present(new Vector3(64f, 0f, 64f));
+            var copy = parent.transform.Find("Modern Terrain/Terrain 0,0 copy 4");
+            Assert.That(copy, Is.Not.Null);
+            var filter = copy.GetComponent<MeshFilter>();
+            var near = filter.sharedMesh;
+            terrain.Present(new Vector3(500f, 0f, 64f));
+            var far = filter.sharedMesh;
+            Assert.That(far, Is.Not.SameAs(near));
+            Assert.That(terrain.VisibleDetailCopies, Is.GreaterThan(0));
+            Assert.That(terrain.VisibleFarCopies, Is.GreaterThan(0));
+            Assert.That(terrain.VisibleTriangleCount, Is.GreaterThan(0));
+            Assert.That(far.GetTriangles(0).Length, Is.LessThan(near.GetTriangles(0).Length));
+            Assert.That(far.GetTriangles(1).Length, Is.LessThan(near.GetTriangles(1).Length / 2));
+            CollectionAssert.AreEqual(near.vertices, far.vertices);
+            AssertWaterCell(near, 12, 12);
+            AssertMaterialCoverage(near);
+            AssertMaterialCoverage(far);
+            CollectionAssert.AreEquivalent(ShoreEdges(near), ShoreEdges(far));
+            Assert.That(ShoreEdges(far).Count, Is.GreaterThan(0));
+            AssertClosedInteriorEdges(far);
+            // A copy in the hysteresis band keeps its previous LOD.
+            terrain.Present(new Vector3(338f, 0f, 64f));
+            Assert.That(filter.sharedMesh, Is.SameAs(far));
+            terrain.Present(new Vector3(64f, 0f, 64f));
+            Assert.That(filter.sharedMesh, Is.SameAs(near));
+            terrain.Present(new Vector3(338f, 0f, 64f));
+            Assert.That(filter.sharedMesh, Is.SameAs(near));
+            terrain.Present(new Vector3(500f, 0f, 64f));
+            Assert.That(filter.sharedMesh, Is.SameAs(far));
+            terrain.Present(new Vector3(64f, 500f, 64f));
+            Assert.That(copy.gameObject.activeSelf, Is.True, "altitude must not alter horizontal residency");
+            Assert.That(filter.sharedMesh, Is.SameAs(far));
+            terrain.Present(new Vector3(64f, 0f, 64f));
+            Assert.That(filter.sharedMesh, Is.SameAs(near));
+            terrain.Present(new Vector3(500f, 0f, 64f));
+
+            // Rebuild both retained variants after a source-height and water change.
+            heights[Index(10, 10)] += 10;
+            water[Index(12, 12)] = 0;
+            terrain.Update(heights, types, water, 1, 2);
+            Assert.That(far.vertices[20 + 20 * Side].y, Is.EqualTo(heights[Index(10, 10)] * 0.5f));
+            CollectionAssert.AreEqual(near.vertices, far.vertices);
+            AssertMaterialCoverage(near);
+            AssertMaterialCoverage(far);
+            CollectionAssert.AreEquivalent(ShoreEdges(near), ShoreEdges(far));
+            AssertClosedInteriorEdges(far);
+            terrain.Present(new Vector3(64f, 0f, 64f));
+            Assert.That(filter.sharedMesh, Is.SameAs(near));
+        }
+
+        [Test]
+        public void WaterVisibilityUsesCurrentWaterAndWrappedActiveCopies()
+        {
+            Array.Clear(water, 0, water.Length);
+            water[Index(255, 255)] = 8;
+            terrain.Update(heights, types, water, 1, 1);
+            terrain.ViewDistance = 100f;
+            terrain.Present(new Vector3(-2f, 200f, -2f));
+            var cameraObject = new GameObject("Water visibility camera");
+            try
+            {
+                var camera = cameraObject.AddComponent<Camera>();
+                camera.orthographic = true;
+                camera.orthographicSize = 8f;
+                camera.farClipPlane = 400f;
+                camera.transform.position = new Vector3(-2f, 200f, -2f);
+                camera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+                Assert.That(terrain.WaterVisible(camera), Is.True);
+                camera.transform.rotation = Quaternion.Euler(-90f, 0f, 0f);
+                Assert.That(terrain.WaterVisible(camera), Is.False);
+                // High land in the same chunk must not enlarge the water bound.
+                for (var i = 0; i < heights.Length; i++) heights[i] = 120;
+                heights[Index(255, 255)] = heights[Index(0, 255)] = 0;
+                heights[Index(255, 0)] = heights[Index(0, 0)] = 0;
+                terrain.Update(heights, types, water, 1, 2);
+                camera.transform.position = new Vector3(-2f, 25f, -50f);
+                camera.transform.rotation = Quaternion.identity;
+                Assert.That(terrain.WaterVisible(camera), Is.False);
+                camera.transform.position = new Vector3(-2f, 200f, -2f);
+                camera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+                Assert.That(terrain.WaterVisible(camera), Is.True);
+                water[Index(255, 255)] = 0;
+                terrain.Update(heights, types, water, 1, 3);
+                Assert.That(terrain.WaterVisible(camera), Is.False);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(cameraObject); }
+        }
+
+        private static void AssertClosedInteriorEdges(Mesh mesh)
+        {
+            var edges = new Dictionary<long, int>();
+            for (var submesh = 0; submesh < 2; submesh++)
+            {
+                var triangles = mesh.GetTriangles(submesh);
+                for (var i = 0; i < triangles.Length; i += 3)
+                {
+                    CountEdge(edges, triangles[i], triangles[i + 1]);
+                    CountEdge(edges, triangles[i + 1], triangles[i + 2]);
+                    CountEdge(edges, triangles[i + 2], triangles[i]);
+                }
+            }
+            foreach (var edge in edges)
+            {
+                var a = (int)(edge.Key >> 32);
+                var b = (int)edge.Key;
+                var boundary = (a % Side == 0 && b % Side == 0)
+                    || (a % Side == Side - 1 && b % Side == Side - 1)
+                    || (a / Side == 0 && b / Side == 0)
+                    || (a / Side == Side - 1 && b / Side == Side - 1);
+                Assert.That(edge.Value, Is.EqualTo(boundary ? 1 : 2), $"edge {a}--{b}");
+            }
+        }
+
+        private void AssertMaterialCoverage(Mesh mesh)
+        {
+            var vertices = mesh.vertices;
+            var areas = new float[2, 32 * 32];
+            for (var submesh = 0; submesh < 2; submesh++)
+            {
+                var triangles = mesh.GetTriangles(submesh);
+                for (var i = 0; i < triangles.Length; i += 3)
+                {
+                    var a = vertices[triangles[i]];
+                    var b = vertices[triangles[i + 1]];
+                    var c = vertices[triangles[i + 2]];
+                    var x = Mathf.FloorToInt((a.x + b.x + c.x) / 12f);
+                    var z = Mathf.FloorToInt((a.z + b.z + c.z) / 12f);
+                    Assert.That(x, Is.InRange(0, 31));
+                    Assert.That(z, Is.InRange(0, 31));
+                    Assert.That((water[Index(x, z)] & 8) != 0, Is.EqualTo(submesh == 1), $"cell {x},{z}");
+                    var area = Mathf.Abs((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)) * 0.5f;
+                    Assert.That(area, Is.GreaterThan(0));
+                    areas[submesh, x + z * 32] += area;
+                }
+            }
+            for (var z = 0; z < 32; z++)
+            for (var x = 0; x < 32; x++)
+            {
+                var submesh = (water[Index(x, z)] & 8) != 0 ? 1 : 0;
+                Assert.That(areas[submesh, x + z * 32], Is.EqualTo(16f).Within(0.0001f), $"cell {x},{z}");
+            }
+        }
+
+        private static HashSet<long> ShoreEdges(Mesh mesh)
+        {
+            var landEdges = new Dictionary<long, int>();
+            var waterEdges = new Dictionary<long, int>();
+            for (var submesh = 0; submesh < 2; submesh++)
+            {
+                var edges = submesh == 0 ? landEdges : waterEdges;
+                var triangles = mesh.GetTriangles(submesh);
+                for (var i = 0; i < triangles.Length; i += 3)
+                {
+                    CountEdge(edges, triangles[i], triangles[i + 1]);
+                    CountEdge(edges, triangles[i + 1], triangles[i + 2]);
+                    CountEdge(edges, triangles[i + 2], triangles[i]);
+                }
+            }
+            var shore = new HashSet<long>();
+            foreach (var edge in waterEdges)
+                if (landEdges.ContainsKey(edge.Key)) shore.Add(edge.Key);
+            return shore;
+        }
+
+        private static void CountEdge(Dictionary<long, int> edges, int a, int b)
+        {
+            var key = ((long)Math.Min(a, b) << 32) | (uint)Math.Max(a, b);
+            edges.TryGetValue(key, out var count);
+            edges[key] = count + 1;
         }
 
         private void AssertWaterCell(Mesh mesh, int x, int z)

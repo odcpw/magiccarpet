@@ -7,6 +7,8 @@ Shader "MagicCarpet/ModernSky"
         _MoonColor ("Moonlight", Color) = (0.82, 0.88, 0.78, 1)
         _MoonDirection ("Moon direction", Vector) = (-0.38, 0.48, 0.79, 0)
         _CloudAmount ("Cloud amount", Range(0,1)) = 0.58
+        _CloudNoise ("Cloud lattice", 3D) = "white" {}
+        _UseCloudNoise ("Use cloud lattice", Float) = 0
     }
     SubShader
     {
@@ -22,8 +24,9 @@ Shader "MagicCarpet/ModernSky"
             CBUFFER_START(UnityPerMaterial)
                 half4 _ZenithColor, _HorizonColor, _MoonColor;
                 float4 _MoonDirection;
-                float _CloudAmount;
+                float _CloudAmount, _UseCloudNoise;
             CBUFFER_END
+            TEXTURE3D(_CloudNoise); SAMPLER(sampler_CloudNoise);
             struct Attributes { float4 positionOS:POSITION; };
             struct Varyings { float4 positionCS:SV_POSITION; float3 direction:TEXCOORD0; };
             Varyings Vert(Attributes v)
@@ -42,6 +45,11 @@ Shader "MagicCarpet/ModernSky"
             float Noise(float3 p)
             {
                 int3 i=(int3)floor(p); float3 f=frac(p); f=f*f*f*(f*(f*6-15)+10);
+                // Quintic interpolation is retained. Texel centers correspond
+                // to integer lattice corners; the 128-cell volume wraps smoothly.
+                if (_UseCloudNoise > 0.5)
+                    return SAMPLE_TEXTURE3D_LOD(_CloudNoise,sampler_CloudNoise,
+                        (float3(i)+f+64.5)/128.0,0).r;
                 float a=lerp(Hash(i),Hash(i+int3(1,0,0)),f.x);
                 float b=lerp(Hash(i+int3(0,1,0)),Hash(i+int3(1,1,0)),f.x);
                 float c=lerp(Hash(i+int3(0,0,1)),Hash(i+int3(1,0,1)),f.x);

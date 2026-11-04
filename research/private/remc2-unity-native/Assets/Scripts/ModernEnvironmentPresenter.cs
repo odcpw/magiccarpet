@@ -21,6 +21,7 @@ namespace MagicCarpet.Native
         private readonly ModernWaterReflection waterReflection;
         private readonly ModernEntityPresenter entities;
         private readonly Material landMaterial, waterMaterial, skyMaterial;
+        private readonly Texture3D cloudNoise;
         private readonly VolumeProfile volumeProfile;
         private readonly RenderPipelineAsset previousPipeline, previousQuality;
         private readonly Material previousSky;
@@ -36,6 +37,7 @@ namespace MagicCarpet.Native
         private bool positioned, disposed;
         private ulong generation = ulong.MaxValue, terrainSequence = ulong.MaxValue;
         private int snapshotCount;
+        private bool reportedGeometry;
         private double presentationMilliseconds;
         private Texture2D worldMap;
         private bool mapOpen;
@@ -98,6 +100,12 @@ namespace MagicCarpet.Native
             landMaterial.SetFloat("_TextureScale", .20f);
             waterMaterial = Material("ModernWater");
             skyMaterial = Material("ModernSky");
+            if (!ModernCapture.ProceduralClouds)
+            {
+                cloudNoise = ModernCloudNoise.Create();
+                skyMaterial.SetTexture("_CloudNoise", cloudNoise);
+                skyMaterial.SetFloat("_UseCloudNoise", 1f);
+            }
             RenderSettings.skybox = skyMaterial;
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.ExponentialSquared;
@@ -130,6 +138,7 @@ namespace MagicCarpet.Native
             var cameraData = camera.GetUniversalAdditionalCameraData();
             cameraData.renderPostProcessing = true;
             cameraData.requiresDepthTexture = true;
+            cameraData.requiresColorTexture = false;
             cameraData.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
             cameraData.antialiasingQuality = AntialiasingQuality.High;
             volumeProfile = ScriptableObject.CreateInstance<VolumeProfile>();
@@ -246,9 +255,14 @@ namespace MagicCarpet.Native
             vegetation.Render(camera);
             entities.Render(camera);
             var reflectionStart = ModernCapture.BeginMeasurement();
-            waterReflection.Render(camera, vegetation);
+            waterReflection.Render(camera, vegetation, terrain);
             ModernCapture.EndMeasurement("water_reflection", reflectionStart);
             ModernCapture.EndMeasurement("modern_render", renderStart);
+            if (ModernCapture.Measure && !reportedGeometry && reflectionStart != 0)
+            {
+                Debug.Log($"MC_MODERN_GEOMETRY range_triangles={terrain.VisibleTriangleCount} detail_copies={terrain.VisibleDetailCopies} far_copies={terrain.VisibleFarCopies} nature_triangles={vegetation.SubmittedTriangleCount} nature_draws={vegetation.DrawCount} nature_detail={vegetation.DetailInstanceCount} nature_distant={vegetation.DistantInstanceCount} reflections={waterReflection.RenderedFrames} reflection_reuse={waterReflection.ReusedFrames} reflection_invisible={waterReflection.InvisibleFrames}");
+                reportedGeometry = true;
+            }
         }
 
         internal void DrawHud(string instruction)
@@ -286,6 +300,7 @@ namespace MagicCarpet.Native
             UnityEngine.Object.Destroy(root);
             foreach (var material in new[] { landMaterial, waterMaterial, skyMaterial }) UnityEngine.Object.Destroy(material);
             UnityEngine.Object.Destroy(volumeProfile);
+            UnityEngine.Object.Destroy(cloudNoise);
             UnityEngine.Object.Destroy(worldMap);
             RenderSettings.skybox = previousSky;
             RenderSettings.sun = previousSun;

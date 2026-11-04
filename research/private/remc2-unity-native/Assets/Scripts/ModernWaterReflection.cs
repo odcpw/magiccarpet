@@ -14,6 +14,15 @@ namespace MagicCarpet.Native
         private readonly UniversalRenderPipeline.SingleCameraRequest request = new();
         private RenderTexture target;
         private bool disposed;
+        private bool hasFrame;
+        private Vector3 lastPosition;
+        private Quaternion lastRotation;
+        private Matrix4x4 lastProjection;
+        private ulong lastTerrainRevision;
+        private float lastRenderTime;
+        internal int RenderedFrames { get; private set; }
+        internal int ReusedFrames { get; private set; }
+        internal int InvisibleFrames { get; private set; }
 
         internal ModernWaterReflection(Transform parent, Material water)
         {
@@ -23,17 +32,22 @@ namespace MagicCarpet.Native
             reflectionCamera.enabled = false;
             var data = reflectionCamera.GetUniversalAdditionalCameraData();
             data.renderPostProcessing = false;
+            // Reflected smoke uses scene depth for soft intersections. There is
+            // no opaque-color consumer; shadows stay on the main flight camera.
             data.requiresDepthTexture = true;
             data.requiresColorTexture = false;
+            data.renderShadows = false;
             data.antialiasing = AntialiasingMode.None;
         }
 
-        internal void Render(Camera source, ModernVegetation vegetation)
+        internal void Render(Camera source, ModernVegetation vegetation, ModernTerrainMesh terrain)
         {
             if (disposed) return;
-            if (source.transform.position.y <= .25f)
+            if (source.transform.position.y <= .25f || !terrain.WaterVisible(source))
             {
                 water.SetFloat("_UsePlanarReflection", 0);
+                hasFrame = false;
+                InvisibleFrames++;
                 return;
             }
             var width = Mathf.Clamp(source.pixelWidth / 2, 256, 1024);
@@ -41,6 +55,7 @@ namespace MagicCarpet.Native
             if (target == null || target.width != width || target.height != height)
             {
                 ReleaseTarget();
+                hasFrame = false;
                 target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGBHalf) {
                     name = "NightSpire reflected world", filterMode = FilterMode.Trilinear,
                     wrapMode = TextureWrapMode.Clamp, useMipMap = true, autoGenerateMips = false
@@ -51,6 +66,18 @@ namespace MagicCarpet.Native
             if (!target.IsCreated() && !target.Create())
             {
                 water.SetFloat("_UsePlanarReflection", 0);
+                return;
+            }
+            // Static/small camera motion can reuse a frame for at most 1/30s.
+            // Keep the matching VP matrix with the retained texture; a camera
+            // cut, projection change or terrain mutation always refreshes it.
+            if (hasFrame && terrain.Revision == lastTerrainRevision &&
+                Time.unscaledTime - lastRenderTime < 1f / 30f &&
+                (source.transform.position - lastPosition).sqrMagnitude < .0625f &&
+                Quaternion.Angle(source.transform.rotation, lastRotation) < .5f &&
+                source.projectionMatrix == lastProjection)
+            {
+                ReusedFrames++;
                 return;
             }
             reflectionCamera.CopyFrom(source);
@@ -75,7 +102,7 @@ namespace MagicCarpet.Native
                 return;
             }
             // Instanced foliage is explicitly submitted per camera.
-            vegetation.Render(reflectionCamera);
+            vegetation.Render(reflectionCamera, true, (float)target.height / Mathf.Max(1, source.pixelHeight));
             var previousCulling = GL.invertCulling;
             var previousPass = Shader.GetGlobalFloat("_ModernReflectionPass");
             try
@@ -92,13 +119,20 @@ namespace MagicCarpet.Native
             target.GenerateMips();
             water.SetMatrix("_ReflectionVP", GL.GetGPUProjectionMatrix(reflectionCamera.projectionMatrix, true) * view);
             water.SetFloat("_UsePlanarReflection", 1);
+            hasFrame = true;
+            lastPosition = source.transform.position;
+            lastRotation = source.transform.rotation;
+            lastProjection = source.projectionMatrix;
+            lastTerrainRevision = terrain.Revision;
+            lastRenderTime = Time.unscaledTime;
+            RenderedFrames++;
         }
 
         private void ReleaseTarget()
         {
             if (target == null) return;
             target.Release();
-            UnityEngine.Object.Destroy(target);
+            Destroy(target);
             target = null;
         }
 
@@ -108,7 +142,13 @@ namespace MagicCarpet.Native
             disposed = true;
             water.SetFloat("_UsePlanarReflection", 0);
             ReleaseTarget();
-            UnityEngine.Object.Destroy(reflectionCamera.gameObject);
+            Destroy(reflectionCamera.gameObject);
+        }
+
+        private static void Destroy(UnityEngine.Object value)
+        {
+            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
+            else UnityEngine.Object.DestroyImmediate(value);
         }
     }
 }

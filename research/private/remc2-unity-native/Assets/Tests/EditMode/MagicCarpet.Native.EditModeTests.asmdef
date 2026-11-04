@@ -2,7 +2,8 @@
   "name": "MagicCarpet.Native.EditModeTests",
   "rootNamespace": "MagicCarpet.Native.Tests",
   "references": [
-    "MagicCarpet.Native.Runtime"
+    "MagicCarpet.Native.Runtime",
+    "Unity.RenderPipelines.Universal.Runtime"
   ],
   "includePlatforms": [
     "Editor"

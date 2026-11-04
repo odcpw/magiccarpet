@@ -207,6 +207,86 @@ remains non-clean and was not used to justify unrelated reformatting.
 Logs, captures, profiler data and exact command receipts are under
 `../generated/nightspire-performance-20261104/`.
 
+## Rendering architecture pass, 2026-11-04
+
+Implemented in the qualified Modern player, retaining native `7fe307bd304e`:
+
+1. Terrain retains detailed and distant meshes. Distant homogeneous land and
+   water use original source-cell geometry; section borders and a shoreline
+   ring remain detailed, with stitched transitions. Both meshes update after
+   deformation. LOD uses distance to the chunk's 3D bounds with hysteresis, so
+   flight altitude reduces detail too. Water visibility uses water-only bounds.
+2. Vegetation uses retained 32 m spatial batches instead of rebuilding its whole
+   surrounding area after each 4 m movement. Overlapping batches survive camera
+   movement; terrain revisions re-ground them. Nearby scanned meshes remain;
+   distant meshes simplify indices while retaining their UVs and attributes.
+   Tree crowns retain whole leaf cards, orientation coverage and outer extrema.
+   Trees switch at 104/88 m, smaller vegetation at 63/47 m. Shadows can still be
+   cast by offscreen landmarks. Reflection LOD has separate hysteresis and uses
+   its actual render-target scale, with the same visibility radii as the main view.
+3. Water reflections skip invisible water, retain their texture and matching
+   projection for up to 1/30 s during negligible camera motion, and refresh on
+   camera cuts, projection changes or terrain mutations. The reflection camera
+   omits its separate shadow pass and unused color copy. Its depth texture stays:
+   reflected smoke consumes it for soft intersections. Shorter reflection ranges
+   and removing that depth texture were rejected during independent source review.
+4. Clouds sample a 128-cubed R16 lattice (4 MiB) prepared once per environment,
+   instead of hashing eight corners for every noise sample in the volume march.
+   Quintic interpolation, animated world-space density and moonward self-shadowing
+   remain. The lattice repeats outside its stored domain. The diagnostic switch
+   `-mc-modern-procedural-clouds` retains the previous procedural calculation.
+5. The unused main-camera opaque-color copy is disabled. Texture import settings
+   were checked: nature maps retain 1K compressed mipmaps, ground maps retain their
+   2K maximum and mipmaps. Main-view moon shadows, texture resolutions and artwork
+   were not reduced.
+
+The actual imported distant meshes have 477/1,257 grass triangles, 2,323/5,242
+shrub triangles, 3,056/5,000 rock triangles, 2,532/4,500 branch triangles, and
+4,448/10,172 leaf triangles. These are mesh counts, not total frame GPU work.
+At the same shoreline camera the terrain's active range budget fell from
+851,968 triangles (104 fully detailed copies) to 447,766, about 47% lower.
+This range includes offscreen chunks; it is not a rasterized-triangle measurement.
+
+Two fresh 1600x900 Vulkan runs on the RTX 3090/i7-10700 measured:
+
+| Measurement | Before | Final renderer |
+| --- | --- | --- |
+| Frame median | 40.26 / 40.36 ms | 39.61 / 39.48 ms |
+| Frame p95 | 43.07 / 52.97 ms | 49.52 / 47.21 ms |
+
+Each run samples 120 frames after five seconds of warmup. This is a small median
+improvement, without a consistent p95 gain; overall throughput remains about
+25 fps. Main-thread and campaign work remain substantial. No 60-fps claim or
+GPU-timing attribution follows from these captures. Rust gameplay, collision,
+tick scheduling and the simulation/presentation data contract are unchanged.
+
+All nine focused Unity EditMode checks pass on the final source, covering
+terrain sampling, mixed water/land topology, shoreline edges, wrapped bounds,
+mutation, altitude/hysteresis, actual imported mesh indices/cards/UVs, chunk
+retention/re-grounding, cloud lattice quantization and reflection configuration.
+An independent bounded source review found the two reflection issues corrected
+above; visual checking remains necessary for crown density and LOD transitions.
+UBS scans are partial (C# semantic work limits and unavailable standalone dotnet);
+reported possible-null findings in the pipeline creator and timing dictionary
+are guarded by construction and are not newly introduced defects. Unity itself
+compiled the actual assemblies and player. No scanner suppression was added.
+
+The final build is `Builds/build-ns465lsd` in the qualified project. All 323 Unity
+inputs and the exact native hash passed installation checks. A preceding Burst/
+Mono build crash and a later input-stability rejection are retained in their
+build logs; the unchanged final retry succeeded with no differences between
+independent before/after input manifests. Their causes were not established.
+The canonical launcher was exercised through normal frontend entry. Root viewed
+the final shoreline, close vegetation, sky and ordinary-flight captures. Normal
+Up-arrow input moved the actual camera from `(310,80.5,890)` to
+`(310,91.61,778.75)`; Backspace stopped movement and F5 wrote a runtime save.
+This is a bounded automated flight/save check, not a human playthrough or proof
+of every LOD transition. Final runs had no logged runtime exceptions or shader
+errors. Both Modern and Original installation validators pass; Original remains
+on its separately qualified native `ab1095b7514a`.
+Commands, manifests, XML, logs and actual captures are retained under
+`../generated/nightspire-rendering-20261104/`.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game
