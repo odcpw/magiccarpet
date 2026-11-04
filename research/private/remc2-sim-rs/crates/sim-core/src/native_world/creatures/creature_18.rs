@@ -518,7 +518,11 @@ pub(crate) fn step(
                     return Some(effects);
                 }
                 let target = ctx.target(actor.target).unwrap_or_default();
-                if source_distance_3d(actor.position, target.position) < RULES.target_range {
+                // sub_24E20 uses EuclideanDistXYZ_58490, whose source body
+                // computes wrapped X/Y distance without the altitude term.
+                if crate::legacy_sqrt(xy_squared(actor.position, target.position))
+                    < RULES.target_range
+                {
                     turn_toward(actor, target.position, RULES.turn_limit);
                     if random(actor) % 49 == 0 {
                         request_action(actor, 2, 0);

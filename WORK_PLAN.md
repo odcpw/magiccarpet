@@ -1,10 +1,52 @@
 # Shared-engine delivery plan
 
-Current delivered subcapability: actual Tremor acquisition → cast → scheduled
-deformation/damage → player clearance → natural cleanup, under `mc-bhq.8`.
-Continue that bead's remaining original terrain acceptance; select a concrete
-unmet producer/consumer from source before dispatch. MaroonMarsh is stopped and
-available for the next bounded capability. CalmBeaver owns sole builds/install.
+Current qualified shared capability (commit/install pending): authored Creature18
+and Cymmerian25 lifecycles now feed the original Level24 absence objectives and
+real45→46 ribbon geometry/collision, under existing `mc-bhq.8` acceptance.
+The complete unfiltered current-exporter package retains task2/18/group2 and
+task5/25/group7. Actual groups2/7 → natural creature/split death → both original
+absence objectives → following reclaim pass (candidate5,30.899s); actual ribbon
+construction reaches live collision (candidate7,2.713s). Only18/25's existing
+complete-lifecycle eligibility was admitted after bounded source assessments
+and real family qualification. Full creature and terrain beads stay open.
+
+Creature18's actual wrapped XY tracking and current fixed-address parent reads
+are corrected. All17 owner checks pass (426.259s), including actual Secret34
+group23 → ordinary five-shot fan → player damage → mana/death → original DTO
+and reclaim. Creature25 now preserves source zero-life large roots through
+split, protected landing hit-discard, raw countdowns, vertical hit relaxation,
+water visual/speed distinctions and exact global denominator updates. Its26
+focused source checks pass. The actual Level10 buildings → group8 → row31 guard
+→ own shot/prepared sound37 → three small bodies → natural landing → real Castle
+contact → small death/no-resplit → hide/reclaim/frozen removal also passes
+(candidate7,15.214s). Constructor10/57 was missing from ordinary authored groups;
+the family now exposes the existing Fool's Mana constructor with58DA0 binding,
+without holder/payment/parent/tier overrides. Sound37 freezes its real Flight
+journal/native audio command before movement, beyond the diagnostic receipt.
+
+The old32-visit guard deadline stopped at phase33 after scan20 acquisition;
+source pursuit attacks at the later scan40. The check now derives two source
+cadence windows (41 visits), with every existing expectation intact. Diagnostic
+source/logs are preserved in candidate6; no forced phase/RNG/action or shortened
+lifetime. Fresh independent production and gate reviews found no further
+concrete defect in their bounded coverage. Source-order and workspace all-target
+checks pass; both canonical hash-consistency checks pass. Candidate5→7 changes
+only this test file; production is byte-identical. Evidence is under
+`generated/ribbon-20261104-integration/candidate-7/` and referenced candidates.
+The inherited audio-census gate fails MeteorLaunch identically on installed
+baseline and candidate; it does not invalidate the actual guard audio receipt.
+Package-wide formatting and whole-file UBS debt remain: no critical finding
+falls on an added line. All original acceptance/dependencies remain open.
+
+Root CalmBeaver owns sole Cargo/push/install. Installed Original remains
+`ddfb0188`/`6a9ce089c86a` until this qualified batch is refreshed. The existing
+healthy RCH daemon listens on `/run/user/1000/rch.sock`; set RCH_SOCKET_PATH per
+command because the default cache socket is stale. No worker restart needed.
+Remaining terrain production gap observed in current source: non-Cave reset
+uses exported post-feature terrain, while the Rust startup constructor is
+hardcoded to Cave. Real Day3 rows5–10 are authored ribbons. Their generic
+Day/Night construction/typed-input consumer remains unfinished; do not count
+matching captured terrain as executing those Rust producers.
 The actual Creature17 prerequisite is corrected: all 12 owner checks pass on
 candidate5, including real melee after natural initial protection, slowdown,
 stance, follow/expiry and retained addresses. Its real Level9 absence sensor

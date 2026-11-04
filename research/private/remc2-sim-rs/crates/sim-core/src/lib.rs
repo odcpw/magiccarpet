@@ -711,6 +711,7 @@ pub enum MissionAudioSite {
     CaveInCapture,
     MeteorImpact,
     FireSphereCollision,
+    CymmerianPursuit,
     Count,
 }
 
@@ -1177,6 +1178,7 @@ impl MissionAudioSite {
         Self::CaveInCapture,
         Self::MeteorImpact,
         Self::FireSphereCollision,
+        Self::CymmerianPursuit,
     ];
 
     #[must_use]
@@ -1524,6 +1526,14 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:24713 sub_33C00 per colliding column-zero sector",
+                true,
+            ),
+            Self::CymmerianPursuit => (
+                "37",
+                "current Cymmerian before pursuit movement",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:19082 sub_28C60 before sub_1C310",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

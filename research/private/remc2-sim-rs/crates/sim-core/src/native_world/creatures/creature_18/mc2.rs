@@ -396,21 +396,15 @@ pub(crate) fn step_row(
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model-18 callback lost slot{slot}"))?;
     let mut actor = load(actor_row, arena.slot_generation(slot));
-    let stale_parent = actor.route_mode != 14 && arena.handle(slot).is_some_and(|child| {
-        arena.has_creature_parent_binding(child)
-            && arena
-                .creature_parent(child)
-                .is_none_or(|parent| parent.source_slot != actor.parent)
-    });
-    // Alliance follows the current fixed record, even after sub_57F20 has
-    // returned it to the free stack. Its remaining fields are not cleared.
-    let pointers: Vec<_> = crate::native_world::source_target::alliance_direct_references(arena, actor_row)?.into_iter().collect();
-    let mut targets = targets(arena, &pointers);
-    if stale_parent {
-        // Bound summons must not follow a later occupant of the same source
-        // slot; unbound authored routes retain their source-slot behavior.
-        targets.retain(|target| target.slot != actor.parent);
-    }
+    // Alliance and sub_1E580/1E320 follow current fixed records, including
+    // retained class-zero packets and later occupants of those addresses.
+    let mut pointers: Vec<_> =
+        crate::native_world::source_target::alliance_direct_references(arena, actor_row)?
+            .into_iter()
+            .collect();
+    pointers
+        .extend(crate::native_world::source_target::summoned_direct_references(arena, actor_row)?);
+    let targets = targets(arena, &pointers);
     let callback_action = actor.action;
     let context = Creature18Context {
         terrain,

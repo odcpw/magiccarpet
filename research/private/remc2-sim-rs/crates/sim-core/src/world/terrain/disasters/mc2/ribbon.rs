@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn retained_ribbon_startup_changes_live_collision_terrain() {
         let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level24");
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level24");
         let selection = CampaignSelection::ordinary(24).unwrap();
         let decoded = DecodedCampaignPackage::decode(&package, selection)
             .expect("retained Level 24 owner package");

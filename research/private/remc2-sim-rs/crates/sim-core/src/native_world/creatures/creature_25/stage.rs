@@ -25,6 +25,7 @@ fn step_point_or_guard(
     ctx: &Context<'_>,
     runtime: &RuntimeSnapshot,
     mode: u8,
+    effects: &mut super::Effects,
 ) -> Result<(), String> {
     let index = actor.row.record[76];
     let descriptor = runtime
@@ -37,7 +38,7 @@ fn step_point_or_guard(
     match super::consume(actor, ctx)? {
         0 => {
             if seek_point || RULES.behavior_flags & 2 == 0 {
-                super::move_actor(actor, ctx);
+                super::move_actor(actor, ctx, effects);
                 if seek_point && actor.row.phase & 7 == 0 {
                     if actor.row.control_flags & 0x40000 == 0 {
                         actor
@@ -253,7 +254,7 @@ fn step_alliance(
     if hit == 2 {
         put(actor.row, 50, 1);
     } else {
-        super::move_actor(actor, ctx);
+        super::move_actor(actor, ctx, effects);
         if hit == 1 {
             let attacker = word(actor.row, 42);
             if attacker != parent_slot
@@ -336,11 +337,11 @@ pub(crate) fn step_action_207(
 ) -> Result<Option<bool>, String> {
     let mode = actor.row.record[77];
     if matches!(mode, 1 | 2) {
-        step_point_or_guard(actor, ctx, runtime, mode)?;
+        step_point_or_guard(actor, ctx, runtime, mode, effects)?;
         return Ok(None);
     }
     if matches!(mode, 3..=5) {
-        step_follow_leader_target(actor, ctx, runtime, families, mode)?;
+        step_follow_leader_target(actor, ctx, runtime, families, mode, effects)?;
         return Ok(None);
     }
     if matches!(mode, 6..=9) {
@@ -348,7 +349,7 @@ pub(crate) fn step_action_207(
         // and linked-life comparison precede movement and hit reactions.
         match super::consume(actor, ctx)? {
             0 if RULES.behavior_flags & 2 == 0 => {
-                super::move_actor(actor, ctx);
+                super::move_actor(actor, ctx, effects);
                 if actor.row.phase & 15 == 0 && actor.row.control_flags & 0x40000 == 0 {
                     let rng = crate::native_world::level2_next_rng16(actor.row.entity_rng);
                     actor.row.set_entity_rng(rng);
@@ -423,7 +424,7 @@ pub(crate) fn step_action_207(
         return Ok(None);
     }
     if mode == 17 {
-        super::move_actor(actor, ctx);
+        super::move_actor(actor, ctx, effects);
         if actor.row.life < 0 {
             actor.row.disable_drawing();
         } else if let Some(target) = ctx.target(actor.target()).filter(|target| target.living()) {
@@ -494,7 +495,7 @@ pub(crate) fn step_action_207(
     if hit == 2 {
         put(actor.row, 50, 1);
     } else {
-        super::move_actor(actor, ctx);
+        super::move_actor(actor, ctx, effects);
         if hit == 1 {
             let attacker = word(actor.row, 42);
             if attacker != parent_slot
@@ -559,6 +560,7 @@ fn step_follow_leader_target(
     runtime: &RuntimeSnapshot,
     families: &[Vec<u16>; 29],
     mode: u8,
+    effects: &mut super::Effects,
 ) -> Result<(), String> {
     let index = actor.row.record[76];
     let descriptor = runtime
@@ -567,7 +569,7 @@ fn step_follow_leader_target(
     let hit = super::consume(actor, ctx)?;
     let mut leader = None;
     if hit == 0 {
-        super::move_actor(actor, ctx);
+        super::move_actor(actor, ctx, effects);
         if actor.row.phase & 7 == 0 {
             if descriptor.flags & 2 != 0 {
                 let mut relation = word(actor.row, 78);

@@ -303,7 +303,7 @@ fn jitter(actor: &mut Actor<'_>) {
         .set_source_roll(actor.row.source_roll().wrapping_add(delta as i16) & 2047);
 }
 
-fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>) {
+fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     if actor.row.control_flags & 0x800 != 0 {
         actor
             .row
@@ -359,7 +359,25 @@ fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>) {
     }
     if motion.killed && RULES.behavior_flags & 1 != 0 {
         actor.row.set_life(-1);
+        // sub_1B8C0 changes the global denominator only when all movement
+        // retries fail. Ordinary death/hide does not decrement this count.
+        effects.population_decrements += 1;
     }
+}
+
+fn relax_actor(actor: &mut Actor<'_>, ctx: &Context<'_>) {
+    let descent = if is_split_body(actor) {
+        RULES.split_descent
+    } else {
+        RULES.descent
+    };
+    crate::ground_creature_motion::relax_to_terrain(
+        &mut actor.row.position,
+        ctx.terrain,
+        RULES.ground_clearance,
+        descent,
+    );
+    actor.row.set_position(actor.row.position);
 }
 
 fn update_water(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
@@ -368,9 +386,9 @@ fn update_water(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects)
         if visual == Some(SPLIT_PARTICLE)
             && ctx.terrain.ground_height(actor.row.position) < actor.row.position.z
         {
+            // sub_28860 changes only the visual above the water floor.
+            // It neither replaces minSpeed nor requests an actSpeed update.
             effects.visual = Some(313);
-            put(actor.row, 136, RULES.minimum_speed as u16);
-            effects.speed_changed = true;
         } else if visual != Some(SPLIT_PARTICLE) {
             effects.visual = Some(SPLIT_PARTICLE);
             put(actor.row, 136, RULES.split_minimum_speed as u16);
@@ -410,7 +428,7 @@ fn nearest_target(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
     best
 }
 
-fn seek(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<(), String> {
+fn seek(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> Result<(), String> {
     match consume(actor, ctx)? {
         2 => {
             actor.set_action(204);
@@ -419,11 +437,12 @@ fn seek(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<(), String> {
         1 => {
             actor.set_target(actor.word(42));
             actor.set_action(202);
+            relax_actor(actor, ctx);
             return Ok(());
         }
         _ => {}
     }
-    move_actor(actor, ctx);
+    move_actor(actor, ctx, effects);
     if actor.row.phase % scan_period(actor) == 0 {
         jitter(actor);
         if actor.row.record[61] != 0
@@ -444,11 +463,12 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> Re
         }
         1 => {
             actor.set_target(actor.word(42));
+            relax_actor(actor, ctx);
             return Ok(());
         }
         _ => {}
     }
-    move_actor(actor, ctx);
+    move_actor(actor, ctx, effects);
     let target = ctx
         .target(actor.target())
         .filter(|target| target.living() && target.flags & 0x400 == 0);
@@ -526,7 +546,9 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> R
     // Pinned sub_28860 decrements subSpellIndex on every action200 visit and
     // selects action204 at zero. It is independent of dword_0x10, which the
     // byte46 state machine uses for its own timers.
-    actor.row.subspell_index = actor.row.subspell_index.wrapping_sub(1);
+    actor
+        .row
+        .set_subspell_index(actor.row.subspell_index.wrapping_sub(1));
     if actor.row.subspell_index == 0 {
         result = 2;
     }
@@ -542,6 +564,9 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> R
                 actor.set_timer(52);
                 actor.set_state(2);
             }
+            // sub_28860 discards hits throughout the protected landing,
+            // including the visit which changes byte46 from2 to3.
+            actor.put(102, 0);
             actor.row.set_life(actor.row.max_life);
             let timer = actor.timer().wrapping_sub(1);
             actor.set_timer(timer);
@@ -652,7 +677,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> R
             .row
             .set_source_roll(actor.row.source_roll().wrapping_add(delta) & 2047);
     }
-    move_actor(actor, ctx);
+    move_actor(actor, ctx, effects);
     update_water(actor, ctx, effects);
     if actor.state() != previous_state || effects.speed_changed {
         let minimum = i16::from_le_bytes([actor.row.record[136], actor.row.record[137]]);
@@ -673,8 +698,21 @@ pub(crate) fn step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<Effects, 
     let mut effects = Effects::default();
     match actor.row.action {
         200 => special(actor, ctx, &mut effects)?,
-        201 => seek(actor, ctx)?,
-        202 => pursue(actor, ctx, &mut effects)?,
+        201 => {
+            seek(actor, ctx, &mut effects)?;
+            // sub_28C30 retains a zero-life root until its split/death
+            // callbacks, so the next frozen class5 list still contains it.
+            if actor.row.life < 0 {
+                actor.row.set_life(0);
+            }
+        }
+        202 => {
+            pursue(actor, ctx, &mut effects)?;
+            // sub_28C60 has the same post-callback clamp as sub_28C30.
+            if actor.row.life < 0 {
+                actor.row.set_life(0);
+            }
+        }
         203 => {
             actor.set_action(201);
             if actor.row.life < 0 {
@@ -691,13 +729,11 @@ pub(crate) fn step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<Effects, 
             let owner = actor.owner();
             effects.kill_credit = (owner != 0).then_some(owner);
             effects.kill = true;
-            effects.population_decrements = 1;
         }
         205 if actor.state() != 0 => {}
         205 => {
             actor.row.set_life(-1);
             actor.row.disable_drawing();
-            effects.population_decrements = 1;
         }
         207 if actor.state() != 0 => stage::reset_to_special(actor),
         207 => effects.stage_callback = true,

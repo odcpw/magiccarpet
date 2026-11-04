@@ -11938,7 +11938,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
-                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
+                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
                     )
                     | (11, 0..=44)
                     | (14, 2 | 3 | 4 | 5)
@@ -12759,6 +12759,20 @@ impl Mc2Simulation {
                             .live
                             .level2_mana_attraction_activated
                             .insert(feature.index);
+                    }
+                }
+                (10, 57) => {
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = late_spells::allocate_authored_sphere(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        position,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
                     }
                 }
                 (10, 58) => {
@@ -16940,6 +16954,24 @@ impl Mc2Simulation {
                 | ExistingHandler::Cymmerian,
                 SourceRoute::Imported,
             ) => {
+                // Source28C60 prepares sound37 before pursuit can move,
+                // change action or allocate. Publish the queued call while
+                // its current source pose still belongs to that boundary.
+                if visit.handler == ExistingHandler::Cymmerian
+                    && creatures::creature_25::mc2::prepare_callback_sound(
+                        &mut self.session.state.live.economy,
+                        source_slot,
+                    )
+                {
+                    self.push_flight_effect(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::CymmerianPursuit,
+                        entity_index: source_slot,
+                        player_index: -1,
+                        sound_id: 37,
+                    });
+                    self.append_new_economy_events(pass, source_slot);
+                }
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
                 {
@@ -41691,5 +41723,134 @@ mod tests {
                 timer: 100,
             })
         );
+    }
+    #[test]
+    fn level24_real_creature_groups_reach_their_original_absence_objectives() {
+        use crate::campaign::spec::CampaignSelection;
+        use crate::{PlayerCommand, native_world::Mc2DispatchEvent};
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level24");
+        let campaign = crate::campaign::CampaignSession::open(
+            &package,
+            CampaignSelection::ordinary(24).unwrap(),
+        )
+        .expect("unmodified Level24 retains both original absence objectives");
+        for (model, group, authored, stage) in [(18_u8, 2_u16, 234_u16, 1_usize), (25, 7, 297, 4)] {
+            let mut simulation = campaign.simulation().clone();
+            let feature = simulation
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == authored)
+                .unwrap();
+            assert_eq!(
+                (feature.kind, feature.subtype, feature.activation_group),
+                (5, i16::from(model), group as i16)
+            );
+            // Progression and lethal contacts are explicit controls. Keep the
+            // actual package/group, constructors, callbacks, split timers,
+            // frozen census, original objective and reclaim unmodified.
+            simulation
+                .activate_authored_group_prerequisite_for_test(group)
+                .unwrap();
+            let player = simulation.state.entity_index;
+            let owner = simulation
+                .players()
+                .iter()
+                .find(|owner| owner.entity_index == player)
+                .unwrap()
+                .player_color_index() as usize;
+            {
+                let runtime = &mut simulation.session.state.live.core.runtime;
+                for index in 0..runtime.objectives.len() {
+                    for selector in 0..runtime.objectives[index].stage_selectors.len() {
+                        runtime.set_level2_objective_stage_selector_for(index, selector, 0);
+                    }
+                    runtime.set_level2_objective_level_end_for(index, 0);
+                }
+                runtime.set_level2_objective_text_selector_for(owner, stage);
+                runtime.set_level2_objective_stage_selector_for(owner, stage, 1);
+            }
+            simulation.step_outer_turn(PlayerCommand::default(), 0);
+            assert_eq!(
+                simulation.runtime().objectives[owner].stage_selectors[stage],
+                1,
+                "the real living model{model} group must prevent absence"
+            );
+            assert!(
+                !simulation.source_arena().rebuilt_class5_model_slots()[usize::from(model)]
+                    .is_empty()
+            );
+            let mut struck = Vec::new();
+            let mut observed = Vec::new();
+            let mut completed = false;
+            for _ in 0..320 {
+                let targets = simulation
+                    .entities()
+                    .iter()
+                    .filter(|row| row.active && row.class == 5 && row.model == model)
+                    .map(|row| {
+                        (
+                            simulation.source_arena().handle(row.index).unwrap(),
+                            row.life >= 0 && (row.action != 200 || row.record[74] >= 3),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                for (handle, vulnerable) in targets {
+                    if !observed.contains(&handle) {
+                        observed.push(handle);
+                    }
+                    if vulnerable && !struck.contains(&handle) {
+                        crate::native_world::area_damage::contact(
+                            simulation.source_arena_mut(),
+                            None,
+                            handle.source_slot,
+                            u16::MAX,
+                            player,
+                        )
+                        .unwrap();
+                        struck.push(handle);
+                    }
+                }
+                simulation.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    simulation
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "actual group{group} callback failed: {:?}",
+                    simulation.dispatch_events()
+                );
+                completed |= simulation.runtime().objectives[owner].stage_selectors[stage] == 2;
+                if completed
+                    && observed
+                        .iter()
+                        .all(|handle| simulation.source_arena().resolve(*handle).is_none())
+                {
+                    break;
+                }
+            }
+            assert!(
+                completed,
+                "real task{} must consume the naturally empty model{model} head",
+                stage + 1
+            );
+            assert!(
+                observed
+                    .iter()
+                    .all(|handle| simulation.source_arena().resolve(*handle).is_none()),
+                "every observed root and split child reaches following-pass reclaim"
+            );
+            assert!(
+                simulation.source_arena().rebuilt_class5_model_slots()[usize::from(model)]
+                    .is_empty()
+            );
+            if model == 25 {
+                assert!(
+                    observed.len() >= 4,
+                    "large Cymmerians must produce their actual small bodies before absence"
+                );
+            }
+        }
     }
 }

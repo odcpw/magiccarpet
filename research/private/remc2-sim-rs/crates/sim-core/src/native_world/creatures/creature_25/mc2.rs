@@ -80,6 +80,18 @@ pub(crate) fn prepare_source_pass(
     super::super::stage_route::prepare_source_pass(arena, runtime, target_context, slots)
 }
 
+/// sub_28C60 prepares sound37 before movement, damage or allocation. The
+/// caller publishes this event immediately, while the source pose is current.
+pub(crate) fn prepare_callback_sound(arena: &mut SourceArena, slot: u16) -> bool {
+    if !arena.entities.get(usize::from(slot)).is_some_and(|row| {
+        row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL && row.action == 202
+    }) {
+        return false;
+    }
+    arena.economy.prepare_sound(slot, slot, -1, 37);
+    true
+}
+
 /// Ordinary `sub_4CE00` authored producer. A failed allocation leaves the
 /// source model counter and route table untouched.
 pub(crate) fn allocate_authored(

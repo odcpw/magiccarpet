@@ -144,6 +144,37 @@ fn construct_mana_sphere(
     Ok(sphere)
 }
 
+/// Authored10/57 selects sub_50130 directly, without the spell holder's
+/// launch, parent or tier overrides. The caller owns sub_58DA0's reference
+/// binding after a successful constructor and consumes the authored row even
+/// when NewEvent returns null.
+pub(crate) fn allocate_authored_sphere(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    position: Position,
+) -> Result<Option<u16>, String> {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    let sphere = match construct_mana_sphere(arena, slot, particles, position) {
+        Ok(sphere) => sphere,
+        Err(error) => {
+            crate::world::terrain::cave_features::reclaim(arena, terrain, slot);
+            return Err(error);
+        }
+    };
+    arena.economy.source_rng.insert(slot, sphere.entity_rng);
+    arena.entities[usize::from(slot)] = sphere;
+    if let Err(error) =
+        crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
+    {
+        crate::world::terrain::cave_features::reclaim(arena, terrain, slot);
+        return Err(error);
+    }
+    Ok(Some(slot))
+}
+
 /// sub_6C870's holder callback, including all six ordinary NewEvent attempts.
 /// Failed individual allocations do not cancel later attempts or refund the
 /// source mana pulse. `cleanup` remains a signal to the shared holder tail.

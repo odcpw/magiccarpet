@@ -806,9 +806,127 @@ fn ordinary_subspell_counter_and_state_timer_follow_source_fields() {
     step(&mut Actor { row: &mut row }, &mut context).unwrap();
 
     assert_eq!(row.subspell_index, RULES.attack_damage - 1);
+    assert_eq!(word(&row, 46), RULES.attack_damage - 1);
     assert_eq!(row.source_dword_10(), 100);
     assert_eq!(row.action, 200);
     assert_eq!(row.record[74], 8);
+}
+
+#[test]
+fn protected_landing_discards_damage_through_the_transition_to_state3() {
+    let terrain = terrain();
+    let mut row = cymmerian(
+        200,
+        Position {
+            x: 20_000,
+            y: 20_000,
+            z: 400,
+        },
+    );
+    row.parameter_relation = Some(SPLIT_DESCRIPTOR);
+    row.record[74] = 1;
+    row.set_max_life(RULES.split_max_life);
+    row.set_life(RULES.split_max_life);
+    row.set_subspell_index(RULES.split_attack_damage);
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &[],
+        class3: &[],
+        model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
+    };
+    // Source28860 sets52 then decrements on the first visit. All53 visits,
+    // including the final2->3 transition, restore life and clear word62.
+    for visit in 0..53 {
+        row.record[98..102].copy_from_slice(&1000_i32.to_le_bytes());
+        row.record[102..104].copy_from_slice(&42_u16.to_le_bytes());
+        step(&mut Actor { row: &mut row }, &mut context).unwrap();
+        assert_eq!(row.life, RULES.split_max_life, "protected visit{visit}");
+        assert_eq!(word(&row, 102), 0, "protected visit{visit}");
+        assert_eq!(row.action, 200);
+        assert_eq!(row.record[74], if visit == 52 { 3 } else { 2 });
+        assert_eq!(word(&row, 46), RULES.split_attack_damage - visit - 1);
+    }
+    // No stale attacker survives protection. A newly delivered hit after
+    // landing must still take the ordinary small-body prekill route.
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(row.life, RULES.split_max_life);
+    row.record[98..102].copy_from_slice(&1000_i32.to_le_bytes());
+    row.record[102..104].copy_from_slice(&42_u16.to_le_bytes());
+    step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(row.action, 204);
+    let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert!(effects.prekill && !effects.split);
+}
+
+#[test]
+fn water_visual_change_above_floor_preserves_speed_but_entry_and_land_set_it() {
+    let (_, _, terrain, particles, _, _, _) = source_parts(18);
+    let sample = |water: bool| {
+        (0_u16..=255)
+            .find_map(|y| {
+                (0_u16..=255).find_map(|x| {
+                    let mut point = Position {
+                        x: x * 256 + 128,
+                        y: y * 256 + 128,
+                        z: 0,
+                    };
+                    ((terrain.material_mask(point) == crate::WATER_AMBIENCE_MASK) == water).then(
+                        || {
+                            point.z = terrain.ground_height(point) + 512;
+                            point
+                        },
+                    )
+                })
+            })
+            .expect("unchanged owner Mission18 has both water and land samples")
+    };
+    let water = sample(true);
+    let land = sample(false);
+    let mut row = cymmerian(200, water);
+    row.parameter_relation = Some(SPLIT_DESCRIPTOR);
+    row.record[74] = 4;
+    row.set_source_dword_10(100);
+    row.set_subspell_index(RULES.split_attack_damage);
+    row.set_phase(1);
+    put(&mut row, 136, RULES.split_minimum_speed as u16);
+    row.set_actual_speed(123);
+    crate::world::effects::bind_particle(&mut row, SPLIT_PARTICLE, &particles).unwrap();
+    let mut context = Context {
+        terrain: &terrain,
+        targets: &[],
+        class3: &[],
+        model25: &[],
+        reader: None,
+        read_error: std::cell::Cell::new(None),
+    };
+    // Branch controls: position this existing small-body shape above real
+    // water, keep byte46 unchanged, and use source movement-skip bit0x800 so
+    // the callback cannot cross onto another tile. No terrain is rewritten.
+    row.set_control_flags(row.control_flags | 0x800);
+    let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(effects.visual, Some(313));
+    assert!(
+        !effects.speed_changed,
+        "source visual-only branch leaves v26 clear"
+    );
+    assert_eq!((word(&row, 136), row.actual_speed), (35, 123));
+
+    crate::world::effects::bind_particle(&mut row, 313, &particles).unwrap();
+    row.set_control_flags(row.control_flags | 0x800);
+    let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(effects.visual, Some(SPLIT_PARTICLE));
+    assert!(effects.speed_changed);
+    assert_eq!((word(&row, 136), row.actual_speed), (35, 35));
+
+    crate::world::effects::bind_particle(&mut row, SPLIT_PARTICLE, &particles).unwrap();
+    row.set_position(land);
+    row.set_control_flags(row.control_flags | 0x800);
+    let effects = step(&mut Actor { row: &mut row }, &mut context).unwrap();
+    assert_eq!(effects.visual, Some(313));
+    assert!(effects.speed_changed);
+    assert_eq!((word(&row, 136), row.actual_speed), (60, 60));
 }
 
 #[test]
@@ -1224,7 +1342,10 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
     let Some(SourceEntityView::Imported(row)) = session.source_arena().resolve(parent) else {
         panic!("damaged Cymmerian must retain its original source generation");
     };
-    assert!(row.life < 0);
+    assert_eq!(
+        row.life, 0,
+        "source28C60 clamps the lethal attack callback tail"
+    );
     assert_eq!(row.action, 204, "the real hit selects the death callback");
     assert_eq!(
         row.phase,
@@ -1232,7 +1353,7 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
         "the same-pass source tail runs after the hit"
     );
     assert!(
-        !session
+        session
             .source_arena()
             .imported_creature_runtime_identity(parent.source_slot, &BTreeMap::new())
             .expect("the original dying root retains its semantic identity")
@@ -1443,7 +1564,7 @@ pub(crate) fn assert_night_army_cymmerian_lifetime(
 #[test]
 fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
     use crate::PlayerCommand;
-    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityView};
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::native_world::{FireballProjectileOrigin, Mc2DispatchEvent};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1662,7 +1783,12 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
         .expect("a bounded nearby position lies in the guard's source view cone");
     session.set_level2_entity_position(player, point).unwrap();
     let mut fired = false;
-    for _ in 0..32 {
+    let mut prepared_pursuit_audio = false;
+    // The actual initial phase is1: scan20 acquires the target, then
+    // pursuit at40 emits the first shot. The previous32-visit deadline
+    // ended at33, before that second source cadence. Preserve both scans.
+    let acquisition_and_attack_visits = 2 * usize::from(RULES.scan_period) + 1;
+    for _ in 0..acquisition_and_attack_visits {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -1681,6 +1807,13 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
                     && projectile.owner_entity_index == actor_id
                     && projectile.target_source_entity_index == player
             });
+        prepared_pursuit_audio |= session.effect_journal().records().iter().any(|record| {
+            matches!(record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                    entity_index, player_index: -1, sound_id: 37, ..
+                }) if entity_index == guard.source_slot
+            ) && record.audio.is_some()
+        });
         if fired {
             break;
         }
@@ -1688,6 +1821,194 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
     assert!(
         fired,
         "the real row31 guard must reach its ordinary projectile consumer"
+    );
+    assert!(
+        prepared_pursuit_audio,
+        "the actual guard must publish prepared audio consumed by native playback, not only an economy receipt"
+    );
+
+    // A real Castle is the source-required target for the small bodies'
+    // action200 state5/6/7 combat. Its location and the later lethal hits are
+    // explicit check controls; the row31 producer and all callbacks stay real.
+    let castle_position = session.entities()[usize::from(guard.source_slot)].position;
+    let castle = session
+        .economy_mut()
+        .build_castle(castle_position, player)
+        .expect("Castle combat prerequisite for the actual authored split");
+    let phase = session.entities()[usize::from(guard.source_slot)].phase;
+    crate::native_world::area_damage::contact(
+        session.source_arena_mut(),
+        None,
+        guard.source_slot,
+        u16::MAX,
+        player,
+    )
+    .unwrap();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let row = &session.entities()[usize::from(guard.source_slot)];
+    assert_eq!((row.action, row.life), (204, 0));
+    assert_eq!(row.phase, phase.wrapping_add(1));
+    assert!(
+        session
+            .source_arena()
+            .imported_creature_runtime_identity(guard.source_slot, &empty_bindings,)
+            .unwrap()
+            .living,
+        "source28C60 retains the zero-life root until split"
+    );
+    assert!(session.source_arena().rebuilt_class5_model_slots()[25].contains(&guard.source_slot));
+
+    let mut children = BTreeMap::new();
+    let mut landed = BTreeSet::new();
+    let mut parent_hidden = false;
+    let mut parent_reclaimed = false;
+    let mut small_hit = false;
+    for _ in 0..320 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "authored split/combat dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        let arena = session.source_arena();
+        match arena.resolve(guard) {
+            Some(SourceEntityView::Imported(row)) => parent_hidden |= row.drawing_disabled(),
+            None => parent_reclaimed |= parent_hidden,
+            _ => panic!("authored Cymmerian was replaced before natural reclaim"),
+        }
+        for row in arena
+            .entities
+            .iter()
+            .filter(|row| row.active && row.class == 5 && row.model == 25)
+        {
+            let Some(identity) =
+                arena.imported_creature_runtime_identity(row.index, &empty_bindings)
+            else {
+                continue;
+            };
+            if identity.origin
+                == (CreatureRootOrigin::CreatureConversion {
+                    producer_slot: guard.source_slot,
+                })
+            {
+                children.insert(row.index, identity.handle);
+                assert_eq!(
+                    row.action, 200,
+                    "small body stays in its source-specific action200"
+                );
+                assert!(identity.living);
+                assert_eq!(
+                    word(row, 46),
+                    row.subspell_index,
+                    "small countdown raw bytes stay current"
+                );
+                if row.record[74] >= 3 {
+                    landed.insert(row.index);
+                }
+            }
+        }
+        let target = arena
+            .economy
+            .castle_at(castle)
+            .expect("Castle survives the bounded contact check");
+        small_hit |= target.pending_damage > 0
+            && children.keys().any(|&slot| {
+                arena.entities[usize::from(slot)].source_id == target.pending_attacker_entity_index
+            });
+        if children.len() == 3 && landed.len() == 3 && parent_reclaimed && small_hit {
+            break;
+        }
+    }
+    assert_eq!(
+        children.len(),
+        3,
+        "the ordinary large death creates three real small bodies"
+    );
+    assert_eq!(
+        landed.len(),
+        3,
+        "all small bodies finish their unshortened landing"
+    );
+    assert!(parent_hidden && parent_reclaimed);
+    assert!(
+        small_hit,
+        "a landed small body must damage the actual Castle mailbox"
+    );
+
+    for child in children.values() {
+        crate::native_world::area_damage::contact(
+            session.source_arena_mut(),
+            None,
+            child.source_slot,
+            u16::MAX,
+            player,
+        )
+        .unwrap();
+    }
+    let mut hidden = BTreeSet::new();
+    let mut reclaimed = BTreeSet::new();
+    for _ in 0..64 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "authored small-body death dispatch failed: {:?}",
+            session.dispatch_events()
+        );
+        let arena = session.source_arena();
+        for (&slot, &child) in &children {
+            match arena.resolve(child) {
+                Some(SourceEntityView::Imported(row)) if row.drawing_disabled() => {
+                    assert!(
+                        !arena
+                            .imported_creature_runtime_identity(slot, &empty_bindings)
+                            .unwrap()
+                            .living
+                    );
+                    hidden.insert(slot);
+                }
+                None if hidden.contains(&slot) => {
+                    reclaimed.insert(slot);
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            !arena
+                .entities
+                .iter()
+                .filter(|row| row.active && row.class == 5 && row.model == 25)
+                .filter_map(
+                    |row| arena.imported_creature_runtime_identity(row.index, &empty_bindings)
+                )
+                .any(|identity| children.keys().any(|&slot| identity.origin
+                    == (CreatureRootOrigin::CreatureConversion {
+                        producer_slot: slot
+                    }))),
+            "small children must not create another split generation"
+        );
+        if reclaimed.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(
+        (hidden.len(), reclaimed.len()),
+        (3, 3),
+        "small death hides before following-pass reclaim"
+    );
+    let frozen = session.source_arena().rebuilt_class5_model_slots();
+    assert!(!frozen[25].contains(&guard.source_slot));
+    assert!(
+        children.keys().all(|slot| !frozen[25].contains(slot)),
+        "the source absence consumer drops the entire retired lineage"
+    );
+    eprintln!(
+        "Level10 row31 ordinary Cymmerian combat/split/landing/Castle damage/death/reclaim: parent={guard:?}, children={children:?}"
     );
 }
 
@@ -1929,7 +2250,17 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
         crate::native_world::source_target::Context::default(),
     )
     .unwrap();
-    assert!(arena.entities[usize::from(parent_slot)].life < 0);
+    // The old negative-life oracle omitted sub28C30's wrapper. The source
+    // selects204 and then restores0, retaining the next frozen living root.
+    assert_eq!(arena.entities[usize::from(parent_slot)].life, 0);
+    assert_eq!(word(&arena.entities[usize::from(parent_slot)], 12), 0);
+    assert!(arena.rebuilt_class5_model_presence()[usize::from(SOURCE_MODEL)]);
+    assert!(
+        arena
+            .imported_creature_runtime_identity(parent_slot, &std::collections::BTreeMap::new())
+            .unwrap()
+            .living
+    );
     assert_eq!(arena.entities[usize::from(parent_slot)].action, 204);
     let parent_id = arena.entities[usize::from(parent_slot)].source_id;
     let mut exhausted = arena.clone();
@@ -2141,6 +2472,23 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     assert_eq!((burst.class, burst.model, burst.action), (10, 1, 1));
     assert_eq!(burst.source_id, parent_id);
     assert_eq!(arena.entities[usize::from(parent_slot)].action, 205);
+    let denominator = arena.economy.source_creature_population;
+    mc2::step_row(
+        &mut arena,
+        &mut runtime,
+        &mut terrain,
+        &particles,
+        parent_slot,
+        &[],
+        &families,
+        crate::native_world::source_target::Context::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        arena.economy.source_creature_population, denominator,
+        "source28EC0 hides the large body without reducing the global denominator"
+    );
+    assert!(arena.entities[usize::from(parent_slot)].drawing_disabled());
     for child_slot in children {
         let identity = arena
             .imported_creature_runtime_identity(child_slot, &std::collections::BTreeMap::new())

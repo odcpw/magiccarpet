@@ -1082,23 +1082,76 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
         Some(parent_handle)
     );
 
-    let replacement = arena.entities[usize::from(parent)].clone();
-    arena.entities[usize::from(parent)].reclaim_source_row();
-    arena.economy.release_slot(parent, None);
-    assert_eq!(arena.allocate_source_slot(), Some(parent));
-    arena.entities[usize::from(parent)] = replacement;
+    // These explicit releases qualify fixed-address semantics; they do not
+    // claim that normal player death reclaims the original player packets.
+    let target = arena
+        .entities
+        .iter()
+        .find(|row| row.active && (row.class, row.model) == (3, 1))
+        .expect("fixture retains a rival target")
+        .index;
+    let parent_position = arena.entities[usize::from(parent)].position;
+    {
+        let row = &mut arena.entities[usize::from(bound)];
+        put(row, 154, target);
+        row.set_phase(1);
+        row.set_control_flags(row.control_flags | 0x800);
+    }
+    for (address, life) in [(target, 100), (parent, 0)] {
+        let position = arena.entities[usize::from(address)].position;
+        crate::world::effects::sync_position(arena, terrain, address, position, false, false)
+            .unwrap();
+        arena.entities[usize::from(address)].set_life(life);
+        arena.entities[usize::from(address)].reclaim_source_row();
+        arena.economy.release_slot(address, None);
+    }
+    let families = model_slots(arena);
+    let retained = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families)
+        .expect("fixed parent and target remain readable after source release");
+    assert!(!retained.expire);
+    assert_eq!(put_word(&arena.entities[usize::from(bound)], 154), target);
+    assert_eq!(put_word(&arena.entities[usize::from(bound)], 50), 10);
+    assert!(!arena.entities[usize::from(bound)].drawing_disabled());
+
+    let replacement = crate::world::effects::allocate(
+        arena,
+        terrain,
+        sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+        parent_position,
+        &particles,
+    )
+    .unwrap()
+    .expect("the real Impact constructor allocates a replacement");
+    assert_eq!(
+        replacement, parent,
+        "NewEvent reuses the last released address"
+    );
     assert_ne!(arena.handle(parent).unwrap(), parent_handle);
+    assert_eq!(
+        (
+            arena.entities[usize::from(parent)].class,
+            arena.entities[usize::from(parent)].model
+        ),
+        (10, 0)
+    );
     assert_eq!(
         arena.creature_parent_binding(child_handle),
         Some(parent_handle)
     );
     assert!(arena.creature_parent(child_handle).is_none());
-    let classes = class3_slots(arena);
+    let flags = arena.entities[usize::from(bound)].control_flags;
+    arena.entities[usize::from(bound)].set_control_flags(flags | 0x800);
     let families = model_slots(arena);
-    let expired = mc2::step_row(
-        arena, runtime, terrain, &particles, bound, &classes, &families,
-    )
-    .expect("reused parent slot expires the bound summon");
+    let reused = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families)
+        .expect("the current positive-life replacement remains a valid fixed parent");
+    assert!(!reused.expire);
+    assert_eq!(put_word(&arena.entities[usize::from(bound)], 154), target);
+    assert_eq!(put_word(&arena.entities[usize::from(bound)], 50), 10);
+    assert!(!arena.entities[usize::from(bound)].drawing_disabled());
+
+    arena.entities[usize::from(parent)].set_life(-1);
+    let expired = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families)
+        .expect("negative current parent life expires the configured summon");
     assert!(expired.expire);
     assert!(!expired.summon_expire);
     assert!(arena.entities[usize::from(bound)].drawing_disabled());
@@ -1110,7 +1163,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
 }
 
 #[test]
-fn action144_clears_target_when_three_dimensional_distance_exceeds_range() {
+fn action144_tracks_by_horizontal_distance_and_clears_at_strict_source_range() {
     let simulation = crate::native_world::tests::level_two_campaign_session();
     let terrain = simulation.session.state.live.terrain.clone();
     let runtime = simulation.session.state.live.core.runtime.clone();
@@ -1148,13 +1201,38 @@ fn action144_clears_target_when_three_dimensional_distance_exceeds_range() {
     actor.action = 144;
     actor.attack_phase = 1;
     actor.target = target_slot;
+    let tracking = actor;
+    let tracking_rng = level2_next_rng16(actor.rng);
+    assert_ne!(tracking_rng % 49, 0);
 
     step(&mut actor, &context).expect("action144 range callback runs");
 
-    assert_eq!(actor.target, 0);
+    assert!(source_distance_3d(actor.position, target_position) > RULES.target_range);
+    assert_eq!(actor.target, target_slot, "source58490 ignores altitude");
     assert_eq!(actor.action, 144);
-    assert_eq!(actor.attack_phase, 0);
-    assert!((400..=799).contains(&actor.timer));
+    assert_eq!(actor.attack_phase, 1);
+    assert_eq!(actor.rng, tracking_rng);
+
+    for distance in [RULES.target_range, RULES.target_range + 1] {
+        let boundary_targets = [Target {
+            position: Position {
+                x: actor_position.x.wrapping_add(distance as u16),
+                ..target_position
+            },
+            ..targets[0]
+        }];
+        let boundary = Creature18Context {
+            targets: &boundary_targets,
+            ..context
+        };
+        let mut actor = tracking;
+        step(&mut actor, &boundary).expect("action144 horizontal boundary callback runs");
+        assert_eq!(actor.target, 0, "strict horizontal range={distance}");
+        assert_eq!(actor.action, 144);
+        assert_eq!(actor.attack_phase, 0);
+        assert!((400..=799).contains(&actor.timer));
+        assert_eq!(actor.rng, tracking_rng);
+    }
 }
 
 #[test]

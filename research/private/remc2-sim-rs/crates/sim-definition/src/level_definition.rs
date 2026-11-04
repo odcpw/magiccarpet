@@ -266,6 +266,8 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
             | CreatureKind::Skeleton
             | CreatureKind::Spider
             | CreatureKind::Creature17
+            | CreatureKind::Creature18
+            | CreatureKind::Cymmerian
             | CreatureKind::Creature26
             | CreatureKind::Creature24
     )
