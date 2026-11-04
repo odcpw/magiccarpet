@@ -518,6 +518,7 @@ pub(crate) fn allocate_from_source_position(
             | EffectKind::GroundFire
             | EffectKind::FireSpheres
             | EffectKind::FadingSmoke
+            | EffectKind::DarkSmoke
     ) {
         return Err(
             "effect constructor does not support a source-position address"
@@ -1002,6 +1003,18 @@ fn child(
     kind: EffectKind,
     position: Position,
 ) -> Result<Option<u16>, String> {
+    child_inner(arena, terrain, particles, parent, kind, position, false)
+}
+
+fn child_inner(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    parent: &mut EntitySnapshot,
+    kind: EffectKind,
+    position: Position,
+    source_position_address: bool,
+) -> Result<Option<u16>, String> {
     // NewEvent may evict this very replaceable parent. Publish the current
     // source writes before allocation, then keep using the actual occupant
     // of that address, just as the source pointer does after replacement.
@@ -1015,13 +1028,12 @@ fn child(
     {
         arena.entities[usize::from(parent_slot)] = parent.clone();
     }
-    let result = allocate(
-        arena,
-        terrain,
-        sim_definition::adapter::mc2_effect_definition(kind),
-        position,
-        particles,
-    )?;
+    let definition = sim_definition::adapter::mc2_effect_definition(kind);
+    let result = if source_position_address {
+        allocate_from_source_position(arena, terrain, definition, parent_slot, position, particles)?
+    } else {
+        allocate(arena, terrain, definition, position, particles)?
+    };
     if arena.economy.slot_generation(parent_slot) != generation {
         *parent = arena.entities[usize::from(parent_slot)].clone();
     }
@@ -1218,15 +1230,18 @@ where
                 if source.life < 12 && age > 0 {
                     source.set_source_dword_10(age.wrapping_sub(1));
                     index = index.wrapping_sub(1);
+                    source.particle_parameter_index = Some(index);
+                    write_word(&mut source, 94, index as i16);
                     if source.control_flags & 0x80 == 0 && draw(&mut source) % 7 == 0 {
                         let position = source.position;
-                        if let Some(slot) = child(
+                        if let Some(slot) = child_inner(
                             arena,
                             terrain,
                             particles,
                             &mut source,
                             EffectKind::DarkSmoke,
                             position,
+                            true,
                         )? {
                             let row = &mut arena.entities[usize::from(slot)];
                             row.set_source_dword_10(100);
@@ -1242,9 +1257,9 @@ where
                 } else if source.life >= 12 && age <= 6 {
                     source.set_source_dword_10(age.wrapping_add(1));
                     index = index.wrapping_add(1);
+                    source.particle_parameter_index = Some(index);
+                    write_word(&mut source, 94, index as i16);
                 }
-                source.particle_parameter_index = Some(index);
-                write_word(&mut source, 94, index as i16);
                 let mut position = source.position;
                 position.z = terrain
                     .ground_height(position)

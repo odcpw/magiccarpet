@@ -1143,6 +1143,8 @@ pub struct Level2PossessionEffect {
     pub pitch: i16,
     pub life: i16,
     pub max_life: i16,
+    /// Source `dword_0x10`: actions 12/77 advance it before the life test.
+    pub source_dword_10: i32,
     pub phase: u8,
     pub active: bool,
 }

@@ -43,6 +43,10 @@ fn status_kind(arena: &SourceArena, slot: u16) -> Option<Kind> {
         .any(|row| row.source_entity_index == slot && !row.active)
     {
         Some(Kind::PossessionProjectile)
+    } else if arena.economy.possession_effects.iter()
+        .any(|row| row.source_entity_index == slot && matches!(row.source_model, 12 | 70) && !row.active)
+    {
+        Some(Kind::PossessionEffect)
     } else {
         None
     }
@@ -94,6 +98,13 @@ pub(crate) fn status_parent(
     }
     if let Some(kind) = kind {
         let economy = &arena.economy;
+        if kind == Kind::PossessionEffect
+            && let Some(effect) = economy.possession_effects.iter().find(|row|
+                (row.active || retained) && row.source_entity_index == slot && matches!(row.source_model, 12 | 70))
+        {
+            parent.set_source_dword_10(effect.source_dword_10);
+            parent.set_phase(effect.phase);
+        }
         // NewEvent initializes mana to zero. Only these typed carriers own a
         // mutable mana field; another carrier cannot inherit the old player.
         let mana = match kind {
@@ -1674,6 +1685,20 @@ fn read_current(
             .find(|row| row.source_entity_index == slot && !row.active)
         {
             return Ok(Some(possession_projectile(row)));
+        }
+        if let Some(row) = arena.economy.possession_effects.iter()
+            .find(|row| row.source_entity_index == slot && matches!(row.source_model, 12 | 70) && !row.active)
+        {
+            // sub320E0/sub32120 hide the current contact before the following
+            // source prologue frees it. The typed packet still owns this
+            // address; neither its cold raw shadow nor a freed incarnation
+            // supplies its terminal life/clock/phase.
+            return Ok(Some(View {
+                slot, source_id: row.source_id_entity_index, active: false,
+                class: row.source_class, model: row.source_model, position: row.position,
+                life: i32::from(row.life), control_flags: 5 | 0x400,
+                yaw: None, roll: None, relations: Relations::default(), collision: None,
+            }));
         }
     }
     let mut view = if raw.active
@@ -4345,6 +4370,7 @@ mod tests {
             session.set_level2_player_aim_for_test(yaw, pitch);
             let mut saw_flyer = false;
             let mut saw_flash = false;
+            let mut saw_contact_clock_reclaim = false;
             let mut saw_auxiliary = false;
             let mut saw_ownership_callback = false;
             let mut saw_presentation = false;
@@ -4425,6 +4451,101 @@ mod tests {
                         (row.source_model, row.action),
                         if tier == 2 { (70, 77) } else { (12, 12) }
                     );
+                    if matches!(row.source_model, 12 | 70) {
+                        assert_eq!(row.source_dword_10,
+                            i32::from(row.max_life) - i32::from(row.life));
+                        assert_eq!(row.phase, (row.source_entity_index as u8)
+                            .wrapping_add(row.source_dword_10 as u8));
+                        if !saw_contact_clock_reclaim {
+                            let slot = row.source_entity_index;
+                            let generation = session.economy().slot_generation(slot);
+                            let mut actual = session.clone();
+                            let mut changed_clock = session.clone();
+                            changed_clock.session.state.live.economy.economy.possession_effects.iter_mut()
+                                .find(|effect| effect.source_entity_index == slot).unwrap()
+                                .source_dword_10 = row.source_dword_10.wrapping_add(1);
+                            assert_ne!(actual.campaign_state_hash(), changed_clock.campaign_state_hash(),
+                                "the actual contact clock reaches the canonical arena hash");
+                            assert_ne!(crate::campaign::state::encode_reset_v1(
+                                &crate::campaign::state::ResetState::from_simulation(&actual)),
+                                crate::campaign::state::encode_reset_v1(
+                                &crate::campaign::state::ResetState::from_simulation(&changed_clock)),
+                                "reset-domain receipts retain the typed clock");
+                            let mut terminal = None;
+                            for _ in 0..12 {
+                                assert_eq!(actual.economy().slot_generation(slot), generation);
+                                let effect = actual.economy().possession_effects().iter()
+                                    .find(|effect| effect.source_entity_index == slot).copied()
+                                    .expect("the current contact survives until its owning source reclaim");
+                                let packet = status_parent(actual.source_arena(), Context::default(), slot)
+                                    .unwrap().unwrap();
+                                assert_eq!((packet.source_dword_10(), packet.phase),
+                                    (effect.source_dword_10, effect.phase),
+                                    "active and hidden current-address reads use the contact carrier");
+                                assert_eq!(effect.source_dword_10,
+                                    i32::from(effect.max_life) - i32::from(effect.life));
+                                assert_eq!(effect.phase, (slot as u8).wrapping_add(effect.source_dword_10 as u8));
+                                assert!(!actual.campaign_entity_presentations(0).unwrap().iter()
+                                    .any(|view| view.entity_index == slot),
+                                    "the contact remains a hidden ownership pulse");
+                                if !effect.active {
+                                    assert_eq!((effect.life, effect.source_dword_10), (-2, 10),
+                                        "the contact increments its clock before the terminal postdecrement");
+                                    assert!(!actual.economy().free_source_slots().contains(&slot));
+                                    terminal = Some(effect);
+                                    break;
+                                }
+                                actual.step_level2_source_pass(0);
+                            }
+                            let terminal = terminal.expect("the real acquired contact naturally reaches terminal");
+                            // Inspect the actual owning 49F90 sweep before a
+                            // subsequent callback can consume its free slot.
+                            // The full scheduled branch below may legitimately
+                            // reuse this address within that following pass.
+                            let mut boundary = actual.clone();
+                            {
+                                let live = &mut boundary.session.state.live;
+                                live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &[])
+                                    .unwrap();
+                            }
+                            assert_eq!(boundary.economy().slot_generation(slot), generation);
+                            assert!(boundary.economy().free_source_slots().contains(&slot));
+                            assert!(!boundary.economy().map_chains.is_linked(slot));
+                            let packet = status_parent(boundary.source_arena(), Context::default(), slot)
+                                .unwrap().unwrap();
+                            assert_eq!((packet.class, packet.model, packet.life,
+                                packet.source_dword_10(), packet.phase, packet.position, packet.source_id),
+                                (0, terminal.source_model, -2, terminal.source_dword_10, terminal.phase,
+                                    terminal.position, terminal.source_id_entity_index),
+                                "owning source reclaim retains the final contact clock/phase packet");
+                            assert_eq!(packet.control_flags & 0x409, 0x401,
+                                "reclaim retains the current hidden contact flags, not NewEvent's cold bit8");
+                            actual.step_level2_source_pass(0);
+                            let prior = crate::campaign::source_arena::SourceEntityHandle {
+                                source_slot: slot, generation,
+                            };
+                            assert!(actual.source_arena().resolve(prior).is_none(),
+                                "following scheduled reclaim ends the actual contact incarnation");
+                            if actual.economy().slot_generation(slot) == generation {
+                                assert!(actual.economy().free_source_slots().contains(&slot));
+                            } else {
+                                let packet = status_parent(actual.source_arena(), Context::default(), slot)
+                                    .unwrap().unwrap();
+                                if let Some(kind) = actual.economy().live_arena_kind(slot) {
+                                    let (class, _) = actual.economy().live_arena_class_action(slot, kind).unwrap();
+                                    assert_eq!(status_kind(actual.source_arena(), slot), Some(kind));
+                                    assert_eq!(packet.class, class,
+                                        "the current reader follows the real same-pass replacement");
+                                } else {
+                                    let raw = &actual.entities()[usize::from(slot)];
+                                    assert_eq!((packet.class, packet.model, packet.life, packet.source_dword_10()),
+                                        (raw.class, raw.model, raw.life, raw.source_dword_10()),
+                                        "no retired contact overrides the current raw address");
+                                }
+                            }
+                            saw_contact_clock_reclaim = true;
+                        }
+                    }
                 }
                 for row in session.economy().mana_attraction_fields() {
                     if session.economy().source_owner(row.source_entity_index) == player {
@@ -4572,6 +4693,7 @@ mod tests {
                 "tier {tier}: flyer={saw_flyer}, flash={saw_flash}, ownership={saw_ownership_callback}, presentation={saw_presentation}"
             );
             assert_eq!(saw_auxiliary, tier > 0);
+            assert!(saw_contact_clock_reclaim);
             assert_eq!(
                 saw_attraction,
                 tier > 0,

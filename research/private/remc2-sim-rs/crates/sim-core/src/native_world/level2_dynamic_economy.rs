@@ -2662,7 +2662,8 @@ impl Level2EconomyState {
             pitch: projectile.pitch,
             life: POSSESSION_IMPACT_LIFE,
             max_life: POSSESSION_IMPACT_LIFE,
-            phase: 0,
+            source_dword_10: 0,
+            phase: source_entity_index as u8,
             active: true,
         };
         if self
@@ -3086,6 +3087,7 @@ impl Level2EconomyState {
             return false;
         };
         let mut effect = self.possession_effects[effect_index];
+        effect.source_dword_10 = effect.source_dword_10.wrapping_add(1);
         effect.phase = effect.phase.wrapping_add(1);
         let terminal = effect.life < 0;
         if !terminal {

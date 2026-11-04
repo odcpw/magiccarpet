@@ -1274,6 +1274,9 @@ pub(crate) fn prepare_spell_flyers_reclaim(
     }
     for source in contacts {
         let slot = source.source_entity_index;
+        let flags = super::source_target::read(arena, Default::default(), slot)?
+            .ok_or_else(|| format!("hidden Possession contact {slot} lost its current packet"))?
+            .control_flags;
         let links = (arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
         rules::sync_position(arena, terrain, slot, source.position, false, false)?;
         let row = &mut arena.entities[usize::from(slot)];
@@ -1290,8 +1293,10 @@ pub(crate) fn prepare_spell_flyers_reclaim(
         row.set_life(i32::from(source.life));
         row.set_max_life(i32::from(source.max_life));
         row.set_phase(source.phase);
-        row.set_control_flags(row.control_flags | 0x400);
-        row.set_control_flags(row.control_flags & !4);
+        if matches!(source.source_model, 12 | 70) {
+            row.set_source_dword_10(source.source_dword_10);
+        }
+        row.set_control_flags(flags);
         row.reclaim_source_row();
     }
     Ok(())

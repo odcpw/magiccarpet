@@ -27937,7 +27937,7 @@ impl Mc2Simulation {
     }
 
     #[cfg(test)]
-    pub(super) fn step_level2_source_pass(&mut self, pass: u8) {
+    pub(crate) fn step_level2_source_pass(&mut self, pass: u8) {
         let mut evidence = Vec::new();
         self.step_level2_source_pass_with_player(
             pass,
@@ -27947,6 +27947,70 @@ impl Mc2Simulation {
         )
         .map(|_| ())
         .expect("test source pass has only admitted selectors");
+    }
+
+    /// Isolate one real GroundFire visit after a caller's actual 49F90
+    /// snapshot. Earlier callbacks cannot spend the captured fallback address;
+    /// live selection, damage domains and the current-occupant epilogue remain
+    /// the production scheduler's. This is not a complete source pass.
+    #[cfg(test)]
+    pub(crate) fn step_level2_effect_source_slot_for_test(
+        &mut self,
+        source_slot: u16,
+    ) -> std::result::Result<(), String> {
+        let player_entity_index = self.session.state.live.core.state.entity_index;
+        let player_position = self.session.state.live.core.state.position;
+        let mut evidence = Vec::new();
+        let mut world = Level2SourceSchedulerWorld {
+            owner: self,
+            pass: 0,
+            latched_command: crate::LatchedCommand::default(),
+            flight_tuning: crate::FlightTuning::CLASSIC,
+            evidence: &mut evidence,
+            source_player_order: Vec::new(),
+            player_entity_index,
+            player_position,
+            goat_players: Vec::new(),
+            pass_start_mana_sphere_slots: BTreeSet::new(),
+            pass_start_class5_model_slots: std::array::from_fn(|_| Vec::new()),
+            pass_start_class3_slots: Vec::new(),
+            pass_start_class9_slots: Vec::new(),
+            pass_start_capture_slots: Vec::new(),
+            effect_lists: Default::default(),
+            pass_start_settlement_building_slots: Vec::new(),
+            pass_start_class5_model_present: [false; 29],
+            pass_start_model45_building_selectors: Vec::new(),
+            pass_start_castle_auxiliary_membership: Default::default(),
+            pass_start_castle_root_slots: BTreeSet::new(),
+            goat_begin_events: BTreeMap::new(),
+        };
+        let pass = SourcePass::UpdateEntities;
+        world.phase(pass, PassPhase::RebuildMemberships)?;
+        let SlotResolution::Eligible(plan) = world.resolve(pass, 0, source_slot) else {
+            return Err(format!("source slot {source_slot} is not an admitted GroundFire"));
+        };
+        if plan.kind != VisitKind::Callback
+            || plan.selector.registry_key().selector
+                != (BehaviorSelector::ClassAction { class: 10, action: 6 })
+        {
+            return Err(format!("source slot {source_slot} is not a GroundFire callback"));
+        }
+        world.callback(pass, 0, source_slot, &plan.selector)?;
+        let current = match world.resolve(pass, 0, source_slot) {
+            SlotResolution::Inactive => CurrentOccupant::Inactive,
+            SlotResolution::Eligible(plan) => CurrentOccupant::Known {
+                selector: plan.selector,
+                kind: plan.kind,
+            },
+            SlotResolution::Unknown { selector } => {
+                return Err(format!("GroundFire replacement has unknown selector {selector:?}"));
+            }
+        };
+        let epilogue = plan.epilogue.as_ref()
+            .ok_or_else(|| format!("GroundFire {source_slot} has no source epilogue"))?;
+        world.epilogue(pass, 0, source_slot, epilogue, &current)?;
+        assert!(plan.cleanup.is_none(), "GroundFire has no immediate source cleanup");
+        Ok(())
     }
 
     /// Execute one source outer turn against the Day terrain and reset state.

@@ -1117,7 +1117,7 @@ impl Level2EconomyState {
     /// production failure-path test. The group callback still owns authored
     /// row consumption, producer hiding, and following-pass cleanup.
     #[cfg(test)]
-    pub(super) fn exhaust_new_event_capacity_for_test(&mut self) -> Option<u16> {
+    pub(crate) fn exhaust_new_event_capacity_for_test(&mut self) -> Option<u16> {
         let removed_free_slot = self.free_slots.last().copied();
         self.free_slots.clear();
         for child in &mut self.castle_children {
@@ -8452,6 +8452,10 @@ impl Level2EconomyState {
         }
         hasher.update(b"level2-possession-effect-v1");
         for effect in &self.possession_effects {
+            if matches!(effect.source_model, 12 | 70) {
+                hasher.update(b"possession-contact-clock-v1");
+                hasher.update(effect.source_dword_10.to_le_bytes());
+            }
             hasher.update(effect.source_entity_index.to_le_bytes());
             hasher.update(effect.entity_rng.to_le_bytes());
             hasher.update(effect.source_id_entity_index.to_le_bytes());

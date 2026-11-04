@@ -421,6 +421,98 @@ mod tests {
                     .collect::<Vec<_>>());
             if let Some(fire) = fire {
                 let fire_handle = case.source_arena().handle(fire).unwrap();
+                // The real debris-born fire is retained. Its late-life and
+                // allocator pressure are explicit controls for the source
+                // 31760 -> smoke14 same-address continuation.
+                let mut replaced = case.clone();
+                let reset = replaced.session.baseline.economy.economy.free_source_slots().to_vec();
+                let source_seed = (0..=u16::MAX)
+                    .find(|seed| seed.wrapping_mul(9_377).wrapping_add(9_439) % 7 == 0)
+                    .unwrap();
+                let mut exhausted = case.clone();
+                {
+                    let live = &mut exhausted.session.state.live;
+                    for row in &mut live.economy.entities {
+                        row.set_control_flags(row.control_flags & !0x0002_0000);
+                    }
+                    let row = &mut live.economy.entities[usize::from(fire)];
+                    row.set_life(11);
+                    row.set_source_dword_10(1);
+                    row.set_entity_rng(source_seed);
+                    live.economy.economy.exhaust_new_event_capacity_for_test();
+                    live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &reset).unwrap();
+                    live.economy.economy.exhaust_new_event_capacity_for_test();
+                }
+                let original_particle = exhausted.entities()[usize::from(fire)].particle_parameter_index.unwrap();
+                let original_phase = exhausted.entities()[usize::from(fire)].phase;
+                exhausted.step_level2_effect_source_slot_for_test(fire).unwrap();
+                assert!(!exhausted.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+                let current = &exhausted.entities()[usize::from(fire)];
+                assert_eq!(exhausted.source_arena().handle(fire), Some(fire_handle));
+                assert_eq!((current.class, current.model, current.life, current.source_dword_10(),
+                    current.particle_parameter_index, current.phase),
+                    (10, 6, 10, 0, Some(original_particle - 1), original_phase.wrapping_add(1)),
+                    "failed NewEvent leaves the real fire and completes its source tail");
+                {
+                    let live = &mut replaced.session.state.live;
+                    for row in &mut live.economy.entities {
+                        if row.index != fire {
+                            row.set_control_flags(row.control_flags & !0x0002_0000);
+                        }
+                    }
+                    let row = &mut live.economy.entities[usize::from(fire)];
+                    assert_ne!(row.control_flags & 0x0002_0000, 0);
+                    row.set_life(11);
+                    row.set_source_dword_10(1);
+                    row.set_entity_rng(source_seed);
+                    live.economy.economy.exhaust_new_event_capacity_for_test();
+                    live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &reset).unwrap();
+                    live.economy.economy.exhaust_new_event_capacity_for_test();
+                    assert!(live.economy.economy.free_source_slots().is_empty());
+                }
+                let prior_generation = replaced.economy().slot_generation(fire);
+                let generations = replaced.entities().iter().map(|row|
+                    replaced.economy().slot_generation(row.index)).collect::<Vec<_>>();
+                replaced.step_level2_effect_source_slot_for_test(fire).unwrap();
+                assert!(!replaced.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+                let row = &replaced.entities()[usize::from(fire)];
+                assert_ne!(replaced.economy().slot_generation(fire), prior_generation,
+                    "the source allocator reuses the actual GroundFire address");
+                assert_eq!((row.class, row.model, row.action), (10, 14, 14),
+                    "fire={fire} current_kind={:?} handle={:?} changed={:?}",
+                    replaced.economy().live_arena_kind(fire), replaced.source_arena().handle(fire),
+                    replaced.entities().iter().filter(|candidate|
+                        replaced.economy().slot_generation(candidate.index) != generations[usize::from(candidate.index)])
+                        .map(|candidate| (candidate.index, candidate.active, candidate.class, candidate.model,
+                            candidate.action, replaced.economy().live_arena_kind(candidate.index)))
+                        .collect::<Vec<_>>());
+                assert_eq!((row.position.x, row.position.y), (0, 0),
+                    "smoke constructor reads the cleared parent position address");
+                assert_eq!(row.position.z, replaced.canonical_terrain().ground_height(row.position));
+                assert_eq!((row.source_id, row.life, row.source_dword_10(), row.particle_parameter_index),
+                    (fire, 15, 100, Some(11)),
+                    "31760 continues on the new smoke, including its own particle and ID");
+                assert_eq!((row.subspell_index, row.record[69], row.record[70], row.control_flags & 0x0001_0000),
+                    (100, 10, 14, 0), "the continuing damage tail reads the newborn smoke payload and selector");
+                assert_eq!(row.phase, (fire as u8).wrapping_add(1),
+                    "the common epilogue advances the replacement; action14 waits for its next visit");
+                let replacement = replaced.source_arena().handle(fire).unwrap();
+                if !row.drawing_disabled() {
+                    let observer = Position { z: row.position.z.wrapping_add(1_024), ..row.position };
+                    replaced.set_level2_entity_position(replaced.state.entity_index, observer).unwrap();
+                    let dto = replaced.campaign_entity_presentations(0).unwrap().into_iter()
+                        .find(|view| view.entity_index == fire).expect("replacement smoke is presented");
+                    assert_eq!((dto.source_id, dto.render_parameter_index), (fire, 11));
+                    for _ in 0..32 {
+                        if replaced.entities()[usize::from(fire)].drawing_disabled() { break; }
+                        replaced.step_level2_source_pass(0);
+                    }
+                    assert!(replaced.entities()[usize::from(fire)].drawing_disabled(),
+                        "replacement smoke naturally reaches its hidden state");
+                }
+                replaced.step_level2_source_pass(0);
+                assert_ne!(replaced.source_arena().handle(fire), Some(replacement),
+                    "the actual smoke is reclaimed on the following pass");
                 let player = case.state.entity_index;
                 case.set_level2_entity_position(player, Position { z: landing.z.wrapping_add(512), ..landing }).unwrap();
                 let mut saw_presentation = false;
