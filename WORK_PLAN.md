@@ -1,7 +1,7 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: mana contention/collection `a9d4fb80`, native
-`115137a73a34`.
+Current installed checkpoint: shared effects/lifetime `e72f6c58`, native
+`9b9911936657`.
 The requested Possession → Fireball → Morph sequence is delivered. Remaining
 shared-engine acceptance stays in the existing open beads; do not restart these
 completed capability batches.
@@ -11,6 +11,9 @@ one Sol 6.1/xhigh integrator, with root coordination and independent checks.
 The requested mana economy → rival combat → Lightning → Steal Mana → Duel
 sequence is delivered in the installed checkpoints below. Do not restart those
 completed paths. The full shared-engine acceptance remains in the open beads.
+
+Previous mana contention/collection checkpoint: runtime `a9d4fb80`, native
+`115137a73a34`.
 The connected mana boundary is delivered: actual earned death sphere → rival
 selection/contest → public reclaim → defender collection → exact Castle deposit
 and another paid cast. Actual authored Scavenger selection → approach → claim →
@@ -31,13 +34,33 @@ combat, FPS, hardware audio, complete missions and old-save migration remain
 unverified. Wider `mc-bhq.10` and shared-engine acceptance stay open. Evidence:
 `research/private/generated/mana-collection-20261104-integration/`.
 
-Next connected boundary is the existing `mc-bhq.9` shared fire/impact/transient
-capability: ordinary impact → actual child damage/presentation → retained hidden
-occupant → scheduled reclaim/reuse. Its existing
-`hidden_fireball_remains_current_until_the_source_reclaim_boundary` negative is
-an entry point for distinguishing invalid setup from a real lifecycle gap;
-fixing a bare helper alone is not delivery. Preserve completed public Fireball
-behavior and all existing family acceptance. No new planning round or test suite.
+Shared effects/lifetime checkpoint delivered on 2026-11-04:
+
+- Implemented the source two-by-two wrapped 3D GroundFire proximity search and
+  post-allocation velocity tail from the current BurningDebris occupant. Hidden
+  fire remains searchable until its source reclaim.
+- Completed final packets, phase and map-link retention across shared
+  effects, Fire Spheres and Castle/Possession owning sweeps. Real lists unlink;
+  the retiring packet retains its own link words with map bit and class cleared.
+- Verified actual acquired all-tier Fireball impact → damaging descendants →
+  target life/presentation → hidden packet → next-pass reclaim/reuse. The real
+  authored Volcano → Eruption → unforced debris → GroundFire → DarkSmoke path
+  passes, including source cancellation when its floor changes. Positive cases
+  declare objective, stable-position and allocation prerequisites explicitly.
+  A proposed Fire Spheres fallback test was removed because it bypassed the
+  source's 26-free-slot admission; that broader alias reachability is unproven.
+- Committed/pushed runtime `e72f6c58`; installed native `9b9911936657` in the
+  qualified original client. Nine relevant checks, workspace all-target check,
+  native build and all 443 Rust plus 162 upstream input comparisons pass. Root
+  viewed the normal map/loading/NightSpire scene/HUD with the matching mapped
+  library, then stopped its owned smoke processes. No Unity/art change.
+
+The existing `mc-bhq.9` family acceptance stays open. This checkpoint does not
+claim every remaining class10 producer, rare alias, whole mission, human combat,
+FPS, hardware audio or old-save migration. Continue its remaining real shared
+producer/consumer paths before broader closure; do not restart the delivered
+checkpoints. Evidence: `research/private/generated/shared-effects-20261104-integration/candidate-5/`.
+
 CalmBeaver owns the sole build/push/install slot; MaroonMarsh implements shared
 joins with the feature owners. VioletGrove and WildSpring are the Terra workers.
 Use exclusive file windows. Original-client delivery uses the verified isolated
