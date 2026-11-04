@@ -12,8 +12,9 @@ objective consumers and original presentation/assets. Preserve the delivered
 spell checkpoints and already qualified creature paths; repair shared defects
 in their canonical owner when a real connected failure exposes them.
 
-- [ ] Wyvern16 — `mc-1pb.5` (first connected batch).
-- [ ] Castle defenders15 — `mc-1pb.4`.
+- [x] Wyvern16 — `mc-1pb.5` (installed checkpoint; original Fireball
+      dependency remains open, so the bead remains open).
+- [x] Castle defenders15 — `mc-1pb.4`.
 - [ ] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
 - [ ] Archer4 — `mc-1pb.21`; Skeleton9 — `mc-1pb.22`;
       Firefly19 — `mc-1pb.23`.
@@ -35,8 +36,18 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-The first creature batch is implemented and verified, awaiting commit/native
-delivery; installed source remains the all-spells checkpoint below. Evidence:
+The first creature batch is implemented, verified, committed and installed.
+Runtime `793b7ef62973d4153ab1372ffee3afc559585813` is pushed; matching native
+`ecbf096983e4b60b3fe63a24a1c734ff569d5d12efd08b31c155a3c39a198b18`
+is installed in the qualified Original client. Strict rig native build passed
+48.397s; native-only installation and installed qualification passed. All444
+Rust and162 upstream inputs match rig/canonical/isolated source, and the
+installed receipt matches all444 Rust inputs. Root viewed the normal canonical
+map, loading and NightSpire terrain/HUD on the first attempt, with the exact
+mapped native, then stopped both owned processes. One portal click, no retry or
+gameplay input. The isolated display had software/no-sound output; hardware
+audio is not qualified. No private save was written. Evidence:
+`Builds/delivery-creatures-20261104-batch1/runtime-proof.json` and
 `generated/creatures-20261104-integration/candidate-20/` and earlier connected
 runs. All444 Rust inputs are frozen. Candidate20 differs from18 only in the
 new sphere boundary's source-pass/resource prerequisites; production is byte
@@ -77,10 +88,11 @@ combat assertion still fails from insufficient mana/dead player and is not a
 gameplay pass. Fresh bounded source and independent gate reviews support the
 changed paths; package formatting remains non-clean, without a clean-format claim.
 
-All owners are frozen/handed back: Terra BoldHollow/AmberOtter, Sol
-CrimsonGlacier/BrownMountain. Root AmberWolf owns final verification, push and
-matching Original installation; no creature acceptance is closed yet. Full
-`.24` and the Wyvern's original Fireball dependency stay open. Unresolved
+The batch owners handed back frozen source: Terra BoldHollow/AmberOtter, Sol
+CrimsonGlacier/BrownMountain. Root AmberWolf independently verified and delivered
+the integrated batch. The finite defender `.4` acceptance is qualified; full
+`.24` and Wyvern `.5` with its original Fireball dependency stay open. Next
+connected families are Dragon `.19` and Bee `.20`. Unresolved
 Level23 initial Castle3/2 identity at0,0 remains in `mc-bhq.8` comment99; the
 fresh whole package is structurally/exporter-qualified, not runtime-qualified.
 No human combat/FPS/hardware audio, all missions, old-save or arbitrary custom
@@ -116,7 +128,7 @@ does not substitute for Crater/Earthquake/Volcano spell-casting acceptance.
 Root serializes Cargo/RCH and delivery; independent owners retain their paths
 through integration. Do not close broader families on this list alone.
 
-## Current installed checkpoint: all-spells batch
+## Previous installed checkpoint: all-spells batch
 
 Implemented and verified source `7bf5439845bc11fb54f8b0fe42c21eb0c6899e8e`
 is committed and pushed. Matching native
