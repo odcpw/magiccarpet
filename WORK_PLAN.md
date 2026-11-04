@@ -1,6 +1,54 @@
 # Shared-engine delivery plan
 
-Current installed batch: actual Level9 group0 lowering rings57/113 now use
+Current installed batch: prepared Volcano9/Earthquake15 terrain production,
+runtime `9d660088d63a6100f04a0554ed7cc4a8377fc0de`, matching native
+`ab1095b7514a4f925fddfef378468d263537342d6ac59c82ad8bb09061c65fd1`.
+Source is committed/pushed and the native is installed in qualified Original.
+Real `DisId=-1` phase1 records now call their typed constructors, repeated
+ascending ApplyEvents scans and real descendants, preserving common phase
+tails and immediate startup reclaim. Eruption18 is constructed before startup
+hides/reclaims it without its gameplay callback. Later BUILD composition now
+handles missing source material10–15/20–22, inclusive lowDiff<=8, protection
+and four-corner closure in the canonical shared terrain consumer.
+
+Actual unchanged whole Level13 (42 Volcano roots) and Level22 (three Quakes,
+one Volcano) require source RNG, exact allocator/free-stack, all five produced
+planes, map heads, every slot's activity and full live MCE3 packets, followed
+by ordinary session publication and FlightWorld height/material queries:
+PASS8.052s. The original new gate had incorrectly passed MCE3 to the MCE1
+parser; the corrected strict MCE3/v1/176/1000/header/extent comparison keeps
+all activity/live-packet expectations. Day3 ribbon1.012s, Cave24 ribbon2.676s,
+Level9 lowering rings2.379s and source-order0.857s pass on that same compiled
+candidate6. Fresh independent bounded production/gate review found no concrete
+defect, verified443 input hashes and both19-member package manifests. UBS
+completed both changed Rust files with no critical added-line finding; its
+one whole-file critical is the unchanged non-secret Castle-holder equality.
+Startup formatting passes; world_types has existing outside-hunk drift.
+
+All443 Rust and162 upstream inputs match rig, and the installed receipt matches
+the443 Rust inputs. The returned native exactly matches the actual rig-built
+library; pin, asset plugin and player plugin all hash `ab1095b7514a`. One
+canonical Original map-to-NightSpire load succeeded on its first attempt with
+that mapped native; root viewed map and terrain/HUD, verified the loading-open
+event/private save, then stopped owned player/display. No load failures in
+this smoke; the earlier intermittent WAVE failure's cause remains unresolved.
+No Unity/art changes in this batch, native Level13/22 demonstration, human
+combat/FPS/hardware audio, whole-mission or old-save claim. Evidence:
+`generated/volcano-quake-20261104-integration/candidate-6/` and
+`Builds/delivery-volcano-quake-20261104-batch1/`. Full original `.8` acceptance
+and dependencies remain OPEN; finite `.9` stays CLOSED. Next assess remaining
+original terrain-family acceptance against actual source/evidence before
+choosing another concrete unmet capability; do not replay delivered paths.
+
+Completed test binaries/RCH returns are preserved on rig with SHA receipts
+before and after checksum-verified relocation; active native stays on local
+ext4. The bad mounted candidate4 copy remains excluded and retained as
+evidence, with no claimed hardware/storage diagnosis. See the recovery record
+below. The automatic heartbeat was deleted during the blocked interval; this
+explicitly requested resumed batch did not recreate it. Other workers' Modern
+changes remain outside this delivery.
+
+Previous installed batch (`17cf7060`/`50d6e9af2de1`): actual Level9 group0 lowering rings57/113 now use
 canonical Rust constructors with validated physical NewEvent identities16/69.
 Source phase/RNG precede the first callback; physical69's first radius update
 is preserved. Initial PlayerEvents Castle stamps run before numeric callbacks;
@@ -40,9 +88,60 @@ successfully without source/data changes. That intermittent failure's cause
 remains unresolved; this is not a clean first-attempt launch claim or an audio
 fix. No Unity/art change, native Level9 play, human combat/FPS/hardware audio,
 full-mission or old-save proof. Full `.8` acceptance/dependencies stay OPEN;
-finite `.9` stays CLOSED. Next: assess the remaining original finite terrain
-family acceptance against current source and connected evidence, selecting a
-concrete unmet producer/consumer rather than inventing another requirement.
+finite `.9` stays CLOSED. Fresh bounded original-family review at `c533e693`
+found the next concrete missing producer: actual pre-feature `DisId=-1`
+Volcano9/Earthquake15 are selected by source GenerateEvents phase1, but Rust
+startup rejects them and retains captured geometry. MaroonMarsh owns the
+startup-module join through existing typed constructors/callbacks, repeated
+ascending ApplyEvents scans, real Eruption allocation with immediate startup
+reclaim, following phases and ordinary geometry/collision publication. Fresh
+whole source packages for Level13 (42 Volcano roots) and Level22 (three
+Earthquakes and one Volcano) are qualified under
+`generated/volcano-quake-20261104-integration/current-owner-package/`; all160
+exporter compile inputs and its binary marker match current pinned source.
+Full acceptance remains open; this extends shared generation, not mission
+content. Root serializes checks and delivery. Verified completed native,
+exporter and old report bytes are preserved on mounted disk to restore build
+headroom; warm objects and installed player remain. The exporter executable
+now lives at `/mnt/pinokio-shared/magiccarpet-build-proofs-20261104/volcano-quake-headroom/qualified-exporter-be08`;
+its disposable build-directory copy was removed after verification. Existing
+CMake target relinks it from warm objects if needed; no symlink is left at that
+reusable build path. Current and previous native artifact paths remain stable.
+
+Resolved during current batch: phase1 Volcano9/Earthquake15 and ApplyEvents are
+implemented in `cave_features/startup.rs`. The real Level13 check exposed
+missing canonical BUILD material10–15/20–22 handling; `world_types.rs` now
+implements source mapping, lowDiff, protection and closure. Candidate4 passes
+Level13 terrain/global RNG, exact free-stack, all five feature planes and map
+heads. It then hits a test-format defect: post-feature packets are MCE3 but
+`parse_entities` requires MCE1. The corrected gate validates MCE3/v1/176/1000
+and retains activity/full live-packet equality. Candidate5's slice-method
+compile error was corrected; candidate6 now passes both Level13/22 and all
+later ordinary publication/collision gates. Earlier candidates remain failed
+evidence, not qualified artifacts. The fresh final bounded review and delivery
+proof are recorded above.
+
+Operator authorized resuming integrity recovery and delivery. A second preservation
+failure has concrete evidence: a mounted copy of candidate4's test binary
+differs at one byte, offset82043581, source0x24 versus copy0x20. Source SHA
+`06a2fe76a5376d7db1e4d091a365c0e7fb396b73bccd83c0e95065b75c143e60`
+still matches its compiled receipt; the copy hashes
+`c03f37474fc566744fa0f7f812aa66f83a5a2a4efdda540bb8905356011d8994`.
+Direct aligned disk reads confirm the differing byte in each file; this was
+not merely a buffered-read discrepancy. No hardware/storage cause is established.
+The bad mounted copy is retained as evidence and excluded from delivery. The
+good original and244 completed RCH return files are now preserved under
+`/data/projects/magiccarpet-dispatcher-proofs-20261104/candidate4-recovery` on rig.
+All245 SHA hashes matched before and after checksum-verified rsync relocation;
+no source, data, warm worker cache or installed player was touched. This
+preserving alternative recovered388592432 bytes after DCG had refused the
+earlier deletion command. Receipts remain in candidate4. Root free space was
+5.89GB before the resumed check, above the unchanged measured stage budgets.
+Keep active artifacts on ext4 and use the verified rig archival path, not the
+bad mounted copy. Qualified candidate6 core outputs and native auxiliary
+outputs are similarly hash-preserved on rig under `candidate6-qualified` and
+`candidate6-native-aux`; the new native pin remains local and regular. Current
+installation is now9d660088/ab1095b7514a as recorded above. Keep `.8` open.
 
 Previous installed checkpoint: supported outdoor startup (`8ec3db4b`, native
 `3b841258c2d1`) runs canonical typed MapType producers and ordinary geometry
