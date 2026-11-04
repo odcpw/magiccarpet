@@ -1,5 +1,23 @@
 # Shared-engine delivery plan
 
+Current qualified batch (commit/install pending): supported outdoor terrain now
+uses the same canonical Rust startup producer and ordinary geometry consumer
+as Cave maps. MapType is a typed input; Day lighting and non-Cave ceiling are
+preserved. Actual unfiltered Day3 rows5→10 allocate48 ribbon descendants before
+92BUILD births reuse them, preserving source free-stack/RNG/all five planes;
+ordinary live collision/material/no-ceiling and consumed-chain no-op pass
+(candidate9,0.979s). A test-only thread-local observer on successful geometry
+publication proves the ordinary session actually installs constructed planes;
+identical captured geometry alone cannot satisfy this check. Fresh independent
+source and gate reviews support the join. The copied consumed-stage check does
+not prove live mission-row propagation. Cave24 ribbon (2.750s), full Cave4
+retained boundary (5.304s), acquired all-tier Tremor (23.275s), source-order
+(0.762s) and workspace all-targets (19.939s) pass; candidate8→9 changes only
+that test observer/assertion, with production unchanged. No critical added-line
+UBS finding; two roots retain existing format debt. Full terrain acceptance and
+all dependencies remain open. Evidence: `generated/ribbon-20261104-integration/candidate-9/`.
+
+Previous installed checkpoint:
 Current installed shared capability: authored Creature18
 and Cymmerian25 lifecycles now feed the original Level24 absence objectives and
 real45→46 ribbon geometry/collision, under existing `mc-bhq.8` acceptance.
@@ -49,11 +67,10 @@ native refresh. Current and immediate previous native are preserved on disk.
 Root CalmBeaver owns sole Cargo/push/install. The existing
 healthy RCH daemon listens on `/run/user/1000/rch.sock`; set RCH_SOCKET_PATH per
 command because the default cache socket is stale. No worker restart needed.
-Remaining terrain production gap observed in current source: non-Cave reset
-uses exported post-feature terrain, while the Rust startup constructor is
-hardcoded to Cave. Real Day3 rows5–10 are authored ribbons. Their generic
-Day/Night construction/typed-input consumer remains unfinished; do not count
-matching captured terrain as executing those Rust producers.
+Remaining terrain production gap: group-zero terrain variants such as Level9
+ring11 rows57/113 are still explicitly unsupported by startup; their existing
+captured fallback is not qualified as Rust production. Complete those actual
+producer/consumer joins under the original `mc-bhq.8` acceptance.
 Previous Tremor/Creature17 checkpoint (`ddfb0188`/`6a9ce089c86a`):
 The actual Creature17 prerequisite is corrected: all 12 owner checks pass on
 candidate5, including real melee after natural initial protection, slowdown,

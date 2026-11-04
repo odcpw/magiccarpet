@@ -1,4 +1,4 @@
-//! Source-order cave startup. Imported post-feature planes are comparison
+//! Source-order authored terrain startup. Imported post-feature planes are comparison
 //! oracles only: all writes start at the package's pre-feature boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,7 +27,7 @@ use crate::{
 /// A constructed world using the ordinary collision and presentation carrier.
 /// No owner oracle rows or post-feature terrain are copied into this result.
 #[derive(Clone, Debug)]
-pub struct CaveStartupWorld {
+pub struct TerrainStartupWorld {
     pub(crate) terrain: SessionTerrain,
     arena: SourceArena,
     pub(crate) authored: Vec<AuthoredFeature>,
@@ -37,7 +37,14 @@ pub struct CaveStartupWorld {
     particles: Box<[ParticleParameter]>,
 }
 
-impl CaveStartupWorld {
+// Observe the actual geometry consumer independently of captured-plane equality.
+// One test thread can construct several worlds without sharing another's count.
+#[cfg(test)]
+thread_local! {
+    static GEOMETRY_PUBLICATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl TerrainStartupWorld {
     /// Install geometry after the ordinary startup terrain callbacks. Other
     /// actor families retain their reset arena, RNG and map heads; this result
     /// supplies only the terrain constructed by the world owners.
@@ -67,6 +74,8 @@ impl CaveStartupWorld {
         planes
             .secondary_heights
             .clone_from(&generated.secondary_heights);
+        #[cfg(test)]
+        GEOMETRY_PUBLICATIONS.with(|count| count.set(count.get().wrapping_add(1)));
         Ok((terrain.terrain_rng(), lighting, linked_flags))
     }
 
@@ -214,11 +223,12 @@ impl CaveStartupWorld {
                 _ => {}
             }
         }
+        let night_or_cave = terrain.map_type() != MapType::Day;
         let (ground, shading) = terrain.dynamic_lighting_planes();
         let mut lighting = std::mem::take(&mut arena.dynamic_lighting);
         lighting.service_recompute(
             shading,
-            true,
+            night_or_cave,
             |slot| {
                 arena
                     .entities
@@ -274,13 +284,15 @@ impl CaveStartupWorld {
         LegacyTerrain::new(
             self.terrain.planes().terrain_types.to_vec(),
             self.terrain.planes().ground_heights.to_vec(),
-            Some(self.terrain.planes().secondary_heights.to_vec()),
+            (self.terrain.map_type() == MapType::Cave)
+                .then(|| self.terrain.planes().secondary_heights.to_vec()),
             self.terrain.planes().angles.to_vec(),
         )
     }
 }
 
 pub(crate) struct Inputs<'a> {
+    pub(crate) map_type: MapType,
     pub(crate) authored: &'a [u8],
     pub(crate) pre_terrain: &'a [u8],
     pub(crate) boundary: &'a [u8],
@@ -310,7 +322,7 @@ pub(crate) fn supports_authored(authored: &[u8]) -> Result<bool, String> {
 /// `GenerateEvents_49290` / `ApplyEvents_498A0`. This adapter admits a complete
 /// supported startup family set before writing anything. Other worlds retain
 /// their own owners; an absent constructor is never a successful no-op.
-pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
+pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String> {
     let mut features = parse_authored_features(inputs.authored)?;
     let buildings = decode_house_construction_inputs(inputs.construction)?;
     for row in features
@@ -324,7 +336,7 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
             // GenerateEvents' seven ordered preparation phases.
             (10, 9 | 15 | 27 | 30 | 32 | 51 | 88) => {
                 return Err(format!(
-                    "cave generation needs constructor {}/{} at authored row {}",
+                    "terrain generation needs constructor {}/{} at authored row {}",
                     row.kind, row.subtype, row.index
                 ));
             }
@@ -338,11 +350,11 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
         || word(boundary, 6)? != 16
         || word(boundary, 10)? != 0
     {
-        return Err("cave startup boundary is malformed".into());
+        return Err("terrain startup boundary is malformed".into());
     }
     let global_rng = dword(boundary, 12)?;
     let mut terrain = SessionTerrain::from_planes(
-        MapType::Cave,
+        inputs.map_type,
         crate::native_world::parse_terrain(inputs.pre_terrain).map_err(|e| e.to_string())?,
         word(boundary, 8)?,
     );
@@ -352,7 +364,7 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
         .iter()
         .any(|head| *head != 0)
     {
-        return Err("cave pre-feature map heads are not empty".into());
+        return Err("terrain pre-feature map heads are not empty".into());
     }
     let entities = (0..1000)
         .map(|slot| {
@@ -478,7 +490,7 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<CaveStartupWorld, String> {
         }
         apply_events(&mut arena, &mut terrain, &buildings)?;
     }
-    Ok(CaveStartupWorld {
+    Ok(TerrainStartupWorld {
         terrain,
         arena,
         authored: features,
@@ -794,6 +806,159 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_day_startup_runs_ribbon_descendants_before_live_collision() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level3");
+        let selection = CampaignSelection::ordinary(3).unwrap();
+        let package = DecodedCampaignPackage::decode(&root, selection)
+            .expect("unfiltered current-exporter Day3 package");
+        let features = parse_authored_features(package.authored_bytes()).unwrap();
+        assert_eq!(selection.map_type_id, 0);
+        assert!(supports_authored(package.authored_bytes()).unwrap());
+        for index in 5..=10 {
+            let row = features[index];
+            assert_eq!(
+                (row.kind, row.subtype, row.activation_group, row.stage_tag),
+                (10, 28, -1, 1)
+            );
+            assert_eq!(
+                row.parameter_1,
+                if index == 5 { 0 } else { index as u16 - 1 }
+            );
+            assert_eq!(
+                row.parameter_2,
+                if index == 10 { 0 } else { index as u16 + 1 }
+            );
+        }
+        let houses = features
+            .iter()
+            .filter(|row| row.activation_group == -1 && (row.kind, row.subtype) == (10, 45))
+            .count();
+        assert_eq!(houses, 92);
+
+        let generated = package
+            .generate_terrain_startup()
+            .expect("Day3 executes the source terrain constructors");
+        assert_eq!(generated.terrain.map_type(), MapType::Day);
+        // Source48400's five axis-aligned edges subdivide into6,12,12,12,6
+        // actual model27 allocations. ApplyEvents reclaims them before the92
+        // ordinary BUILD births reuse those physical source addresses.
+        assert_eq!(generated.allocation_count(), houses + 48);
+        assert!((1..=48).all(|slot| generated.arena.slot_generation(slot) == 2));
+        assert_eq!(generated.live_entities().count(), houses);
+        assert!(
+            generated
+                .live_entities()
+                .all(|row| (row.class, row.model) == (10, 45))
+        );
+        for index in 5..=10 {
+            assert_eq!(
+                (
+                    generated.authored[index].kind,
+                    generated.authored[index].stage_tag
+                ),
+                (0, 0)
+            );
+        }
+        let end = package.member("feature-end.bin").unwrap();
+        assert_eq!(generated.terrain.terrain_rng(), word(end, 8).unwrap());
+        assert_eq!(generated.arena.economy.global_rng, dword(end, 12).unwrap());
+        let allocator = package.member("feature-allocator.bin").unwrap();
+        let expected_free = (0..dword(allocator, 16).unwrap() as usize)
+            .map(|index| word(allocator, 32 + 2 * index).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(generated.arena.economy.free_source_slots(), expected_free);
+        let pre =
+            crate::native_world::parse_terrain(package.member("terrain-pre-features.bin").unwrap())
+                .unwrap();
+        let oracle = crate::native_world::parse_terrain(
+            package.member("terrain-post-features.bin").unwrap(),
+        )
+        .unwrap();
+        let planes = generated.terrain.planes();
+        for (name, actual, expected) in [
+            ("material", &planes.terrain_types, &oracle.terrain_types),
+            ("height", &planes.ground_heights, &oracle.ground_heights),
+            ("shade", &planes.shading, &oracle.shading),
+            ("angle", &planes.angles, &oracle.angles),
+            (
+                "inactive ceiling",
+                &planes.secondary_heights,
+                &oracle.secondary_heights,
+            ),
+        ] {
+            let first = actual.iter().zip(expected.iter()).position(|(a, b)| a != b);
+            assert!(
+                first.is_none(),
+                "constructed Day3 {name}: first mismatch {first:?}"
+            );
+        }
+        assert_eq!(planes.entity_indices, oracle.entity_indices);
+        let flight = generated.flight_world().unwrap();
+        let publications_before = GEOMETRY_PUBLICATIONS.with(|count| count.get());
+        let mut campaign = crate::campaign::CampaignSession::open(&root, selection)
+            .expect("the ordinary Day3 session consumes Rust terrain startup");
+        assert_eq!(
+            GEOMETRY_PUBLICATIONS.with(|count| count.get()),
+            publications_before + 1,
+            "ordinary Day3 must publish constructed planes, not reuse an identical captured terrain.bin"
+        );
+        let simulation = campaign.simulation_mut();
+        assert_eq!(simulation.canonical_terrain().map_type(), MapType::Day);
+        let changed = (80_u16..=141)
+            .flat_map(|x| (80_u16..=140).map(move |y| (x, y)))
+            .find_map(|(x, y)| {
+                let tile = usize::from(x) + 256 * usize::from(y);
+                let point = Position {
+                    x: x << 8,
+                    y: y << 8,
+                    z: 0,
+                };
+                let before = crate::legacy_terrain::interpolate_ground(
+                    &pre.ground_heights,
+                    point.x,
+                    point.y,
+                );
+                let after = generated.terrain.ground_height(point);
+                (planes.terrain_types[tile] == 8
+                    && i32::from(after) != before
+                    && simulation.canonical_terrain().planes().terrain_types[tile] == 8
+                    && simulation.canonical_terrain().ground_height(point) == after)
+                    .then_some((point, before, after))
+            })
+            .expect("actual Day3 ribbons change the live collision terrain");
+        assert_eq!(flight.ground_height(changed.0), changed.2);
+        assert_eq!(flight.ceiling_height(changed.0), None);
+        assert_eq!(
+            simulation.canonical_terrain().ceiling_height(changed.0),
+            None
+        );
+
+        // Re-enter the canonical chain adapter with the original selectors
+        // and the actual consumed stage words, rather than fabricating a path.
+        let mut consumed = features;
+        for index in 5..=10 {
+            consumed[index].stage_tag = generated.authored[index].stage_tag;
+        }
+        let live = &mut simulation.session.state.live;
+        let hash = live.terrain.deterministic_hash();
+        let free = live.economy.economy.free_source_slots().to_vec();
+        let global_rng = live.economy.economy.global_rng;
+        let no_op = rings::authored::prepare_chain(
+            &mut live.economy,
+            &mut live.terrain,
+            &mut consumed,
+            5,
+            0,
+        )
+        .unwrap();
+        assert!(no_op.source_slots.is_empty() && no_op.consumed_rows.is_empty());
+        assert_eq!(live.economy.economy.free_source_slots(), free);
+        assert_eq!(live.economy.economy.global_rng, global_rng);
+        assert_eq!(live.terrain.deterministic_hash(), hash);
+    }
+
+    #[test]
     fn ordinary_cave_reset_constructs_geometry_before_flight_consumption() {
         let mut saw_startup_light = false;
         for mission in [4, 6, 8, 12, 15, 16, 21, 24] {
@@ -817,7 +982,7 @@ mod tests {
                 "Mission{mission} must use the ordinary source-construction path"
             );
             let generated = package
-                .generate_cave_startup()
+                .generate_terrain_startup()
                 .expect("source feature constructors");
             let feature_oracle = crate::native_world::parse_terrain(
                 package.member("terrain-post-features.bin").unwrap(),
@@ -1023,7 +1188,7 @@ mod tests {
             DecodedCampaignPackage::decode(&root, CampaignSelection::ordinary(4).unwrap())
                 .expect("real Mission4 owner package");
         let generated = package
-            .generate_cave_startup()
+            .generate_terrain_startup()
             .expect("ordinary source generation");
         let oracle = crate::native_world::parse_terrain(
             package.member("terrain-post-features.bin").unwrap(),

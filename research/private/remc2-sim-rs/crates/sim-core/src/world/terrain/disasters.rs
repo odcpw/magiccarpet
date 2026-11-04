@@ -180,7 +180,7 @@ mod tests {
         )
         .expect("real Mission4 package decode");
         let mut terrain = decoded
-            .generate_cave_startup()
+            .generate_terrain_startup()
             .expect("ordinary source terrain construction")
             .terrain;
         let bytes = decoded

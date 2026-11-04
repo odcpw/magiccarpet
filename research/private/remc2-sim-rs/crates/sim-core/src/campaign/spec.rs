@@ -14,7 +14,7 @@ use crate::level_definition::{
     LevelObjectiveId, MechanicKind, RivalWizardId, SceneryKind, SpellKind, SwitchKind,
     TilePosition,
 };
-pub use crate::world::terrain::cave_features::startup::CaveStartupWorld;
+pub use crate::world::terrain::cave_features::startup::TerrainStartupWorld;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -850,17 +850,14 @@ impl DecodedCampaignPackage {
         })
     }
 
-    /// Construct authored cave terrain from the retained pre-feature boundary.
+    /// Construct authored terrain from the retained pre-feature boundary.
     /// The returned geometry feeds ordinary flight/collision and source sprite
     /// observations; post-feature members are never inputs to construction.
-    pub fn generate_cave_startup(&self) -> Result<CaveStartupWorld> {
+    pub fn generate_terrain_startup(&self) -> Result<TerrainStartupWorld> {
         let fail = |message| CampaignPackageError {
             stage: ValidationStage::TypedMembers,
             message,
         };
-        if self.identity.map_type_id != 2 {
-            return Err(fail("cave startup requires a Cave package".into()));
-        }
         let level = self
             .semantic_entities
             .as_ref()
@@ -869,7 +866,8 @@ impl DecodedCampaignPackage {
             self.member(name)
                 .ok_or_else(|| fail(format!("missing startup member {name}")))
         };
-        generate_bound_cave_startup(
+        generate_bound_terrain_startup(
+            self.identity.map_type_id,
             level,
             &self.semantic_entity_by_authored_record,
             self.authored_bytes(),
@@ -881,7 +879,8 @@ impl DecodedCampaignPackage {
     }
 }
 
-fn generate_bound_cave_startup(
+fn generate_bound_terrain_startup(
+    map_type_id: u8,
     level: &LevelDefinition,
     bindings: &BTreeMap<u16, LevelEntityId>,
     authored: &[u8],
@@ -889,10 +888,20 @@ fn generate_bound_cave_startup(
     boundary: &[u8],
     construction: &[u8],
     presentation: &[u8],
-) -> Result<CaveStartupWorld> {
+) -> Result<TerrainStartupWorld> {
     let fail = |message| CampaignPackageError {
         stage: ValidationStage::TypedMembers,
         message,
+    };
+    let map_type = match map_type_id {
+        0 => crate::native_world::MapType::Day,
+        1 => crate::native_world::MapType::Night,
+        2 => crate::native_world::MapType::Cave,
+        _ => {
+            return Err(fail(format!(
+                "unsupported terrain startup map type {map_type_id}"
+            )));
+        }
     };
     let mut caves = BTreeMap::new();
     let mut corridors = BTreeMap::new();
@@ -919,6 +928,7 @@ fn generate_bound_cave_startup(
     }
     crate::world::terrain::cave_features::startup::generate(
         crate::world::terrain::cave_features::startup::Inputs {
+            map_type,
             authored,
             pre_terrain,
             boundary,
@@ -2259,8 +2269,9 @@ impl CampaignDefinition {
         &self.level_definition
     }
 
-    pub(crate) fn generate_cave_startup(&self) -> Result<CaveStartupWorld> {
-        generate_bound_cave_startup(
+    pub(crate) fn generate_terrain_startup(&self) -> Result<TerrainStartupWorld> {
+        generate_bound_terrain_startup(
+            self.identity.map_type_id,
             &self.level_definition,
             &self.mechanic_entity_by_authored_record,
             &self.read_member("authored-level.bin")?,
@@ -2271,7 +2282,7 @@ impl CampaignDefinition {
         )
     }
 
-    pub(crate) fn can_generate_cave_startup(&self) -> Result<bool> {
+    pub(crate) fn can_generate_terrain_startup(&self) -> Result<bool> {
         crate::world::terrain::cave_features::startup::supports_authored(
             &self.read_member("authored-level.bin")?,
         )

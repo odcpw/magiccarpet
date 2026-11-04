@@ -189,7 +189,7 @@ mod tests {
             "the source contains the linked ribbon producer"
         );
         let generated = decoded
-            .generate_cave_startup()
+            .generate_terrain_startup()
             .expect("ordinary source startup executes its ribbon descendants");
         assert_eq!(
             (

@@ -4175,13 +4175,12 @@ impl NativeWorld {
         };
         let mut entities = parse_entities(&entities_bytes)?;
         let mut terrain_planes = parse_terrain(&terrain_bytes)?;
-        let (terrain_rng, dynamic_lighting, linked_flags) = if map_type == MapType::Cave
-            && definition
-                .can_generate_cave_startup()
-                .map_err(|error| NativeWorldError::new(error.to_string()))?
+        let (terrain_rng, dynamic_lighting, linked_flags) = if definition
+            .can_generate_terrain_startup()
+            .map_err(|error| NativeWorldError::new(error.to_string()))?
         {
             definition
-                .generate_cave_startup()
+                .generate_terrain_startup()
                 .map_err(|error| NativeWorldError::new(error.to_string()))?
                 .write_geometry_and_lighting_into(
                     &mut terrain_planes,
