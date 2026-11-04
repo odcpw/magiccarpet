@@ -1,6 +1,6 @@
 # Shared-engine delivery plan
 
-Current qualified batch (commit/install pending): supported outdoor terrain now
+Current installed batch: supported outdoor terrain now
 uses the same canonical Rust startup producer and ordinary geometry consumer
 as Cave maps. MapType is a typed input; Day lighting and non-Cave ceiling are
 preserved. Actual unfiltered Day3 rows5→10 allocate48 ribbon descendants before
@@ -16,6 +16,17 @@ retained boundary (5.304s), acquired all-tier Tremor (23.275s), source-order
 that test observer/assertion, with production unchanged. No critical added-line
 UBS finding; two roots retain existing format debt. Full terrain acceptance and
 all dependencies remain open. Evidence: `generated/ribbon-20261104-integration/candidate-9/`.
+
+Runtime `8ec3db4b` is verified, committed and pushed; matching native
+`3b841258c2d1` is installed in the qualified Original client. All443Rust and
+162upstream inputs match rig and installation. Root viewed normal canonical
+map/loading/NightSpire terrain/HUD with matching mapped native and stopped owned
+smoke processes. This proves launch/load, not native Day3 mechanics, human
+combat/FPS/hardware audio, full missions or old saves. No Unity/art changes.
+Next within `.8`: actual Level9 group0 ring11 rows57/113 need constructor and
+first-callback joins with validated physical NewEvent identity before dispatch;
+slot69's source phase affects the first radius update. Do not remove admission
+refusal without the real producer/consumer. Full acceptance remains open.
 
 Previous installed checkpoint:
 Current installed shared capability: authored Creature18
