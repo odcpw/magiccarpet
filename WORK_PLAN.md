@@ -1,7 +1,31 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: ordinary Cave smoke `3555793f`, native
-`fa95bcc1ff52`.
+Current installed checkpoint: effect continuation and Possession contact packets
+`b395b5e4`, native `e739c2ff0f23`.
+
+Delivered on 2026-11-04: GroundFire commits its particle change before allocating
+DarkSmoke through the real parent-position address, then continues on the current
+occupant. Both ordinary Possession contacts (12/70) now retain the source clock,
+slot phase and current flags through hidden reads, owning reclaim and hashing.
+Actual acquired all-tier contacts and authored Volcano/debris/fire/smoke checks
+pass, including terminal/reclaim/reuse and declared allocation-failure/replacement
+controls. Three affected current-address/light/Cave checks, workspace all-target
+check and native build also pass. All 443 Rust and 162 upstream inputs match rig
+and the installed original client. Source is committed/pushed; the native is
+installed without Unity/art changes.
+
+Root viewed the original map/loading artwork and verified NightSpire's load-open
+event with the matching mapped native, then stopped its smoke processes. The
+last screenshot still showed loading artwork; no mission-render visual claim.
+Evidence: `research/private/generated/effect-state-20261104-integration/candidate-3/`.
+Rare pressure checks isolate one actual scheduled callback after real `49F90`;
+they do not prove natural owner-package exhaustion. Full `mc-bhq.9` acceptance
+stays open. Remaining family producers/consumers, human combat, FPS, hardware
+audio, complete missions and old-save migration remain unverified. Continue
+unmet real paths; do not restart this checkpoint. Formatting and whole-file
+scanner debt remain; no critical changed-hunk defect was identified.
+
+Previous ordinary Cave smoke checkpoint: `3555793f`, native `fa95bcc1ff52`.
 
 Ordinary Cave smoke checkpoint delivered on 2026-11-04: implemented the missing
 `sub_58630` ambient producer after `sub_159E0` and before `sub_60F00` and numeric
@@ -444,8 +468,8 @@ one Sol 6.1/xhigh integrator. Discover actual agent status and Mail identities
 before resuming them. The earlier four-team NTM sessions are retired; do not
 resurrect their panes or credentials. Use NTM only if live state warrants it.
 Root CalmBeaver owns acceptance, tracker updates and sole Cargo/RCH, commit/push
-and native installation. MaroonMarsh implements shared joins with the feature
-owners; VioletGrove and WildSpring are the workers. Preserve dirty source,
+and native installation. MaroonMarsh implements shared joins with the Terra
+workers; discover their current Mail identities on resume. Preserve dirty source,
 staged work, warm caches and current installations.
 
 Integrator ownership includes implementation of shared joins. Never hold a
