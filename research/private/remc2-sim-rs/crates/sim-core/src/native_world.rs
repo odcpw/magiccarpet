@@ -574,7 +574,9 @@ mod guided_projectile;
 #[cfg(test)]
 pub(crate) use guided_projectile::boss as test_guided_boss;
 pub(crate) use effects::hidden_slots as hidden_effect_slots;
-pub(crate) use effects::prepare_model17_reclaim;
+pub(crate) use effects::prepare_retained_effects_reclaim;
+pub(crate) use effects::prepare_fire_spheres_reclaim;
+pub(crate) use effects::prepare_spell_flyers_reclaim;
 mod level2_nyphur;
 pub(crate) mod lightning;
 mod meteor;

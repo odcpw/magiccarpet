@@ -3180,6 +3180,7 @@ mod tests {
     fn hidden_fireball_remains_current_until_the_source_reclaim_boundary() {
         let session = super::super::tests::level_two_campaign_session();
         let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
         let slot = arena
             .economy
             .spawn_fireball_projectile_with_payload(
@@ -3266,6 +3267,7 @@ mod tests {
             .find(|row| row.source_entity_index == possession)
             .unwrap()
             .active = false;
+        let mut expected_packets = Vec::new();
         for (slot, model) in [(castle, 10), (possession, 1)] {
             // A retained packet at the same address cannot resurrect the
             // previous occupant while its typed flyer awaits reclaim.
@@ -3278,16 +3280,41 @@ mod tests {
             assert_eq!(current.position, session.state.position);
             assert_eq!(current.source_id, session.state.entity_index);
             assert!(!current.active && current.drawing_disabled());
+            expected_packets.push(current);
         }
+        // Match UpdateEntities' owning cleanup callbacks. The generic
+        // economy sweep deliberately excludes these retained flyers; it is
+        // not the complete source prologue on its own.
+        let castle_links = (arena.economy.map_chains.old_map_entity(castle),
+            arena.economy.map_chains.next_entity(castle));
+        assert_ne!(castle_links, (0, 0), "the retiring packet has real map neighbors");
+        crate::native_world::prepare_spell_flyers_reclaim(&mut arena, &mut terrain).unwrap();
+        arena.economy.reclaim_possession_rows_at_source_boundary();
+        crate::world::effects::lighting::prepare_fireball_reclaim(&mut arena, &mut terrain)
+            .unwrap();
+        arena.economy.reclaim_fireball_rows_at_source_boundary();
+        arena.economy.reclaim_hidden_castle_rows_at_source_boundary();
         arena.economy.reclaim_inactive_slots_at_source_boundary();
-        for slot in [castle, possession] {
+        assert!(arena.economy.free_source_slots().contains(&slot));
+        let fireball = read(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((fireball.class, fireball.model), (0, 0));
+        assert_eq!(fireball.position, session.state.position);
+        for expected in expected_packets {
+            let slot = expected.slot;
             assert!(arena.economy.free_source_slots().contains(&slot));
             let retained = read(&arena, Context::default(), slot).unwrap().unwrap();
             assert_eq!(
                 (retained.class, retained.model, retained.life),
-                (2, 7, -900)
+                (0, expected.model, expected.life)
             );
+            assert_eq!(retained.position, session.state.position);
+            assert_eq!(retained.source_id, session.state.entity_index);
+            assert_eq!(retained.control_flags & 4, 0, "source unlink clears the map bit");
         }
+        let castle_packet = &arena.entities[usize::from(castle)].record;
+        assert_eq!((u16::from_le_bytes([castle_packet[26], castle_packet[27]]),
+            u16::from_le_bytes([castle_packet[28], castle_packet[29]])), castle_links,
+            "source unlink preserves the retiring row's own oldMap/next words");
     }
 
     #[test]
@@ -3700,6 +3727,10 @@ mod tests {
             let mut saw_tail = false;
             let mut terminal_witness = None;
             let mut saw_presentation = false;
+            let mut saw_child_damage = false;
+            let mut saw_child_consumption = false;
+            let mut hidden_pending = Vec::<(u16, u32, View)>::new();
+            let mut hidden_reclaimed = Vec::new();
             let mut casts = 0;
             for turn in 0..320 {
                 assert!(
@@ -3722,11 +3753,13 @@ mod tests {
                 let killed = session.economy().authored_bee_kill_census(player) > kill_count;
                 let alive_descendants = descendants.iter().any(|(&slot, &generation)| {
                     session.economy().slot_generation(slot) == generation
-                        && session.source_arena().handle(slot).is_some()
+                        && !session.economy().free_source_slots().contains(&slot)
                 });
                 if saw_flyer
                     && saw_impact
                     && saw_damage
+                    && saw_child_damage
+                    && saw_child_consumption
                     && !alive_descendants
                     && session.shared_spells().pickup(holder).unwrap().active_value == 0
                     && (tier < 2 || (killed && saw_tail))
@@ -3795,7 +3828,72 @@ mod tests {
                         .map(|row| session.economy().slot_generation(row.index))
                         .collect::<Vec<_>>()
                 };
+                super::super::area_damage::start_effect_damage_trace(bee_slot);
                 session.step_outer_turn(command, 0);
+                let damage_receipts = super::super::area_damage::take_effect_damage_trace();
+                for (slot, generation, hidden) in hidden_pending.drain(..) {
+                    if session.economy().slot_generation(slot) != generation {
+                        // A genuine NewEvent has already superseded the hidden
+                        // incarnation during the following numeric pass.
+                        hidden_reclaimed.push((slot, generation));
+                        continue;
+                    }
+                    assert!(session.economy().free_source_slots().contains(&slot),
+                        "tier{tier}: hidden {slot} must reach the following source reclaim");
+                    let retained = read(session.source_arena(), Context::default(), slot)
+                        .unwrap().unwrap();
+                    assert_eq!((retained.class, retained.model, retained.source_id,
+                        retained.position, retained.life),
+                        (0, hidden.model, hidden.source_id, hidden.position, hidden.life),
+                        "sub57F20 retains the final current packet at {slot}");
+                    hidden_reclaimed.push((slot, generation));
+                }
+                let child_hit = damage_receipts.iter().any(|receipt| {
+                    let actual_child = receipt.source_slot.is_some_and(|slot| {
+                        let row = &session.entities()[usize::from(slot)];
+                        (row.model, row.source_id) == (0, player)
+                            && baseline.get(&slot).copied().unwrap_or_default()
+                                != session.economy().slot_generation(slot)
+                    }) || (tier == 2 && session.economy().model76_children().iter().any(|child| {
+                        child.entity_id == player && child.column_index == 0
+                            && child.position == receipt.pulse.position
+                            && descendants.get(&child.source_entity_index).is_some_and(|generation|
+                                *generation == session.economy().slot_generation(child.source_entity_index))
+                    }));
+                    actual_child && receipt.pulse.owner == player
+                        && receipt.mailbox_before.zip(receipt.mailbox_after).is_some_and(|(before, after)|
+                            after.0 > before.0 && after.1 == player)
+                });
+                saw_child_damage |= child_hit;
+                if child_hit && !saw_child_consumption {
+                    let queued = session.economy().bee_creatures().iter()
+                        .find(|bee| bee.source_entity_index == bee_slot).copied();
+                    if let Some(queued) = queued.filter(|bee| bee.pending_damage > 0
+                        && bee.pending_attacker_entity_index == player && bee.life > 0
+                        && !session.economy().fireball_projectiles().iter().any(|flyer|
+                            flyer.active && flyer.owner_entity_index == player))
+                    {
+                        // Compare the actual connected state with the same
+                        // scheduled visit minus this queued child damage. No
+                        // projectile, target, or handler is fabricated.
+                        let mut damaged = session.clone();
+                        let mut control = session.clone();
+                        let bee = control.session.state.live.economy.economy.bee_creatures.iter_mut()
+                            .find(|bee| bee.source_entity_index == bee_slot).unwrap();
+                        bee.pending_damage = 0;
+                        bee.pending_attacker_entity_index = 0;
+                        damaged.step_outer_turn(PlayerCommand::default(), 0);
+                        control.step_outer_turn(PlayerCommand::default(), 0);
+                        let actual = damaged.economy().bee_creatures().iter()
+                            .find(|bee| bee.source_entity_index == bee_slot).unwrap();
+                        let without = control.economy().bee_creatures().iter()
+                            .find(|bee| bee.source_entity_index == bee_slot).unwrap();
+                        assert!(actual.life < without.life,
+                            "tier{tier}: the real queued child payload reaches actual target life");
+                        assert_eq!(actual.damage_attacker_entity_index, player);
+                        saw_child_consumption = true;
+                    }
+                }
                 for flyer in session
                     .economy()
                     .fireball_projectiles()
@@ -3873,6 +3971,21 @@ mod tests {
                             child.source_entity_index,
                             session.economy().slot_generation(child.source_entity_index),
                         );
+                    }
+                }
+                let presentations = session.campaign_entity_presentations(0).unwrap();
+                for (&slot, &generation) in &descendants {
+                    if session.economy().slot_generation(slot) != generation
+                        || session.economy().free_source_slots().contains(&slot) { continue; }
+                    let current = read(session.source_arena(), Context::default(), slot).unwrap().unwrap();
+                    if current.drawing_disabled() {
+                        assert!(!presentations.iter().any(|view| view.entity_index == slot),
+                            "the hidden current child is absent from presentation");
+                        hidden_pending.push((slot, generation, current));
+                    } else if current.class == 10 && current.model == 0 {
+                        if let Some(view) = presentations.iter().find(|view| view.entity_index == slot) {
+                            assert_eq!(view.render_parameter_index, 7);
+                        }
                     }
                 }
                 // The shrinking root emits a NewEvent-owned model0 tail,
@@ -3991,13 +4104,16 @@ mod tests {
                         })
                         .collect::<Vec<_>>();
                     panic!(
-                        "tier{tier}: casts={casts}, flyer={saw_flyer}, impact={saw_impact}, damage={saw_damage}, sectors={saw_sectors}, tail={saw_tail}, killed={}/{kill_count}, holder_active={}, survivors={survivors:?}, terminal={terminal_witness:?}, bee={current:?}",
+                        "tier{tier}: casts={casts}, flyer={saw_flyer}, impact={saw_impact}, damage={saw_damage}, child={saw_child_damage}/{saw_child_consumption}, sectors={saw_sectors}, tail={saw_tail}, killed={}/{kill_count}, holder_active={}, survivors={survivors:?}, terminal={terminal_witness:?}, bee={current:?}",
                         session.economy().authored_bee_kill_census(player),
                         session.shared_spells().pickup(holder).unwrap().active_value
                     );
                 }
             }
             assert!(saw_flyer && saw_impact && saw_damage && saw_presentation);
+            assert!(saw_child_damage && saw_child_consumption,
+                "tier{tier}: actual child callback/target consumption {saw_child_damage}/{saw_child_consumption}");
+            assert!(!hidden_reclaimed.is_empty(), "observe hidden current state through following reclaim");
             assert_eq!(saw_sectors, tier == 2);
             assert_eq!(
                 saw_tail,
@@ -4015,9 +4131,37 @@ mod tests {
                     .economy()
                     .slot_generation(slot)
                     != generation
-                    || session.source_arena().handle(slot).is_none()),
+                    || session.economy().free_source_slots().contains(&slot)),
                 "natural following-pass reclaim"
             );
+            let (reused, old_generation) = hidden_reclaimed.iter().copied()
+                .find(|(slot, generation)| session.economy().slot_generation(*slot) == *generation
+                    && session.economy().free_source_slots().contains(slot))
+                .expect("a naturally reclaimed descendant remains on the source free stack");
+            let replacement_position = Position {
+                x: session.state.position.x.wrapping_add(123),
+                y: session.state.position.y.wrapping_add(456),
+                z: session.state.position.z.wrapping_add(111),
+            };
+            // Consume the actual free-stack prefix with ordinary Smoke13
+            // constructors. This controls allocator pressure, not identity,
+            // ownership, or the target's earlier natural lifetime.
+            let mut replaced = false;
+            for _ in 0..1_000 {
+                let live = &mut session.session.state.live;
+                let slot = live.economy.allocate_smoke13_with_terrain(
+                    replacement_position, &mut live.terrain)
+                    .expect("source free prefix reaches the reclaimed descendant");
+                if slot == reused { replaced = true; break; }
+            }
+            assert!(replaced);
+            assert_ne!(session.economy().slot_generation(reused), old_generation);
+            let replacement = read(session.source_arena(), Context::default(), reused).unwrap().unwrap();
+            assert_eq!((replacement.class, replacement.model, replacement.source_id, replacement.position),
+                (10, 13, reused, replacement_position));
+            let dto = session.campaign_entity_presentations(0).unwrap().into_iter()
+                .find(|view| view.entity_index == reused).expect("current replacement reaches presentation");
+            assert_eq!((dto.source_id, dto.render_parameter_index), (reused, 67));
         }
     }
 

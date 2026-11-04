@@ -956,7 +956,9 @@ impl SourceArena {
             .map(|s| (s.index, s.position, s.entity_rng))
             .collect::<Vec<_>>();
         for (slot, position, rng) in hidden {
+            let links = (self.economy.map_chains.old_map_entity(slot), self.economy.map_chains.next_entity(slot));
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
+            self.entities[usize::from(slot)].set_map_links(links.0, links.1);
             self.effects.forget_source_slot(slot);
             self.entities[usize::from(slot)].reclaim_source_row();
             self.economy.release_slot(slot, Some(rng));
@@ -981,18 +983,24 @@ impl SourceArena {
         );
         hidden_typed.sort_unstable_by_key(|(slot, _)| *slot);
         for (slot, position) in hidden_typed {
+            let links = (self.economy.map_chains.old_map_entity(slot), self.economy.map_chains.next_entity(slot));
             crate::world::effects::sync_position(self, terrain, slot, position, false, false)?;
+            self.entities[usize::from(slot)].set_map_links(links.0, links.1);
         }
+        crate::native_world::prepare_fire_spheres_reclaim(self)?;
+        crate::native_world::prepare_spell_flyers_reclaim(self, terrain)?;
         crate::world::fields::retire_hidden_wind_projections(self, terrain)?;
         crate::native_world::area_damage::retire_hidden_player_death_markers(self, terrain)?;
         // Explicit source49F90 reclaims every hidden row before rebuilding
         // allocation stacks; bare allocator rebuilds keep their own policy.
         crate::world::effects::lighting::prepare_fireball_reclaim(self, terrain)?;
         self.economy.reclaim_fireball_rows_at_source_boundary();
+        self.economy.reclaim_possession_rows_at_source_boundary();
+        self.economy.reclaim_hidden_castle_rows_at_source_boundary();
         crate::native_world::terrain_strip::prepare_trigger_reclaim(self, terrain)?;
         self.economy.reclaim_death_burst_rows_at_source_boundary();
         crate::world::scenery::trees::prepare_reclaim(self, terrain)?;
-        crate::native_world::prepare_model17_reclaim(self)?;
+        crate::native_world::prepare_retained_effects_reclaim(self)?;
         self.economy.reclaim_inactive_slots_at_source_boundary();
         let retired_morph_holders = crate::native_world::creatures::morph::holder_generations(&self.economy)
             .filter_map(|(slot, generation)| {

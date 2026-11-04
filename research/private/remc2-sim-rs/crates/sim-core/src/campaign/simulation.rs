@@ -925,6 +925,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 for (source_slot, source_rng) in hidden_imported {
                     let live = &mut self.owner.session.state.live;
                     let position = live.economy.entities[usize::from(source_slot)].position;
+                    let links = (live.economy.economy.map_chains.old_map_entity(source_slot),
+                        live.economy.economy.map_chains.next_entity(source_slot));
                     crate::world::effects::sync_position(
                         &mut live.economy,
                         &mut live.terrain,
@@ -933,6 +935,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         false,
                         false,
                     )?;
+                    live.economy.entities[usize::from(source_slot)].set_map_links(links.0, links.1);
                     live.economy.entities[usize::from(source_slot)].reclaim_source_row();
                     live.economy.effects.forget_source_slot(source_slot);
                     live.economy.clear_raw_creature_origin(source_slot);
@@ -957,6 +960,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     for (slot, position) in
                         crate::native_world::effects::hidden_slots(&live.economy)
                     {
+                        let links = (live.economy.economy.map_chains.old_map_entity(slot),
+                            live.economy.economy.map_chains.next_entity(slot));
                         crate::world::effects::sync_position(
                             &mut live.economy,
                             &mut live.terrain,
@@ -965,10 +970,13 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                             false,
                             false,
                         )?;
+                        live.economy.entities[usize::from(slot)].set_map_links(links.0, links.1);
                     }
                 }
                 let live = &mut self.owner.session.state.live;
                 let economy = &mut live.economy;
+                crate::native_world::prepare_fire_spheres_reclaim(economy)?;
+                crate::native_world::prepare_spell_flyers_reclaim(economy, &mut live.terrain)?;
                 let castle_slots = economy.live_arena_slots().into_iter()
                     .filter(|(_, kind)| matches!(kind, Level2DynamicArenaKind::CastleChild
                         | Level2DynamicArenaKind::CastleController | Level2DynamicArenaKind::CastleDefender
@@ -1012,7 +1020,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 area_damage::retire_hidden_player_death_markers(economy, &mut live.terrain)?;
                 terrain_strip::prepare_trigger_reclaim(economy, &mut live.terrain)?;
                 crate::world::scenery::trees::prepare_reclaim(economy, &mut live.terrain)?;
-                crate::native_world::effects::prepare_model17_reclaim(economy)?;
+                crate::native_world::effects::prepare_retained_effects_reclaim(economy)?;
                 economy.reclaim_inactive_slots_at_source_boundary();
             }
             PassPhase::RebuildMemberships => {
@@ -15491,6 +15499,20 @@ impl Mc2Simulation {
         })?;
         *phase = phase.wrapping_add(1);
         let advanced = *phase;
+        // Shared effect adapters publish their final hidden packet before
+        // the common epilogue. Keep that retained packet's last phase byte
+        // current while its typed carrier still owns the address.
+        if matches!(route, SourceRoute::Dynamic(row) if matches!(row.kind,
+            Level2DynamicArenaKind::DeathBurst | Level2DynamicArenaKind::AuthoredModel1
+            | Level2DynamicArenaKind::AuthoredModel5WaterSplash | Level2DynamicArenaKind::AuthoredModel6
+            | Level2DynamicArenaKind::AuthoredModel13 | Level2DynamicArenaKind::Model13SpawnedChild
+            | Level2DynamicArenaKind::Model59SmokeChild | Level2DynamicArenaKind::AuthoredModel17
+            | Level2DynamicArenaKind::Model17SpawnedChild))
+            && let Some(row) = live.economy.entities.get_mut(usize::from(source_slot))
+            && row.class == 0 && row.drawing_disabled()
+        {
+            row.set_phase(advanced);
+        }
         match route {
             SourceRoute::SpeedPickup | SourceRoute::ImportedSpellSource => {
                 if let Some(row) = live.shared_spells.pickup_mut(source_slot) {

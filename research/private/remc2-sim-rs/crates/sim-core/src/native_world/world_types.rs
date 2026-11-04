@@ -361,14 +361,15 @@ impl EntitySnapshot {
         self.record[16..20].copy_from_slice(&self.control_flags.to_le_bytes());
     }
 
-    /// Apply the source `sub_57F20` class-zero transition after a row was
-    /// draw-disabled during the preceding UpdateEntities pass.
     pub(crate) fn set_map_links(&mut self, old: u16, next: u16) {
         self.record[26..28].copy_from_slice(&old.to_le_bytes());
         self.record[28..30].copy_from_slice(&next.to_le_bytes());
     }
 
+    /// Retain the packet after `sub_57F20`: its caller unlinks the actual map
+    /// chain, then `SetMapEntity_57E50`'s map bit and the source class are zero.
     pub(crate) fn reclaim_source_row(&mut self) {
+        self.set_control_flags(self.control_flags & !4);
         self.active = false;
         self.authority = EntityAuthority::Inactive;
         self.class = 0;

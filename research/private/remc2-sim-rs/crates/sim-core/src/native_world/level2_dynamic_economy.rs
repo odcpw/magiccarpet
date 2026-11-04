@@ -3252,7 +3252,7 @@ impl Level2EconomyState {
     /// and free before the next pass begins. Possession landing callbacks may
     /// clear their draw/live state during a pass, but their source slot is not
     /// reusable until this one narrowly scoped prologue sweep.
-    pub(super) fn reclaim_possession_rows_at_source_boundary(&mut self) {
+    pub(crate) fn reclaim_possession_rows_at_source_boundary(&mut self) {
         let reclaimed_projectiles = self
             .possession_projectiles
             .iter()
@@ -3989,7 +3989,7 @@ impl Level2EconomyState {
     /// following-pass `sub_57F20` unlink/free and must not advance byte 0x3E
     /// again. A disabled Castle flyer remains an arena/map-tracked row until
     /// this boundary, just like a hidden Castle child.
-    pub(super) fn reclaim_hidden_castle_rows_at_source_boundary(&mut self) {
+    pub(crate) fn reclaim_hidden_castle_rows_at_source_boundary(&mut self) {
         let hidden_slots: Vec<u16> = self
             .castle_children
             .iter()

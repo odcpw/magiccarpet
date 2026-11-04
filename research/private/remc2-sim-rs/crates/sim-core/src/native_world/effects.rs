@@ -867,7 +867,10 @@ fn header(
             }
             _ => return Err(format!("{kind:?} is not a retained shared effect carrier")),
         };
-    let mut row = super::cave_features::new_event(slot, rng, position);
+    let mut row = arena.entities[usize::from(slot)].clone();
+    row.active = true;
+    row.set_entity_rng(rng);
+    row.set_position(position);
     row.source_id = owner;
     row.record[30..32].copy_from_slice(&owner.to_le_bytes());
     row.class = 10;
@@ -1147,9 +1150,9 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
     }
 }
 
-/// After hidden map unlink, retain the source's class-zero bytes at each
-/// current 10/17 address before the economy frees its typed carrier.
-pub(crate) fn prepare_model17_reclaim(arena: &mut SourceArena) -> Result<(), String> {
+/// After hidden map unlink, retain final shared-effect packets before their
+/// typed carriers are freed. Model17 also supports external source hiding.
+pub(crate) fn prepare_retained_effects_reclaim(arena: &mut SourceArena) -> Result<(), String> {
     let hidden = arena
         .economy
         .authored_model17
@@ -1171,8 +1174,215 @@ pub(crate) fn prepare_model17_reclaim(arena: &mut SourceArena) -> Result<(), Str
         // This header has no particle binding. The typed carrier is still the
         // current authority, including its last callback and phase bytes.
         let mut row = header(arena, slot, Kind::AuthoredModel17, &[])?;
+        row.set_control_flags(row.control_flags & !4);
         row.reclaim_source_row();
         arena.entities[usize::from(slot)] = row;
+    }
+    for (slot, kind) in arena.economy.live_arena_slots() {
+        if matches!(kind, Kind::DeathBurst | Kind::AuthoredModel1 | Kind::AuthoredModel5WaterSplash
+            | Kind::AuthoredModel6 | Kind::AuthoredModel13 | Kind::Model13SpawnedChild
+            | Kind::Model59SmokeChild | Kind::Model17SpawnedChild)
+        {
+            let row = &mut arena.entities[usize::from(slot)];
+            if row.class == 0 && row.drawing_disabled() {
+                row.set_control_flags(row.control_flags & !4);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Publish the last current flyer/contact packet before its owning sweep
+/// removes the typed carrier. `sub_57F20` clears class, not the old payload.
+pub(crate) fn prepare_spell_flyers_reclaim(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+) -> Result<(), String> {
+    let current = |slot, kind| {
+        arena.economy.live_arena_kind(slot).is_none()
+            && arena.economy.retained_projectile_kind(slot) == Some(kind)
+    };
+    let castles = arena.economy.castle_projectiles.iter()
+        .filter(|row| !row.active && row.drawing_disabled
+            && current(row.source_entity_index, Kind::CastleProjectile))
+        .copied().collect::<Vec<_>>();
+    let possessions = arena.economy.possession_projectiles.iter()
+        .filter(|row| !row.active && current(row.source_entity_index, Kind::PossessionProjectile))
+        .copied().collect::<Vec<_>>();
+    let contacts = arena.economy.possession_effects.iter()
+        .filter(|row| !row.active && current(row.source_entity_index, Kind::PossessionEffect))
+        .copied().collect::<Vec<_>>();
+    for source in castles {
+        let slot = source.source_entity_index;
+        let links = (arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
+        rules::sync_position(arena, terrain, slot, source.position, false, false)?;
+        let mut row = super::source_target::status_parent(arena, Default::default(), slot)?
+            .ok_or_else(|| format!("hidden Castle flyer {slot} lost its current packet"))?;
+        row.set_map_links(links.0, links.1);
+        row.set_entity_rng(source.entity_rng);
+        row.set_source_action(10);
+        row.record[68] = source.source_model;
+        row.record[30..32].copy_from_slice(&source.owner_entity_index.to_le_bytes());
+        row.record[42..44].copy_from_slice(&source.holder_entity_index.to_le_bytes());
+        row.set_subspell_index(source.source_subspell_index);
+        row.set_source_dword_10(i32::from(source.source_a4_byte_154));
+        row.set_max_life(source.max_life);
+        if let Some(phase) = arena.economy.source_phase_sidecar(slot) {
+            row.set_phase(phase);
+        }
+        row.set_source_roll(source.source_roll);
+        row.fov = source.source_fov;
+        row.record[38..40].copy_from_slice(&source.source_fov.to_le_bytes());
+        row.record[71] = source.source_byte_43;
+        row.record[72] = source.source_byte_44;
+        row.set_source_word_96(source.source_word_96);
+        for (offset, value) in [(158, source.axis_position.x), (160, source.axis_position.y), (162, source.axis_position.z.cast_unsigned())] {
+            row.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        row.reclaim_source_row();
+        row.set_control_flags(row.control_flags & !4);
+        arena.entities[usize::from(slot)] = row;
+    }
+    for source in possessions {
+        let slot = source.source_entity_index;
+        let links = (arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
+        rules::sync_position(arena, terrain, slot, source.position, false, false)?;
+        let mut row = super::source_target::status_parent(arena, Default::default(), slot)?
+            .ok_or_else(|| format!("hidden Possession flyer {slot} lost its current packet"))?;
+        row.set_map_links(links.0, links.1);
+        row.set_entity_rng(source.entity_rng);
+        row.set_source_action(source.action);
+        row.record[68] = source.source_model;
+        row.record[30..32].copy_from_slice(&source.source_id_entity_index.to_le_bytes());
+        row.record[42..44].copy_from_slice(&source.holder_entity_index.to_le_bytes());
+        row.set_mana(source.source_mana);
+        row.set_source_dword_10(source.source_dword_10);
+        row.set_max_life(i32::from(source.max_life));
+        row.set_phase(source.phase);
+        row.set_source_roll(source.roll);
+        row.fov = source.fov;
+        row.record[38..40].copy_from_slice(&source.fov.to_le_bytes());
+        row.record[69] = source.output_class;
+        row.record[70] = source.output_model;
+        row.set_source_word_96(source.target_source_entity_index);
+        for (offset, value) in [(158, source.axis_position.x), (160, source.axis_position.y), (162, source.axis_position.z.cast_unsigned())] {
+            row.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        row.reclaim_source_row();
+        row.set_control_flags(row.control_flags & !4);
+        arena.entities[usize::from(slot)] = row;
+    }
+    for source in contacts {
+        let slot = source.source_entity_index;
+        let links = (arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
+        rules::sync_position(arena, terrain, slot, source.position, false, false)?;
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_map_links(links.0, links.1);
+        row.model = source.source_model;
+        row.record[68] = source.source_model;
+        row.source_id = source.source_id_entity_index;
+        row.record[30..32].copy_from_slice(&source.source_id_entity_index.to_le_bytes());
+        row.set_source_action(source.action);
+        row.set_entity_rng(source.entity_rng);
+        row.set_position(source.position);
+        row.set_yaw(source.yaw);
+        row.set_pitch(source.pitch);
+        row.set_life(i32::from(source.life));
+        row.set_max_life(i32::from(source.max_life));
+        row.set_phase(source.phase);
+        row.set_control_flags(row.control_flags | 0x400);
+        row.set_control_flags(row.control_flags & !4);
+        row.reclaim_source_row();
+    }
+    Ok(())
+}
+
+/// `sub_57F20` clears only class at a hidden Fire Spheres address. Preserve
+/// the current root and sector packets until a later NewEvent overwrites them.
+pub(crate) fn prepare_fire_spheres_reclaim(arena: &mut SourceArena) -> Result<(), String> {
+    let roots = arena.economy.authored_model76().iter()
+        .filter(|row| row.active && row.control_flags & 0x400 != 0
+            && arena.economy.live_arena_kind(row.source_entity_index) == Some(Kind::AuthoredModel76))
+        .copied().collect::<Vec<_>>();
+    let children = arena.economy.model76_children().iter()
+        .filter(|row| row.active
+            && arena.economy.live_arena_kind(row.source_entity_index) == Some(Kind::Model76Child))
+        .copied().collect::<Vec<_>>();
+    for source in roots {
+        let mut row = arena.entities[usize::from(source.source_entity_index)].clone();
+        row.set_entity_rng(source.entity_rng);
+        row.set_position(source.position);
+        row.source_id = source.entity_id;
+        row.record[30..32].copy_from_slice(&source.entity_id.to_le_bytes());
+        row.model = source.model;
+        row.record[68] = source.model;
+        row.set_source_action(source.action);
+        row.set_max_life(i32::from(source.max_life));
+        row.set_life(i32::from(source.life));
+        row.set_subspell_index(source.subspell_index);
+        row.set_control_flags(source.control_flags & !4);
+        row.set_phase(source.phase);
+        row.set_yaw(source.yaw);
+        row.set_pitch(source.pitch);
+        row.set_actual_speed(source.actual_speed);
+        row.record[136..138].copy_from_slice(&source.minimum_speed.to_le_bytes());
+        row.record[138..140].copy_from_slice(&source.maximum_speed.to_le_bytes());
+        row.set_source_word_2c(source.word_0x2c);
+        row.font_type_index = source.font_type_index as u8;
+        row.record[65] = source.font_type_index as u8;
+        row.set_source_byte_46(source.state);
+        row.set_source_word_96(source.target_entity_index);
+        row.set_source_overlap_half_extents(source.shift_rot_x, source.shift_rot_x);
+        row.record[92..94].copy_from_slice(&source.shift_rot_y.to_le_bytes());
+        let next = children.iter().filter(|child| child.parent_entity_index == source.source_entity_index)
+            .min_by_key(|child| child.chain_index).map_or(0, |child| child.source_entity_index);
+        row.record[56..58].copy_from_slice(&next.to_le_bytes());
+        row.reclaim_source_row();
+        arena.entities[usize::from(source.source_entity_index)] = row;
+    }
+    for source in children.iter().filter(|row| row.control_flags & 0x400 != 0) {
+        let mut row = arena.entities[usize::from(source.source_entity_index)].clone();
+        row.set_entity_rng(source.entity_rng);
+        row.set_position(source.position);
+        row.source_id = source.entity_id;
+        row.record[30..32].copy_from_slice(&source.entity_id.to_le_bytes());
+        row.model = source.model;
+        row.record[68] = source.model;
+        row.set_source_action(source.action);
+        row.set_max_life(i32::from(source.max_life));
+        row.set_life(i32::from(source.life));
+        row.set_subspell_index(source.subspell_index);
+        row.set_control_flags(source.control_flags & !4);
+        row.set_phase(source.phase);
+        row.set_yaw(source.yaw);
+        row.set_pitch(source.pitch);
+        row.set_source_roll(source.roll);
+        row.fov = source.fov;
+        row.record[38..40].copy_from_slice(&source.fov.to_le_bytes());
+        row.set_actual_speed(source.actual_speed);
+        row.record[136..138].copy_from_slice(&source.minimum_speed.to_le_bytes());
+        row.record[138..140].copy_from_slice(&source.maximum_speed.to_le_bytes());
+        row.set_source_word_2c(source.word_0x2c);
+        row.record[71] = source.row_index;
+        row.record[72] = source.column_index;
+        row.record[86..88].copy_from_slice(&source.collision_yaw.to_le_bytes());
+        row.record[88..90].copy_from_slice(&source.collision_pitch.to_le_bytes());
+        row.record[90..92].copy_from_slice(&source.collision_roll.to_le_bytes());
+        row.record[92..94].copy_from_slice(&source.collision_fov.to_le_bytes());
+        row.particle_parameter_index = Some(source.visual_index);
+        row.record[94..96].copy_from_slice(&source.visual_index.to_le_bytes());
+        row.record[98..102].copy_from_slice(&source.pending_damage.to_le_bytes());
+        row.record[102..104].copy_from_slice(&source.pending_damage_owner.to_le_bytes());
+        let previous = children.iter().filter(|child| child.parent_entity_index == source.parent_entity_index
+            && child.chain_index < source.chain_index).max_by_key(|child| child.chain_index)
+            .map_or(source.parent_entity_index, |child| child.source_entity_index);
+        let next = children.iter().filter(|child| child.parent_entity_index == source.parent_entity_index
+            && child.chain_index > source.chain_index).min_by_key(|child| child.chain_index)
+            .map_or(0, |child| child.source_entity_index);
+        row.record[54..56].copy_from_slice(&previous.to_le_bytes());
+        row.record[56..58].copy_from_slice(&next.to_le_bytes());
+        row.reclaim_source_row();
+        arena.entities[usize::from(source.source_entity_index)] = row;
     }
     Ok(())
 }
@@ -1208,15 +1418,6 @@ where
         rules::commit_entity(arena, terrain, row)?;
     } else {
         store(arena, kind, &row);
-        if row.drawing_disabled() && let Some(parent) = burst_parent {
-            arena.economy.record_raw_death_burst_expiry(slot, parent);
-            // The retained typed carrier remains authoritative while hidden.
-            // Keep its eventual class-zero bytes for fixed-address readers
-            // after the following source reclaim removes that carrier.
-            let mut reclaimed = row.clone();
-            reclaimed.reclaim_source_row();
-            arena.entities[usize::from(slot)] = reclaimed;
-        }
         arena.economy.source_rng.insert(slot, row.entity_rng);
         rules::sync_position(
             arena,
@@ -1226,6 +1427,19 @@ where
             row.active && row.control_flags & 4 != 0,
             false,
         )?;
+        if row.drawing_disabled() {
+            if let Some(parent) = burst_parent {
+                arena.economy.record_raw_death_burst_expiry(slot, parent);
+            }
+            // The retained typed carrier remains authoritative while hidden.
+            // Keep its eventual class-zero bytes for fixed-address readers
+            // after the following source reclaim removes that carrier.
+            let mut reclaimed = row.clone();
+            reclaimed.set_map_links(arena.economy.map_chains.old_map_entity(slot),
+                arena.economy.map_chains.next_entity(slot));
+            reclaimed.reclaim_source_row();
+            arena.entities[usize::from(slot)] = reclaimed;
+        }
     }
     Ok(visit)
 }

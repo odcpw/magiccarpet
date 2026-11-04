@@ -1517,6 +1517,33 @@ pub(crate) fn sync_position(
     Ok(())
 }
 
+/// `sub_10B70` searches current map-linked source addresses, including a
+/// hidden fire until the next reclaim, in the four cells around the landing.
+fn nearby_ground_fire(arena: &SourceArena, position: Position) -> bool {
+    let x = (position.x.wrapping_sub(128) >> 8) as u8;
+    let y = (position.y.wrapping_sub(128) >> 8) as u8;
+    for dy in 0..2_u8 {
+        for dx in 0..2_u8 {
+            for slot in arena.economy.map_chains.entity_chain(x.wrapping_add(dx), y.wrapping_add(dy)) {
+                let fire_position = match arena.economy.live_arena_kind(slot) {
+                    Some(crate::native_world::Level2DynamicArenaKind::AuthoredModel6) => arena
+                        .economy.authored_model6().iter()
+                        .find(|row| row.active && row.source_entity_index == slot && row.model == 6)
+                        .map(|row| row.position),
+                    Some(_) => None,
+                    None => arena.entities.get(usize::from(slot))
+                        .filter(|row| (row.class, row.model) == (10, 6))
+                        .map(|row| row.position),
+                };
+                if fire_position.is_some_and(|fire| crate::distance_3d_wrapped(position, fire) <= 128) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn step_debris(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -1549,26 +1576,7 @@ fn step_debris(
                 source.disable_drawing();
             }
         } else {
-            let cell = u16::from_le_bytes([(position.x >> 8) as u8, (position.y >> 8) as u8]);
-            let already_burning = crate::level1_mission::source_map_search_slots(
-                &arena.economy.map_chains,
-                position,
-                &[(0, 0)],
-            )
-            .into_iter()
-            .any(|id| {
-                let row = &arena.entities[usize::from(id)];
-                (row.active && row.class == 10 && row.model == 6)
-                    || arena.economy.authored_model6().iter().any(|row| {
-                        row.active
-                            && row.source_entity_index == id
-                            && u16::from_le_bytes([
-                                (row.position.x >> 8) as u8,
-                                (row.position.y >> 8) as u8,
-                            ]) == cell
-                    })
-            });
-            if !already_burning {
+            if !nearby_ground_fire(arena, position) {
                 if let Some(id) = child(
                     arena,
                     terrain,
@@ -1603,6 +1611,10 @@ fn step_debris(
         let c = at(x.wrapping_add(1), y.wrapping_add(1));
         let d = at(x, y.wrapping_add(1));
         let damp = |v: i16| ((250 * i32::from(v)) / 256) as i16;
+        // NewEvent above may have replaced this source address. sub_32600
+        // reads the current occupant's velocity after the child allocation.
+        let vx = word(source, 158);
+        let vy = word(source, 160);
         write_word(source, 158, damp(vx.wrapping_add(a - b - c + d)));
         write_word(source, 160, damp(vy.wrapping_add(a + b - c - d)));
     }

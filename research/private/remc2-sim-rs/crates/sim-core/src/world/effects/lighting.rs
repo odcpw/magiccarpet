@@ -105,6 +105,14 @@ pub(crate) fn prepare_fireball_reclaim(
         .collect::<Vec<_>>();
     for projectile in retiring {
         let slot = projectile.source_entity_index;
+        let links = if arena.economy.map_chains.is_linked(slot) {
+            (arena.economy.map_chains.old_map_entity(slot),
+                arena.economy.map_chains.next_entity(slot))
+        } else {
+            let row = &arena.entities[usize::from(slot)];
+            (u16::from_le_bytes([row.record[26], row.record[27]]),
+                u16::from_le_bytes([row.record[28], row.record[29]]))
+        };
         crate::world::effects::sync_position(
             arena,
             terrain,
@@ -114,6 +122,7 @@ pub(crate) fn prepare_fireball_reclaim(
             false,
         )?;
         let row = &mut arena.entities[usize::from(slot)];
+        row.set_map_links(links.0, links.1);
         row.reclaim_source_row();
         row.model = projectile.source_model;
         row.record[68] = projectile.source_model;
@@ -124,7 +133,7 @@ pub(crate) fn prepare_fireball_reclaim(
         row.set_life(i32::from(projectile.life));
         row.set_max_life(i32::from(projectile.max_life));
         row.set_entity_rng(projectile.entity_rng);
-        row.set_control_flags(projectile.control_flags | 0x400);
+        row.set_control_flags((projectile.control_flags | 0x400) & !4);
         row.set_subspell_index(projectile.source_subspell_index);
         row.set_yaw(projectile.yaw);
         row.pitch = projectile.pitch;
@@ -193,6 +202,322 @@ mod tests {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::native_world::{lightning, test_guided_boss as boss};
     use std::path::PathBuf;
+
+    #[test]
+    fn authored_volcano_debris_obeys_current_fire_proximity_and_runs_smoke_lifetime() {
+        use crate::level_definition::EffectKind;
+        use crate::native_world::Mc2DispatchEvent;
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level18");
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(18).unwrap())
+            .expect("actual ordinary Level 18 owner package").simulation().clone();
+        let feature = session.mission().authored_features().iter()
+            .find(|row| row.index == 422 && row.kind == 10 && row.subtype == 9)
+            .expect("the actual group-20 Volcano feature");
+        assert_eq!(feature.activation_group, 20);
+        let prior = session.entities().iter().filter(|row| row.active && (row.class, row.model) == (10, 9))
+            .filter_map(|row| session.source_arena().handle(row.index)).collect::<Vec<_>>();
+        let switch_position = session.mission().authored_features().iter()
+            .find(|row| row.index == 371 && row.kind == 11 && row.subtype == 4)
+            .expect("the actual authored completion switch").world_position(0);
+        let switch = session.entities().iter().find(|row| row.active
+            && (row.class, row.model, row.action, row.source_id) == (11, 4, 4, 20)
+            && (row.position.x, row.position.y) == (switch_position.x, switch_position.y))
+            .expect("the actual imported group-20 completion switch is live").index;
+        let color = session.shared_spells().local_player().player_color_index();
+        // Declare the completion prerequisite; the actual model-4 source
+        // publishes the complete authored group through the scheduler.
+        session.session.state.live.core.runtime.objectives[usize::from(color)].is_level_end = 1;
+        for _ in 0..8 {
+            session.step_outer_turn(crate::PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 20, .. }
+                    if *source_slot == switch)) { break; }
+        }
+        assert!(session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 20, .. }
+                if *source_slot == switch)), "the real completion switch must publish group 20");
+        let volcano = session.entities().iter().find(|row| row.active
+            && (row.class, row.model, row.action) == (10, 9, 9)
+            && session.source_arena().handle(row.index).is_some_and(|handle| !prior.contains(&handle)))
+            .expect("group 20 constructs its actual Volcano");
+        let owner = volcano.source_id;
+        let volcano_slot = volcano.index;
+        let original_volcano_position = volcano.position;
+        // The real group also publishes lowering rings. On the original
+        // terrain an intervening ring changes the floor during the Eruption's
+        // first visit; sub_32880 must hide it without producing debris.
+        let mut cancellation = session.clone();
+        let mut cancelled = None;
+        for _ in 0..32 {
+            let ground_before = cancellation.canonical_terrain().ground_height(original_volcano_position);
+            cancellation.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(!cancellation.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            if let Some(row) = cancellation.entities().iter().find(|row| row.active
+                && (row.class, row.model, row.action) == (10, 18, 18)
+                && row.source_id == owner && row.drawing_disabled())
+            {
+                assert_eq!(row.source_dword_10(), 0, "the changed-floor branch returns before age advances");
+                assert_eq!(row.position.z, cancellation.canonical_terrain().ground_height(row.position));
+                assert_ne!(ground_before, row.position.z, "the real group changed the floor during the source pass");
+                assert!(!cancellation.entities().iter().any(|row| row.active
+                    && (row.class, row.model, row.action) == (10, 16, 16) && row.source_id == owner),
+                    "the cancelled first Eruption does not create debris");
+                cancelled = cancellation.source_arena().handle(row.index);
+                break;
+            }
+        }
+        let cancelled = cancelled.expect("the unmodified authored route observes the actual changed-floor cancellation");
+        cancellation.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert_ne!(cancellation.source_arena().handle(cancelled.source_slot), Some(cancelled),
+            "the cancelled Eruption crosses the next source reclaim boundary");
+
+        // Move only the real authored Volcano to stable owner terrain away
+        // from those rings. Its remaining lifetime and every descendant are
+        // still advanced by the ordinary scheduler.
+        let volcano_position = Position {
+            x: original_volcano_position.x.wrapping_add(16_384),
+            y: original_volcano_position.y.wrapping_add(16_384),
+            z: original_volcano_position.z,
+        };
+        assert!(!session.source_arena().economy.map_chains.is_linked(volcano_slot),
+            "the source Volcano constructor does not map-link its controller");
+        session.session.state.live.economy.entities[usize::from(volcano_slot)]
+            .set_position(volcano_position);
+        let baseline = session.entities().iter().filter(|row| row.active && (row.class, row.model) == (10, 16))
+            .filter_map(|row| session.source_arena().handle(row.index)).collect::<Vec<_>>();
+        let mut eruption_seen = false;
+        let mut debris = None;
+        let mut producer_trace = Vec::new();
+        for turn in 0..128 {
+            session.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            if turn < 32 || turn == 127 {
+                let row = &session.entities()[usize::from(volcano_slot)];
+                let descendants = session.entities().iter().filter(|row| row.active
+                    && row.class == 10 && matches!(row.model, 18 | 16)).take(12)
+                    .map(|row| (row.index, row.model, row.action, row.source_id, row.position,
+                        row.life, row.source_dword_10(), row.control_flags)).collect::<Vec<_>>();
+                producer_trace.push((turn, (row.active, row.class, row.model, row.action,
+                    row.source_id, row.life, row.record[74], row.phase, row.position, row.control_flags),
+                    session.canonical_terrain().ground_height(row.position), descendants));
+            }
+            eruption_seen |= session.entities().iter().any(|row|
+                row.active && (row.class, row.model, row.action) == (10, 18, 18) && row.source_id == owner);
+            debris = session.entities().iter().find(|row| row.active
+                && (row.class, row.model, row.action) == (10, 16, 16) && row.source_id == owner
+                && session.source_arena().handle(row.index).is_some_and(|handle| !baseline.contains(&handle)))
+                .map(|row| row.index);
+            if debris.is_some() { break; }
+        }
+        let debris = debris.unwrap_or_else(|| panic!("the authored Volcano's scheduled Eruption produces real burning debris: owner={owner} eruption_seen={eruption_seen} trace={producer_trace:#?}"));
+        assert!(eruption_seen, "the actual Eruption must be observed before its debris");
+        let debris_handle = session.source_arena().handle(debris).unwrap();
+
+        // Separately observe an unforced debris trajectory landing and
+        // creating its real GroundFire; the cases below control geometry only
+        // to discriminate the two sub_10B70 boundary rules.
+        let mut natural = session.clone();
+        let mut natural_fire = false;
+        for _ in 0..128 {
+            let landings = natural.entities().iter().filter(|row| row.active
+                && (row.class, row.model, row.action) == (10, 16, 16) && row.source_id == owner
+                && natural.canonical_terrain().terrain_type(row.position) != 0)
+                .filter_map(|row| {
+                    let vx = i16::from_le_bytes([row.record[158], row.record[159]]).clamp(-80, 80);
+                    let vy = i16::from_le_bytes([row.record[160], row.record[161]]).clamp(-80, 80);
+                    let vz = i16::from_le_bytes([row.record[48], row.record[49]]);
+                    let mut next = Position { x: row.position.x.wrapping_add(vx as u16),
+                        y: row.position.y.wrapping_add(vy as u16), z: row.position.z.wrapping_add(vz) };
+                    let ground = natural.canonical_terrain().ground_height(next);
+                    if ground <= next.z { return None; }
+                    next.z = ground;
+                    Some(next)
+                }).collect::<Vec<_>>();
+            let before = natural.entities().iter().filter_map(|row|
+                natural.source_arena().handle(row.index).map(|handle| (row.index, handle.generation)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            natural.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(!natural.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            natural_fire = natural.entities().iter().any(|row| row.active
+                && (row.class, row.model, row.action) == (10, 6, 6) && row.source_id == owner
+                && landings.iter().any(|landing| (row.position.x, row.position.y) == (landing.x, landing.y))
+                && natural.source_arena().handle(row.index).is_some_and(|handle|
+                    before.get(&row.index) != Some(&handle.generation)));
+            if natural_fire { break; }
+        }
+        assert!(natural_fire, "a real Eruption debris trajectory must land and create GroundFire");
+
+        // Explicit landing and reference-fire positions isolate source10B70's
+        // tile boundary and distance; no target, fire birth or callback is faked.
+        for (cross_boundary, expected_new_fire) in [(true, false), (false, true)] {
+            let mut case = session.clone();
+            let landing = (1_u16..255).flat_map(|y| (1_u16..255).map(move |x| (x, y)))
+                .map(|(x, y)| Position { x: (x << 8) + if cross_boundary { 250 } else { 20 },
+                    y: (y << 8) + 128, z: 0 })
+                .find_map(|mut p| {
+                    p.z = case.canonical_terrain().ground_height(p);
+                    let ref_x = p.x.wrapping_add(if cross_boundary { 10 } else { 170 });
+                    let other = Position { x: ref_x, ..p };
+                    if case.canonical_terrain().terrain_type(p) == 0
+                        || case.canonical_terrain().terrain_type(other) == 0
+                        || case.canonical_terrain().ground_height(other) != p.z
+                        || crate::distance_3d_wrapped(p, volcano_position) < 8_192
+                        || crate::distance_3d_wrapped(p, original_volcano_position) < 8_192 { return None; }
+                    let arena = case.source_arena();
+                    let clear = !super::super::nearby_ground_fire(arena, p)
+                        && !super::super::nearby_ground_fire(arena, other);
+                    clear.then_some(p)
+                }).expect("owner terrain has a dry location away from existing fires");
+            let reference = {
+                let particles = case.session.definition.presentation.particles.clone();
+                let live = &mut case.session.state.live;
+                let mut other = Position { x: landing.x.wrapping_add(if cross_boundary { 10 } else { 170 }), ..landing };
+                other.z = live.terrain.ground_height(other);
+                let slot = crate::world::effects::allocate(&mut live.economy, &mut live.terrain,
+                    sim_definition::adapter::mc2_effect_definition(EffectKind::GroundFire), other, &particles)
+                    .unwrap().expect("ordinary reference GroundFire constructor");
+                // Equal altitude isolates horizontal distance; the position is
+                // a declared control on the actual constructed reference.
+                live.economy.entities[usize::from(slot)].set_position(Position { z: landing.z, ..other });
+                crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, slot,
+                    Position { z: landing.z, ..other }, true, false).unwrap();
+                let row = &mut live.economy.entities[usize::from(debris)];
+                row.set_position(landing);
+                row.set_source_word_2c(-1);
+                row.record[158..162].fill(0);
+                crate::world::effects::sync_position(&mut live.economy, &mut live.terrain,
+                    debris, landing, true, false).unwrap();
+                slot
+            };
+            assert_eq!(case.source_arena().handle(debris), Some(debris_handle));
+            assert_eq!(super::super::nearby_ground_fire(case.source_arena(), landing), cross_boundary,
+                "the current map admits the controlled near reference and rejects the distant one");
+            let phase_before = case.entities()[usize::from(debris)].phase;
+            let before = case.entities().iter().filter_map(|row|
+                case.source_arena().handle(row.index).map(|handle| (row.index, handle.generation)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            case.step_outer_turn(crate::PlayerCommand::default(), 0);
+            assert!(!case.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            assert_eq!(case.source_arena().handle(debris), Some(debris_handle),
+                "the controlled debris remains the same current occupant");
+            let landed = &case.entities()[usize::from(debris)];
+            assert_eq!(case.canonical_terrain().ground_height(landing), landing.z,
+                "other authored effects must not change this declared landing floor during the pass");
+            assert_eq!((landed.position, landed.phase), (landing, phase_before.wrapping_add(1)),
+                "the actual debris callback must visit and land at the controlled point");
+            let fire = case.entities().iter().find(|row| row.active && row.index != reference
+                && (row.class, row.model, row.action) == (10, 6, 6) && row.source_id == owner
+                && row.position.x == landing.x && row.position.y == landing.y
+                && case.source_arena().handle(row.index).is_some_and(|handle|
+                    before.get(&row.index) != Some(&handle.generation)))
+                .map(|row| row.index);
+            assert_eq!(fire.is_some(), expected_new_fire,
+                "cross-boundary near fire suppresses; distant same-tile fire does not: landing={landing:?} owner={owner} debris={debris} reference={reference} fires={:?}",
+                case.entities().iter().filter(|row| row.active && (row.class, row.model) == (10, 6))
+                    .map(|row| (row.index, row.action, row.source_id, row.position, row.control_flags,
+                        case.source_arena().handle(row.index), before.get(&row.index)))
+                    .collect::<Vec<_>>());
+            if let Some(fire) = fire {
+                let fire_handle = case.source_arena().handle(fire).unwrap();
+                let player = case.state.entity_index;
+                case.set_level2_entity_position(player, Position { z: landing.z.wrapping_add(512), ..landing }).unwrap();
+                let mut saw_presentation = false;
+                let mut smoke = None;
+                let mut saw_smoke_hidden = false;
+                let mut saw_smoke_presentation = false;
+                for _ in 0..96 {
+                    let presentations = case.campaign_entity_presentations(0).unwrap();
+                    saw_presentation |= presentations.iter().any(|view|
+                        view.entity_index == fire && view.source_id == owner
+                            && (228..=235).contains(&view.render_parameter_index));
+                    if smoke.is_none() {
+                        smoke = case.entities().iter().find(|row| row.active
+                            && (row.class, row.model, row.action) == (10, 14, 14) && row.source_id == owner
+                            && crate::distance_3d_wrapped(landing, row.position) < 1_024
+                            && case.source_arena().handle(row.index).is_some_and(|handle|
+                                before.get(&row.index) != Some(&handle.generation)))
+                            .and_then(|row| case.source_arena().handle(row.index));
+                    }
+                    if let Some(handle) = smoke {
+                        saw_smoke_presentation |= presentations.iter().any(|view|
+                            view.entity_index == handle.source_slot && view.source_id == owner
+                                && (9..=16).contains(&view.render_parameter_index));
+                        let row = &case.entities()[usize::from(handle.source_slot)];
+                        saw_smoke_hidden |= case.source_arena().handle(handle.source_slot) == Some(handle)
+                            && row.drawing_disabled();
+                        if saw_smoke_hidden && case.source_arena().handle(handle.source_slot) != Some(handle)
+                            && case.source_arena().handle(fire) != Some(fire_handle) { break; }
+                    }
+                    case.step_outer_turn(crate::PlayerCommand::default(), 0);
+                    assert!(!case.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+                }
+                let smoke = smoke.expect("the real scheduled fire produces DarkSmoke14");
+                assert!(saw_presentation && saw_smoke_presentation && saw_smoke_hidden,
+                    "actual fire/smoke presentation and smoke hide are observed");
+                assert_ne!(case.source_arena().handle(smoke.source_slot), Some(smoke), "smoke crosses source reclaim");
+                assert_ne!(case.source_arena().handle(fire), Some(fire_handle), "GroundFire crosses source reclaim");
+            }
+        }
+
+        // Exercise NewEvent's real exhausted fallback on the same produced
+        // debris. The cloned arena and landing are explicit exhaustion and
+        // geometry controls; the source callback and allocation are unchanged.
+        let mut alias = session.clone();
+        let particles = alias.session.definition.presentation.particles.clone();
+        let live = &mut alias.session.state.live;
+        let landing = (1_u16..255).flat_map(|y| (1_u16..255).map(move |x| (x, y)))
+            .find_map(|(x, y)| {
+                let index = usize::from(y) * 256 + usize::from(x);
+                let heights = live.terrain.ground_heights();
+                if heights[index] != heights[index + 1] || heights[index] != heights[index + 256]
+                    || heights[index] != heights[index + 257] { return None; }
+                let mut start = Position { x: (x << 8) + 64, y: (y << 8) + 128, z: 0 };
+                start.z = live.terrain.ground_height(start);
+                let end = Position { x: start.x.wrapping_add(80), ..start };
+                (live.terrain.terrain_type(start) != 0
+                    && live.terrain.ground_height(end) == start.z
+                    && !super::super::nearby_ground_fire(&live.economy, end)).then_some((start, end))
+            }).expect("owner terrain has a dry, flat unburned landing");
+        let row = &mut live.economy.entities[usize::from(debris)];
+        assert_ne!(row.control_flags & 0x0002_0000, 0, "ordinary debris is source-replaceable");
+        row.set_position(landing.0);
+        row.set_source_word_2c(-1);
+        row.record[158..160].copy_from_slice(&80_i16.to_le_bytes());
+        row.record[160..162].copy_from_slice(&0_i16.to_le_bytes());
+        crate::world::effects::sync_position(&mut live.economy, &mut live.terrain,
+            debris, landing.0, true, false).unwrap();
+        live.economy.rebuild_source_free_arena();
+        while live.economy.economy.free_slot_count() != 0 {
+            live.economy.allocate_source_slot_with_terrain(&mut live.terrain)
+                .expect("exhaust the actual free stack");
+        }
+        let probe_position = Position { x: landing.0.x.wrapping_add(8_192), ..landing.0 };
+        loop {
+            let mut probe = live.economy.clone();
+            let mut probe_terrain = live.terrain.clone();
+            let candidate = crate::world::effects::allocate(&mut probe, &mut probe_terrain,
+                sim_definition::adapter::mc2_effect_definition(EffectKind::ShortVisual),
+                probe_position, &particles).unwrap().expect("replacement cursor reaches the debris");
+            if candidate == debris { break; }
+            assert_eq!(crate::world::effects::allocate(&mut live.economy, &mut live.terrain,
+                sim_definition::adapter::mc2_effect_definition(EffectKind::ShortVisual),
+                probe_position, &particles).unwrap(), Some(candidate));
+        }
+        let previous = live.economy.handle(debris).unwrap();
+        let mut state = std::mem::take(&mut live.economy.effects);
+        crate::world::effects::visit(&mut live.economy, &mut live.terrain, debris,
+            &particles, &mut state, |_, _| unreachable!("debris submits no direct damage"))
+            .expect("the real debris callback reaches the current replacement");
+        live.economy.effects = state;
+        let replacement = &live.economy.entities[usize::from(debris)];
+        assert_ne!(live.economy.handle(debris), Some(previous));
+        assert_eq!((replacement.class, replacement.model, replacement.action), (10, 6, 6));
+        assert_eq!((replacement.position.x, replacement.position.y), (landing.1.x, landing.1.y));
+        assert_eq!(&replacement.record[158..162], &[0, 0, 0, 0],
+            "the post-allocation tail uses the newborn fire's velocity, not the old debris velocity");
+    }
 
     #[test]
     fn typed_ground_fire_light_and_current_action_reach_the_source_scheduler() {
