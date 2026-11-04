@@ -581,17 +581,21 @@ namespace MagicCarpet.Native
 
         internal static Identity ReadIdentity(ulong handle)
         {
+            var nativeStart = ModernCapture.BeginMeasurement();
             var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
                     NativeSim.mc_game_runtime_identity_json_v1(
                         handle, buffer, capacity, out length),
                 16 * 1024 * 1024,
                 "read game runtime identity");
+            ModernCapture.EndMeasurement("runtime_native_Identity", nativeStart);
             // Unity JsonUtility materializes empty nested DTOs for JSON null.
             // Identity nulls are authoritative: no session on a map, no stats
             // before completion, and no speech on a results screen. Preserve
             // those tokens rather than treating fabricated zero stats as real.
+            var decodeStart = ModernCapture.BeginMeasurement();
             var identity = DecodeRuntimeJson<Identity>(bytes);
+            ModernCapture.EndMeasurement("runtime_decode_Identity", decodeStart);
             ValidateIdentity(identity, handle);
             return identity;
         }
@@ -1961,6 +1965,7 @@ namespace MagicCarpet.Native
 
         private static T ReadJson<T>(JsonRead read, string operation) where T : class
         {
+            var nativeStart = ModernCapture.BeginMeasurement();
             Check(read(IntPtr.Zero, 0, out var required), operation + " size", NativeSim.Bounds);
             if (required == 0 || required > 16 * 1024 * 1024)
             {
@@ -1976,11 +1981,14 @@ namespace MagicCarpet.Native
                 }
                 var bytes = new byte[checked((int)written)];
                 Marshal.Copy(buffer, bytes, 0, checked((int)written));
+                if (nativeStart != 0) ModernCapture.EndMeasurement("runtime_native_" + typeof(T).Name, nativeStart);
+                var decodeStart = ModernCapture.BeginMeasurement();
                 // Loading observations and completion receipts also embed an
                 // identity; preserve absent session/statistics there as well.
                 var value = typeof(T) == typeof(Contract)
                     ? JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes))
                     : DecodeRuntimeJson<T>(bytes);
+                if (decodeStart != 0) ModernCapture.EndMeasurement("runtime_decode_" + typeof(T).Name, decodeStart);
                 return value ?? throw new InvalidOperationException(operation + " returned null JSON");
             }
             finally

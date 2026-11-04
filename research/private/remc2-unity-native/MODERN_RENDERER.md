@@ -142,6 +142,47 @@ player artifacts nor its native plugin were replaced by this installation.
 Local screenshots, test results and the delivery evidence are in
 `../generated/nightspire-modern-20261103/checkpoint27/`.
 
+## CPU performance pass, 2026-11-04
+
+The installed modern player caches its immutable command-line options instead
+of retrieving and allocating the argument array during every actor draw. The
+terrain, nature assets, shaders, lighting and reflection settings are unchanged.
+The same 1600×900/Vulkan shoreline camera on the RTX 3090/i7-10700 measured:
+
+| Measurement | Before | Cached options |
+| --- | --- | --- |
+| Complete frame median | 47.22 / 47.72 ms | 40.20 / 40.25 ms |
+| Modern scene preparation median | 5.15 / 5.13 ms | 0.86 / 0.85 ms |
+
+The final rebuilt player measured 40.29 ms median (about 25 fps), with scene
+preparation at 0.84 ms. These are 120-frame samples after five seconds of warmup;
+the final run's p95 was 57.73 ms, so this is not a smooth-frame-time or 60-fps
+claim. Captures were inspected at the same camera and retain the same visual
+content. One competing-build run was excluded from the comparison.
+
+`-mc-modern-metrics` now distinguishes native observation calls, managed JSON
+decoding and Unity main/render-thread timing. Diagnostic scope names allocate
+only while measurement is active. Unity reported main-thread medians around
+34–40 ms and render-thread medians around 0.45 ms; GPU frame timing was unavailable
+in this Linux/Vulkan run. Sampled GPU utilization was 35–42%. A separate flat CPU
+profile identified SHA-256 and terrain hashing as substantial native costs.
+Those samples cover all process threads, and the scope samples are not an
+additive breakdown of an individual frame.
+
+A separate attempt to reuse terrain digests was held back after a cross-library
+240-step/reset comparison found different state fingerprints despite matching
+positions, terrain hashes, dispatch hashes and events. Its five experimental
+Rust edits were reverted only in the isolated test source; canonical Rust was
+never changed. The installed player retains qualified native `e547bac85fa3`.
+The candidate source, binaries and comparison traces are preserved for diagnosis.
+
+The final Unity build and twelve existing JSON-boundary/terrain checks pass.
+UBS's C# scan is partial; its seven possible-null warnings concern the private
+timing dictionary, whose sole insertion always supplies a new non-null list.
+Changed source was also reviewed directly. This checkpoint was self-verified.
+Logs, captures, profiler data and exact command receipts are under
+`../generated/nightspire-performance-20261104/`.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game

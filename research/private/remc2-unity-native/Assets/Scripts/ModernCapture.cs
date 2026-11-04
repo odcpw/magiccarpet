@@ -11,9 +11,12 @@ namespace MagicCarpet.Native
 {
     internal sealed class ModernCapture : MonoBehaviour
     {
-        internal static bool HideHud => Environment.GetCommandLineArgs().Contains("-mc-modern-hide-hud");
-        internal static bool Measure => Environment.GetCommandLineArgs().Contains("-mc-modern-metrics");
-        internal static bool VisualDebug => Environment.GetCommandLineArgs().Contains("-mc-modern-visual-debug");
+        // Process arguments never change. Reading them inside every actor draw
+        // repeatedly marshals and allocates the complete argument array in Mono.
+        private static readonly string[] Arguments = Environment.GetCommandLineArgs();
+        internal static readonly bool HideHud = Arguments.Contains("-mc-modern-hide-hud");
+        internal static readonly bool Measure = Arguments.Contains("-mc-modern-metrics");
+        internal static readonly bool VisualDebug = Arguments.Contains("-mc-modern-visual-debug");
         internal static int EntityVisibility { get; private set; }
         internal static bool IsolateSmoke { get; private set; }
         internal static int SmokeDebug { get; private set; }
@@ -24,16 +27,25 @@ namespace MagicCarpet.Native
         private float started;
         private bool reported;
         private static readonly Dictionary<string, List<double>> scopeTimes = new();
+        private static float measurementReadyAt = float.PositiveInfinity;
+        private readonly FrameTiming[] timings = new FrameTiming[1];
+        private ulong lastTimingTimestamp;
 
-        internal static long BeginMeasurement() => Measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        internal static long BeginMeasurement() => Measure && Time.realtimeSinceStartup >= measurementReadyAt
+            ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
         internal static void EndMeasurement(string scope, long start)
         {
             if (start == 0) return;
+            RecordTiming(scope, (System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+        }
+
+        private static void RecordTiming(string scope, double milliseconds)
+        {
             if (!scopeTimes.TryGetValue(scope, out var samples))
                 scopeTimes.Add(scope, samples = new List<double>(120));
             if (samples.Count >= 120) return;
-            samples.Add((System.Diagnostics.Stopwatch.GetTimestamp() - start) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+            samples.Add(milliseconds);
             if (samples.Count != 120) return;
             samples.Sort();
             Debug.Log($"MC_MODERN_SCOPE scope={scope} samples=120 mean_ms={samples.Average():F2} median_ms={samples[60]:F2} p95_ms={samples[113]:F2}");
@@ -42,6 +54,7 @@ namespace MagicCarpet.Native
         private void Awake()
         {
             started = Time.realtimeSinceStartup;
+            measurementReadyAt = started + 5f;
             EntityVisibility = 0;
             IsolateSmoke = false;
             SmokeDebug = 0;
@@ -65,6 +78,22 @@ namespace MagicCarpet.Native
 
         private void Update()
         {
+            if (Measure && !reported)
+            {
+                FrameTimingManager.CaptureFrameTimings();
+                if (Time.realtimeSinceStartup >= measurementReadyAt &&
+                    FrameTimingManager.GetLatestTimings(1, timings) > 0 &&
+                    timings[0].frameStartTimestamp != lastTimingTimestamp)
+                {
+                    var timing = timings[0];
+                    lastTimingTimestamp = timing.frameStartTimestamp;
+                    RecordTiming("cpu_frame", timing.cpuFrameTime);
+                    RecordTiming("cpu_main", timing.cpuMainThreadFrameTime);
+                    RecordTiming("cpu_render", timing.cpuRenderThreadFrameTime);
+                    RecordTiming("cpu_present_wait", timing.cpuMainThreadPresentWaitTime);
+                    if (timing.gpuFrameTime > 0) RecordTiming("gpu_frame", timing.gpuFrameTime);
+                }
+            }
             if (VisualDebug)
             {
                 var capture = false;

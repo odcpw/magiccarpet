@@ -1116,6 +1116,7 @@ namespace MagicCarpet.Native
 
         internal static T ReadJson<T>(JsonRead read, string operation) where T : class
         {
+            var nativeStart = ModernCapture.BeginMeasurement();
             // A size probe builds and hashes the entire native snapshot too.
             // Most observations fit here; larger ones retain the bounded retry.
             const uint maximum = 16 * 1024 * 1024;
@@ -1139,7 +1140,10 @@ namespace MagicCarpet.Native
                     throw new InvalidOperationException(operation + " returned an invalid byte length");
                 var bytes = new byte[checked((int)written)];
                 Marshal.Copy(buffer, bytes, 0, checked((int)written));
+                if (nativeStart != 0) ModernCapture.EndMeasurement("engine_native_" + typeof(T).Name, nativeStart);
+                var decodeStart = ModernCapture.BeginMeasurement();
                 var value = JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes));
+                if (decodeStart != 0) ModernCapture.EndMeasurement("engine_decode_" + typeof(T).Name, decodeStart);
                 return value ?? throw new InvalidOperationException(operation + " returned null JSON");
             }
             finally
