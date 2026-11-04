@@ -647,7 +647,7 @@ impl RuntimeRecord {
                     "active game-runtime campaign has no selection-bound installed resource",
                 )
             })?;
-        let inspection = Arc::new(campaign.inspection().clone());
+        let inspection = campaign.inspection_arc();
         let retained = self.campaign_presentation.take().and_then(|record| {
             if record.generation != generation {
                 return None;
@@ -2476,6 +2476,7 @@ mod tests {
                 "save_contract": "carpet-flight-mc2-campaign-replay-save/v6",
                 "save_transport": "mc_game_runtime_save_replay_json_v1",
                 "load_transport": "mc_game_runtime_load_replay_json_v1",
+                "warm_load_transport": "mc_game_runtime_load_replay_from_runtime_json_v1",
                 "load_package_authority": "complete_unordered_resource_set",
                 "client_semantics": "opaque_utf8_json"
             })
@@ -2675,6 +2676,33 @@ mod tests {
         );
         assert_eq!(entity_count, world.entity_count);
         assert!(entity_count > 0);
+        let check_shared_inspection = || {
+            with_runtime_mut(handle, |record| {
+                let before = record.campaign_snapshot()?;
+                let authoritative = record
+                    .session()?
+                    .backend()
+                    .campaign_presentation_source()
+                    .inspection_arc();
+                // The first read refreshes the dirty adapter; the second
+                // reuses it. Both must retain the authoritative allocation.
+                for _ in 0..2 {
+                    let presentation = record.take_campaign_presentation_record()?;
+                    let super::super::campaign_abi::CampaignSessionKind::Campaign {
+                        inspection, ..
+                    } = &presentation.kind
+                    else {
+                        panic!("runtime presentation retains its campaign variant");
+                    };
+                    assert!(Arc::ptr_eq(inspection, &authoritative));
+                    record.retain_campaign_presentation_record(presentation);
+                }
+                assert_eq!(record.campaign_snapshot()?, before);
+                Ok(())
+            })
+            .unwrap();
+        };
+        check_shared_inspection();
         let command = br#"{"longitudinal":"accelerate"}"#;
         assert_eq!(
             mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32,),
@@ -2684,6 +2712,7 @@ mod tests {
             mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
         });
         assert_eq!(stepped["identity"]["tick"], "1");
+        check_shared_inspection();
 
         assert_eq!(
             mc_game_session_destroy_v1(handle),

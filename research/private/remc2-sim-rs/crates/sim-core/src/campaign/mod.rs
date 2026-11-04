@@ -199,6 +199,12 @@ impl CampaignSession {
         &self.inspection
     }
 
+    /// Share the immutable owner data with a retained presentation adapter.
+    #[must_use]
+    pub fn inspection_arc(&self) -> Arc<NativeWorldInspection> {
+        Arc::clone(&self.inspection)
+    }
+
     pub(crate) fn speech_enabled(&self) -> bool {
         self.speech_enabled
     }

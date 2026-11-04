@@ -14611,6 +14611,9 @@ impl Mc2Simulation {
     ) -> Option<Level2ResolvedSourcePlan> {
         let live = &self.session.state.live;
         let dynamic_row = live.economy.live_arena_cursor_row(source_slot);
+        // Raw entities retain parse_entities' slot/index invariant through
+        // allocation and reclaim. Read the current slot directly; route and
+        // phase are still resolved afresh at every scheduler visit.
         // The fixed player address can be reused by NewEvent. Only the
         // current raw player callback belongs to the player route; a live
         // replacement carrier keeps its own route and authoritative phase.
@@ -14757,7 +14760,7 @@ impl Mc2Simulation {
                 holder.class,
                 holder.action,
             ))
-        } else if let Some(holder) = live.economy.entities.iter().find(|holder| {
+        } else if let Some(holder) = live.economy.entities.get(usize::from(source_slot)).filter(|holder| {
             holder.active
                 && holder.index == source_slot
                 && holder.class == 15
@@ -14770,7 +14773,7 @@ impl Mc2Simulation {
                 holder.class,
                 holder.action,
             ))
-        } else if let Some(holder) = live.economy.entities.iter().find(|holder| {
+        } else if let Some(holder) = live.economy.entities.get(usize::from(source_slot)).filter(|holder| {
             holder.active
                 && holder.index == source_slot
                 && holder.class == 15
@@ -14807,7 +14810,7 @@ impl Mc2Simulation {
                 stone.entity.class,
                 stone.entity.action,
             ))
-        } else if let Some(exit_switch) = live.economy.entities.iter().find(|entity| {
+        } else if let Some(exit_switch) = live.economy.entities.get(usize::from(source_slot)).filter(|entity| {
             entity.active && entity.index == source_slot && entity.class == 11 && entity.model == 4
         }) {
             Some((
@@ -14856,7 +14859,7 @@ impl Mc2Simulation {
             .find(|goat| goat.active && goat.entity_index == source_slot)
         {
             Some((SourceRoute::Goat, 5, goat.action))
-        } else if let Some(nyphur) = live.economy.entities.iter().find(|entity| {
+        } else if let Some(nyphur) = live.economy.entities.get(usize::from(source_slot)).filter(|entity| {
             entity.active && entity.index == source_slot && entity.class == 3 && entity.model == 1
         }) {
             Some((SourceRoute::Nyphur, nyphur.class, nyphur.action))
@@ -14953,8 +14956,8 @@ impl Mc2Simulation {
             SourceRoute::Player | SourceRoute::Nyphur | SourceRoute::ExitSwitch => live
                 .economy
                 .entities
-                .iter()
-                .find(|row| row.active && row.index == source_slot)
+                .get(usize::from(source_slot))
+                .filter(|row| row.active && row.index == source_slot)
                 .map(|row| row.phase),
             SourceRoute::SpeedPickup
             | SourceRoute::ImportedSpellSource
@@ -14969,8 +14972,8 @@ impl Mc2Simulation {
                 .or_else(|| {
                     live.economy
                         .entities
-                        .iter()
-                        .find(|row| row.active && row.index == source_slot)
+                        .get(usize::from(source_slot))
+                        .filter(|row| row.active && row.index == source_slot)
                         .map(|row| row.phase)
                 }),
             SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
@@ -14978,8 +14981,8 @@ impl Mc2Simulation {
                 {
                     live.economy
                         .entities
-                        .iter()
-                        .find(|row| row.active && row.index == source_slot)
+                        .get(usize::from(source_slot))
+                        .filter(|row| row.active && row.index == source_slot)
                         .map(|row| row.phase)
                 } else {
                     live.shared_spells
