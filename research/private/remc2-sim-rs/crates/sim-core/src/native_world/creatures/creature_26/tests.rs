@@ -419,8 +419,45 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
         0
     );
     let holder_handle = session.source_arena().handle(holder_slot).unwrap();
+    // Speed's initial overlap box is entirely covered by its real Army and
+    // Shield neighbors. Isolate only the existing Army pickup's placement as
+    // a check prerequisite; keep real Speed acquisition and Shield recovery.
+    let army = session.entities()[7].clone();
+    assert_eq!((army.class, army.model, army.action), (15, 19, 58));
+    let army_handle = session.source_arena().handle(7).unwrap();
+    session.set_level2_entity_position(7, Position {
+        x: army.position.x.wrapping_sub(4_096),
+        ..army.position
+    }).unwrap();
+    let isolated = &session.entities()[7];
+    assert_eq!(session.source_arena().handle(7), Some(army_handle));
+    assert_eq!((isolated.class, isolated.model, isolated.action, isolated.control_flags,
+        isolated.life, isolated.max_life, isolated.phase, isolated.entity_rng),
+        (army.class, army.model, army.action, army.control_flags,
+            army.life, army.max_life, army.phase, army.entity_rng));
+    let shield = session.entities()[2].clone();
+    assert_eq!((shield.class, shield.model, shield.action), (15, 6, 19));
+    let mut pickup_approach = pickup.position;
+    crate::move_entity(&mut pickup_approach,
+        heading_for_positions(shield.position, pickup.position) as i16, 0, 512);
+    let mut player_at_pickup = session.entities()[usize::from(player_slot)].clone();
+    player_at_pickup.set_position(pickup_approach);
+    for ground in session.entities().iter().filter(|row| {
+        row.active && row.class == 15 && !row.drawing_disabled()
+            && [crate::spell_activation::PhysicalSpellActionRole::OrdinaryPickup,
+                crate::spell_activation::PhysicalSpellActionRole::PersistentPickup]
+                .into_iter().any(|role|
+                    crate::spell_activation::physical_spell_action(row.model, role) == Some(row.action))
+            && session.shared_spells().local_player().enabled_spell_holders
+                .get(usize::from(row.model)) == Some(&0)
+    }) {
+        assert_eq!(crate::native_world::level2_source_intersects(ground, &player_at_pickup),
+            ground.index == holder_slot,
+            "the declared approach overlaps Speed only among all eligible real pickups: slot {} family {} position {:?}",
+            ground.index, ground.model, ground.position);
+    }
     session
-        .set_level2_entity_position(player_slot, pickup.position)
+        .set_level2_entity_position(player_slot, pickup_approach)
         .unwrap();
     for _ in 0..8 {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -461,6 +498,10 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
         );
     }
     assert_eq!(word(&session.entities()[usize::from(holder_slot)], 58), 0);
+    assert_eq!(session.entities()[usize::from(player_slot)].source_player_entity_index(), 0,
+        "the actual player's word94 ownership relation does not identify its A4");
+    assert_eq!(session.entities()[usize::from(player_slot)].special_relation,
+        crate::native_world::EntitySpecialRelation::PlayerState(session.shared_spells().local_player().slot));
 
     // An old holder generation cannot mutate the genuinely acquired hand.
     let victim = session.source_arena().handle(player_slot).unwrap();
@@ -1374,12 +1415,14 @@ fn dynamic_theft_publishes_current_holder_and_uses_detached_return_consumer() {
     let victim_slot = shared.player_entity.index;
     let victim = arena.entities[usize::from(victim_slot)].clone();
     assert!(victim.active && victim.class == 3 && victim.model == 0);
-    let victim_player = victim.source_player_entity_index();
+    let crate::native_world::EntitySpecialRelation::PlayerState(victim_player_slot) = victim.special_relation
+        else { panic!("the actual victim retains its source A4 player relation") };
     let player_index = shared
         .players
         .iter()
-        .position(|player| player.entity_index == victim_player)
+        .position(|player| player.slot == victim_player_slot)
         .expect("victim has a source player record");
+    let victim_player = shared.players[player_index].entity_index;
     let family = 4;
     let holder_action = family * 3;
     let pickup = arena

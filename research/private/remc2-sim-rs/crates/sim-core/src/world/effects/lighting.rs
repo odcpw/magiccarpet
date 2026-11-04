@@ -204,6 +204,140 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn authored_ambient_smoke_switch_runs_source_children_through_expiry() {
+        use crate::native_world::Mc2DispatchEvent;
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level6");
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(6).unwrap())
+            .expect("actual ordinary Level 6 owner package").simulation().clone();
+        let feature = session.mission().authored_features().iter()
+            .find(|row| row.index == 384 && (row.kind, row.subtype, row.activation_group) == (10, 60, 16))
+            .expect("the actual group-16 AmbientSmoke feature");
+        assert_eq!((feature.tile_x, feature.tile_y), (196, 2));
+        let switch = session.entities().iter().find(|row| row.active
+            && (row.class, row.model, row.action, row.source_id) == (11, 2, 2, 16)
+            && (row.position.x >> 8, row.position.y >> 8) == (195, 2))
+            .expect("the imported repeated-entry switch for group 16").clone();
+        let prior = session.entities().iter().map(|row| session.economy().slot_generation(row.index))
+            .collect::<Vec<_>>();
+        // The player position is the declared trigger prerequisite; the
+        // original switch, unfiltered group and NewEvent remain live.
+        session.set_level2_entity_position(session.state.entity_index, switch.position).unwrap();
+        let mut controller = None;
+        for _ in 0..16 {
+            session.step_level2_source_pass(0);
+            assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+            controller = session.entities().iter().find(|row| row.active
+                && (row.class, row.model, row.action) == (10, 60, 65)
+                && (row.position.x >> 8, row.position.y >> 8) == (196, 2)
+                && session.economy().slot_generation(row.index) != prior[usize::from(row.index)])
+                .and_then(|row| session.source_arena().handle(row.index));
+            if controller.is_some() { break; }
+        }
+        let controller = controller.expect("the real group-16 switch constructs AmbientSmoke60");
+        let authored_thieves = session.mission().authored_features().iter()
+            .filter(|row| (row.kind, row.subtype, row.activation_group) == (5, 26, 13))
+            .map(|row| row.index).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(authored_thieves.len(), 6);
+        let census = session.creature_runtime_census();
+        let actual_thieves = census.roots_of_kind(crate::level_definition::CreatureKind::Creature26)
+            .filter_map(|identity| match identity.origin {
+                crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord { authored_record }
+                    if authored_thieves.contains(&authored_record) => {
+                        assert_ne!(identity.handle.generation, prior[usize::from(identity.handle.source_slot)]);
+                        Some(authored_record)
+                    }
+                _ => None,
+            }).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_thieves, authored_thieves,
+            "the preceding real group constructs all six model26 roots with current authored identities");
+        let root = &session.entities()[usize::from(controller.source_slot)];
+        assert!((800..=899).contains(&root.max_life));
+        assert_eq!(root.phase, (root.index as u8).wrapping_add((root.max_life - root.life) as u8),
+            "the real controller's constructor and scheduled visits retain source phase");
+        assert_eq!(root.control_flags & 0x0002_0005, 1,
+            "the admitted controller is unlinked and not source-replaceable");
+        let position = root.position;
+        // The source checks only the ordinary free stack before NewEvent;
+        // captured replacement addresses do not satisfy the 32-slot gate.
+        let mut capacity = session.clone();
+        {
+            let live = &mut capacity.session.state.live;
+            while live.economy.economy.free_slot_count() > 32 {
+                live.economy.allocate_source_slot_with_terrain(&mut live.terrain)
+                    .expect("consume an ordinary free address for the admission control");
+            }
+            assert_eq!(live.economy.economy.free_slot_count(), 32);
+        }
+        let particles = capacity.session.definition.presentation.particles.clone();
+        let mut at_limit = capacity.clone();
+        {
+            let live = &mut at_limit.session.state.live;
+            assert!(crate::world::effects::allocate(&mut live.economy, &mut live.terrain,
+                sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::AmbientSmoke),
+                position, &particles).unwrap().is_some(), "32 ordinary free slots admit the constructor");
+        }
+        {
+            let live = &mut capacity.session.state.live;
+            live.economy.allocate_source_slot_with_terrain(&mut live.terrain).unwrap();
+            let rng = live.economy.economy.global_rng;
+            assert_eq!(live.economy.economy.free_slot_count(), 31);
+            assert!(crate::world::effects::allocate(&mut live.economy, &mut live.terrain,
+                sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::AmbientSmoke),
+                position, &particles).unwrap().is_none(), "31 free slots refuse before NewEvent");
+            assert_eq!(live.economy.economy.global_rng, rng);
+            assert_eq!(live.economy.economy.free_slot_count(), 31);
+        }
+        let player = session.state.entity_index;
+        session.set_level2_entity_position(player, Position { z: position.z.wrapping_add(1_024), ..position }).unwrap();
+
+        let mut child = None;
+        let mut child_presented = false;
+        let mut child_hidden = false;
+        let mut root_hidden = false;
+        for _ in 0..920 {
+            if child.is_none() {
+                let observed = session.entities().iter().find(|row| row.active
+                    && (row.class, row.model, row.action) == (10, 14, 14)
+                    && row.source_id == row.index
+                    && session.economy().slot_generation(row.index) != prior[usize::from(row.index)]
+                    && crate::distance_3d_wrapped(position, row.position) < 1_024);
+                if let Some(row) = observed {
+                    assert_eq!(row.max_life, 32);
+                    assert!((31..=32).contains(&row.life),
+                        "the child receives source lifetime before any later numeric visit");
+                    child = session.source_arena().handle(row.index);
+                }
+            }
+            if let Some(handle) = child {
+                if session.source_arena().handle(handle.source_slot) == Some(handle) {
+                    let row = &session.entities()[usize::from(handle.source_slot)];
+                    assert_eq!(row.source_id, handle.source_slot,
+                        "32420 leaves the smoke child's NewEvent ID intact");
+                    child_presented |= session.campaign_entity_presentations(0).unwrap().iter().any(|view|
+                        view.entity_index == handle.source_slot && view.source_id == handle.source_slot
+                            && (9..=16).contains(&view.render_parameter_index));
+                    child_hidden |= row.drawing_disabled();
+                }
+            }
+            if session.source_arena().handle(controller.source_slot) == Some(controller) {
+                root_hidden |= session.entities()[usize::from(controller.source_slot)].drawing_disabled();
+            }
+            if root_hidden && session.source_arena().handle(controller.source_slot) != Some(controller)
+                && child_hidden && child.is_some_and(|handle|
+                    session.source_arena().handle(handle.source_slot) != Some(handle)) { break; }
+            session.step_level2_source_pass(0);
+            assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        let child = child.expect("the scheduled AmbientSmoke emitted actual DarkSmoke14");
+        assert!(child_presented && child_hidden, "the original smoke sprite is presented and naturally hides");
+        assert_ne!(session.source_arena().handle(child.source_slot), Some(child), "the child is reclaimed");
+        assert!(root_hidden, "the unmodified source lifetime reaches the controller's hide");
+        assert_ne!(session.source_arena().handle(controller.source_slot), Some(controller), "the controller is reclaimed");
+    }
+
+    #[test]
     fn authored_volcano_debris_obeys_current_fire_proximity_and_runs_smoke_lifetime() {
         use crate::level_definition::EffectKind;
         use crate::native_world::Mc2DispatchEvent;

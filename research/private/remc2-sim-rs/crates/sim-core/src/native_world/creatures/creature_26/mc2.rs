@@ -9,7 +9,7 @@ use super::{
 use crate::Position;
 use crate::campaign::source_arena::{SourceArena, SourceEntityHandle, SourceEntityView};
 use crate::native_world::{
-    ENTITY_DRAW_DISABLED_BIT, EntitySnapshot, Level2DynamicArenaKind,
+    ENTITY_DRAW_DISABLED_BIT, EntitySnapshot, EntitySpecialRelation, Level2DynamicArenaKind,
     Level2SharedSpellResetSession, ParticleParameter, PlayerSnapshot, RuntimeSnapshot,
     SessionTerrain,
 };
@@ -116,6 +116,24 @@ fn offer(
     })
 }
 
+/// sub_28FF0 reads hands through the current victim's A4 pointer. The
+/// separate source word94 is a mana/ownership relation, not that pointer.
+pub(crate) fn player_state<'a>(
+    row: &EntitySnapshot,
+    shared: &'a Level2SharedSpellResetSession,
+) -> Option<&'a PlayerSnapshot> {
+    if !row.active || row.class != 3 || !matches!(row.model, 0 | 1) {
+        return None;
+    }
+    let EntitySpecialRelation::PlayerState(slot) = row.special_relation else {
+        return None;
+    };
+    shared.players.iter()
+        .find(|player| player.slot == slot && player.entity_index == row.index)
+        .or_else(|| (shared.local_player.slot == slot && shared.local_player.entity_index == row.index)
+            .then_some(&shared.local_player))
+}
+
 fn target(
     arena: &SourceArena,
     shared: &Level2SharedSpellResetSession,
@@ -126,14 +144,8 @@ fn target(
         .get(usize::from(slot))
         .filter(|row| row.active && row.index == slot)?;
     let handle = arena.handle(slot)?;
-    let player_entity = row.source_player_entity_index();
-    let player = shared
-        .players
-        .iter()
-        .find(|player| player.entity_index == player_entity)
-        .or_else(|| {
-            (shared.local_player.entity_index == player_entity).then_some(&shared.local_player)
-        });
+    let player = player_state(row, shared);
+    let player_entity = player.map_or(0, |player| player.entity_index);
     let left_spell =
         player.and_then(|player| offer(arena, shared, player, player.left_spell_slot_raw));
     let right_spell =
@@ -404,19 +416,24 @@ pub(super) fn apply_spell_theft(
                 && row.model == 0
                 && row.life >= 0
                 && row.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-                && row.source_player_entity_index() == theft.victim_player
                 && row.position == theft.victim_position
         })
     else {
         return false;
     };
     let victim_position = victim.position;
+    let Some(player) = player_state(victim, shared)
+        .filter(|player| player.entity_index == theft.victim_player)
+    else {
+        return false;
+    };
+    let player_slot = player.slot;
     let player_index = shared
         .players
         .iter()
-        .position(|player| player.entity_index == theft.victim_player);
+        .position(|player| player.slot == player_slot);
     let local_only =
-        player_index.is_none() && shared.local_player.entity_index == theft.victim_player;
+        player_index.is_none() && shared.local_player.slot == player_slot;
     if player_index.is_none() && !local_only {
         return false;
     }
@@ -436,7 +453,6 @@ pub(super) fn apply_spell_theft(
     }
     let right_selected = player.right_spell_slot_raw == expected_hand;
     let left_selected = player.left_spell_slot_raw == expected_hand;
-    let player_slot = player.slot;
     let holder_slot = usize::from(theft.holder.source_slot);
     if holder_slot >= arena.entities.len() {
         return false;

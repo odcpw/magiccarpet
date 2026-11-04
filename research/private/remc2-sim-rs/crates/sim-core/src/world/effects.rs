@@ -1003,7 +1003,7 @@ fn child(
     kind: EffectKind,
     position: Position,
 ) -> Result<Option<u16>, String> {
-    child_inner(arena, terrain, particles, parent, kind, position, false)
+    child_inner(arena, terrain, particles, parent, kind, position, false, true)
 }
 
 fn child_inner(
@@ -1014,6 +1014,7 @@ fn child_inner(
     kind: EffectKind,
     position: Position,
     source_position_address: bool,
+    inherit_parent_id: bool,
 ) -> Result<Option<u16>, String> {
     // NewEvent may evict this very replaceable parent. Publish the current
     // source writes before allocation, then keep using the actual occupant
@@ -1037,7 +1038,7 @@ fn child_inner(
     if arena.economy.slot_generation(parent_slot) != generation {
         *parent = arena.entities[usize::from(parent_slot)].clone();
     }
-    if let Some(slot) = result {
+    if inherit_parent_id && let Some(slot) = result {
         let row = &mut arena.entities[usize::from(slot)];
         row.source_id = parent.source_id;
         row.record[30..32].copy_from_slice(&parent.source_id.to_le_bytes());
@@ -1242,6 +1243,7 @@ where
                             EffectKind::DarkSmoke,
                             position,
                             true,
+                            true,
                         )? {
                             let row = &mut arena.entities[usize::from(slot)];
                             row.set_source_dword_10(100);
@@ -1342,13 +1344,15 @@ where
                 let mut position = source.position;
                 position.x = position.x.wrapping_add(draw(&mut source) % 160);
                 position.z = position.z.wrapping_add((draw(&mut source) % 160) as i16);
-                if let Some(slot) = child(
+                if let Some(slot) = child_inner(
                     arena,
                     terrain,
                     particles,
                     &mut source,
                     EffectKind::DarkSmoke,
                     position,
+                    false,
+                    false,
                 )? {
                     let extra = source
                         .actual_speed

@@ -11893,7 +11893,7 @@ impl Mc2Simulation {
             && !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1 | 2 | 6 | 7)
-                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 27 | 28)
+                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
                         0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
@@ -17009,21 +17009,14 @@ impl Mc2Simulation {
                                         && row.model == 0
                                 })
                         {
-                            let victim_player = victim_row.source_player_entity_index();
-                            if let Some(source_player) = live
-                                .shared_spells
-                                .players()
-                                .iter()
-                                .find(|player| player.entity_index == victim_player)
-                                .or_else(|| {
-                                    (live.shared_spells.local_player.entity_index == victim_player)
-                                        .then_some(&live.shared_spells.local_player)
-                                })
+                            if let Some(source_player) = creatures::creature_26::mc2::player_state(
+                                victim_row, &live.shared_spells,
+                            )
                                 && let Some(player) = live
                                     .core
                                     .players
                                     .iter_mut()
-                                    .find(|player| player.entity_index == victim_player)
+                                    .find(|player| player.slot == source_player.slot)
                             {
                                 player.sync_spell_acquisition_from(source_player);
                             }
