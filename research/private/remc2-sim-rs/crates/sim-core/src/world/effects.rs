@@ -500,9 +500,8 @@ pub(crate) fn allocate(
     allocate_inner(arena, terrain, definition, position, particles, None)
 }
 
-/// Construct an impact, radial explosion, ash, ground fire or fire spheres from a source
-/// entity's position address. NewEvent can reuse that same address and zero it
-/// before the constructor maps the child or admits its light.
+/// Construct a supported effect from a source entity's position address.
+/// NewEvent can reuse that address and zero it before the child reads it.
 pub(crate) fn allocate_from_source_position(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -518,9 +517,10 @@ pub(crate) fn allocate_from_source_position(
             | EffectKind::Ash
             | EffectKind::GroundFire
             | EffectKind::FireSpheres
+            | EffectKind::FadingSmoke
     ) {
         return Err(
-            "source-position effect constructor only supports impact, radial explosion, ash, ground fire and fire spheres"
+            "effect constructor does not support a source-position address"
                 .to_owned(),
         );
     }

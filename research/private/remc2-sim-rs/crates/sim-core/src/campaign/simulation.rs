@@ -1428,6 +1428,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     );
                 }
                 self.owner.step_level2_projectile_threat_prepass();
+                self.owner.step_cave_ground_feature_prepass()?;
                 let begin_events = self
                     .owner
                     .session
@@ -1815,6 +1816,48 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
 }
 
 impl Mc2Simulation {
+    /// Source58630 runs after159E0 and before60F00/the numeric walk. In
+    /// single player the cadence comes from the local player, while the
+    /// enabled flag and fixed entity address belong to player-table row0.
+    fn step_cave_ground_feature_prepass(&mut self) -> std::result::Result<(), String> {
+        let live = &mut self.session.state.live;
+        if live.terrain.map_type() != MapType::Cave {
+            return Ok(());
+        }
+        let turn = live.shared_spells.local_player.turn;
+        let player = live.core.players.iter().find(|player| player.slot == 0)
+            .ok_or("Cave ground-feature prepass has no source player-table row0")?;
+        let enabled = player.banishment_state_0x006
+            .ok_or("Cave ground-feature prepass has no source row0 enabled byte")? != 0;
+        // The source never dereferences the configured address when either
+        // admission gate fails, including an unused player-table row.
+        if !enabled || turn & 7 != 0 {
+            return Ok(());
+        }
+        let slot = player.entity_index;
+        let (position, yaw) = if slot == 0 {
+            // Entities[0] is the source's initialized fixed sentinel packet.
+            let sentinel = &live.economy.entities[0];
+            (sentinel.position, sentinel.yaw)
+        } else {
+            let state = live.core.state;
+            let current = source_target::read(&live.economy, source_target::Context {
+                spells: Some(&live.shared_spells),
+                particles: Some(&self.session.definition.presentation.particles),
+                map_type: Some(live.terrain.map_type()),
+                player: Some((state.entity_index, state.position, live.player_life)),
+                player_orientation: Some((state.yaw, state.roll_accumulator)),
+                ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+            }, slot)?.ok_or_else(|| format!("Cave player0 fixed address {slot} is outside the arena"))?;
+            (current.position, current.yaw.ok_or_else(||
+                format!("Cave player0 fixed address {slot} has no current source yaw"))?)
+        };
+        cave_features::produce_ground_feature(&mut live.economy, &mut live.terrain,
+            &self.session.definition.presentation.particles,
+            cave_features::GroundFeatureSource { position, yaw, turn, enabled })?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn cf10_production_schedule_receipts(
         &self,
@@ -28442,6 +28485,157 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_cave_ground_feature_schedules_smoke_current_parent_tail_and_reclaim() {
+        use crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+        use crate::campaign::journal::CampaignEffect;
+        fn set_turn(session: &mut Mc2Simulation, turn: i32) {
+            let live = &mut session.session.state.live;
+            let local = live.shared_spells.local_player.slot;
+            live.shared_spells.local_player.turn = turn;
+            live.shared_spells.local_player.record[8..12].copy_from_slice(&turn.to_le_bytes());
+            for player in live.shared_spells.players.iter_mut().chain(live.core.players.iter_mut())
+                .filter(|player| player.slot == local)
+            {
+                player.turn = turn;
+                player.record[8..12].copy_from_slice(&turn.to_le_bytes());
+            }
+        }
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level4");
+        let base = CampaignSession::open(package, CampaignSelection::ordinary(4).unwrap())
+            .expect("unmodified ordinary Cave owner package").simulation().clone();
+        assert_eq!(base.canonical_terrain().map_type(), MapType::Cave);
+        assert_eq!(base.players().iter().find(|player| player.slot == 0).unwrap()
+            .banishment_state_0x006, Some(1));
+        let generations = base.entities().iter().map(|row| base.economy().slot_generation(row.index))
+            .collect::<Vec<_>>();
+        // Only turn/RNG are declared producer prerequisites. Each trial runs
+        // the actual complete source pass and its unfiltered terrain scan;
+        // no feature, child, target, or eligible tile is installed by hand.
+        let mut ready = None;
+        for seed in 0..64 {
+            let mut candidate = base.clone();
+            set_turn(&mut candidate, 8);
+            candidate.session.state.live.economy.economy.global_rng = seed;
+            candidate.step_level2_source_pass(0);
+            let source = candidate.entities().iter().find(|row| row.active
+                && (row.class, row.model, row.action) == (10, 86, 93)
+                && candidate.economy().slot_generation(row.index) != generations[usize::from(row.index)])
+                .cloned();
+            let Some(source) = source else { continue; };
+            assert_eq!((source.max_life, source.life, source.phase),
+                (9, 8, (source.index as u8).wrapping_add(1)),
+                "ambient birth participates in this same numeric scan");
+            set_turn(&mut candidate, 9);
+            for _ in 0..4 { candidate.step_level2_source_pass(0); }
+            let current = &candidate.entities()[usize::from(source.index)];
+            if current.active && !current.drawing_disabled() && current.life == 4 {
+                ready = Some((candidate, source.index));
+                break;
+            }
+        }
+        let (ready, parent) = ready.expect("the real ambient producer reaches its ordinary sixth visit");
+        let parent_generation = ready.economy().slot_generation(parent);
+        let parent_particle = ready.entities()[usize::from(parent)].particle_parameter_index.unwrap();
+        assert!((332..=334).contains(&parent_particle));
+        let mut normal_audio = false;
+        let mut alias_audio = false;
+        for alias in [false, true] {
+            for sound_seed in [0, 1] {
+                let mut session = ready.clone();
+                if alias {
+                    // Real49F90 captures the ordinary replaceable ground
+                    // feature. Exhaustion is an explicit pressure control;
+                    // model87 has no multi-row admission budget.
+                    let reset = session.session.baseline.economy.economy.free_slots.clone();
+                    let live = &mut session.session.state.live;
+                    live.economy.economy.exhaust_new_event_capacity_for_test();
+                    for row in &mut live.economy.entities {
+                        if row.index != parent {
+                            row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+                        }
+                    }
+                    assert_ne!(live.economy.entities[usize::from(parent)].control_flags & SOURCE_REPLACEABLE_FLAG, 0);
+                    live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &reset).unwrap();
+                    live.economy.economy.exhaust_new_event_capacity_for_test();
+                    assert!(live.economy.economy.free_source_slots().is_empty());
+                }
+                session.session.state.live.economy.economy.global_rng = sound_seed;
+                let journal_start = session.effect_journal().records().len();
+                let parent_phase = session.entities()[usize::from(parent)].phase;
+                let parent_position = session.entities()[usize::from(parent)].position;
+                let before = session.entities().iter().map(|row| session.economy().slot_generation(row.index))
+                    .collect::<Vec<_>>();
+                session.step_level2_source_pass(0);
+                let smoke = session.entities().iter().find(|row| row.active
+                    && (row.class, row.model, row.action) == (10, 87, 94)
+                    && session.economy().slot_generation(row.index) != before[usize::from(row.index)])
+                    .cloned().expect("actual scheduled action93 constructs FadingSmoke87");
+                let smoke_generation = session.economy().slot_generation(smoke.index);
+                assert_eq!(smoke.particle_parameter_index, Some(67));
+                assert!((17..=39).contains(&smoke.max_life));
+                if alias {
+                    assert_eq!(smoke.index, parent);
+                    assert_ne!(smoke_generation, parent_generation);
+                    assert_eq!((smoke.position, smoke.life, smoke.record[96], smoke.phase),
+                        (Position::default(), smoke.max_life - 1, 1, (parent as u8).wrapping_add(1)),
+                        "action93 continues current-parent decrement/animation; action94 waits until the next visit");
+                } else {
+                    assert_ne!(smoke.index, parent);
+                    let source = &session.entities()[usize::from(parent)];
+                    assert_eq!((source.life, source.phase), (3, parent_phase.wrapping_add(1)));
+                    assert_eq!(smoke.life, smoke.max_life - i32::from(smoke.index > parent));
+                }
+                let sound = if alias { 67_u16.wrapping_sub(282) } else { parent_particle - 282 };
+                for record in &session.effect_journal().records()[journal_start..] {
+                    if matches!(record.effect, CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index, sound_id, .. }) if entity_index == parent && sound_id == sound)
+                    {
+                        assert_eq!(record.audio.is_some(), !alias,
+                            "unsupported signed source sound remains a request, without an invalid prepared descriptor");
+                        if alias { alias_audio = true; } else { normal_audio = true; }
+                    }
+                }
+                let observer = Position { z: smoke.position.z.wrapping_add(1_024), ..smoke.position };
+                session.set_level2_entity_position(session.state.entity_index, observer).unwrap();
+                let dto = session.campaign_entity_presentations(0).unwrap().into_iter()
+                    .find(|view| view.entity_index == smoke.index).expect("the real smoke reaches original sprite projection");
+                assert_eq!(dto.render_parameter_index, 67);
+                if alias {
+                    let z = smoke.position.z;
+                    session.step_level2_source_pass(0);
+                    let moved = &session.entities()[usize::from(smoke.index)];
+                    assert_ne!(moved.position.z, z, "the following source visit now runs action94 physics");
+                }
+                let mut hidden = None;
+                for _ in 0..64 {
+                    let current = &session.entities()[usize::from(smoke.index)];
+                    assert_eq!(session.economy().slot_generation(smoke.index), smoke_generation);
+                    if current.drawing_disabled() {
+                        assert!(!session.economy().free_source_slots().contains(&smoke.index));
+                        assert!(session.economy().map_chains.is_linked(smoke.index));
+                        hidden = Some(current.clone());
+                        break;
+                    }
+                    session.step_level2_source_pass(0);
+                }
+                let hidden = hidden.expect("source smoke naturally hides after its lifetime");
+                assert!(!session.campaign_entity_presentations(0).unwrap().iter()
+                    .any(|view| view.entity_index == smoke.index));
+                session.step_level2_source_pass(0);
+                assert!(session.economy().free_source_slots().contains(&smoke.index));
+                assert!(!session.economy().map_chains.is_linked(smoke.index));
+                let retained = &session.entities()[usize::from(smoke.index)];
+                assert_eq!((retained.class, retained.model, retained.life, retained.position),
+                    (0, 87, hidden.life, hidden.position));
+                assert_eq!(retained.control_flags & 4, 0);
+                assert!(alias || parent_position != Position::default());
+            }
+        }
+        assert!(normal_audio && alias_audio, "both current-parent source sound branches are observed");
+    }
 
     #[test]
     fn level16_creature24_production_death_and_reclaim_reach_real_absence_objective() {

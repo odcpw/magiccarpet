@@ -125,52 +125,6 @@ pub(crate) fn bind_particle(
     Ok(())
 }
 
-/// Ground86's immediate smoke descendant. The source-global draw happens
-/// before NewEvent, even on exhaustion; the entity draw happens only on birth.
-pub(crate) fn allocate_ground_smoke(
-    arena: &mut SourceArena,
-    terrain: &mut SessionTerrain,
-    position: Position,
-    particle: ParticleParameter,
-) -> Result<Option<u16>, String> {
-    arena.economy.advance_global_rng();
-    let lifetime = (arena.economy.global_rng % 23 + 17) as i32;
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
-        return Ok(None);
-    };
-    let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
-    source.class = 10;
-    source.model = 87;
-    source.record[67] = 10;
-    source.record[68] = 87;
-    source.set_source_action(94);
-    source.set_max_life(lifetime);
-    source.set_life(lifetime);
-    source.set_entity_rng(source.entity_rng.wrapping_mul(9_377).wrapping_add(9_439));
-    source.set_control_flags((source.control_flags & 0xfffd_fff7) | 0x0002_0004);
-    source.record[69] = 10;
-    source.record[70] = 87;
-    source.record[138..140].copy_from_slice(&30_i16.to_le_bytes());
-    source.set_actual_speed((source.entity_rng % 53 + 51) as i16);
-    if let Err(error) = bind_particle(&mut source, 67, particle) {
-        arena.economy.release_slot(slot, Some(source.entity_rng));
-        return Err(error);
-    }
-    if let Err(error) = arena.economy.map_chains.sync_entity(RenderableMapSeed {
-        entity_index: slot,
-        active: true,
-        x: position.x,
-        y: position.y,
-    }) {
-        arena.economy.release_slot(slot, Some(source.entity_rng));
-        return Err(error);
-    }
-    arena.economy.source_rng.insert(slot, source.entity_rng);
-    arena.entities[usize::from(slot)] = source;
-    synchronize_links(arena, terrain, slot);
-    Ok(Some(slot))
-}
-
 /// PrepareEvents' cave branch. The caller scans ordinary authored rows in
 /// source order and shares this mutable working copy across generation phases.
 /// Linked80 clears each visited stage tag, preventing duplicate construction
@@ -328,6 +282,72 @@ pub(crate) fn allocate(
     }))
 }
 
+/// Current fixed-address player inputs consumed by single-player sub_58630.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GroundFeatureSource {
+    pub(crate) position: Position,
+    pub(crate) yaw: i16,
+    pub(crate) turn: i32,
+    pub(crate) enabled: bool,
+}
+
+/// Run the source cave ambient prepass before numeric entity dispatch.
+pub(crate) fn produce_ground_feature(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    source: GroundFeatureSource,
+) -> Result<Option<u16>, String> {
+    if terrain.map_type() != MapType::Cave || !source.enabled || source.turn & 7 != 0 {
+        return Ok(None);
+    }
+    let mut point = source.position;
+    move_entity(&mut point, source.yaw, 0, 2_560);
+    let base_x = ((point.x.wrapping_add(128) >> 8) as u8).wrapping_sub(10);
+    let base_y = ((point.y.wrapping_add(128) >> 8) as u8).wrapping_sub(10);
+    arena.economy.advance_global_rng();
+    let first_x = (arena.economy.global_rng % 20) as u8;
+    arena.economy.advance_global_rng();
+    let first_y = (arena.economy.global_rng % 20) as u8;
+    let mut start_x = first_x;
+    for y in first_y..20 {
+        for x in (start_x..20).step_by(11) {
+            let tile_x = base_x.wrapping_add(x);
+            let tile_y = base_y.wrapping_add(y);
+            let tile = terrain_index(tile_x, tile_y);
+            if terrain.planes().terrain_types[tile] != 0 || terrain.planes().angles[tile] & 8 != 0 {
+                continue;
+            }
+            point.x = u16::from(tile_x) << 8;
+            point.y = u16::from(tile_y) << 8;
+            let Some(allocation) = allocate(arena, terrain, 86, point)? else {
+                return Ok(None);
+            };
+            if let Some(index) = allocation.particle_index {
+                let Some(particle) = particles.get(usize::from(index)).copied() else {
+                    reclaim(arena, terrain, allocation.source_slot);
+                    return Err(format!("ground feature needs retained particle {index}"));
+                };
+                if let Err(error) = bind_particle(
+                    &mut arena.entities[usize::from(allocation.source_slot)],
+                    index,
+                    particle,
+                ) {
+                    reclaim(arena, terrain, allocation.source_slot);
+                    return Err(error);
+                }
+            }
+            if allocation.reclaim {
+                reclaim(arena, terrain, allocation.source_slot);
+                return Ok(None);
+            }
+            return Ok(Some(allocation.source_slot));
+        }
+        start_x = 0;
+    }
+    Ok(None)
+}
+
 /// Immediate sub_57F20 (constructor86 failure or ApplyEvents terminal row).
 /// Runtime UpdateEntities continues to use its existing following-pass reclaim.
 pub(crate) fn reclaim(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16) {
@@ -341,8 +361,12 @@ pub(crate) fn reclaim(arena: &mut SourceArena, terrain: &mut SessionTerrain, slo
 
 pub(crate) fn synchronize_links(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u16) {
     // Source map surgery changes neighboring fixed rows as well as the head.
-    // Dynamic families retain their own projections in the shared map owner.
+    // Unlinked records retain their own old link words until NewEvent, even
+    // after sub_57F20 clears their class.
     for source in &mut arena.entities {
+        if !arena.economy.map_chains.is_linked(source.index) {
+            continue;
+        }
         source.record[26..28].copy_from_slice(
             &arena
                 .economy
@@ -469,23 +493,35 @@ pub(crate) fn visit_source(
     let mut sound_id = None;
     if birth {
         let position = source.position;
-        let sound = source
-            .particle_parameter_index
-            .ok_or_else(|| "ground feature has no retained particle binding".to_owned())?
-            .checked_sub(282)
-            .ok_or_else(|| "ground feature particle cannot select its source sound".to_owned())?;
-        let particle = particles
-            .get(67)
-            .copied()
-            .ok_or_else(|| "ground feature smoke needs retained particle67".to_owned())?;
-        allocate_ground_smoke(arena, terrain, position, particle)?;
+        crate::world::effects::allocate_from_source_position(
+            arena,
+            terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::FadingSmoke,
+            ),
+            source_slot,
+            position,
+            particles,
+        )?;
         arena.economy.advance_global_rng();
         if arena.economy.global_rng & 1 == 0 {
-            sound_id = Some(sound);
+            let current = &arena.entities[usize::from(source_slot)];
+            let particle = u16::from_le_bytes([current.record[94], current.record[95]]);
+            sound_id = Some(particle.wrapping_sub(282));
         }
     }
     let source = &mut arena.entities[usize::from(source_slot)];
-    let mut visit = step(terrain, source);
+    let mut visit = if birth {
+        let mut visit = Visit {
+            spawn_model87: true,
+            random_sound_pending: true,
+            ..Visit::default()
+        };
+        finish_ground_feature(source, &mut visit);
+        visit
+    } else {
+        step(terrain, source)
+    };
     visit.sound_id = sound_id;
     if source.control_flags & 4 != 0 {
         arena.economy.map_chains.sync_entity(RenderableMapSeed {
@@ -699,13 +735,7 @@ pub(crate) fn step(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) ->
                     visit.spawn_model87 = true;
                     visit.random_sound_pending = true;
                 }
-                let old_life = source.life;
-                source.set_life(old_life.wrapping_sub(1));
-                visit.hide = old_life < 0;
-                visit.animate = !visit.hide;
-                if visit.animate && source.record[96] < source.record[97] {
-                    source.record[96] += 1;
-                }
+                finish_ground_feature(source, &mut visit);
             }
         }
         94 => {
@@ -719,6 +749,18 @@ pub(crate) fn step(terrain: &mut SessionTerrain, source: &mut EntitySnapshot) ->
         *sequence = sequence.wrapping_add(1);
     }
     visit
+}
+
+/// The remainder of `sub_31120` runs on the current physical address even
+/// when NewEvent has replaced the ground feature with its own smoke child.
+fn finish_ground_feature(source: &mut EntitySnapshot, visit: &mut Visit) {
+    let old_life = source.life;
+    source.set_life(old_life.wrapping_sub(1));
+    visit.hide = old_life < 0;
+    visit.animate = !visit.hide;
+    if visit.animate && source.record[96] < source.record[97] {
+        source.record[96] += 1;
+    }
 }
 
 fn index(position: Position) -> usize {
