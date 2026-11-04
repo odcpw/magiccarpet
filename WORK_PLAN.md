@@ -1,32 +1,54 @@
 # Shared-engine delivery plan
 
-Current installed batch: supported outdoor terrain now
-uses the same canonical Rust startup producer and ordinary geometry consumer
-as Cave maps. MapType is a typed input; Day lighting and non-Cave ceiling are
-preserved. Actual unfiltered Day3 rows5→10 allocate48 ribbon descendants before
-92BUILD births reuse them, preserving source free-stack/RNG/all five planes;
-ordinary live collision/material/no-ceiling and consumed-chain no-op pass
-(candidate9,0.979s). A test-only thread-local observer on successful geometry
-publication proves the ordinary session actually installs constructed planes;
-identical captured geometry alone cannot satisfy this check. Fresh independent
-source and gate reviews support the join. The copied consumed-stage check does
-not prove live mission-row propagation. Cave24 ribbon (2.750s), full Cave4
-retained boundary (5.304s), acquired all-tier Tremor (23.275s), source-order
-(0.762s) and workspace all-targets (19.939s) pass; candidate8→9 changes only
-that test observer/assertion, with production unchanged. No critical added-line
-UBS finding; two roots retain existing format debt. Full terrain acceptance and
-all dependencies remain open. Evidence: `generated/ribbon-20261104-integration/candidate-9/`.
+Current installed batch: actual Level9 group0 lowering rings57/113 now use
+canonical Rust constructors with validated physical NewEvent identities16/69.
+Source phase/RNG precede the first callback; physical69's first radius update
+is preserved. Initial PlayerEvents Castle stamps run before numeric callbacks;
+real root146 then creates BUILD child161, which runs in that same ascending
+pass. Immutable authored stages/Life, the first Update global RNG advance,
+child byte3B/flags and successful root state4 match source. This terrain arena
+produces geometry; unrelated actor startup remains under its existing owner.
 
-Runtime `8ec3db4b` is verified, committed and pushed; matching native
-`3b841258c2d1` is installed in the qualified Original client. All443Rust and
-162upstream inputs match rig and installation. Root viewed normal canonical
-map/loading/NightSpire terrain/HUD with matching mapped native and stopped owned
-smoke processes. This proves launch/load, not native Day3 mechanics, human
-combat/FPS/hardware audio, full missions or old saves. No Unity/art changes.
-Next within `.8`: actual Level9 group0 ring11 rows57/113 need constructor and
-first-callback joins with validated physical NewEvent identity before dispatch;
-slot69's source phase affects the first radius update. Do not remove admission
-refusal without the real producer/consumer. Full acceptance remains open.
+The initial Castle's real BUILD1/2/3 inputs are now exported in MCI3 v4,
+with exact Rust/Python closure and typed-schema validation. Original BUILD0
+is a zero-sized source no-op. Older v1/v2/v3 contracts remain unchanged;
+old packages are preserved. Fresh whole Level9/2 packages and separate160-input
+exporter/binary-marker checks are under `generated/ribbon-20261104-integration/group-zero-exporter/`
+and `group-zero-owner-package-v4/`. No captured mutable Castle clocks or
+post-feature planes seed production. The real Level9 check requires all five
+constructed planes, actual publication, exact lowered-plane player clearance,
+subsequent ordinary deformation and natural hide/following reclaim (2.281s).
+It rejects captured-clock dependence and a stale higher collision plane.
+
+Focused v4 missing-input/legacy controls, Day3 ribbon (0.979s), Cave24 ribbon
+(2.734s), source-order (0.790s), real public Castle failure/retry/upgrades
+(62.342s), acquired all-tier Tremor (22.936s) and workspace all-targets
+(30.385s) pass. Fresh independent bounded source/gate review found no further
+concrete defect in these joins. UBS completed Rust/Python scanning with four
+unchanged critical false positives and no critical added-line finding; its
+C++ analyzer failed on unsupported control flow, so that scan is partial.
+C++ was compiled and its actual exported packages verified; no clean C++ UBS
+claim. Broader formatting debt remains. Evidence: `generated/ribbon-20261104-integration/candidate-14/`.
+
+Implemented and verified runtime `17cf7060` is committed and pushed; matching
+native `50d6e9af2de1` is installed in the qualified Original client. All443Rust
+and162upstream inputs match rig and installation. Root viewed the canonical
+map/loading/NightSpire terrain/HUD with that mapped native and stopped owned
+smoke processes. First load hit a music-WAVE hash failure although the actual
+disk WAVE matched its unchanged descriptor; one same-process Retry loaded
+successfully without source/data changes. That intermittent failure's cause
+remains unresolved; this is not a clean first-attempt launch claim or an audio
+fix. No Unity/art change, native Level9 play, human combat/FPS/hardware audio,
+full-mission or old-save proof. Full `.8` acceptance/dependencies stay OPEN;
+finite `.9` stays CLOSED. Next: assess the remaining original finite terrain
+family acceptance against current source and connected evidence, selecting a
+concrete unmet producer/consumer rather than inventing another requirement.
+
+Previous installed checkpoint: supported outdoor startup (`8ec3db4b`, native
+`3b841258c2d1`) runs canonical typed MapType producers and ordinary geometry
+publication on Day3 with source lighting/no ceiling; Cave24/Cave4/Tremor and
+source-order controls qualified that batch. Current and immediate previous
+native artifacts remain byte-preserved on disk.
 
 Previous installed checkpoint:
 Current installed shared capability: authored Creature18
@@ -78,10 +100,6 @@ native refresh. Current and immediate previous native are preserved on disk.
 Root CalmBeaver owns sole Cargo/push/install. The existing
 healthy RCH daemon listens on `/run/user/1000/rch.sock`; set RCH_SOCKET_PATH per
 command because the default cache socket is stale. No worker restart needed.
-Remaining terrain production gap: group-zero terrain variants such as Level9
-ring11 rows57/113 are still explicitly unsupported by startup; their existing
-captured fallback is not qualified as Rust production. Complete those actual
-producer/consumer joins under the original `mc-bhq.8` acceptance.
 Previous Tremor/Creature17 checkpoint (`ddfb0188`/`6a9ce089c86a`):
 The actual Creature17 prerequisite is corrected: all 12 owner checks pass on
 candidate5, including real melee after natural initial protection, slowdown,
