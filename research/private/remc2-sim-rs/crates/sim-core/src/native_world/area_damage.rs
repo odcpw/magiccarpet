@@ -685,7 +685,7 @@ fn read_current_arena_actor(arena: &SourceArena, slot: u16) -> Option<Actor> {
             class: 5,
             model: 15,
             position: row.position,
-            shape: shape(row.shift_rot_x, row.shift_rot_y, 125, row.fov),
+            shape: shape(row.shift_rot_x, row.shift_rot_y, row.collision_vertical_offset, row.fov),
             damage_mask: row.byte_38,
             control_flags: row.control_flags,
         });

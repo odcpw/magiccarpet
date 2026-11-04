@@ -265,6 +265,7 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
             | CreatureKind::Firefly
             | CreatureKind::Skeleton
             | CreatureKind::Spider
+            | CreatureKind::Wyvern
             | CreatureKind::Creature17
             | CreatureKind::Creature18
             | CreatureKind::Cymmerian

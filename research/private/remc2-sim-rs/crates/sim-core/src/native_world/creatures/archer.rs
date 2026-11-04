@@ -214,6 +214,7 @@ pub struct Level2AuthoredClass5ArcherChild {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ArrowCollisionTarget {
     pub target: crate::native_world::level2_dynamic_economy::Level2FireballCollisionTarget,
+    pub half_depth: i16,
     pub control_flags: u32,
     pub mana: i32,
 }

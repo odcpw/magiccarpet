@@ -2640,6 +2640,10 @@ fn level_two_castle_auxiliary_self_replacement_updates_the_current_fixed_row() {
             0,
         )
     );
+    assert_eq!(
+        (projectile.collision_half_width, projectile.collision_vertical_offset, projectile.collision_half_height),
+        (0, 125, 125)
+    );
     assert!(
         session
             .economy()

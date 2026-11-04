@@ -123,7 +123,7 @@ fn move_actor(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
         effects.population_decrements+=1;
     }
 }
-fn consume(actor:&mut Actor<'_>,ctx:&Context<'_>,linked_hit:bool)->u8 {
+fn consume(actor:&mut Actor<'_>,ctx:&Context<'_>)->u8 {
     let mut damage=i32::from_le_bytes(actor.row.record[98..102].try_into().expect("damage dword"));
     let mut pending=actor.word(102);
     let mut attacker=actor.attacker();
@@ -133,7 +133,7 @@ fn consume(actor:&mut Actor<'_>,ctx:&Context<'_>,linked_hit:bool)->u8 {
     for _ in 0..ctx.targets.len() {
         let Some(child)=ctx.target(next) else {break};
         if crate::combat::actors::inherit_linked_life(&mut life,&mut attacker,child.life,child.attacker) {
-            if linked_hit {hit=1;}
+            hit=1;
             break;
         }
         next=child.next;
@@ -176,7 +176,7 @@ fn damage_action(actor:&mut Actor<'_>,hit:u8) {
 /// Wyvern-specific cone-free class3 scan every descriptor cadence+1.
 fn roam(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
     let stationary=actor.row.action==128;
-    let hit=consume(actor,ctx,true);
+    let hit=consume(actor,ctx);
     if hit!=0 {
         damage_action(actor,hit);
         if stationary || hit==1 {settle(actor,ctx);}
@@ -203,7 +203,7 @@ fn roam(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
 /// sub_24510; damage interrupts the entire attack packet. Burst decrement
 /// precedes allocation, and cadence can rearm it after the last launch.
 fn attack(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
-    let hit=consume(actor,ctx,true);
+    let hit=consume(actor,ctx);
     if hit!=0 {damage_action(actor,hit);return;}
     move_actor(actor,ctx,effects);
     let Some(target)=ctx.target(actor.target()).and_then(|t|stage::alliance_target(actor,ctx,t,effects)) else {return};
@@ -235,7 +235,7 @@ fn link(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
     let peer=ctx.target(actor.word(54));
     if actor.word(54)==0 {actor.set_action(129);return;}
     let valid=peer.is_some_and(|t|living(t)&&t.class==5&&t.model==SOURCE_MODEL);
-    let hit=consume(actor,ctx,true);
+    let hit=consume(actor,ctx);
     if hit!=0 {
         if valid && let Some(mut peer)=peer {
             peer.target=actor.attacker();peer.previous=0;peer.action=130;effects.linked_updates.push(peer);

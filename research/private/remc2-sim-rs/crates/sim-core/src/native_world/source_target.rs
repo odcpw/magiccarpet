@@ -1603,6 +1603,7 @@ pub(crate) fn arrow_collision_frame(
                 half_width: shape.half_width, vertical_offset: shape.vertical_offset,
                 half_height: shape.half_height,
             },
+            half_depth: shape.half_depth,
             control_flags: view.control_flags,
             mana,
         });
@@ -1698,6 +1699,11 @@ fn read_current(
         return Ok(Some(fireball(projectile, context)));
     }
     if !arena.economy.free_source_slots().contains(&slot) {
+        if let Some(row) = arena.economy.speed_trails.iter().find(|row| {
+            row.source_entity_index == slot && !row.active && row.control_flags & 0x400 != 0
+        }) {
+            return Ok(Some(speed_trail(row)));
+        }
         if let Some(row) = arena
             .economy
             .castle_projectiles
@@ -2004,14 +2010,10 @@ fn dynamic(
             view.collision = context.particle_shape(row.particle_parameter_index);
             view
         }
-        Kind::SpeedTrail => carrier!(
-            economy.speed_trails,
-            row,
-            row.class,
-            row.model,
-            row.source_id,
-            row.life,
-            row.control_flags
+        Kind::SpeedTrail => speed_trail(
+            economy.speed_trails.iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("target slot {slot} lost its current Speed trail"))?,
         ),
         Kind::TerrainStripCloseTrigger => carrier!(
             economy.terrain_strip_close_triggers,
@@ -2313,6 +2315,51 @@ fn dynamic(
     Ok(view)
 }
 
+fn speed_trail(row: &super::SpeedTrailEffect) -> View {
+    View {
+        slot: row.source_entity_index,
+        source_id: row.source_id,
+        active: row.active,
+        class: row.class,
+        model: row.model,
+        position: row.position,
+        life: row.life,
+        control_flags: row.control_flags,
+        yaw: Some(0),
+        roll: Some(0),
+        relations: Relations { target: Some(0), ..Relations::default() },
+        // NewAdd0A02_4E430 leaves NewEvent's zeroed axes and word96
+        // untouched; CastSpeedSpell_31100 only changes life/drawing.
+        // These physical fields remain readable after hide, before reclaim.
+        collision: Some(Shape {
+            half_width: 0,
+            half_depth: 0,
+            vertical_offset: 0,
+            half_height: 0,
+        }),
+    }
+}
+
+/// Freeze the trail's actual last source packet before its typed owner is
+/// removed. NewAdd0A02 has no particle, map insertion or mutable axes.
+pub(super) fn speed_trail_packet(source: &super::SpeedTrailEffect) -> EntitySnapshot {
+    let mut row = super::cave_features::new_event(
+        source.source_entity_index, source.entity_rng, source.position,
+    );
+    row.class = source.class;
+    row.model = source.model;
+    row.record[67] = source.class;
+    row.record[68] = source.model;
+    row.source_id = source.source_id;
+    row.record[30..32].copy_from_slice(&source.source_id.to_le_bytes());
+    row.set_source_action(source.action);
+    row.set_max_life(source.max_life);
+    row.set_life(source.life);
+    row.set_control_flags(source.control_flags);
+    row.set_phase(source.phase);
+    row
+}
+
 fn fireball(row: &super::Level2FireballProjectile, context: Context<'_>) -> View {
     View {
         slot: row.source_entity_index,
@@ -2382,6 +2429,33 @@ fn possession_projectile(row: &super::Level2PossessionProjectile) -> View {
 fn relations(arena: &SourceArena, kind: Kind, slot: u16) -> Relations {
     let economy = &arena.economy;
     match kind {
+        Kind::ManaSphere => economy
+            .spheres
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| Relations {
+                // NewEvent/500C0 leave word96 zero; AddBallon60AB0 and
+                // model23 later write this current collector relation.
+                target: Some(row.assigned_defender_slot),
+                ..Relations::default()
+            })
+            .unwrap_or_default(),
+        Kind::CastleAuxiliary => economy
+            .castle_defenders
+            .iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .map(|row| Relations {
+                // sub23C40/sub23E60 mutate word96 on this model15 owner;
+                // cached source pointers must read that current target.
+                target: Some(row.target_sphere_slot),
+                attacker: Some(row.damage_attacker_entity_index),
+                parent: Some(row.stage.parent),
+                stage_mode: Some(row.stage.mode),
+                stage_index: Some(row.stage.index),
+                stage_relation: Some(row.stage.relation),
+                next: Some(row.chain_next_slot),
+            })
+            .unwrap_or_default(),
         Kind::BeeCreature => economy
             .bee_creatures
             .iter()

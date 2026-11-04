@@ -322,6 +322,7 @@ fn import_row(row: &EntitySnapshot, generation: u32) -> CastleDefenderState {
         visual_index: word(94),
         shift_rot_x: row.array_pitch(),
         shift_rot_y: row.array_roll(),
+        collision_vertical_offset: row.array_yaw(),
         fov: row.array_fov(),
         proximity_delay: bytes[62],
         stage: StageState {

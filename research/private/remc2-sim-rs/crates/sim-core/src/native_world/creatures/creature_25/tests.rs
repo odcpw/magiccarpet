@@ -461,6 +461,390 @@ fn stage_follow_modes_choose_leader_only_when_requested() {
 }
 
 #[test]
+fn stage_follow_reads_ordinary_castle_defenders_live_target_over_raw_shadow() {
+    use crate::native_world::{Level2DynamicArenaKind, RuntimeRelation, area_damage, source_target};
+    use crate::native_world::creatures::creature_15;
+
+    let (mut arena, mut runtime, mut terrain, particles, owner, _, position) = source_parts(18);
+    let hostile = arena.entities.iter().find(|row|
+        row.active && row.class == 3 && row.source_id != owner && row.life >= 0)
+        .expect("actual Level18 hostile class3 target").clone();
+    let castle = arena.economy.build_castle(position, owner, &terrain)
+        .expect("ordinary Castle constructor");
+    // Stage three is the source prerequisite for sub5FF50's model15 producer.
+    arena.economy.castle.as_mut().unwrap().level = 3;
+    arena.economy.maintain_castle_defenders(castle, &terrain);
+    let leader = arena.economy.castle().unwrap().auxiliary_slots[0];
+    assert_ne!(leader, 0);
+    assert_eq!(arena.economy.live_arena_cursor_row(leader).unwrap().kind,
+        Level2DynamicArenaKind::CastleAuxiliary);
+    let handle = arena.handle(leader).unwrap();
+
+    // Exercise the actual damage writer and model15 retaliation callback to
+    // produce a nonzero target, rather than assuming NewEvent's zero word.
+    area_damage::contact(&mut arena, None, leader, 1, hostile.index)
+        .expect("contact writes the actual defender mailbox");
+    let targets = creature_15::mc2::targets_in_economy(&arena.economy, &arena.entities);
+    creature_15::mc2::step_economy(&mut arena.economy, leader,
+        creature_15::DefenderContext {
+            terrain: &terrain, targets: &targets, class3: &[hostile.index],
+            model15: &[leader], class5: &[leader], stage_runtime: None,
+        }).expect("ordinary defender consumes contact and retaliates");
+    let defender = arena.economy.castle_defenders().iter()
+        .find(|row| row.active && row.source_entity_index == leader).unwrap();
+    assert_eq!((defender.action, defender.target_sphere_slot), (122, hostile.index));
+    assert_eq!(defender.damage_attacker_entity_index, hostile.index);
+    assert_eq!(arena.handle(leader), Some(handle));
+
+    // The typed occupant owns word96 even before any raw publication. A
+    // plausible stale packet must neither erase nor supply the live target.
+    put(&mut arena.entities[usize::from(leader)], 154, 999);
+    let current = source_target::read(&arena, source_target::Context::default(), leader)
+        .unwrap().unwrap();
+    assert_eq!((current.class, current.model), (5, 15));
+    assert_eq!(current.relations.target, Some(hostile.index));
+    assert_eq!(current.relations.attacker, Some(hostile.index));
+
+    let actor = mc2::allocate_authored(&mut arena, &mut runtime, &mut terrain,
+        &particles, hostile.position, RULES.max_life, None, 0)
+        .unwrap().unwrap();
+    runtime.stage_variables[1].kind = 4;
+    runtime.stage_variables[1].flags = 2;
+    runtime.stage_variables[1].relation = RuntimeRelation::Scalar(15);
+    let row = &mut arena.entities[usize::from(actor)];
+    row.set_source_action(207);
+    row.record[76] = 1;
+    row.record[77] = 4;
+    row.set_phase(8);
+    put(row, 78, leader);
+    let mut families = family_with_cymmerian(actor);
+    families[15].push(leader);
+    mc2::step_row(&mut arena, &mut runtime, &mut terrain, &particles, actor,
+        &[hostile.index], &families, source_target::Context::default())
+        .expect("source mode4 consumes its cached current defender target");
+    let row = &arena.entities[usize::from(actor)];
+    assert_eq!((row.action, row.record[77], word(row, 78), word(row, 154)),
+        (202, 10, leader, hostile.index));
+    assert_eq!(arena.handle(leader), Some(handle));
+    assert_eq!(word(&arena.entities[usize::from(leader)], 154), 999,
+        "the shared reader borrows the actual carrier without publishing a raw mirror");
+}
+
+#[test]
+fn stage_follow_reads_current_mana_sphere_collector_through_hidden_reclaim() {
+    use crate::native_world::{Level2DynamicArenaKind, RuntimeRelation, source_target};
+
+    let package = std::env::var_os("MC_DEFENDER_HOSTILE_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/all-spells-20261104-integration/current-owner-package/level18"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(package,
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap())
+        .expect("actual Level18 owner package").simulation().clone();
+    let particles = session.session.definition.presentation.particles.to_vec();
+    let live = &mut session.session.state.live;
+    let owner = live.core.state.entity_index;
+    let position = live.core.state.position;
+    let arena = &mut live.economy;
+    let runtime = &mut live.core.runtime;
+    let terrain = &mut live.terrain;
+    let shared = &mut live.shared_spells;
+    let castle = arena.economy.build_castle(position, owner, terrain)
+        .expect("ordinary Castle constructor");
+    arena.economy.maintain_castle_defenders(castle, terrain);
+    let collector = arena.economy.castle().unwrap().defender_slots[0];
+    assert_eq!(arena.economy.live_arena_kind(collector), Some(Level2DynamicArenaKind::CastleDefender));
+    let collector_position = arena.economy.castle_children().iter()
+        .find(|row| row.source_entity_index == collector).unwrap().position;
+    let sphere_position = Position { x: collector_position.x.wrapping_add(512), ..collector_position };
+    let sphere = crate::world::effects::spawn_death_mana_sphere(arena, terrain,
+        owner, sphere_position, 0, 512, 0).unwrap().unwrap();
+    let sphere_handle = arena.handle(sphere).unwrap();
+    assert_eq!(arena.economy.live_arena_kind(sphere), Some(Level2DynamicArenaKind::ManaSphere));
+    put(&mut arena.entities[usize::from(sphere)], 154, 999);
+    assert_eq!(source_target::read(arena, Default::default(), sphere).unwrap().unwrap()
+        .relations.target, Some(0), "the ordinary neutral constructor owns its zero word96");
+
+    let actor = mc2::allocate_authored(arena, runtime, terrain, &particles,
+        sphere_position, RULES.max_life, None, 0).unwrap().unwrap();
+    runtime.stage_variables[1].kind = 4;
+    runtime.stage_variables[1].flags = 2;
+    runtime.stage_variables[1].relation = RuntimeRelation::Scalar(26);
+    let row = &mut arena.entities[usize::from(actor)];
+    row.set_source_action(207);
+    row.record[76] = 1;
+    row.record[77] = 4;
+    row.set_phase(8);
+    put(row, 78, sphere);
+    let families = family_with_cymmerian(actor);
+    mc2::step_row(arena, runtime, terrain, &particles, actor, &[], &families,
+        Default::default()).expect("a cached numeric leader reads the neutral sphere's zero target");
+    assert_eq!((arena.entities[usize::from(actor)].action,
+        word(&arena.entities[usize::from(actor)], 154)), (207, 0));
+
+    // Ordinary ownership and Castle target arbitration precede the real
+    // AddBallon callback. No test writes the sphere's collector relation.
+    assert!(arena.economy.claim_mana_sphere(sphere, owner));
+    // Declared free-capacity prerequisite: sub5FF50 compares the current
+    // house-mana census plus the Castle balance with its capacity. Reserve
+    // room for this actual sphere, then leave the Castle balance empty.
+    arena.economy.rebuild_owner_mana_projection_at_source_boundary(&arena.entities);
+    let aggregate = arena.economy.owner_mana_aggregate(owner);
+    let incoming_mana = arena.economy.spheres().iter().find(|row|
+        row.source_entity_index == sphere).unwrap().mana;
+    let capacity = aggregate.checked_add(incoming_mana).unwrap();
+    assert!(arena.economy.set_castle_mana_prerequisite_for_test(castle, capacity));
+    assert!(arena.economy.set_castle_mana_prerequisite_for_test(castle, 0));
+    let root = arena.economy.castle_at(castle).unwrap();
+    assert!(aggregate + root.mana < root.mana_capacity,
+        "collector selection requires real free capacity: aggregate={aggregate}, root={root:?}");
+    // The bounded Castle adapter consumes the actual pass-start model39
+    // membership. A same-pass birth cannot enter its scan until this real
+    // owning boundary captures all current sphere slots.
+    arena.economy.rebuild_possession_guidance_source_slots();
+    assert!(arena.economy.possession_guidance_source_slots.contains(&sphere),
+        "the newborn sphere must enter the following pass's real frozen membership");
+    let holder = arena.economy.castle_children().iter().find(|row|
+        row.source_entity_index == collector).unwrap();
+    let current_sphere = arena.economy.spheres().iter().find(|row|
+        row.source_entity_index == sphere).unwrap();
+    assert_eq!(current_sphere.player_entity_index, holder.id_entity_index);
+    assert_eq!(current_sphere.control_flags & 0x2000, 0);
+    assert_eq!(arena.economy.select_castle_defender_sphere(
+        holder.position, holder.id_entity_index, 0, 0), Some(sphere),
+        "the admitted real sphere must satisfy sub5F810 before maintenance: sphere={current_sphere:?}");
+    arena.economy.maintain_castle_defenders(castle, terrain);
+    assert_eq!(arena.economy.castle_children().iter().find(|row|
+        row.source_entity_index == collector).unwrap().target_sphere_slot, sphere);
+    let step_collector = |arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &SessionTerrain, shared: &mut crate::native_world::Level2SharedSpellResetSession| {
+        let target = source_target::collector_target(arena, Default::default(), sphere).unwrap();
+        let mut consumer = source_target::CastleCollectorConsumer {
+            target, entities: &mut arena.entities, shared,
+        };
+        assert!(arena.economy.step_castle_defender_slot_with_consumer(collector, terrain, &mut consumer));
+    };
+    step_collector(arena, terrain, shared);
+    let assigned = *arena.economy.spheres().iter().find(|row| row.source_entity_index == sphere).unwrap();
+    assert_eq!(assigned.assigned_defender_slot, collector);
+    assert_ne!(assigned.control_flags & 0x40, 0);
+    assert!(!assigned.pending_delete);
+    put(&mut arena.entities[usize::from(sphere)], 154, 999);
+    assert_eq!(source_target::read(arena, Default::default(), sphere).unwrap().unwrap()
+        .relations.target, Some(collector));
+    mc2::step_row(arena, runtime, terrain, &particles, actor, &[], &families,
+        Default::default()).expect("cached StageVar4 reads the current nonzero sphere collector");
+    assert_eq!((arena.entities[usize::from(actor)].action,
+        arena.entities[usize::from(actor)].record[77], word(&arena.entities[usize::from(actor)], 154)),
+        (202, 10, collector));
+
+    // Clone-only boundary prerequisite selects sub5FF50's excess-holder
+    // retirement branch. This is not an actual damage/death claim. The
+    // source hides the holder and clears its owning array entry, leaving
+    // this separate sphere's physical word96 and flags untouched.
+    let mut retirement = arena.clone();
+    assert_eq!(retirement.economy.castle_children().iter().find(|row|
+        row.source_entity_index == collector).unwrap().mana, 0);
+    retirement.economy.castle_at_mut(castle).unwrap().level = 0;
+    retirement.economy.maintain_castle_defenders(castle, terrain);
+    assert_eq!(retirement.economy.castle_at(castle).unwrap().defender_slots[0], 0);
+    assert_ne!(retirement.economy.castle_children().iter().find(|row|
+        row.source_entity_index == collector).unwrap().control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    let still_assigned = retirement.economy.spheres().iter().find(|row|
+        row.source_entity_index == sphere).unwrap();
+    assert_eq!((still_assigned.assigned_defender_slot, still_assigned.control_flags),
+        (collector, assigned.control_flags));
+    assert_eq!(source_target::read(&retirement, Default::default(), sphere).unwrap().unwrap()
+        .relations.target, Some(collector));
+
+    // Outside the attraction radius AddBallon clears only bit40; word96
+    // still names the last collector. Control only encounter geometry here.
+    let child = arena.economy.castle_children.iter_mut()
+        .find(|row| row.source_entity_index == collector).unwrap();
+    child.position.x = assigned.position.x.wrapping_add(2048);
+    step_collector(arena, terrain, shared);
+    let released = arena.economy.spheres().iter().find(|row| row.source_entity_index == sphere).unwrap();
+    assert_eq!(released.control_flags & 0x40, 0);
+    assert_eq!(released.assigned_defender_slot, collector);
+    assert_eq!(source_target::read(arena, Default::default(), sphere).unwrap().unwrap()
+        .relations.target, Some(collector));
+
+    // Place the collector's actual collision centre on the sphere, then let
+    // its ordinary callback collect/hide it and the owning boundary reclaim.
+    let sphere_view = source_target::read(arena, Default::default(), sphere).unwrap().unwrap();
+    let collector_shape = source_target::read(arena, source_target::Context {
+        particles: Some(&particles), map_type: Some(terrain.map_type()), ..Default::default()
+    }, collector)
+        .unwrap().unwrap().collision.unwrap();
+    let child = arena.economy.castle_children.iter_mut()
+        .find(|row| row.source_entity_index == collector).unwrap();
+    child.position = Position {
+        z: sphere_view.position.z.wrapping_add(sphere_view.collision.unwrap().vertical_offset)
+            .wrapping_sub(collector_shape.vertical_offset),
+        ..sphere_view.position
+    };
+    step_collector(arena, terrain, shared);
+    let hidden = source_target::read(arena, Default::default(), sphere).unwrap().unwrap();
+    assert_eq!(hidden.relations.target, Some(collector));
+    assert_ne!(hidden.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert_eq!(arena.handle(sphere), Some(sphere_handle));
+    assert!(arena.economy.spheres().iter().find(|row| row.source_entity_index == sphere).unwrap().pending_delete);
+    put(&mut arena.entities[usize::from(sphere)], 154, 999);
+    arena.rebuild_source_arena_with_terrain(terrain, &[]).unwrap();
+    assert!(arena.economy.free_source_slots().contains(&sphere));
+    assert!(!arena.economy.spheres().iter().any(|row| row.source_entity_index == sphere));
+    let retired = source_target::read(arena, Default::default(), sphere).unwrap().unwrap();
+    assert_eq!((retired.class, retired.model, retired.relations.target), (0, 39, Some(collector)));
+    assert_eq!(word(&arena.entities[usize::from(sphere)], 154), collector);
+}
+
+#[test]
+fn stage_follow_reused_model26_address_reads_speed_trail_zero_axes_and_target() {
+    use crate::level1_mission::SOURCE_REPLACEABLE_FLAG;
+    use crate::native_world::{Level2DynamicArenaKind, RuntimeRelation, source_target};
+
+    let (mut arena, mut runtime, mut terrain, particles, owner, _, position) = source_parts(18);
+    let target_slot = arena
+        .entities
+        .iter()
+        .find(|row| row.active && row.class == 5 && row.model == 26)
+        .expect("actual Level18 model26 target")
+        .index;
+    let old_handle = arena.handle(target_slot).unwrap();
+    let old_target = mc2::target_at(&arena, source_target::Context::default(), target_slot)
+        .unwrap()
+        .unwrap();
+    assert_eq!((old_target.class, old_target.model), (5, 26));
+    assert!(old_target.pitch_extent.unwrap() > 0);
+
+    // Isolate NewEvent's real replacement branch, retaining the creature's
+    // cached numeric address across the generation change.
+    for row in &mut arena.entities {
+        row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+    }
+    let row = &mut arena.entities[usize::from(target_slot)];
+    row.set_control_flags(row.control_flags | SOURCE_REPLACEABLE_FLAG);
+    arena.rebuild_source_free_arena();
+    arena.economy.free_slots.clear();
+    let slot = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+    assert_eq!(slot, target_slot);
+    let trail_position = Position {
+        x: position.x.wrapping_add(RULES.collision_half_width as u16 + 8),
+        y: position.y.wrapping_add(RULES.collision_half_width as u16 + 8),
+        ..position
+    };
+    arena.economy.initialize_speed_trail_at(slot, trail_position, owner);
+    assert_eq!(arena.economy.live_arena_kind(slot), Some(Level2DynamicArenaKind::SpeedTrail));
+    assert_ne!(arena.handle(slot).unwrap(), old_handle);
+    assert!(arena.resolve(old_handle).is_none());
+
+    // A predecessor's plausible axes/target must never supply the typed
+    // replacement. SpeedTrail has no particle resize: its source axes and
+    // target word remain zero from NewEvent, independent of particle zero.
+    let raw = &mut arena.entities[usize::from(slot)];
+    raw.set_source_overlap_half_extents(4096, 4096);
+    put(raw, 154, 999);
+    let source_context = source_target::Context {
+        particles: Some(&particles),
+        map_type: Some(terrain.map_type()),
+        ..Default::default()
+    };
+    let current = source_target::read(&arena, source_context, slot).unwrap().unwrap();
+    assert_eq!((current.class, current.model, current.source_id, current.life), (10, 2, owner, 32));
+    assert_eq!(current.position, trail_position);
+    let axes = current.collision.expect("SpeedTrail retains NewEvent's physical zero axes");
+    assert_eq!((axes.half_width, axes.half_depth, axes.vertical_offset, axes.half_height), (0, 0, 0, 0));
+    assert_eq!(current.relations.target, Some(0));
+
+    runtime.stage_variables[1].kind = 4;
+    runtime.stage_variables[1].flags = 2;
+    runtime.stage_variables[1].relation = RuntimeRelation::Scalar(26);
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[26].push(target_slot);
+    let context = Context {
+        terrain: &terrain,
+        targets: &[],
+        class3: &[],
+        model25: &[],
+        reader: Some((&arena, source_context)),
+        read_error: std::cell::Cell::new(None),
+    };
+    let mut actor = cymmerian(207, position);
+    actor.record[76] = 1;
+    actor.record[77] = 4;
+    actor.set_phase(8);
+    put(&mut actor, 78, target_slot);
+    stage::step_action_207(
+        &mut Actor { row: &mut actor },
+        &context,
+        &runtime,
+        &families,
+        true,
+        &mut Effects::default(),
+    ).expect("source mode4 follows the current replacement and reads its zero target");
+    assert_eq!((actor.action, actor.record[77], word(&actor, 78), word(&actor, 154)), (207, 4, target_slot, 0));
+    assert_eq!(actor.source_roll(), crate::heading_for_positions(actor.position, trail_position) as i16,
+        "the retired model26 width must not reverse the current heading");
+    assert_eq!(context.read_error.get(), None);
+    drop(context);
+
+    // Run the constructor's real 32-life countdown through all 34 callbacks;
+    // no synthetic inactive carrier or shortened lifetime supplies this tail.
+    for visit in 1..=34 {
+        assert_eq!(arena.economy.step_speed_trail(slot), visit < 34);
+        let trail = arena.economy.speed_trails().iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!(trail.life, 32 - visit);
+    }
+    let terminal = *arena.economy.speed_trails().iter()
+        .find(|row| row.source_entity_index == slot).unwrap();
+    assert!(!terminal.active);
+    assert_ne!(terminal.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+    assert_eq!(arena.economy.live_arena_kind(slot), None);
+    assert!(!arena.economy.free_source_slots().contains(&slot));
+    assert!(!arena.economy.map_chains.is_linked(slot));
+    let hidden = source_target::read(&arena, source_context, slot).unwrap().unwrap();
+    assert_eq!((hidden.class, hidden.model, hidden.life, hidden.position), (10, 2, -2, trail_position));
+    assert_eq!((hidden.source_id, hidden.control_flags), (owner, terminal.control_flags));
+    let context = Context {
+        terrain: &terrain,
+        targets: &[],
+        class3: &[],
+        model25: &[],
+        reader: Some((&arena, source_context)),
+        read_error: std::cell::Cell::new(None),
+    };
+    stage::step_action_207(
+        &mut Actor { row: &mut actor },
+        &context,
+        &runtime,
+        &families,
+        true,
+        &mut Effects::default(),
+    ).expect("the later cached-address callback still reads the hidden trail's last packet");
+    assert_eq!((actor.action, word(&actor, 78), word(&actor, 154)), (207, target_slot, 0));
+    assert_eq!(actor.source_roll(), crate::heading_for_positions(actor.position, trail_position) as i16);
+    drop(context);
+
+    // The actual following boundary freezes physical fields and frees the
+    // typed carrier. Fixed-address readers then see the source class0 packet.
+    arena.rebuild_source_arena_with_terrain(&mut terrain, &[]).unwrap();
+    assert!(!arena.economy.speed_trails().iter().any(|row| row.source_entity_index == slot));
+    assert!(arena.economy.free_source_slots().contains(&slot));
+    assert!(!arena.economy.map_chains.is_linked(slot));
+    let retired = &arena.entities[usize::from(slot)];
+    assert_eq!((retired.class, retired.model, retired.life, retired.max_life), (0, 2, -2, 8));
+    assert_eq!((retired.position, retired.phase, retired.entity_rng),
+        (terminal.position, terminal.phase, terminal.entity_rng));
+    assert_eq!((retired.source_id, retired.control_flags), (owner, terminal.control_flags & !4));
+    assert_eq!((retired.array_pitch(), retired.array_roll(), retired.array_yaw(), retired.array_fov()), (0, 0, 0, 0));
+    let current = source_target::read(&arena, source_context, slot).unwrap().unwrap();
+    assert_eq!((current.class, current.model, current.life, current.position), (0, 2, -2, trail_position));
+    assert_eq!(current.relations.target, Some(0));
+}
+
+#[test]
 fn stage_guard_acquires_only_visible_class3_on_scan_cadence() {
     let session = crate::native_world::tests::level_two_campaign_session();
     let position = session.state.position;

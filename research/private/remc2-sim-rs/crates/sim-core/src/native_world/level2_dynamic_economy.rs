@@ -2505,8 +2505,8 @@ impl Level2EconomyState {
                 model: 15,
                 position: actor.position,
                 half_width: actor.shift_rot_x,
-                vertical_offset: actor.fov,
-                half_height: actor.shift_rot_y,
+                vertical_offset: actor.collision_vertical_offset,
+                half_height: actor.fov,
             })
         }));
         targets.extend(self.authored_class5.iter().filter_map(|source| {
@@ -7147,11 +7147,6 @@ impl Level2EconomyState {
                 false,
                 terrain,
             );
-        }
-        for sphere in &mut self.spheres {
-            if sphere.assigned_defender_slot == source_slot {
-                sphere.assigned_defender_slot = 0;
-            }
         }
         if let Some(installed) = self
             .castle_children

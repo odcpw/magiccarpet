@@ -17302,6 +17302,19 @@ impl Mc2Simulation {
                         -1,
                         u16::from(sound),
                     );
+                    if visit.handler == ExistingHandler::Wyvern {
+                        // sub24510 prepares sound39 after movement and its
+                        // projectile constructor, before the common phase tail.
+                        // The economy receipt alone is a dispatch event; freeze
+                        // the actual positional command for the native client.
+                        self.push_flight_effect(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::WyvernAttack,
+                            entity_index: source_slot,
+                            player_index: -1,
+                            sound_id: u16::from(sound),
+                        });
+                    }
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -24463,8 +24476,8 @@ impl Mc2Simulation {
                         shape.2,
                         target.position,
                         target.shift_rot_x,
+                        target.collision_vertical_offset,
                         target.fov,
-                        target.shift_rot_y,
                     )
             })
             .map(|target| target.source_entity_index)
@@ -26121,6 +26134,15 @@ impl Mc2Simulation {
                     )
             }
             Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                // AddArcherArrow prepares its first sound before movement or
+                // collision can hide/reuse the typed arrow. Freeze that source
+                // pose here; its inactive raw shadow is not the audio carrier.
+                let sound_source = self.session.state.live.economy
+                    .authored_class5_archer_children().iter()
+                    .find(|child| child.active && child.source_entity_index == source_slot
+                        && child.action == 13 && child.control_flags & 2 == 0)
+                    .copied();
+                let sound_start = self.session.state.live.economy.events().len();
                 let frame = {
                     let live = &self.session.state.live;
                     let context = source_target::Context {
@@ -26146,6 +26168,31 @@ impl Mc2Simulation {
                         source_slot, &live.terrain, &frame,
                     )
                 };
+                if let Some(source) = sound_source {
+                    let sound = self.session.state.live.economy.events()[sound_start..].iter()
+                        .find_map(|event| match *event {
+                            Level2EconomyEvent::PreparedSound { source_entity_index,
+                                sound_id: sound_id @ (33 | 34), .. }
+                                if source_entity_index == source_slot => Some(sound_id),
+                            _ => None,
+                        });
+                    if let Some(sound_id) = sound {
+                        let audio = (source.control_flags & 0x80 == 0).then(||
+                            crate::prepare_event_sound_command(self.state.position, self.state.yaw,
+                                source.position, sound_id, 0, source.entity_id, source.action))
+                            .flatten();
+                        self.flush_shared_effects();
+                        let turn = self.session.state.live.core.runtime.global_turn;
+                        self.effect_journal_mut().append_prepared_flight(turn,
+                            FlightEvent::PrepareSound {
+                                #[cfg(test)]
+                                audio_site: crate::MissionAudioSite::ArcherArrow,
+                                entity_index: source_slot,
+                                player_index: -1,
+                                sound_id,
+                            }, audio);
+                    }
+                }
                 if let Some(damage) = damage {
                     let child = self
                         .session

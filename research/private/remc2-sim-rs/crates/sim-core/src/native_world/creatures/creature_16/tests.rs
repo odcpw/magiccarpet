@@ -1044,6 +1044,86 @@ fn wyvern_stage_selects_nearest_frozen_target_or_the_same_route_relation() {
 }
 
 #[test]
+fn linked_point_route_hit_inherits_life_and_reacts_to_external_attacker() {
+    struct Routes(StageDescriptor);
+    impl StageRuntime for Routes {
+        fn descriptor(&self, _: u8) -> Option<StageDescriptor> { Some(self.0) }
+        fn bind(&mut self, _: u8) -> Option<StageDescriptor> { Some(self.0) }
+        fn rearm_model_relations(&mut self) {}
+    }
+    let terrain = terrain();
+    let position = Position { x: 20_000, y: 20_000, z: 2_000 };
+    let route = StageDescriptor { kind: 1, flags: 0, next: 0,
+        point: Position { x: 24_000, ..position }, actor: 0, model: 0, scalar: 0 };
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    for same_family in [false, true] {
+        let mut row = wyvern(135, position);
+        row.record[76] = 1;
+        row.record[77] = 1;
+        put(&mut row, 56, 8);
+        let mut child = target(8, 5, 16, position);
+        child.life = 900;
+        child.attacker = 9;
+        let attacker = target(9, if same_family { 5 } else { 3 },
+            if same_family { 16 } else { 0 }, position);
+        let targets = [child, attacker];
+        let mut routes = Routes(route);
+        let mut context = Context { terrain: &terrain, targets: &targets, class3: &[],
+            family: &[], families: &families, runtime: &mut routes };
+        step(&mut Actor { row: &mut row }, &mut context).unwrap();
+        assert_eq!((row.life, word(&row, 42)), (900, 9));
+        if same_family {
+            assert_eq!((row.action, row.record[77]), (135, 1));
+        } else {
+            assert_eq!((row.action, row.record[77], word(&row, 154)), (130, 10, 9));
+        }
+        assert_ne!(row.position.z, position.z, "the hit branch settles in both cases");
+    }
+}
+
+#[test]
+fn selected_target_overlap_overrides_an_overlapping_peer_heading() {
+    struct Routes(StageDescriptor);
+    impl StageRuntime for Routes {
+        fn descriptor(&self, _: u8) -> Option<StageDescriptor> { Some(self.0) }
+        fn bind(&mut self, _: u8) -> Option<StageDescriptor> { Some(self.0) }
+        fn rearm_model_relations(&mut self) {}
+    }
+    let terrain = terrain();
+    let position = Position { x: 20_000, y: 20_000, z: 400 };
+    let peer = target(8, 5, 16, Position { x: 20_050, ..position });
+    let mut selected = target(9, 5, 15, Position { y: 20_050, ..position });
+    selected.half_width = 128;
+    let mut families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    families[16] = vec![8];
+    let route = StageDescriptor { kind: 5, flags: 0, next: 0, point: position,
+        actor: 9, model: 15, scalar: 0 };
+    for (include_peer, target_near) in [(true, true), (true, false), (false, true)] {
+        let mut row = wyvern(135, position);
+        put(&mut row, 88, 128);
+        row.record[76] = 7;
+        row.record[77] = 5;
+        row.set_phase(8);
+        row.set_control_flags(row.control_flags | 0x800);
+        let mut target = selected;
+        if !target_near { target.position.y = position.y.wrapping_add(1_024); }
+        let targets = [peer, target];
+        let mut routes = Routes(route);
+        let mut context = Context { terrain: &terrain, targets: &targets, class3: &[],
+            family: if include_peer { &families[16] } else { &[] },
+            families: &families, runtime: &mut routes };
+        step(&mut Actor { row: &mut row }, &mut context).unwrap();
+        let expected = if target_near {
+            heading_for_positions(target.position, position)
+        } else {
+            heading_for_positions(peer.position, position)
+        };
+        assert_eq!(row.source_roll(), expected as i16,
+            "the selected-target overlap wins after the independent peer scan: peer={include_peer} target_near={target_near}");
+    }
+}
+
+#[test]
 fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() {
     use crate::PlayerCommand;
     use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityView};
@@ -1102,8 +1182,42 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
         panic!("Wyvern is an authoritative raw source actor");
     };
     let actor = actor.clone();
-    assert_eq!((actor.record[76], actor.record[77]), (2, 3));
+    // sub_12100 gives direct authored-row selectors precedence over subtype
+    // selectors. StageVar6 directly names row172 (kind4, model17 relation),
+    // whereas subtype-matched StageVar2 is the model17 route to model26.
+    let feature = mission_eighteen_feature();
+    let route = session.session.state.live.mission.level2_authored_stage_variable_for(
+        feature,
+        session.runtime.active_stage_variable_count(),
+    ).expect("record172 has an authored route");
+    assert_eq!((route.index, route.kind, route.selector, route.relation_word), (6, 4, 172, 62));
+    assert_eq!((actor.record[76], actor.record[77]), (6, 4));
     assert_eq!(actor.parameter_relation, Some(DESCRIPTOR));
+    // sub_1D8C0 calls sub_1E3E0 only while its cached model relation is
+    // zero. Let the actual source callback choose the guide before arranging
+    // the encounter; moving an unrelated model17 cannot change that choice.
+    for _ in 0..16 {
+        let SourceEntityView::Imported(current) = session.source_arena().resolve(handle).unwrap() else {
+            panic!("Wyvern remains the authored source generation");
+        };
+        if word(current, 78) != 0 { break; }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    let SourceEntityView::Imported(actor) = session.source_arena().resolve(handle).unwrap() else {
+        panic!("Wyvern remains the authored source generation");
+    };
+    let actor = actor.clone();
+    let guide_slot = word(&actor, 78);
+    assert_ne!(guide_slot, 0, "the source callback chooses its model17 guide");
+    let guide_handle = session.source_arena().handle(guide_slot).unwrap();
+    let guide = &session.entities()[usize::from(guide_slot)];
+    assert_eq!((guide.class, guide.model, guide.record[76], guide.record[77]), (5, 17, 1, 6));
+    let sprite = session.campaign_entity_presentations(0).unwrap().into_iter()
+        .find(|view| view.entity_index == handle.source_slot)
+        .expect("the ordinary Wyvern reaches the original sprite projection");
+    assert_eq!((sprite.render_parameter_index, sprite.position), (207, actor.position));
+    assert_eq!(sprite.base_tmap, session.session.definition.presentation.particles[207].base_tmap);
     let targets = session
         .entities()
         .iter()
@@ -1113,6 +1227,13 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
     let target_slot = *targets
         .first()
         .expect("owner18 supplies the actual route's model26 targets");
+    let guide_route = session.session.state.live.mission.level2_authored_stage_variable_for(
+        session.session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.index == 63).copied().unwrap(),
+        session.runtime.active_stage_variable_count(),
+    ).expect("model17 has an authored subtype route");
+    assert_eq!((guide_route.index, guide_route.kind, guide_route.stage, guide_route.relation_word),
+        (1, 6, 2, 60));
     let target_handle = session.source_arena().handle(target_slot).unwrap();
     let life_before = session.entities()[usize::from(target_slot)].life;
     let nearby = Position {
@@ -1124,6 +1245,10 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
     session
         .set_level2_entity_position(target_slot, nearby)
         .unwrap();
+    // StageVar6 mode4 follows the selected model17's target. Bring the real
+    // model17 guide into range; its own StageVar2 must acquire model26.
+    let guide_position = Position { x: actor.position.x.wrapping_add(512), ..actor.position };
+    session.set_level2_entity_position(guide_slot, guide_position).unwrap();
     let mut distant = session.clone();
     for &slot in &targets {
         let far = Position {
@@ -1134,9 +1259,13 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
     }
     let mut acquired = false;
     let mut moved = false;
+    let mut guide_acquired = false;
+    let mut guide_transitioned = false;
+    let mut heard = false;
+    let mut effect_sequence = session.effect_journal().cursor(0).next_sequence;
     let mut shot_handles = Vec::new();
     let mut consumed = None;
-    for turn in 0..120 {
+    for turn in 0..240 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -1153,7 +1282,27 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
         else {
             panic!("Wyvern must keep its raw actor carrier");
         };
+        for record in session.effect_journal().records().iter().filter(|record| record.sequence >= effect_sequence) {
+            if matches!(record.effect, crate::campaign::journal::CampaignEffect::Flight(
+                crate::FlightEvent::PrepareSound { audio_site: crate::MissionAudioSite::WyvernAttack,
+                    entity_index, sound_id: 39, .. }) if entity_index == handle.source_slot) {
+                let audio = record.audio.expect("Wyvern sound39 reaches positional audio preparation");
+                assert_eq!((audio.command.relative_x, audio.command.relative_y, audio.command.relative_z),
+                    (i32::from(actor_now.position.x) - i32::from(session.state.position.x),
+                     i32::from(actor_now.position.y) - i32::from(session.state.position.y),
+                     i32::from(actor_now.position.z) - i32::from(session.state.position.z)),
+                    "sound39 uses the same actor's current source pose");
+                assert_eq!(audio.play_type, 3, "source sound39 uses its original positional play type");
+                heard = true;
+            }
+        }
+        effect_sequence = session.effect_journal().cursor(0).next_sequence;
         acquired |= word(actor_now, 154) == target_slot && actor_now.action == 130;
+        let guide = &session.entities()[usize::from(guide_slot)];
+        assert_eq!(session.source_arena().handle(guide_slot), Some(guide_handle),
+            "the source-selected guide retains its generation");
+        guide_transitioned |= guide.record[76] == 2;
+        guide_acquired |= word(guide, 154) == target_slot;
         moved |= actor_now.position != actor.position;
         for shot in session
             .economy()
@@ -1190,18 +1339,18 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
                 "same route stays out of attack range with only distant model26 actors"
             );
         }
-        if acquired && moved && !shot_handles.is_empty() && consumed.is_some() {
+        if guide_transitioned && guide_acquired && acquired && moved && heard && !shot_handles.is_empty() && consumed.is_some() {
             break;
         }
     }
     assert!(
-        acquired && moved && !shot_handles.is_empty() && consumed.is_some(),
-        "real route must acquire, fly, fire and damage original model26: acquired={acquired} moved={moved} shots={shot_handles:?} consumed={consumed:?} actor={:?}",
+        guide_transitioned && guide_acquired && acquired && moved && heard && !shot_handles.is_empty() && consumed.is_some(),
+        "real route must acquire, fly, sound, fire and damage original model26: guide_transitioned={guide_transitioned} guide={guide_acquired} acquired={acquired} moved={moved} heard={heard} shots={shot_handles:?} consumed={consumed:?} actor={:?}",
         session.source_arena().resolve(handle)
     );
     eprintln!(
-        "ordinary Wyvern{} -> model26{}: consumed={consumed:?}, projectiles={shot_handles:?}",
-        handle.source_slot, target_slot
+        "ordinary Wyvern{} -> model17{} -> model26{}: consumed={consumed:?}, projectiles={shot_handles:?}",
+        handle.source_slot, guide_slot, target_slot
     );
     for _ in 0..32 {
         if shot_handles
@@ -1213,4 +1362,379 @@ fn owner_mission18_switch_wyvern_acquires_and_damages_its_real_model26_target() 
         session.step_outer_turn(PlayerCommand::default(), 0);
     }
     panic!("naturally produced Wyvern projectiles must reach normal next-boundary reclamation");
+}
+
+#[test]
+fn owner_mission18_wyvern_public_meteor_death_reaches_target_objective_and_mana() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityView};
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, RuntimeRelation};
+
+    fn aim_public_possession(
+        sim: &mut crate::native_world::Mc2Simulation,
+        player: u16,
+        reward: u16,
+    ) -> (Position, Position, i16, i16) {
+        let sphere = *sim.economy().spheres().iter()
+            .find(|row| row.source_entity_index == reward && row.active)
+            .expect("the real reward remains available for public aim");
+        let top = sim.possession_guidance_target_top_for_test(reward).unwrap();
+        // Aim two ordinary source visits ahead from the sphere's current
+        // velocity. No sphere position, velocity, target or timing is written.
+        let aim = Position {
+            x: top.x.wrapping_add_signed(sphere.velocity_x.wrapping_mul(2)),
+            y: top.y.wrapping_add_signed(sphere.velocity_y.wrapping_mul(2)),
+            ..top
+        };
+        // The selected-hand command uses source bit0x100. Compensate its
+        // actual 256-unit lateral offset, then solve the public yaw/pitch from
+        // the source hand position, including terrain rollback and eye FOV.
+        let mut approach = Position { x: aim.x.wrapping_sub(768), y: aim.y,
+            z: aim.z.wrapping_add(512) };
+        crate::move_entity(&mut approach, 1024, 0, 256);
+        approach.z = approach.z.max(sim.canonical_terrain().ground_height(approach).wrapping_add(256));
+        let mut yaw = 512_i16;
+        let mut pitch = 0_i16;
+        for _ in 0..3 {
+            let mut launch = approach;
+            crate::move_entity(&mut launch, yaw.wrapping_sub(512), 0, 256);
+            if sim.canonical_terrain().ground_height(launch) > launch.z { launch = approach; }
+            launch.z = launch.z.wrapping_add(sim.entities()[usize::from(player)].array_fov());
+            (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, aim);
+        }
+        sim.set_level2_entity_position(player, approach).unwrap();
+        sim.set_level2_player_aim_for_test(yaw, pitch);
+        (approach, aim, yaw, pitch)
+    }
+
+    // Acquire the real Level6 pickup, then carry it through the same campaign
+    // entry operation used by the existing acquired-Meteor scenario.
+    let level6 = std::env::var_os("MC_METEOR_LEVEL6_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level6"));
+    let mut source = CampaignSession::open(level6, CampaignSelection::ordinary(6).unwrap()).unwrap();
+    // Explicit opening progression, as in the existing earned-mana path;
+    // Meteor itself must still be acquired from the actual Level6 pickup.
+    source.simulation_mut().apply_carried_spell_families(&[0, 1, 2], Some(0)).unwrap();
+    let source_player = source.simulation().state.entity_index;
+    let pickup = source.simulation().shared_spells().pickups().iter()
+        .find(|row| row.index == 5 && (row.class, row.model, row.action) == (15, 9, 28))
+        .expect("Level6 supplies its real Meteor pickup").index;
+    for _ in 0..16 {
+        let sim = source.simulation_mut();
+        let position = sim.entities()[usize::from(pickup)].position;
+        sim.set_level2_entity_position(source_player, position).unwrap();
+        sim.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        if sim.shared_spells().local_player().enabled_spell_holders[9] == pickup { break; }
+    }
+    assert_eq!(source.simulation().shared_spells().local_player().enabled_spell_holders[9], pickup);
+    let learned = source.simulation().shared_spells().local_player().enabled_spell_holders
+        .iter().enumerate().filter_map(|(family, holder)| (*holder != 0).then_some(family as u8))
+        .collect::<Vec<_>>();
+    let mut campaign = CampaignSession::open(mission_eighteen_root().join("level18"),
+        CampaignSelection::ordinary(18).unwrap()).unwrap();
+    assert_eq!(campaign.rebuild_for_spell_carry(&learned, Some(9)).unwrap(), Some(9));
+    let sim = campaign.simulation_mut();
+    let player = sim.state.entity_index;
+    for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+        sim.economy_mut().set_castle_stage_footprint(stage, footprint);
+    }
+    let encounter = mission_eighteen_feature().world_position(0);
+    let castle_site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+        x: x * 2048, y: y * 2048, z: 0,
+    })).filter(|position| !sim.economy().castle_projectile_site_blocked(
+        *position, sim.entities(), sim.canonical_terrain()))
+        .min_by_key(|position| xy(*position, encounter)).expect("owner terrain has a Castle site");
+    let castle = sim.economy_mut().build_castle(castle_site, player).unwrap();
+    assert!(sim.economy_mut().set_castle_mana_prerequisite_for_test(castle, 2_000_000));
+    sim.shared_spells_mut().award_spell_experience(player, 9, 5_000);
+    {
+        let live = &mut sim.session.state.live;
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.max_mana = 2_000_000;
+        parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+        parent.set_mana(parent.max_mana);
+        parent.set_mana_regen(0);
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.player_mana = parent.mana;
+        live.shared_spells.caster.mana = parent.mana;
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+    }
+    let gate = sim.entities()[86].clone();
+    assert_eq!((gate.class, gate.model, gate.action, gate.source_id), (11, 32, 32, 2));
+    let task = usize::try_from(gate.level_gate).unwrap();
+    for owner in 0..sim.runtime.objectives.len() {
+        sim.runtime.set_level2_objective_stage_selector_for(owner, task, 2);
+    }
+    for _ in 0..8 {
+        sim.step_outer_turn(PlayerCommand::default(), 0);
+        if sim.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 86, group: 2, authored_indices, .. }
+                if authored_indices.contains(&172))) { break; }
+    }
+    let handle = sim.entities().iter().find_map(|row| {
+        let identity = sim.creature_identity_for_source_slot(row.index)?;
+        (identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record: 172 })
+            .then_some(identity.handle)
+    }).expect("the real switch produces authored Wyvern172");
+    let slot = handle.source_slot;
+    let initial = sim.entities()[usize::from(slot)].clone();
+    assert_eq!((initial.class, initial.model, initial.life), (5, 16, RULES.max_life));
+    assert!(initial.mana > 0);
+    assert!(matches!(sim.runtime.stages[1].relation, RuntimeRelation::LiveEntity(target) if target == slot),
+        "the original Level18 target-death task binds row172's live slot");
+    let owner = sim.session.state.live.core.players.iter().find(|p| p.entity_index == player)
+        .unwrap().player_color_index() as usize;
+    for index in 0..sim.runtime.objectives.len() {
+        for stage in 0..sim.runtime.objectives[index].stage_selectors.len() {
+            sim.runtime.set_level2_objective_stage_selector_for(index, stage, 0);
+        }
+        sim.runtime.set_level2_objective_level_end_for(index, 0);
+    }
+    sim.runtime.set_level2_objective_text_selector_for(owner, 1);
+    sim.runtime.set_level2_objective_stage_selector_for(owner, 1, 1);
+    let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 9).unwrap() as i8;
+    sim.step_outer_turn(PlayerCommand { opcode: 31, argument_1: ui, argument_2: 2,
+        ..PlayerCommand::default() }, 0);
+    let holder = sim.shared_spells().local_player().enabled_spell_holders[9];
+    assert_ne!(holder, 0);
+    assert_eq!(sim.shared_spells().pickup(holder).unwrap().level_gate, 2);
+    assert_eq!(sim.runtime.objectives[owner].stage_selectors[1], 1);
+
+    let event_start = sim.economy().events().len();
+    let mut fired = 0;
+    let mut damaged = false;
+    let mut fatal = false;
+    let mut prekill = false;
+    let mut kill_counter = None;
+    let mut hidden = false;
+    let mut reclaimed = false;
+    let mut completed = false;
+    let mut reward = None;
+    // Only the player's aim/position and resource prerequisites are controlled;
+    // all casts, impacts, actor life, phase, RNG, death and reclaim remain live.
+    for turn in 0..1600 {
+        let actor = sim.source_arena().resolve(handle);
+        let prekill_before = matches!(actor, Some(SourceEntityView::Imported(row))
+            if row.action == 132 && word(row, 40) == player);
+        let kills_before = sim.economy().authored_bee_kill_census(player);
+        let command = if let Some(SourceEntityView::Imported(row)) = actor
+            && row.life >= 0 && turn % 24 == 0
+        {
+            let aim = Position { z: row.position.z.wrapping_add(word(row, 86) as i16), ..row.position };
+            let mut origin = Position { x: aim.x.wrapping_add(256),
+                y: aim.y.wrapping_add(768), z: aim.z.wrapping_sub(sim.state.entity_fov) };
+            origin.z = origin.z.max(sim.canonical_terrain().ground_height(origin).wrapping_add(256));
+            sim.set_level2_entity_position(player, origin).unwrap();
+            let launch = Position { x: origin.x.wrapping_sub(256),
+                z: origin.z.wrapping_add(sim.state.entity_fov), ..origin };
+            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, aim);
+            sim.set_level2_player_aim_for_test(yaw, pitch);
+            fired += 1;
+            PlayerCommand { flags: 0x10, ..PlayerCommand::default() }
+        } else { PlayerCommand::default() };
+        let was_hidden = hidden && !reclaimed;
+        sim.step_outer_turn(command, 0);
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "owner18 Meteor/death dispatch: {:?}", sim.dispatch_events());
+        if prekill_before {
+            let after = sim.economy().authored_bee_kill_census(player);
+            assert_eq!(after, kills_before.wrapping_add(1),
+                "source PreKill1C890 credits this hostile model16 to its actual player attacker once");
+            kill_counter = Some((kills_before, after));
+        }
+        if was_hidden {
+            assert!(sim.source_arena().resolve(handle).is_none(), "the immediately following source pass reclaims the hidden generation");
+        }
+        if let Some(SourceEntityView::Imported(row)) = sim.source_arena().resolve(handle) {
+            damaged |= row.life < initial.life && word(row, 42) == player;
+            fatal |= row.life < 0;
+            prekill |= row.action == 132 || row.action == 133;
+            hidden |= row.drawing_disabled();
+            if row.life >= 0 { assert_ne!(sim.runtime.objectives[owner].stage_selectors[1], 2); }
+        } else { reclaimed = true; }
+        completed |= sim.runtime.objectives[owner].stage_selectors[1] == 2;
+        reward = reward.or_else(|| sim.economy().events()[event_start..].iter().find_map(|event| match event {
+            Level2EconomyEvent::ManaSphereSpawned { source_entity_index, sphere_id, mana }
+                if *source_entity_index == slot && *mana == initial.mana => u16::try_from(*sphere_id).ok(),
+            _ => None,
+        }));
+        if fatal && prekill && hidden && reclaimed && completed && reward.is_some() { break; }
+    }
+    assert!(fired > 0 && damaged && fatal && prekill && kill_counter.is_some() && hidden && reclaimed && completed && reward.is_some(),
+        "actual Wyvern death closure: casts={fired} damaged={damaged} fatal={fatal} prekill={prekill} kill_counter={kill_counter:?} hidden={hidden} reclaimed={reclaimed} objective={completed} reward={reward:?} row={:?}", sim.source_arena().resolve(handle));
+    let reward = reward.unwrap();
+    let sphere = *sim.economy().spheres().iter().find(|row| row.source_entity_index == reward && row.active)
+        .expect("the actual death reward is a live collectible sphere");
+    assert_eq!((sphere.mana, sphere.owner_entity_index, sphere.player_entity_index), (initial.mana, 0, 0));
+    let reward_handle = sim.source_arena().handle(reward).unwrap();
+    let root_handle = sim.source_arena().handle(castle).unwrap();
+    for _ in 0..128 {
+        let sphere = sim.economy().spheres().iter().find(|row| row.source_entity_index == reward
+            && row.active && !row.pending_delete).expect("the actual death sphere remains available");
+        if sphere.velocity_x == 0 && sphere.velocity_y == 0 && sphere.vertical_velocity == 0 { break; }
+        sim.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_eq!(sim.source_arena().handle(reward), Some(reward_handle));
+    assert!(sim.economy_mut().set_castle_mana_prerequisite_for_test(castle, 100_000),
+        "leave capacity for the real collected reward after Meteor combat");
+    let capacity_before = sim.economy().owner_max_mana_capacity(player);
+    let castle_mana_before = sim.economy().castle_for_owner(player).unwrap().mana;
+    let possession = sim.shared_spells().local_player().enabled_spell_holders[1];
+    assert_ne!(possession, 0, "the declared opening carry supplies the real Possession holder");
+    for _ in 0..64 {
+        let holder = sim.shared_spells().pickup(possession).unwrap();
+        if holder.active_value == 0 && sim.shared_spells().player_entity().mana >= holder.max_mana { break; }
+        sim.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let holder = sim.shared_spells().pickup(possession).unwrap();
+    assert!(holder.active_value == 0 && sim.shared_spells().player_entity().mana >= holder.max_mana);
+    let (approach, target, yaw, pitch) = aim_public_possession(sim, player, reward);
+    let possession_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 1).unwrap() as i8;
+    let reward_before_possession = sim.economy().spheres().iter()
+        .find(|row| row.source_entity_index == reward && row.active).copied();
+    let mut possession_trace = Vec::new();
+    sim.step_outer_turn(PlayerCommand { opcode: 6, argument_1: possession_ui, flags: 0x40,
+        ..PlayerCommand::default() }, 0);
+    let mut flyer = None;
+    let mut effect = None;
+    let mut claimed = false;
+    for turn in 0..64 {
+        if let Some(row) = sim.economy().possession_projectiles().iter()
+            .find(|row| row.source_id_entity_index == player) {
+            flyer = flyer.or_else(|| sim.source_arena().handle(row.source_entity_index));
+        }
+        if let Some(row) = sim.economy().possession_effects().iter().find(|row|
+            row.source_id_entity_index == player
+                && flyer.is_some_and(|handle| handle.source_slot == row.projectile_entity_index)) {
+            effect = effect.or_else(|| sim.source_arena().handle(row.source_entity_index));
+        }
+        claimed |= sim.economy().events()[event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                if *sphere_id == u32::from(reward) && *owner_entity_index == player));
+        let shot = sim.economy().possession_projectiles().iter()
+            .find(|row| row.source_id_entity_index == player && flyer.is_some_and(|handle|
+                handle.source_slot == row.source_entity_index))
+            .map(|row| (row.source_entity_index, row.position, row.target_source_entity_index,
+                row.yaw, row.pitch, row.life, row.phase, row.active));
+        let pulse = sim.economy().possession_effects().iter()
+            .find(|row| effect.is_some_and(|handle| handle.source_slot == row.source_entity_index))
+            .map(|row| (row.source_entity_index, row.position, row.life, row.phase, row.active));
+        let sphere_now = sim.economy().spheres().iter()
+            .find(|row| row.source_entity_index == reward && row.active)
+            .map(|row| (row.position, row.mana, row.owner_entity_index, row.player_entity_index,
+                row.incoming_owner_entity_index, row.incoming_possession_payload, row.assigned_defender_slot,
+                row.control_flags, row.pending_delete));
+        if turn < 16 || shot.is_some() || pulse.is_some() {
+            possession_trace.push((turn, shot, pulse, sphere_now));
+        }
+        if claimed { break; }
+        sim.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert!(flyer.is_some() && effect.is_some() && claimed,
+        "public Possession must claim the actual Wyvern death sphere: flyer={flyer:?} effect={effect:?} claimed={claimed} reward_handle={reward_handle:?} current_handle={:?} pre_cast_reward={reward_before_possession:?} approach={approach:?} target={target:?} yaw={yaw} pitch={pitch} trace={possession_trace:#?} sphere_events={:?}",
+        sim.source_arena().handle(reward), sim.economy().events()[event_start..].iter().filter(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereClaimed { .. } | Level2EconomyEvent::ManaSpheresMerged { .. }
+            | Level2EconomyEvent::CastleDefenderCollectedSphere { .. })).collect::<Vec<_>>());
+    assert_eq!(sim.source_arena().handle(reward), Some(reward_handle));
+    assert!(sim.economy().spheres().iter().any(|row| row.active && row.source_entity_index == reward
+        && row.owner_entity_index == player && row.player_entity_index == player));
+    let mut collector = None;
+    let mut deposited = false;
+    let mut credited = false;
+    let mut census_seen = false;
+    let mut census_capacity = None;
+    let mut successful_census = None;
+    let mut retirement_end = None;
+    let mut contested = false;
+    let mut recasts = 0;
+    for turn in 0..2048 {
+        if sim.source_arena().handle(reward) != Some(reward_handle) && retirement_end.is_none() {
+            retirement_end = Some(sim.economy().events().len());
+        }
+        if sim.source_arena().handle(reward) == Some(reward_handle) {
+            let economy = sim.economy();
+            let matching = economy.owner_mana_rows.iter().filter(|row| row.active
+                && row.source_entity_index == reward && row.player_entity_index == player && row.mana == sphere.mana).count();
+            if matching == 1 {
+                census_seen = true;
+                let base = economy.owner_base_max_mana.get(&player).copied().unwrap_or_default();
+                let expected = economy.owner_mana_rows.iter().filter(|row| row.active && row.player_entity_index == player)
+                    .fold(base, |total, row| total.saturating_add(row.mana));
+                let projected = economy.owner_max_mana_capacity(player);
+                let player_max = sim.entities()[usize::from(player)].max_mana;
+                census_capacity = Some((base, expected, projected, player_max));
+                if projected == expected && player_max == projected {
+                    credited = true;
+                    successful_census.get_or_insert((base, expected, projected, player_max));
+                }
+            }
+        }
+        let collection_end = retirement_end.unwrap_or_else(|| sim.economy().events().len());
+        for event in &sim.economy().events()[event_start..collection_end] {
+            if let Level2EconomyEvent::CastleDefenderCollectedSphere { sphere_id, defender_slot, mana } = event
+                && *sphere_id == u32::from(reward) && *mana == sphere.mana
+                && sim.economy().castle_children().iter().any(|row| row.source_entity_index == *defender_slot
+                    && row.source_class == 3 && row.model == 3 && row.id_entity_index == player) {
+                collector = Some(*defender_slot);
+            }
+        }
+        deposited |= sim.economy().events()[event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+                if Some(*defender_slot) == collector && *castle_id == castle && *mana == sphere.mana));
+        if deposited && credited && retirement_end.is_some() { break; }
+        let rival_owned = sim.source_arena().handle(reward) == Some(reward_handle)
+            && sim.economy().spheres().iter().any(|row| row.active && row.source_entity_index == reward
+                && row.player_entity_index != 0 && row.player_entity_index != player);
+        contested |= rival_owned;
+        let holder_ready = sim.shared_spells().pickup(possession).is_some_and(|holder|
+            holder.active_value == 0 && sim.shared_spells().player_entity().mana >= holder.max_mana);
+        let own_claim_in_flight = sim.economy().possession_projectiles().iter()
+            .any(|row| row.active && row.source_id_entity_index == player)
+            || sim.economy().possession_effects().iter()
+                .any(|row| row.active && row.source_id_entity_index == player);
+        let command = if rival_owned && holder_ready && !own_claim_in_flight {
+            // A rival may actually claim the earned sphere while its collector
+            // travels. Recapture with another public cast; do not write either
+            // owner's relation or alter the rival's action or schedule.
+            aim_public_possession(sim, player, reward);
+            recasts += 1;
+            PlayerCommand { opcode: 6, argument_1: possession_ui, flags: 0x40,
+                ..PlayerCommand::default() }
+        } else { PlayerCommand::default() };
+        sim.step_outer_turn(command, 0);
+        if sim.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })) {
+            let live = &sim.session.state.live;
+            let context = crate::native_world::source_target::Context {
+                spells: Some(&live.shared_spells), map_type: Some(live.terrain.map_type()),
+                player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                particles: Some(&sim.session.definition.presentation.particles),
+                ..crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+            };
+            panic!("Wyvern reward collection dispatch turn={turn}: events={:?}; target31 cursor={:?} view={:?} raw={:?}; Cymmerian39={:?}; reward={:?}; castle={:?}",
+                sim.dispatch_events(), sim.economy().live_arena_cursor_row(31),
+                crate::native_world::source_target::read(&live.economy, context, 31),
+                sim.entities().get(31), sim.entities().get(39),
+                sim.economy().spheres().iter().find(|row| row.source_entity_index == reward),
+                sim.economy().castle_for_owner(player));
+        }
+    }
+    assert!(credited && collector.is_some() && deposited && retirement_end.is_some(),
+        "the actual Wyvern reward must enter owner census and reach the Castle: credited={credited} census_seen={census_seen} pre_claim_capacity={capacity_before} census_capacity={census_capacity:?} collector={collector:?} deposited={deposited} contested={contested} recasts={recasts} sphere={:?} castle={:?}",
+        sim.economy().spheres().iter().find(|row| row.source_entity_index == reward), sim.economy().castle_for_owner(player));
+    assert_eq!(sim.source_arena().handle(castle), Some(root_handle));
+    assert_eq!(sim.economy().castle_for_owner(player).unwrap().mana, castle_mana_before + sphere.mana);
+    let collection_end = retirement_end.unwrap();
+    assert_eq!(sim.economy().events()[event_start..collection_end].iter().filter(|event| matches!(event,
+        Level2EconomyEvent::CastleDefenderCollectedSphere { sphere_id, .. } if *sphere_id == u32::from(reward))).count(), 1);
+    assert_eq!(sim.economy().events()[event_start..].iter().filter(|event| matches!(event,
+        Level2EconomyEvent::CastleDefenderArrived { defender_slot, castle_id, mana }
+            if Some(*defender_slot) == collector && *castle_id == castle && *mana == sphere.mana)).count(), 1);
+    eprintln!("owner18 Wyvern{slot} Meteor casts={fired} kill_counter={kill_counter:?} death sphere={reward} mana={} pre_claim_capacity={capacity_before} successful_census={successful_census:?} contested={contested} recasts={recasts} collector={collector:?} Castle={castle} objective=complete", sphere.mana);
 }

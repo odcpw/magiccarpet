@@ -19,7 +19,8 @@ fn follow(actor:&mut Actor<'_>,ctx:&Context<'_>,point:Position,signed:bool,width
     if let Some(peer)=ctx.family.iter().filter_map(|s|ctx.target(*s)).find(|t|t.source_id!=actor.row.source_id
         && near(actor.row.position,t.position,u32::from(actor.word(88)),signed)) {
         actor.row.set_source_roll(heading_for_positions(peer.position,actor.row.position) as i16);
-    } else if let Some(width)=width && near(actor.row.position,point,(i32::from(actor.word(88))+i32::from(width)) as u32,false) {
+    }
+    if let Some(width)=width && near(actor.row.position,point,(i32::from(actor.word(88))+i32::from(width)) as u32,false) {
         actor.row.set_source_roll(heading_for_positions(point,actor.row.position) as i16);
     }
 }
@@ -87,7 +88,7 @@ pub(super) fn alliance_target(actor:&mut Actor<'_>,ctx:&Context<'_>,target:Targe
     Some(target)
 }
 fn summon_follow(actor:&mut Actor<'_>,ctx:&Context<'_>,effects:&mut Effects) {
-    let hit=consume(actor,ctx,true);
+    let hit=consume(actor,ctx);
     if hit==2 {let mut stage=actor.stage();stage.remaining=1;actor.set_stage(stage);return;}
     move_actor(actor,ctx,effects);
     if hit==1 {
@@ -175,7 +176,7 @@ pub(super) fn step(actor:&mut Actor<'_>,ctx:&mut Context<'_>,effects:&mut Effect
         1..=9=>{
             let route=ctx.runtime.descriptor(stage.index);
             let point=route.is_some_and(|r|mode==1||(mode==2&&!near(actor.row.position,r.point,3073,true)));
-            match consume(actor,ctx,!point) {
+            match consume(actor,ctx) {
                 2=>actor.set_action(132),
                 1=>{
                     if ctx.target(actor.attacker()).is_none_or(|t|t.class!=5||t.model!=SOURCE_MODEL) {

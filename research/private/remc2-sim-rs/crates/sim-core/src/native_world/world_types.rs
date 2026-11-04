@@ -394,6 +394,7 @@ impl EntitySnapshot {
         self.set_source_word_2c(source.vertical_velocity);
         self.set_mana(source.mana);
         self.set_source_player_entity_index(source.player_entity_index);
+        self.set_source_word_96(source.assigned_defender_slot);
         self.set_control_flags(source.control_flags);
         self.record[86..88].copy_from_slice(&source.collision_yaw.to_le_bytes());
         self.set_source_overlap_half_extents(source.collision_pitch, source.collision_roll);
@@ -4922,7 +4923,7 @@ impl NativeWorldInspection {
             .any(|kind| kind == SpellKind::Castle)
             || has_starting_castle
             || has_imported_castle)
-            && !session.economy().has_castle_stage_footprint(1)
+            && (1..=3).any(|stage| !session.economy().has_castle_stage_footprint(stage))
         {
             for (stage, footprint) in campaign_castle_stage_footprints()? {
                 if !session.economy().has_castle_stage_footprint(stage)
@@ -5062,13 +5063,26 @@ impl NativeWorldInspection {
             .filter(|row| row.active && row.class == 3)
             .ok_or_else(|| NativeWorldError::new("campaign local player entity is absent"))?;
         let mut castle_stage_footprints = self.level2_castle_stage_footprints.clone();
+        // MCI3 retains the exact initial Castle BUILD records alongside the
+        // house construction inputs. Bind their typed footprints to the
+        // ordinary Castle consumer too; a stage-1 presence does not imply
+        // that an imported stage-5 root has its later construction data.
+        for (&stage, footprint) in &self.level2_house_build_footprints {
+            if (1..=7).contains(&stage) {
+                castle_stage_footprints
+                    .entry(stage)
+                    .or_insert_with(|| footprint.clone());
+            }
+        }
         if definition
             .level_definition()
             .spell_kinds()
             .any(|kind| kind == SpellKind::Castle)
-            && !castle_stage_footprints.contains_key(&1)
+            && (1..=3).any(|stage| !castle_stage_footprints.contains_key(&stage))
         {
-            castle_stage_footprints.extend(campaign_castle_stage_footprints()?);
+            for (stage, footprint) in campaign_castle_stage_footprints()? {
+                castle_stage_footprints.entry(stage).or_insert(footprint);
+            }
         }
         let mut economy = Level2EconomyState::from_parts_with_castle_stage_footprints(
             SessionTerrain::from_inspection(self),

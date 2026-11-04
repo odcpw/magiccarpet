@@ -4127,6 +4127,113 @@ fn level_two_castle_public_route_retries_root_and_child_failures_and_upgrades() 
     assert_eq!((sprite.source_id, sprite.render_parameter_index, sprite.base_tmap),
         (player_slot, 177, 96));
 
+    // Continue this very same public, paid Castle through its source 5FF50
+    // producer. Only encounter geometry is controlled below: the actor,
+    // callbacks, targeting, projectiles and all damage remain scheduled.
+    let mut defense = occupied.clone();
+    let mut child_slot = 0;
+    for _ in 0..64 {
+        child_slot = defense.economy().castle_at(root_slot).unwrap().auxiliary_slots[0];
+        if child_slot != 0 { break; }
+        defense.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_ne!(child_slot, 0, "the public stage-three Castle must produce its model-15 child");
+    let child = *defense.economy().castle_defenders().iter()
+        .find(|row| row.active && row.source_entity_index == child_slot)
+        .expect("the root relation reaches the real defender carrier");
+    let root_handle = defense.session.state.live.economy.handle(root_slot).unwrap();
+    let child_handle = defense.session.state.live.economy.handle(child_slot).unwrap();
+    assert_eq!(child.castle_owner, Some(root_handle));
+    assert_eq!((child.id_entity_index, child.player_entity_index), (player_slot, player_slot));
+    assert_eq!(child.mana, 0, "source 4C1E0 starts this Castle defender with no mana");
+    assert!(defense.campaign_entity_presentations(0).unwrap().iter()
+        .any(|row| row.entity_index == child_slot && row.source_id == player_slot),
+        "the produced generation must reach the original sprite consumer");
+    let initial_child_position = child.position;
+    // The constructor-census helper is only valid at reset; after the paid
+    // Castle route use the current actual rival and its arena generation.
+    let rival = defense.entities().iter().find(|row| row.active && row.class == 3
+        && row.model == 1 && row.source_id != player_slot && row.life >= 0)
+        .expect("the live authored Level 2 rival").index;
+    let rival_handle = defense.session.state.live.economy.handle(rival).unwrap();
+    let mut away = defense.entities()[usize::from(rival)].position;
+    away.x = away.x.wrapping_add(0x5000);
+    away.z = defense.canonical_terrain().ground_height(away).wrapping_add(512);
+    defense.set_level2_entity_position(rival, away).unwrap();
+    for _ in 0..256 {
+        let upkeep = defense.nyphur_common_upkeep().unwrap();
+        if upkeep.word_0x159 == 0 && !upkeep.high_upkeep { break; }
+        defense.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(defense.session.state.live.economy.handle(rival), Some(rival_handle));
+    }
+    let upkeep = defense.nyphur_common_upkeep().unwrap();
+    assert_eq!(upkeep.word_0x159, 0, "the real rival's protection must expire naturally");
+    assert!(!upkeep.high_upkeep, "the rival must be outside its own Castle");
+    // Wait for the real 121 scan window; neither its phase nor action is
+    // assigned. This leaves the rival closer to its first scheduled shot.
+    for _ in 0..32 {
+        let current = defense.economy().castle_defenders().iter()
+            .find(|row| row.active && row.source_entity_index == child_slot)
+            .expect("the originally produced defender survives the protected approach");
+        if current.action == 121 && current.source_byte_3e % 15 == 0 { break; }
+        defense.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    let current = *defense.economy().castle_defenders().iter()
+        .find(|row| row.active && row.source_entity_index == child_slot && row.action == 121
+            && row.source_byte_3e % 15 == 0)
+        .expect("ordinary source phase reaches its attack scan");
+    let mut contact = current.position;
+    crate::move_entity(&mut contact, current.yaw as i16, 0, 512);
+    contact.z = defense.canonical_terrain().ground_height(contact).wrapping_add(256);
+    defense.set_level2_entity_position(rival, contact).unwrap();
+    let event_start = defense.economy().events().len();
+    let mut moved = false;
+    let mut aimed = false;
+    let mut arrow = false;
+    let mut arrow_handles = Vec::new();
+    let mut arrow_sound = false;
+    let mut arrow_audio = false;
+    let mut trace = Vec::new();
+    for _ in 0..256 {
+        let Some(current) = defense.economy().castle_defenders().iter()
+            .find(|row| row.active && row.source_entity_index == child_slot).copied() else { break };
+        moved |= current.position != initial_child_position;
+        aimed |= current.action == 122 && current.target_sphere_slot == rival;
+        defense.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(defense.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        for row in defense.economy().authored_class5_archer_children().iter().filter(|row|
+            row.source_class == 9 && row.model == 13 && row.entity_id == player_slot
+                && row.word_0x96 == rival)
+        {
+            arrow = true;
+            if let Some(handle) = defense.session.state.live.economy.handle(row.source_entity_index)
+                && !arrow_handles.contains(&handle) { arrow_handles.push(handle); }
+        }
+        arrow_sound |= defense.economy().events()[event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::PreparedSound { source_entity_index, sound_id: 33 | 34, .. }
+                if arrow_handles.iter().any(|handle| handle.source_slot == *source_entity_index)));
+        arrow_audio |= defense.effect_journal().records().iter().any(|record|
+            matches!(record.effect, crate::campaign::journal::CampaignEffect::Flight(
+                FlightEvent::PrepareSound { audio_site: crate::MissionAudioSite::ArcherArrow,
+                    entity_index, player_index: -1, sound_id: 33 | 34 }
+            ) if arrow_handles.iter().any(|handle| handle.source_slot == entity_index))
+                && record.audio.is_some_and(|audio| audio.play_type == 3));
+        if trace.len() < 48 {
+            trace.push((current.source_byte_3e, current.action, current.position,
+                defense.entities()[usize::from(rival)].position,
+                defense.economy().authored_class5_archer_children().iter().filter(|row|
+                    row.entity_id == player_slot && row.word_0x96 == rival)
+                    .map(|row| (row.source_entity_index, row.position, row.life, row.yaw, row.pitch))
+                    .collect::<Vec<_>>()));
+        }
+        if moved && aimed && arrow && arrow_sound && arrow_audio { break; }
+    }
+    assert!(moved && aimed && arrow && arrow_sound && arrow_audio,
+        "public Castle defender must roam, aim and emit 9/13 with source audio: moved={moved} aimed={aimed} arrow={arrow} sound={arrow_sound} audio={arrow_audio}, defender={:?}, rival={:?}, trace={:?}",
+        defense.economy().castle_defenders().iter().find(|row| row.source_entity_index == child_slot),
+        defense.entities()[usize::from(rival)], trace);
+    assert_eq!(defense.session.state.live.economy.handle(child_slot), Some(child_handle));
+
     // Exercise the source's last upgrade without farming through intermediate
     // stages. The acquired holder and root are real; the stage-five entry,
     // full stage-six Castle mana and player balance are controlled late-game

@@ -1177,6 +1177,22 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
 /// After hidden map unlink, retain final shared-effect packets before their
 /// typed carriers are freed. Model17 also supports external source hiding.
 pub(crate) fn prepare_retained_effects_reclaim(arena: &mut SourceArena) -> Result<(), String> {
+    let trails = arena.economy.speed_trails.iter()
+        .filter(|source| !source.active && source.control_flags & 0x400 != 0)
+        .copied().collect::<Vec<_>>();
+    for source in trails {
+        let slot = source.source_entity_index;
+        if arena.economy.free_source_slots().contains(&slot)
+            || arena.economy.live_arena_kind(slot).is_some()
+        {
+            continue;
+        }
+        // This constructor never map-links. Its final pose/life/phase still
+        // belong to the hidden typed row until the following owning sweep.
+        let mut row = super::source_target::speed_trail_packet(&source);
+        row.reclaim_source_row();
+        arena.entities[usize::from(slot)] = row;
+    }
     let checkpoints = arena.economy.authored_model59.iter()
         .filter(|source| source.active && source.control_flags & 0x400 != 0)
         .map(|source| source.source_entity_index).collect::<Vec<_>>();

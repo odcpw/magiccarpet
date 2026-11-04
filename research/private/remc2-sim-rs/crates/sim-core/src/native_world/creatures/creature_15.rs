@@ -76,6 +76,8 @@ pub struct CastleDefenderState {
     pub visual_index: u16,
     pub shift_rot_x: i16,
     pub shift_rot_y: i16,
+    /// Source `array_0x52.yaw`, the vertical collision-centre offset.
+    pub collision_vertical_offset: i16,
     pub fov: i16,
     pub proximity_delay: u8,
     pub(crate) stage: StageState,
@@ -134,7 +136,8 @@ impl CastleDefenderState {
             visual_index: 0,
             shift_rot_x: PROPERTIES.collision_half_width,
             shift_rot_y: PROPERTIES.collision_half_height,
-            fov: 125,
+            collision_vertical_offset: 125,
+            fov: PROPERTIES.collision_half_height,
             proximity_delay: 0,
             stage: StageState::default(),
         }
@@ -255,6 +258,7 @@ impl CastleDefenderState {
             self.maximum_speed,
             self.shift_rot_x,
             self.shift_rot_y,
+            self.collision_vertical_offset,
             self.fov,
             self.stage.remaining,
             self.stage.duration,
@@ -365,14 +369,6 @@ fn distance(a: Position, b: Position) -> u32 {
 }
 
 fn consume_mailbox(actor: &mut CastleDefenderState, context: &DefenderContext<'_>) -> u8 {
-    consume_mailbox_inner(actor, context, true)
-}
-
-fn consume_mailbox_inner(
-    actor: &mut CastleDefenderState,
-    context: &DefenderContext<'_>,
-    linked_hit: bool,
-) -> u8 {
     let mut state = u8::from(
         consume_damage(
             &mut actor.life,
@@ -393,9 +389,7 @@ fn consume_mailbox_inner(
             linked.life,
             linked.attacker,
         ) {
-            if linked_hit {
-                state = 1;
-            }
+            state = 1;
             break;
         }
         slot = linked.next;
@@ -432,6 +426,21 @@ pub(crate) fn probe_blocked(terrain: &SessionTerrain, candidate: Position, fov: 
             }))
 }
 
+/// `sub_102D0(..., 1)` checks the whole collision extent, advancing from
+/// the predicted point along the actor's current yaw, not the trial yaw.
+fn roam_probe_blocked(actor: &CastleDefenderState, terrain: &SessionTerrain, candidate: Position) -> bool {
+    let mut point = candidate;
+    let mut distance = 0;
+    while distance <= i32::from(actor.shift_rot_x.max(actor.shift_rot_y)) {
+        if probe_blocked(terrain, point, actor.fov) {
+            return true;
+        }
+        crate::move_entity(&mut point, actor.yaw as i16, 0, 256);
+        distance += 256;
+    }
+    false
+}
+
 /// `sub_24190`: four RNG probes, grid alignment and first overlapping peer.
 pub(crate) fn roam(actor: &mut CastleDefenderState, context: &DefenderContext<'_>) {
     if actor.source_byte_3e & 7 == 0 {
@@ -445,7 +454,7 @@ pub(crate) fn roam(actor: &mut CastleDefenderState, context: &DefenderContext<'_
             let mut candidate = actor.position;
             crate::move_entity(&mut candidate, heading as i16, 0, 256);
             actor.entity_rng = level2_next_rng16(actor.entity_rng);
-            let score = if probe_blocked(context.terrain, candidate, actor.fov) {
+            let score = if roam_probe_blocked(actor, context.terrain, candidate) {
                 0
             } else {
                 actor.entity_rng % modulus + 2
@@ -492,12 +501,18 @@ fn aim(actor: &mut CastleDefenderState) {
     actor.speed = 0;
     actor.visual_index = if actor.entity_rng % 20 <= 10 { 206 } else { 1 };
     actor.fov = if actor.visual_index == 206 { 120 } else { 125 };
+    actor.collision_vertical_offset = actor.fov;
+    actor.shift_rot_x = 0;
+    actor.shift_rot_y = 0;
 }
 
 fn idle(actor: &mut CastleDefenderState) {
     actor.speed = actor.minimum_speed;
     actor.visual_index = 0;
     actor.fov = 125;
+    actor.collision_vertical_offset = 125;
+    actor.shift_rot_x = 0;
+    actor.shift_rot_y = 0;
 }
 
 fn nearest(
@@ -531,8 +546,8 @@ fn nearest(
     best
 }
 
-/// 1DBF0 deliberately uses promoted unsigned coordinates rather than the
-/// signed-wrapped deltas in 23C40. Keep its separate guard scan arithmetic.
+/// 1DBF0 promotes the X difference but stores the Y difference in an i16.
+/// This differs from 23C40, which truncates both coordinate differences.
 fn guard_target(
     actor: &CastleDefenderState,
     context: &DefenderContext<'_>,
@@ -545,7 +560,7 @@ fn guard_target(
         .filter_map(|slot| context.target(*slot))
     {
         let dx = i32::from(target.position.x) - i32::from(actor.position.x);
-        let dy = i32::from(target.position.y) - i32::from(actor.position.y);
+        let dy = i32::from(target.position.y.wrapping_sub(actor.position.y).cast_signed());
         let d = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
         if target.control_flags & 0x20 == 0
             && d <= TARGET_RANGE * TARGET_RANGE
@@ -1251,10 +1266,7 @@ fn stage_step(
                 .stage_runtime
                 .as_ref()
                 .and_then(|runtime| runtime.descriptor(actor.stage.index));
-            let point_helper = descriptor.is_some_and(|descriptor| {
-                mode == 1 || (mode == 2 && !signed_near(actor.position, descriptor.point, 3072))
-            });
-            match consume_mailbox_inner(actor, context, !point_helper) {
+            match consume_mailbox(actor, context) {
                 2 => actor.action = 124,
                 1 => {
                     if context
@@ -1373,6 +1385,9 @@ pub(crate) fn finish_self_replaced_arrow(
     arrow.particle_index = 0;
     arrow.shift_rot_x = 0;
     arrow.shift_rot_y = 0;
+    arrow.collision_half_width = 0;
+    arrow.collision_vertical_offset = 125;
+    arrow.collision_half_height = 125;
     arrow.fov = 125;
 }
 

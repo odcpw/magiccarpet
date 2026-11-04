@@ -1821,7 +1821,9 @@ impl Level2EconomyState {
     ) {
         let targets = self.arrow_collision_targets(imported_entities).into_iter().filter_map(|target| {
             let (_, _, control_flags, mana) = self.archer_arrow_target_properties(target.source_slot, imported_entities)?;
-            Some(super::super::creatures::archer::ArrowCollisionTarget { target, control_flags, mana })
+            Some(super::super::creatures::archer::ArrowCollisionTarget {
+                half_depth: target.half_width, target, control_flags, mana,
+            })
         }).collect();
         let owner_class_model = self.authored_class5_archer_children.iter()
             .find(|child| child.active && child.source_entity_index == source_slot)
@@ -1879,16 +1881,17 @@ impl Level2EconomyState {
                                     || (child.xtype == class
                                         && (child.xsubtype == u8::MAX || child.xsubtype == model)))
                             })
-                        && crate::level1_mission::source_entities_overlap(
+                        && crate::level1_mission::source_entities_overlap_xy(
                             child.position,
                             child.collision_half_width,
-                            child.collision_vertical_offset,
-                            child.collision_half_height,
+                            child.collision_half_width,
                             target.position,
                             target.half_width,
-                            target.vertical_offset,
-                            target.half_height,
+                            entry.half_depth,
                         )
+                        && (i32::from(target.position.z) + i32::from(target.vertical_offset)
+                            - i32::from(child.position.z) - i32::from(child.collision_vertical_offset)).abs()
+                            < i32::from(child.collision_half_height) + i32::from(target.half_height)
                 })
             })
             .map(|entry| entry.target);
@@ -3346,6 +3349,33 @@ mod tests {
             if !reflects {
                 assert_eq!(damage.expect("current linked target remains hittable regardless of life or hide bit").payload, 400);
             }
+        }
+        for (depth, should_hit) in [(128_i16, true), (0, false)] {
+            let mut current = arena.clone();
+            let target = &mut current.entities[usize::from(target_slot)];
+            target.set_position(Position { y: 0x7060, ..target_position });
+            target.record[90..92].copy_from_slice(&depth.to_le_bytes());
+            let frame = crate::native_world::source_target::arrow_collision_frame(
+                &current, slot, Default::default(),
+            ).unwrap();
+            let entry = frame.targets.iter().find(|entry| entry.target.source_slot == target_slot).unwrap();
+            assert_eq!((entry.target.half_width, entry.half_depth), (0, depth));
+            let (_, damage, _) = current.economy.step_authored_class5_archer_child_with_frame(slot, terrain, &frame);
+            assert_eq!(damage.is_some(), should_hit,
+                "the current source Y extent controls arrow collision independently of X");
+        }
+        for (arrow_z, target_z, should_hit) in [(10_000, 10_040, true), (32_760, -32_700, false)] {
+            let mut current = arena.clone();
+            current.economy.authored_class5_archer_children.iter_mut()
+                .find(|arrow| arrow.source_entity_index == slot).unwrap().position.z = arrow_z;
+            current.entities[usize::from(target_slot)]
+                .set_position(Position { z: target_z, ..target_position });
+            let frame = crate::native_world::source_target::arrow_collision_frame(
+                &current, slot, Default::default(),
+            ).unwrap();
+            let (_, damage, _) = current.economy.step_authored_class5_archer_child_with_frame(slot, terrain, &frame);
+            assert_eq!(damage.is_some(), should_hit,
+                "source promotes signed Z and offsets before calculating separation");
         }
     }
 

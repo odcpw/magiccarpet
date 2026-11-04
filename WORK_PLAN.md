@@ -1,5 +1,91 @@
 # Shared-engine delivery plan
 
+## Active request: complete the creature capabilities
+
+Oliver requested working through the remaining creature list on 2026-11-04.
+Continue the existing original `mc-1pb` acceptance and dependencies; this list
+tracks delivery, not missing-code counts. Start with Wyvern and Castle defenders
+in independent family owners; root serializes shared joins, Cargo and installation.
+Each family must connect ordinary production, source scheduling/arithmetic,
+behavior and spell interaction, consequences/rewards, natural cleanup,
+objective consumers and original presentation/assets. Preserve the delivered
+spell checkpoints and already qualified creature paths; repair shared defects
+in their canonical owner when a real connected failure exposes them.
+
+- [ ] Wyvern16 — `mc-1pb.5` (first connected batch).
+- [ ] Castle defenders15 — `mc-1pb.4`.
+- [ ] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
+- [ ] Archer4 — `mc-1pb.21`; Skeleton9 — `mc-1pb.22`;
+      Firefly19 — `mc-1pb.23`.
+- [ ] Creature17 — `mc-1pb.6`; Creature18 — `mc-1pb.7`.
+- [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
+- [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
+- [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
+- [ ] Builder/Villager/Trader — `mc-1pb.16`.
+- [ ] All single-player rival wizards — `mc-1pb.17`.
+- [ ] Player death, banishment and revival — `mc-1pb.18`.
+- [ ] Final boss10 — `mc-1pb.3`.
+- [ ] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`,
+      integrated as actual family consumers require it.
+
+Goat (`mc-1pb.1`, already closed) and existing Spider20 behavior remain delivered
+inputs; the parent still requires their actual enabled-source coverage. Recent
+17/18/25/26 checkpoints are installed inputs, not reasons to replay unchanged
+long checks. An unchecked family may already be substantially implemented.
+Original full acceptance remains open until its evidence is independently
+verified and matching native delivery lands. No automatic heartbeat is recreated.
+
+The first creature batch is implemented and verified, awaiting commit/native
+delivery; installed source remains the all-spells checkpoint below. Evidence:
+`generated/creatures-20261104-integration/candidate-20/` and earlier connected
+runs. All444 Rust inputs are frozen. Candidate20 differs from18 only in the
+new sphere boundary's source-pass/resource prerequisites; production is byte
+identical. The strict rig workspace/all-target check passes22.907s.
+
+Actual owner18 Wyvern production/route/target inheritance, real projectile
+damage, sprite207 and prepared sound39 pass. Its full reward path on18 passes
+91.451s: five public Meteor casts, source kill credit0→1, original target172
+objective, natural hide/reclaim, actual neutral30000 sphere, public Possession,
+collector217/Castle215 deposit and exact131000 census/player capacity. This run
+has no rival contest;11 separately passed contest/recapture. Corrections include
+source target-overlap precedence and linked-point-hit retaliation. Player-only
+test aim accounts for the real hand offset and the still-moving sphere; damage,
+RNG, life and ownership outcomes are not assigned.
+
+The actual hostile Castle→defender path on18 passes18.731s: exact MCI BUILD1..5
+binding, ordinary stage5 construction/model15 production, movement/aim/arrow,
+prepared33/34 and attributed player damage, paid Fireball retaliation/death,
+following reclaim, cleared owner relation and replacement. Initial resources
+and player travel/aim are declared controls. Source collision axes, full probe
+extent, wrapped guard-Y, linked-point reactions, allocation throttle, independent
+arrow depth and promoted Z arithmetic are corrected. Public Castle, source
+order/reset and focused source/pressure controls pass; pressure controls do not
+establish ordinary self-alias reachability. This owner package lacks BUILD6/7;
+those are not invented or claimed qualified by this path.
+
+Connected collection exposed missing current fields across fixed-address reuse.
+Speed trails now supply their real zero axes/word96 through hide/reclaim;
+CastleAuxiliary supplies its current target/attacker/stage fields. Failure-time
+diagnostics identified the remaining cached leader as a real ManaSphere10/39,
+not the later9/20 packet seen after the whole turn. Sphere word96 now reads the
+actual collector slot, survives flag-only release/collector retirement, and is
+retained at reclaim. Candidate20's actual sphere→collector assignment→Cymmerian
+current read→collection/hide/reclaim boundary passes0.627s, including poisoned
+raw rejection and a separately labelled retirement prerequisite. The original
+100-mana replay runs all1024 iterations without dispatch errors on18; its final
+combat assertion still fails from insufficient mana/dead player and is not a
+gameplay pass. Fresh bounded source and independent gate reviews support the
+changed paths; package formatting remains non-clean, without a clean-format claim.
+
+All owners are frozen/handed back: Terra BoldHollow/AmberOtter, Sol
+CrimsonGlacier/BrownMountain. Root AmberWolf owns final verification, push and
+matching Original installation; no creature acceptance is closed yet. Full
+`.24` and the Wyvern's original Fireball dependency stay open. Unresolved
+Level23 initial Castle3/2 identity at0,0 remains in `mc-bhq.8` comment99; the
+fresh whole package is structurally/exporter-qualified, not runtime-qualified.
+No human combat/FPS/hardware audio, all missions, old-save or arbitrary custom
+particle-override claim. Retired pane maps and the deleted heartbeat stay retired.
+
 ## Delivered request: remaining spell E2E paths
 
 Oliver explicitly requested completing all remaining spells on 2026-11-04.

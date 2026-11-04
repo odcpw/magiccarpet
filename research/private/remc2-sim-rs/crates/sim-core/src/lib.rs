@@ -712,6 +712,7 @@ pub enum MissionAudioSite {
     MeteorImpact,
     FireSphereCollision,
     CymmerianPursuit,
+    WyvernAttack,
     Count,
 }
 
@@ -1179,6 +1180,7 @@ impl MissionAudioSite {
         Self::MeteorImpact,
         Self::FireSphereCollision,
         Self::CymmerianPursuit,
+        Self::WyvernAttack,
     ];
 
     #[must_use]
@@ -1534,6 +1536,14 @@ impl MissionAudioSite {
                 "3",
                 "fixed 0",
                 "EventsFunctions.cpp:19082 sub_28C60 before sub_1C310",
+                true,
+            ),
+            Self::WyvernAttack => (
+                "39",
+                "current Wyvern after projectile construction",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:15503 sub_24510 before burst rearm",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

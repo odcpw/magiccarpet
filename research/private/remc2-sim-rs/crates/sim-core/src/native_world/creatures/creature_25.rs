@@ -89,7 +89,7 @@ impl Target {
     fn required<T>(self, value: Option<T>, field: &str) -> Result<T, String> {
         value.ok_or_else(|| {
             format!(
-                "Cymmerian source target {} lacks current {field}",
+                "Cymmerian source target {} lacks current {field}: {self:?}",
                 self.slot
             )
         })
