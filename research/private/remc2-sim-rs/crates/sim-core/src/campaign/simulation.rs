@@ -10330,6 +10330,17 @@ macro_rules! terrain_method {
 
 #[cfg(test)]
 impl Level2EconomyTestView<'_> {
+    pub(crate) fn step_authored_model59_slot(&mut self, source_slot: u16) -> bool {
+        if !self.session.economy().authored_model59().iter()
+            .any(|row| row.active && row.source_entity_index == source_slot)
+        {
+            return false;
+        }
+        self.session.step_level2_effect_source_slot_for_test(source_slot)
+            .expect("checkpoint callback uses the production scheduler adapter");
+        true
+    }
+
     fn with_terrain<R>(
         &mut self,
         callback: impl FnOnce(&mut Level2EconomyState, &mut SessionTerrain) -> R,
@@ -10597,8 +10608,16 @@ impl Level2EconomyTestView<'_> {
         (carrier_slot: u16, position: Position) -> bool);
     terrain_method!(step_model13_spawned_child_slot,
         (source_slot: u16) -> bool);
-    terrain_method!(step_model59_smoke_child_slot,
-        (source_slot: u16) -> bool);
+    pub(crate) fn step_model59_smoke_child_slot(&mut self, source_slot: u16) -> bool {
+        if !self.session.economy().model59_smoke_children().iter()
+            .any(|row| row.active && row.source_entity_index == source_slot)
+        {
+            return false;
+        }
+        self.session.step_level2_effect_source_slot_for_test(source_slot)
+            .expect("checkpoint smoke uses the canonical source callback");
+        true
+    }
     terrain_method!(step_model6_spawned_child_slot,
         (source_slot: u16) -> bool);
     pub(crate) fn step_possession_projectile_slot(&mut self, source_slot: u16) -> bool {
@@ -12024,6 +12043,7 @@ impl Mc2Simulation {
                         let width = (feature.word_10 as i16).wrapping_shl(8);
                         row.record[88..90].copy_from_slice(&width.to_le_bytes());
                         row.record[90..92].copy_from_slice(&width.to_le_bytes());
+                        row.record[92..94].copy_from_slice(&width.to_le_bytes());
                     }
                 }
                 // These historical auxiliary producers share the same authored
@@ -15550,13 +15570,20 @@ impl Mc2Simulation {
             | Level2DynamicArenaKind::AuthoredModel5WaterSplash | Level2DynamicArenaKind::AuthoredModel6
             | Level2DynamicArenaKind::AuthoredModel13 | Level2DynamicArenaKind::Model13SpawnedChild
             | Level2DynamicArenaKind::Model59SmokeChild | Level2DynamicArenaKind::AuthoredModel17
-            | Level2DynamicArenaKind::Model17SpawnedChild))
+            | Level2DynamicArenaKind::Model17SpawnedChild | Level2DynamicArenaKind::AuthoredModel59))
             && let Some(row) = live.economy.entities.get_mut(usize::from(source_slot))
             && row.class == 0 && row.drawing_disabled()
         {
             row.set_phase(advanced);
         }
         match route {
+            SourceRoute::Dynamic(row) if row.kind == Level2DynamicArenaKind::AuthoredModel59 => {
+                if let Some(source) = live.economy.economy.authored_model59.iter_mut()
+                    .find(|source| source.source_entity_index == source_slot)
+                {
+                    source.source_byte_3e = advanced;
+                }
+            }
             SourceRoute::SpeedPickup | SourceRoute::ImportedSpellSource => {
                 if let Some(row) = live.shared_spells.pickup_mut(source_slot) {
                     row.record[66] = advanced;
@@ -19648,6 +19675,7 @@ impl Mc2Simulation {
                         | Level2DynamicArenaKind::AuthoredModel13
                         | Level2DynamicArenaKind::Model13SpawnedChild
                         | Level2DynamicArenaKind::Model59SmokeChild
+                        | Level2DynamicArenaKind::AuthoredModel59
                         | Level2DynamicArenaKind::AuthoredModel76
                 ) {
                     self.step_shared_effect_source(
@@ -26077,19 +26105,11 @@ impl Mc2Simulation {
             Level2DynamicArenaKind::AuthoredModel32 => {
                 self.step_level2_authored_model32(pass, source_slot)
             }
-            Level2DynamicArenaKind::AuthoredModel59 => self
-                .session
-                .state
-                .live
-                .economy
-                .step_authored_model59_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredModel59 => {
+                unreachable!("checkpoint emitter uses the shared effect source callback")
+            }
             Level2DynamicArenaKind::Model59SmokeChild => {
-                let terrain = &self.session.state.live.terrain;
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .step_model59_smoke_child_slot(source_slot, terrain)
+                unreachable!("checkpoint smoke uses the shared effect source callback")
             }
             Level2DynamicArenaKind::AuthoredModel53 => {
                 let source = self
@@ -27942,7 +27962,7 @@ impl Mc2Simulation {
         .expect("test source pass has only admitted selectors");
     }
 
-    /// Isolate one real GroundFire visit after a caller's actual 49F90
+    /// Isolate one real shared-effect visit after the caller's source
     /// snapshot. Earlier callbacks cannot spend the captured fallback address;
     /// live selection, damage domains and the current-occupant epilogue remain
     /// the production scheduler's. This is not a complete source pass.
@@ -27980,13 +28000,17 @@ impl Mc2Simulation {
         let pass = SourcePass::UpdateEntities;
         world.phase(pass, PassPhase::RebuildMemberships)?;
         let SlotResolution::Eligible(plan) = world.resolve(pass, 0, source_slot) else {
-            return Err(format!("source slot {source_slot} is not an admitted GroundFire"));
+            return Err(format!("source slot {source_slot} is not an admitted shared effect"));
         };
         if plan.kind != VisitKind::Callback
             || plan.selector.registry_key().selector
                 != (BehaviorSelector::ClassAction { class: 10, action: 6 })
+                && plan.selector.registry_key().selector
+                    != (BehaviorSelector::ClassAction { class: 10, action: 64 })
+                && plan.selector.registry_key().selector
+                    != (BehaviorSelector::ClassAction { class: 10, action: 13 })
         {
-            return Err(format!("source slot {source_slot} is not a GroundFire callback"));
+            return Err(format!("source slot {source_slot} is not a supported shared-effect callback"));
         }
         world.callback(pass, 0, source_slot, &plan.selector)?;
         let current = match world.resolve(pass, 0, source_slot) {
@@ -27996,13 +28020,13 @@ impl Mc2Simulation {
                 kind: plan.kind,
             },
             SlotResolution::Unknown { selector } => {
-                return Err(format!("GroundFire replacement has unknown selector {selector:?}"));
+                return Err(format!("shared-effect replacement has unknown selector {selector:?}"));
             }
         };
         let epilogue = plan.epilogue.as_ref()
-            .ok_or_else(|| format!("GroundFire {source_slot} has no source epilogue"))?;
+            .ok_or_else(|| format!("shared effect {source_slot} has no source epilogue"))?;
         world.epilogue(pass, 0, source_slot, epilogue, &current)?;
-        assert!(plan.cleanup.is_none(), "GroundFire has no immediate source cleanup");
+        assert!(plan.cleanup.is_none(), "shared effect has no immediate source cleanup");
         Ok(())
     }
 

@@ -5066,11 +5066,18 @@ fn level_two_reset_model32_producer_reaches_group29_bees_from_production_turns()
 
 #[test]
 fn level_two_group23_model59_materializes_from_rooted_production_turns() {
-    let inspection =
-        NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
-    let mut session = inspection
-        .level2_reset_session()
-        .expect("Level 2 group-23 model-59 session");
+    // Nested group24 creates real GroundFire rows361/362 in the same pass.
+    // Gameplay needs their immutable descriptor bindings; the raw export-only
+    // inspection fixture intentionally does not supply those definitions.
+    let mut session = level_two_campaign_session();
+    for authored_record in [361, 362] {
+        let definition = &session.session.definition;
+        let id = definition.mechanic_entity_for_authored_record(authored_record)
+            .expect("the production descriptor binds the actual GroundFire record");
+        let effect = definition.semantic_level().unwrap().entity(id).unwrap().effect()
+            .expect("the immutable authored record owns effect properties");
+        assert_eq!(effect.kind(), crate::level_definition::EffectKind::GroundFire);
+    }
     let baseline_hash = session.campaign_state_hash();
     let baseline_model59_count = session.economy().authored_model59().len();
     let authored_features = session.mission().authored_features().to_vec();
@@ -5094,10 +5101,31 @@ fn level_two_group23_model59_materializes_from_rooted_production_turns() {
     // This is the real imported root overlap path. No allocator or
     // authored-row helper is called directly; the source pass owns the
     // group activation and the same-pass dynamic cursor visit.
-    session.state.position = feature_position(342);
+    let player_slot = session.state.entity_index;
+    session.set_level2_entity_position(player_slot, feature_position(342)).unwrap();
     let mut activated = false;
+    let mut activation_trace = Vec::new();
     for _ in 0..8 {
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let root = &session.entities()[usize::from(root_source_slot)];
+        let player = &session.entities()[usize::from(player_slot)];
+        let dx = i32::from((player.position.x as i16)
+            .wrapping_sub(root.position.x as i16)).abs();
+        let dy = i32::from((player.position.y as i16)
+            .wrapping_sub(root.position.y as i16)).abs();
+        let overlap = dx < i32::from(root.array_pitch()) + i32::from(player.array_pitch())
+            && dy < i32::from(root.array_roll()) + i32::from(player.array_roll());
+        activation_trace.push((
+            (root.active, root.class, root.model, root.action, root.phase,
+                root.position, root.control_flags, root.source_dword_10()),
+            (player.active, player.class, player.model, player.life,
+                player.position, session.state.position),
+            (overlap, root.phase & 7),
+        ));
+        assert!(!session.dispatch_events().iter()
+            .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "root342 ordinary activation errors: {:?}; source trace: {activation_trace:?}",
+            session.dispatch_events());
         activated |= session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
@@ -5115,7 +5143,7 @@ fn level_two_group23_model59_materializes_from_rooted_production_turns() {
             break;
         }
     }
-    assert!(activated, "row 342 must activate group 23 in production");
+    assert!(activated, "row 342 must activate group 23 in production; source trace: {activation_trace:?}; events: {:?}", session.dispatch_events());
 
     let checkpoint = session
         .economy()
@@ -5176,7 +5204,7 @@ fn level_two_group23_model59_materializes_from_rooted_production_turns() {
             smoke_child.particle_index,
             smoke_child.control_flags,
         ),
-        (10, 13, 13, 32, 31, 67, 0x0002_0000)
+        (10, 13, 13, 32, 31, 67, 0x0002_0004)
     );
     assert_eq!(
         smoke_child.phase,
@@ -5207,6 +5235,116 @@ fn level_two_group23_model59_materializes_from_rooted_production_turns() {
     );
     assert_eq!(session.economy().authored_model59().len(), 1);
     assert_eq!(session.economy().model59_smoke_children().len(), 1);
+
+    // Retain the real group-produced state for the complete unshortened
+    // lifecycle. Only the observer's position is controlled; no source life,
+    // allocation list, activation gate or callback is forced.
+    let mut lifetime = session.clone();
+    let slot = checkpoint.source_entity_index;
+    let handle = lifetime.source_arena().handle(slot).unwrap();
+    let child_handle = lifetime.source_arena().handle(smoke_child.source_entity_index).unwrap();
+    let mut saw_child_hidden = false;
+    let mut saw_child_reclaimed = false;
+    let mut saw_smoke_presentation = false;
+    let mut terminal = None;
+    for _ in 0..usize::try_from(checkpoint.max_life).unwrap() + 2 {
+        assert!(!lifetime.dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })),
+            "the unfiltered checkpoint source pass must complete: {:?}", lifetime.dispatch_events());
+        let current = lifetime.economy().authored_model59().iter()
+            .find(|source| source.source_entity_index == slot).copied()
+            .expect("the real checkpoint remains owned until its following reclaim");
+        assert!(lifetime.source_arena().resolve(handle).is_some());
+        let packet = source_target::status_parent(lifetime.source_arena(), source_target::Context::default(), slot)
+            .unwrap().unwrap();
+        assert_eq!((packet.class, packet.model, packet.action, packet.life, packet.entity_rng,
+            packet.actual_speed, packet.phase, packet.position, packet.source_id, packet.control_flags),
+            (10, 59, 64, i32::from(current.life), current.entity_rng,
+                current.actual_speed, current.phase, current.position, current.entity_id, current.control_flags));
+        assert_eq!(current.source_byte_3e, current.phase);
+        assert_eq!(current.phase, (slot as u8)
+            .wrapping_add((i32::from(current.max_life) - i32::from(current.life)) as u8));
+        let player = lifetime.state.entity_index;
+        lifetime.set_level2_entity_position(player, Position {
+            z: checkpoint.position.z.wrapping_add(768), ..checkpoint.position
+        }).unwrap();
+        let presentations = lifetime.campaign_entity_presentations(0).unwrap();
+        assert!(!presentations.iter()
+            .any(|view| view.entity_index == slot),
+            "source flag1 keeps the checkpoint itself hidden");
+        if lifetime.source_arena().resolve(child_handle).is_some() {
+            let child = lifetime.economy().model59_smoke_children().iter()
+                .find(|child| child.source_entity_index == child_handle.source_slot).unwrap();
+            if child.control_flags & 0x400 != 0 {
+                assert_eq!(child.life, -2);
+                assert!(child.active && !child.drawing_enabled);
+                assert!(!lifetime.economy().free_source_slots().contains(&child_handle.source_slot));
+                saw_child_hidden = true;
+            }
+        } else {
+            assert!(saw_child_hidden, "the child hides before its source incarnation is reclaimed");
+            saw_child_reclaimed = true;
+        }
+        for child in lifetime.economy().model59_smoke_children().iter()
+            .filter(|child| child.active && child.drawing_enabled)
+        {
+            if let Some(view) = presentations.iter()
+                .find(|view| view.entity_index == child.source_entity_index)
+            {
+                assert_eq!(view.source_id, child.source_entity_index,
+                    "32420 preserves the Smoke13 child's own NewEvent identity");
+                assert_eq!(view.render_parameter_index, child.particle_index);
+                assert!((67..=74).contains(&view.render_parameter_index));
+                saw_smoke_presentation = true;
+            }
+        }
+        if !current.drawing_enabled {
+            assert_eq!((current.life, current.control_flags), (-2, 0x401));
+            assert!(current.active);
+            assert!(!lifetime.economy().free_source_slots().contains(&slot));
+            terminal = Some(current);
+            break;
+        }
+        lifetime.step_level2_source_pass(0);
+        let after = lifetime.economy().authored_model59().iter()
+            .find(|source| source.source_entity_index == slot).unwrap();
+        assert_eq!(after.life, current.life - 1);
+        if current.life < 0 {
+            assert_eq!(after.entity_rng, current.entity_rng,
+                "the terminal postdecrement creates no child and consumes no parent RNG");
+        }
+    }
+    let terminal = terminal.expect("the original 800..899-life checkpoint naturally hides");
+    assert!(saw_smoke_presentation && saw_child_hidden && saw_child_reclaimed);
+    // Inspect the actual owning49F90 boundary before another ordinary producer
+    // can spend this newly free address in the following scheduled pass.
+    let mut boundary = lifetime.clone();
+    {
+        let live = &mut boundary.session.state.live;
+        live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &[]).unwrap();
+    }
+    assert!(boundary.source_arena().resolve(handle).is_none());
+    assert!(boundary.economy().free_source_slots().contains(&slot));
+    let retained = source_target::status_parent(boundary.source_arena(), source_target::Context::default(), slot)
+        .unwrap().unwrap();
+    assert_eq!((retained.class, retained.model, retained.life, retained.entity_rng,
+        retained.actual_speed, retained.phase, retained.position, retained.source_id, retained.control_flags),
+        (0, 59, -2, terminal.entity_rng, terminal.actual_speed, terminal.phase,
+            terminal.position, terminal.entity_id, 0x401));
+    lifetime.step_level2_source_pass(0);
+    assert!(lifetime.source_arena().resolve(handle).is_none(),
+        "the following scheduled source pass reclaims the checkpoint incarnation");
+    // The remaining naturally emitted children have at most32 life. No parent
+    // survives to replenish them, and their own source reclaim ends each one.
+    let remaining = lifetime.economy().model59_smoke_children().iter()
+        .map(|child| lifetime.source_arena().handle(child.source_entity_index).unwrap())
+        .collect::<Vec<_>>();
+    for _ in 0..35 {
+        lifetime.step_level2_source_pass(0);
+    }
+    assert!(remaining.into_iter().all(|handle| lifetime.source_arena().resolve(handle).is_none()));
+    assert!(!lifetime.economy().authored_model59().iter()
+        .any(|source| source.authored_index == 343));
 
     session.reset();
     assert_eq!(

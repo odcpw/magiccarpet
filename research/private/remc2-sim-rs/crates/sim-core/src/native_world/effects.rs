@@ -494,6 +494,7 @@ pub(crate) fn hidden_slots(arena: &SourceArena) -> Vec<(u16, Position)> {
     collect!(arena.economy.authored_model5_water_splashes);
     collect!(arena.economy.authored_model6);
     collect!(arena.economy.authored_model13);
+    collect!(arena.economy.authored_model59);
     collect!(arena.economy.model13_spawned_children);
     collect!(arena.economy.model59_smoke_children);
     collect!(arena.economy.authored_model17);
@@ -666,6 +667,10 @@ pub(crate) fn animation_frame(arena: &SourceArena, slot: u16, particle: u16) -> 
 
 pub(crate) fn renderable_source(row: &EntitySnapshot) -> bool {
     row.class != 10 || rules::source_kind(row.model).is_none() || row.control_flags & 4 != 0
+}
+
+pub(super) fn checkpoint_packet(arena: &SourceArena, slot: u16) -> Result<EntitySnapshot, String> {
+    header(arena, slot, Kind::AuthoredModel59, &[])
 }
 
 fn header(
@@ -844,6 +849,13 @@ fn header(
                     9,
                 )
             }
+            Kind::AuthoredModel59 => {
+                let s = arena.economy.authored_model59.iter()
+                    .find(|s| s.active && s.source_entity_index == slot)
+                    .ok_or("checkpoint smoke emitter is absent")?;
+                (s.entity_id, s.entity_rng, s.model, s.action, s.max_life,
+                    s.life, 100, s.control_flags, s.phase, s.position, 0)
+            }
             Kind::Model59SmokeChild => {
                 let s = arena
                     .economy
@@ -890,10 +902,15 @@ fn header(
             },
     );
     row.set_phase(phase);
-    if kind != Kind::AuthoredModel17 {
+    if !matches!(kind, Kind::AuthoredModel17 | Kind::AuthoredModel59) {
         rules::bind_particle(&mut row, base_particle, particles)?;
     }
     match kind {
+        Kind::AuthoredModel59 => {
+            let s = arena.economy.authored_model59.iter()
+                .find(|s| s.source_entity_index == slot).unwrap();
+            row.set_actual_speed(s.actual_speed);
+        }
         Kind::AuthoredModel17 => {
             let s = arena
                 .economy
@@ -1018,6 +1035,13 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
         };
     }
     match kind {
+        Kind::AuthoredModel59 => {
+            let s = arena.economy.authored_model59.iter_mut()
+                .find(|s| s.source_entity_index == slot).unwrap();
+            common!(s);
+            s.actual_speed = row.actual_speed;
+            s.drawing_enabled = !row.drawing_disabled();
+        }
         Kind::DeathBurst => {
             let s = arena
                 .economy
@@ -1153,6 +1177,15 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
 /// After hidden map unlink, retain final shared-effect packets before their
 /// typed carriers are freed. Model17 also supports external source hiding.
 pub(crate) fn prepare_retained_effects_reclaim(arena: &mut SourceArena) -> Result<(), String> {
+    let checkpoints = arena.economy.authored_model59.iter()
+        .filter(|source| source.active && source.control_flags & 0x400 != 0)
+        .map(|source| source.source_entity_index).collect::<Vec<_>>();
+    for slot in checkpoints {
+        if arena.economy.live_arena_kind(slot) != Some(Kind::AuthoredModel59) { continue; }
+        let mut row = checkpoint_packet(arena, slot)?;
+        row.reclaim_source_row();
+        arena.entities[usize::from(slot)] = row;
+    }
     let hidden = arena
         .economy
         .authored_model17
@@ -1417,6 +1450,13 @@ where
         None
     };
     let (row, visit) = rules::visit_entity(arena, terrain, row, particles, state, apply)?;
+    if kind == Kind::AuthoredModel59 && let Some(child) = visit.smoke_child {
+        // SetSmoke4 has already initialized the one canonical source row.
+        // Retain that packet in the existing MC2 smoke carrier; no second
+        // allocation, RNG draw, constructor or parent-ID write occurs here.
+        let child = arena.entities[usize::from(child)].clone();
+        arena.economy.adopt_checkpoint_smoke(&child);
+    }
     if arena.economy.slot_generation(slot) != generation {
         // NewEvent replaced this typed parent during its own callback. The
         // source pointer now denotes the child; never restore the old carrier.

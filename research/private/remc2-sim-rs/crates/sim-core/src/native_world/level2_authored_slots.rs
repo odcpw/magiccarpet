@@ -2172,11 +2172,32 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    pub(super) fn allocate_model59_smoke_child(&mut self, position: Position) -> Option<u16> {
-        // `SetParticleSmoke3B_4E9E0` advances the process-global stream before
-        // `SetSmoke4_4EAA0` attempts NewEvent. The draw survives failure.
-        self.global_rng = level2_next_rng32(self.global_rng);
-        self.allocate_model13_smoke_child_after_global_draw(position, 32)
+    /// Retain a completed canonical SetSmoke4 packet in the existing typed
+    /// carrier. Construction, allocation, RNG and map insertion have already
+    /// happened in world::effects; this adapter copies current state only.
+    pub(crate) fn adopt_checkpoint_smoke(&mut self, row: &EntitySnapshot) {
+        self.model59_smoke_children.push(Level2Model59SmokeChild {
+            source_entity_index: row.index,
+            entity_rng: row.entity_rng,
+            source_word_30: row.source_word_30(),
+            pending_damage: row.source_wind_spell_payload(),
+            pending_attacker_entity_index: row.source_wind_spell_owner(),
+            source_class: row.class,
+            model: row.model,
+            action: row.action,
+            max_life: row.max_life as i16,
+            life: row.life as i16,
+            max_speed: i16::from_le_bytes(row.record[138..140].try_into().unwrap()),
+            actual_speed: row.actual_speed,
+            dword_0x10: row.source_dword_10(),
+            particle_index: row.particle_parameter_index.expect("canonical smoke particle"),
+            yaw: row.yaw,
+            control_flags: row.control_flags,
+            position: row.position,
+            phase: row.phase,
+            drawing_enabled: !row.drawing_disabled(),
+            active: row.active,
+        });
     }
 
     /// Construct the class-2 ballistic death smoke through the shared
@@ -2187,126 +2208,6 @@ impl Level2EconomyState {
         let max_life = i16::try_from(self.global_rng % 0x17 + 17)
             .expect("ballistic death-smoke life fits i16");
         self.allocate_model13_smoke_child_after_global_draw(position, max_life)
-    }
-
-    /// Advance the authored action-64 checkpoint callback. The parent emits
-    /// one model-13/action-13 smoke child per successful callback allocation;
-    /// the child then follows the source `sub_32160` motion/expiry path.
-    pub fn step_authored_model59_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source_index) = self
-            .authored_model59
-            .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)
-        else {
-            return false;
-        };
-        let life_before = self.authored_model59[source_index].life;
-        let mut source = self.authored_model59[source_index];
-        source.life = source.life.wrapping_sub(1);
-        if life_before < 0 {
-            source.drawing_enabled = false;
-            source.active = true;
-            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-            source.phase = source.phase.wrapping_add(1);
-            self.source_rng.insert(source_slot, source.entity_rng);
-            self.authored_model59[source_index] = source;
-            return true;
-        }
-
-        let mut smoke_position = source.position;
-        source.entity_rng = level2_next_rng16(source.entity_rng);
-        smoke_position.x = smoke_position.x.wrapping_add(source.entity_rng % 0xA0);
-        source.entity_rng = level2_next_rng16(source.entity_rng);
-        smoke_position.z = smoke_position
-            .z
-            .wrapping_add(i16::try_from(source.entity_rng % 0xA0).expect("smoke z offset"));
-        if let Some(child_slot) = self.allocate_model59_smoke_child(smoke_position) {
-            // `AddParticleSmoke0A_3D` consumes the parent's third draw only
-            // after SetSmoke4 returns a live child.
-            source.entity_rng = level2_next_rng16(source.entity_rng);
-            if let Some(child) = self
-                .model59_smoke_children
-                .iter_mut()
-                .find(|child| child.source_entity_index == child_slot)
-            {
-                child.actual_speed = child
-                    .actual_speed
-                    .wrapping_add(source.actual_speed)
-                    .wrapping_add(
-                        i16::try_from(source.entity_rng % 0x4D)
-                            .expect("model-59 smoke parent speed draw fits"),
-                    );
-            }
-        }
-        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
-        source.phase = source.phase.wrapping_add(1);
-        self.source_rng.insert(source_slot, source.entity_rng);
-        self.authored_model59[source_index] = source;
-        true
-    }
-
-    /// Advance one model-59 smoke child through the pinned `sub_32160`
-    /// callback. Its particle ramp differs from the rooted model-13 family:
-    /// it rises toward selector 74 and falls back toward selector 67.
-    pub fn step_model59_smoke_child_slot(
-        &mut self,
-        source_slot: u16,
-        terrain: &SessionTerrain,
-    ) -> bool {
-        let Some(child_index) = self
-            .model59_smoke_children
-            .iter()
-            .position(|child| child.active && child.source_entity_index == source_slot)
-        else {
-            return false;
-        };
-        let mut child = self.model59_smoke_children[child_index];
-        let life_before = child.life;
-        child.life = child.life.wrapping_sub(1);
-        if life_before < 0 {
-            child.drawing_enabled = false;
-            child.active = true;
-            child.phase = child.phase.wrapping_add(1);
-            self.model59_smoke_children[child_index] = child;
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: true,
-                    x: child.position.x,
-                    y: child.position.y,
-                })
-                .expect("Level 2 model-59 smoke child fits the map chain");
-            return true;
-        }
-        child.actual_speed = (child.actual_speed - 4).clamp(64, 128);
-        let mut predicted = child.position;
-        predicted.z = predicted
-            .z
-            .wrapping_add(child.actual_speed)
-            .max(terrain.ground_height(predicted));
-        child.dword_0x10 += 1;
-        if child.dword_0x10 < 16 {
-            crate::move_entity(&mut predicted, child.yaw, 0, child.max_speed);
-            child.max_speed = (child.max_speed - 52).clamp(30, 1024);
-            if child.dword_0x10 & 1 == 0 && child.particle_index < 74 {
-                child.particle_index += 1;
-            }
-        }
-        if child.life < 6 && child.particle_index > 67 {
-            child.particle_index -= 1;
-        }
-        child.position = predicted;
-        child.phase = child.phase.wrapping_add(1);
-        self.model59_smoke_children[child_index] = child;
-        self.source_rng.insert(source_slot, child.entity_rng);
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: child.position.x,
-                y: child.position.y,
-            })
-            .is_ok()
     }
 
     /// Allocate the authored class-10/model-53/action-58 row from remc2
@@ -6319,6 +6220,7 @@ impl Level2EconomyState {
             expire_hidden_effects!(self.authored_model5_water_splashes);
             expire_hidden_effects!(self.authored_model6);
             expire_hidden_effects!(self.authored_model13);
+            expire_hidden_effects!(self.authored_model59);
             expire_hidden_effects!(self.model13_spawned_children);
             expire_hidden_effects!(self.model59_smoke_children);
             expire_hidden_effects!(self.model17_spawned_children);

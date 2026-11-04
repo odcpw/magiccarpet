@@ -49,6 +49,9 @@ pub(crate) struct Visit {
     pub(crate) sounds: Vec<u16>,
     pub(crate) nearest_fire: Option<Position>,
     pub(crate) experience: Vec<(u16, u8, u16)>,
+    /// Completed ordinary emitter birth; the MC2 adapter may retain its
+    /// existing typed smoke carrier without rerunning the constructor.
+    pub(crate) smoke_child: Option<u16>,
 }
 
 /// Source-global eruption ownership, reset with the arena, never inferred
@@ -1335,7 +1338,7 @@ where
         }
         18 => step_eruption(arena, terrain, particles, state, &mut source)?,
         19 => step_eruption_smoke(arena, terrain, particles, state, &mut source, &mut visit)?,
-        65 => {
+        64 | 65 => {
             let life = source.life;
             source.set_life(life.wrapping_sub(1));
             if life < 0 {
@@ -1344,12 +1347,17 @@ where
                 let mut position = source.position;
                 position.x = position.x.wrapping_add(draw(&mut source) % 160);
                 position.z = position.z.wrapping_add((draw(&mut source) % 160) as i16);
+                let smoke_kind = if source.model == 59 {
+                    EffectKind::Smoke
+                } else {
+                    EffectKind::DarkSmoke
+                };
                 if let Some(slot) = child_inner(
                     arena,
                     terrain,
                     particles,
                     &mut source,
-                    EffectKind::DarkSmoke,
+                    smoke_kind,
                     position,
                     false,
                     false,
@@ -1361,6 +1369,7 @@ where
                     row.set_max_life(32);
                     row.set_life(32);
                     row.set_actual_speed(row.actual_speed.wrapping_add(extra));
+                    visit.smoke_child = Some(slot);
                     if slot == source.index {
                         source = row.clone();
                     }

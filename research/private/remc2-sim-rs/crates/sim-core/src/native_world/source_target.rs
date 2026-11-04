@@ -60,6 +60,9 @@ pub(crate) fn status_parent(
     context: Context<'_>,
     slot: u16,
 ) -> Result<Option<EntitySnapshot>, String> {
+    if status_kind(arena, slot) == Some(Kind::AuthoredModel59) {
+        return super::effects::checkpoint_packet(arena, slot).map(Some);
+    }
     let Some(view) = read(arena, context, slot)? else {
         return Ok(None);
     };
