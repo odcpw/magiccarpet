@@ -30,11 +30,16 @@ client. Root viewed normal map/loading/NightSpire terrain/HUD with the matching
 mapped library and stopped its smoke processes. No Unity/art changes. Evidence:
 `research/private/generated/checkpoint-smoke-20261104-integration/candidate-4/`.
 
-Full `mc-bhq.9` and shared-engine acceptance remain open pending the finite
-family acceptance assessment. A reclaimed address's eligibility is checked;
-later NewEvent reuse of that exact parent address is not asserted. Human
-checkpoint visuals/combat, FPS, hardware audio, full missions and old saves
-remain unverified. Package formatting and whole-file scanner debt remain.
+Finite `mc-bhq.9` acceptance is complete and the bead is closed. A fresh
+independent assessment found no concrete unmet requirement across its typed
+content, owned callbacks, real damage/presentation consumers and source
+lifetimes. Root checked its source/evidence against the original acceptance;
+prior acquired Fireball/Fire Spheres, Volcano, Possession, Cave and Ambient
+checks remain relevant. This does not close the full shared engine or the
+external spell/creature families. The latest checkpoint checks free-slot
+eligibility, without asserting later NewEvent reuse of that exact parent
+address. Native visuals for every effect, human combat, FPS, hardware audio,
+full missions and old saves remain unverified. Format/scanner legacy debt stays.
 
 Previous Ambient/theft checkpoint `bae0a599`/`a911fd3b0eee` stays delivered:
 unfiltered Level6 groups, six authored model26 roots, Ambient60 children and
