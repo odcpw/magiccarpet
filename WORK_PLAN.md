@@ -1,6 +1,6 @@
 # Shared-engine delivery plan
 
-Current qualified shared capability (commit/install pending): authored Creature18
+Current installed shared capability: authored Creature18
 and Cymmerian25 lifecycles now feed the original Level24 absence objectives and
 real45→46 ribbon geometry/collision, under existing `mc-bhq.8` acceptance.
 The complete unfiltered current-exporter package retains task2/18/group2 and
@@ -38,8 +38,15 @@ baseline and candidate; it does not invalidate the actual guard audio receipt.
 Package-wide formatting and whole-file UBS debt remain: no critical finding
 falls on an added line. All original acceptance/dependencies remain open.
 
-Root CalmBeaver owns sole Cargo/push/install. Installed Original remains
-`ddfb0188`/`6a9ce089c86a` until this qualified batch is refreshed. The existing
+Runtime `5c648cb7` is verified, committed and pushed; matching native
+`530814669e15` is installed in the qualified Original client. All443Rust and
+162upstream inputs match rig and installation; root viewed the normal canonical
+map/loading/NightSpire terrain/HUD with matching mapped native, then stopped
+owned smoke processes. This is launch/load proof, not native Level10/24 combat,
+FPS, hardware audio, whole missions or old saves. No Unity/art changes. The
+separate committed shared observation-hash improvement is included in this
+native refresh. Current and immediate previous native are preserved on disk.
+Root CalmBeaver owns sole Cargo/push/install. The existing
 healthy RCH daemon listens on `/run/user/1000/rch.sock`; set RCH_SOCKET_PATH per
 command because the default cache socket is stale. No worker restart needed.
 Remaining terrain production gap observed in current source: non-Cave reset
@@ -47,6 +54,7 @@ uses exported post-feature terrain, while the Rust startup constructor is
 hardcoded to Cave. Real Day3 rows5–10 are authored ribbons. Their generic
 Day/Night construction/typed-input consumer remains unfinished; do not count
 matching captured terrain as executing those Rust producers.
+Previous Tremor/Creature17 checkpoint (`ddfb0188`/`6a9ce089c86a`):
 The actual Creature17 prerequisite is corrected: all 12 owner checks pass on
 candidate5, including real melee after natural initial protection, slowdown,
 stance, follow/expiry and retained addresses. Its real Level9 absence sensor
