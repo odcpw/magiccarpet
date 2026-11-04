@@ -27,7 +27,7 @@ use crate::{
         SessionTerrain, cave_corridors, level1_load_house_base, terrain_strip,
     },
     renderable_map_chain::RenderableMapSeed,
-    world::terrain::disasters::{RingProfile, mc2 as rings},
+    world::terrain::disasters::mc2 as rings,
 };
 
 /// A constructed world using the ordinary collision and presentation carrier.
@@ -501,8 +501,7 @@ pub(crate) fn supports_authored(authored: &[u8]) -> Result<bool, String> {
         .skip(1)
         .any(|row| {
             row.kind == 10
-                && ((row.activation_group == -1
-                    && matches!(row.subtype, 9 | 15 | 27 | 30 | 32 | 51 | 88))
+                && ((row.activation_group == -1 && matches!(row.subtype, 27 | 30 | 32 | 51 | 88))
                     || (row.activation_group == 0
                         && matches!(row.subtype, 9 | 10 | 15 | 27..=32 | 50 | 51 | 80..=86 | 88)))
         }))
@@ -521,10 +520,10 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String
         .filter(|row| row.activation_group == -1)
     {
         match (row.kind, row.subtype) {
-            (10, 80..=85 | 11 | 28 | 29 | 31 | 45 | 50) | (14, 2) => {}
+            (10, 80..=85 | 9 | 11 | 15 | 28 | 29 | 31 | 45 | 50) | (14, 2) => {}
             // Other rows are constructed later by normal startup, outside
             // GenerateEvents' seven ordered preparation phases.
-            (10, 9 | 15 | 27 | 30 | 32 | 51 | 88) => {
+            (10, 27 | 30 | 32 | 51 | 88) => {
                 return Err(format!(
                     "terrain generation needs constructor {}/{} at authored row {}",
                     row.kind, row.subtype, row.index
@@ -589,7 +588,7 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String
             }
             let selected = match phase {
                 0 => (row.kind, row.subtype) == (10, 82),
-                1 => row.kind == 10 && matches!(row.subtype, 11 | 29 | 31 | 50 | 83..=85),
+                1 => row.kind == 10 && matches!(row.subtype, 9 | 11 | 15 | 29 | 31 | 50 | 83..=85),
                 2 => row.kind == 10 && matches!(row.subtype, 80 | 81),
                 3 => (row.kind, row.subtype) == (14, 2),
                 4 => (row.kind, row.subtype) == (10, 28),
@@ -632,15 +631,21 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String
                         }
                     }
                 }
-                (10, 11) => {
+                (10, 9 | 11 | 15) => {
                     let properties = inputs.rings.get(&row.index).ok_or_else(|| {
                         format!(
-                            "terrain ring row {} lacks typed construction content",
+                            "terrain disaster row {} lacks typed construction content",
                             row.index
                         )
                     })?;
-                    let profile = RingProfile::from(*properties);
-                    if rings::construct(&mut arena, &mut terrain, position, profile).is_some() {
+                    if rings::runtime::construct_defined(
+                        &mut arena,
+                        &mut terrain,
+                        position,
+                        *properties,
+                    )?
+                    .is_some()
+                    {
                         allocations += 1;
                     }
                 }
@@ -678,7 +683,7 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String
             }
             features[index].kind = 0;
         }
-        apply_events(&mut arena, &mut terrain, &buildings)?;
+        apply_events(&mut arena, &mut terrain, &buildings, inputs.particles)?;
     }
     Ok(TerrainStartupWorld {
         terrain,
@@ -697,8 +702,12 @@ fn apply_events(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     buildings: &BTreeMap<u8, Building>,
+    particles: &[ParticleParameter],
 ) -> Result<(), String> {
     arena.economy.advance_global_rng();
+    // GenerateEvents precedes PlayerEvents and the first UpdateEntities
+    // actor-list rebuild. Preserve those still-empty source damage heads.
+    let effect_lists = crate::native_world::area_damage::EffectLists::default();
     loop {
         let mut again = false;
         for slot in 1..arena.entities.len() {
@@ -716,6 +725,35 @@ fn apply_events(
                 }
             } else if class == 10 {
                 match (model, action) {
+                    (9, 9) | (15, 15) => {
+                        again = true;
+                        // The normal disaster owner constructs its real
+                        // descendants. ApplyEvents later reaches a higher
+                        // address in this same scan; model18 is then hidden
+                        // and reclaimed here, without its play callback.
+                        rings::runtime::step(
+                            arena,
+                            terrain,
+                            particles,
+                            slot as u16,
+                            false,
+                            |arena, request| {
+                                rings::damage::apply_request(
+                                    arena,
+                                    rings::damage::Context {
+                                        actors: None,
+                                        player: None,
+                                        progression: None,
+                                        experience_enabled: false,
+                                        masks: None,
+                                        lists: &effect_lists,
+                                    },
+                                    request,
+                                )
+                                .map(|result| result.hits)
+                            },
+                        )?;
+                    }
                     (80..=85, _) => {
                         again = true;
                         hide = super::step(terrain, &mut arena.entities[slot]).hide;
@@ -1019,6 +1057,226 @@ fn dword(bytes: &[u8], offset: usize) -> Result<u32, String> {
 mod tests {
     use super::*;
     use crate::campaign::spec::{CampaignSelection, DecodedCampaignPackage};
+
+    #[test]
+    fn ordinary_prepared_volcano_and_quake_reach_source_geometry_and_live_collision() {
+        let packages = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/volcano-quake-20261104-integration/current-owner-package");
+        for mission in [13, 22] {
+            let root = packages.join(format!("level{mission}"));
+            let selection = CampaignSelection::ordinary(mission).unwrap();
+            let package = DecodedCampaignPackage::decode(&root, selection)
+                .expect("complete unfiltered current-exporter terrain package");
+            let features = parse_authored_features(package.authored_bytes()).unwrap();
+            let prepared = features
+                .iter()
+                .filter(|row| {
+                    row.activation_group == -1 && row.kind == 10 && matches!(row.subtype, 9 | 15)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                prepared.iter().filter(|row| row.subtype == 9).count(),
+                if mission == 13 { 42 } else { 1 }
+            );
+            assert_eq!(
+                prepared.iter().filter(|row| row.subtype == 15).count(),
+                if mission == 13 { 0 } else { 3 }
+            );
+            if mission == 13 {
+                assert_eq!(prepared[0].index, 416);
+            } else {
+                assert_eq!(
+                    prepared.iter().map(|row| row.index).collect::<Vec<_>>(),
+                    [21, 22, 23, 68]
+                );
+            }
+            assert!(supports_authored(package.authored_bytes()).unwrap());
+            let generated = package
+                .generate_terrain_startup()
+                .expect("real phase1 constructors and repeated ApplyEvents scans");
+            for row in &prepared {
+                assert_eq!(generated.authored[usize::from(row.index)].kind, 0);
+                let properties = generated
+                    .rings
+                    .get(&row.index)
+                    .expect("prepared disaster has immutable typed source properties");
+                assert_eq!(
+                    rings::kind_for_model(row.subtype as u8),
+                    Some(properties.kind())
+                );
+            }
+            assert!(
+                !generated
+                    .live_entities()
+                    .any(|row| matches!(row.model, 9 | 11 | 15 | 18)),
+                "ApplyEvents finishes real roots/ring descendants and immediately reclaims Eruption18"
+            );
+            let allocations: usize = (1..generated.arena.entities.len())
+                .map(|slot| generated.arena.slot_generation(slot as u16) as usize)
+                .sum();
+            assert!(
+                allocations > generated.allocation_count(),
+                "real scheduled parents must allocate descendants beyond their authored/chain constructors"
+            );
+            let end = package.member("feature-end.bin").unwrap();
+            assert_eq!(
+                generated.terrain.terrain_rng(),
+                word(end, 8).unwrap(),
+                "Level{mission} terrain RNG"
+            );
+            assert_eq!(
+                generated.arena.economy.global_rng,
+                dword(end, 12).unwrap(),
+                "Level{mission} global RNG"
+            );
+            let allocator = package.member("feature-allocator.bin").unwrap();
+            let free = (0..dword(allocator, 16).unwrap() as usize)
+                .map(|index| word(allocator, 32 + 2 * index).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                generated.arena.economy.free_source_slots(),
+                free,
+                "Level{mission} same-scan children and immediate reclaim retain the source free-stack order"
+            );
+            let feature_oracle = crate::native_world::parse_terrain(
+                package.member("terrain-post-features.bin").unwrap(),
+            )
+            .unwrap();
+            for (name, actual, expected) in [
+                (
+                    "material",
+                    &generated.terrain.planes().terrain_types,
+                    &feature_oracle.terrain_types,
+                ),
+                (
+                    "floor",
+                    &generated.terrain.planes().ground_heights,
+                    &feature_oracle.ground_heights,
+                ),
+                (
+                    "shade",
+                    &generated.terrain.planes().shading,
+                    &feature_oracle.shading,
+                ),
+                (
+                    "angle",
+                    &generated.terrain.planes().angles,
+                    &feature_oracle.angles,
+                ),
+                (
+                    "secondary",
+                    &generated.terrain.planes().secondary_heights,
+                    &feature_oracle.secondary_heights,
+                ),
+            ] {
+                let first = actual.iter().zip(expected.iter()).position(|(a, b)| a != b);
+                assert!(
+                    first.is_none(),
+                    "Level{mission} feature {name}: first mismatch {first:?}"
+                );
+            }
+            assert_eq!(
+                generated.terrain.planes().entity_indices,
+                feature_oracle.entity_indices
+            );
+            let rows = package.member("entities-post-features.bin").unwrap();
+            assert_eq!(&rows[..4], b"MCE3");
+            assert_eq!(word(rows, 4).unwrap(), 1);
+            assert_eq!(word(rows, 6).unwrap(), 176);
+            assert_eq!(
+                dword(rows, 8).unwrap() as usize,
+                generated.arena.entities.len()
+            );
+            assert_eq!(rows.len(), 12 + 176 * generated.arena.entities.len());
+            for actual in &generated.arena.entities {
+                let start = 12 + usize::from(actual.index) * 176;
+                let expected = &rows[start..start + 176];
+                assert_eq!(
+                    actual.active,
+                    expected[2] != 0,
+                    "Level{mission} feature source{} activity",
+                    actual.index
+                );
+                if actual.active {
+                    assert_eq!(
+                        &actual.record[..],
+                        expected,
+                        "Level{mission} live feature source{} packet",
+                        actual.index
+                    );
+                }
+            }
+
+            let pre = crate::native_world::parse_terrain(
+                package.member("terrain-pre-features.bin").unwrap(),
+            )
+            .unwrap();
+            let oracle =
+                crate::native_world::parse_terrain(package.member("terrain.bin").unwrap()).unwrap();
+            let publications_before = GEOMETRY_PUBLICATIONS.with(|count| count.get());
+            let campaign = crate::campaign::CampaignSession::open(&root, selection)
+                .expect("ordinary unfiltered session publishes the Rust-produced terrain");
+            assert_eq!(
+                GEOMETRY_PUBLICATIONS.with(|count| count.get()),
+                publications_before + 1
+            );
+            let terrain = campaign.simulation().canonical_terrain();
+            for (name, actual, expected) in [
+                (
+                    "material",
+                    &terrain.planes().terrain_types,
+                    &oracle.terrain_types,
+                ),
+                (
+                    "floor",
+                    &terrain.planes().ground_heights,
+                    &oracle.ground_heights,
+                ),
+                ("shade", &terrain.planes().shading, &oracle.shading),
+                ("angle", &terrain.planes().angles, &oracle.angles),
+                (
+                    "secondary",
+                    &terrain.planes().secondary_heights,
+                    &oracle.secondary_heights,
+                ),
+            ] {
+                let first = actual.iter().zip(expected.iter()).position(|(a, b)| a != b);
+                assert!(
+                    first.is_none(),
+                    "Level{mission} ordinary {name}: first mismatch {first:?}"
+                );
+            }
+            let sample = (0..65536)
+                .find(|&tile| {
+                    let point = Position {
+                        x: ((tile % 256) as u16) << 8,
+                        y: ((tile / 256) as u16) << 8,
+                        z: 0,
+                    };
+                    generated.terrain.planes().ground_heights[tile] != pre.ground_heights[tile]
+                        && terrain.ground_height(point) == generated.terrain.ground_height(point)
+                })
+                .expect("actual prepared disaster geometry reaches the live height query");
+            let point = Position {
+                x: ((sample % 256) as u16) << 8,
+                y: ((sample / 256) as u16) << 8,
+                z: 0,
+            };
+            let collision: &dyn FlightWorld = terrain;
+            assert_eq!(
+                collision.ground_height(point),
+                32 * i16::from(generated.terrain.planes().ground_heights[sample])
+            );
+            assert_ne!(
+                collision.ground_height(point),
+                32 * i16::from(pre.ground_heights[sample])
+            );
+            assert_eq!(
+                collision.terrain_type(point),
+                generated.terrain.planes().terrain_types[sample]
+            );
+        }
+    }
 
     #[test]
     fn reset_identity_join_rejects_missing_ambiguous_and_retained_rows() {

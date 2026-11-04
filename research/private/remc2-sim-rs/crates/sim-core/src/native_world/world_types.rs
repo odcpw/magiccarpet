@@ -3380,6 +3380,26 @@ fn apply_house_material(
     match material {
         8 => planes.terrain_types[index] = 8,
         9 => planes.terrain_types[index] = 9,
+        10..=14 => {
+            // sub_45BE0 publishes lowDiff for the four current floor
+            // corners. sub_45DC0 selects the second eight-entry half at
+            // a range of exactly eight as well as on flatter surfaces.
+            let heights = [
+                planes.ground_heights[index],
+                planes.ground_heights[terrain_index(x.wrapping_add(1), y)],
+                planes.ground_heights[terrain_index(x.wrapping_add(1), y.wrapping_add(1))],
+                planes.ground_heights[terrain_index(x, y.wrapping_add(1))],
+            ];
+            let minimum = heights.into_iter().min().expect("four source corners");
+            let maximum = heights.into_iter().max().expect("four source corners");
+            let corner = classify_castle_corner(planes, x, y, column)
+                + 8 * usize::from(maximum - minimum <= 8);
+            let table_offset = 0x80 + 0x20 * usize::from(material - 10) + 2 * corner;
+            let table = terrain_generation_table();
+            planes.terrain_types[index] = table[table_offset];
+            planes.angles[index] = (planes.angles[index] & 0x8f) | table[table_offset + 1];
+        }
+        15 => planes.terrain_types[index] = 11,
         16..=19 => {
             let corner = classify_castle_corner(planes, x, y, column);
             let table_offset = match material {
@@ -3396,7 +3416,15 @@ fn apply_house_material(
                 planes.angles[index] = (planes.angles[index] & 0x8f) | table[table_offset + 1];
             }
         }
-        _ => return,
+        20..=22 => {
+            let corner = classify_castle_corner(planes, x, y, column);
+            let table_offset = 0x10 * usize::from(material - 19) + 2 * corner;
+            let table = terrain_generation_table();
+            planes.terrain_types[index] = table[table_offset];
+            planes.angles[index] = (planes.angles[index] & 0x8f) | table[table_offset + 1];
+        }
+        // The source default still protects the tile and repairs closure.
+        _ => {}
     }
     planes.angles[index] |= 0x80;
     for (corner_x, corner_y) in [
