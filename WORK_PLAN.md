@@ -1,6 +1,6 @@
 # Shared-engine delivery plan
 
-## Active request: finish the remaining spell E2E paths
+## Delivered request: remaining spell E2E paths
 
 Oliver explicitly requested completing all remaining spells on 2026-11-04.
 Execute the existing beads and preserve their original acceptance/dependencies.
@@ -9,18 +9,18 @@ actual consequences/consumers, natural cleanup and presentation, then focused
 verification, coherent commit/push and matching installed native. Existing code
 and traces are inputs; an unchecked entry is not an absent implementation.
 
-- [ ] Heal5 — `mc-k5k.1`
-- [ ] Rebound8 — `mc-k5k.1`
-- [ ] Teleport10 — `mc-k5k.1`
-- [ ] Meteor9 — `mc-bhq.4`
-- [ ] Crater16 — `mc-k5k.3`
-- [ ] Earthquake17 — `mc-k5k.3`
-- [ ] Volcano18 — `mc-k5k.3`
-- [ ] Gravity Well20 — `mc-k5k.4`
-- [ ] Whirlwind21 — `mc-k5k.4`
-- [ ] Fool's Mana22 — `mc-k5k.5`
-- [ ] Magic Mine23 — `mc-k5k.5`
-- [ ] Cave In25 — `mc-k5k.6`
+- [x] Heal5 — `mc-k5k.1`
+- [x] Rebound8 — `mc-k5k.1`
+- [x] Teleport10 — `mc-k5k.1`
+- [x] Meteor9 — `mc-bhq.4`
+- [x] Crater16 — `mc-k5k.3`
+- [x] Earthquake17 — `mc-k5k.3`
+- [x] Volcano18 — `mc-k5k.3`
+- [x] Gravity Well20 — `mc-k5k.4`
+- [x] Whirlwind21 — `mc-k5k.4`
+- [x] Fool's Mana22 — `mc-k5k.5`
+- [x] Magic Mine23 — `mc-k5k.5`
+- [x] Cave In25 — `mc-k5k.6`
 
 The14 delivered spell-specific checkpoints (Fireball, Possession, Castle,
 Speed, Morph, Shield, Invisibility, Beyond Sight, Lightning, Steal Mana,
@@ -30,7 +30,26 @@ does not substitute for Crater/Earthquake/Volcano spell-casting acceptance.
 Root serializes Cargo/RCH and delivery; independent owners retain their paths
 through integration. Do not close broader families on this list alone.
 
-## All-spells batch: implemented and verified, installation pending
+## Current installed checkpoint: all-spells batch
+
+Implemented and verified source `7bf5439845bc11fb54f8b0fe42c21eb0c6899e8e`
+is committed and pushed. Matching native
+`845964e70e7a6cbbc9d31cdabe0704dbb16502926eff8a04dd5539dc9d650371`
+is installed in the qualified Original client. The actual rig-built binary,
+local pin, asset plugin, player plugin and loaded process mapping match.
+All444 Rust and162 upstream input hashes match rig; all444 Rust inputs match
+the installed receipt, frozen candidate15 and canonical/isolated source.
+Native-only installation and `--check-installed` passed without a Unity build.
+The prior native `ab1095b7514a` and its original install receipt are preserved.
+
+One normal canonical launcher smoke reached the original map, loading artwork
+and NightSpire terrain/HUD on its first attempt, with the matching mapped
+native. Root viewed the map and scene, recorded the loading-open event, then
+stopped both owned processes. Only one portal click; no retry or gameplay
+input. The private save destination was separate but no save file was written:
+this is launch/load evidence, not saving or old-save proof. Details:
+`Builds/delivery-all-spells-20261104-batch1/runtime-proof.json` and
+`generated/all-spells-20261104-integration/candidate-15/`.
 
 The remaining twelve spell paths above now have connected positive checks.
 The frozen source is `generated/all-spells-20261104-integration/candidate-15/`
@@ -75,20 +94,26 @@ Fireball observations read their actual carriers rather than retired packets.
 
 UBS static analysis covers25 changed Rust files, with57 whole-file legacy
 critical heuristics and no critical on added lines; the final field/Gravity
-delta scan completed with zero critical findings. Formatting check remains non-clean across the existing
-package (1832 diff headers); no formatter writes or broad cleanup. Full raw
+delta scan completed with zero critical findings. Formatting check remains
+non-clean across the existing package (1832 diff headers); no formatter
+writes or broad cleanup. Full raw
 review/compiler outputs and completed executables are checksum-preserved on
 rig with receipts; source, owner data, warm worker caches and installed player
 remain intact. Quarantined bad mounted-copy evidence was not reused.
 
 The strict remote workspace all-target check passes34.591s with all444 input
-hashes unchanged. Source commit/push and matching native installation
-are still pending at this checkpoint. Keep all list entries unchecked until
-delivery. Broader original acceptance/dependencies remain open. This is not
-human combat/FPS/hardware-audio, whole-mission or old-save qualification, and
-does not complete the shared engine. No Unity/art change is required.
+hashes unchanged; strict matching native build passes55.419s. The checkboxes
+record these delivered spell-specific checkpoints, not closure of broader
+family acceptance or open dependencies. Remaining shared-engine and campaign
+beads stay explicit; no dependencies or acceptance were rewritten. The finite
+support-family `mc-k5k.1` is closed after its original acceptance and installed
+delivery; the other five families retain their open dependency/full-family
+acceptance. This is
+not human combat/FPS/hardware-audio, whole-mission or old-save qualification,
+and does not complete the shared engine. No Unity/art change. Workers and
+bounded reviewers finished; the old heartbeat remains deleted.
 
-## Installed checkpoint
+## Previous installed checkpoint
 
 Current installed batch: prepared Volcano9/Earthquake15 terrain production,
 runtime `9d660088d63a6100f04a0554ed7cc4a8377fc0de`, matching native
