@@ -169,17 +169,41 @@ profile identified SHA-256 and terrain hashing as substantial native costs.
 Those samples cover all process threads, and the scope samples are not an
 additive breakdown of an individual frame.
 
-A separate attempt to reuse terrain digests was held back after a cross-library
-240-step/reset comparison found different state fingerprints despite matching
-positions, terrain hashes, dispatch hashes and events. Its five experimental
-Rust edits were reverted only in the isolated test source; canonical Rust was
-never changed. The installed player retains qualified native `e547bac85fa3`.
-The candidate source, binaries and comparison traces are preserved for diagnosis.
+A second optimization computes the terrain digest once per campaign observation
+and passes it through the existing component hashes. It retains the outer
+SourceArena effects and dynamic-lighting hash. There is no cache across ticks or
+terrain mutations. Installed native `7fe307bd304e` uses the qualified `e547` source
+baseline plus these six Rust files. All 738 source/fixture inputs were recorded.
+
+| Native measurement | Cached options, old native | Reused terrain digest |
+| --- | --- | --- |
+| Campaign snapshot median | 4.09 / 4.05 ms | 2.84 / 2.93 ms |
+| Step and snapshot median | 15.29 / 15.26 ms | 13.84 / 13.40 ms |
+| Complete frame median | 40.20 / 40.25 ms | 40.39 / 41.03 ms |
+
+This second change saves native CPU work but does not demonstrate another
+whole-frame throughput gain. The installed scene remains about 24–25 fps.
+The corrected native matches all 115,680 rows of a 240-step/reset trace from
+`e547`, including state/terrain/dispatch hashes, positions and events. Its four
+focused native checks pass, as do the current canonical workspace all-target
+check and both integrated hash/polling checks. The integrated tests use the same
+qualified Level 2 fixture explicitly, because the ordinary remote source sync
+excludes generated owner packages.
+
+The comparison first rejected an incomplete candidate which bypassed the outer
+SourceArena hash through Deref. The corrected implementation retains that owner,
+and a new regression checks that changing only its lighting state changes the
+snapshot fingerprint. The rejected source/binary and a byte-identical rebuild
+of the old native are preserved with the evidence. Restoring experimental source
+also updates modification times so Cargo does not reuse a newer candidate binary.
 
 The final Unity build and twelve existing JSON-boundary/terrain checks pass.
 UBS's C# scan is partial; its seven possible-null warnings concern the private
 timing dictionary, whose sole insertion always supplies a new non-null list.
 Changed source was also reviewed directly. This checkpoint was self-verified.
+The Rust scanner's changed-line findings are test assertions/unwraps; its broad
+legacy findings are not candidate findings. The package-wide format check
+remains non-clean and was not used to justify unrelated reformatting.
 Logs, captures, profiler data and exact command receipts are under
 `../generated/nightspire-performance-20261104/`.
 

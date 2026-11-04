@@ -4672,6 +4672,10 @@ impl Level2SharedSpellResetSession {
 
     #[must_use]
     pub(crate) fn reset_hash_with_terrain(&self, terrain: &SessionTerrain) -> String {
+        self.reset_hash_with_terrain_hash(terrain.deterministic_hash())
+    }
+
+    pub(crate) fn reset_hash_with_terrain_hash(&self, terrain_hash: u64) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         for entity in self.pickups.iter().chain(self.holders.iter()) {
@@ -4691,7 +4695,7 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.local_player.record_bytes());
         self.local_player.append_omitted_state_hash(&mut hasher);
         hasher.update(self.player_entity_sha256.as_bytes());
-        hasher.update(terrain.deterministic_hash().to_le_bytes());
+        hasher.update(terrain_hash.to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_life_regen.to_le_bytes());
         hasher.update(self.player_life_regen_cooldown.to_le_bytes());

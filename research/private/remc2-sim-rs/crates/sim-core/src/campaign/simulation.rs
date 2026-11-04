@@ -26493,22 +26493,29 @@ impl Mc2Simulation {
 
     #[must_use]
     pub(crate) fn campaign_state_hash_with_terrain(&self, terrain: &SessionTerrain) -> u64 {
+        self.campaign_state_hash_with_terrain_hash(terrain.deterministic_hash())
+    }
+
+    // Reuse only within this immutable observation. Entity indices and dynamic
+    // lighting also belong to the terrain digest, so a terrain revision alone
+    // would not be a valid key for a cache spanning simulation updates.
+    pub(crate) fn campaign_state_hash_with_terrain_hash(&self, terrain_hash: u64) -> u64 {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(b"level2-campaign-state-v1");
         hasher.update(state_hash(&self.session.state.live.core.state).to_le_bytes());
-        hasher.update(terrain.deterministic_hash().to_le_bytes());
+        hasher.update(terrain_hash.to_le_bytes());
         for component in [
             self.session
                 .state
                 .live
                 .shared_spells
-                .reset_hash_with_terrain(terrain),
+                .reset_hash_with_terrain_hash(terrain_hash),
             self.session
                 .state
                 .live
                 .economy
-                .reset_hash_with_terrain(terrain),
+                .reset_hash_with_terrain_hash(terrain_hash),
             self.session.state.live.ordinary.reset_hash(),
             self.goat_hash(),
             self.bad_stone_hash(),

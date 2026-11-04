@@ -298,7 +298,13 @@ impl SourceArena {
         &self,
         terrain: &crate::native_world::SessionTerrain,
     ) -> String {
-        let arena = self.economy.reset_hash_with_terrain(terrain);
+        self.reset_hash_with_terrain_hash(terrain.deterministic_hash())
+    }
+
+    // Keep the arena's effects and lighting in the receipt. Calling the inner
+    // economy helper through Deref would silently omit this owner state.
+    pub(crate) fn reset_hash_with_terrain_hash(&self, terrain_hash: u64) -> String {
+        let arena = self.economy.reset_hash_with_terrain_hash(terrain_hash);
         if self.effects == crate::world::effects::State::default()
             && self.dynamic_lighting == crate::dynamic_lighting::DynamicLightingState::reset()
             && self.dynamic_lighting_enabled

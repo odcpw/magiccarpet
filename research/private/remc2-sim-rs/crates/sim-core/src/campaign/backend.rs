@@ -3479,13 +3479,14 @@ impl GameSessionBackend for Mc2CampaignBackend {
                     .collect()
             })
             .unwrap_or_default();
+        let (state_hash, terrain_hash) = self.campaign.state_and_terrain_hashes();
         CampaignSnapshot {
             tick: flight.tick,
             source_menu_admission: self.campaign.simulation().source_menu_admission(),
             return_to_title_requested: self.campaign.simulation().ordinary_banishment_result(),
             effect_head: self.campaign.effect_cursor().next_sequence,
-            state_hash: self.campaign.state_hash(),
-            terrain_hash: self.campaign.terrain_hash(),
+            state_hash,
+            terrain_hash,
             effect_journal_sha256: hex_digest(
                 self.campaign
                     .simulation
@@ -7949,6 +7950,29 @@ pub(crate) mod tests {
             encode_reset_v1(&ResetState::from_simulation(&backend.campaign.simulation)),
             encode_reset_v1(&ResetState::from_simulation(&direct.simulation))
         );
+    }
+
+    #[test]
+    fn campaign_snapshot_hash_retains_arena_state_without_terrain_changes() {
+        let root = descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            11,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let before = session.snapshot();
+        // A hash optimization must retain the SourceArena wrapper, including
+        // owner state which does not change terrain bytes or the flight tick.
+        session.backend_mut().campaign.simulation_mut()
+            .source_arena_mut().dynamic_lighting_enabled = false;
+        let after = session.snapshot();
+        assert_eq!(after.identity, before.identity);
+        assert_eq!(after.value.terrain_hash, before.value.terrain_hash);
+        assert_ne!(after.value.state_hash, before.value.state_hash);
     }
 
     #[test]

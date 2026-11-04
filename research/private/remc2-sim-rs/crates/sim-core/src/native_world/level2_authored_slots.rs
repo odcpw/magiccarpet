@@ -6919,14 +6919,18 @@ impl Level2EconomyState {
 
     #[must_use]
     pub(crate) fn reset_hash_with_terrain(&self, terrain: &SessionTerrain) -> String {
-        self.reset_hash_inner(Some(terrain))
+        self.reset_hash_with_terrain_hash(terrain.deterministic_hash())
     }
 
-    fn reset_hash_inner(&self, terrain: Option<&SessionTerrain>) -> String {
+    pub(crate) fn reset_hash_with_terrain_hash(&self, terrain_hash: u64) -> String {
+        self.reset_hash_inner(Some(terrain_hash))
+    }
+
+    fn reset_hash_inner(&self, terrain_hash: Option<u64>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
-        if let Some(terrain) = terrain {
-            hasher.update(terrain.deterministic_hash().to_le_bytes());
+        if let Some(terrain_hash) = terrain_hash {
+            hasher.update(terrain_hash.to_le_bytes());
         }
         hasher.update(self.global_rng.to_le_bytes());
         hasher.update(self.sentinel_rng.to_le_bytes());

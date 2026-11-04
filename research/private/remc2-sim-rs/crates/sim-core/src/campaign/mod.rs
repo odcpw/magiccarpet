@@ -781,6 +781,14 @@ impl CampaignSession {
         self.simulation.terrain_hash()
     }
 
+    pub(crate) fn state_and_terrain_hashes(&self) -> (u64, u64) {
+        let terrain_hash = self.terrain_hash();
+        (
+            self.simulation.campaign_state_hash_with_terrain_hash(terrain_hash),
+            terrain_hash,
+        )
+    }
+
     #[must_use]
     pub fn events(&self) -> &[Mc2DispatchEvent] {
         self.simulation.dispatch_events()
