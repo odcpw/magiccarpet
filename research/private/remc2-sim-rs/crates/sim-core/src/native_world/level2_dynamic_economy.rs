@@ -2017,6 +2017,13 @@ impl Level2EconomyState {
             ) {
                 projectile.owner_entity_index = reflected.owner;
                 projectile.target_source_entity_index = reflected.target;
+                // sub_68740 refreshes the target selectors from the current
+                // former-owner address after reversing the ownership link.
+                let former_owner = imported_entities
+                    .get(usize::from(reflected.target))
+                    .ok_or("reflected Fireball former owner is outside the source arena")?;
+                projectile.target_class = former_owner.class;
+                projectile.target_model = former_owner.model;
                 projectile.position = reflected.position;
                 projectile.yaw = reflected.yaw;
                 projectile.pitch = reflected.pitch;

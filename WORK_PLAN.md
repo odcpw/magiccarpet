@@ -1,5 +1,95 @@
 # Shared-engine delivery plan
 
+## Active request: finish the remaining spell E2E paths
+
+Oliver explicitly requested completing all remaining spells on 2026-11-04.
+Execute the existing beads and preserve their original acceptance/dependencies.
+Each entry includes source tracing, ordinary acquisition/public all-tier casts,
+actual consequences/consumers, natural cleanup and presentation, then focused
+verification, coherent commit/push and matching installed native. Existing code
+and traces are inputs; an unchecked entry is not an absent implementation.
+
+- [ ] Heal5 — `mc-k5k.1`
+- [ ] Rebound8 — `mc-k5k.1`
+- [ ] Teleport10 — `mc-k5k.1`
+- [ ] Meteor9 — `mc-bhq.4`
+- [ ] Crater16 — `mc-k5k.3`
+- [ ] Earthquake17 — `mc-k5k.3`
+- [ ] Volcano18 — `mc-k5k.3`
+- [ ] Gravity Well20 — `mc-k5k.4`
+- [ ] Whirlwind21 — `mc-k5k.4`
+- [ ] Fool's Mana22 — `mc-k5k.5`
+- [ ] Magic Mine23 — `mc-k5k.5`
+- [ ] Cave In25 — `mc-k5k.6`
+
+The14 delivered spell-specific checkpoints (Fireball, Possession, Castle,
+Speed, Morph, Shield, Invisibility, Beyond Sight, Lightning, Steal Mana,
+Duel, Tremor, Army and Alliance) remain the baseline; repair them only when
+an actual shared-consumer finding requires it. Shared authored-terrain evidence
+does not substitute for Crater/Earthquake/Volcano spell-casting acceptance.
+Root serializes Cargo/RCH and delivery; independent owners retain their paths
+through integration. Do not close broader families on this list alone.
+
+## All-spells batch: implemented and verified, installation pending
+
+The remaining twelve spell paths above now have connected positive checks.
+The frozen source is `generated/all-spells-20261104-integration/candidate-15/`
+(`inputs.json`:444 Rust inputs). Candidate14's same-binary acquired checks pass:
+Heal/Rebound/Teleport62.786s, Meteor11.585s, Crater/Earthquake/Volcano31.976s,
+Gravity/Whirlwind12.346s, Fool's Mana42.754s, Mine23.819s and Cave In32.450s.
+These use actual owner packages, authored acquisition and public casts, with
+declared objective/progression/resources/encounter-position controls. They
+observe actual damage, terrain, ownership/target state, presentation and
+natural cleanup as applicable; no forced RNG or shortened source lifetime.
+
+Candidate15 differs from14 only in the field test's retired-Villager setup and
+Gravity's missing successful AddEventToMap04 publication. All10 field checks,
+10 Gravity controls, the Mine constructor/tier/ordinary-dispatch boundary3,
+acquired Mine19.901s, six Mine field controls and BadStone source/semantic
+binding1.025s pass on15. The boundary control supplies captured payloads
+explicitly; it is not33 actual acquisitions. Actual capture, release,
+attributed rival damage and natural expiry are covered by the acquired Mine
+scenario. Candidate12 ordering/formula and candidate10 acquired Tremor/Steal
+Mana regressions passed; their relevant production joins remain unchanged.
+
+Implemented shared joins include registry-backed persistent spell admission,
+current fixed-address parent/A4 Castle/aim/price reads, the complete Rebound
+product allowlist, canonical reusable guided constructors, real Mine9/30 and
+10/85 scheduling, all real6DCA0 captured products with source-null cases,
+per-shot recoil/charge/fanout order, and source Mine hover/visibility. Gravity
+now initializes its child differently from Wind as source677A0/678E0 require.
+Fool's Mana has actual motion/attraction, Cave/water/ground tails, map identity,
+merge/color and retaliation. Source my_sign32 is a sign mask; a new actual
+neighbor-cell merge/reclaim check passes1.779s. Authored BadStone construction,
+source action9, sealed semantic bindings and source Cave-only null2/8 admission
+complete previously blocked ordinary acquisition routes.
+
+Independent fresh bounded reviews found one merge-radius defect, now fixed
+and independently rechecked, and no further concrete defect in their inspected
+paths. They inspected the original producer/consumer source, implementation
+and gate changes separately, recording hashes and omitted coverage. Earlier
+failed checks exposed real missing joins and erroneous observations; no source
+gate was weakened. Rival100-visit protection now expires naturally away from
+its Castle before the controlled damage encounter. Typed Firefly/Villager and
+Fireball observations read their actual carriers rather than retired packets.
+
+UBS static analysis covers25 changed Rust files, with57 whole-file legacy
+critical heuristics and no critical on added lines; the final field/Gravity
+delta scan completed with zero critical findings. Formatting check remains non-clean across the existing
+package (1832 diff headers); no formatter writes or broad cleanup. Full raw
+review/compiler outputs and completed executables are checksum-preserved on
+rig with receipts; source, owner data, warm worker caches and installed player
+remain intact. Quarantined bad mounted-copy evidence was not reused.
+
+The strict remote workspace all-target check passes34.591s with all444 input
+hashes unchanged. Source commit/push and matching native installation
+are still pending at this checkpoint. Keep all list entries unchecked until
+delivery. Broader original acceptance/dependencies remain open. This is not
+human combat/FPS/hardware-audio, whole-mission or old-save qualification, and
+does not complete the shared engine. No Unity/art change is required.
+
+## Installed checkpoint
+
 Current installed batch: prepared Volcano9/Earthquake15 terrain production,
 runtime `9d660088d63a6100f04a0554ed7cc4a8377fc0de`, matching native
 `ab1095b7514a4f925fddfef378468d263537342d6ac59c82ad8bb09061c65fd1`.

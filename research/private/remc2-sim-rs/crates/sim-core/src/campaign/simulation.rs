@@ -323,7 +323,7 @@ fn validate_semantic_scenery_dispatch(
     match (scenery_kind, handler) {
         (Some(SceneryKind::Tree), ExistingHandler::TreeLifecycle)
         | (Some(SceneryKind::Mushroom), ExistingHandler::Mushrooms)
-        | (Some(SceneryKind::Stone), ExistingHandler::Stone)
+        | (Some(SceneryKind::Stone), ExistingHandler::Stone | ExistingHandler::BadStone)
         | (Some(SceneryKind::ExitPortal), ExistingHandler::Class14Events) => Ok(()),
         (Some(kind), actual) => Err(format!(
             "scenery source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
@@ -3440,7 +3440,7 @@ impl Mc2Simulation {
             .ok_or("Meteor source holder disappeared")?
             .source_spell_parent_entity_index();
         let current_global_a4 = live.shared_spells.pickup(source_slot)
-            .is_some_and(|holder| matches!(holder.model, 19 | 24))
+            .is_some_and(|holder| matches!(holder.model, 19..=24))
             && live.economy.entities.get(usize::from(parent_slot))
                 .is_some_and(|parent| parent.special_relation == EntitySpecialRelation::GlobalSpecialState);
         let owner = live
@@ -11929,12 +11929,16 @@ impl Mc2Simulation {
         // already shared. Keep this preflight exhaustive so a newly reached
         // authored family is a visible capability error, never a no-op.
         if let Some(feature) = rows.iter().find(|feature| {
-            !u16::try_from(feature.subtype).is_ok_and(|model| {
+            // sub_4B120 returns null in Cave before NewEvent. This is not
+            // admission of the still-unimplemented outdoor model8 producer.
+            !(feature.kind == 2 && feature.subtype == 8
+                && self.session.state.live.terrain.map_type() == MapType::Cave)
+            && !u16::try_from(feature.subtype).is_ok_and(|model| {
                 crate::campaign::authored_spawn::has_family_constructor(feature.kind, model)
             })
             && !matches!(
                 (feature.kind, feature.subtype),
-                (2, 0 | 1 | 2 | 6 | 7)
+                (2, 0 | 1 | 2 | 3 | 6 | 7)
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
@@ -12015,6 +12019,13 @@ impl Mc2Simulation {
                     .insert(feature.index);
             }
             consumed.push(feature.index);
+            if feature.kind == 2 && feature.subtype == 8
+                && self.session.state.live.terrain.map_type() == MapType::Cave
+            {
+                // Source consumes this authored row but its Cave constructor
+                // returns null without an allocation, RNG draw or StageVar.
+                continue;
+            }
             if feature.kind == 10 && matches!(feature.subtype, 88 | 90) {
                 // Enabled constructor table entries with a null pointer.
                 // Source consumes the record and allocates no event.
@@ -12156,6 +12167,32 @@ impl Mc2Simulation {
                         &self.session.definition.presentation.particles,
                         position,
                     )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
+                }
+                (2, 3) => {
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = crate::world::scenery::bad_stones::construct(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                        crate::world::scenery::bad_stones::MC2_DEFAULT,
+                        &self.session.definition.presentation.particles,
+                    )? {
+                        for stage in live.mission.level2_authored_stage_variable_references_to(
+                            feature.index,
+                            live.core.runtime.active_stage_variable_count(),
+                        ) {
+                            if !live.core.runtime.bind_authored_stage_variable_entity(stage, slot) {
+                                return Err(format!(
+                                    "authored BadStone {} could not publish StageVar {stage} source slot {slot}",
+                                    feature.index,
+                                ));
+                            }
+                        }
                         live.core.runtime.bind_authored_stage_entity(feature.index, slot);
                     }
                 }
@@ -14664,7 +14701,9 @@ impl Mc2Simulation {
                             row.model,
                             PhysicalSpellActionRole::OrdinaryPickup,
                         ) == Some(row.action)
-                        || (matches!(row.model, 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 19 | 25)
+                        || (CAMPAIGN_BEHAVIOR_REGISTRY
+                            .entry(&level2_update_key(row.class, row.action))
+                            .is_some_and(|entry| entry.handler == ExistingHandler::SpellHolderAndPickup)
                             && physical_spell_action(
                                 row.model,
                                 PhysicalSpellActionRole::PersistentPickup,
@@ -14838,13 +14877,13 @@ impl Mc2Simulation {
                         && ((entity.class, entity.model, entity.action) == (10, 74, 81)
                             || matches!(
                             (entity.class, entity.action),
-                            (2, 0 | 1 | 2 | 3 | 18 | 19 | 20 | 21)
+                            (2, 0 | 1 | 2 | 3 | 9 | 18 | 19 | 20 | 21)
                                 | (
                                     5,
                                     25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
                                 )
-                                | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 31)
-                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 87..=94 | 96)
+                                | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 30 | 31)
+                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
                         ))
@@ -15766,6 +15805,7 @@ impl Mc2Simulation {
             SourceRoute::Imported => matches!(
                 handler,
                 ExistingHandler::BallisticScenery
+                    | ExistingHandler::BadStone
                     | ExistingHandler::CountdownSwitch
                     | ExistingHandler::TerrainStripController
                     | ExistingHandler::SwitchProducers
@@ -17271,6 +17311,7 @@ impl Mc2Simulation {
                 | ExistingHandler::DisasterSpellProjectile
                 | ExistingHandler::FieldSpellProjectile
                 | ExistingHandler::DirectionalSpellProjectile
+                | ExistingHandler::MagicMineProjectile
                 | ExistingHandler::AllianceProjectile
                 | ExistingHandler::Creature17Projectile
                 | ExistingHandler::SummonArmyProjectile,
@@ -17389,6 +17430,15 @@ impl Mc2Simulation {
                         Some(&targets),
                         context,
                     )?
+                } else if visit.handler == ExistingHandler::MagicMineProjectile {
+                    crate::native_world::magic_mine_spell::step_projectile(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        source_slot,
+                        &targets,
+                        &self.session.definition.presentation.entity_parameters,
+                    )?.callback
                 } else if live.economy.entities[usize::from(source_slot)].class == 10
                     && live.economy.entities[usize::from(source_slot)].model == 23
                 {
@@ -17634,22 +17684,18 @@ impl Mc2Simulation {
                 let captured = crate::native_world::magic_mine_discharge::captured_profile(
                     &live.economy.entities[usize::from(source_slot)],
                 )?;
-                let terrain_sample = crate::world::fields::magic_mine::TerrainSample {
-                    ground_height: live.terrain.ground_height(position),
-                    cave_ceiling: live.terrain.ceiling_height(position),
-                    water: live.terrain.material_mask(position) == 1,
-                };
                 let targets = if effect_lists.is_current(&live.economy) {
                     pass_start_class3_slots
                 } else {
                     &[]
                 };
                 let visit = crate::native_world::magic_mine_spell::step_field(
+                    &live.shared_spells,
                     &mut live.economy,
                     source_slot,
                     targets,
                     captured,
-                    terrain_sample,
+                    &live.terrain,
                 )?;
                 let current_position = live.economy.entities[usize::from(source_slot)].position;
                 if current_position != position {
@@ -17953,6 +17999,7 @@ impl Mc2Simulation {
             }
             (ExistingHandler::CaveSpell, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
+                let current_class3_slots = effect_lists.current_class3_slots(&live.economy);
                 cave_spells::step_source(
                     &mut live.economy,
                     &mut live.terrain,
@@ -17960,6 +18007,7 @@ impl Mc2Simulation {
                     &mut live.core,
                     source_slot,
                     &self.session.definition.presentation.entity_parameters,
+                    &current_class3_slots,
                 )?;
             }
             (ExistingHandler::CaveFeatures, SourceRoute::Imported) => {
@@ -18589,7 +18637,7 @@ impl Mc2Simulation {
                         &mut live.shared_spells,
                         &mut live.economy,
                         &mut live.core,
-                        &live.terrain,
+                        &mut live.terrain,
                         &self.session.definition.presentation.particles,
                         source_slot,
                     )?;
@@ -18727,6 +18775,14 @@ impl Mc2Simulation {
                         message: error.to_string(),
                     }),
                 }
+            }
+            (ExistingHandler::BadStone, SourceRoute::Imported) => {
+                let live = &mut self.session.state.live;
+                crate::world::scenery::bad_stones::step(
+                    &mut live.economy,
+                    &live.terrain,
+                    source_slot,
+                )?;
             }
             (ExistingHandler::Class10Effects, SourceRoute::House) => {
                 let clears_protection = self.session.state.live.ordinary.houses()
@@ -19896,7 +19952,7 @@ impl Mc2Simulation {
                         &mut live.shared_spells,
                         &mut live.economy,
                         &mut live.core,
-                        &live.terrain,
+                        &mut live.terrain,
                         &self.session.definition.presentation.particles,
                         source_slot,
                     )?;

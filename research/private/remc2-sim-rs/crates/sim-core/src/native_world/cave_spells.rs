@@ -15,6 +15,20 @@ use crate::{
     },
 };
 
+/// sub_4E210's bare flyer, also selected by sub_6DCA0 for a Mine discharge.
+/// The Cave restriction belongs to the player holder, not this constructor.
+pub(crate) const SOURCE_CONSTRUCTOR: super::guided_projectile::Constructor =
+    super::guided_projectile::Constructor {
+        model: 30,
+        action: 31,
+        parameter: 60,
+        particle: 211,
+        speed: 384,
+        maximum_speed: 8192,
+        life: 8192 / 384,
+        mana: 50,
+    };
+
 struct Terrain<'a>(&'a mut SessionTerrain);
 impl CaveTerrain for Terrain<'_> {
     fn perimeter(&self, x: u8, y: u8, diameter: u16) -> (i32, i32) {
@@ -64,28 +78,13 @@ fn set_owner(row: &mut EntitySnapshot, owner: u16) {
     row.record[30..32].copy_from_slice(&owner.to_le_bytes());
 }
 
-fn publish(arena: &mut SourceArena, mut row: EntitySnapshot) -> Result<u16, String> {
+fn publish(arena: &mut SourceArena, terrain: &mut SessionTerrain, mut row: EntitySnapshot) -> Result<u16, String> {
     let slot = row.index;
-    arena.economy.map_chains.sync_entity(RenderableMapSeed {
-        entity_index: slot,
-        active: true,
-        x: row.position.x,
-        y: row.position.y,
-    })?;
-    let old = arena.economy.map_chains.old_map_entity(slot);
+    let position = row.position;
     row.set_control_flags(row.control_flags | 4);
-    row.record[26..28].copy_from_slice(&old.to_le_bytes());
-    if old != 0
-        && !arena
-            .economy
-            .live_arena_slots()
-            .iter()
-            .any(|(id, _)| *id == old)
-    {
-        arena.entities[usize::from(old)].record[28..30].copy_from_slice(&slot.to_le_bytes());
-    }
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
     Ok(slot)
 }
 
@@ -93,14 +92,14 @@ fn publish(arena: &mut SourceArena, mut row: EntitySnapshot) -> Result<u16, Stri
 /// sidecar: its stage, wave and lifetime remain in this one raw source row.
 pub(crate) fn construct_effect(
     arena: &mut SourceArena,
-    terrain: &SessionTerrain,
+    terrain: &mut SessionTerrain,
     position: Position,
     tier: u8,
 ) -> Result<Option<u16>, String> {
     if terrain.map_type != MapType::Cave {
         return Ok(None);
     }
-    let Some(slot) = arena.allocate_source_slot() else {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
     let mut row =
@@ -115,22 +114,33 @@ pub(crate) fn construct_effect(
     // sub_67910's successful-delivery overrides, after sub_50A20.
     row.set_max_life(i32::from(tier));
     row.set_source_byte_46(0);
-    publish(arena, row).map(Some)
+    publish(arena, terrain, row).map(Some)
 }
 
-fn launch(
+pub(super) fn launch(
     arena: &mut SourceArena,
-    terrain: &SessionTerrain,
+    terrain: &mut SessionTerrain,
     shared: &mut Level2SharedSpellResetSession,
     core: &mut CanonicalRuntimeState,
     holder: &EntitySnapshot,
     parent: &EntitySnapshot,
     particles: &[ParticleParameter],
 ) -> Result<Option<u16>, String> {
-    let Some(slot) = arena.allocate_source_slot() else {
+    let Some(slot) = super::guided_projectile::construct(
+        arena,
+        terrain,
+        particles,
+        parent.position,
+        Some(parent.index),
+        parent.actual_speed,
+        SOURCE_CONSTRUCTOR,
+    )?
+    else {
         return Ok(None);
     };
-    let mut position = parent.position;
+    let mut row = arena.entities[usize::from(slot)].clone();
+    let base_position = row.position;
+    let mut position = base_position;
     let hand = if parent.control_flags & 0x100 != 0 {
         Some(parent.yaw.wrapping_sub(512))
     } else if parent.control_flags & 0x200 != 0 {
@@ -141,29 +151,11 @@ fn launch(
     if let Some(yaw) = hand {
         crate::move_entity(&mut position, yaw, 0, 256);
         if terrain.ground_height(position) > position.z {
-            position = parent.position;
+            position = base_position;
         }
     }
     position.z = position.z.wrapping_add(parent.array_fov());
-    let mut row =
-        super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
-    row.class = 9;
-    row.model = 30;
-    row.record[67] = 9;
-    row.record[68] = 30;
-    row.set_source_action(31);
-    row.set_control_flags(row.control_flags & !8);
-    row.parameter_relation = Some(60);
-    row.record[164..168].copy_from_slice(&61_u32.to_le_bytes());
-    row.set_max_life(8192 / 384);
-    row.set_life(row.max_life);
-    row.set_actual_speed(384_i16.wrapping_add(parent.actual_speed).clamp(384, 8192));
-    row.record[136..138].copy_from_slice(&384_i16.to_le_bytes());
-    super::cave_features::bind_particle(
-        &mut row,
-        211,
-        *particles.get(211).ok_or("CaveIn particle211 absent")?,
-    )?;
+    row.set_position(position);
     set_owner(&mut row, parent.source_id);
     row.record[42..44].copy_from_slice(&holder.index.to_le_bytes());
     row.record[71] = 10;
@@ -225,7 +217,7 @@ fn launch(
         aux.byte_0x154_340 = 0;
         player.record[super::PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
     }
-    let slot = publish(arena, row)?;
+    let slot = publish(arena, terrain, row)?;
     crate::mark_source_audio_call(crate::SourceAudioCallTag::ProjectileDeliveryLaunch);
     shared.emit_flight_effect(crate::FlightEvent::PrepareSound {
         #[cfg(test)]
@@ -241,7 +233,7 @@ pub(crate) fn step_holder(
     shared: &mut Level2SharedSpellResetSession,
     arena: &mut SourceArena,
     core: &mut CanonicalRuntimeState,
-    terrain: &SessionTerrain,
+    terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<(), String> {
@@ -250,33 +242,17 @@ pub(crate) fn step_holder(
         .cloned()
         .ok_or("CaveIn holder missing")?;
     let parent_slot = holder.source_spell_parent_entity_index();
-    let mut parent = arena
-        .entities
-        .get(usize::from(parent_slot))
-        .filter(|row| parent_slot != 0 && row.active)
-        .cloned();
-    let owner = shared
-        .players
-        .iter()
-        .find(|player| player.entity_index == parent_slot);
-    let castle = arena
-        .economy
-        .castle()
-        .filter(|castle| {
-            castle.active
-                && castle.owner_entity_index == parent_slot
-                && arena.economy.player_castle_entity_index() == castle.source_entity_index
-        })
-        .map(|castle| castle.mana)
-        .or_else(|| {
-            let player = owner?;
-            let slot = u16::from_le_bytes([player.record[42], player.record[43]]);
-            arena
-                .entities
-                .get(usize::from(slot))
-                .filter(|row| slot != 0 && row.active)
-                .map(|row| row.mana)
-        });
+    // 6CFA0 does not dereference its parent/A4 outside the Cave/active gate.
+    let mut parent = if terrain.map_type == MapType::Cave && holder.active_value > 0 {
+        super::source_target::status_parent(arena, super::source_target::Context {
+            spells: Some(shared), ..super::source_target::Context::default()
+        }, parent_slot)?
+    } else { None };
+    let castle = match parent.as_ref() {
+        Some(parent) if parent.life >= 0 && parent.mana >= 0 && holder.mana_regen != 0 =>
+            super::source_target::status_castle_mana(arena, shared, parent)?,
+        _ => None,
+    };
     let mut state = CaveInHolder {
         active: holder.active_value,
         duration: holder.activation_value as i16,
@@ -303,11 +279,17 @@ pub(crate) fn step_holder(
         )?;
     }
     if let (Some(parent), Some(caster)) = (parent.as_mut(), caster) {
+        let before = parent.clone();
         parent.set_mana_regen(caster.mana_regen);
-        arena.entities[usize::from(parent_slot)] = parent.clone();
-        shared.sync_player_entity_from_authority(parent);
-        if parent_slot == shared.player_entity.index {
-            shared.sync_typed_spell_parent_caches_from_player_entity();
+        super::source_target::commit_status_parent(arena, shared, None, &before, parent)?;
+        if parent.active && parent.class == 3 && matches!(parent.model, 0 | 1)
+            && matches!(parent.special_relation, super::EntitySpecialRelation::PlayerState(index)
+                if shared.players.get(usize::from(index)).is_some_and(|row| row.entity_index == parent.index))
+        {
+            shared.sync_player_entity_from_authority(parent);
+            if parent_slot == shared.player_entity.index {
+                shared.sync_typed_spell_parent_caches_from_player_entity();
+            }
         }
     }
     holder.active_value = state.active;
@@ -364,6 +346,7 @@ pub(crate) fn step_effect(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     slot: u16,
+    current_class3_slots: &[u16],
 ) -> Result<Vec<(Position, i16)>, String> {
     let row = &mut arena.entities[usize::from(slot)];
     let mut state = CaveInEffect {
@@ -375,10 +358,10 @@ pub(crate) fn step_effect(
         smoke_emitted: u16::from_le_bytes([row.record[58], row.record[59]]) != 0,
         floor: i16::from_le_bytes([row.record[162], row.record[163]]),
     };
-    let wizards = arena
-        .entities
-        .iter()
-        .filter(|row| row.active && row.class == 3 && row.model == 0)
+    let wizards = current_class3_slots.iter()
+        .filter_map(|slot| arena.entities.get(usize::from(*slot)))
+        // 311E0 follows the frozen class3 chain and reads only current model.
+        .filter(|row| row.model == 0)
         .map(|row| row.position)
         .collect::<Vec<_>>();
     let visit = state.step(&mut Terrain(terrain), &wizards);
@@ -405,12 +388,13 @@ pub(crate) fn step_source(
     core: &mut CanonicalRuntimeState,
     slot: u16,
     parameters: &[[u8; super::ENTITY_PARAMETER_BYTES]],
+    current_class3_slots: &[u16],
 ) -> Result<(), String> {
     let row = &arena.entities[usize::from(slot)];
     match (row.class, row.model, row.action) {
         (9, 30, 31) => step_projectile(arena, terrain, shared, core, slot, parameters),
         (10, 89, 96) => {
-            for (position, yaw) in step_effect(arena, terrain, slot)? {
+            for (position, yaw) in step_effect(arena, terrain, slot, current_class3_slots)? {
                 if let Some(child) = arena.allocate_smoke13_with_terrain(position, terrain)
                     && let Some(row) = arena
                         .economy
@@ -435,7 +419,7 @@ pub(crate) fn step_source(
 /// or flight expiry; a failed constructor keeps the flyer alive for retry.
 pub(crate) fn step_projectile(
     arena: &mut SourceArena,
-    terrain: &SessionTerrain,
+    terrain: &mut SessionTerrain,
     shared: &mut Level2SharedSpellResetSession,
     core: &mut CanonicalRuntimeState,
     slot: u16,
@@ -831,14 +815,7 @@ pub(crate) fn step_projectile(
     row.set_life(state.life);
     row.set_source_word_96(state.target);
     row.set_control_flags(state.flags | (row.control_flags & 0x400));
-    arena.economy.map_chains.sync_entity(RenderableMapSeed {
-        entity_index: slot,
-        active: true,
-        x: row.position.x,
-        y: row.position.y,
-    })?;
-    arena.economy.source_rng.insert(slot, row.entity_rng);
-    arena.entities[usize::from(slot)] = row;
+    publish(arena, terrain, row)?;
     if let Some(reflection) = reflection {
         super::support_spells::commit_reflection(shared, arena, core, reflection);
     }
@@ -852,6 +829,533 @@ mod tests {
         PlayerCommand,
         native_world::{Mc2DispatchEvent, NativeWorld},
     };
+
+    #[test]
+    fn authored_cavein_pickup_carry_and_public_all_tiers_reach_live_geometry_and_cleanup() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        let packages = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj");
+        let mut source = CampaignSession::open(
+            packages.join("level24"),
+            CampaignSelection::ordinary(24).unwrap(),
+        )
+        .expect("unfiltered source Cave24 opens");
+        let pickup = source.simulation().entities()[147].clone();
+        assert!(pickup.active);
+        assert_eq!((pickup.class, pickup.model, pickup.action), (15, 25, 76));
+        let owner = source.simulation().state.entity_index;
+        for _ in 0..12 {
+            let simulation = source.simulation_mut();
+            simulation
+                .set_level2_entity_position(owner, pickup.position)
+                .unwrap();
+            simulation.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                simulation
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "{:?}",
+                simulation.dispatch_events()
+            );
+            if simulation
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders[25]
+                == pickup.index
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            source
+                .simulation()
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders[25],
+            pickup.index
+        );
+        assert_eq!(
+            source
+                .simulation()
+                .shared_spells()
+                .pickup(pickup.index)
+                .unwrap()
+                .action,
+            75
+        );
+        let learned = source
+            .simulation()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders
+            .iter()
+            .enumerate()
+            .filter_map(|(family, slot)| (*slot != 0).then_some(family as u8))
+            .collect::<Vec<_>>();
+        for tier in 0_u8..=2 {
+            let profile = crate::spell_activation::level2_set_spell_profile(25, tier).unwrap();
+            let mut campaign = CampaignSession::open(
+                packages.join("level12"),
+                CampaignSelection::ordinary(12).unwrap(),
+            )
+            .expect("unfiltered destination Cave12 opens");
+            assert_eq!(
+                campaign
+                    .rebuild_for_spell_carry(&learned, Some(25))
+                    .unwrap(),
+                Some(25)
+            );
+            let simulation = campaign.simulation_mut();
+            let owner = simulation.state.entity_index;
+            let position = (0..256_u16)
+                .flat_map(|y| {
+                    (0..256_u16).map(move |x| Position {
+                        x: (x << 8) + 128,
+                        y: (y << 8) + 128,
+                        z: 0,
+                    })
+                })
+                .filter(|position| simulation.canonical_terrain().material_mask(*position) != 1)
+                .max_by_key(|position| {
+                    i32::from(
+                        simulation
+                            .canonical_terrain()
+                            .ceiling_height(*position)
+                            .unwrap(),
+                    ) - i32::from(simulation.canonical_terrain().ground_height(*position))
+                })
+                .expect("real Cave12 nonwater casting room");
+            let floor = simulation.canonical_terrain().ground_height(position);
+            let roof = simulation
+                .canonical_terrain()
+                .ceiling_height(position)
+                .unwrap();
+            assert!(i32::from(roof) - i32::from(floor) > 4096);
+            let position = Position {
+                z: floor + (roof - floor) / 2,
+                ..position
+            };
+            simulation
+                .set_level2_entity_position(owner, position)
+                .unwrap();
+            let castle = simulation
+                .economy_mut()
+                .build_castle(position, owner)
+                .unwrap();
+            assert!(
+                simulation
+                    .economy_mut()
+                    .set_castle_mana_prerequisite_for_test(castle, 1_000_000)
+            );
+            let ui = crate::SOURCE_SPELL_INDEX_MAP
+                .iter()
+                .position(|family| *family == 25)
+                .unwrap() as i8;
+            simulation.step_outer_turn(
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: ui,
+                    argument_2: tier as i8,
+                    ..Default::default()
+                },
+                0,
+            );
+            {
+                let live = &mut simulation.session.state.live;
+                live.core.state.target_speed = 0;
+                live.core.state.actual_speed = 0;
+                live.core.state.impulse_x = 0;
+                live.core.state.impulse_y = 0;
+                live.core.state.impulse_z = 0;
+                let parent = &mut live.economy.entities[usize::from(owner)];
+                parent.max_mana = 2_000_000;
+                parent.record[144..148].copy_from_slice(&2_000_000_i32.to_le_bytes());
+                parent.set_mana(500_000);
+                parent.set_mana_regen(0);
+                let parent = parent.clone();
+                live.shared_spells
+                    .sync_player_entity_from_authority(&parent);
+                live.shared_spells.player_mana = parent.mana;
+                live.shared_spells.caster.mana = parent.mana;
+                live.shared_spells
+                    .sync_typed_spell_parent_caches_from_player_entity();
+                if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                    fire.caster.mana = parent.mana;
+                }
+                live.economy.economy.refresh_owner_mana_rows();
+            }
+            let holder = simulation
+                .shared_spells()
+                .local_player()
+                .enabled_spell_holders[25];
+            assert_eq!(
+                simulation
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .level_gate,
+                tier as i8
+            );
+            let before = simulation.canonical_terrain().planes().clone();
+            let mana = simulation.shared_spells().player_entity().mana;
+            let mut uncast = simulation.clone();
+            let mut unfunded = simulation.clone();
+            assert!(
+                unfunded
+                    .economy_mut()
+                    .set_castle_mana_prerequisite_for_test(castle, profile.mana_regen - 1)
+            );
+            unfunded.step_outer_turn(
+                PlayerCommand {
+                    flags: 0x10,
+                    ..Default::default()
+                },
+                0,
+            );
+            assert!(
+                unfunded
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            assert_eq!(
+                unfunded
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .active_value,
+                0
+            );
+            assert!(
+                !unfunded
+                    .entities()
+                    .iter()
+                    .any(|row| row.active && (row.class, row.model) == (9, 30))
+            );
+            let mut tracked = [None; 3];
+            let mut hidden = [false; 3];
+            let mut reclaimed = [false; 3];
+            let mut flyer_sprite = false;
+            let mut smoke_sprite = false;
+            let mut launch_sound = false;
+            let mut paid_exactly = false;
+            let mut pending_charge_balance = None;
+            // Actual maximum flyer life, complete227..1024 wave, maximum
+            // Smoke13 life39, hide and following source reclaim boundaries.
+            let visits = 8192 / 384 + (1024 - 227) / 22 + 1 + 39 + 3;
+            for turn in 0..visits {
+                simulation.step_outer_turn(
+                    if turn == 0 {
+                        PlayerCommand {
+                            flags: 0x10,
+                            ..Default::default()
+                        }
+                    } else {
+                        PlayerCommand::default()
+                    },
+                    0,
+                );
+                uncast.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    uncast
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "uncast: {:?}",
+                    uncast.dispatch_events()
+                );
+                assert!(
+                    simulation
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "tier{tier}: {:?}",
+                    simulation.dispatch_events()
+                );
+                // 68DE0 writes the exact negative cost; 5426 consumes that
+                // accumulator on the player's next numeric visit, then
+                // prepares ordinary regeneration again. Later balances
+                // include the complete effect/smoke lifetime's regeneration.
+                if turn == 0 {
+                    let player = simulation.shared_spells().player_entity();
+                    if holder < owner {
+                        assert_eq!(
+                            player.mana,
+                            mana - profile.max_mana,
+                            "earlier holder charges this pass's actual player visit"
+                        );
+                        paid_exactly = true;
+                    } else {
+                        assert_eq!(
+                            player.mana_regen, -profile.max_mana,
+                            "later holder publishes exact cost for the following player visit"
+                        );
+                        pending_charge_balance = Some(player.mana);
+                    }
+                } else if turn == 1
+                    && let Some(balance) = pending_charge_balance
+                {
+                    assert_eq!(
+                        simulation.shared_spells().player_entity().mana,
+                        balance - profile.max_mana,
+                        "following scheduled player consumes the complete exact source cost"
+                    );
+                    paid_exactly = true;
+                }
+                let live = &simulation.session.state.live;
+                for row in live
+                    .economy
+                    .entities
+                    .iter()
+                    .filter(|row| row.active && row.source_id == owner)
+                {
+                    let stage = match (row.class, row.model, row.action) {
+                        (9, 30, 31) => Some(0),
+                        (10, 89, 96) => Some(1),
+                        _ => None,
+                    };
+                    if let Some(stage) = stage {
+                        let tile = live.economy.map_chains.tile_of(row.index);
+                        assert_eq!(
+                            live.terrain.planes().entity_indices[usize::from(tile)],
+                            live.economy.map_chains.tile_head(tile) as i16,
+                            "ordinary CaveIn producer/movement publishes its current terrain head"
+                        );
+                        tracked[stage]
+                            .get_or_insert((row.index, live.economy.slot_generation(row.index)));
+                        if stage == 0 {
+                            assert_eq!(row.particle_parameter_index, Some(211));
+                            assert_eq!(row.record[74], tier);
+                            assert_eq!(
+                                row.subspell_index,
+                                if tier == 0 {
+                                    profile.subspell_index
+                                } else {
+                                    profile.subspell_index / u16::from(tier)
+                                }
+                            );
+                        } else {
+                            assert_eq!(row.max_life, i32::from(tier));
+                        }
+                        hidden[stage] |= row.drawing_disabled();
+                    }
+                }
+                for smoke in live.economy.economy.model59_smoke_children().iter() {
+                    let incarnation = (
+                        smoke.source_entity_index,
+                        live.economy.slot_generation(smoke.source_entity_index),
+                    );
+                    // 311E0 writes512 at birth; 32160 reduces it on each
+                    // early visit. Follow the same physical incarnation
+                    // through that source drift and its later terminal hide.
+                    if smoke.max_speed == 512 {
+                        tracked[2].get_or_insert(incarnation);
+                    }
+                    if tracked[2] == Some(incarnation) {
+                        assert_eq!(
+                            smoke.max_speed,
+                            (512 - 52 * smoke.dword_0x10.clamp(0, 15)).max(30) as i16
+                        );
+                        hidden[2] |= !smoke.drawing_enabled;
+                    }
+                }
+                for (stage, tracked) in tracked.iter().enumerate() {
+                    if let Some((slot, generation)) = tracked {
+                        reclaimed[stage] |= live.economy.slot_generation(*slot) != *generation
+                            || live.economy.free_source_slots().contains(slot);
+                    }
+                }
+                let presentations = simulation.campaign_entity_presentations(0).unwrap();
+                flyer_sprite |= presentations
+                    .iter()
+                    .any(|row| row.source_id == owner && row.render_parameter_index == 211);
+                if let Some((slot, _)) = tracked[2] {
+                    smoke_sprite |= presentations
+                        .iter()
+                        .any(|row| row.entity_index == slot && row.render_parameter_index == 67);
+                }
+                launch_sound |= live.core.effect_journal.records().iter().any(|record| matches!(record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                        sound_id: 15, entity_index, .. }) if entity_index == owner));
+                if reclaimed.iter().all(|done| *done)
+                    && simulation
+                        .shared_spells()
+                        .pickup(holder)
+                        .unwrap()
+                        .active_value
+                        == 0
+                {
+                    break;
+                }
+            }
+            assert!(
+                tracked.iter().all(Option::is_some),
+                "tier{tier} real9/30→10/89→Smoke13: {tracked:?}"
+            );
+            assert!(
+                hidden.iter().all(|seen| *seen),
+                "tier{tier} natural retained hides: {hidden:?}"
+            );
+            assert!(
+                reclaimed.iter().all(|done| *done),
+                "tier{tier} following owning reclaim: {reclaimed:?}"
+            );
+            assert!(flyer_sprite && smoke_sprite && launch_sound);
+            assert_eq!(
+                simulation
+                    .shared_spells()
+                    .pickup(holder)
+                    .unwrap()
+                    .active_value,
+                0
+            );
+            assert!(
+                paid_exactly,
+                "actual scheduled player consumes the exact source charge"
+            );
+            let after = simulation.canonical_terrain().planes();
+            let changed = after
+                .secondary_heights
+                .iter()
+                .enumerate()
+                .find(|(index, height)| {
+                    **height != before.secondary_heights[*index]
+                        && **height != uncast.canonical_terrain().planes().secondary_heights[*index]
+                })
+                .map(|(index, _)| index)
+                .expect("actual collapse changes roof beyond the uncast ordinary control");
+            let probe = Position {
+                x: ((changed & 255) as u16) << 8,
+                y: ((changed >> 8) as u16) << 8,
+                z: 0,
+            };
+            let collision: &dyn FlightWorld = simulation.canonical_terrain();
+            assert_eq!(
+                collision.ceiling_height(probe),
+                Some(crate::legacy_terrain::interpolate_cave(
+                    &after.secondary_heights,
+                    probe.x,
+                    probe.y
+                ) as i16)
+            );
+            assert_ne!(
+                collision.ceiling_height(probe),
+                uncast.canonical_terrain().ceiling_height(probe)
+            );
+            assert_ne!(after.ground_heights, before.ground_heights);
+
+            let mut day =
+                CampaignSession::open(packages.join("level2"), CampaignSelection::LEVEL2).unwrap();
+            day.rebuild_for_spell_carry(&learned, Some(25)).unwrap();
+            let outside = day.simulation_mut();
+            assert_ne!(outside.canonical_terrain().map_type(), MapType::Cave);
+            let owner = outside.state.entity_index;
+            let castle_position = outside.state.position;
+            let castle = outside
+                .economy_mut()
+                .build_castle(castle_position, owner)
+                .unwrap();
+            assert!(
+                outside
+                    .economy_mut()
+                    .set_castle_mana_prerequisite_for_test(castle, 1_000_000)
+            );
+            outside.step_outer_turn(
+                PlayerCommand {
+                    opcode: 31,
+                    argument_1: ui,
+                    argument_2: tier as i8,
+                    ..Default::default()
+                },
+                0,
+            );
+            {
+                let live = &mut outside.session.state.live;
+                let parent = &mut live.economy.entities[usize::from(owner)];
+                parent.max_mana = 2_000_000;
+                parent.record[144..148].copy_from_slice(&2_000_000_i32.to_le_bytes());
+                parent.set_mana(500_000);
+                parent.set_mana_regen(0);
+                let parent = parent.clone();
+                live.shared_spells
+                    .sync_player_entity_from_authority(&parent);
+                live.shared_spells.player_mana = parent.mana;
+                live.shared_spells.caster.mana = parent.mana;
+                if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                    fire.caster.mana = parent.mana;
+                }
+                let free = live.economy.free_slot_count();
+                assert!(
+                    construct_effect(&mut live.economy, &mut live.terrain, position, tier)
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(
+                    live.economy.free_slot_count(),
+                    free,
+                    "non-Cave null consumes no allocation"
+                );
+            }
+            let holder = outside.shared_spells().local_player().enabled_spell_holders[25];
+            let timer = u16::from_le_bytes(
+                outside.shared_spells().pickup(holder).unwrap().record[58..60]
+                    .try_into()
+                    .unwrap(),
+            );
+            let mut outside_uncast = outside.clone();
+            outside.step_outer_turn(
+                PlayerCommand {
+                    flags: 0x10,
+                    ..Default::default()
+                },
+                0,
+            );
+            outside_uncast.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                outside
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            assert_eq!(
+                outside.shared_spells().pickup(holder).unwrap().active_value,
+                profile.word_0x30 as i16
+            );
+            assert_eq!(
+                u16::from_le_bytes(
+                    outside.shared_spells().pickup(holder).unwrap().record[58..60]
+                        .try_into()
+                        .unwrap()
+                ),
+                timer.saturating_sub(1),
+                "non-Cave still visits the separate word36 timer"
+            );
+            outside.step_outer_turn(PlayerCommand::default(), 0);
+            outside_uncast.step_outer_turn(PlayerCommand::default(), 0);
+            assert_eq!(
+                outside.shared_spells().pickup(holder).unwrap().active_value,
+                profile.word_0x30 as i16,
+                "non-Cave does not decrement the active holder"
+            );
+            assert!(
+                !outside
+                    .entities()
+                    .iter()
+                    .any(|row| row.active && matches!((row.class, row.model), (9, 30) | (10, 89)))
+            );
+            assert_eq!(
+                outside.shared_spells().player_entity().mana,
+                outside_uncast.shared_spells().player_entity().mana,
+                "non-Cave cast leaves actual ordinary mana balance identical to uncast visits"
+            );
+            assert_eq!(
+                outside.entities()[usize::from(owner)].mana_regen,
+                outside_uncast.entities()[usize::from(owner)].mana_regen,
+                "non-Cave applies no debit to ordinary source regeneration"
+            );
+        }
+    }
 
     #[test]
     fn owner_cavein_semantic_command_collapses_the_ordinary_cave_world() {
@@ -869,12 +1373,13 @@ mod tests {
             .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level12");
         let definition = load_mc2_campaign(&root, &default_catalog().unwrap())
             .expect("the real Cave12 package must pass ordinary semantic admission");
-        assert!(definition.runtime_flow().is_none());
+        assert!(definition.runtime_flow().is_some(),
+            "ordinary Cave definitions carry the canonical semantic runtime flow");
         let Err(error) = Mc2RuntimePackageResolver::load([Mc2CampaignInputs::new(&root)]) else {
             panic!("an isolated Cave mission cannot substitute for a complete campaign flow");
         };
         assert_eq!(error.code, DefinitionErrorCode::InvalidSchema);
-        assert_eq!(error.path_or_id, "runtime_package_resolver.flow");
+        assert_eq!(error.path_or_id, "mc2_campaign.runtime_catalog");
         let mut game = GameSession::open(
             &Mc2CampaignAdapter,
             std::sync::Arc::new(definition),
@@ -1050,7 +1555,7 @@ mod tests {
             let live = &mut session.session.state.live;
             let free = live.economy.free_slot_count();
             assert!(
-                construct_effect(&mut live.economy, &live.terrain, Position::default(), 0)
+                construct_effect(&mut live.economy, &mut live.terrain, Position::default(), 0)
                     .unwrap()
                     .is_none()
             );
@@ -1179,7 +1684,7 @@ mod tests {
                 row.set_control_flags(row.control_flags & !0x20000);
             }
             assert!(
-                construct_effect(&mut live.economy, &live.terrain, start, 0)
+                construct_effect(&mut live.economy, &mut live.terrain, start, 0)
                     .unwrap()
                     .is_none()
             );

@@ -12,6 +12,12 @@ use crate::{
 
 const PROJECTILE_PARTICLE: u16 = 210;
 
+pub(crate) const SOURCE_CONSTRUCTOR: guided_projectile::Constructor = guided_projectile::Constructor {
+    model: 4, action: 4, parameter: 60, particle: PROJECTILE_PARTICLE,
+    speed: RULES.projectile_speed, maximum_speed: RULES.maximum_launch_speed,
+    life: RULES.projectile_range / RULES.projectile_speed as i32, mana: 50,
+};
+
 fn put(row: &mut EntitySnapshot, offset: usize, value: u16) -> Result<(), String> {
     let bytes = row
         .record
@@ -27,15 +33,6 @@ fn put_byte(row: &mut EntitySnapshot, offset: usize, value: u8) -> Result<(), St
         .get_mut(offset)
         .ok_or("Volcano source byte is outside the entity record")?;
     *byte = value;
-    Ok(())
-}
-
-fn put_u32(row: &mut EntitySnapshot, offset: usize, value: u32) -> Result<(), String> {
-    let bytes = row
-        .record
-        .get_mut(offset..offset + 4)
-        .ok_or("Volcano source dword is outside the entity record")?;
-    bytes.copy_from_slice(&value.to_le_bytes());
     Ok(())
 }
 
@@ -88,54 +85,17 @@ pub(crate) fn launch(
             .ok_or("Volcano parent address is outside the source arena")?;
         (rule, parent.position, parent.actual_speed)
     };
-    let projectile_life = RULES
-        .projectile_range
-        .checked_div(i32::from(RULES.projectile_speed))
-        .filter(|life| *life > 0)
-        .ok_or("Volcano projectile speed or range is invalid")?;
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+    let Some(slot) = guided_projectile::construct(
+        arena, terrain, particles, initial_position, Some(parent_slot), inherited_speed,
+        SOURCE_CONSTRUCTOR,
+    )? else {
         return Ok(None);
     };
-    let position = if slot == parent_slot {
-        Position::default()
-    } else {
-        initial_position
-    };
-    let mut row =
-        super::super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
-    row.class = 9;
-    row.model = 4;
-    put_byte(&mut row, 67, 9)?;
-    put_byte(&mut row, 68, 4)?;
-    row.set_source_action(4);
-    row.set_control_flags((row.control_flags & !8) | 4);
-    row.set_actual_speed(
-        RULES
-            .projectile_speed
-            .wrapping_add(inherited_speed)
-            .clamp(RULES.projectile_speed, RULES.maximum_launch_speed),
-    );
-    put_i16(&mut row, 136, RULES.projectile_speed)?;
-    row.set_max_life(projectile_life);
-    row.set_life(row.max_life);
+    let row = &mut arena.entities[usize::from(slot)];
     row.set_subspell_index(initial_rule.damage);
     row.set_source_byte_46(initial_rule.impact_parameter);
-    row.parameter_relation = Some(60);
-    put_u32(&mut row, 164, 61)?;
-    super::super::cave_features::bind_particle(
-        &mut row,
-        PROJECTILE_PARTICLE,
-        *particles
-            .get(usize::from(PROJECTILE_PARTICLE))
-            .ok_or("Volcano requires retained particle210")?,
-    )?;
-    put_byte(&mut row, 71, 10)?;
-    put_byte(&mut row, 72, 9)?;
-    *arena
-        .entities
-        .get_mut(usize::from(slot))
-        .ok_or("Volcano projectile slot is outside the source arena")? = row;
-    crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
+    put_byte(row, 71, 10)?;
+    put_byte(row, 72, 9)?;
 
     // sub_6BF30 re-reads both fixed addresses after NewEvent publication.
     // If either address was reused, source behavior observes the new occupant.

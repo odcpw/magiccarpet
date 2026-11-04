@@ -36,6 +36,13 @@ const PROJECTILE_SPEED: i16 = 384;
 const PROJECTILE_RANGE: i32 = 0x2000;
 const FIELD_LIFETIME: i32 = 8;
 
+pub(crate) const STEAL_MANA_SOURCE_CONSTRUCTOR: super::guided_projectile::Constructor = super::guided_projectile::Constructor {
+    model: STEAL_MANA_PROJECTILE_MODEL, action: STEAL_MANA_PROJECTILE_MODEL,
+    parameter: STEAL_MANA_PARAMETER, particle: STEAL_MANA_PARTICLE,
+    speed: PROJECTILE_SPEED, maximum_speed: PROJECTILE_RANGE as i16,
+    life: PROJECTILE_RANGE / PROJECTILE_SPEED as i32, mana: 50,
+};
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DirectionalCastInput {
     pub projectile: CastInput,
@@ -277,49 +284,28 @@ fn construct_projectile(
                 10_240,
             )
         };
-    let particle = *particles
-        .get(usize::from(particle_index))
-        .ok_or_else(|| format!("directional spell requires retained particle {particle_index}"))?;
     let parent = arena
         .entities
         .get(usize::from(parent_slot))
         .ok_or("directional parent address is outside source arena")?
         .clone();
     let position = parent.position;
-    let Some(projectile_slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+    let definition = if family == STEAL_MANA_FAMILY {
+        STEAL_MANA_SOURCE_CONSTRUCTOR
+    } else {
+        super::guided_projectile::Constructor {
+            model, action: model, parameter, particle: particle_index,
+            speed: PROJECTILE_SPEED, maximum_speed: PROJECTILE_RANGE as i16,
+            life: PROJECTILE_RANGE / PROJECTILE_SPEED as i32, mana: 50,
+        }
+    };
+    let Some(projectile_slot) = super::guided_projectile::construct(
+        arena, terrain, particles, position, Some(parent_slot),
+        if family == STEAL_MANA_FAMILY { parent.actual_speed } else { 0 }, definition,
+    )? else {
         return Ok(None);
     };
-    let position = if projectile_slot == parent_slot {
-        Position { x: 0, y: 0, z: 0 }
-    } else {
-        position
-    };
-    let mut projectile = super::cave_features::new_event(
-        projectile_slot,
-        arena.economy.new_event_rng(projectile_slot),
-        position,
-    );
-    projectile.class = 9;
-    projectile.model = model;
-    projectile.record[67] = 9;
-    projectile.record[68] = model;
-    projectile.set_source_action(model);
-    projectile.set_control_flags(projectile.control_flags & !0x08);
-    projectile.set_actual_speed(if family == STEAL_MANA_FAMILY {
-        PROJECTILE_SPEED
-            .wrapping_add(parent.actual_speed)
-            .clamp(PROJECTILE_SPEED, PROJECTILE_RANGE as i16)
-    } else {
-        PROJECTILE_SPEED
-    });
-    projectile.record[136..138].copy_from_slice(&PROJECTILE_SPEED.to_le_bytes());
-    projectile.set_mana(50);
-    projectile.set_max_life(PROJECTILE_RANGE / i32::from(PROJECTILE_SPEED));
-    projectile.set_life(projectile.max_life);
-    projectile.parameter_relation = Some(parameter);
-    projectile.record[164..168]
-        .copy_from_slice(&u32::from(parameter.wrapping_add(1)).to_le_bytes());
-    super::cave_features::bind_particle(&mut projectile, particle_index, particle)?;
+    let mut projectile = arena.entities[usize::from(projectile_slot)].clone();
     projectile.record[71] = 10;
     projectile.record[72] = terminal_model;
     if family == DUEL_FAMILY {

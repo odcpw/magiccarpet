@@ -416,19 +416,13 @@ pub(super) fn step_source_slot(
         .ok_or_else(|| format!("support spell holder {source_slot} is not live"))?;
     let parent_slot = holder.source_spell_parent_entity_index();
     let is_status = matches!(holder.model, 6 | 11 | 12);
-    let mut parent = if is_status {
+    let mut parent = {
         let mut context = domains.as_ref().map_or_else(
             super::source_target::Context::default,
             super::area_damage::ActorDomains::source_target_context,
         );
         context.spells = Some(shared);
         super::source_target::status_parent(arena, context, parent_slot)?
-    } else {
-        arena
-            .entities
-            .get(usize::from(parent_slot))
-            .filter(|parent| parent_slot != 0 && parent.active && parent.class == 3)
-            .cloned()
     };
     let parent_before = parent.clone();
     // A fixed source address may now belong to a different kind of entity.
@@ -466,7 +460,7 @@ pub(super) fn step_source_slot(
         }
     }
     let parent_feedback = parent.as_ref()
-        .filter(|_| !is_status || current_player)
+        .filter(|_| current_player)
         .map(|_| parent_slot);
     let player_color = shared
         .players
@@ -477,30 +471,51 @@ pub(super) fn step_source_slot(
         player_count: core.runtime.player_count,
         ..TeleportCastles::default()
     };
-    let mut castle_mana = None;
-    for player in shared
+    let reads_castles = holder.model == 10
+        && holder.level_gate == 2
+        && holder.active_value > 0
+        && holder.active_value == holder.activation_value.cast_signed();
+    for (index, player) in shared
         .players
         .iter()
         .take(usize::from(core.runtime.player_count))
+        .enumerate()
+        .filter(|_| reads_castles)
     {
-        let color = usize::from(player.player_color_index());
-        if color >= castles.positions.len() {
+        if index >= castles.positions.len() {
             continue;
         }
-        let castle = arena
-            .economy
-            .castle_for_owner(player.entity_index)
-            .map(|castle| (castle.position, castle.mana));
-        castles.positions[color] = castle.map(|(position, _)| position);
-        if player.entity_index == parent_slot {
-            castle_mana = castle.map(|(_, mana)| mana);
+        // CycleCastles follows the fixed global player-table addresses; the
+        // current occupant's A4 then supplies its Castle address.
+        if let Some(actor) = super::source_target::status_parent(
+            arena,
+            super::source_target::Context {
+                spells: Some(shared),
+                ..super::source_target::Context::default()
+            },
+            player.entity_index,
+        )? {
+            castles.positions[index] = super::source_target::status_castle(arena, shared, &actor)?
+                .map(|castle| castle.position);
         }
     }
-    if is_status {
-        castle_mana = match parent.as_ref() {
-            Some(actor) => super::source_target::status_castle_mana(arena, shared, actor)?,
-            None => None,
-        };
+    let castle = parent.as_ref()
+        .map(|actor| super::source_target::status_castle(arena, shared, actor))
+        .transpose()?.flatten();
+    let castle_mana = castle.as_ref().map(|castle| castle.mana);
+    castles.own_position = castle.map(|castle| castle.position);
+    // 6A300/6AD60 award before the player mutation and before expiry's
+    // queued SetSpell. Preserve a newly queued tier in the current holder.
+    let first_pulse = holder.active_value > 0
+        && holder.active_value == holder.activation_value.cast_signed()
+        && parent.as_ref().is_some_and(|actor| {
+            actor.life >= 0 && actor.mana >= 0 && actor.mana >= holder.max_mana
+                && (holder.mana_regen == 0
+                    || castle_mana.is_some_and(|mana| mana >= holder.mana_regen))
+        });
+    let early_heal_sound = holder.model == 5 && first_pulse;
+    if early_heal_sound {
+        shared.emit_flight_effect(sound_event(SupportSpellSound::Heal, parent_slot));
     }
     // Source6B310 publishes XP before 68D50. Refresh the actual holder
     // afterwards so a threshold's queued SetSpell survives this pulse.
@@ -508,6 +523,14 @@ pub(super) fn step_source_slot(
         && parent
             .as_ref()
             .is_some_and(|row| (row.class, row.model) == (3, 0));
+    if can_award_experience && first_pulse
+        && (holder.model == 10 || (holder.model == 5
+            && parent.as_ref().is_some_and(|actor| actor.life < actor.max_life)))
+    {
+        shared.award_spell_experience(parent_slot, holder.model, 1);
+        holder = shared.pickup(source_slot).cloned()
+            .ok_or("support spell experience lost its current holder")?;
+    }
     let beyond_sight_experience = i32::from(
         can_award_experience
             && holder.model == 12
@@ -566,7 +589,7 @@ pub(super) fn step_source_slot(
             None,
         )
     };
-    if parent_slot == core.state.entity_index && (!is_status || current_player) {
+    if parent_slot == core.state.entity_index && current_player {
         macro_rules! current_profile {
             ($state:ident) => {
                 $state.tier = level2_applied_tier(holder.level_gate)
@@ -615,21 +638,21 @@ pub(super) fn step_source_slot(
         }
     }
     if let Some(parent) = parent {
-        if is_status {
+        if is_status || holder.model == 8 {
             super::source_target::commit_status_parent(
                 arena,
                 shared,
                 domains.as_mut(),
-                parent_before.as_ref().expect("a status parent was read before its pulse"),
+                parent_before.as_ref().expect("a support parent was read before its pulse"),
                 &parent,
             )?;
         } else {
             arena.entities[usize::from(parent_slot)] = parent.clone();
         }
-        if !is_status || current_player {
+        if current_player {
             shared.sync_player_entity_from_authority(&parent);
         }
-        if parent_slot == core.state.entity_index && (!is_status || current_player) {
+        if parent_slot == core.state.entity_index && current_player {
             core.state.position = parent.position;
             if result.stop_player {
                 core.state.target_speed = 0;
@@ -659,15 +682,11 @@ pub(super) fn step_source_slot(
                 shared.local_player.record[20..22].fill(0);
             }
         }
-        if result.award_experience && can_award_experience {
-            // XP can queue SetSpell on this same live holder. Publish the
-            // callback first, then retain those source-visible queue writes.
+        if is_status && result.award_experience && can_award_experience {
             shared.sync_pickup_from_authority(&holder);
             shared.award_spell_experience(parent_slot, holder.model, 1);
-            holder = shared
-                .pickup(source_slot)
-                .cloned()
-                .ok_or("support spell award lost its holder")?;
+            holder = shared.pickup(source_slot).cloned()
+                .ok_or("status spell award lost its holder")?;
         }
         for player in core
             .players
@@ -686,7 +705,7 @@ pub(super) fn step_source_slot(
             }
         }
         if let Some(fire) = core.context.spell_fire.as_mut() {
-            if fire.caster.entity_index == parent_slot && (!is_status || current_player) {
+            if fire.caster.entity_index == parent_slot && current_player {
                 fire.caster.control_flags = parent.control_flags;
                 fire.caster.mana = parent.mana;
                 fire.spell_experience[usize::from(holder.model)] =
@@ -695,7 +714,9 @@ pub(super) fn step_source_slot(
                     shared.spell_levels[usize::from(holder.model)];
             }
         }
-        if let Some(sound) = result.sound {
+        if let Some(sound) = result.sound
+            && !(early_heal_sound && sound == SupportSpellSound::Heal)
+        {
             shared.emit_flight_effect(sound_event(sound, parent_slot));
         }
     }
@@ -845,6 +866,929 @@ mod tests {
         assert_eq!(holder.position.z, 0);
         assert_eq!(holder.source_dword_10(), 7);
         assert_eq!(holder.action, 25);
+    }
+
+    fn acquired_rebound_reflects_scheduled_guided_products(
+        base: &crate::native_world::Mc2Simulation,
+    ) {
+        // The defender's inventory and active tier2 Rebound come from the
+        // actual pickup/public cast below. Incoming inventory, caster pose,
+        // resources and aim are explicit controls, using real constructors.
+        // In particular the9/30 case qualifies the incoming constructor and
+        // reflection, not an outside-Cave holder cast or enemy acquisition.
+        for family in [9_u8, 15, 16, 17, 18, 20, 21, 25] {
+            let mut simulation = base.clone();
+            let owner = simulation.state.entity_index;
+            let enemy = simulation
+                .entities()
+                .iter()
+                .find(|row| row.active && (row.class, row.model) == (3, 1))
+                .unwrap()
+                .index;
+            let observer = Position {
+                z: 12_000,
+                ..simulation.state.position
+            };
+            simulation
+                .set_level2_entity_position(owner, observer)
+                .unwrap();
+            simulation
+                .set_level2_entity_position(
+                    enemy,
+                    Position {
+                        x: observer.x.wrapping_add(12_000),
+                        ..observer
+                    },
+                )
+                .unwrap();
+            let slot = {
+                let particles = &simulation.session.definition.presentation.particles;
+                let live = &mut simulation.session.state.live;
+                live.shared_spells
+                    .materialize_carried_spell_families(&mut live.economy.economy, &[(family, 0)])
+                    .unwrap();
+                let holder =
+                    live.shared_spells.local_player().enabled_spell_holders[usize::from(family)];
+                let mut source = live.shared_spells.pickup(holder).unwrap().clone();
+                source.record[44..46].copy_from_slice(&enemy.to_le_bytes());
+                assert_eq!(source.source_spell_parent_entity_index(), enemy);
+                // The field adapter exposes its ordinary active callback;
+                // the other owners expose their canonical launch directly.
+                if matches!(family, 20 | 21) {
+                    source.active_value = source.activation_value as i16;
+                    source.record[50..52].copy_from_slice(&source.active_value.to_le_bytes());
+                }
+                *live.shared_spells.pickup_mut(holder).unwrap() = source.clone();
+                live.economy.entities[usize::from(holder)] = source.clone();
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    holder,
+                    source.position,
+                    true,
+                    false,
+                )
+                .unwrap();
+                live.economy.entities[usize::from(enemy)].set_mana(2_000_000);
+                let input = crate::spell_activation::ProjectileSpellCastInput {
+                    aim_yaw: 0,
+                    aim_pitch: 0,
+                    auxiliary_byte: 0,
+                    castle_mana: Some(2_000_000),
+                };
+                let slot = match family {
+                    9 => super::super::meteor::launch(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        particles,
+                        holder,
+                        enemy,
+                        input,
+                    )
+                    .unwrap(),
+                    15 => super::super::disaster_spells::tremor::launch(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        particles,
+                        holder,
+                        enemy,
+                        input,
+                    )
+                    .unwrap(),
+                    16 => super::super::disaster_spells::crater::launch(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        particles,
+                        holder,
+                        enemy,
+                        input,
+                    )
+                    .unwrap(),
+                    17 => super::super::disaster_spells::earthquake::launch(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        particles,
+                        holder,
+                        enemy,
+                        input,
+                    )
+                    .unwrap(),
+                    18 => super::super::disaster_spells::volcano::launch(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        particles,
+                        holder,
+                        enemy,
+                        input,
+                    )
+                    .unwrap(),
+                    20 | 21 => {
+                        super::super::field_spells::step_holder(
+                            &mut live.shared_spells,
+                            &mut live.economy,
+                            &mut live.terrain,
+                            particles,
+                            holder,
+                            input,
+                        )
+                        .unwrap()
+                        .projectile
+                    }
+                    25 => {
+                        let parent = live.economy.entities[usize::from(enemy)].clone();
+                        super::super::cave_spells::launch(
+                            &mut live.economy,
+                            &mut live.terrain,
+                            &mut live.shared_spells,
+                            &mut live.core,
+                            &source,
+                            &parent,
+                            particles,
+                        )
+                        .unwrap()
+                    }
+                    _ => unreachable!(),
+                }
+                .expect("the canonical incoming constructor succeeds");
+                let parent = &mut live.economy.entities[usize::from(owner)];
+                parent.set_mana(1_000_000);
+                parent.set_mana_regen(0);
+                let parent = parent.clone();
+                live.shared_spells
+                    .sync_player_entity_from_authority(&parent);
+                live.shared_spells.player_mana = parent.mana;
+                live.shared_spells.caster.mana = parent.mana;
+                live.shared_spells
+                    .sync_typed_spell_parent_caches_from_player_entity();
+                if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                    fire.caster.mana = parent.mana;
+                }
+                let projectile = &mut live.economy.entities[usize::from(slot)];
+                projectile.set_yaw(0);
+                projectile.set_pitch(0);
+                projectile.set_source_word_96(owner);
+                projectile.record[69] = 3;
+                projectile.record[70] = 0;
+                let mut position = parent.position;
+                position.z = position
+                    .z
+                    .wrapping_add(parent.array_yaw())
+                    .wrapping_sub(projectile.array_yaw());
+                crate::move_entity(&mut position, 0, 0, -projectile.actual_speed);
+                projectile.set_position(position);
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    slot,
+                    position,
+                    true,
+                    false,
+                )
+                .unwrap();
+                assert_eq!(
+                    live.economy.entities[usize::from(slot)].position,
+                    position,
+                    "declared incoming pose is current before ordinary scheduling"
+                );
+                slot
+            };
+            let before = simulation.entities()[usize::from(slot)].clone();
+            let defender_before = simulation.entities()[usize::from(owner)].clone();
+            let generation = simulation.economy().slot_generation(slot);
+            assert_eq!(before.source_id, enemy);
+            let xp = simulation.shared_spells().spell_experience()[8];
+            let mut missed = simulation.clone();
+            let mut miss = before.position;
+            miss.x = miss.x.wrapping_add(16_000);
+            missed.set_level2_entity_position(slot, miss).unwrap();
+            {
+                let row = &mut missed.session.state.live.economy.entities[usize::from(slot)];
+                row.set_source_word_96(0);
+                row.set_control_flags(row.control_flags | 2);
+            }
+            simulation.step_outer_turn(PlayerCommand::default(), 0);
+            missed.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                simulation
+                    .dispatch_events()
+                    .iter()
+                    .chain(missed.dispatch_events())
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "family{family}: {:?}",
+                simulation.dispatch_events()
+            );
+            let reflected = simulation.entities()[usize::from(slot)].clone();
+            assert_eq!(
+                (reflected.class, reflected.model, reflected.action),
+                (before.class, before.model, before.action),
+                "family{family} remains a flyer"
+            );
+            assert!(
+                !reflected.drawing_disabled(),
+                "family{family} reflection creates no impact"
+            );
+            assert_eq!(simulation.economy().slot_generation(slot), generation);
+            let live = &simulation.session.state.live;
+            let collision = super::super::guided_projectile::collision(
+                &live.economy,
+                &reflected,
+                super::super::source_target::Context {
+                    spells: Some(&live.shared_spells),
+                    particles: Some(&simulation.session.definition.presentation.particles),
+                    ..super::super::source_target::Context::from_ordinary(
+                        &live.goats,
+                        &live.ordinary,
+                    )
+                },
+            )
+            .map(|hit| hit.map(|(slot, _)| slot));
+            let defender_after = &live.economy.entities[usize::from(owner)];
+            assert_eq!(
+                reflected.source_id,
+                owner,
+                "family{family} collision={collision:?}; defender before={:?}/flags{:x}/mana{} after={:?}/flags{:x}/mana{} core={:?} shared={:?}; flyer {:?}→{:?}, axes{:?}, speed{}, yaw{}/pitch{}, life{}/{}",
+                defender_before.position,
+                defender_before.control_flags,
+                defender_before.mana,
+                defender_after.position,
+                defender_after.control_flags,
+                defender_after.mana,
+                simulation.state.position,
+                simulation.shared_spells().player_entity().position,
+                before.position,
+                reflected.position,
+                (
+                    reflected.array_yaw(),
+                    reflected.array_pitch(),
+                    reflected.array_roll(),
+                    reflected.array_fov()
+                ),
+                reflected.actual_speed,
+                reflected.yaw,
+                reflected.pitch,
+                reflected.life,
+                reflected.max_life
+            );
+            assert_eq!(reflected.source_word_96(), enemy);
+            assert_eq!((reflected.record[69], reflected.record[70]), (3, 1));
+            assert_eq!(
+                reflected.subspell_index,
+                before.subspell_index.wrapping_mul(2)
+            );
+            assert_eq!(reflected.life, reflected.max_life);
+            assert_eq!(simulation.shared_spells().spell_experience()[8], xp + 1);
+            assert_eq!(
+                missed.shared_spells().player_entity().mana
+                    - simulation.shared_spells().player_entity().mana,
+                before.mana / 4,
+                "family{family} exact defender reflection charge"
+            );
+            assert_eq!(
+                simulation.canonical_terrain().planes().ground_heights,
+                missed.canonical_terrain().planes().ground_heights,
+                "family{family} no impact terrain"
+            );
+            assert_eq!(
+                simulation.canonical_terrain().planes().secondary_heights,
+                missed.canonical_terrain().planes().secondary_heights
+            );
+            assert!(
+                simulation
+                    .campaign_entity_presentations(0)
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.entity_index == slot),
+                "reflected flyer reaches production presentation"
+            );
+            simulation.step_outer_turn(PlayerCommand::default(), 0);
+            let continued = &simulation.entities()[usize::from(slot)];
+            assert!(continued.active && !continued.drawing_disabled());
+            assert_ne!(continued.position, reflected.position);
+            assert_eq!(continued.source_id, owner);
+            let mut hidden = false;
+            let mut reclaimed = false;
+            for _ in 0..usize::try_from(before.max_life).unwrap() + 3 {
+                let row = &simulation.entities()[usize::from(slot)];
+                if simulation.economy().slot_generation(slot) == generation && row.active {
+                    hidden |= row.drawing_disabled();
+                }
+                reclaimed |= simulation.economy().slot_generation(slot) != generation
+                    || simulation.economy().free_source_slots().contains(&slot);
+                if reclaimed {
+                    break;
+                }
+                simulation.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    simulation
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "family{family}: {:?}",
+                    simulation.dispatch_events()
+                );
+            }
+            if family == 25 {
+                // This controlled incoming constructor runs in Day2. Source
+                // 50A20 is null outside Cave, so 65820 retains the expired
+                // 9/30 for another delivery attempt. Actual acquired Cave12
+                // casting separately requires natural effect/smoke cleanup.
+                assert_ne!(
+                    simulation.canonical_terrain().map_type(),
+                    crate::native_world::MapType::Cave
+                );
+                assert!(!hidden && !reclaimed);
+                let expired = simulation.entities()[usize::from(slot)].clone();
+                assert!(expired.active && !expired.drawing_disabled() && expired.life < 0);
+                simulation.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    simulation
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+                );
+                let retry = &simulation.entities()[usize::from(slot)];
+                assert_eq!(simulation.economy().slot_generation(slot), generation);
+                assert_eq!((retry.class, retry.model, retry.action), (9, 30, 31));
+                assert!(retry.active && !retry.drawing_disabled());
+                assert!(
+                    retry.life < expired.life,
+                    "ordinary terminal-null visit retries delivery"
+                );
+                assert_eq!(retry.source_id, owner);
+                assert!(
+                    !simulation
+                        .entities()
+                        .iter()
+                        .any(|row| row.active && (row.class, row.model) == (10, 89))
+                );
+            } else {
+                assert!(
+                    hidden && reclaimed,
+                    "family{family} natural reflected flyer hide and following reclaim"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_support_pickups_carry_and_public_all_tiers_reach_real_consumers() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        let packages = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj");
+        let mut source = CampaignSession::open(
+            packages.join("level16"),
+            CampaignSelection::ordinary(16).unwrap(),
+        )
+        .expect("unfiltered Level16 source opens");
+        let pickups = [5_u8, 8, 10].map(|family| {
+            source
+                .simulation()
+                .session
+                .state
+                .live
+                .economy
+                .entities
+                .iter()
+                .find(|row| {
+                    row.active && (row.class, row.model, row.action) == (15, family, family * 3 + 2)
+                })
+                .cloned()
+                .expect("real group-zero persistent support pickup")
+        });
+        for pickup in pickups {
+            let family = pickup.model;
+            let simulation = source.simulation_mut();
+            let owner = simulation.state.entity_index;
+            for _ in 0..12 {
+                if simulation
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[usize::from(family)]
+                    != 0
+                {
+                    break;
+                }
+                let position = simulation.session.state.live.economy.entities
+                    [usize::from(pickup.index)]
+                .position;
+                simulation
+                    .set_level2_entity_position(owner, position)
+                    .unwrap();
+                simulation.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    simulation
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "{:?}",
+                    simulation.dispatch_events()
+                );
+                if simulation
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[usize::from(family)]
+                    != 0
+                {
+                    break;
+                }
+            }
+            assert_eq!(
+                simulation
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[usize::from(family)],
+                pickup.index,
+                "actual source overlap acquires family{family}"
+            );
+            assert_eq!(
+                simulation
+                    .shared_spells()
+                    .pickup(pickup.index)
+                    .unwrap()
+                    .action,
+                family * 3
+            );
+        }
+        let learned = source
+            .simulation()
+            .shared_spells()
+            .local_player()
+            .enabled_spell_holders
+            .iter()
+            .enumerate()
+            .filter_map(|(family, slot)| (*slot != 0).then_some(family as u8))
+            .collect::<Vec<_>>();
+        for family in [5_u8, 8, 10] {
+            for tier in 0_u8..=2 {
+                let mut campaign =
+                    CampaignSession::open(packages.join("level2"), CampaignSelection::LEVEL2)
+                        .expect("ordinary destination opens");
+                assert_eq!(
+                    campaign
+                        .rebuild_for_spell_carry(&learned, Some(family))
+                        .unwrap(),
+                    Some(family)
+                );
+                let simulation = campaign.simulation_mut();
+                let owner = simulation.state.entity_index;
+                let holder = simulation
+                    .shared_spells()
+                    .local_player()
+                    .enabled_spell_holders[usize::from(family)];
+                let rule = level2_set_spell_profile(family, tier).unwrap();
+                // Castle existence/funding, injury and a stationary observer are
+                // declared controls. The pickups, carried holders and casts are real.
+                let mut start = Position {
+                    x: 32_768,
+                    y: 32_768,
+                    z: 0,
+                };
+                start.z = simulation
+                    .canonical_terrain()
+                    .ground_height(start)
+                    .wrapping_add(2048);
+                simulation.set_level2_entity_position(owner, start).unwrap();
+                let castle = simulation
+                    .economy_mut()
+                    .build_castle(start, owner)
+                    .expect("canonical Castle prerequisite constructor");
+                assert!(
+                    simulation
+                        .economy_mut()
+                        .set_castle_mana_prerequisite_for_test(castle, 2_000_000)
+                );
+                let ui = crate::SOURCE_SPELL_INDEX_MAP
+                    .iter()
+                    .position(|entry| *entry == family)
+                    .unwrap() as i8;
+                simulation.step_outer_turn(
+                    PlayerCommand {
+                        opcode: 31,
+                        argument_1: ui,
+                        argument_2: tier as i8,
+                        ..Default::default()
+                    },
+                    0,
+                );
+                assert_eq!(
+                    simulation
+                        .shared_spells()
+                        .pickup(holder)
+                        .unwrap()
+                        .level_gate,
+                    tier as i8
+                );
+                {
+                    let live = &mut simulation.session.state.live;
+                    let state = &mut live.core.state;
+                    state.target_speed = 0;
+                    state.actual_speed = 0;
+                    state.strafe_speed = 0;
+                    state.recoil_speed = 0;
+                    state.impulse_x = 0;
+                    state.impulse_y = 0;
+                    state.impulse_z = 0;
+                    let parent = &mut live.economy.entities[usize::from(owner)];
+                    parent.set_life(parent.max_life / 2);
+                    parent.max_mana = 2_000_000;
+                    parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+                    parent.set_mana(parent.max_mana);
+                    parent.set_mana_regen(0);
+                    let parent = parent.clone();
+                    live.shared_spells
+                        .sync_player_entity_from_authority(&parent);
+                    live.shared_spells.player_mana = parent.mana;
+                    live.shared_spells.caster.mana = parent.mana;
+                    live.shared_spells
+                        .sync_typed_spell_parent_caches_from_player_entity();
+                    if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                        fire.caster.mana = parent.mana;
+                    }
+                    live.economy.economy.refresh_owner_mana_rows();
+                }
+                let initial = simulation.shared_spells().player_entity().clone();
+                let xp = simulation.shared_spells().spell_experience()[usize::from(family)];
+                let mut rejected = simulation.clone();
+                if rule.mana_regen != 0 {
+                    assert!(
+                        rejected
+                            .economy_mut()
+                            .set_castle_mana_prerequisite_for_test(castle, rule.mana_regen - 1)
+                    );
+                } else {
+                    let live = &mut rejected.session.state.live;
+                    live.economy.entities[usize::from(owner)].set_mana(0);
+                    let parent = live.economy.entities[usize::from(owner)].clone();
+                    live.shared_spells
+                        .sync_player_entity_from_authority(&parent);
+                    live.shared_spells.player_mana = 0;
+                    live.shared_spells.caster.mana = 0;
+                    if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                        fire.caster.mana = 0;
+                    }
+                }
+                rejected.step_outer_turn(
+                    PlayerCommand {
+                        flags: 0x10,
+                        ..Default::default()
+                    },
+                    0,
+                );
+                rejected.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(
+                    rejected
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "{:?}",
+                    rejected.dispatch_events()
+                );
+                assert_eq!(
+                    rejected
+                        .shared_spells()
+                        .pickup(holder)
+                        .unwrap()
+                        .active_value,
+                    0,
+                    "ordinary unaffordable support cast cannot sustain its holder"
+                );
+                assert_eq!(
+                    rejected.shared_spells().spell_experience()[usize::from(family)],
+                    xp
+                );
+                assert_eq!(
+                    rejected.shared_spells().player_entity().control_flags & 0x8010,
+                    0
+                );
+                assert_eq!(
+                    (rejected.state.position.x, rejected.state.position.y),
+                    (initial.position.x, initial.position.y)
+                );
+                let mut expected_destination =
+                    simulation.economy().castle_at(castle).unwrap().position;
+                crate::move_entity(
+                    &mut expected_destination,
+                    initial.yaw.wrapping_sub(204) & 2047,
+                    0,
+                    -448,
+                );
+                let mut seen_active = false;
+                let mut seen_sound = false;
+                let mut reflected = false;
+                let mut incoming = None;
+                let mut paid = false;
+                let passes_per_turn = usize::from(crate::entity_passes_for_speed_index(0));
+                let cooldown = u16::from_le_bytes(
+                    simulation.shared_spells().pickup(holder).unwrap().record[58..60]
+                        .try_into()
+                        .unwrap(),
+                );
+                let lifetime_turns =
+                    usize::from(rule.word_0x30.max(cooldown)).div_ceil(passes_per_turn) + 2;
+                for turn in 0..lifetime_turns {
+                    simulation.step_outer_turn(
+                        if turn == 0 {
+                            PlayerCommand {
+                                flags: 0x10,
+                                ..Default::default()
+                            }
+                        } else {
+                            PlayerCommand::default()
+                        },
+                        0,
+                    );
+                    assert!(
+                        simulation
+                            .dispatch_events()
+                            .iter()
+                            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                        "family{family}/tier{tier}: {:?}",
+                        simulation.dispatch_events()
+                    );
+                    let live = &simulation.session.state.live;
+                    let current = live.shared_spells.pickup(holder).unwrap();
+                    seen_active |= current.active_value > 0;
+                    paid |= live.shared_spells.player_entity.mana < initial.mana;
+                    seen_sound |= live.core.effect_journal.records().iter().any(|record| matches!(record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                            entity_index, sound_id, .. }) if entity_index == owner
+                            && sound_id == if family == 5 { 25 } else { 22 }));
+                    if family == 8 && incoming.is_none() && current.active_value > 0 {
+                        if tier == 2 {
+                            acquired_rebound_reflects_scheduled_guided_products(simulation);
+                        }
+                        let enemy = live
+                            .economy
+                            .entities
+                            .iter()
+                            .find(|row| row.active && (row.class, row.model) == (3, 1))
+                            .unwrap()
+                            .index;
+                        let target = live.shared_spells.player_entity.position;
+                        let mut launch = target;
+                        crate::move_entity(
+                            &mut launch,
+                            0,
+                            0,
+                            -crate::level1_mission::FIREBALL_SPEED,
+                        );
+                        let live = &mut simulation.session.state.live;
+                        let slot = live.economy.economy.spawn_fireball_projectile_with_payload(
+                            super::super::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                                origin: super::super::FireballProjectileOrigin::Dragon,
+                                position: launch, yaw: 0, pitch: 0, axis_position: target,
+                                source_id_entity_index: enemy, holder_entity_index: 0,
+                                source_subspell_index: 250, source_mana: 1000, source_dword_0x10: 0,
+                                target_source_entity_index: owner, target_class: 0, target_model: 0,
+                            }, 0).expect("real incoming Fireball constructor");
+                        incoming = Some((slot, enemy, live.shared_spells.spell_experience()[8]));
+                    } else if let Some((slot, enemy, before_xp)) = incoming {
+                        if let Some(projectile) = live
+                            .economy
+                            .economy
+                            .fireball_projectiles()
+                            .iter()
+                            .find(|row| {
+                                row.source_entity_index == slot && row.owner_entity_index == owner
+                            })
+                        {
+                            assert_eq!(projectile.target_source_entity_index, enemy);
+                            assert_eq!((projectile.target_class, projectile.target_model), (3, 1));
+                            assert_eq!(
+                                projectile.source_subspell_index,
+                                if tier == 2 { 500 } else { 250 }
+                            );
+                            assert_eq!(live.shared_spells.spell_experience()[8], before_xp + 1);
+                            reflected = true;
+                        }
+                    }
+                    if seen_active
+                        && simulation
+                            .shared_spells()
+                            .pickup(holder)
+                            .unwrap()
+                            .active_value
+                            == 0
+                        && simulation.shared_spells().pickup(holder).unwrap().record[58..60]
+                            == [0, 0]
+                    {
+                        break;
+                    }
+                }
+                assert!(
+                    seen_active && paid,
+                    "family{family}/tier{tier} actual cast and upkeep payment"
+                );
+                let player = simulation.shared_spells().player_entity();
+                assert_eq!(player.life, simulation.entities()[usize::from(owner)].life);
+                assert_eq!(
+                    player.control_flags,
+                    simulation.entities()[usize::from(owner)].control_flags
+                );
+                assert_eq!(player.position, simulation.state.position);
+                let hud = simulation
+                    .day_hud()
+                    .expect("actual support state reaches original HUD");
+                assert_eq!(
+                    (hud.local_player_life, hud.local_player_control_flags),
+                    (player.life, player.control_flags)
+                );
+                match family {
+                    5 => {
+                        assert!(player.life > initial.life && player.life <= player.max_life);
+                        assert_eq!(simulation.shared_spells().spell_experience()[5], xp + 1);
+                        assert!(seen_sound, "actual Heal sound25");
+                    }
+                    8 => {
+                        assert!(
+                            reflected,
+                            "tier{tier} scheduled incoming shot reaches real Rebound"
+                        );
+                        simulation.step_outer_turn(PlayerCommand::default(), 0);
+                        assert_eq!(
+                            simulation.shared_spells().player_entity().control_flags & 0x8010,
+                            0,
+                            "following inactive callback clears exactly the Rebound bits"
+                        );
+                    }
+                    10 => {
+                        assert_eq!(
+                            (player.position.x, player.position.y),
+                            (expected_destination.x, expected_destination.y)
+                        );
+                        assert_eq!(simulation.shared_spells().spell_experience()[10], xp + 1);
+                        assert!(seen_sound, "actual Teleport sound22");
+                        let teleport_yaw = player.yaw;
+                        if tier > 0 {
+                            if tier == 2 {
+                                let prior_exit = simulation.state.position;
+                                for _ in 0..8 {
+                                    simulation.step_outer_turn(
+                                        PlayerCommand {
+                                            flags: 1,
+                                            ..Default::default()
+                                        },
+                                        0,
+                                    );
+                                }
+                                assert_ne!(
+                                    (simulation.state.position.x, simulation.state.position.y),
+                                    (prior_exit.x, prior_exit.y),
+                                    "ordinary travel leaves the first Castle exit"
+                                );
+                                // Keep the destination comparison independent of
+                                // momentum; no Castle or roster state is changed.
+                                let state = &mut simulation.session.state.live.core.state;
+                                state.target_speed = 0;
+                                state.actual_speed = 0;
+                            }
+                            let current = simulation.shared_spells().pickup(holder).unwrap();
+                            assert_eq!(current.source_word_96(), 1);
+                            let mut destination = if tier == 1 {
+                                Position {
+                                    x: u16::from_le_bytes(
+                                        current.record[158..160].try_into().unwrap(),
+                                    ),
+                                    y: u16::from_le_bytes(
+                                        current.record[160..162].try_into().unwrap(),
+                                    ),
+                                    z: i16::from_le_bytes(
+                                        current.record[162..164].try_into().unwrap(),
+                                    ),
+                                }
+                            } else {
+                                let live = &simulation.session.state.live;
+                                let eligible = live
+                                    .shared_spells
+                                    .players
+                                    .iter()
+                                    .enumerate()
+                                    .take(usize::from(live.core.runtime.player_count))
+                                    .filter(|(index, row)| {
+                                        *index
+                                            != usize::from(
+                                                live.shared_spells
+                                                    .local_player
+                                                    .player_color_index(),
+                                            )
+                                            && row.entity_index != owner
+                                    })
+                                    .filter_map(|(index, row)| {
+                                        let actor =
+                                            &live.economy.entities[usize::from(row.entity_index)];
+                                        super::super::source_target::status_castle(
+                                            &live.economy,
+                                            &live.shared_spells,
+                                            actor,
+                                        )
+                                        .unwrap()
+                                        .map(|castle| (index, row.entity_index, castle.index))
+                                    })
+                                    .collect::<Vec<_>>();
+                                assert_eq!(
+                                    live.core.runtime.player_count, 2,
+                                    "actual SP owner roster includes local slot0 and rival slot1"
+                                );
+                                assert!(
+                                    eligible.is_empty(),
+                                    "this actual SP roster has no other current A4 Castle: {eligible:?}"
+                                );
+                                // 6AD60 scans selectors1..8, then0; the absent
+                                // rival Castle therefore wraps to the own A4.
+                                super::super::source_target::status_castle(
+                                    &live.economy,
+                                    &live.shared_spells,
+                                    &live.economy.entities[usize::from(owner)],
+                                )
+                                .unwrap()
+                                .expect("the admitted caster still has its source Castle")
+                                .position
+                            };
+                            if tier == 2 {
+                                crate::move_entity(
+                                    &mut destination,
+                                    teleport_yaw.wrapping_sub(204) & 2047,
+                                    0,
+                                    -448,
+                                );
+                            }
+                            simulation.step_outer_turn(
+                                PlayerCommand {
+                                    flags: 0x10,
+                                    ..Default::default()
+                                },
+                                0,
+                            );
+                            for _ in 0..usize::from(rule.word_0x30).div_ceil(passes_per_turn) + 2 {
+                                simulation.step_outer_turn(PlayerCommand::default(), 0);
+                            }
+                            assert_eq!(
+                                (simulation.state.position.x, simulation.state.position.y),
+                                (destination.x, destination.y),
+                                "tier{tier} ordinary second cast consumes its retained travel selector"
+                            );
+                            assert_eq!(simulation.shared_spells().spell_experience()[10], xp + 2);
+                            assert_eq!(
+                                simulation
+                                    .shared_spells()
+                                    .pickup(holder)
+                                    .unwrap()
+                                    .source_word_96(),
+                                if tier == 1 { 0 } else { 1 },
+                                "the source selector reflects return versus complete SP cycle"
+                            );
+                        }
+                        let destination = simulation.state.position;
+                        for _ in 0..8 {
+                            simulation.step_outer_turn(
+                                PlayerCommand {
+                                    flags: 1,
+                                    ..Default::default()
+                                },
+                                0,
+                            );
+                        }
+                        assert_ne!(
+                            (simulation.state.position.x, simulation.state.position.y),
+                            (destination.x, destination.y),
+                            "ordinary player movement resumes from the Teleport destination"
+                        );
+                        assert_eq!(
+                            simulation.state.position,
+                            simulation.shared_spells().player_entity().position
+                        );
+                        assert_eq!(
+                            simulation.state.position,
+                            simulation.entities()[usize::from(owner)].position
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    simulation
+                        .shared_spells()
+                        .pickup(holder)
+                        .unwrap()
+                        .active_value,
+                    0,
+                    "family{family}/tier{tier} completes its full source active lifetime"
+                );
+                assert!(
+                    simulation.shared_spells().pickup(holder).unwrap().active,
+                    "source self-spell expiry retains the learned holder, without inventing a projectile or reclaim"
+                );
+                campaign.reset();
+                let reset = campaign.simulation();
+                assert_eq!(
+                    reset.shared_spells().pickup(holder).unwrap().active_value,
+                    0
+                );
+                assert_eq!(
+                    reset.shared_spells().player_entity().control_flags & 0x8010,
+                    0
+                );
+            }
+        }
     }
 
     #[test]

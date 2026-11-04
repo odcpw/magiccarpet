@@ -539,11 +539,29 @@ pub(crate) fn commit_status_speed(
     }
 }
 
-pub(crate) fn status_castle_mana(
+/// Follow the parent's current A4 Castle address, without requiring that the
+/// occupant still be an active Castle. Source support spells read that packet.
+pub(crate) fn status_player_color(
+    shared: &super::Level2SharedSpellResetSession,
+    parent: &EntitySnapshot,
+) -> Result<Option<u8>, String> {
+    match parent.special_relation {
+        super::EntitySpecialRelation::PlayerState(index) => shared.players
+            .get(usize::from(index))
+            .map(|player| Some(player.player_color_index()))
+            .ok_or_else(|| format!("source parent {} has no PlayerState {index}", parent.index)),
+        // NewEvent's shared A4 has the zero-initialized color byte. Unlike
+        // its mutable aim/protection fields, no source callback writes it.
+        super::EntitySpecialRelation::GlobalSpecialState => Ok(Some(0)),
+        super::EntitySpecialRelation::None => Ok(None),
+    }
+}
+
+pub(crate) fn status_castle(
     arena: &SourceArena,
     shared: &super::Level2SharedSpellResetSession,
     parent: &EntitySnapshot,
-) -> Result<Option<i32>, String> {
+) -> Result<Option<EntitySnapshot>, String> {
     let slot = match parent.special_relation {
         super::EntitySpecialRelation::PlayerState(index) => {
             let player = shared.players.get(usize::from(index)).ok_or_else(|| {
@@ -556,15 +574,22 @@ pub(crate) fn status_castle_mana(
         }
         _ => 0,
     };
-    Ok(status_parent(
+    status_parent(
         arena,
         Context {
             spells: Some(shared),
             ..Context::default()
         },
         slot,
-    )?
-    .map(|castle| castle.mana))
+    )
+}
+
+pub(crate) fn status_castle_mana(
+    arena: &SourceArena,
+    shared: &super::Level2SharedSpellResetSession,
+    parent: &EntitySnapshot,
+) -> Result<Option<i32>, String> {
+    Ok(status_castle(arena, shared, parent)?.map(|castle| castle.mana))
 }
 
 /// Commit just the two parent fields written by 6A480/6B1C0/6B310. In

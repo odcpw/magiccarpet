@@ -146,6 +146,7 @@ enum SourceProduct {
     Fireball { terminal_model: u8 },
     LightningRay,
     LightningStormShot,
+    Guided { family: u8 },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -176,31 +177,19 @@ fn source_product(
     }
 
     let product = match request.family {
-        0 if captured.life < 2 => SourceProduct::Fireball { terminal_model: 0 },
-        0 => {
-            return Err(
-                "Magic Mine family-0 subtype 28 has no current typed constructor".to_owned(),
-            );
-        }
+        0 => SourceProduct::Fireball {
+            terminal_model: if captured.life < 2 { 0 } else { 76 },
+        },
         7 if captured.life == 0 => SourceProduct::LightningRay,
         7 if captured.life <= 2 => SourceProduct::LightningStormShot,
         7 => return Ok(None),
         // These branches of sub_6DCA0 unconditionally reach LABEL_60 without
         // invoking a type-9 source constructor. Preserve their real null.
-        1..=6 | 8 | 10..=12 | 14 | 23 => return Ok(None),
-        // These source branches do allocate. Their ordinary Rust launch APIs
-        // still require an active player holder, which a captured mine is not.
-        9 | 13 | 15 => {
-            return Err(format!(
-                "Magic Mine family-{} needs its bare source constructor",
-                request.family
-            ));
-        }
-        family => {
-            return Err(format!(
-                "Magic Mine family {family} is outside the first-16 source dispatch"
-            ));
-        }
+        1..=6 | 8 | 10..=12 | 14 | 19 | 22..=24 => return Ok(None),
+        9 | 13 | 15..=18 | 20 | 21 | 25 => SourceProduct::Guided {
+            family: request.family,
+        },
+        family => return Err(format!("Magic Mine family {family} is outside SPELLS.DAT")),
     };
     Ok(Some(product))
 }
@@ -210,6 +199,21 @@ fn source_selector(product: SourceProduct) -> (u8, u8) {
         SourceProduct::Fireball { terminal_model } => (10, terminal_model),
         SourceProduct::LightningRay => (10, 23),
         SourceProduct::LightningStormShot => (9, 9),
+        SourceProduct::Guided { family } => (
+            10,
+            match family {
+                9 => 17,
+                13 => 25,
+                15 => 71,
+                16 => 11,
+                17 => 15,
+                18 => 9,
+                20 => 67,
+                21 => 22,
+                25 => 89,
+                _ => unreachable!("source_product validates the finite guided families"),
+            },
+        ),
     }
 }
 
@@ -217,6 +221,7 @@ fn source_sound(product: SourceProduct) -> u16 {
     match product {
         SourceProduct::Fireball { .. } | SourceProduct::LightningStormShot => 9,
         SourceProduct::LightningRay => 23,
+        SourceProduct::Guided { .. } => 15,
     }
 }
 
@@ -227,8 +232,18 @@ fn launch_position(mine: &EntitySnapshot, altitude_offset: i16) -> Position {
     }
 }
 
-fn base_angles(request: ProjectileRequest, origin: Position) -> (i16, i16) {
-    crate::level1_mission::projectile_guidance_angles(origin, request.target_position)
+fn source_angles(arena: &SourceArena, origin: Position, target: u16) -> Result<(i16, i16), String> {
+    let target = arena
+        .entities
+        .get(usize::from(target))
+        .ok_or("Mine guidance target address is outside the source arena")?;
+    // sub655C0 temporarily raises the current target by array_yaw, after
+    // NewEvent. The projectile's own launch height is added only afterwards.
+    let position =
+        super::guided_projectile::centre(target.position, target.model, target.array_yaw());
+    Ok(crate::level1_mission::projectile_guidance_angles(
+        origin, position,
+    ))
 }
 
 fn construct_request(
@@ -264,9 +279,6 @@ fn construct_request(
     if target.class != 3 || target.model > 1 {
         return Err("Magic Mine target no longer matches its class-3 selector".to_owned());
     }
-    let (source_yaw, pitch) = base_angles(request, mine.position);
-    let yaw = source_yaw.wrapping_add(request.yaw_offset) & 2047;
-    let position = launch_position(&mine, request.altitude_offset);
     let (terminal_class, terminal_model) = source_selector(product);
 
     match product {
@@ -280,17 +292,19 @@ fn construct_request(
             let payload = Level2FireballProjectileLaunchPayload {
                 origin: FireballProjectileOrigin::PlayerSpell,
                 position: mine.position,
-                yaw,
-                pitch,
+                yaw: 0,
+                pitch: 0,
                 axis_position: request.target_position,
                 source_id_entity_index: request.owner_slot,
                 holder_entity_index: 0,
-                source_subspell_index: request.damage,
+                // 6DCA0 does not copy the captured Fireball's damage word;
+                // SummonFireball leaves NewEvent's default100 intact.
+                source_subspell_index: 100,
                 source_mana: 50,
                 source_dword_0x10: 0,
                 target_source_entity_index: request.target_slot,
-                target_class: terminal_class,
-                target_model: terminal_model,
+                target_class: u8::MAX,
+                target_model: u8::MAX,
             };
             let Some(projectile_slot) = arena
                 .economy
@@ -298,6 +312,11 @@ fn construct_request(
             else {
                 return Ok(None);
             };
+            if terminal_model == 76 {
+                arena
+                    .economy
+                    .apply_fireball_tier_constructor(projectile_slot, 2);
+            }
             crate::world::effects::sync_position(
                 arena,
                 terrain,
@@ -314,11 +333,14 @@ fn construct_request(
                 crate::world::effects::lighting::SourceLight::Fireball,
             );
             arena.economy.prepare_sound(
-                projectile_slot,
+                request.owner_slot,
                 request.owner_slot,
                 -1,
                 source_sound(product),
             );
+            let (source_yaw, pitch) = source_angles(arena, mine.position, request.target_slot)?;
+            let yaw = source_yaw.wrapping_add(request.yaw_offset) & 2047;
+            let position = launch_position(&mine, request.altitude_offset);
             let projectile = arena
                 .economy
                 .fireball_projectiles
@@ -328,10 +350,10 @@ fn construct_request(
                 })
                 .ok_or("family-0 constructor returned without a live Fireball carrier")?;
             projectile.owner_entity_index = request.owner_slot;
-            projectile.source_subspell_index = request.damage;
+            projectile.source_subspell_index = 100;
             projectile.target_source_entity_index = request.target_slot;
-            projectile.target_class = terminal_class;
-            projectile.target_model = terminal_model;
+            projectile.target_class = u8::MAX;
+            projectile.target_model = u8::MAX;
             projectile.position = position;
             projectile.yaw = yaw;
             projectile.roll = source_yaw;
@@ -344,7 +366,7 @@ fn construct_request(
             let lightning_product = match product {
                 SourceProduct::LightningRay => Product::Ray,
                 SourceProduct::LightningStormShot => Product::StormShot,
-                SourceProduct::Fireball { .. } => {
+                SourceProduct::Fireball { .. } | SourceProduct::Guided { .. } => {
                     return Err("Fireball reached the Lightning constructor".to_owned());
                 }
             };
@@ -354,11 +376,15 @@ fn construct_request(
                 return Ok(None);
             };
             arena.economy.prepare_sound(
-                projectile_slot,
+                request.owner_slot,
                 request.owner_slot,
                 -1,
                 source_sound(product),
             );
+            let origin = arena.entities[usize::from(projectile_slot)].position;
+            let (source_yaw, pitch) = source_angles(arena, origin, request.target_slot)?;
+            let yaw = source_yaw.wrapping_add(request.yaw_offset) & 2047;
+            let position = launch_position(&mine, request.altitude_offset);
             let projectile = arena
                 .entities
                 .get_mut(usize::from(projectile_slot))
@@ -367,7 +393,7 @@ fn construct_request(
             let expected_model = match product {
                 SourceProduct::LightningRay => 9,
                 SourceProduct::LightningStormShot => 12,
-                SourceProduct::Fireball { .. } => {
+                SourceProduct::Fireball { .. } | SourceProduct::Guided { .. } => {
                     return Err("Fireball reached the Lightning constructor".to_owned());
                 }
             };
@@ -404,6 +430,79 @@ fn construct_request(
                 false,
             )?;
             Ok(Some((projectile_slot, completion_yaw)))
+        }
+        SourceProduct::Guided { family } => {
+            let captured = captured.ok_or("guided Mine request lost its captured profile")?;
+            let slot = if family == 9 {
+                super::meteor::construct(
+                    arena,
+                    terrain,
+                    particles,
+                    mine.position,
+                    Some(mine_slot),
+                    0,
+                    captured.tier,
+                )?
+            } else {
+                let definition = match family {
+                    13 => super::directional_spells::STEAL_MANA_SOURCE_CONSTRUCTOR,
+                    15 => super::disaster_spells::tremor::SOURCE_CONSTRUCTOR,
+                    16 => super::disaster_spells::crater::SOURCE_CONSTRUCTOR,
+                    17 => super::disaster_spells::earthquake::SOURCE_CONSTRUCTOR,
+                    18 => super::disaster_spells::volcano::SOURCE_CONSTRUCTOR,
+                    20 | 21 => super::field_spells::source_constructor(family)?,
+                    25 => super::cave_spells::SOURCE_CONSTRUCTOR,
+                    _ => return Err("invalid guided Mine constructor family".into()),
+                };
+                super::guided_projectile::construct(
+                    arena,
+                    terrain,
+                    particles,
+                    mine.position,
+                    Some(mine_slot),
+                    0,
+                    definition,
+                )?
+            };
+            let Some(slot) = slot else {
+                return Ok(None);
+            };
+            // sub_6DCA0 deliberately leaves Steal Mana's NewEvent payload and
+            // life byte alone. Whirlwind/Cave In divide only when life != 0.
+            let row = &mut arena.entities[usize::from(slot)];
+            row.record[71..73].copy_from_slice(&[terminal_class, terminal_model]);
+            if family != 13 {
+                let damage = if matches!(family, 21 | 25) && captured.life != 0 {
+                    request.damage / u16::from(captured.life)
+                } else {
+                    request.damage
+                };
+                row.set_subspell_index(damage);
+                row.set_source_byte_46(captured.life);
+            }
+            // Source sound is attached to the owner argument, before the
+            // model78 caller supplies ownership, aim and height.
+            arena.economy.prepare_sound(
+                request.owner_slot,
+                request.owner_slot,
+                -1,
+                source_sound(product),
+            );
+            let origin = arena.entities[usize::from(slot)].position;
+            let (source_yaw, pitch) = source_angles(arena, origin, request.target_slot)?;
+            let yaw = source_yaw.wrapping_add(request.yaw_offset) & 2047;
+            let position = launch_position(&mine, request.altitude_offset);
+            let row = &mut arena.entities[usize::from(slot)];
+            row.source_id = request.owner_slot;
+            row.record[30..32].copy_from_slice(&request.owner_slot.to_le_bytes());
+            row.set_source_word_96(request.target_slot);
+            row.set_source_roll(source_yaw);
+            row.set_fov(pitch);
+            row.set_yaw(yaw);
+            row.set_pitch(pitch);
+            row.set_position(position);
+            crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+            Ok(Some((slot, source_yaw)))
         }
     }
 }
@@ -473,7 +572,7 @@ pub(crate) fn consume_visit(
     let mut charge_finished = visit.charge_finished;
     let mut projectiles = Vec::with_capacity(visit.projectiles.len());
     if !visit.projectiles.is_empty() {
-        let mut completion_yaws = Vec::with_capacity(visit.projectiles.len());
+        let mut exhausted = false;
         for request in visit.projectiles.iter().copied() {
             let spawned =
                 construct_request(arena, terrain, particles, mine_slot, request, captured)?;
@@ -481,16 +580,12 @@ pub(crate) fn consume_visit(
                 projectiles.push(slot);
                 // Source sub_3A8B0 writes the mine's yaw from the base
                 // guidance result before applying a fanout-only shot offset.
-                completion_yaws.push(Some(yaw));
-            } else {
-                completion_yaws.push(None);
+                exhausted |=
+                    super::magic_mine_spell::complete_field_projectile(arena, mine_slot, yaw)?;
             }
         }
-        charge_finished |= super::magic_mine_spell::complete_field_projectiles(
-            arena,
-            mine_slot,
-            &completion_yaws,
-        )?;
+        charge_finished |=
+            super::magic_mine_spell::finish_field_projectile_burst(arena, mine_slot, exhausted)?;
     } else if visit.spell_experience.is_some() {
         return Err(
             "Magic Mine firing visit awarded experience without a target request".to_owned(),
@@ -545,7 +640,205 @@ mod tests {
     }
 
     #[test]
-    fn source_dispatch_keeps_null_families_null_and_non_null_gaps_explicit() {
+    fn captured_payload_constructors_publish_source_packets_and_reach_the_scheduler() {
+        use crate::PlayerCommand;
+        use crate::campaign::CampaignSession;
+        use crate::campaign::spec::CampaignSelection;
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../generated/all-spells-20261104-integration/current-owner-package/level18",
+        );
+        let base =
+            CampaignSession::open(package, CampaignSelection::ordinary(18).unwrap()).unwrap();
+        let owner = base.simulation().state.entity_index;
+        let target = base
+            .simulation()
+            .entities()
+            .iter()
+            .find(|row| row.active && (row.class, row.model) == (3, 1) && row.life > 0)
+            .expect("actual owner package has a rival wizard")
+            .index;
+        // The acquired Mine scenario owns real capture/target/release/damage
+        // and cleanup. This declared captured-payload boundary control covers
+        // every 6DCA0 constructor/tier without fabricating 33 player casts.
+        for family in [0, 7, 9, 13, 15, 16, 17, 18, 20, 21, 25] {
+            for tier in 0..3 {
+                let mut campaign = base.clone();
+                let origin = Position {
+                    x: 32_768,
+                    y: 32_768,
+                    z: 12_000,
+                };
+                let destination = Position {
+                    x: 32_768,
+                    y: 40_768,
+                    z: 11_000,
+                };
+                campaign
+                    .simulation_mut()
+                    .set_level2_entity_position(target, destination)
+                    .unwrap();
+                let (slot, generation, before_life) = {
+                    let particles = &campaign
+                        .simulation()
+                        .session
+                        .definition
+                        .presentation
+                        .particles
+                        .clone();
+                    let live = &mut campaign.simulation_mut().session.state.live;
+                    let mine = crate::world::fields::magic_mine::construct(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        origin,
+                        particles[66],
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let row = &mut live.economy.entities[usize::from(mine)];
+                    row.record[54..56].copy_from_slice(&owner.to_le_bytes());
+                    row.record[58..60].copy_from_slice(&u16::from(family).to_le_bytes());
+                    row.record[56..58].copy_from_slice(&u16::from(tier).to_le_bytes());
+                    row.set_source_word_96(target);
+                    row.set_source_byte_46(5);
+                    let captured = captured_profile(row).unwrap().unwrap();
+                    let request = ProjectileRequest {
+                        owner_slot: owner,
+                        target_slot: target,
+                        target_position: destination,
+                        family,
+                        tier,
+                        damage: captured.damage,
+                        yaw_offset: 0,
+                        altitude_offset: row.array_yaw(),
+                    };
+                    let product = source_product(request, Some(captured)).unwrap().unwrap();
+                    let (slot, base_yaw) = super::construct_request(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        particles,
+                        mine,
+                        request,
+                        Some(captured),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    if family == 0 {
+                        let shot = live
+                            .economy
+                            .economy
+                            .fireball_projectiles()
+                            .iter()
+                            .find(|shot| shot.active && shot.source_entity_index == slot)
+                            .unwrap();
+                        assert_eq!(
+                            (shot.source_model, shot.action),
+                            if tier == 2 { (28, 29) } else { (0, 0) }
+                        );
+                        assert_eq!(
+                            (
+                                shot.target_class,
+                                shot.target_model,
+                                shot.source_subspell_index
+                            ),
+                            (255, 255, 100)
+                        );
+                        assert_eq!(shot.owner_entity_index, owner);
+                    } else {
+                        let shot = &live.economy.entities[usize::from(slot)];
+                        assert_eq!(shot.class, 9);
+                        assert_eq!(
+                            shot.record[71..73],
+                            [
+                                super::source_selector(product).0,
+                                super::source_selector(product).1
+                            ]
+                        );
+                        assert_eq!(shot.source_id, owner);
+                        let damage = if family == 13 {
+                            100
+                        } else if matches!(family, 21 | 25) && captured.life != 0 {
+                            captured.damage / u16::from(captured.life)
+                        } else {
+                            captured.damage
+                        };
+                        assert_eq!(shot.subspell_index, damage, "family{family}/tier{tier}");
+                        if !matches!(family, 7 | 13) {
+                            assert_eq!(shot.record[74], captured.life);
+                        }
+                        assert_eq!(shot.yaw, base_yaw);
+                    }
+                    // Fireball owns these mutable words in its typed carrier;
+                    // status_parent intentionally projects only status fields.
+                    let (roll, fov, link, life) = if family == 0 {
+                        let shot = live
+                            .economy
+                            .economy
+                            .fireball_projectiles()
+                            .iter()
+                            .find(|shot| shot.active && shot.source_entity_index == slot)
+                            .unwrap();
+                        (
+                            shot.roll,
+                            shot.fov,
+                            shot.target_source_entity_index,
+                            i32::from(shot.life),
+                        )
+                    } else {
+                        let row = &live.economy.entities[usize::from(slot)];
+                        (row.source_roll(), row.fov, row.source_word_96(), row.life)
+                    };
+                    let target_row = &live.economy.entities[usize::from(target)];
+                    let target_centre = super::super::guided_projectile::centre(
+                        target_row.position,
+                        target_row.model,
+                        target_row.array_yaw(),
+                    );
+                    let expected =
+                        crate::level1_mission::projectile_guidance_angles(origin, target_centre);
+                    assert_eq!(
+                        (roll, fov),
+                        expected,
+                        "family{family}/tier{tier} current target-height aim"
+                    );
+                    assert_eq!(link, target);
+                    (slot, live.economy.economy.slot_generation(slot), life)
+                };
+                campaign.step(PlayerCommand::default(), 0);
+                let simulation = campaign.simulation();
+                assert!(
+                    !simulation.dispatch_events().iter().any(|event| matches!(
+                        event,
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
+                    )),
+                    "family{family}/tier{tier}: {:?}",
+                    simulation.dispatch_events()
+                );
+                let arena = &simulation.session.state.live.economy;
+                let consumed = if family == 0 {
+                    arena
+                        .economy
+                        .fireball_projectiles()
+                        .iter()
+                        .find(|shot| shot.source_entity_index == slot)
+                        .is_none_or(|shot| {
+                            !shot.active
+                                || shot.drawing_disabled
+                                || i32::from(shot.life) < before_life
+                        })
+                } else {
+                    let after = &simulation.entities()[usize::from(slot)];
+                    !after.active || after.drawing_disabled() || after.life < before_life
+                };
+                assert!(
+                    arena.economy.slot_generation(slot) != generation || consumed,
+                    "family{family}/tier{tier} must reach its ordinary callback"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_dispatch_keeps_null_families_null_and_constructs_every_real_family() {
         assert_eq!(
             source_product(request(1, 0), Some(captured(1, 0, 0))),
             Ok(None)
@@ -558,7 +851,22 @@ mod tests {
             source_product(request(7, 0), Some(captured(7, 0, 3))),
             Ok(None)
         );
-        assert!(source_product(request(9, 0), Some(captured(9, 0, 0))).is_err());
+        for family in [9, 13, 15, 16, 17, 18, 20, 21, 25] {
+            assert_eq!(
+                source_product(request(family, 0), Some(captured(family, 0, 0))),
+                Ok(Some(SourceProduct::Guided { family }))
+            );
+        }
+        assert_eq!(
+            source_product(request(0, 2), Some(captured(0, 2, 2))),
+            Ok(Some(SourceProduct::Fireball { terminal_model: 76 }))
+        );
+        for family in [19, 22, 24] {
+            assert_eq!(
+                source_product(request(family, 0), Some(captured(family, 0, 0))),
+                Ok(None)
+            );
+        }
         assert_eq!(
             source_product(request(7, 2), Some(captured(7, 2, 2))),
             Ok(Some(SourceProduct::LightningStormShot))
@@ -599,10 +907,13 @@ mod tests {
         null_request.damage = genuinely_null.damage;
         assert_eq!(source_product(null_request, Some(genuinely_null)), Ok(None));
 
-        let unsupported_non_null = captured_profile(&mine_row(9, 0)).unwrap().unwrap();
+        let meteor = captured_profile(&mine_row(9, 0)).unwrap().unwrap();
         let mut meteor_request = request(9, 0);
-        meteor_request.damage = unsupported_non_null.damage;
-        assert!(source_product(meteor_request, Some(unsupported_non_null)).is_err());
+        meteor_request.damage = meteor.damage;
+        assert_eq!(
+            source_product(meteor_request, Some(meteor)),
+            Ok(Some(SourceProduct::Guided { family: 9 }))
+        );
 
         assert_eq!(captured_profile(&mine_row(u16::MAX, u16::MAX)), Ok(None));
         assert!(captured_profile(&mine_row(26, 0)).is_err());

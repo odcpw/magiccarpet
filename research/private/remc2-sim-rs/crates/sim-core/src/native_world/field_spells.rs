@@ -5,7 +5,7 @@
 //! the same-pass tail, and next-pass reclamation; guided flight and live field
 //! state remain with their existing owners.
 
-use super::{EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain};
+use super::{EntitySnapshot, EntitySpecialRelation, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain};
 use crate::campaign::source_arena::SourceArena;
 use crate::level_definition::{FieldSpellTier, GRAVITY_WELL_TIERS, WHIRLWIND_TIERS};
 use crate::spells::{gravity_well, whirlwind};
@@ -94,16 +94,22 @@ fn set_owner(row: &mut EntitySnapshot, owner: u16) {
     put_word(row, 30, owner);
 }
 
-fn launch_speed(parent_speed: i16) -> i16 {
-    // sub_6DCA0 assigns the sum back to a signed 16-bit source field before
-    // applying the 384..8192 clamps.
-    PROJECTILE_SPEED
-        .wrapping_add(parent_speed)
-        .clamp(PROJECTILE_SPEED, PROJECTILE_MAXIMUM_LAUNCH_SPEED)
-}
-
-fn source_projectile_flags(flags: u32) -> u32 {
-    flags & !8
+pub(crate) fn source_constructor(family: u8) -> Result<super::guided_projectile::Constructor, String> {
+    let family = match family {
+        20 => Family::GravityWell,
+        21 => Family::Whirlwind,
+        _ => return Err(format!("field spell family {family} has no guided source constructor")),
+    };
+    Ok(super::guided_projectile::Constructor {
+        model: family.projectile_model(),
+        action: family.projectile_action(),
+        parameter: PARAMETER_RELATION,
+        particle: family.particle(),
+        speed: PROJECTILE_SPEED,
+        maximum_speed: PROJECTILE_MAXIMUM_LAUNCH_SPEED,
+        life: PROJECTILE_RANGE / i32::from(PROJECTILE_SPEED),
+        mana: 50,
+    })
 }
 
 fn target_axis(origin: Position, yaw: i16, terrain: &impl FlightWorld) -> Position {
@@ -147,6 +153,7 @@ fn typed_tier(family: Family, level_gate: i8) -> Result<FieldSpellTier, String> 
 }
 
 fn launch(
+    shared: &Level2SharedSpellResetSession,
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
@@ -156,56 +163,44 @@ fn launch(
     family: Family,
     projectile_power: u16,
     effect_life: u8,
-) -> Result<Option<u16>, String> {
-    let particle_index = family.particle();
-    let particle = *particles
-        .get(usize::from(particle_index))
-        .ok_or_else(|| format!("field spell requires retained particle{particle_index}"))?;
-    let (mut position, inherited_speed) = {
+) -> Result<Option<(u16, bool)>, String> {
+    let (position, inherited_speed) = {
         let parent = arena
             .entities
             .get(usize::from(parent_slot))
             .ok_or("field spell parent address is outside source arena")?;
         (parent.position, parent.actual_speed)
     };
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+    let Some(slot) = super::guided_projectile::construct(
+        arena, terrain, particles, position, Some(parent_slot), inherited_speed,
+        source_constructor(family.profile_family())?,
+    )? else {
         return Ok(None);
     };
-    if slot == parent_slot {
-        position = Position::default();
-    }
-
-    let mut row =
-        super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
-    row.class = 9;
-    row.model = family.projectile_model();
-    row.record[67] = 9;
-    row.record[68] = family.projectile_model();
-    row.set_source_action(family.projectile_action());
-    row.set_control_flags(source_projectile_flags(row.control_flags));
-    row.set_actual_speed(launch_speed(inherited_speed));
-    put_word(&mut row, 136, PROJECTILE_SPEED as u16);
-    let projectile_life = PROJECTILE_RANGE / i32::from(PROJECTILE_SPEED);
-    row.set_max_life(projectile_life);
-    row.set_life(projectile_life);
-    row.parameter_relation = Some(PARAMETER_RELATION);
-    row.record[164..168].copy_from_slice(&61_u32.to_le_bytes());
-    super::cave_features::bind_particle(&mut row, particle_index, particle)?;
+    let row = &mut arena.entities[usize::from(slot)];
+    let mut position = row.position;
     row.record[71] = 10;
     row.record[72] = family.terminal_model();
-    put_word(&mut row, 42, holder_slot);
+    put_word(row, 42, holder_slot);
     row.set_mana(50);
     row.set_subspell_index(projectile_power);
     row.set_source_byte_46(effect_life);
     row.set_source_dword_10(i32::from(input.auxiliary_byte));
 
-    arena.economy.source_rng.insert(slot, row.entity_rng);
-    arena.entities[usize::from(slot)] = row;
-    crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
-
     // NewEvent can replace either fixed address. The source rereads both
     // addresses before applying the final owner, mana, hand, and aim writes.
     let parent = arena.entities[usize::from(parent_slot)].clone();
+    let uses_global_a4 = parent.special_relation == EntitySpecialRelation::GlobalSpecialState;
+    let input = if uses_global_a4 {
+        CastInput {
+            aim_yaw: shared.global_special_state.input_yaw,
+            aim_pitch: shared.global_special_state.input_pitch,
+            auxiliary_byte: shared.global_special_state.cast_auxiliary,
+            ..input
+        }
+    } else {
+        input
+    };
     let holder = arena
         .entities
         .get(usize::from(holder_slot))
@@ -235,14 +230,17 @@ fn launch(
     row.set_source_dword_10(i32::from(input.auxiliary_byte));
     let yaw = input.aim_yaw.wrapping_add(parent.yaw);
     let pitch = input.aim_pitch.wrapping_add(parent.pitch);
-    let axis = target_axis(parent.position, yaw, terrain);
+    // If the parent address was recycled for this projectile, the source's
+    // preceding z write has already changed the position read for the axis.
+    let axis_origin = if slot == parent_slot { position } else { parent.position };
+    let axis = target_axis(axis_origin, yaw, terrain);
     put_word(row, 158, axis.x);
     put_word(row, 160, axis.y);
     put_word(row, 162, axis.z as u16);
     row.set_yaw(yaw);
     row.set_pitch(pitch);
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    Ok(Some(slot))
+    Ok(Some((slot, uses_global_a4)))
 }
 
 /// One source active-holder callback. The scheduler owns phase and reclaim
@@ -292,8 +290,8 @@ pub(crate) fn step_holder(
                 gravity_well::Rule {
                     power: profile.power,
                     effect_life: profile.effect_parameter,
-                    mana_cost: profile.mana_cost,
-                    castle_mana_required: profile.castle_mana_required,
+                    mana_cost: holder.max_mana,
+                    castle_mana_required: holder.mana_regen,
                 },
                 leaf_caster.as_mut(),
             );
@@ -323,8 +321,8 @@ pub(crate) fn step_holder(
                 whirlwind::Rule {
                     power: profile.power,
                     effect_life: profile.effect_parameter,
-                    mana_cost: profile.mana_cost,
-                    castle_mana_required: profile.castle_mana_required,
+                    mana_cost: holder.max_mana,
+                    castle_mana_required: holder.mana_regen,
                 },
                 leaf_caster.as_mut(),
             );
@@ -342,7 +340,8 @@ pub(crate) fn step_holder(
 
     let mut outcome = HolderOutcome::default();
     if let Some((projectile_power, effect_life)) = payload {
-        outcome.projectile = launch(
+        let emission = launch(
+            shared,
             arena,
             terrain,
             particles,
@@ -353,8 +352,13 @@ pub(crate) fn step_holder(
             projectile_power,
             effect_life,
         )?;
-        if outcome.projectile.is_some() {
-            outcome.clear_player_aux = Some(parent_slot);
+        outcome.projectile = emission.map(|(slot, _)| slot);
+        if let Some((_, uses_global_a4)) = emission {
+            if uses_global_a4 {
+                shared.global_special_state.cast_auxiliary = 0;
+            } else {
+                outcome.clear_player_aux = Some(parent_slot);
+            }
             crate::mark_source_audio_call(crate::SourceAudioCallTag::ProjectileDeliveryLaunch);
             shared.emit_flight_effect(crate::FlightEvent::PrepareSound {
                 #[cfg(test)]
@@ -366,9 +370,22 @@ pub(crate) fn step_holder(
         }
     }
 
-    if let Some(mana_regen) = parent_mana_regen
+    if parent_mana_regen.is_some()
         && let Some(parent) = arena.entities.get_mut(usize::from(parent_slot))
     {
+        // sub_68DE0 reads the current parent after the projectile allocation,
+        // and its price comes from the live holder rather than SPELLS.DAT.
+        let mana_regen = if holder.active_value == holder.activation_value as i16 {
+            if parent.mana_regen >= 0 {
+                holder.max_mana.wrapping_neg()
+            } else {
+                parent.mana_regen.wrapping_sub(holder.max_mana)
+            }
+        } else if parent.mana_regen > 0 {
+            0
+        } else {
+            parent.mana_regen
+        };
         parent.set_mana_regen(mana_regen);
         shared.sync_player_entity_from_authority(parent);
         if parent_slot == shared.player_entity.index {
@@ -381,11 +398,12 @@ pub(crate) fn step_holder(
         holder.record[50..52].copy_from_slice(&0_i16.to_le_bytes());
         let deferred = holder.source_word_2c();
         if deferred != 0 {
-            let tier = crate::spell_activation::level2_applied_tier(deferred.wrapping_sub(1) as i8)
+            let tier = deferred.checked_sub(1)
+                .and_then(|value| u8::try_from(value.min(2)).ok())
                 .ok_or("field spell deferred tier is negative")?;
-            let profile =
-                crate::spell_activation::level2_set_spell_profile(family.profile_family(), tier)
-                    .ok_or("field spell deferred tier has no source profile")?;
+            let profile = shared
+                .physical_spell_profile(family.profile_family(), tier, parent_slot, None)
+                .ok_or("field spell deferred tier has no source profile")?;
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.set_source_word_2c(0);
         }
@@ -406,8 +424,8 @@ pub(crate) fn step_holder(
 #[cfg(test)]
 mod tests {
     use super::{
-        CastInput, Family, GRAVITY_WELL_TIERS, WHIRLWIND_TIERS, launch_speed,
-        source_projectile_flags, step_holder, step_projectile, target_axis, word,
+        CastInput, Family, GRAVITY_WELL_TIERS, WHIRLWIND_TIERS, source_constructor,
+        step_holder, step_projectile, target_axis, word,
     };
     use crate::{FlightWorld, Position, Tile, move_entity};
 
@@ -433,14 +451,15 @@ mod tests {
 
     #[test]
     fn launch_speed_wraps_as_i16_before_source_clamps() {
-        assert_eq!(launch_speed(i16::MAX), 384);
-        assert_eq!(launch_speed(8_000), 8_192);
+        let definition = source_constructor(20).unwrap();
+        assert_eq!(super::super::guided_projectile::source_launch_speed(definition.speed, i16::MAX, definition.maximum_speed), 384);
+        assert_eq!(super::super::guided_projectile::source_launch_speed(definition.speed, 8_000, definition.maximum_speed), 8_192);
     }
 
     #[test]
     fn projectile_constructor_only_clears_source_flag_08() {
-        assert_eq!(source_projectile_flags(0), 0);
-        assert_eq!(source_projectile_flags(0x0c), 0x04);
+        assert_eq!(super::super::guided_projectile::source_projectile_flags(0), 0);
+        assert_eq!(super::super::guided_projectile::source_projectile_flags(0x0c), 0x04);
     }
 
     #[test]
@@ -462,6 +481,506 @@ mod tests {
         let mut pitched = origin;
         move_entity(&mut pitched, yaw, 256, 4_096);
         assert_ne!((axis.x, axis.y), (pitched.x, pitched.y));
+    }
+
+    #[test]
+    fn field_holders_read_live_cost_and_post_allocation_parent() {
+        for family in [Family::GravityWell, Family::Whirlwind] {
+            let id = family.holder_model();
+            let mut simulation = crate::native_world::tests::level_two_campaign_session();
+            simulation.apply_carried_spell_families(&[id], Some(id)).unwrap();
+            let parent_slot = simulation.state.entity_index;
+            let holder_slot = simulation.shared_spells().local_player.enabled_spell_holders[usize::from(id)];
+            simulation.session.state.live.economy.economy.exhaust_new_event_capacity_for_test();
+            let particles = simulation.session.definition.presentation.particles.clone();
+            let live = &mut simulation.session.state.live;
+            live.economy.finish_source_group();
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.active_value = holder.activation_value as i16;
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            holder.max_mana = 1_234;
+            holder.record[144..148].copy_from_slice(&1_234_i32.to_le_bytes());
+            holder.set_mana_regen(321);
+            crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, parent_slot);
+            let parent = &mut live.economy.entities[usize::from(parent_slot)];
+            parent.set_life(100);
+            parent.set_mana(1_234);
+            parent.set_mana_regen(-9);
+            live.shared_spells.global_special_state.input_yaw = 37;
+            live.shared_spells.global_special_state.input_pitch = -21;
+            live.shared_spells.global_special_state.cast_auxiliary = 11;
+            let outcome = step_holder(&mut live.shared_spells, &mut live.economy, &mut live.terrain,
+                &particles, holder_slot, CastInput { aim_yaw: 120, aim_pitch: 55, auxiliary_byte: 7, castle_mana: Some(321) }).unwrap();
+            assert_eq!(outcome.projectile, Some(parent_slot));
+            assert_eq!(outcome.clear_player_aux, None);
+            assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 0);
+            let flyer = &live.economy.entities[usize::from(parent_slot)];
+            assert_eq!((flyer.class, flyer.model, flyer.action), (9, family.projectile_model(), family.projectile_action()));
+            assert_eq!((flyer.yaw, flyer.pitch, flyer.source_dword_10()), (37, -21, 11));
+            assert_eq!(flyer.mana_regen, -1_234, "charge reads the replacement parent, not its old negative regeneration");
+        }
+    }
+
+    #[test]
+    fn field_holders_charge_failed_allocation_and_apply_deferred_free_profile() {
+        for family in [Family::GravityWell, Family::Whirlwind] {
+            let id = family.holder_model();
+            let mut simulation = crate::native_world::tests::level_two_campaign_session();
+            simulation.apply_carried_spell_families(&[id], Some(id)).unwrap();
+            let parent_slot = simulation.state.entity_index;
+            let holder_slot = simulation.shared_spells().local_player.enabled_spell_holders[usize::from(id)];
+            simulation.session.state.live.economy.economy.exhaust_new_event_capacity_for_test();
+            let particles = simulation.session.definition.presentation.particles.clone();
+            let live = &mut simulation.session.state.live;
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.active_value = holder.activation_value as i16;
+            holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+            let cost = holder.max_mana;
+            let requirement = holder.mana_regen;
+            let parent = &mut live.economy.entities[usize::from(parent_slot)];
+            parent.set_life(100);
+            parent.set_mana(cost);
+            parent.set_mana_regen(13);
+            let input = CastInput { aim_yaw: 0, aim_pitch: 0, auxiliary_byte: 7, castle_mana: Some(requirement) };
+            let outcome = step_holder(&mut live.shared_spells, &mut live.economy, &mut live.terrain, &particles, holder_slot, input).unwrap();
+            assert_eq!(outcome.projectile, None);
+            assert_eq!(live.economy.entities[usize::from(parent_slot)].mana_regen, -cost);
+
+            live.shared_spells.free_spell_usage = true;
+            let expected = live.shared_spells.physical_spell_profile(id, 2, parent_slot, None).unwrap();
+            let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+            holder.active_value = 1;
+            holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            holder.set_source_word_2c(129);
+            step_holder(&mut live.shared_spells, &mut live.economy, &mut live.terrain, &particles, holder_slot, input).unwrap();
+            let holder = live.shared_spells.pickup(holder_slot).unwrap();
+            assert_eq!(holder.active_value, 0);
+            assert_eq!(holder.source_word_2c(), 0);
+            assert_eq!((holder.level_gate, holder.max_mana, holder.mana_regen, holder.mana), (2, expected.max_mana, expected.mana_regen, expected.mana));
+        }
+    }
+
+    #[test]
+    fn scheduled_field_holders_use_reused_parent_current_castle_and_aim() {
+        for family in [Family::GravityWell, Family::Whirlwind] {
+            let id = family.holder_model();
+            let mut base = crate::native_world::tests::level_two_campaign_session();
+            let earlier_slot = {
+                let live = &mut base.session.state.live;
+                super::super::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain).unwrap()
+            };
+            base.apply_carried_spell_families(&[id], Some(id)).unwrap();
+            let parent_slot = base.state.entity_index;
+            let holder_slot = base.shared_spells().local_player.enabled_spell_holders[usize::from(id)];
+            assert!(earlier_slot < holder_slot && earlier_slot != parent_slot);
+            let castle = base.economy_mut().build_castle_at(Position::default(), Position::default(), parent_slot, false, true).unwrap();
+            let requirement = base.shared_spells().pickup(holder_slot).unwrap().mana_regen;
+            assert!(requirement > 0);
+            assert!(base.economy_mut().set_castle_mana_prerequisite_for_test(castle, requirement));
+            let cost;
+            {
+                let live = &mut base.session.state.live;
+                live.economy.finish_source_group();
+                crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, parent_slot);
+                let slot = super::super::alliance_spell::construct_impact(&mut live.economy, &mut live.terrain).unwrap();
+                assert_eq!(slot, parent_slot);
+                let holder = live.shared_spells.pickup_mut(holder_slot).unwrap();
+                holder.active_value = holder.activation_value as i16;
+                holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
+                cost = holder.max_mana;
+                live.economy.entities[usize::from(holder_slot)] = holder.clone();
+                let parent = &mut live.economy.entities[usize::from(parent_slot)];
+                parent.set_life(100);
+                parent.set_mana(cost);
+                crate::world::terrain::cave_features::reclaim(&mut live.economy, &mut live.terrain, earlier_slot);
+                live.shared_spells.global_special_state.cast_auxiliary = 11;
+            }
+            for (castle_slot, should_launch) in [(0, false), (castle, true)] {
+                let mut simulation = base.clone();
+                simulation.session.state.live.shared_spells.global_special_state.castle_entity_index = castle_slot;
+                simulation.step_outer_turn(crate::PlayerCommand { argument_6: 37, argument_8: (-21_i16) as u16, ..Default::default() }, 0);
+                assert!(!simulation.dispatch_events().iter().any(|event| matches!(event, super::super::Mc2DispatchEvent::Error { .. })), "{:?}", simulation.dispatch_events());
+                let live = &simulation.session.state.live;
+                let flyer = live.economy.entities.iter().find(|row| row.active && (row.class, row.model, row.action) == (9, family.projectile_model(), family.projectile_action()) && word(row, 42) == holder_slot);
+                assert_eq!(flyer.is_some(), should_launch, "current A4 Castle controls family {id}");
+                if let Some(flyer) = flyer {
+                    assert_eq!((flyer.yaw, flyer.pitch, flyer.source_dword_10()), (37, -21, 11));
+                    assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 0);
+                    assert_eq!(live.economy.entities[usize::from(parent_slot)].mana_regen, -cost);
+                } else {
+                    assert_eq!(live.shared_spells.global_special_state.cast_auxiliary, 11);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn acquired_field_spells_fly_naturally_to_their_fields_at_each_tier() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Mc2DispatchEvent, LEVEL2_SPELL_TIER_THRESHOLDS};
+        use crate::native_world::simulation::CarriedSpellProgress;
+
+        for (family, id, level, pickup_slot, pickup_action, tiers) in [
+            (Family::GravityWell, 20_u8, 21, 214_u16, 61, GRAVITY_WELL_TIERS),
+            (Family::Whirlwind, 21_u8, 6, 28_u16, 64, WHIRLWIND_TIERS),
+        ] {
+            let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+                .join(format!("level{level}"));
+            let mut acquired = CampaignSession::open(
+                package,
+                CampaignSelection::ordinary(level).unwrap(),
+            ).expect("actual owner-data campaign opens");
+            let player = acquired.simulation().state.entity_index;
+            assert_eq!(acquired.simulation().shared_spells().local_player.enabled_spell_holders[usize::from(id)], 0);
+            let pickup = &acquired.simulation().entities()[usize::from(pickup_slot)];
+            assert!(pickup.active);
+            assert_eq!((pickup.class, pickup.model, pickup.action), (15, id, pickup_action));
+            let pickup_position = pickup.position;
+            acquired.simulation_mut().set_level2_entity_position(player, pickup_position).unwrap();
+            let mut receipt = None;
+            for _ in 0..8 {
+                acquired.step(PlayerCommand::default(), 0);
+                receipt = acquired.simulation().dispatch_events().iter().find_map(|event| match event {
+                    Mc2DispatchEvent::SpellAcquisition { source_slot, family, result: Some(outcome), .. }
+                        if *source_slot == pickup_slot && *family == id => Some(*outcome),
+                    _ => None,
+                });
+                if receipt.is_some() { break; }
+            }
+            let receipt = receipt.expect("ordinary overlap acquires the authored pickup");
+            assert_eq!((receipt.source_slot, receipt.family, receipt.parent_entity_index), (pickup_slot, id, player));
+
+            for (tier, profile) in tiers.into_iter().enumerate() {
+                let mut campaign = acquired.clone();
+                let session = campaign.simulation_mut();
+                session.apply_carried_spell_progression(&[CarriedSpellProgress {
+                    family: id,
+                    persistent_experience: LEVEL2_SPELL_TIER_THRESHOLDS[usize::from(id)][tier],
+                    runtime_experience: 0,
+                    unlocked_tier: tier as i8,
+                    selected_tier: tier as i8,
+                }]).unwrap();
+                let holder = session.shared_spells().local_player.enabled_spell_holders[usize::from(id)];
+                assert_ne!(holder, 0);
+                assert_eq!(session.shared_spells().pickup(holder).unwrap().level_gate, tier as i8);
+                let position = session.state.position;
+                let castle = session.economy_mut().build_castle(position, player).unwrap();
+                assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, profile.castle_mana_required));
+                // The authored pickup is at terrain level, where its first
+                // projectile can naturally impact and hide in the launch
+                // pass. Move the actual caster into navigable air for this
+                // presentation/consequence scenario; do not alter the flyer.
+                let mut cast_position = Position {
+                    x: if family == Family::GravityWell {
+                        position.x.wrapping_sub(4_096)
+                    } else {
+                        position.x.wrapping_add(4_096)
+                    },
+                    ..position
+                };
+                let ground = session.session.state.live.terrain.ground_height(cast_position);
+                let ceiling = session.session.state.live.terrain.ceiling_height(cast_position);
+                if let Some(ceiling) = ceiling {
+                    assert!(i32::from(ceiling) - i32::from(ground) > 1_024, "controlled cast position has cave clearance");
+                }
+                cast_position.z = ground.saturating_add(512);
+                session.set_level2_entity_position(player, cast_position).unwrap();
+                let staged_mana = profile.mana_cost + 1_000;
+                let live = &mut session.session.state.live;
+                live.economy.refresh_owner_mana_rows();
+                for row in &mut live.shared_spells.player_entities {
+                    if row.index == player { row.set_mana(staged_mana); row.set_mana_regen(0); }
+                }
+                live.shared_spells.player_entity.set_mana(staged_mana);
+                live.shared_spells.player_entity.set_mana_regen(0);
+                live.shared_spells.caster.mana = staged_mana;
+                live.shared_spells.player_mana = staged_mana;
+                live.economy.entities[usize::from(player)].set_mana(staged_mana);
+                if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = staged_mana; }
+                let owner_id = live.economy.entities[usize::from(player)].source_id;
+                let existing = live.economy.entities.iter().filter(|row| row.active && row.class == 10 && row.model == family.terminal_model()).map(|row| row.index).collect::<Vec<_>>();
+                let journal_start = session.effect_journal().records().len();
+                let power = if family == Family::Whirlwind && profile.effect_parameter != 0 {
+                    profile.power / u16::from(profile.effect_parameter)
+                } else { profile.power };
+                let mut projectile_seen = false;
+                let mut projectile_presented = false;
+                let mut field = None;
+                for turn in 0..150 {
+                    campaign.step(if turn == 0 { PlayerCommand { opcode: 6, argument_1: id as i8, flags: 0x40, ..PlayerCommand::default() } } else { PlayerCommand::default() }, 0);
+                    let session = campaign.simulation();
+                    assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "family {id} tier {tier}, turn {turn}: {:?}", session.dispatch_events());
+                    if let Some(projectile) = session.entities().iter().find(|row| row.active && (row.class, row.model, row.action) == (9, family.projectile_model(), family.projectile_action()) && word(row, 42) == holder && row.subspell_index == power) {
+                        projectile_seen = true;
+                        if tier == 0 && !projectile.drawing_disabled() {
+                            let presentations = session.campaign_entity_presentations(0).expect("actual projectile sprite projection");
+                            let presentation = presentations.iter().find(|row| row.entity_index == projectile.index)
+                                .unwrap_or_else(|| panic!("acquired family {id} tier {tier} projectile slot {} lacks sprite: flags={:#x} particle={:?} position={:?} dynamic={:?} same_slot={:?}", projectile.index, projectile.control_flags, projectile.particle_parameter_index, projectile.position, session.economy.live_arena_cursor_row(projectile.index), presentations.iter().filter(|row| row.entity_index == projectile.index).collect::<Vec<_>>()));
+                            assert_eq!(presentation.source_id, owner_id);
+                            assert_eq!(presentation.render_parameter_index, family.particle());
+                            assert_eq!(presentation.base_tmap, session.session.definition.presentation.particles[usize::from(family.particle())].base_tmap);
+                            projectile_presented = true;
+                        }
+                    }
+                    field = session.entities().iter().find(|row| row.active && row.class == 10 && row.model == family.terminal_model() && row.source_id == owner_id && row.subspell_index == power && !existing.contains(&row.index)).map(|row| row.index);
+                    if field.is_some() { break; }
+                }
+                assert!(projectile_seen, "acquired family {id} tier {tier} emits its source flyer");
+                let field = field.unwrap_or_else(|| panic!("acquired family {id} tier {tier} naturally reaches its source field"));
+                let field_row = &campaign.simulation().entities()[usize::from(field)];
+                assert_eq!(field_row.max_life, if family == Family::GravityWell { 300 } else { i32::from(profile.effect_parameter) * 8 });
+                if tier == 0 {
+                    assert!(projectile_presented);
+                    assert!(campaign.simulation().effect_journal().records()[journal_start..].iter().any(|record| matches!(record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound { entity_index, sound_id: 15, .. }) if entity_index == player)),
+                        "acquired family {id} publishes its source launch sound");
+                    let session = campaign.simulation();
+                    let field_row = if family == Family::Whirlwind {
+                        session.field_source_rows().into_iter().find(|row| row.index == field)
+                            .expect("actual Wind publishes its live source descriptor")
+                    } else {
+                        session.entities()[usize::from(field)].clone()
+                    };
+                    let field_presentation = session.campaign_entity_presentations(0).expect("actual field sprite projection")
+                        .into_iter().find(|row| row.entity_index == field);
+                    if family == Family::GravityWell {
+                        // sub_51730 sets control bit1; source DrawSprites
+                        // intentionally omits this terrain controller.
+                        assert_eq!(field_row.control_flags & 5, 5, "Gravity source is hidden from sprites and map-linked");
+                        assert!(field_presentation.is_none());
+                    } else {
+                        let field_presentation = field_presentation.expect("natural Wind reaches the sprite observation");
+                        let field_particle = field_row.particle_parameter_index.expect("source Wind has a particle descriptor");
+                        assert_eq!(field_presentation.render_parameter_index, field_particle);
+                        assert_eq!(field_presentation.base_tmap, session.session.definition.presentation.particles[usize::from(field_particle)].base_tmap);
+                    }
+                    let original_terrain = (family == Family::GravityWell).then(|| session.canonical_terrain().clone());
+                    let field_position = field_row.position;
+                    let mut terrain_changed = false;
+                    let target_model = if family == Family::GravityWell { 20 } else { 19 };
+                    let targets = if family == Family::Whirlwind {
+                        // The imported Firefly is retired in the raw row;
+                        // authored_class5 is its current source authority.
+                        campaign.simulation().economy.authored_class5().iter()
+                            .filter(|actor| actor.active && actor.model == target_model && actor.life > 0
+                                && actor.drawing_enabled
+                                && crate::world::fields::wind::accepts(owner_id, 0, 5, actor.model, actor.action))
+                            .map(|actor| actor.source_entity_index).collect::<Vec<_>>()
+                    } else {
+                        campaign.simulation().entities().iter()
+                            .filter(|actor| actor.active && actor.class == 5 && actor.model == target_model
+                                && actor.life > 0 && !actor.drawing_disabled() && actor.action != 232
+                                && actor.control_flags & 0x0010_0021 == 0 && actor.record[60] & 1 != 0)
+                            .map(|actor| actor.index).collect::<Vec<_>>()
+                    };
+                    let target = *targets.first().unwrap_or_else(|| {
+                        let observed = campaign.simulation().entities().iter()
+                            .filter(|actor| actor.class == 5 && actor.model == target_model)
+                            .map(|actor| (actor.index, actor.active, actor.action, actor.life,
+                                actor.control_flags, actor.record[60], actor.position))
+                            .collect::<Vec<_>>();
+                        panic!("family {id} tier {tier} owner package retains an eligible actual creature: {observed:?}")
+                    });
+                    let experience_before = campaign.simulation().session.state.live.shared_spells.spell_experience()[usize::from(id)];
+                    let mut placed = false;
+                    let mut moved = false;
+                    let mut contact = false;
+                    let mut credited = false;
+                    let mut damaged = false;
+                    let mut target_lives = Vec::new();
+                    let mut gravity_trace = Vec::new();
+                    let mut wind_trace = Vec::new();
+                    let mut position_before = Position::default();
+                    let generation = campaign.simulation().session.state.live.economy.economy.slot_generation(field);
+                    let mut hidden = false;
+                    let mut reclaimed = false;
+                    for turn in 0..(i32::from(profile.effect_parameter) * 8 + 40) {
+                        if !placed {
+                            let target_position = if family == Family::GravityWell {
+                                let source = &campaign.simulation().entities()[usize::from(field)];
+                                crate::world::fields::gravity::pull_is_active(source).then_some(Position {
+                                    x: source.position.x.wrapping_add(768), y: source.position.y,
+                                    z: source.source_word_2c().wrapping_add(256),
+                                })
+                            } else {
+                                campaign.simulation().economy.authored_model22().iter()
+                                    .find(|wind| wind.source_entity_index == field).map(|wind| Position {
+                                        z: wind.position.z.saturating_add(1_536), ..wind.axis_position
+                                    })
+                            };
+                            if let Some(position) = target_position {
+                                let live = &mut campaign.simulation_mut().session.state.live;
+                                for (index, &slot) in targets.iter().enumerate() {
+                                    if family == Family::Whirlwind && index > 0 { break; }
+                                    // The first creature demonstrates pull; the other real
+                                    // bounty-enabled owner rows start within the source's
+                                    // contact band so their normal RNG visits can award credit.
+                                    let actor_position = if family == Family::GravityWell && index > 0 {
+                                        Position { x: position.x.wrapping_sub(704).wrapping_add((index as u16) * 8),
+                                            z: position.z.wrapping_sub(192), ..position }
+                                    } else { position };
+                                    if let Some(actor) = live.economy.economy.authored_class5.iter_mut()
+                                        .find(|actor| actor.active && actor.source_entity_index == slot)
+                                    {
+                                        actor.position = actor_position;
+                                    }
+                                    let generation = live.economy.economy.slot_generation(slot);
+                                    let life = super::super::area_damage::read_arena_life(&live.economy, slot)
+                                        .expect("selected real actor has a life carrier");
+                                    let (bounty, _) = super::super::area_damage::source_bounty(&live.economy, None, slot)
+                                        .expect("selected real actor has a bounty carrier");
+                                    target_lives.push((slot, generation, life, bounty));
+                                    let row = &mut live.economy.entities[usize::from(slot)];
+                                    row.set_position(actor_position);
+                                    crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, slot, actor_position, true, true)
+                                        .expect("controlled target placement keeps the source map chain");
+                                }
+                                position_before = position;
+                                placed = true;
+                            }
+                        }
+                        let prior_phase = campaign.simulation().economy.authored_model22().iter()
+                            .find(|wind| wind.source_entity_index == field)
+                            .map(|wind| wind.phase);
+                        campaign.step(PlayerCommand::default(), 0);
+                        let session = campaign.simulation();
+                        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "natural family {id} expiry: {:?}", session.dispatch_events());
+                        if let Some(before) = &original_terrain && !terrain_changed {
+                            let center_x = ((u32::from(field_position.x) + 128) >> 8) as u8;
+                            let center_y = ((u32::from(field_position.y) + 128) >> 8) as u8;
+                            'samples: for y in 0..30_u8 {
+                                for x in 0..30_u8 {
+                                    let sample = Position {
+                                        x: u16::from(center_x.wrapping_sub(15).wrapping_add(x)) << 8,
+                                        y: u16::from(center_y.wrapping_sub(15).wrapping_add(y)) << 8,
+                                        z: 0,
+                                    };
+                                    if before.ground_height(sample) != session.canonical_terrain().ground_height(sample) {
+                                        terrain_changed = true;
+                                        break 'samples;
+                                    }
+                                }
+                            }
+                        }
+                        let arena = &session.session.state.live.economy;
+                        if placed {
+                            if family == Family::GravityWell {
+                                for &(slot, generation, initial_life, initial_bounty) in &target_lives {
+                                    if arena.economy.slot_generation(slot) != generation { continue; }
+                                    let row = &arena.entities[usize::from(slot)];
+                                    contact |= row.control_flags & 0x0010_0000 != 0;
+                                    if let Ok((bounty, attacker)) = super::super::area_damage::source_bounty(arena, None, slot) {
+                                        credited |= bounty > initial_bounty && attacker == owner_id;
+                                    }
+                                    let life = super::super::area_damage::read_arena_life(arena, slot).unwrap_or(row.life);
+                                    let source_damage = life < initial_life && row.word_26() == owner_id;
+                                    damaged |= source_damage;
+                                    credited |= source_damage;
+                                }
+                                if gravity_trace.len() < 24 {
+                                    let source = &arena.entities[usize::from(field)];
+                                    let actors = target_lives.iter().take(4).map(|&(slot, _, _, _)| {
+                                        let row = &arena.entities[usize::from(slot)];
+                                        (slot, row.active, row.position, row.control_flags, row.life,
+                                            super::super::area_damage::source_bounty(arena, None, slot).ok())
+                                    }).collect::<Vec<_>>();
+                                    gravity_trace.push((turn, source.action, source.record[74], source.position,
+                                        source.source_word_2c(), source.life, actors,
+                                        session.shared_spells().spell_experience()[usize::from(id)]));
+                                }
+                            }
+                            let target_row = &arena.entities[usize::from(target)];
+                            let typed_target = arena.authored_class5().iter()
+                                .find(|actor| actor.source_entity_index == target);
+                            if family == Family::Whirlwind {
+                                let (_, generation, initial_life, initial_bounty) = target_lives[0];
+                                if arena.economy.slot_generation(target) == generation {
+                                    if let Ok((bounty, attacker)) = super::super::area_damage::source_bounty(arena, None, target) {
+                                        credited |= bounty > initial_bounty && attacker == owner_id;
+                                    }
+                                    if let Some(actor) = typed_target {
+                                        let source_damage = actor.life < initial_life && actor.word_0x26 == owner_id;
+                                        damaged |= source_damage;
+                                        credited |= source_damage;
+                                    }
+                                }
+                                if wind_trace.len() < 24 {
+                                    let actor = typed_target.map(|actor| (actor.active, actor.position, actor.life, actor.word_0x26));
+                                    let state = arena.economy.authored_fireflies().iter()
+                                        .find(|actor| actor.source_entity_index == target)
+                                        .map(|actor| actor.control_flags);
+                                    let wind = arena.authored_model22().iter()
+                                        .find(|wind| wind.source_entity_index == field)
+                                        .map(|wind| (wind.phase, wind.position, wind.axis_position, wind.life));
+                                    wind_trace.push((turn, wind, actor, state,
+                                        super::super::area_damage::source_bounty(arena, None, target).ok(),
+                                        session.shared_spells().spell_experience()[usize::from(id)]));
+                                }
+                            }
+                            let position = typed_target.filter(|actor| actor.active)
+                                .map(|actor| actor.position)
+                                .or_else(|| target_row.active.then_some(target_row.position));
+                            if let Some(position) = position {
+                                if family == Family::GravityWell {
+                                    let source = &arena.entities[usize::from(field)];
+                                    let distance_sq = |position: Position| {
+                                        let dx = i32::from(position.x.wrapping_sub(source.position.x) as i16);
+                                        let dy = i32::from(position.y.wrapping_sub(source.position.y) as i16);
+                                        dx * dx + dy * dy
+                                    };
+                                    moved |= distance_sq(position) < distance_sq(position_before);
+                                } else {
+                                    moved |= position != position_before;
+                                }
+                            }
+                        }
+                        let row = &arena.entities[usize::from(field)];
+                        if arena.economy.slot_generation(field) != generation || !row.active {
+                            reclaimed = true;
+                            break;
+                        }
+                        if family == Family::Whirlwind {
+                            // Wind's live typed carrier is the source of its
+                            // compatibility observation; the allocated raw row
+                            // is retired at the following pass boundary.
+                            let wind = arena.authored_model22().iter().find(|wind| wind.source_entity_index == field)
+                                .expect("live Wind generation retains its authoritative carrier");
+                            if wind.control_flags & 0x400 != 0 {
+                                assert!(row.active && arena.map_chains.is_linked(field));
+                                assert_eq!(wind.phase, prior_phase.unwrap().wrapping_add(1), "Wind hide still runs the source same-pass tail");
+                                let published = session.field_source_rows().into_iter()
+                                    .find(|source| source.index == field)
+                                    .expect("Wind observation retains the hidden source row until reclaim");
+                                assert!(published.active && published.control_flags & 0x400 != 0);
+                                assert_eq!(published.phase, wind.phase);
+                                hidden = true;
+                            }
+                        } else {
+                            hidden |= row.control_flags & 0x400 != 0;
+                        }
+                    }
+                    assert!(hidden, "naturally expiring family {id} reaches its hide callback");
+                    assert!(reclaimed, "following source boundary reclaims the family {id} field");
+                    assert!(placed && moved, "natural family {id} field moves its real owner-data creature");
+                    if family == Family::GravityWell {
+                        assert!(terrain_changed, "natural Gravity field changes a real flight-world ground query");
+                        assert!(contact, "natural Gravity field captures a real eligible creature: {gravity_trace:?}");
+                        assert!(credited, "natural Gravity contact credits real creature bounty to the caster: {gravity_trace:?}");
+                        assert!(damaged, "real Gravity bounty reaches the creature's damage consumer: {gravity_trace:?}");
+                        assert!(campaign.simulation().session.state.live.shared_spells.spell_experience()[usize::from(id)] > experience_before,
+                            "natural Gravity contact awards the actual caster's experience");
+                    }
+                    if family == Family::Whirlwind {
+                        assert!(campaign.simulation().session.state.live.shared_spells.spell_experience()[usize::from(id)] > experience_before,
+                            "natural Wind contact awards the actual caster's experience: {wind_trace:?}");
+                        assert!(credited, "natural Wind contact reaches the real creature's owner-attributed damage mailbox or consumed damage: {wind_trace:?}");
+                        assert!(damaged, "the ordinary creature consumer applies the real Wind damage: {wind_trace:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -603,7 +1122,7 @@ mod tests {
                 }
                 .impact_slot
                 .expect("terminal field allocation succeeds");
-                let lifetime = i32::from(profile.effect_parameter) * 8;
+                let lifetime = if family == Family::GravityWell { i32::from(profile.effect_parameter) } else { i32::from(profile.effect_parameter) * 8 };
                 let terminal = &session.economy.entities[usize::from(impact)];
                 assert_eq!(
                     (terminal.class, terminal.model, terminal.action),
@@ -617,7 +1136,11 @@ mod tests {
                     )
                 );
                 assert_eq!(terminal.subspell_index, projectile_power);
-                assert_eq!((terminal.max_life, terminal.life), (lifetime, lifetime));
+                assert_eq!((terminal.max_life, terminal.life),
+                    (if family == Family::GravityWell { 300 } else { lifetime }, lifetime));
+                if family == Family::GravityWell {
+                    assert_eq!(terminal.record[74], 0, "sub_677A0 clears the child phase before its first visit");
+                }
 
                 match family {
                     Family::GravityWell => {
@@ -932,6 +1455,9 @@ mod tests {
                 })
                 .expect("fixture has a live Villager admitted by both source fields")
                 .entity_index;
+            let actor_generation = session.session.state.live.economy.economy.slot_generation(actor_slot);
+            let original_model = session.ordinary.villagers.villagers().iter()
+                .find(|actor| actor.entity_index == actor_slot).unwrap().model;
             let owner = session.session.state.live.core.state.entity_index;
             let caster_position = session.session.state.live.core.state.position;
             session
@@ -1093,7 +1619,7 @@ mod tests {
             }
             session.step_outer_turn(PlayerCommand::default(), 0);
             no_dispatch_errors(&session);
-            let lifetime = i32::from(profile.effect_parameter) * 8;
+            let lifetime = if family == Family::GravityWell { i32::from(profile.effect_parameter) } else { i32::from(profile.effect_parameter) * 8 };
             let impact_slot = session
                 .economy
                 .entities
@@ -1104,7 +1630,7 @@ mod tests {
                         && row.model == family.terminal_model()
                         && row.source_id == owner
                         && row.subspell_index == projectile_power
-                        && row.max_life == lifetime
+                        && row.max_life == if family == Family::GravityWell { 300 } else { lifetime }
                         && !prior_terminal_slots.contains(&row.index)
                 })
                 .map(|row| row.index)
@@ -1116,15 +1642,10 @@ mod tests {
                         session.economy.entities[usize::from(impact_slot)].action,
                         72
                     );
-                    assert_eq!(
-                        session.economy.entities[usize::from(impact_slot)].record[74],
-                        profile.effect_parameter,
-                        "sub_65820 copies projectile byte46 before sub_678E0 scales field life"
-                    );
-                    // The source keeps this payload byte while action72 counts
-                    // down, then resets it to phase zero on the scheduled
-                    // expiry callback. Its next real action74 visit performs
-                    // the Gravity pull through the shared actor authority.
+                    assert!(session.economy.entities[usize::from(impact_slot)].record[74] <= 2,
+                        "sub_677A0 starts phase zero; a same-pass visit may advance the rise");
+                    // Natural action72 visits the crater phases before its
+                    // ordinary expiry transitions to action74.
                     for _ in 0..=lifetime {
                         if session.economy.entities[usize::from(impact_slot)].action == 74 {
                             break;
@@ -1136,6 +1657,36 @@ mod tests {
                         session.economy.entities[usize::from(impact_slot)].action,
                         74
                     );
+                    // A source-correct rise can kill and reclaim the original
+                    // Villager before the action74 pull. Reuse it only while
+                    // it is still eligible; otherwise prove the original
+                    // generation is no longer live and select another real
+                    // eligible Villager for the same scheduled callback.
+                    let eligible = |actor: &&crate::villager::VillagerState| {
+                        actor.active && actor.life > 0 && actor.control_flags & 0x0010_0c21 == 0
+                            && !matches!(actor.action, 180 | 232)
+                            && !matches!(actor.model, 10 | 15 | 18 | 22 | 27 | 28)
+                    };
+                    let original = session.ordinary.villagers.villagers().iter()
+                        .find(|actor| actor.entity_index == actor_slot);
+                    let actor_slot = if original.as_ref().is_some_and(eligible) {
+                        actor_slot
+                    } else {
+                        let live = &session.session.state.live;
+                        let view = super::super::source_target::read(
+                            &live.economy,
+                            super::super::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+                            actor_slot,
+                        ).expect("original Villager current source address resolves");
+                        assert!(live.economy.economy.slot_generation(actor_slot) != actor_generation
+                            || view.is_none_or(|actor| !actor.active || actor.life <= 0 || actor.drawing_disabled()
+                                || actor.class != 5 || actor.model != original_model),
+                            "original Villager left its authority while its original source remains live: {view:?}");
+                        session.ordinary.villagers.villagers().iter().filter(eligible)
+                            .find(|actor| actor.entity_index != actor_slot)
+                            .unwrap_or_else(|| panic!("Gravity action74 needs another real eligible Villager; original={original:?} source={view:?}; remaining={:?}", session.ordinary.villagers.villagers()))
+                            .entity_index
+                    };
                     let gravity = &session.economy.entities[usize::from(impact_slot)];
                     let field_position = gravity.position;
                     let target_position = Position {
@@ -1789,7 +2340,8 @@ mod tests {
     }
 }
 
-/// Source guided callback followed by `sub_678E0`'s lifetime write. Guided
+/// Source guided callback followed by the family-specific `sub_677A0` or
+/// `sub_678E0` terminal write. Guided
 /// impact already copies the current projectile subspell value onto its field.
 /// Shared movement, impact creation, and pass tails remain with their owners.
 pub(crate) fn step_projectile(
@@ -1838,7 +2390,6 @@ pub(crate) fn step_projectile(
     let effect_life = current.record[74];
 
     if let Some(impact_slot) = outcome.impact_slot {
-        let field_lifetime = i32::from(effect_life).wrapping_mul(8);
         let impact = arena
             .entities
             .get_mut(usize::from(impact_slot))
@@ -1853,9 +2404,16 @@ pub(crate) fn step_projectile(
                 (impact.class, impact.model, impact.action)
             ));
         }
-        impact.set_max_life(field_lifetime);
-        impact.set_life(field_lifetime);
-        if family == Family::Whirlwind {
+        if family == Family::GravityWell {
+            // sub_677A0 replaces the child phase and life, but leaves the
+            // constructor's NewEvent maxLife untouched.
+            impact.set_source_byte_46(0);
+            impact.set_life(i32::from(effect_life));
+        } else {
+            // sub_678E0 gives Wind its separate eightfold lifetime.
+            let field_lifetime = i32::from(effect_life).wrapping_mul(8);
+            impact.set_max_life(field_lifetime);
+            impact.set_life(field_lifetime);
             crate::world::fields::sync_wind_impact(arena, impact_slot);
         }
     }

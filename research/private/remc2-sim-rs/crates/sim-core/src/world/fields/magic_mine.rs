@@ -68,6 +68,9 @@ pub(crate) fn construct(
         arena.economy.release_slot(slot, Some(source.entity_rng));
         return Err(error);
     }
+    // sub_50840 calls AddEventToMap_57D70, which marks the source row
+    // map-linked as well as inserting it into the map chain.
+    source.set_control_flags(source.control_flags | 4);
     arena.economy.source_rng.insert(slot, source.entity_rng);
     arena.entities[usize::from(slot)] = source;
     crate::world::terrain::cave_features::synchronize_links(arena, terrain, slot);
@@ -155,6 +158,15 @@ pub(crate) struct TerrainSample {
     pub water: bool,
 }
 
+/// Current source owner and local Beyond Sight packet for sub_3A8B0.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Visibility {
+    pub owner_available: bool,
+    pub owner_color: Option<u8>,
+    pub local_color: u8,
+    pub beyond_sight: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ManaDrop {
     pub position: Position,
@@ -200,6 +212,31 @@ pub(crate) fn nearest_target(
     nearest
 }
 
+/// sub_3A8B0 moves around the stored axis before sampling terrain. The
+/// byte is signed and runs 1..6, -5..-1, then zero on successive visits.
+pub(crate) fn recoil_position(mine: &EntitySnapshot) -> Position {
+    let recoil = mine.record[72] as i8;
+    if recoil == 0 {
+        return mine.position;
+    }
+    let distance = match recoil.unsigned_abs() {
+        1 => 0,
+        2 => 153,
+        3 => 307,
+        4 => 445,
+        5 => 491,
+        6 => 512,
+        _ => return mine.position,
+    };
+    let mut position = Position {
+        x: u16::from_le_bytes([mine.record[158], mine.record[159]]),
+        y: u16::from_le_bytes([mine.record[160], mine.record[161]]),
+        z: mine.position.z,
+    };
+    crate::move_entity(&mut position, mine.yaw, 0, distance);
+    position
+}
+
 /// One source sub_3A8B0 callback. `rows_by_slot` is a short-lived source-row
 /// view for target/owner resolution; `map_order` is the current class3 map
 /// chain. Projectile requests must be passed to the ordinary spell constructor
@@ -210,6 +247,7 @@ pub(crate) fn visit(
     map_order: &[u16],
     captured: Option<CapturedSpell>,
     terrain: TerrainSample,
+    visibility: Visibility,
 ) -> Result<Visit, String> {
     let Some(mine) = rows.get(usize::from(mine_slot)) else {
         return Err("Magic Mine slot is outside the source arena".to_owned());
@@ -219,32 +257,20 @@ pub(crate) fn visit(
     }
     let mut result = Visit::default();
     let owner_slot = mine.word_32();
-    let Some(owner) = rows.get(usize::from(owner_slot)) else {
-        rows[usize::from(mine_slot)].disable_drawing();
-        result.hide = true;
-        return Ok(result);
-    };
-    if owner.index != owner_slot || owner.life < 0 || owner.drawing_disabled() {
+    if !visibility.owner_available {
         rows[usize::from(mine_slot)].disable_drawing();
         result.hide = true;
         return Ok(result);
     }
 
-    // Source ground/cave clamps happen before the phase switch.
+    // Recoil precedes the phase-specific lifetime, hover, and cave clamps.
     let mine = &mut rows[usize::from(mine_slot)];
-    let mut position = mine.position;
-    if position.z < terrain.ground_height {
-        position.z = terrain.ground_height;
+    let mut position = recoil_position(mine);
+    let recoil = mine.record[72] as i8;
+    if recoil != 0 {
+        let next = recoil.wrapping_add(1);
+        mine.record[72] = if next > 6 { -5_i8 as u8 } else { next as u8 };
     }
-    if let Some(ceiling) = terrain.cave_ceiling {
-        let fov = i16::from_le_bytes([mine.record[92], mine.record[93]]);
-        let maximum = ceiling.wrapping_sub(fov);
-        if position.z > maximum {
-            position.z = maximum;
-        }
-    }
-    mine.set_position(position);
-
     let old_phase = mine.record[74];
     if old_phase != 9 && old_phase != 7 {
         let life = mine.life.wrapping_sub(1);
@@ -252,7 +278,35 @@ pub(crate) fn visit(
         if life <= 0 {
             mine.record[74] = 6;
         }
+        let mut flags = mine.control_flags;
+        if visibility.owner_color == Some(visibility.local_color) {
+            flags &= !1;
+            if u16::from_le_bytes([mine.record[58], mine.record[59]]) != UNCARGED {
+                flags |= 0x0080_0000;
+            }
+        } else if mine.phase & 7 == 0 {
+            if visibility.beyond_sight {
+                flags &= !1;
+            } else {
+                flags |= 1;
+            }
+        }
+        mine.set_control_flags(flags);
+        if position.z < terrain.ground_height {
+            position.z = terrain.ground_height;
+        }
+        let hover_delta = i32::from(position.z) - (i32::from(terrain.ground_height) + 1_024);
+        if mine.record[72] == 0 && hover_delta.abs() > 96 {
+            position.z = position.z.wrapping_add(if hover_delta <= 0 { 48 } else { -48 });
+        }
+        if let Some(ceiling) = terrain.cave_ceiling {
+            let maximum = ceiling.wrapping_sub(mine.array_fov());
+            if position.z > maximum {
+                position.z = maximum;
+            }
+        }
     }
+    mine.set_position(position);
 
     let phase = rows[usize::from(mine_slot)].record[74];
     match phase {
@@ -269,7 +323,7 @@ pub(crate) fn visit(
             mine.record[160..162].copy_from_slice(&mine.position.y.to_le_bytes());
             mine.record[162..164].copy_from_slice(&mine.position.z.to_le_bytes());
             mine.record[71] = rule.repeat_count;
-            mine.record[74] = 1;
+            mine.record[74] = if u16::from_le_bytes([mine.record[58], mine.record[59]]) != UNCARGED { 2 } else { 1 };
         }
         1 => {
             let mine = &mut rows[usize::from(mine_slot)];
@@ -279,6 +333,7 @@ pub(crate) fn visit(
         }
         2 => {
             let mine = &mut rows[usize::from(mine_slot)];
+            mine.set_control_flags(mine.control_flags & !8);
             let family = u16::from_le_bytes([mine.record[58], mine.record[59]]) as u8;
             let tier = u16::from_le_bytes([mine.record[56], mine.record[57]]) as u8;
             let spell = captured
@@ -314,6 +369,8 @@ pub(crate) fn visit(
             }
         }
         5 => {
+            let mine = &mut rows[usize::from(mine_slot)];
+            mine.set_control_flags(mine.control_flags & !0x0080_0001);
             let target_slot = rows[usize::from(mine_slot)].source_word_96();
             let target = rows
                 .get(usize::from(target_slot))
@@ -410,10 +467,27 @@ pub(crate) fn visit(
 
 /// Apply the ordinary constructor outcomes from one active-target visit. A
 /// failed allocation leaves the target and charge in place for the next pass.
+#[cfg(test)]
 pub(crate) fn complete_projectiles(
     rows: &mut [EntitySnapshot],
     mine_slot: u16,
     projectile_yaws: &[Option<i16>],
+) -> Result<bool, String> {
+    let mut exhausted = false;
+    for &yaw in projectile_yaws {
+        if let Some(yaw) = yaw {
+            exhausted |= complete_projectile(rows, mine_slot, yaw)?;
+        }
+    }
+    finish_projectile_burst(rows, mine_slot, exhausted)
+}
+
+/// Each successful sub_6DCA0 allocation updates the current Mine before the
+/// next allocation. The exhausted flag remains sticky until the burst ends.
+pub(crate) fn complete_projectile(
+    rows: &mut [EntitySnapshot],
+    mine_slot: u16,
+    yaw: i16,
 ) -> Result<bool, String> {
     let Some(mine) = rows.get(usize::from(mine_slot)) else {
         return Err("Magic Mine slot is outside the source arena".to_owned());
@@ -422,22 +496,28 @@ pub(crate) fn complete_projectiles(
         return Err("Magic Mine projectile completion is outside phase five".to_owned());
     }
     let mine = &mut rows[usize::from(mine_slot)];
-    let mut charge_finished = false;
-    for &yaw in projectile_yaws {
-        let Some(yaw) = yaw else {
-            continue;
-        };
-        let raw_yaw = yaw.cast_unsigned();
-        let source_yaw = (((raw_yaw >> 8).wrapping_add(4) & 7) << 8) | (raw_yaw & 0xff);
-        mine.set_yaw(source_yaw as i16);
-        mine.font_type_index = mine.font_type_index.wrapping_sub(1);
-        mine.record[65] = mine.font_type_index;
-        charge_finished |= mine.font_type_index == 0;
+    let raw_yaw = yaw.cast_unsigned();
+    let source_yaw = (((raw_yaw >> 8).wrapping_add(4) & 7) << 8) | (raw_yaw & 0xff);
+    mine.set_yaw(source_yaw as i16);
+    let recoil = mine.record[72] as i8;
+    mine.record[72] = if recoil == 0 { 1 } else { recoil.wrapping_add(1).min(5) as u8 };
+    mine.font_type_index = mine.font_type_index.wrapping_sub(1);
+    mine.record[65] = mine.font_type_index;
+    Ok(mine.font_type_index == 0)
+}
+
+pub(crate) fn finish_projectile_burst(
+    rows: &mut [EntitySnapshot],
+    mine_slot: u16,
+    exhausted: bool,
+) -> Result<bool, String> {
+    let mine = rows.get_mut(usize::from(mine_slot))
+        .ok_or("Magic Mine slot is outside the source arena")?;
+    if mine.class != CLASS || mine.model != MODEL || mine.record[74] != 5 {
+        return Err("Magic Mine projectile completion is outside phase five".to_owned());
     }
-    if charge_finished {
-        finish_charge(mine);
-    }
-    Ok(charge_finished)
+    if exhausted { finish_charge(mine); }
+    Ok(exhausted)
 }
 
 fn finish_charge(mine: &mut EntitySnapshot) {
@@ -452,8 +532,13 @@ fn next_rng(rng: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CapturedSpell, TerrainSample, capture, complete_projectiles, visit};
+    use super::{CapturedSpell, TerrainSample, Visibility, capture, complete_projectile,
+        complete_projectiles, finish_projectile_burst, visit};
     use crate::{Position, native_world::EntitySnapshot};
+
+    const LOCAL_OWNER: Visibility = Visibility {
+        owner_available: true, owner_color: Some(0), local_color: 0, beyond_sight: false,
+    };
 
     fn row(index: u16, class: u8, model: u8, position: Position) -> EntitySnapshot {
         let mut row = crate::world::terrain::cave_features::new_event(index, 17, position);
@@ -551,6 +636,7 @@ mod tests {
                 cave_ceiling: None,
                 water: false,
             },
+            LOCAL_OWNER,
         )
         .expect("captured source spell");
 
@@ -573,5 +659,75 @@ mod tests {
         assert_eq!(rows[2].record[71], 0);
         assert_eq!(rows[2].source_word_96(), 0);
         assert_eq!(rows[2].yaw, 300 + 1_024);
+        assert_eq!(rows[2].record[72], 1);
+    }
+
+    #[test]
+    fn fanout_updates_each_shot_before_the_sticky_exhaustion_tail() {
+        let mut rows = rows();
+        rows[2] = mine();
+        assert!(complete_projectile(&mut rows, 2, 300).unwrap());
+        assert_eq!((rows[2].record[74], rows[2].record[72], rows[2].font_type_index), (5, 1, 0));
+        assert!(!complete_projectile(&mut rows, 2, 500).unwrap());
+        assert_eq!((rows[2].record[74], rows[2].record[72], rows[2].font_type_index), (5, 2, 255));
+        assert!(finish_projectile_burst(&mut rows, 2, true).unwrap());
+        assert_eq!((rows[2].record[74], rows[2].record[71], rows[2].source_word_96()), (6, 0, 0));
+    }
+
+    #[test]
+    fn mine_hover_and_recoil_follow_the_source_visit_order() {
+        let mut rows = rows();
+        rows[2] = mine();
+        rows[2].record[74] = 1;
+        rows[2].record[58..60].copy_from_slice(&u16::MAX.to_le_bytes());
+        rows[2].record[158..160].copy_from_slice(&1_000_u16.to_le_bytes());
+        rows[2].record[160..162].copy_from_slice(&2_000_u16.to_le_bytes());
+        let terrain = TerrainSample { ground_height: 0, cave_ceiling: None, water: false };
+        let start_z = rows[2].position.z;
+        visit(&mut rows, 2, &[], None, terrain, LOCAL_OWNER).unwrap();
+        assert_eq!(rows[2].position.z, start_z + 48);
+
+        rows[2].record[72] = 6;
+        let axis_position = super::recoil_position(&rows[2]);
+        let before_z = rows[2].position.z;
+        visit(&mut rows, 2, &[], None, terrain, LOCAL_OWNER).unwrap();
+        assert_eq!(rows[2].position, axis_position);
+        assert_eq!(rows[2].record[72] as i8, -5);
+        assert_eq!(rows[2].position.z, before_z);
+        for expected in [-4_i8, -3, -2, -1, 0] {
+            visit(&mut rows, 2, &[], None, terrain, LOCAL_OWNER).unwrap();
+            assert_eq!(rows[2].record[72] as i8, expected);
+        }
+        assert_eq!(rows[2].position.z, before_z + 48);
+    }
+
+    #[test]
+    fn mine_visibility_uses_owner_charge_and_eight_visit_enemy_scan() {
+        let mut rows = rows();
+        rows[2] = mine();
+        rows[2].record[74] = 1;
+        rows[2].set_control_flags(1);
+        let terrain = TerrainSample { ground_height: 0, cave_ceiling: None, water: false };
+        visit(&mut rows, 2, &[], None, terrain, LOCAL_OWNER).unwrap();
+        assert_eq!(rows[2].control_flags & 1, 0);
+        assert_ne!(rows[2].control_flags & 0x0080_0000, 0);
+
+        let enemy = Visibility { owner_color: Some(1), ..LOCAL_OWNER };
+        rows[2].record[74] = 1;
+        rows[2].record[58..60].copy_from_slice(&u16::MAX.to_le_bytes());
+        rows[2].set_phase(1);
+        rows[2].set_control_flags(0);
+        visit(&mut rows, 2, &[], None, terrain, enemy).unwrap();
+        assert_eq!(rows[2].control_flags & 1, 0);
+        rows[2].set_phase(8);
+        visit(&mut rows, 2, &[], None, terrain, enemy).unwrap();
+        assert_ne!(rows[2].control_flags & 1, 0);
+        let seeing = Visibility { beyond_sight: true, ..enemy };
+        visit(&mut rows, 2, &[], None, terrain, seeing).unwrap();
+        assert_eq!(rows[2].control_flags & 1, 0);
+        rows[2].record[74] = 7;
+        rows[2].set_control_flags(1);
+        visit(&mut rows, 2, &[], None, terrain, seeing).unwrap();
+        assert_ne!(rows[2].control_flags & 1, 0);
     }
 }

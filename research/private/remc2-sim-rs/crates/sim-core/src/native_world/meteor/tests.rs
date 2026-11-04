@@ -58,6 +58,207 @@ fn exhaust(arena: &mut SourceArena) {
 }
 
 #[test]
+fn authored_meteor_pickup_and_public_hand_reach_scheduled_impact_and_damage() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::native_world::{Mc2DispatchEvent, area_damage, source_target};
+
+    let private = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let source_package = std::env::var_os("MC_METEOR_LEVEL6_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| private.join("generated/mc-bhq6-ordinary-20261025-zclu5fjj/level6"));
+    let mut source = CampaignSession::open(source_package, CampaignSelection::ordinary(6).unwrap())
+        .expect("unfiltered Level6 owner campaign opens");
+    let player = source.simulation().state.entity_index;
+    let pickup = source.simulation().shared_spells().pickups().iter()
+        .find(|row| row.index == 5 && (row.class, row.model, row.action) == (15, 9, 28))
+        .expect("actual initial Level6 slot5 is the Meteor pickup").index;
+    for _ in 0..16 {
+        let simulation = source.simulation_mut();
+        let position = simulation.entities()[usize::from(pickup)].position;
+        simulation.set_level2_entity_position(player, position).unwrap();
+        simulation.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(simulation.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "actual Level6 pickup dispatch: {:?}", simulation.dispatch_events());
+        if simulation.shared_spells().local_player().enabled_spell_holders[9] != 0 { break; }
+    }
+    assert_eq!(source.simulation().shared_spells().local_player().enabled_spell_holders[9],
+        pickup, "ordinary overlap acquires the actual Meteor pickup");
+    let learned = source.simulation().shared_spells().local_player().enabled_spell_holders
+        .iter().enumerate().filter_map(|(family, holder)| (*holder != 0).then_some(family as u8))
+        .collect::<Vec<_>>();
+
+    let packages = private.join("generated/ribbon-20261104-integration/group-zero-owner-package-v4");
+    for tier in 0_u8..=2 {
+        let mut campaign = CampaignSession::open(packages.join("level2"), CampaignSelection::LEVEL2)
+            .expect("unfiltered Level2 target campaign opens");
+        assert_eq!(campaign.rebuild_for_spell_carry(&learned, Some(9)).unwrap(), Some(9));
+        let simulation = campaign.simulation_mut();
+        let caster = simulation.state.entity_index;
+        let rule = RULES.tiers[usize::from(tier)];
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            simulation.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        let castle_site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+            x: x * 2048, y: y * 2048, z: 0,
+        })).find(|position| !simulation.economy().castle_projectile_site_blocked(
+            *position, simulation.entities(), simulation.canonical_terrain()))
+            .expect("owner terrain has a normal Castle site");
+        let castle = simulation.economy_mut().build_castle(castle_site, caster)
+            .expect("normal Castle constructor");
+        assert!(simulation.economy_mut().set_castle_mana_prerequisite_for_test(
+            castle, rule.castle_mana_required + 50_000));
+        simulation.shared_spells_mut().award_spell_experience(caster, 9, 5_000);
+        {
+            let live = &mut simulation.session.state.live;
+            let parent = &mut live.economy.entities[usize::from(caster)];
+            parent.max_mana = rule.mana_cost + 10_000;
+            parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+            parent.set_mana(parent.max_mana);
+            parent.set_mana_regen(0);
+            let parent = parent.clone();
+            live.shared_spells.sync_player_entity_from_authority(&parent);
+            live.shared_spells.player_mana = parent.mana;
+            live.shared_spells.caster.mana = parent.mana;
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+        }
+        let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 9).unwrap() as i8;
+        simulation.step_outer_turn(PlayerCommand { opcode: 31, argument_1: ui,
+            argument_2: tier as i8, ..Default::default() }, 0);
+        let holder = simulation.shared_spells().local_player().enabled_spell_holders[9];
+        assert_ne!(holder, 0);
+        assert_eq!(simulation.shared_spells().pickup(holder).unwrap().level_gate, tier as i8);
+
+        let (target, origin, yaw, aim) = simulation.goats().iter().filter(|goat| goat.life > 0)
+            .flat_map(|goat| [0_i16, 512, 1024, 1536].into_iter().map(move |yaw| (goat, yaw)))
+            .find_map(|(goat, yaw)| {
+                let mut origin = goat.position;
+                move_entity(&mut origin, yaw.wrapping_add(1024) & 2047, 0, 2048);
+                let terrain = simulation.canonical_terrain();
+                let ground = terrain.ground_height(goat.position);
+                let maximum = (0..=8).map(|step| {
+                    let mut point = origin;
+                    move_entity(&mut point, yaw, 0, step * 256);
+                    terrain.ground_height(point)
+                }).max().unwrap();
+                if terrain.material_mask(goat.position) == 1 || maximum > ground.wrapping_add(1024) {
+                    return None;
+                }
+                origin.z = maximum.wrapping_add(768);
+                Some((goat.entity_index, origin, yaw, Position { z: ground, ..goat.position }))
+            }).expect("an actual Goat has an open approach");
+        let target_handle = simulation.source_arena().handle(target).unwrap();
+        simulation.set_level2_entity_position(caster, origin).unwrap();
+        simulation.state.actual_speed = 0;
+        simulation.state.target_speed = 0;
+        let (_, pitch) = crate::level1_mission::projectile_guidance_angles(origin, aim);
+        simulation.set_level2_player_aim_for_test(yaw, pitch);
+        let life_before = {
+            let live = &simulation.session.state.live;
+            source_target::read(&live.economy,
+                source_target::Context::from_ordinary(&live.goats, &live.ordinary), target)
+                .unwrap().unwrap().life
+        };
+        let xp_before = simulation.shared_spells().spell_experience()[9];
+        let mut prior_mana = simulation.entities()[usize::from(caster)].mana;
+        let mut charged = false;
+        let mut flyer = None;
+        let mut impact = None;
+        let mut hidden = [false; 2];
+        let mut reclaimed = [false; 2];
+        let mut previous_phase = [None; 2];
+        let mut phase_advanced = [false; 2];
+        let mut presented = false;
+        let mut damage = false;
+        let mut sound = [false; 2];
+        area_damage::start_effect_damage_trace(target);
+        for turn in 0..100 {
+            simulation.step_outer_turn(if turn == 0 {
+                PlayerCommand { flags: 0x10, ..Default::default() }
+            } else { PlayerCommand::default() }, 0);
+            assert!(simulation.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "tier{tier} Meteor dispatch: {:?}", simulation.dispatch_events());
+            let live = &simulation.session.state.live;
+            let mana = live.economy.entities[usize::from(caster)].mana;
+            charged |= prior_mana - mana == rule.mana_cost;
+            prior_mana = mana;
+            for row in live.economy.entities.iter().filter(|row| row.active && row.source_id == caster) {
+                if (row.class, row.model, row.action) == (9, 3, 3) {
+                    flyer.get_or_insert((row.index, live.economy.slot_generation(row.index)));
+                    assert_eq!(row.subspell_index, rule.damage);
+                }
+                if (row.class, row.model, row.action) == (10, 17, 17) {
+                    impact.get_or_insert((row.index, live.economy.slot_generation(row.index)));
+                    assert_eq!(row.subspell_index, rule.damage);
+                }
+            }
+            for (i, saved) in [flyer, impact].into_iter().enumerate() {
+                if let Some((slot, generation)) = saved {
+                    let same = live.economy.slot_generation(slot) == generation;
+                    let current = source_target::read(&live.economy,
+                        source_target::Context::from_ordinary(&live.goats, &live.ordinary), slot)
+                        .unwrap().unwrap();
+                    hidden[i] |= same && current.active && current.drawing_disabled();
+                    if same && current.active {
+                        let phase = if i == 0 {
+                            live.economy.entities[usize::from(slot)].phase
+                        } else {
+                            live.economy.economy.authored_model17.iter()
+                                .find(|row| row.active && row.source_entity_index == slot)
+                                .expect("the current impact owns its phase").phase
+                        };
+                        if let Some(previous) = previous_phase[i] {
+                            assert_eq!(phase, u8::wrapping_add(previous, 1),
+                                "tier{tier} source phase advances once per live visit for carrier{i}");
+                            phase_advanced[i] = true;
+                        }
+                        previous_phase[i] = Some(phase);
+                    }
+                    reclaimed[i] |= !same || live.economy.free_source_slots().contains(&slot);
+                }
+            }
+            if live.economy.resolve(target_handle).is_some() {
+                let view = source_target::read(&live.economy,
+                    source_target::Context::from_ordinary(&live.goats, &live.ordinary), target)
+                    .unwrap().unwrap();
+                damage |= view.life < life_before && simulation.goats().iter().any(|goat| {
+                    goat.entity_index == target && (goat.current_attacker == caster as i16
+                        || goat.kill_credit_entity == caster as i16)
+                });
+            }
+            for event in &live.shared_spells.events {
+                if let crate::FlightEvent::PrepareSound { entity_index, sound_id, .. } = event {
+                    sound[0] |= *entity_index == caster && *sound_id == 15;
+                    sound[1] |= *sound_id == 30 && impact.is_some_and(|(slot, _)| slot == *entity_index);
+                }
+            }
+            for view in simulation.campaign_entity_presentations(0).unwrap() {
+                if flyer.is_some_and(|(slot, generation)| view.entity_index == slot
+                    && live.economy.slot_generation(slot) == generation) {
+                    assert_eq!((view.source_id, view.render_parameter_index), (caster, 76));
+                    assert_eq!(view.base_tmap, simulation.session.definition.presentation.particles[76].base_tmap);
+                    presented = true;
+                }
+            }
+            if reclaimed.iter().all(|done| *done) { break; }
+        }
+        let receipts = area_damage::take_effect_damage_trace();
+        let impact_damage = receipts.iter().any(|receipt| receipt.pulse.owner == caster
+            && receipt.pulse.payload == rule.damage / u16::from(rule.impact_duration)
+            && receipt.mailbox_after.is_some_and(|(damage, owner)| damage > 0 && owner == caster)
+            && receipt.hit_count.is_some_and(|hits| hits > 0));
+        assert!(charged && presented && damage && impact_damage,
+            "tier{tier}: charge={charged} sprite={presented} target={damage} pulse={impact_damage} flyer={flyer:?} impact={impact:?} receipts={receipts:?}");
+        assert!(simulation.shared_spells().spell_experience()[9] > xp_before, "Meteor damage awards XP");
+        assert_eq!(hidden, [true; 2], "flyer and impact hide before reclaim");
+        assert_eq!(reclaimed, [true; 2], "flyer and impact reach following reclaim");
+        assert_eq!(phase_advanced, [true; 2], "both source carriers advance through normal visits");
+        assert_eq!(sound, [true; 2], "launch and impact sounds reach presentation");
+    }
+}
+
+#[test]
 fn meteor_common_constructor_preserves_tiers_and_source_position_alias() {
     let (session, holder_slot, parent) = ready_holder();
     let particles = session.session.definition.presentation.particles.clone();

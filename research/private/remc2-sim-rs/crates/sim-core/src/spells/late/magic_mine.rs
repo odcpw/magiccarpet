@@ -104,8 +104,6 @@ impl Holder {
                     } else {
                         parent.mana_regen.wrapping_sub(rule.mana_cost)
                     };
-                } else if parent.mana_regen > 0 {
-                    parent.mana_regen = 0;
                 }
             }
             self.active = self.active.wrapping_sub(1);
@@ -236,5 +234,17 @@ mod tests {
         assert!(!visit.mana_pulse);
         assert_eq!(visit.projectile_allocation_attempts, 0);
         assert_eq!(parent.mana_regen, 100);
+    }
+
+    #[test]
+    fn later_admitted_countdown_preserves_positive_regeneration() {
+        let rule = SOURCE_RULES[0];
+        let mut holder = Holder::new(rule, rule.duration - 1, 2);
+        let mut parent = caster();
+        let visit = holder.visit(rule, Some(&mut parent));
+        assert!(!visit.denied && !visit.mana_pulse);
+        assert_eq!(visit.projectile_allocation_attempts, 0);
+        assert_eq!(parent.mana_regen, 100);
+        assert_eq!((holder.active, holder.cooldown), (rule.duration - 2, 1));
     }
 }

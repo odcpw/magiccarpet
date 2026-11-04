@@ -2,8 +2,8 @@
 //!
 //! Holder pulses create ordinary class9/model29 source rows. The field kernel
 //! owns charging, target selection, and payload state; this adapter runs the
-//! source constructor before applying holder overrides, then reports actual
-//! projectile yaw (or `None`) back through `complete_field_projectiles`.
+//! source constructor before applying holder overrides, then commits each
+//! successful projectile's actual yaw before the fanout tail.
 
 use super::{EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain};
 use crate::campaign::source_arena::SourceArena;
@@ -155,12 +155,13 @@ fn hand_position(
 /// state. Parent and holder rows are reread after allocation so an arena slot
 /// reuse cannot leave the source yaw, FOV, or mana overrides stale.
 fn construct_carrier(
+    shared: &Level2SharedSpellResetSession,
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     parent_slot: u16,
     holder_slot: u16,
-    parameters: rules::ProjectileParameters,
+    input: CastInput,
 ) -> Result<Option<u16>, String> {
     let parent_before = arena
         .entities
@@ -196,6 +197,16 @@ fn construct_carrier(
             })
             .cloned()
             .ok_or("Magic Mine holder was lost during source allocation")?;
+        let input = if parent.special_relation == super::EntitySpecialRelation::GlobalSpecialState {
+            CastInput {
+                aim_yaw: shared.global_special_state.input_yaw,
+                aim_pitch: shared.global_special_state.input_pitch,
+                auxiliary_byte: shared.global_special_state.cast_auxiliary,
+                ..input
+            }
+        } else {
+            input
+        };
         let row = arena
             .entities
             .get_mut(usize::from(slot))
@@ -208,13 +219,11 @@ fn construct_carrier(
         row.set_mana(holder.mana);
         row.set_subspell_index(u16::from(holder.record[74]));
         row.set_source_byte_46(holder.record[74]);
-        row.set_source_dword_10(i32::from(parameters.pending_cast_auxiliary));
+        row.set_source_dword_10(i32::from(input.auxiliary_byte));
         put_word(row, 42, holder_slot);
         set_owner(row, parent.source_id);
-        let yaw = parent.yaw.wrapping_add(parent.next_entity() as i16);
-        let pitch = parent
-            .pitch
-            .wrapping_add(i16::from_le_bytes([parent.record[172], parent.record[173]]));
+        let yaw = parent.yaw.wrapping_add(input.aim_yaw);
+        let pitch = parent.pitch.wrapping_add(input.aim_pitch);
         let mut destination = parent.position;
         move_entity(&mut destination, yaw, 0, 4_096);
         destination.z = terrain.ground_height(destination);
@@ -266,14 +275,16 @@ pub(crate) fn step_holder(
         .ok_or_else(|| format!("Magic Mine holder {slot} is not live class15/model23/action69"))?;
     let tier = crate::spell_activation::level2_applied_tier(holder.level_gate)
         .ok_or("Magic Mine holder has a negative source tier")?;
-    let rule = *rules::SOURCE_RULES
+    let mut rule = *rules::SOURCE_RULES
         .get(usize::from(tier))
         .ok_or("Magic Mine holder tier is outside owner SPELLS.DAT")?;
+    rule.mana_cost = holder.max_mana;
+    rule.castle_mana_required = holder.mana_regen;
     let parent_slot = holder.source_spell_parent_entity_index();
     let parent = arena
         .entities
         .get(usize::from(parent_slot))
-        .filter(|parent| parent_slot != 0 && parent.active)
+        .filter(|_| parent_slot != 0)
         .cloned();
 
     // Preserve the current holder row before NewEvent can recycle an arena
@@ -294,8 +305,8 @@ pub(crate) fn step_holder(
         yaw: parent.yaw,
         pitch: parent.pitch,
         height_offset: parent.array_fov(),
-        next_entity: parent.next_entity(),
-        entity_index2: u16::from_le_bytes([parent.record[172], parent.record[173]]),
+        next_entity: input.aim_yaw as u16,
+        entity_index2: input.aim_pitch as u16,
         pending_cast_auxiliary: input.auxiliary_byte,
     });
     let mut state = rules::Holder {
@@ -310,23 +321,39 @@ pub(crate) fn step_holder(
         ..HolderOutcome::default()
     };
 
-    if let (Some(parent), Some(caster)) = (parent.as_ref(), caster) {
-        if let Some(authority) = arena.entities.get_mut(usize::from(parent_slot)) {
-            authority.set_mana_regen(caster.mana_regen);
-            shared.sync_player_entity_from_authority(authority);
-            if parent_slot == shared.player_entity.index {
-                shared.sync_typed_spell_parent_caches_from_player_entity();
-            }
-        }
+    if let (Some(_), Some(caster)) = (parent.as_ref(), caster) {
         if visit.projectile_allocation_attempts != 0 {
             let parameters = rule.projectile_parameters(caster, slot, holder.mana);
             outcome.projectile =
-                construct_carrier(arena, terrain, particles, parent_slot, slot, parameters)?;
+                construct_carrier(shared, arena, terrain, particles, parent_slot, slot, input)?;
             if let Some(projectile) = outcome.projectile {
-                outcome.clear_player_aux = Some(parent_slot);
+                if arena.entities[usize::from(parent_slot)].special_relation
+                    == super::EntitySpecialRelation::GlobalSpecialState
+                {
+                    shared.global_special_state.cast_auxiliary = 0;
+                } else {
+                    outcome.clear_player_aux = Some(parent_slot);
+                }
                 arena
                     .economy
-                    .prepare_sound(projectile, parent_slot, -1, parameters.sound);
+                    .prepare_sound(projectile, projectile, -1, parameters.sound);
+            }
+        }
+    }
+
+    // Source charging follows NewEvent, including a failed allocation, and
+    // reads the current fixed-address parent and physical holder price.
+    if visit.mana_pulse {
+        let cost = arena.entities[usize::from(slot)].max_mana;
+        if let Some(parent) = arena.entities.get_mut(usize::from(parent_slot)) {
+            parent.set_mana_regen(if parent.mana_regen >= 0 {
+                cost.wrapping_neg()
+            } else {
+                parent.mana_regen.wrapping_sub(cost)
+            });
+            shared.sync_player_entity_from_authority(parent);
+            if parent_slot == shared.player_entity.index {
+                shared.sync_typed_spell_parent_caches_from_player_entity();
             }
         }
     }
@@ -397,31 +424,65 @@ pub(crate) fn capture_flyer(
 
 /// One scheduled model78 callback. `captured` is resolved from the typed
 /// source spell profile by the caller; `visit.projectiles` must be sent through
-/// the normal family constructor before `complete_field_projectiles` runs.
+/// the normal family constructor and its per-shot completion.
 pub(crate) fn step_field(
+    shared: &Level2SharedSpellResetSession,
     arena: &mut SourceArena,
     mine_slot: u16,
     map_order: &[u16],
     captured: Option<CapturedSpell>,
-    terrain: TerrainSample,
+    terrain: &SessionTerrain,
 ) -> Result<field::Visit, String> {
-    let visit = field::visit(&mut arena.entities, mine_slot, map_order, captured, terrain)?;
+    let row = arena.entities.get(usize::from(mine_slot))
+        .ok_or("Magic Mine slot is outside the source arena")?;
+    let position = field::recoil_position(row);
+    let owner_slot = row.word_32();
+    let context = || super::source_target::Context { spells: Some(shared), ..Default::default() };
+    let owner = super::source_target::status_parent(arena, context(), owner_slot)?;
+    let owner_color = match &owner {
+        Some(owner) => super::source_target::status_player_color(shared, owner)?,
+        None => None,
+    };
+    let holder_slot = shared.local_player.enabled_spell_holders[12];
+    let holder = if holder_slot == 0 {
+        None
+    } else {
+        super::source_target::status_parent(arena, context(), holder_slot)?
+    };
+    let visibility = field::Visibility {
+        owner_available: owner.as_ref().is_some_and(|owner| owner.life >= 0 && !owner.drawing_disabled()),
+        owner_color,
+        local_color: shared.local_player.slot,
+        beyond_sight: holder.is_some_and(|holder| holder.source_word_2e() != 0 && holder.record[74] >= 2),
+    };
+    let sample = TerrainSample {
+        ground_height: terrain.ground_height(position),
+        cave_ceiling: terrain.ceiling_height(position),
+        water: terrain.material_mask(position) == 1,
+    };
+    let visit = field::visit(&mut arena.entities, mine_slot, map_order, captured, sample, visibility)?;
     if let Some(mine) = arena.entities.get(usize::from(mine_slot)) {
         arena.economy.source_rng.insert(mine_slot, mine.entity_rng);
     }
     Ok(visit)
 }
 
-/// Finish one model78 firing visit from actual constructor results. The caller
-/// supplies `Some(yaw)` only after an ordinary constructor returns a live
-/// projectile and reads that row's yaw; failed or unsupported constructors
-/// supply `None` and leave the mine's charge in place.
-pub(crate) fn complete_field_projectiles(
+/// Commit one successful constructor before the next source allocation.
+pub(crate) fn complete_field_projectile(
     arena: &mut SourceArena,
     mine_slot: u16,
-    projectile_yaws: &[Option<i16>],
+    yaw: i16,
 ) -> Result<bool, String> {
-    field::complete_projectiles(&mut arena.entities, mine_slot, projectile_yaws)
+    field::complete_projectile(&mut arena.entities, mine_slot, yaw)
+}
+
+/// Apply the sticky exhaustion tail after the complete fanout loop.
+pub(crate) fn finish_field_projectile_burst(
+    arena: &mut SourceArena,
+    mine_slot: u16,
+    exhausted: bool,
+) -> Result<bool, String> {
+    field::finish_projectile_burst(&mut arena.entities, mine_slot, exhausted)
 }
 
 fn source_guidance(
@@ -689,4 +750,340 @@ pub(crate) fn step_projectile(
 /// Typed request seam used by the existing ordinary family constructor.
 pub(crate) fn projectile_requests(visit: &field::Visit) -> &[field::ProjectileRequest] {
     &visit.projectiles
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authored_magic_mine_gates_acquisition_and_public_tiers_create_fields() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::level_definition::late_spells::MAGIC_MINE_PROPERTIES;
+        use crate::native_world::{Mc2DispatchEvent, LEVEL2_SPELL_TIER_THRESHOLDS};
+        use crate::native_world::simulation::CarriedSpellProgress;
+
+        let package = std::env::var_os("MC_MINE_LEVEL18_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/all-spells-20261104-integration/current-owner-package/level18"),
+            std::path::PathBuf::from,
+        );
+        let mut acquired = CampaignSession::open(package, CampaignSelection::ordinary(18).unwrap())
+            .expect("actual Level 18 owner package opens");
+        let player = acquired.simulation().state.entity_index;
+        assert_eq!(acquired.simulation().shared_spells().local_player.enabled_spell_holders[23], 0);
+        let gate = &acquired.simulation().entities()[89];
+        assert!(gate.active);
+        assert_eq!((gate.class, gate.model, gate.action, gate.source_id, gate.level_gate), (11, 32, 32, 14, 1));
+        // Stage the real gate's objective prerequisite, not earned progression.
+        {
+            let runtime = &mut acquired.simulation_mut().session.state.live.core.runtime;
+            runtime.stage_index = 2;
+            for owner in 0..runtime.objectives.len() {
+                runtime.set_level2_objective_stage_selector_for(owner, 1, 2);
+            }
+        }
+        let mut gate_fired = false;
+        for _ in 0..4 {
+            acquired.step(PlayerCommand::default(), 0);
+            assert!(!acquired.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Level18 objective gate: {:?}", acquired.simulation().dispatch_events());
+            gate_fired |= acquired.simulation().dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 89, group: 14, authored_indices, .. }
+                    if authored_indices.as_ref() == [359]));
+            if gate_fired { break; }
+        }
+        assert!(gate_fired, "actual objective gate produces authored proximity switch359");
+        let switch = *acquired.simulation().economy().authored_switch_producers().iter()
+            .find(|switch| switch.authored_index == 359 && switch.active)
+            .expect("group14 publishes the real group15 proximity switch");
+        acquired.simulation_mut().set_level2_entity_position(player, switch.position).unwrap();
+        let mut switch_fired = false;
+        for _ in 0..10 {
+            acquired.step(PlayerCommand::default(), 0);
+            assert!(!acquired.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Level18 proximity gate: {:?}", acquired.simulation().dispatch_events());
+            switch_fired |= acquired.simulation().dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 15, authored_indices, .. }
+                    if *source_slot == switch.source_entity_index && authored_indices.contains(&370)));
+            if switch_fired { break; }
+        }
+        assert!(switch_fired, "ordinary overlap fires the actual group15 switch");
+        let pickup = *acquired.simulation().economy().spell_pickups().iter()
+            .find(|pickup| pickup.authored_index == 370 && pickup.family == 23)
+            .expect("group15 creates the real Magic Mine pickup");
+        assert_eq!(pickup.action, 70);
+        acquired.simulation_mut().set_level2_entity_position(player, pickup.position).unwrap();
+        let mut receipt = None;
+        for _ in 0..8 {
+            acquired.step(PlayerCommand::default(), 0);
+            receipt = acquired.simulation().dispatch_events().iter().find_map(|event| match event {
+                Mc2DispatchEvent::SpellAcquisition { source_slot, family: 23, result: Some(outcome), .. }
+                    if *source_slot == pickup.source_entity_index => Some(*outcome),
+                _ => None,
+            });
+            if receipt.is_some() { break; }
+        }
+        let receipt = receipt.expect("ordinary pickup callback acquires Magic Mine");
+        assert_eq!((receipt.source_slot, receipt.family, receipt.holder_action, receipt.parent_entity_index),
+            (pickup.source_entity_index, 23, 69, player));
+        let stone = acquired.simulation().entities().iter().find(|row| row.active
+            && (row.class, row.model, row.action) == (2, 3, 9)
+            && row.position.x == (91 << 8) + 128 && row.position.y == (68 << 8) + 128)
+            .expect("the same real group15 constructed authored BadStone row369").index;
+        let stone_phase = acquired.simulation().entities()[usize::from(stone)].phase;
+        acquired.step(PlayerCommand::default(), 0);
+        let session = acquired.simulation();
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "group15 BadStone callback: {:?}", session.dispatch_events());
+        let stone_row = &session.entities()[usize::from(stone)];
+        assert_eq!((stone_row.class, stone_row.model, stone_row.action), (2, 3, 9));
+        assert_eq!(stone_row.phase, stone_phase.wrapping_add(1));
+        assert_ne!(stone_row.control_flags & 0x0002_0000, 0);
+        assert!(session.economy.map_chains.is_linked(stone));
+        assert_eq!(stone_row.position.z, session.canonical_terrain().ground_height(stone_row.position));
+        let stone_sprite = session.campaign_entity_presentations(0).unwrap().into_iter()
+            .find(|sprite| sprite.entity_index == stone).expect("group15 BadStone reaches the actual sprite consumer");
+        assert_eq!(stone_sprite.render_parameter_index, 270);
+        assert_eq!(stone_sprite.base_tmap, session.session.definition.presentation.particles[270].base_tmap);
+
+        for (tier, profile) in MAGIC_MINE_PROPERTIES.tiers.into_iter().enumerate() {
+            let mut campaign = acquired.clone();
+            let encounter_rival = if tier == 0 {
+                let rival = campaign.simulation().entities().iter()
+                    .find(|row| row.active && (row.class, row.model) == (3, 1) && row.life > 0)
+                    .expect("Level18 contains a real opposing wizard").index;
+                // Declared pre-cast pose: move the real rival away from its
+                // actual Castle so its ordinary protection countdown is not
+                // continuously refreshed by the Castle overlap.
+                let (origin, castle_slot) = {
+                    let live = &campaign.simulation().session.state.live;
+                    let row = &live.economy.entities[usize::from(rival)];
+                    let upkeep = live.nyphur_dispatcher.get_in_arena(&live.economy, rival)
+                        .expect("the actual rival has its scheduled upkeep authority")
+                        .common_upkeep(row.phase);
+                    let origin = live.economy.entities.get(usize::from(upkeep.castle_entity_index))
+                        .filter(|_| upkeep.castle_entity_index != 0)
+                        .map_or(row.position, |castle| castle.position);
+                    (origin, upkeep.castle_entity_index)
+                };
+                let mut safe_pose = Position { x: origin.x.wrapping_add(16_384), ..origin };
+                let terrain = campaign.simulation().canonical_terrain();
+                safe_pose.z = terrain.ground_height(safe_pose).saturating_add(512);
+                if let Some(ceiling) = terrain.ceiling_height(safe_pose) {
+                    safe_pose.z = safe_pose.z.min(ceiling.saturating_sub(256));
+                }
+                campaign.simulation_mut().set_level2_entity_position(rival, safe_pose).unwrap();
+                // Source Nyphur starts with word159 protection. Let its real
+                // common-upkeep callbacks expire it before constructing the
+                // Mine; no protection or damage mailbox is staged.
+                let mut unprotected = false;
+                let mut protection_trace = Vec::new();
+                for turn in 0..160 {
+                    let session = campaign.simulation();
+                    let live = &session.session.state.live;
+                    let row = &live.economy.entities[usize::from(rival)];
+                    let dispatcher = live.nyphur_dispatcher.get_in_arena(&live.economy, rival)
+                        .expect("the actual rival has its scheduled upkeep authority");
+                    let upkeep = dispatcher.common_upkeep(row.phase);
+                    if turn % 16 == 0 {
+                        let castle = live.economy.entities.get(usize::from(castle_slot))
+                            .filter(|_| castle_slot != 0)
+                            .map(|castle| (castle.position, castle.array_pitch(), castle.array_roll(), castle.array_fov()));
+                        protection_trace.push((turn, upkeep.word_0x159, row.position, row.control_flags, castle));
+                    }
+                    if upkeep.word_0x159 == 0 {
+                        unprotected = true;
+                        break;
+                    }
+                    campaign.step(PlayerCommand::default(), 0);
+                    assert!(!campaign.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                        "ordinary rival protection expiry: {:?}", campaign.simulation().dispatch_events());
+                }
+                assert!(unprotected, "real rival protection expires through ordinary upkeep: {protection_trace:?}");
+                Some(rival)
+            } else { None };
+            let session = campaign.simulation_mut();
+            session.apply_carried_spell_progression(&[CarriedSpellProgress {
+                family: 23,
+                persistent_experience: LEVEL2_SPELL_TIER_THRESHOLDS[23][tier],
+                runtime_experience: 0,
+                unlocked_tier: tier as i8,
+                selected_tier: tier as i8,
+            }]).unwrap();
+            let holder = session.shared_spells().local_player.enabled_spell_holders[23];
+            assert_eq!(holder, pickup.source_entity_index);
+            assert_eq!(session.shared_spells().pickup(holder).unwrap().level_gate, tier as i8);
+            let position = session.state.position;
+            let castle = session.economy_mut().build_castle(position, player).unwrap();
+            assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, profile.runtime_castle_mana_limit));
+            let mut cast_position = Position { x: position.x.wrapping_add(4_096), ..position };
+            cast_position.z = session.session.state.live.terrain.ground_height(cast_position).saturating_add(512);
+            session.set_level2_entity_position(player, cast_position).unwrap();
+            let staged_mana = profile.mana_cost + 1_000;
+            let live = &mut session.session.state.live;
+            live.economy.refresh_owner_mana_rows();
+            for row in &mut live.shared_spells.player_entities {
+                if row.index == player { row.set_mana(staged_mana); row.set_mana_regen(0); }
+            }
+            live.shared_spells.player_entity.set_mana(staged_mana);
+            live.shared_spells.player_entity.set_mana_regen(0);
+            live.shared_spells.caster.mana = staged_mana;
+            live.shared_spells.player_mana = staged_mana;
+            live.economy.entities[usize::from(player)].set_mana(staged_mana);
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = staged_mana; }
+            let owner_id = live.economy.entities[usize::from(player)].source_id;
+            let existing = live.economy.entities.iter().filter(|row| row.active && (row.class,row.model)==(10,78)).map(|row| row.index).collect::<Vec<_>>();
+            let start = session.effect_journal().records().len();
+            let mut flyer_seen = false;
+            let mut field_slot = None;
+            let mut trace = Vec::new();
+            for turn in 0..100 {
+                campaign.step(if turn == 0 { PlayerCommand { opcode: 6, argument_1: 23, flags: 0x40, ..PlayerCommand::default() } } else { PlayerCommand::default() }, 0);
+                let session = campaign.simulation();
+                assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Magic Mine tier {tier} turn {turn}: {:?}", session.dispatch_events());
+                flyer_seen |= session.entities().iter().any(|row| row.active && (row.class,row.model,row.action)==(9,29,30) && u16::from_le_bytes([row.record[42], row.record[43]])==holder && row.subspell_index==tier as u16);
+                field_slot = session.entities().iter().find(|row| row.active && (row.class,row.model,row.action)==(10,78,85) && row.word_32()==owner_id && row.subspell_index==tier as u16 && !existing.contains(&row.index)).map(|row| row.index);
+                if trace.len() < 20 {
+                    let rows = session.entities().iter().filter(|row| row.active && ((row.class,row.model)==(9,29) || (row.class,row.model)==(10,78)))
+                        .map(|row| (row.index, row.class, row.model, row.action, row.control_flags, row.life, row.source_id, row.word_32(), row.subspell_index, row.position)).collect::<Vec<_>>();
+                    if !rows.is_empty() { trace.push((turn, rows)); }
+                }
+                if field_slot.is_some() { break; }
+            }
+            assert!(flyer_seen, "acquired tier {tier} emits the actual Mine flyer");
+            let field_slot = field_slot.unwrap_or_else(|| panic!("natural Mine tier{tier} owner{owner_id} holder{holder} flyer constructs its actual field; trace={trace:?}"));
+            let session = campaign.simulation();
+            let field = &session.entities()[usize::from(field_slot)];
+            // The constructor starts at 1000; if its allocated slot is still
+            // ahead of the source cursor, action85 already applies the live
+            // tier's duration in that same pass.
+            assert_eq!(field.max_life, if field.record[74] == 0 { 1_000 } else { profile.subspell_index });
+            assert_eq!(u16::from_le_bytes([field.record[58],field.record[59]]), u16::MAX);
+            assert!(session.effect_journal().records()[start..].iter().any(|record| matches!(record.effect,
+                crate::campaign::journal::CampaignEffect::Dispatch(Mc2DispatchEvent::Economy {
+                    event: super::super::Level2EconomyEvent::PreparedSound { source_entity_index, entity_index, player_index: -1, sound_id: 15 }, ..
+                }) if source_entity_index == entity_index)),
+                "actual Magic Mine flyer publishes source sound15");
+            let sprite = session.campaign_entity_presentations(0).unwrap().into_iter().find(|sprite| sprite.entity_index == field_slot)
+                .expect("natural Mine field reaches the sprite consumer");
+            assert_eq!(Some(sprite.render_parameter_index), field.particle_parameter_index);
+            assert_eq!(sprite.base_tmap, session.session.definition.presentation.particles[usize::from(sprite.render_parameter_index)].base_tmap);
+            if tier == 0 {
+                // Carry Fireball through the same campaign holder constructor
+                // if the selected Level18 start has not already supplied it.
+                // Resource and actor geometry below are controlled; the Mine,
+                // Fireball, source targeting, contact and cleanup all tick via
+                // the ordinary scheduler.
+                let field_position = field.position;
+                let generation = session.session.state.live.economy.economy.slot_generation(field_slot);
+                let session = campaign.simulation_mut();
+                if session.shared_spells().local_player.enabled_spell_holders[0] == 0 {
+                    let mut carried = session.shared_spells().local_player.enabled_spell_holders.iter().enumerate()
+                        .filter_map(|(family, slot)| (*slot != 0).then_some(family as u8))
+                        .collect::<Vec<_>>();
+                    carried.push(0);
+                    session.apply_carried_spell_families(&carried, Some(0)).unwrap();
+                }
+                let fireball_holder = session.shared_spells().local_player.enabled_spell_holders[0];
+                assert_ne!(fireball_holder, 0);
+                let mut shooter = Position { x: field_position.x.wrapping_add(1_024), ..field_position };
+                shooter.z = session.session.state.live.terrain.ground_height(shooter).saturating_add(256);
+                session.set_level2_entity_position(player, shooter).unwrap();
+                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(shooter, field_position);
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                {
+                    let live = &mut session.session.state.live;
+                    let mana = 20_000;
+                    for row in &mut live.shared_spells.player_entities {
+                        if row.index == player { row.set_mana(mana); row.set_mana_regen(0); }
+                    }
+                    live.shared_spells.player_entity.set_mana(mana);
+                    live.shared_spells.player_entity.set_mana_regen(0);
+                    live.shared_spells.caster.mana = mana;
+                    live.shared_spells.player_mana = mana;
+                    live.economy.entities[usize::from(player)].set_mana(mana);
+                    if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = mana; }
+                }
+                let mut captured = false;
+                for turn in 0..80 {
+                    campaign.step(if turn == 0 { PlayerCommand { opcode: 6, argument_1: 0, flags: 0x40, ..PlayerCommand::default() } } else { PlayerCommand::default() }, 0);
+                    let session = campaign.simulation();
+                    assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Mine Fireball capture turn {turn}: {:?}", session.dispatch_events());
+                    let mine = &session.entities()[usize::from(field_slot)];
+                    assert!(mine.active && (mine.class, mine.model) == (10, 78), "actual Mine survives until Fireball capture");
+                    captured = u16::from_le_bytes([mine.record[58], mine.record[59]]) == 0;
+                    if captured {
+                        assert_eq!(u16::from_le_bytes([mine.record[56], mine.record[57]]), 0);
+                        break;
+                    }
+                }
+                assert!(captured, "the actual public Fireball is captured by the naturally produced owned Mine");
+
+                let rival = encounter_rival.expect("natural rival protection expired before casting");
+                assert_ne!(campaign.simulation().entities()[usize::from(rival)].source_id, owner_id);
+                let initial_life = campaign.simulation().entities()[usize::from(rival)].life;
+                let rival_generation = campaign.simulation().session.state.live.economy.economy.slot_generation(rival);
+                let mut selected = false;
+                let mut emitted = false;
+                let mut damaged = false;
+                let mut rival_placed = false;
+                let mut release_trace = Vec::new();
+                for turn in 0..300 {
+                    if !rival_placed {
+                        let session = campaign.simulation();
+                        let mine = &session.entities()[usize::from(field_slot)];
+                        if mine.record[74] == 4 && mine.phase & 15 == 0 {
+                            let rival_row = &session.entities()[usize::from(rival)];
+                            let target_position = Position {
+                                x: mine.position.x.wrapping_add(640), y: mine.position.y,
+                                z: mine.position.z.wrapping_add(mine.array_yaw()).wrapping_sub(rival_row.array_yaw()),
+                            };
+                            campaign.simulation_mut().set_level2_entity_position(rival, target_position).unwrap();
+                            rival_placed = true;
+                        }
+                    }
+                    campaign.step(PlayerCommand::default(), 0);
+                    let session = campaign.simulation();
+                    assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Mine release turn {turn}: {:?}", session.dispatch_events());
+                    let mine = &session.entities()[usize::from(field_slot)];
+                    selected |= mine.source_word_96() == rival;
+                    emitted |= session.economy.fireball_projectiles().iter().any(|shot| shot.active && shot.owner_entity_index == owner_id && shot.target_source_entity_index == rival && shot.holder_entity_index == 0);
+                    let target = &session.entities()[usize::from(rival)];
+                    damaged |= selected && session.session.state.live.economy.economy.slot_generation(rival) == rival_generation
+                        && target.life < initial_life && target.word_26() == owner_id;
+                    if release_trace.len() < 40 {
+                        let projectiles = session.economy.fireball_projectiles().iter()
+                            .filter(|shot| shot.active && shot.owner_entity_index == owner_id && shot.holder_entity_index == 0)
+                            .map(|shot| (shot.source_entity_index, shot.position, shot.target_source_entity_index,
+                                shot.source_subspell_index, shot.yaw, shot.pitch)).collect::<Vec<_>>();
+                        if !projectiles.is_empty() || turn % 16 == 0 {
+                            release_trace.push((turn, mine.record[74], mine.position, mine.source_word_96(),
+                                target.position, target.life, target.control_flags, target.word_26(), target.mana, projectiles));
+                        }
+                    }
+                    if damaged { break; }
+                }
+                assert!(rival_placed, "the real rival is placed once at the next ordinary Mine target scan");
+                assert!(selected, "charged Mine selects the real opposing wizard");
+                assert!(emitted, "charged Mine emits its captured Fireball at that wizard");
+                assert!(damaged, "the ordinary released Fireball damages the actual wizard with owner attribution: {release_trace:?}");
+
+                let mut hidden = false;
+                let mut reclaimed = false;
+                for _ in 0..1_100 {
+                    campaign.step(PlayerCommand::default(), 0);
+                    let session = campaign.simulation();
+                    assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "natural Mine expiry: {:?}", session.dispatch_events());
+                    let arena = &session.session.state.live.economy;
+                    let row = &arena.entities[usize::from(field_slot)];
+                    if arena.economy.slot_generation(field_slot) != generation || !row.active {
+                        reclaimed = true;
+                        break;
+                    }
+                    hidden |= row.drawing_disabled();
+                }
+                assert!(hidden, "actual Mine naturally reaches its hide branch");
+                assert!(reclaimed, "the following source boundary reclaims the hidden Mine");
+            }
+        }
+    }
 }

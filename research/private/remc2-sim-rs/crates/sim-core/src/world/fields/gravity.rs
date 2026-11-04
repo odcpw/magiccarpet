@@ -123,6 +123,8 @@ pub(crate) fn construct(
         arena.economy.release_slot(slot, Some(source.entity_rng));
         return Err(error);
     }
+    // Source AddEventToMap publishes04 after linking this hidden controller.
+    source.set_control_flags(source.control_flags | 4);
     arena.economy.source_rng.insert(slot, source.entity_rng);
     arena.entities[usize::from(slot)] = source;
     synchronize_links(arena, terrain, slot);

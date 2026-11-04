@@ -118,7 +118,7 @@ impl Mc2LevelDefinition {
                 None => None,
             },
             (2, 0) => Some(LevelEntityKind::Scenery(SceneryKind::Tree)),
-            (2, 1) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
+            (2, 1 | 3) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
             (2, 6) => Some(LevelEntityKind::Scenery(SceneryKind::Mushroom)),
             (10, 45) => Some(LevelEntityKind::Building(BuildingKind::House)),
             (10, model @ 80..=86) => match Self::cave_feature_kind(model) {
@@ -379,7 +379,7 @@ impl Mc2LevelDefinition {
     ) -> Option<SceneryKind> {
         match (class, model, action) {
             (2, 0, 0) => Some(SceneryKind::Tree),
-            (2, 1, 3) => Some(SceneryKind::Stone),
+            (2, 1, 3) | (2, 3, 9) => Some(SceneryKind::Stone),
             (2, 6, 18 | 19) => Some(SceneryKind::Mushroom),
             (14, 3, 8) => Some(SceneryKind::ExitPortal),
             _ => None,
@@ -785,7 +785,7 @@ impl Mc2LevelDefinition {
 
             let scenery_kind = match (feature.kind, feature.subtype) {
                 (2, 0) => Some(SceneryKind::Tree),
-                (2, 1) => Some(SceneryKind::Stone),
+                (2, 1 | 3) => Some(SceneryKind::Stone),
                 (2, 6) => Some(SceneryKind::Mushroom),
                 // `sub_51570` constructs the package's class-14 exit target.
                 // Shared callers see the scenery role, never its MC2 selector.

@@ -1,4 +1,4 @@
-//! The shared sub_65820 flyer used by Meteor and Spider web.
+//! Shared MC2 guided-flyer construction and sub_65820 movement/impact.
 //! SourceArena owns fixed addresses; the scheduler owns phase and reclaim.
 
 pub(crate) mod boss;
@@ -16,6 +16,71 @@ use crate::{FlightWorld, Position, SIN_16_16, angle_distance, move_entity, turn_
 pub(crate) struct Guidance {
     pub yaw_turn: i16,
     pub pitch_turn: i16,
+}
+
+/// Immutable source constructor properties, before a player holder or Mine
+/// writes its payload. Family modules own these bindings; both production
+/// paths use this same NewEvent/map/particle operation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Constructor {
+    pub model: u8,
+    pub action: u8,
+    pub parameter: u16,
+    pub particle: u16,
+    pub speed: i16,
+    pub maximum_speed: i16,
+    pub life: i32,
+    pub mana: i32,
+}
+
+pub(super) fn source_launch_speed(base: i16, inherited: i16, maximum: i16) -> i16 {
+    base.wrapping_add(inherited).clamp(base, maximum)
+}
+
+pub(super) fn source_projectile_flags(flags: u32) -> u32 {
+    flags & !8
+}
+
+pub(crate) fn construct(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    position: Position,
+    position_slot: Option<u16>,
+    inherited_speed: i16,
+    definition: Constructor,
+) -> Result<Option<u16>, String> {
+    let particle = *particles.get(usize::from(definition.particle))
+        .ok_or_else(|| format!("source flyer requires particle{}", definition.particle))?;
+    if particle.animation_limit().is_none() || definition.speed <= 0
+        || definition.maximum_speed < definition.speed
+    {
+        return Err("source flyer constructor has invalid motion/particle properties".into());
+    }
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    let position = if position_slot == Some(slot) { Position::default() } else { position };
+    let mut row = super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
+    row.class = 9;
+    row.model = definition.model;
+    row.record[67] = 9;
+    row.record[68] = definition.model;
+    row.set_source_action(definition.action);
+    // The constructor clears08; its ordinary AddEventToMap then sets04.
+    row.set_control_flags(source_projectile_flags(row.control_flags) | 4);
+    row.set_actual_speed(source_launch_speed(definition.speed, inherited_speed, definition.maximum_speed));
+    row.record[136..138].copy_from_slice(&definition.speed.to_le_bytes());
+    row.set_max_life(definition.life);
+    row.set_life(definition.life);
+    row.set_mana(definition.mana);
+    row.parameter_relation = Some(definition.parameter);
+    row.record[164..168].copy_from_slice(&(u32::from(definition.parameter) + 1).to_le_bytes());
+    super::cave_features::bind_particle(&mut row, definition.particle, particle)?;
+    arena.economy.source_rng.insert(slot, row.entity_rng);
+    arena.entities[usize::from(slot)] = row;
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
+    Ok(Some(slot))
 }
 
 /// Lists frozen at UpdateEntities' ordinary pass prefix, in source order.
@@ -557,8 +622,14 @@ fn reflect(
     outcome: &mut StepOutcome,
 ) -> Result<bool, String> {
     let row = arena.entities[usize::from(slot)].clone();
-    // Of the two callers, only Meteor's 10/17 product is reflectable.
-    if (row.record[71], row.record[72]) != (10, 17) {
+    // sub_68740 admits these impact products (including disaster and field
+    // flyers), or the model13 exception when its product class is not10.
+    let reflectable = if row.record[71] == 10 {
+        matches!(row.record[72], 0 | 1 | 9 | 11 | 15 | 17 | 22 | 67 | 71 | 89)
+    } else {
+        row.model == 13
+    };
+    if !reflectable {
         return Ok(false);
     }
     let target = &arena.entities[usize::from(hit)];
@@ -624,7 +695,7 @@ pub(super) fn absorb(
     outcome: &mut StepOutcome,
 ) -> Result<bool, String> {
     let row = &arena.entities[usize::from(slot)];
-    let Some(hit) = hit.filter(|_| matches!(row.model, 3 | 9 | 12)) else {
+    let Some(hit) = hit.filter(|_| matches!(row.model, 0 | 2..=5 | 8 | 9 | 12 | 22 | 23 | 26 | 28 | 30)) else {
         return Ok(false);
     };
     let target = &arena.entities[usize::from(hit)];

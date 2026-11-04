@@ -93,19 +93,13 @@ impl Holder {
                 if admitted {
                     if first {
                         visit.projectile_payload = Some(rule.projectile_payload());
-                    }
-                    caster.mana_regen = if first {
-                        if caster.mana_regen >= 0 {
+                        caster.mana_regen = if caster.mana_regen >= 0 {
                             rule.mana_cost.wrapping_neg()
                         } else {
                             caster.mana_regen.wrapping_sub(rule.mana_cost)
-                        }
-                    } else if self.active != 0 && caster.mana_regen > 0 {
-                        0
-                    } else {
-                        caster.mana_regen
-                    };
-                    visit.parent_mana_regen = Some(caster.mana_regen);
+                        };
+                        visit.parent_mana_regen = Some(caster.mana_regen);
+                    }
                 } else {
                     self.active = 1;
                 }
@@ -176,6 +170,28 @@ mod tests {
             }
         );
         assert_eq!(payload.field_lifetime(), 0);
+    }
+
+    #[test]
+    fn later_admitted_pulse_leaves_positive_mana_regeneration_unchanged() {
+        let mut holder = Holder {
+            active: 4,
+            duration: 5,
+            cooldown: 3,
+        };
+        let mut caster = Caster {
+            life: 10_000,
+            mana: 4_000,
+            mana_regen: 80,
+            castle_mana: Some(60_000),
+        };
+
+        let visit = holder.step(rule(100, 5), Some(&mut caster));
+
+        assert_eq!(visit.projectile_payload, None);
+        assert_eq!(visit.parent_mana_regen, None);
+        assert_eq!(caster.mana_regen, 80);
+        assert_eq!((holder.active, holder.cooldown), (3, 2));
     }
 
     #[test]

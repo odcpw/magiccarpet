@@ -4,7 +4,6 @@
 //! This module owns only family17's source constructor and impact materializer.
 
 use super::super::{
-    cave_features::new_event,
     guided_projectile::{self, Guidance, StepOutcome},
 };
 #[cfg(test)]
@@ -15,6 +14,14 @@ use crate::level_definition::{EARTHQUAKE_PROPERTIES, TerrainDisasterKind};
 use crate::{FlightWorld, Position, move_entity};
 
 const PROJECTILE_PARTICLE: u16 = 211;
+
+pub(crate) const SOURCE_CONSTRUCTOR: guided_projectile::Constructor = guided_projectile::Constructor {
+    model: 2, action: 2, parameter: 60, particle: PROJECTILE_PARTICLE,
+    speed: EARTHQUAKE_PROPERTIES.projectile_speed,
+    maximum_speed: EARTHQUAKE_PROPERTIES.maximum_launch_speed,
+    life: EARTHQUAKE_PROPERTIES.projectile_range / EARTHQUAKE_PROPERTIES.projectile_speed as i32,
+    mana: 50,
+};
 
 fn put(row: &mut EntitySnapshot, offset: usize, value: u16) {
     row.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -42,38 +49,15 @@ pub(crate) fn launch(
         .filter(|_| parent_slot != 0)
         .map(|parent| (parent.position, parent.actual_speed))
         .ok_or("Earthquake parent address is outside the source arena")?;
-    let particle = *particles
-        .get(usize::from(PROJECTILE_PARTICLE))
-        .ok_or("Earthquake requires retained particle211")?;
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+    let Some(slot) = guided_projectile::construct(
+        arena, terrain, particles, initial_position, Some(parent_slot), inherited_speed,
+        SOURCE_CONSTRUCTOR,
+    )? else {
         return Ok(None);
     };
-    let position = if slot == parent_slot {
-        Position::default()
-    } else {
-        initial_position
-    };
-    let mut row = new_event(slot, arena.economy.new_event_rng(slot), position);
-    row.class = 9;
-    row.model = 2;
-    row.record[67] = 9;
-    row.record[68] = 2;
-    row.set_source_action(2);
-    row.set_control_flags((row.control_flags & !8) | 4);
-    row.set_actual_speed(rule_speed(inherited_speed));
-    put(&mut row, 136, EARTHQUAKE_PROPERTIES.projectile_speed as u16);
-    row.set_max_life(
-        EARTHQUAKE_PROPERTIES.projectile_range / i32::from(EARTHQUAKE_PROPERTIES.projectile_speed),
-    );
-    row.set_life(row.max_life);
-    row.parameter_relation = Some(60);
-    row.record[164..168].copy_from_slice(&61_u32.to_le_bytes());
-    super::super::cave_features::bind_particle(&mut row, PROJECTILE_PARTICLE, particle)?;
+    let row = &mut arena.entities[usize::from(slot)];
     row.record[71] = 10;
     row.record[72] = 15;
-
-    arena.entities[usize::from(slot)] = row;
-    crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
 
     // The source code keeps fixed pointers across NewEvent. Re-read both
     // addresses after publication so an allocator alias is observed there.
@@ -136,16 +120,6 @@ pub(crate) fn launch(
     arena.economy.source_rng.insert(slot, projectile.entity_rng);
     crate::world::effects::sync_position(arena, terrain, slot, launch_position, true, false)?;
     Ok(Some(slot))
-}
-
-fn rule_speed(inherited_speed: i16) -> i16 {
-    EARTHQUAKE_PROPERTIES
-        .projectile_speed
-        .wrapping_add(inherited_speed)
-        .clamp(
-            EARTHQUAKE_PROPERTIES.projectile_speed,
-            EARTHQUAKE_PROPERTIES.maximum_launch_speed,
-        )
 }
 
 /// Source action2/sub_66160: one ordinary shared flyer step, then the wrapper

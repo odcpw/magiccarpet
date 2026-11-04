@@ -51,6 +51,8 @@ pub struct SupportSpellPlayer {
 /// Source player-color order, with absent players/castles represented by None.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TeleportCastles {
+    /// The caster's own A4 address is distinct from the global player table.
+    pub own_position: Option<Position>,
     pub positions: [Option<Position>; 8],
     pub player_count: u8,
 }
@@ -157,11 +159,7 @@ impl SupportSpellHolder {
                     if self.admitted(player) {
                         if self.active == self.duration {
                             result.award_experience = true;
-                            let own_castle = castles
-                                .positions
-                                .get(usize::from(player.color))
-                                .copied()
-                                .flatten();
+                            let own_castle = castles.own_position;
                             let mut destination = None;
                             match mode {
                                 TeleportMode::Castle => {
@@ -430,6 +428,7 @@ mod tests {
             y: 6_000,
             z: 1_000,
         });
+        castles.own_position = castles.positions[0];
         castles.positions[2] = Some(Position {
             x: 20_000,
             y: 22_000,

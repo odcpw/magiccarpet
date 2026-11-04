@@ -10,6 +10,12 @@ use crate::{
 const RULES: sim_definition::level_definition::DisasterSpellProperties =
     sim_definition::level_definition::TREMOR_PROPERTIES;
 
+pub(crate) const SOURCE_CONSTRUCTOR: super::super::guided_projectile::Constructor = super::super::guided_projectile::Constructor {
+    model: 23, action: 24, parameter: 60, particle: 211,
+    speed: RULES.projectile_speed, maximum_speed: RULES.maximum_launch_speed,
+    life: RULES.projectile_range / RULES.projectile_speed as i32, mana: 50,
+};
+
 fn tier_rule(tier: u8) -> Result<sim_definition::level_definition::DisasterSpellTier, String> {
     RULES
         .tiers
@@ -48,52 +54,19 @@ pub(crate) fn launch(
     let tier = crate::spell_activation::level2_applied_tier(holder_tier)
         .ok_or("Tremor holder has an invalid source tier")?;
     let rule = tier_rule(tier)?;
-    let particle = *particles
-        .get(211)
-        .ok_or("Tremor requires retained particle211")?;
-    if particle.animation_limit().is_none() {
-        return Err(format!(
-            "Tremor particle211 has unsupported render mode {}",
-            particle.render_mode
-        ));
-    }
     if RULES.projectile_speed <= 0
         || RULES.maximum_launch_speed < RULES.projectile_speed
         || RULES.projectile_range <= 0
     {
         return Err("Tremor source projectile rules are invalid".to_owned());
     }
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+    let Some(slot) = super::super::guided_projectile::construct(
+        arena, terrain, particles, initial_parent_position, Some(parent_slot), inherited_speed,
+        SOURCE_CONSTRUCTOR,
+    )? else {
         return Ok(None);
     };
-    let base_position = if slot == parent_slot {
-        Position { x: 0, y: 0, z: 0 }
-    } else {
-        initial_parent_position
-    };
-    let mut row = super::super::cave_features::new_event(
-        slot,
-        arena.economy.new_event_rng(slot),
-        base_position,
-    );
-    row.class = 9;
-    row.model = 23;
-    row.record[67] = 9;
-    row.record[68] = 23;
-    row.set_source_action(24);
-    row.set_control_flags((row.control_flags & !8) | 4);
-    row.set_actual_speed(
-        RULES
-            .projectile_speed
-            .wrapping_add(inherited_speed)
-            .clamp(RULES.projectile_speed, RULES.maximum_launch_speed),
-    );
-    row.record[136..138].copy_from_slice(&(RULES.projectile_speed as u16).to_le_bytes());
-    row.set_max_life(RULES.projectile_range / i32::from(RULES.projectile_speed));
-    row.set_life(row.max_life);
-    row.parameter_relation = Some(60);
-    row.record[164..168].copy_from_slice(&61_u32.to_le_bytes());
-    super::super::cave_features::bind_particle(&mut row, 211, particle)?;
+    let row = &mut arena.entities[usize::from(slot)];
     row.record[71] = 10;
     row.record[72] = 71;
     row.set_mana(50);
@@ -103,9 +76,6 @@ pub(crate) fn launch(
     row.record[42..44].copy_from_slice(&holder_slot.to_le_bytes());
     row.record[44..46].copy_from_slice(&parent_slot.to_le_bytes());
 
-    arena.economy.source_rng.insert(slot, row.entity_rng);
-    arena.entities[usize::from(slot)] = row;
-    crate::world::effects::sync_position(arena, terrain, slot, base_position, true, true)?;
 
     // These source pointers are read again after NewEvent. Allocation may
     // have replaced either fixed-address row, so all launch-time parent and
