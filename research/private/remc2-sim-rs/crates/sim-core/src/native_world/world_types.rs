@@ -2564,6 +2564,79 @@ impl SessionTerrain {
         })
     }
 
+    /// Terrain part of `sub_36FC0`: initial Castle stages use an absolute
+    /// BUILD stamp before the first ordinary numeric callback. Occupant
+    /// contacts belong to the actor/arena owner; this method neither allocates
+    /// an event nor runs the distinct timed model42 construction callback.
+    pub(crate) fn apply_initial_castle_stage(
+        &mut self,
+        position: Position,
+        footprint: &CastleBuildFootprint,
+        open_ceiling: bool,
+    ) -> std::result::Result<(), String> {
+        let mut staged = self.clone();
+        let start_x =
+            position.x.wrapping_add(128).to_be_bytes()[0].wrapping_sub(footprint.width / 2);
+        let start_y =
+            position.y.wrapping_add(128).to_be_bytes()[0].wrapping_sub(footprint.height / 2);
+        let base = position.z >> 5;
+        // Source first writes every height/ceiling cell in row-major order,
+        // then performs a separate material pass with the literal column0.
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let x = start_x.wrapping_add(column);
+                let y = start_y.wrapping_add(row);
+                let index = terrain_index(x, y);
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                if cell[1] != 0xff {
+                    staged.planes.ground_heights[index] =
+                        i16::from(cell[1]).wrapping_add(base) as u8;
+                    if staged.planes.angles[index] & 7 == 0 {
+                        staged.planes.angles[index] = (staged.planes.angles[index] & 0xf8) | 1;
+                        rebuild_building_topology(
+                            &mut staged.planes,
+                            x,
+                            y,
+                            x,
+                            y,
+                            staged.map_type,
+                            &mut staged.terrain_rng,
+                        );
+                    }
+                }
+                if staged.map_type == MapType::Cave && open_ceiling {
+                    let desired =
+                        (i16::from(staged.planes.ground_heights[index]).max(base) + 80).min(255);
+                    if desired > i16::from(staged.planes.secondary_heights[index]) {
+                        staged.planes.secondary_heights[index] = desired as u8;
+                    }
+                    normalize_cave_clearance(&mut staged.planes, index);
+                }
+            }
+        }
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                if cell[0] != 0xff {
+                    apply_house_material(
+                        &mut staged.planes,
+                        start_x.wrapping_add(column),
+                        start_y.wrapping_add(row),
+                        0,
+                        cell[0],
+                        &mut staged.terrain_rng,
+                        staged.map_type,
+                    );
+                }
+            }
+        }
+        staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        *self = staged;
+        Ok(())
+    }
+
     /// Apply one source action-51 BUILD terrain event transactionally.
     pub fn apply_house_construction(
         &mut self,

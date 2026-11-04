@@ -248,7 +248,7 @@ mod tests {
         use crate::native_world::{Mc2DispatchEvent, area_damage, source_target};
 
         let packages = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/tremor-20261104-integration/current-owner-package");
+            .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4");
         let mut source = CampaignSession::open(
             packages.join("level9"),
             CampaignSelection::ordinary(9).unwrap(),

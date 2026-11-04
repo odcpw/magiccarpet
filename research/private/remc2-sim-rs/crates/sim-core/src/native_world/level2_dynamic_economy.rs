@@ -6280,6 +6280,66 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
+    /// PlayerEvents' first AI spawn, after its actual initial BUILD stamps.
+    /// Counts are immutable level content; imported post-update Castle state
+    /// never seeds this operation. The caller owns normal numeric dispatch.
+    pub(crate) fn initialize_ai_castle_starting_stages(
+        &mut self,
+        castle_slot: u16,
+        starting_stages: u8,
+    ) -> std::result::Result<(), String> {
+        let level = starting_stages.checked_sub(1)
+            .ok_or_else(|| "initial Castle requires a positive authored stage count".to_owned())?;
+        if level >= 8 {
+            return Err(format!("initial Castle authored stage {level} exceeds the source table"));
+        }
+        let owner = self.castle_at(castle_slot)
+            .filter(|castle| castle.action == 5 && castle.build_state == 0)
+            .ok_or_else(|| format!("initial Castle source {castle_slot} is not a new constructor"))?
+            .source_id_entity_index;
+        let coefficient = self.castle_stage_coefficient_for_owner(owner, level);
+        let (base_life, capacity) = level2_castle_stage_stats(level);
+        let max_life = base_life.wrapping_mul(i32::from(coefficient)) >> 8;
+        let root = self.castle_at_mut(castle_slot).expect("checked constructor remains installed");
+        root.level = level;
+        (root.shift_pitch, root.shift_roll) = level2_castle_shift_axes(level);
+        root.shift_yaw = -8192;
+        root.shift_fov = 0x4000;
+        // sub60780 leaves the constructor's life unchanged at stage0.
+        if max_life != 0 {
+            let debt = if root.life < 0 { root.life.wrapping_neg().min(max_life / 2) } else { 0 };
+            root.max_life = max_life;
+            root.life = max_life.wrapping_sub(debt);
+        }
+        root.mana_capacity = capacity;
+        root.mana = capacity.clamp(0, 320000);
+        Ok(())
+    }
+
+    /// Bind a terrain-only startup allocation to its validated immutable
+    /// NewEvent address before its first callback. Storage remains owned by
+    /// the temporary arena; no captured mutable state is adopted.
+    pub(crate) fn bind_castle_startup_identity(
+        &mut self,
+        source_slot: u16,
+        physical_slot: u16,
+    ) -> std::result::Result<(), String> {
+        let rng = self.new_event_rng(physical_slot);
+        if let Some(root) = self.castle_at_mut(source_slot) {
+            root.phase = physical_slot as u8;
+        } else if let Some(child) = self.castle_children.iter_mut().find(|child| {
+            child.active && child.source_entity_index == source_slot
+                && child.source_class == 10 && child.model == 42 && child.action == 44
+        }) {
+            child.source_byte_3e = physical_slot as u8;
+            child.entity_rng = rng;
+        } else {
+            return Err(format!("Castle startup slot {source_slot} is not a root or BUILD child"));
+        }
+        self.source_rng.insert(source_slot, rng);
+        Ok(())
+    }
+
     /// Transfer the source reset's Castle roots and in-flight construction
     /// children into the same arena used by newly cast Castles. Unsupported
     /// source shapes remain in the imported arena; they are not silently
@@ -7552,6 +7612,239 @@ impl Level2EconomyState {
         self.step_castle_action_with_site(castle_slot, terrain, reset_free_slots, site_clear, &mut consumer)
     }
 
+    /// Source 5FA70 states0/3 share this creation operation. Startup uses
+    /// the same root/child allocator without inventing an inventory consumer
+    /// for branches that cannot read inventory or perform final loss.
+    pub(crate) fn begin_castle_stage_with_site(
+        &mut self,
+        castle_slot: u16,
+        terrain: &mut SessionTerrain,
+        site_clear: bool,
+    ) -> bool {
+        let Some(snapshot) = self.castle_at(castle_slot).copied().filter(|castle| {
+            castle.action == 5 && matches!(castle.build_state, 0 | 3)
+        }) else { return false };
+        if snapshot.build_state == 0 {
+            // 5FA70: level-zero creation bypasses 11A10; upgrades
+            // recheck after the paid flyer has reached this root.
+            self.restore_castle_site_shifts(castle_slot);
+            if snapshot.level != 0 && !site_clear {
+                let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
+                castle.build_state = 2;
+                castle.source_word_2e = 2;
+                castle.control_flags &= !0x40;
+                self.advance_castle_phase(castle_slot);
+                return true;
+            }
+        }
+        let source_construction_start = snapshot.level == 0
+            && snapshot.source_word_2e == 0
+            && snapshot.source_class == 3
+            && snapshot.source_model == 2;
+        let Some(child_slot) = self.allocate_slot() else {
+            if !source_construction_start {
+                self.advance_castle_phase(castle_slot);
+            }
+            return false;
+        };
+        let next_level = snapshot.level.saturating_add(1).max(1);
+        let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
+        let stage_coefficient = self.castle_stage_coefficient_for_owner(snapshot.owner_entity_index, next_level);
+        let stage_life =
+            i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
+                .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
+        let (shift_pitch, shift_roll) = level2_castle_shift_axes(next_level);
+        self.retire_castle_controller_chain(snapshot.source_entity_index);
+        let construction_child = Level2CastleChild {
+            source_entity_index: child_slot,
+            entity_rng: self.new_event_rng(child_slot),
+            id_entity_index: snapshot.source_id_entity_index,
+            source_class: 10,
+            parent_entity_index: snapshot.source_entity_index,
+            owner_entity_index: snapshot.owner_entity_index,
+            player_entity_index: 0,
+            position: snapshot.anchor_position,
+            axis_position: Position::default(),
+            model: 42,
+            action: 44,
+            mana: 0,
+            max_mana: 0,
+            life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+            max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+            speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
+            target_sphere_slot: 0,
+            pending_damage: 0,
+            pending_attacker_entity_index: 0,
+            damage_attacker_entity_index: 0,
+            killer_entity_index: 0,
+            source_byte_3e: child_slot as u8,
+            source_byte_39: 0,
+            // `sub_60480` overrides sub50370's byte3B to zero;
+            // its BUILD child uses the source -1 completion hold.
+            source_byte_3b: 0,
+            cave_collision_cooldown: next_level,
+            source_dword_10: 0,
+            source_word_2e: 0,
+            construction_target_height: 0,
+            source_subspell_index: 0,
+            yaw: 0,
+            roll: 0,
+            visual_index: 0,
+            // sub60480 adds byte2 bit0; 37BC0 adds the initialized bit.
+            control_flags: 0x0001_0001,
+            chain_previous_slot: 0,
+            chain_next_slot: 0,
+            source_byte_43: 0,
+            source_word_4a: 0,
+            active: true,
+        };
+        self.castle_children.push(construction_child);
+        // `sub_613D0` removes the prior `word_0x34_52` chain, then
+        // allocates the source-ordered model-79 controller points
+        // from x_BYTE_DB038.  NewEvent failure is deliberately
+        // non-atomic: model-42 and any committed controller prefix
+        // remain installed, exactly as in the source loop.
+        let mut controller_slots = [0_u16; 8];
+        let mut controller_count = 0_u8;
+        if let Some((selected_level, source_byte_43)) = level2_castle_controller_selection(
+            next_level,
+            self.castle_controller_coefficients_for_owner(snapshot.owner_entity_index),
+        ) {
+            let (controller_width, controller_height) =
+                level2_castle_controller_dimensions(selected_level);
+            let center_x = snapshot.position.x.wrapping_add(128).to_be_bytes()[0];
+            let center_y = snapshot.position.y.wrapping_add(128).to_be_bytes()[0];
+            let start_x = center_x.wrapping_sub(controller_width / 2);
+            let start_y = center_y.wrapping_sub(controller_height / 2);
+            let mut previous_child_index: Option<usize> = None;
+            let mut previous_slot = snapshot.source_entity_index;
+            for &(offset_x, offset_y) in level2_castle_controller_points(selected_level) {
+                let Some(stage_slot) = self.allocate_slot() else {
+                    break;
+                };
+                let stage_position = Position {
+                    x: u16::from(start_x.wrapping_add_signed(offset_x)) << 8,
+                    y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
+                    z: 0,
+                };
+                let ground = terrain.ground_height(stage_position);
+                let stage_child = Level2CastleChild {
+                    source_entity_index: stage_slot,
+                    entity_rng: self.new_event_rng(stage_slot),
+                    id_entity_index: snapshot.source_id_entity_index,
+                    source_class: 10,
+                    // `sub_613D0` exposes the controller ownership
+                    // only through word32/word34; NewEvent leaves
+                    // parentId zero.
+                    parent_entity_index: 0,
+                    owner_entity_index: snapshot.owner_entity_index,
+                    player_entity_index: 0,
+                    position: Position {
+                        z: ground.saturating_add(if selected_level <= 1 {
+                            384
+                        } else {
+                            224
+                        }),
+                        ..stage_position
+                    },
+                    axis_position: Position::default(),
+                    model: 79,
+                    action: 0x56,
+                    mana: 0,
+                    max_mana: 0,
+                    life: 100_000,
+                    max_life: 100_000,
+                    speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
+                    target_sphere_slot: 0,
+                    pending_damage: 0,
+                    pending_attacker_entity_index: 0,
+                    damage_attacker_entity_index: 0,
+                    killer_entity_index: 0,
+                    source_byte_3e: stage_slot as u8,
+                    source_byte_39: 0,
+                    source_byte_3b: 0,
+                    cave_collision_cooldown: 0,
+                    source_dword_10: 0,
+                    source_word_2e: 0,
+                    construction_target_height: 0,
+                    source_subspell_index: 0,
+                    yaw: 0,
+                    roll: 0,
+                    visual_index: 0,
+                    control_flags: 0,
+                    chain_previous_slot: previous_slot,
+                    chain_next_slot: 0,
+                    source_byte_43,
+                    source_word_4a: u16::from(selected_level),
+                    active: true,
+                };
+                self.sync_castle_child_map(stage_child);
+                self.castle_children.push(stage_child);
+                let child_index = self.castle_children.len() - 1;
+                if let Some(previous_index) = previous_child_index {
+                    self.castle_children[previous_index].chain_next_slot = stage_slot;
+                }
+                previous_child_index = Some(child_index);
+                previous_slot = stage_slot;
+                controller_slots[usize::from(controller_count)] = stage_slot;
+                controller_count = controller_count.saturating_add(1);
+            }
+        }
+        let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
+        castle.construction_slot = child_slot;
+        castle.construction_model = 42;
+        castle.construction_action = 44;
+        castle.construction_control_flags = 1;
+        castle.construction_parent_slot = castle.source_entity_index;
+        castle.construction_owner_entity_index = castle.owner_entity_index;
+        castle.construction_id = castle.source_id_entity_index;
+        castle.construction_position = castle.anchor_position;
+        castle.child_chain_slots[0] = child_slot;
+        castle.child_chain_models[0] = 42;
+        castle.child_chain_active[0] = true;
+        castle.controller_chain_slots = controller_slots;
+        castle.controller_chain_count = controller_count;
+        castle.controller_chain_head = controller_slots[0];
+        castle.controller_chain_tail = if controller_count == 0 {
+            0
+        } else {
+            controller_slots[usize::from(controller_count - 1)]
+        };
+        castle.construction_child_active = true;
+        castle.build_state = 4;
+        castle.level = next_level;
+        castle.life = stage_life;
+        castle.max_life = stage_life;
+        castle.mana_capacity = stage_mana_capacity;
+        castle.shift_pitch = shift_pitch;
+        castle.shift_roll = shift_roll;
+        // `sub_60480` writes the completed Castle shift envelope at
+        // the successful child allocation, before the action-5
+        // construction callback begins.
+        castle.shift_yaw = -8_192;
+        castle.shift_fov = 0x4000;
+        castle.control_flags &= !0x40;
+        // `sub_60480` commits state4 after every successful child
+        // allocation, including an upgrade of a nonzero starting stage.
+        castle.source_word_2e = 4;
+        let completed_slot = castle.source_entity_index;
+        let completed_level = castle.level;
+        let owner = castle.owner_entity_index;
+        self.link_castle_owner(owner, completed_slot);
+        if owner == self.local_player_entity_index {
+            self.player_castle_entity_index = completed_slot;
+            self.player_castle_stage = completed_level;
+            self.player_castle_aux_flags = 0;
+        }
+        self.events
+            .push(Level2EconomyEvent::CastleConstructionSound {
+                source_entity_index: completed_slot,
+                sound_id: 10,
+            });
+        self.advance_castle_phase(castle_slot);
+        true
+    }
+
     pub(crate) fn step_castle_action_with_site(
         &mut self,
         castle_slot: u16,
@@ -7572,228 +7865,7 @@ impl Level2EconomyState {
         }
         match snapshot.action {
             5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
-                if snapshot.build_state == 0 {
-                    // 5FA70: level-zero creation bypasses 11A10; upgrades
-                    // recheck after the paid flyer has reached this root.
-                    self.restore_castle_site_shifts(castle_slot);
-                    if snapshot.level != 0 && !site_clear {
-                        let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
-                        castle.build_state = 2;
-                        castle.source_word_2e = 2;
-                        castle.control_flags &= !0x40;
-                        self.advance_castle_phase(castle_slot);
-                        return true;
-                    }
-                }
-                let source_construction_start = snapshot.level == 0
-                    && snapshot.source_word_2e == 0
-                    && snapshot.source_class == 3
-                    && snapshot.source_model == 2;
-                let Some(child_slot) = self.allocate_slot() else {
-                    if !source_construction_start {
-                        self.advance_castle_phase(castle_slot);
-                    }
-                    return false;
-                };
-                let next_level = snapshot.level.saturating_add(1).max(1);
-                let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
-                let stage_coefficient = self.castle_stage_coefficient_for_owner(snapshot.owner_entity_index, next_level);
-                let stage_life =
-                    i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
-                        .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
-                let (shift_pitch, shift_roll) = level2_castle_shift_axes(next_level);
-                self.retire_castle_controller_chain(snapshot.source_entity_index);
-                let construction_child = Level2CastleChild {
-                    source_entity_index: child_slot,
-                    entity_rng: self.new_event_rng(child_slot),
-                    id_entity_index: snapshot.source_id_entity_index,
-                    source_class: 10,
-                    parent_entity_index: snapshot.source_entity_index,
-                    owner_entity_index: snapshot.owner_entity_index,
-                    player_entity_index: 0,
-                    position: snapshot.anchor_position,
-                    axis_position: Position::default(),
-                    model: 42,
-                    action: 44,
-                    mana: 0,
-                    max_mana: 0,
-                    life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-                    max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-                    speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
-                    target_sphere_slot: 0,
-                    pending_damage: 0,
-                    pending_attacker_entity_index: 0,
-                    damage_attacker_entity_index: 0,
-                    killer_entity_index: 0,
-                    source_byte_3e: child_slot as u8,
-                    source_byte_39: 0,
-                    // `sub_50370` sets byte 0x3B before dispatching 37BC0;
-                    // that selects the -25 negative hold after BUILD pass 1.
-                    source_byte_3b: 1,
-                    cave_collision_cooldown: next_level,
-                    source_dword_10: 0,
-                    source_word_2e: 0,
-                    construction_target_height: 0,
-                    source_subspell_index: 0,
-                    yaw: 0,
-                    roll: 0,
-                    visual_index: 0,
-                    // Source flags retain bit 0 and 37BC0 adds bit 2 on its
-                    // first callback.
-                    control_flags: 1,
-                    chain_previous_slot: 0,
-                    chain_next_slot: 0,
-                    source_byte_43: 0,
-                    source_word_4a: 0,
-                    active: true,
-                };
-                self.castle_children.push(construction_child);
-                // `sub_613D0` removes the prior `word_0x34_52` chain, then
-                // allocates the source-ordered model-79 controller points
-                // from x_BYTE_DB038.  NewEvent failure is deliberately
-                // non-atomic: model-42 and any committed controller prefix
-                // remain installed, exactly as in the source loop.
-                let mut controller_slots = [0_u16; 8];
-                let mut controller_count = 0_u8;
-                if let Some((selected_level, source_byte_43)) = level2_castle_controller_selection(
-                    next_level,
-                    self.castle_controller_coefficients_for_owner(snapshot.owner_entity_index),
-                ) {
-                    let (controller_width, controller_height) =
-                        level2_castle_controller_dimensions(selected_level);
-                    let center_x = snapshot.position.x.wrapping_add(128).to_be_bytes()[0];
-                    let center_y = snapshot.position.y.wrapping_add(128).to_be_bytes()[0];
-                    let start_x = center_x.wrapping_sub(controller_width / 2);
-                    let start_y = center_y.wrapping_sub(controller_height / 2);
-                    let mut previous_child_index: Option<usize> = None;
-                    let mut previous_slot = snapshot.source_entity_index;
-                    for &(offset_x, offset_y) in level2_castle_controller_points(selected_level) {
-                        let Some(stage_slot) = self.allocate_slot() else {
-                            break;
-                        };
-                        let stage_position = Position {
-                            x: u16::from(start_x.wrapping_add_signed(offset_x)) << 8,
-                            y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
-                            z: 0,
-                        };
-                        let ground = terrain.ground_height(stage_position);
-                        let stage_child = Level2CastleChild {
-                            source_entity_index: stage_slot,
-                            entity_rng: self.new_event_rng(stage_slot),
-                            id_entity_index: snapshot.source_id_entity_index,
-                            source_class: 10,
-                            // `sub_613D0` exposes the controller ownership
-                            // only through word32/word34; NewEvent leaves
-                            // parentId zero.
-                            parent_entity_index: 0,
-                            owner_entity_index: snapshot.owner_entity_index,
-                            player_entity_index: 0,
-                            position: Position {
-                                z: ground.saturating_add(if selected_level <= 1 {
-                                    384
-                                } else {
-                                    224
-                                }),
-                                ..stage_position
-                            },
-                            axis_position: Position::default(),
-                            model: 79,
-                            action: 0x56,
-                            mana: 0,
-                            max_mana: 0,
-                            life: 100_000,
-                            max_life: 100_000,
-                            speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
-                            target_sphere_slot: 0,
-                            pending_damage: 0,
-                            pending_attacker_entity_index: 0,
-                            damage_attacker_entity_index: 0,
-                            killer_entity_index: 0,
-                            source_byte_3e: stage_slot as u8,
-                            source_byte_39: 0,
-                            source_byte_3b: 0,
-                            cave_collision_cooldown: 0,
-                            source_dword_10: 0,
-                            source_word_2e: 0,
-                            construction_target_height: 0,
-                            source_subspell_index: 0,
-                            yaw: 0,
-                            roll: 0,
-                            visual_index: 0,
-                            control_flags: 0,
-                            chain_previous_slot: previous_slot,
-                            chain_next_slot: 0,
-                            source_byte_43,
-                            source_word_4a: u16::from(selected_level),
-                            active: true,
-                        };
-                        self.sync_castle_child_map(stage_child);
-                        self.castle_children.push(stage_child);
-                        let child_index = self.castle_children.len() - 1;
-                        if let Some(previous_index) = previous_child_index {
-                            self.castle_children[previous_index].chain_next_slot = stage_slot;
-                        }
-                        previous_child_index = Some(child_index);
-                        previous_slot = stage_slot;
-                        controller_slots[usize::from(controller_count)] = stage_slot;
-                        controller_count = controller_count.saturating_add(1);
-                    }
-                }
-                let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
-                castle.construction_slot = child_slot;
-                castle.construction_model = 42;
-                castle.construction_action = 44;
-                castle.construction_control_flags = 1;
-                castle.construction_parent_slot = castle.source_entity_index;
-                castle.construction_owner_entity_index = castle.owner_entity_index;
-                castle.construction_id = castle.source_id_entity_index;
-                castle.construction_position = castle.anchor_position;
-                castle.child_chain_slots[0] = child_slot;
-                castle.child_chain_models[0] = 42;
-                castle.child_chain_active[0] = true;
-                castle.controller_chain_slots = controller_slots;
-                castle.controller_chain_count = controller_count;
-                castle.controller_chain_head = controller_slots[0];
-                castle.controller_chain_tail = if controller_count == 0 {
-                    0
-                } else {
-                    controller_slots[usize::from(controller_count - 1)]
-                };
-                castle.construction_child_active = true;
-                castle.build_state = 4;
-                castle.level = next_level;
-                castle.life = stage_life;
-                castle.max_life = stage_life;
-                castle.mana_capacity = stage_mana_capacity;
-                castle.shift_pitch = shift_pitch;
-                castle.shift_roll = shift_roll;
-                // `sub_60480` writes the completed Castle shift envelope at
-                // the successful child allocation, before the action-5
-                // construction callback begins.
-                castle.shift_yaw = -8_192;
-                castle.shift_fov = 0x4000;
-                castle.control_flags &= !0x40;
-                if source_construction_start {
-                    // `sub_60480` commits the construction relation only
-                    // after its child allocation succeeds.
-                    castle.source_word_2e = 4;
-                }
-                let completed_slot = castle.source_entity_index;
-                let completed_level = castle.level;
-                let owner = castle.owner_entity_index;
-                self.link_castle_owner(owner, completed_slot);
-                if owner == self.local_player_entity_index {
-                    self.player_castle_entity_index = completed_slot;
-                    self.player_castle_stage = completed_level;
-                    self.player_castle_aux_flags = 0;
-                }
-                self.events
-                    .push(Level2EconomyEvent::CastleConstructionSound {
-                        source_entity_index: completed_slot,
-                        sound_id: 10,
-                    });
-                self.advance_castle_phase(castle_slot);
-                true
+                self.begin_castle_stage_with_site(castle_slot, terrain, site_clear)
             }
             5 if snapshot.build_state == 2 => {
                 let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");

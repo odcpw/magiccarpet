@@ -1934,7 +1934,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
         require((domain == 1 and 1 <= relation <= 1000) or (domain == 0 and relation == 0), f"runtime event {index} relation is out of bounds")
 
     construction_version = u16((package / "feature-construction-inputs.bin").read_bytes(), 4)
-    require(construction_version in {1, 2, 3}, "feature construction input version changed")
+    require(construction_version in {1, 2, 3, 4}, "feature construction input version changed")
     expected_boundary = [
         ("feature-start.bin", "mc2-feature-boundary/v1"),
         ("terrain-pre-features.bin", "mc2-feature-terrain/v1"),
@@ -1981,7 +1981,7 @@ def _campaign_validate_reset_members(package: Path, spec: dict, files: dict, pro
 
 def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
     require(len(content) >= 16 and content[:4] == b"MCI3", "feature construction input header is truncated")
-    require(u16(content, 4) in {1, 2, 3} and (u16(content, 6), u16(content, 10), u32(content, 12)) == (16, 1, 0), "feature construction input header changed")
+    require(u16(content, 4) in {1, 2, 3, 4} and (u16(content, 6), u16(content, 10), u32(content, 12)) == (16, 1, 0), "feature construction input header changed")
     count = u16(content, 8)
     selectors: list[int] = []
     cursor = 16
@@ -1989,7 +1989,7 @@ def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
         require(cursor + 12 <= len(content), "feature construction input record is truncated")
         selector, width, height, extent = u16(content, cursor), content[cursor + 6], content[cursor + 7], u32(content, cursor + 8)
         require(not selectors or selector > selectors[-1], "feature construction selectors are not strictly ordered")
-        if u16(content, 4) in {2, 3}:
+        if u16(content, 4) in {2, 3, 4}:
             require(content[cursor + 5] == BUILDING_DESTRUCTION_SUCCESSORS.get(selector, 0), "feature construction successor differs from pinned BLDGPRM")
         require(width > 0 and height > 0 and extent == width * height * 2, "feature construction footprint extent changed")
         cursor += 12 + extent
@@ -2001,7 +2001,8 @@ def _campaign_decode_feature_inputs(content: bytes) -> list[int]:
 
 def _campaign_construction_selectors(authored: bytes, version: int, *, successor_closure: bool = True, reset_entities: bytes | None = None) -> list[int]:
     """Keep authored collision roots separate from dynamic BUILD inputs."""
-    require(version in {1, 2, 3}, "feature construction input version changed")
+    require(version in {1, 2, 3, 4}, "feature construction input version changed")
+    require(version != 4 or successor_closure, "initial Castle inputs require source successor closure")
     if version == 1:
         return sorted({selector for _row, selector in authored_model_45_rows(authored)})
     require(len(authored) == 0x6604, "authored construction rows have invalid extent")
@@ -2014,7 +2015,7 @@ def _campaign_construction_selectors(authored: bytes, version: int, *, successor
             selectors.add(u16(authored, offset + 14))
             has_settlement = True
         has_settlement |= (kind, subtype) == (5, 12)
-    if version == 3:
+    if version in {3, 4}:
         require(reset_entities is not None and len(reset_entities) == 12 + 1000 * 176 and reset_entities[:4] == b"MCE1" and (u16(reset_entities, 4), u16(reset_entities, 6), u32(reset_entities, 8)) == (1, 176, 1000), "reset house source arena is malformed")
         for index in range(1, 1000):
             offset = 12 + index * 176
@@ -2025,6 +2026,15 @@ def _campaign_construction_selectors(authored: bytes, version: int, *, successor
         # sub_232C0's constructor choices, as retained by the exporter and
         # consumed by the settlement owner; this is not an actor allowlist.
         selectors.update((17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74))
+    if version == 4:
+        # player_0x2FED9 is authored bytes11..19. The initial producer stamps
+        # BUILD[0..count), and action5 may create BUILD[count] on its first pass.
+        # BUILD0 is the owner's zero-sized no-op; BUILD1 also anchors the root.
+        for count in authored[11:19]:
+            require(count < 76, "initial Castle BUILD selector is outside the source table")
+            if count:
+                selectors.add(1)
+                selectors.update(range(1, count + 1))
     pending = list(selectors) if successor_closure else []
     while pending:
         selector = pending.pop()
@@ -2163,8 +2173,8 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         kind, member_name, provenance, artifact_paths = expected[fact_id]
         fact_kind = _bounded_integer(fact["kind"], 0xFFFF, f"SourceFact {fact_id} kind")
         fact_version = _bounded_integer(fact["version"], 0xFFFF, f"SourceFact {fact_id} version")
-        require(fact_version == 1 or (kind == 2 and fact_version in {2, 3}) or (kind == 3 and fact_version in {2, 3}), f"SourceFact {fact_id} version differs")
-        if kind == 2 and fact_version in {2, 3}:
+        require(fact_version == 1 or (kind == 2 and fact_version in {2, 3, 4}) or (kind == 3 and fact_version in {2, 3}), f"SourceFact {fact_id} version differs")
+        if kind == 2 and fact_version in {2, 3, 4}:
             artifact_paths = artifact_paths | {"CD_Files/DATA/BLDGPRM.DAT"}
         if kind == 3 and fact_version in {2, 3}:
             bank = ("MSPRD0-0", "MSPRN0-0", "MSPRC0-0")[profile["map_type_id"]]
@@ -2192,15 +2202,15 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
 
     feature_inputs = (package / "feature-construction-inputs.bin").read_bytes()
     feature_selectors = _campaign_decode_feature_inputs(feature_inputs)
-    closed_construction = any(fact["kind"] == 2 and fact["version"] in {2, 3} for fact in facts)
+    closed_construction = any(fact["kind"] == 2 and fact["version"] in {2, 3, 4} for fact in facts)
     closed_collision = any(fact["kind"] == 3 and fact["version"] == 3 for fact in facts)
     construction_fact_version = next(fact["version"] for fact in facts if fact["kind"] == 2)
     require(not closed_construction or u16(feature_inputs, 4) == construction_fact_version, "source-closed construction version differs from SourceFact")
-    require((u16(feature_inputs, 4) == 3) == (construction_fact_version == 3), "reset-house construction version differs from SourceFact")
-    require(construction_fact_version != 3 or profile.get("source_level_v4"), "reset-house closure requires an ordinary source package")
+    require((u16(feature_inputs, 4) in {3, 4}) == (construction_fact_version in {3, 4}), "reset-house construction version differs from SourceFact")
+    require(construction_fact_version not in {3, 4} or profile.get("source_level_v4"), "reset-house closure requires an ordinary source package")
     authored_selectors = [row["model"] for row in behavior_rows if row["initial_source_slot"] is None and row["class"] == 10 and row["subtype"] == 45 and row["action"] == 255]
     require(feature_selectors == _campaign_construction_selectors(authored, u16(feature_inputs, 4), successor_closure=closed_construction, reset_entities=(package / "entities.bin").read_bytes()), "feature construction selectors differ from versioned source closure")
-    if construction_fact_version == 3:
+    if construction_fact_version in {3, 4}:
         parameters = (package / "building-parameters.bin").read_bytes()
         require(len(parameters) == 76 * 4, "reset-house BLDGPRM extent changed")
         cursor = 16

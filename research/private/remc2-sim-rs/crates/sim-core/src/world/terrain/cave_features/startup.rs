@@ -1,7 +1,10 @@
 //! Source-order authored terrain startup. Imported post-feature planes are comparison
 //! oracles only: all writes start at the package's pre-feature boundary.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Bound::{Excluded, Unbounded},
+};
 
 use super::{
     bind_definition, new_event, prepare_authored, reclaim, startup_position, synchronize_links,
@@ -15,10 +18,13 @@ use crate::{
     level_definition::{
         CaveCorridorDefinition, CaveFeatureDefinition, EffectDefinition, TerrainDisasterDefinition,
     },
-    level1_mission::{AuthoredFeature, parse_authored_features},
+    level1_mission::{
+        AUTHORED_FEATURE_BYTES, AUTHORED_FEATURE_COUNT, AUTHORED_FEATURE_OFFSET, AuthoredFeature,
+        parse_authored_features,
+    },
     native_world::{
-        EntitySnapshot, Level2EconomyState, MapType, ParticleParameter, SessionTerrain,
-        cave_corridors, level1_load_house_base, terrain_strip,
+        EntitySnapshot, EntitySpecialRelation, Level2EconomyState, MapType, ParticleParameter,
+        SessionTerrain, cave_corridors, level1_load_house_base, terrain_strip,
     },
     renderable_map_chain::RenderableMapSeed,
     world::terrain::disasters::{RingProfile, mc2 as rings},
@@ -33,8 +39,18 @@ pub struct TerrainStartupWorld {
     pub(crate) authored: Vec<AuthoredFeature>,
     pub(crate) allocation_count: usize,
     buildings: BTreeMap<u8, Building>,
+    rings: BTreeMap<u16, TerrainDisasterDefinition>,
+    initial_castles: Vec<InitialCastle>,
     effects: BTreeMap<u16, EffectDefinition>,
     particles: Box<[ParticleParameter]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InitialCastle {
+    player: u8,
+    stages: u8,
+    life_coefficient: u16,
+    spawn: Position,
 }
 
 // Observe the actual geometry consumer independently of captured-plane equality.
@@ -64,7 +80,7 @@ impl TerrainStartupWorld {
         reset_sources: &[EntitySnapshot],
         lighting_enabled: bool,
     ) -> Result<(u16, DynamicLightingState, Vec<(u16, bool)>), String> {
-        let (terrain, lighting, linked_flags) =
+        let (terrain, _, lighting, linked_flags) =
             self.reset_terrain_with_lighting(reset_sources, lighting_enabled)?;
         let generated = terrain.planes();
         planes.terrain_types.clone_from(&generated.terrain_types);
@@ -92,14 +108,22 @@ impl TerrainStartupWorld {
         reset_sources: &[EntitySnapshot],
     ) -> Result<SessionTerrain, String> {
         self.reset_terrain_with_lighting(reset_sources, true)
-            .map(|(terrain, _, _)| terrain)
+            .map(|(terrain, _, _, _)| terrain)
     }
 
     fn reset_terrain_with_lighting(
         &self,
         reset_sources: &[EntitySnapshot],
         lighting_enabled: bool,
-    ) -> Result<(SessionTerrain, DynamicLightingState, Vec<(u16, bool)>), String> {
+    ) -> Result<
+        (
+            SessionTerrain,
+            SourceArena,
+            DynamicLightingState,
+            Vec<(u16, bool)>,
+        ),
+        String,
+    > {
         let mut terrain = self.terrain.clone();
         let mut arena = self.arena.clone();
         arena.dynamic_lighting = DynamicLightingState::reset();
@@ -123,6 +147,13 @@ impl TerrainStartupWorld {
             }
             let newborn = match (row.kind, row.subtype) {
                 (14, 1) => construct_strip(&mut arena, &mut terrain, row)?,
+                (10, 11) => {
+                    let definition = *self.rings.get(&row.index).ok_or_else(|| {
+                        format!("missing ordinary ring content at row{}", row.index)
+                    })?;
+                    let position = row.world_position(terrain.ground_height(row.world_position(0)));
+                    rings::construct(&mut arena, &mut terrain, position, definition.into())
+                }
                 (10, 0) => {
                     let definition = *self.effects.get(&row.index).ok_or_else(|| {
                         format!("missing ordinary impact content at row{}", row.index)
@@ -166,6 +197,19 @@ impl TerrainStartupWorld {
             if let Some(slot) = newborn {
                 let key =
                     reset_source_key(&arena.entities[usize::from(slot)], reset_sources, &retained)?;
+                if (row.kind, row.subtype) == (10, 11) {
+                    // Other actor owners account for the omitted allocations.
+                    // NewEvent's initial fields depend on that real address,
+                    // not this terrain-only arena's temporary storage slot.
+                    // Never adopt the imported, already-visited life/timer.
+                    let rng = arena.economy.new_event_rng(key);
+                    let source = &mut arena.entities[usize::from(slot)];
+                    source.set_phase(key as u8);
+                    source.source_id = key;
+                    source.record[30..32].copy_from_slice(&key.to_le_bytes());
+                    source.set_entity_rng(rng);
+                    arena.economy.source_rng.insert(slot, rng);
+                }
                 if source_order.insert(key, slot).is_some() {
                     return Err(format!(
                         "ordinary terrain source identity {key} is already bound"
@@ -176,12 +220,152 @@ impl TerrainStartupWorld {
                 }
             }
         }
+        // The first PlayerEvents runs after group0 and before UpdateEntities.
+        // Keep actor allocation with its owner; compose its real Castle
+        // constructor and immutable initial BUILD stamps before any ring tick.
+        for initial in &self.initial_castles {
+            let Some(owner) = reset_sources.iter().find(|row| {
+                row.active
+                    && (row.class, row.model) == (3, 1)
+                    && row.special_relation == EntitySpecialRelation::PlayerState(initial.player)
+            }) else {
+                continue;
+            };
+            for stage in 1..=initial.stages {
+                let building = self
+                    .buildings
+                    .get(&stage)
+                    .ok_or_else(|| format!("missing initial Castle BUILD{stage}"))?;
+                if !arena
+                    .economy
+                    .set_castle_stage_footprint(stage, building.footprint.clone())
+                {
+                    return Err(format!(
+                        "initial Castle BUILD{stage} has invalid source dimensions"
+                    ));
+                }
+            }
+            arena.rebuild_source_arena_with_terrain(&mut terrain, &[])?;
+            let Some(root) = arena.allocate_ai_castle_root_seed(
+                initial.spawn,
+                owner.index,
+                owner.source_id,
+                &mut terrain,
+            ) else {
+                continue;
+            };
+            let key = reset_source_key_at(3, 2, root.position, reset_sources, &retained)?;
+            // First PlayerEvents starts with zero per-stage bonuses; its
+            // authored nonzero wizard Life replaces the default256 scale.
+            for stage in 0..8 {
+                arena.economy.set_castle_stage_coefficient_for_owner(
+                    owner.index,
+                    stage,
+                    initial.life_coefficient,
+                );
+            }
+            arena
+                .economy
+                .bind_castle_startup_identity(root.source_entity_index, key)?;
+            for stage in 0..initial.stages {
+                // Source BUILD0's 0x0 TAB is a real empty operation, omitted
+                // from the immutable bank. A nonempty0 is retained and runs.
+                let Some(building) = self.buildings.get(&stage) else {
+                    if stage == 0 {
+                        continue;
+                    }
+                    return Err(format!("missing initial Castle BUILD{stage}"));
+                };
+                terrain.apply_initial_castle_stage(
+                    root.anchor_position,
+                    &building.footprint,
+                    building.parameter.flags & 4 == 0,
+                )?;
+            }
+            arena
+                .economy
+                .initialize_ai_castle_starting_stages(root.source_entity_index, initial.stages)?;
+            if source_order.insert(key, root.source_entity_index).is_some() {
+                return Err(format!(
+                    "ordinary terrain source identity {key} is already bound"
+                ));
+            }
+        }
         arena.finish_source_group();
+        // Initial UpdateEntities advances D41A0.rand once, after all first
+        // PlayerEvents constructors and before any numeric callback births.
+        arena.economy.advance_global_rng();
         let effect_lists = crate::native_world::area_damage::capture_effect_lists(&mut arena, None);
         // UpdateEntities scans the actual ordinary source identities. Other
         // actor births can put a close trigger AFTER a retained controller;
         // its first terrain change then belongs to the following pass.
-        for &slot in source_order.values() {
+        let mut cursor = 0;
+        while let Some((&key, &slot)) = source_order.range((Excluded(cursor), Unbounded)).next() {
+            cursor = key;
+            if arena.economy.castle_at(slot).is_some() {
+                let class3 = arena
+                    .economy
+                    .live_castles()
+                    .map(|root| root.source_entity_index)
+                    .collect::<Vec<_>>();
+                let site_clear = arena.economy.castle_upgrade_site_checks(
+                    slot,
+                    &terrain,
+                    &class3,
+                    &arena.entities,
+                )[1];
+                arena
+                    .economy
+                    .begin_castle_stage_with_site(slot, &mut terrain, site_clear);
+                // A real NewEvent model42 born after this root is reached in
+                // the same ascending scan. Other Castle descendants retain
+                // their separate owners and do not write startup geometry.
+                let children = arena
+                    .economy
+                    .castle_children()
+                    .iter()
+                    .filter(|child| {
+                        child.active
+                            && (child.source_class, child.model, child.action) == (10, 42, 44)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                for child in children {
+                    if source_order
+                        .values()
+                        .any(|slot| *slot == child.source_entity_index)
+                    {
+                        continue;
+                    }
+                    let child_key =
+                        reset_source_key_at(10, 42, child.position, reset_sources, &retained)?;
+                    arena
+                        .economy
+                        .bind_castle_startup_identity(child.source_entity_index, child_key)?;
+                    if source_order
+                        .insert(child_key, child.source_entity_index)
+                        .is_some()
+                    {
+                        return Err(format!(
+                            "ordinary terrain source identity {child_key} is already bound"
+                        ));
+                    }
+                }
+                continue;
+            }
+            if arena.economy.castle_children().iter().any(|child| {
+                child.active
+                    && child.source_entity_index == slot
+                    && (child.source_class, child.model, child.action) == (10, 42, 44)
+            }) {
+                arena.economy.step_castle_child_terminal_slot(
+                    slot,
+                    &mut arena.entities,
+                    &Default::default(),
+                    &mut terrain,
+                );
+                continue;
+            }
             let slot = usize::from(slot);
             let source = &arena.entities[slot];
             if !source.active {
@@ -209,6 +393,11 @@ impl TerrainStartupWorld {
                 }
                 (10, 45, 51) => {
                     step_house(&mut arena.entities[slot], &mut terrain, &self.buildings)?
+                }
+                (10, 11, 11) => {
+                    rings::step(&mut arena, &mut terrain, slot as u16, apply_damage)?;
+                    let source = &mut arena.entities[slot];
+                    source.set_phase(source.phase.wrapping_add(1));
                 }
                 (10, 63 | 64, _) => {
                     unique_trigger_target(&arena, source.position)?;
@@ -264,7 +453,7 @@ impl TerrainStartupWorld {
                 )
             })
             .collect();
-        Ok((terrain, lighting, linked_flags))
+        Ok((terrain, arena, lighting, linked_flags))
     }
 
     /// The same geometry consumer used by normal campaign flight.
@@ -315,7 +504,7 @@ pub(crate) fn supports_authored(authored: &[u8]) -> Result<bool, String> {
                 && ((row.activation_group == -1
                     && matches!(row.subtype, 9 | 15 | 27 | 30 | 32 | 51 | 88))
                     || (row.activation_group == 0
-                        && matches!(row.subtype, 9..=11 | 15 | 27..=32 | 50 | 51 | 80..=86 | 88)))
+                        && matches!(row.subtype, 9 | 10 | 15 | 27..=32 | 50 | 51 | 80..=86 | 88)))
         }))
 }
 
@@ -325,6 +514,7 @@ pub(crate) fn supports_authored(authored: &[u8]) -> Result<bool, String> {
 pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String> {
     let mut features = parse_authored_features(inputs.authored)?;
     let buildings = decode_house_construction_inputs(inputs.construction)?;
+    let initial_castles = initial_castle_inputs(inputs.authored, &features)?;
     for row in features
         .iter()
         .skip(1)
@@ -496,6 +686,8 @@ pub(crate) fn generate(inputs: Inputs<'_>) -> Result<TerrainStartupWorld, String
         authored: features,
         allocation_count: allocations,
         buildings,
+        rings: inputs.rings.clone(),
+        initial_castles,
         effects: inputs.effects.clone(),
         particles: inputs.particles.to_vec().into_boxed_slice(),
     })
@@ -597,28 +789,87 @@ fn reset_source_key(
     reset_sources: &[EntitySnapshot],
     retained: &BTreeSet<u16>,
 ) -> Result<u16, String> {
+    reset_source_key_at(
+        source.class,
+        source.model,
+        source.position,
+        reset_sources,
+        retained,
+    )
+}
+
+fn reset_source_key_at(
+    class: u8,
+    model: u8,
+    position: Position,
+    reset_sources: &[EntitySnapshot],
+    retained: &BTreeSet<u16>,
+) -> Result<u16, String> {
     let mut matches = reset_sources.iter().filter(|candidate| {
         candidate.active
             && candidate.index != 0
             && !retained.contains(&candidate.index)
-            && candidate.class == source.class
-            && candidate.model == source.model
-            && candidate.position.x == source.position.x
-            && candidate.position.y == source.position.y
+            && candidate.class == class
+            && candidate.model == model
+            && candidate.position.x == position.x
+            && candidate.position.y == position.y
     });
     let Some(first) = matches.next() else {
         return Err(format!(
             "ordinary terrain {}/{} at {},{} has no reset source identity",
-            source.class, source.model, source.position.x, source.position.y
+            class, model, position.x, position.y
         ));
     };
     if matches.next().is_some() {
         return Err(format!(
             "ordinary terrain {}/{} at {},{} has ambiguous reset source identities",
-            source.class, source.model, source.position.x, source.position.y
+            class, model, position.x, position.y
         ));
     }
     Ok(first.index)
+}
+
+fn initial_castle_inputs(
+    authored: &[u8],
+    features: &[AuthoredFeature],
+) -> Result<Vec<InitialCastle>, String> {
+    let counts = authored
+        .get(11..19)
+        .ok_or("missing authored initial Castle counts")?;
+    let mut spawns = [Position::default(); 8];
+    for row in features
+        .iter()
+        .filter(|row| row.activation_group == 0 && row.kind == 3 && (4..=10).contains(&row.subtype))
+    {
+        spawns[(row.subtype - 4) as usize] = row.world_position(0);
+    }
+    let mut castles = Vec::new();
+    for (player, &stages) in counts.iter().enumerate() {
+        if stages == 0 {
+            continue;
+        }
+        let offset = AUTHORED_FEATURE_OFFSET
+            + AUTHORED_FEATURE_COUNT * AUTHORED_FEATURE_BYTES
+            + 1
+            + player * 110;
+        let wizard = authored
+            .get(offset..offset + 110)
+            .ok_or("missing initial Castle wizard settings")?;
+        // InitialiseSpells54A50's AI starting/blocked gate for physical
+        // family2 precedes PlayerEvents5C950's actual Castle constructor.
+        if wizard[15 + 2] != 0 && wizard[67 + 2] == 0 {
+            castles.push(InitialCastle {
+                player: player as u8,
+                stages,
+                life_coefficient: match word(wizard, 93)? {
+                    0 => 256,
+                    value => value,
+                },
+                spawn: spawns[player],
+            });
+        }
+    }
+    Ok(castles)
 }
 
 fn unique_trigger_target(arena: &SourceArena, position: Position) -> Result<(), String> {
@@ -803,6 +1054,306 @@ mod tests {
                 .unwrap_err()
                 .contains("no reset")
         );
+    }
+
+    #[test]
+    fn ordinary_level_nine_group_zero_rings_reach_live_collision_and_reclaim() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9",
+        );
+        let selection = CampaignSelection::ordinary(9).unwrap();
+        let package = DecodedCampaignPackage::decode(&root, selection)
+            .expect("unfiltered current-exporter Level9 package");
+        let features = parse_authored_features(package.authored_bytes()).unwrap();
+        assert!(supports_authored(package.authored_bytes()).unwrap());
+        for (index, x, y) in [(57, 193, 227), (113, 104, 19)] {
+            let row = features[index];
+            assert_eq!(
+                (row.kind, row.subtype, row.activation_group, row.parameter_1),
+                (10, 11, 0, 2)
+            );
+            assert_eq!((row.tile_x, row.tile_y), (x, y));
+        }
+        let generated = package.generate_terrain_startup().unwrap();
+        // GenerateEvents(-1) has not constructed either later group0 row.
+        assert!(!generated.live_entities().any(|row| row.model == 11));
+        assert_eq!(generated.authored[57].kind, 10);
+        assert_eq!(generated.authored[113].kind, 10);
+        let end = package.member("feature-end.bin").unwrap();
+        assert_eq!(generated.arena.economy.global_rng, dword(end, 12).unwrap());
+        let reset_sources =
+            crate::native_world::parse_entities(package.member("entities.bin").unwrap()).unwrap();
+        let (reset, arena, _, _) = generated
+            .reset_terrain_with_lighting(&reset_sources, true)
+            .expect("group0 constructs and visits the real lowering rings");
+        for (slot, phase, count) in [(16, 17, 0), (69, 70, 1)] {
+            let ring = arena
+                .entities
+                .iter()
+                .find(|row| row.active && (row.class, row.model, row.source_id) == (10, 11, slot))
+                .expect("constructed ring has its immutable source identity");
+            assert_eq!((ring.action, ring.max_life, ring.life), (11, 40, 23));
+            assert_eq!((ring.phase, ring.subspell_index), (phase, 900));
+            assert_eq!(
+                i32::from_le_bytes(ring.record[20..24].try_into().unwrap()),
+                count
+            );
+            assert_eq!(ring.entity_rng, generated.arena.economy.new_event_rng(slot));
+            assert_eq!(ring.position, reset_sources[usize::from(slot)].position);
+            assert_eq!(
+                (ring.array_pitch(), ring.array_roll(), ring.array_fov()),
+                (2304, 2304, 8192)
+            );
+            assert_eq!(ring.control_flags, 0x0002_0002);
+        }
+        assert_eq!(generated.initial_castles.len(), 1);
+        assert_eq!(
+            (
+                generated.initial_castles[0].player,
+                generated.initial_castles[0].stages
+            ),
+            (4, 3)
+        );
+        let castle = arena
+            .economy
+            .live_castles()
+            .find(|root| root.source_id_entity_index == 131)
+            .expect("real player4 initial Castle uses the shared constructor and callback");
+        assert_eq!(
+            (castle.level, castle.build_state, castle.phase),
+            (3, 4, 147)
+        );
+        assert_eq!((castle.life, castle.max_life), (15_625, 15_625));
+        let child = arena
+            .economy
+            .castle_children()
+            .iter()
+            .find(|child| {
+                child.active && (child.source_class, child.model, child.action) == (10, 42, 44)
+            })
+            .expect("real Castle first callback allocates its scheduled BUILD child");
+        assert_eq!(
+            (
+                child.cave_collision_cooldown,
+                child.source_dword_10,
+                child.source_byte_3e
+            ),
+            (3, 18, 162)
+        );
+        let mut callback_rng = generated.arena.economy.clone();
+        callback_rng.advance_global_rng();
+        assert_eq!(arena.economy.global_rng, callback_rng.global_rng);
+        assert_eq!(child.entity_rng, callback_rng.new_event_rng(161));
+        assert_eq!(child.entity_rng, reset_sources[161].entity_rng);
+        assert_eq!(
+            (child.source_byte_3b, child.control_flags),
+            (0, 0x0001_0003)
+        );
+        // Reset rows supply immutable addresses/poses only. Their captured
+        // post-callback clock/lifetime/RNG must not determine construction.
+        let mut altered_capture = reset_sources.clone();
+        for slot in [16, 69] {
+            let row = &mut altered_capture[slot];
+            row.set_life(-900);
+            row.set_phase(240);
+            row.set_source_dword_10(1000);
+            row.set_entity_rng(0);
+        }
+        altered_capture[146].set_source_dword_10(7);
+        altered_capture[146].set_life(-900);
+        altered_capture[161].set_source_dword_10(1000);
+        altered_capture[161].set_phase(240);
+        let (independent, independent_arena, _, _) = generated
+            .reset_terrain_with_lighting(&altered_capture, true)
+            .unwrap();
+        assert_eq!(independent.deterministic_hash(), reset.deterministic_hash());
+        for slot in [16, 69] {
+            let packet = |arena: &SourceArena| {
+                arena
+                    .entities
+                    .iter()
+                    .find(|row| {
+                        row.active && (row.class, row.model, row.source_id) == (10, 11, slot)
+                    })
+                    .unwrap()
+                    .record
+                    .to_vec()
+            };
+            assert_eq!(packet(&independent_arena), packet(&arena));
+        }
+        let oracle =
+            crate::native_world::parse_terrain(package.member("terrain.bin").unwrap()).unwrap();
+        for (name, actual, expected) in [
+            (
+                "material",
+                &reset.planes().terrain_types,
+                &oracle.terrain_types,
+            ),
+            (
+                "floor",
+                &reset.planes().ground_heights,
+                &oracle.ground_heights,
+            ),
+            ("shade", &reset.planes().shading, &oracle.shading),
+            ("angle", &reset.planes().angles, &oracle.angles),
+            (
+                "ceiling",
+                &reset.planes().secondary_heights,
+                &oracle.secondary_heights,
+            ),
+        ] {
+            let first = actual.iter().zip(expected.iter()).position(|(a, b)| a != b);
+            assert!(
+                first.is_none(),
+                "constructed Level9 {name}: first mismatch {first:?}"
+            );
+        }
+        let publications_before = GEOMETRY_PUBLICATIONS.with(|count| count.get());
+        let mut campaign = crate::campaign::CampaignSession::open(&root, selection)
+            .expect("ordinary Level9 consumes Rust-constructed group0 terrain");
+        assert_eq!(
+            GEOMETRY_PUBLICATIONS.with(|count| count.get()),
+            publications_before + 1
+        );
+        let simulation = campaign.simulation_mut();
+        assert_eq!(
+            simulation.canonical_terrain().planes().ground_heights,
+            reset.planes().ground_heights
+        );
+        assert_eq!(
+            simulation.canonical_terrain().planes().angles,
+            reset.planes().angles
+        );
+        let changed = (0..65536)
+            .find(|&tile| {
+                reset.planes().ground_heights[tile]
+                    < generated.terrain.planes().ground_heights[tile]
+                    && ((tile % 256).abs_diff(105) <= 2 && (tile / 256).abs_diff(20) <= 2)
+            })
+            .expect("source69's first radius update lowers actual ring terrain");
+        let point = Position {
+            x: ((changed % 256) as u16) << 8,
+            y: ((changed / 256) as u16) << 8,
+            z: 0,
+        };
+        let ground = reset.ground_height(point);
+        assert_eq!(simulation.canonical_terrain().ground_height(point), ground);
+        assert_eq!(
+            crate::FlightWorld::ground_height(simulation.canonical_terrain(), point),
+            ground
+        );
+        assert_eq!(simulation.canonical_terrain().ceiling_height(point), None);
+        // Explicit observer pose only: real player flight and late585D0 must
+        // consume the lowered authoritative terrain, without any plane write.
+        let player = simulation.state.entity_index;
+        simulation
+            .set_level2_entity_position(
+                player,
+                Position {
+                    z: ground - 256,
+                    ..point
+                },
+            )
+            .unwrap();
+        {
+            let state = &mut simulation.session.state.live.core.state;
+            state.actual_speed = 0;
+            state.target_speed = 0;
+            state.strafe_speed = 0;
+            state.impulse_x = 0;
+            state.impulse_y = 0;
+            state.impulse_z = 0;
+            state.recoil_speed = 0;
+        }
+        let handles = [16, 69].map(|slot| simulation.source_arena().handle(slot).unwrap());
+        let mut hidden = [false; 2];
+        let mut reclaimed = [false; 2];
+        let mut lowered_later = false;
+        let clearance = simulation.session.definition.presentation.entity_parameters[66];
+        let clearance = i16::from_le_bytes([clearance[12], clearance[13]]);
+        // Remaining life23 needs25 callbacks through old-life<0, then the
+        // following owning prologue reclaims. No clock or phase is forced.
+        for pass in 0..26 {
+            let before = simulation
+                .canonical_terrain()
+                .planes()
+                .ground_heights
+                .clone();
+            let was_hidden = hidden;
+            simulation.step_level2_source_pass(0);
+            let live = simulation.canonical_terrain();
+            lowered_later |= before
+                .iter()
+                .zip(live.planes().ground_heights.iter())
+                .enumerate()
+                .any(|(tile, (a, b))| {
+                    a > b && (tile % 256).abs_diff(105) <= 9 && (tile / 256).abs_diff(20) <= 9
+                });
+            let raw_player = &simulation.entities()[usize::from(player)];
+            assert_eq!(simulation.state.position, raw_player.position);
+            assert_eq!(
+                simulation.shared_spells().player_entity().position,
+                raw_player.position
+            );
+            assert!(
+                raw_player.position.z
+                    >= live
+                        .ground_height(raw_player.position)
+                        .wrapping_add(clearance)
+            );
+            if pass == 0 {
+                let minimum = clearance.max(simulation.profile().ground_clearance);
+                assert_eq!(
+                    (raw_player.position.x, raw_player.position.y),
+                    (point.x, point.y)
+                );
+                assert_eq!(
+                    raw_player.position.z,
+                    live.ground_height(raw_player.position)
+                        .wrapping_add(minimum),
+                    "real zero-speed player collision/late clearance must use the lowered plane"
+                );
+                assert!(
+                    raw_player.position.z
+                        < generated
+                            .terrain
+                            .ground_height(raw_player.position)
+                            .wrapping_add(minimum),
+                    "a stale higher pre-ring collision plane cannot satisfy this observer"
+                );
+            }
+            for (index, handle) in handles.iter().enumerate() {
+                if was_hidden[index] {
+                    assert!(
+                        simulation.source_arena().resolve(*handle).is_none(),
+                        "ring{} must reclaim at the following source boundary",
+                        handle.source_slot
+                    );
+                    reclaimed[index] = true;
+                } else if !reclaimed[index] {
+                    let row = &simulation.entities()[usize::from(handle.source_slot)];
+                    assert_eq!(
+                        simulation.economy().slot_generation(handle.source_slot),
+                        handle.generation
+                    );
+                    assert_eq!((row.class, row.model, row.action), (10, 11, 11));
+                    assert_eq!(row.phase, (handle.source_slot as u8).wrapping_add(pass + 2));
+                    if row.drawing_disabled() {
+                        assert!(row.active && row.control_flags & 0x400 != 0);
+                        hidden[index] = true;
+                    }
+                }
+            }
+            if reclaimed.iter().all(|done| *done) {
+                break;
+            }
+        }
+        assert!(
+            lowered_later,
+            "ordinary scheduled ring callbacks continue lowering the live geometry"
+        );
+        assert!(hidden.into_iter().all(|done| done));
+        assert!(reclaimed.into_iter().all(|done| done));
     }
 
     #[test]
@@ -1082,7 +1633,7 @@ mod tests {
             let reset_sources =
                 crate::native_world::parse_entities(package.member("entities.bin").unwrap())
                     .unwrap();
-            let (reset, lights, linked_flags) = generated
+            let (reset, _, lights, linked_flags) = generated
                 .reset_terrain_with_lighting(&reset_sources, true)
                 .expect("ordinary terrain callbacks");
             if lights.active_count() != 0 {
@@ -1091,7 +1642,7 @@ mod tests {
                     let row = &reset_sources[usize::from(light.source_entity_index)];
                     assert_eq!((row.class, row.model), (10, 0));
                 }
-                let (without_lights, _, disabled_flags) = generated
+                let (without_lights, _, _, disabled_flags) = generated
                     .reset_terrain_with_lighting(&reset_sources, false)
                     .expect("ordinary terrain with light option disabled");
                 let mut restored = reset.planes().shading.to_vec();

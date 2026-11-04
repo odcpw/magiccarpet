@@ -751,6 +751,27 @@ Bytes capture_feature_construction_inputs(
         };
         selectors.insert(selectors.end(), std::begin(builder_rows), std::end(builder_rows));
     }
+    // PlayerEvents' first AI spawn (sub_5C950) stamps BUILD[0..count)
+    // before the first numeric pass, whose Castle callback can create the
+    // next BUILD[count] child. New roots also read BUILD[1] for their anchor.
+    // Original BUILD[0] is a zero-sized source no-op, not a house footprint.
+    // Retain immutable inputs even when another spawn gate disables a player;
+    // the runtime owner still decides whether that producer actually runs.
+    if (reset_house_closure) {
+        bool has_initial_castle = false;
+        for (const std::uint8_t count : authored.player_0x2FED9) {
+            if (count != 0 && count >= str_D93C0_bldgprmbuffer.size()) {
+                throw std::runtime_error("initial Castle BUILD selector is outside the source table");
+            }
+            has_initial_castle |= count != 0;
+            for (std::uint16_t selector = 1; selector <= count; ++selector) {
+                selectors.push_back(selector);
+            }
+        }
+        if (has_initial_castle) {
+            selectors.push_back(1);
+        }
+    }
     // SetHouse copies byte_3 into the destruction successor selector. Later
     // destruction can construct that BUILD footprint, including successors of
     // successors. Level 2 also needs collision masks for this complete set.
@@ -773,7 +794,7 @@ Bytes capture_feature_construction_inputs(
 
     Bytes result;
     result.magic("MCI3");
-    result.u16(reset_house_closure ? 3 : 2);
+    result.u16(reset_house_closure ? 4 : 2);
     result.u16(16);
     result.u16(static_cast<std::uint16_t>(selectors.size()));
     result.u16(1);
@@ -2281,7 +2302,7 @@ canonical_json campaign_source_facts(
             (construction_collision_closure || reset_house_closure)
                 ? std::initializer_list<const char*>{"CD_Files/DATA/BLDGPRM.DAT", "CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"}
                 : std::initializer_list<const char*>{"CD_Files/DATA/BUILD0-0.DAT", "CD_Files/DATA/BUILD0-0.TAB", "CD_Files/DATA/SPELLS.DAT", "CD_Files/DATA/TABLESN.DAT"})},
-        {"version", reset_house_closure ? 3 : (construction_collision_closure ? 2 : 1)}
+        {"version", reset_house_closure ? 4 : (construction_collision_closure ? 2 : 1)}
     });
     facts.push_back({
         {"fact_id", "level-records"},
@@ -2334,7 +2355,7 @@ canonical_json build_campaign_definition(
         file_manifest, "feature-allocator.bin", "mc2-feature-allocator/v1"));
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "feature-construction-inputs.bin", profile.external > 3
-            ? "mc2-feature-construction-inputs/v3" : "mc2-feature-construction-inputs/v2"));
+            ? "mc2-feature-construction-inputs/v4" : "mc2-feature-construction-inputs/v2"));
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "entities-post-features.bin", "mc2-feature-entity-arena/v1"));
     feature_boundary.push_back(typed_campaign_member(
@@ -3066,7 +3087,7 @@ int run(const Arguments& arguments) {
             {"construction_inputs", {
                 {"file", "feature-construction-inputs.bin"},
                 {"magic", "MCI3"},
-                {"version", arguments.level.external > 3 ? 3 : 2},
+                {"version", arguments.level.external > 3 ? 4 : 2},
                 {"successor_closure", arguments.level.external == 2 || arguments.level.external > 3},
                 {"record_count", feature_building_selectors.size()},
                 {"selectors", feature_building_selectors},

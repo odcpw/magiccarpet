@@ -3733,6 +3733,7 @@ fn validate_feature_boundary(
         1 => "mc2-feature-construction-inputs/v1",
         2 => "mc2-feature-construction-inputs/v2",
         3 => "mc2-feature-construction-inputs/v3",
+        4 => "mc2-feature-construction-inputs/v4",
         _ => {
             return fail(
                 ValidationStage::TypedMembers,

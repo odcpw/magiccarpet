@@ -303,7 +303,7 @@ fn parse_artifact(value: &Value, label: &str) -> Result<SourceArtifact, String> 
 fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> {
     if bytes.len() < 16
         || bytes.get(..4) != Some(b"MCI3")
-        || !matches!(read_u16(bytes, 4, "feature-input version")?, 1 | 2 | 3)
+        || !matches!(read_u16(bytes, 4, "feature-input version")?, 1 | 2 | 3 | 4)
         || read_u16(bytes, 6, "feature-input header")? != 16
         || read_u16(bytes, 10, "feature-input encoding")? != 1
         || read_u32(bytes, 12, "feature-input reserved")? != 0
@@ -347,8 +347,9 @@ fn decode_feature_construction_inputs(bytes: &[u8]) -> Result<Vec<u16>, String> 
 }
 
 /// MCI3 v2 retains finite constructors and all authored Houses; v3 additionally
-/// retains live reset Houses and their successors. The legacy collision census
-/// and Level 2's separately closed collision profile keep their own contracts.
+/// retains live reset Houses and their successors. v4 also retains immutable
+/// initial-Castle constructor inputs. The legacy collision census and Level 2's
+/// separately closed collision profile keep their own contracts.
 fn source_building_successor(selector: u16) -> Result<u16, String> {
     // Nonzero byte_3 rows from the unchanged BLDGPRM.DAT whose complete
     // 304-byte owner identity is pinned in SOURCE_ARTIFACTS.
@@ -387,6 +388,7 @@ fn construction_selectors_from_authored(
     authored: &[u8],
     successor_closure: bool,
     reset_entities: Option<&[u8]>,
+    initial_castle_inputs: bool,
 ) -> Result<Vec<u16>, String> {
     let features = crate::level1_mission::parse_authored_features(authored)?;
     let mut selectors = features
@@ -432,6 +434,20 @@ fn construction_selectors_from_authored(
                 .map(u16::from),
         );
     }
+    if initial_castle_inputs {
+        // Authored player_0x2FED9 occupies bytes11..19. sub_5C950 stamps
+        // BUILD[0..count), then the first action5 can create BUILD[count].
+        // BUILD0 is the owner's zero-sized no-op; BUILD1 also anchors a root.
+        for &count in &authored[11..19] {
+            if count >= 76 {
+                return Err("initial Castle BUILD selector is outside the source table".to_owned());
+            }
+            if count != 0 {
+                selectors.insert(1);
+                selectors.extend(1..=u16::from(count));
+            }
+        }
+    }
     if successor_closure {
         close_construction_successors(&mut selectors)?;
     }
@@ -447,11 +463,13 @@ fn validate_construction_selectors(
 ) -> Result<(), String> {
     let actual = decode_feature_construction_inputs(bytes)?;
     let version = read_u16(bytes, 4, "feature-input version")?;
-    if successor_closure && !matches!(version, 2 | 3) {
-        return Err("source-closed construction profile requires MCI3 v2 or v3".to_owned());
+    if successor_closure && !matches!(version, 2 | 3 | 4) {
+        return Err("source-closed construction profile requires MCI3 v2, v3 or v4".to_owned());
     }
-    if version == 3 && (!successor_closure || reset_entities.is_none()) {
-        return Err("MCI3 v3 requires reset houses and their source successor closure".to_owned());
+    if matches!(version, 3 | 4) && (!successor_closure || reset_entities.is_none()) {
+        return Err(format!(
+            "MCI3 v{version} requires reset houses and their source successor closure"
+        ));
     }
     let expected = if version == 1 {
         legacy_selectors.to_vec()
@@ -459,7 +477,12 @@ fn validate_construction_selectors(
         construction_selectors_from_authored(
             authored,
             successor_closure,
-            if version == 3 { reset_entities } else { None },
+            if matches!(version, 3 | 4) {
+                reset_entities
+            } else {
+                None
+            },
+            version == 4,
         )?
     };
     if actual != expected {
@@ -684,7 +707,8 @@ pub(crate) fn validate_source_facts(
         )?;
         if kind != expected.1
             || !(version == 1
-                || (kind == SourceFactKind::FeatureConstructionInputs && matches!(version, 2 | 3))
+                || (kind == SourceFactKind::FeatureConstructionInputs
+                    && matches!(version, 2 | 3 | 4))
                 || (kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3)))
             || string(&object["lifetime"], &format!("{label}.lifetime"))?
                 != "immutable-through-session"
@@ -750,7 +774,7 @@ pub(crate) fn validate_source_facts(
         // v1 retains the legacy Day provenance contract. v2 names the bank
         // Level.cpp actually loads for this map, while retaining MCM1 pixels.
         let expected_paths =
-            if kind == SourceFactKind::FeatureConstructionInputs && matches!(version, 2 | 3) {
+            if kind == SourceFactKind::FeatureConstructionInputs && matches!(version, 2 | 3 | 4) {
                 &[
                     "CD_Files/DATA/BLDGPRM.DAT",
                     "CD_Files/DATA/BUILD0-0.DAT",
@@ -802,15 +826,15 @@ pub(crate) fn validate_source_facts(
         .find(|fact| fact.kind == SourceFactKind::FeatureConstructionInputs)
         .map_or(0, |fact| fact.version);
     let construction_version = read_u16(feature_inputs, 4, "feature-input version")?;
-    if construction_version == 3 && !context.has_building_parameters {
+    if matches!(construction_version, 3 | 4) && !context.has_building_parameters {
         return Err("reset-house construction requires the owner BLDGPRM bank".to_owned());
     }
-    if (construction_fact_version == 3 || construction_version == 3)
+    if (matches!(construction_fact_version, 3 | 4) || matches!(construction_version, 3 | 4))
         && construction_fact_version != construction_version
     {
         return Err("reset-house SourceFact and construction member versions differ".to_owned());
     }
-    let successor_closure = matches!(construction_fact_version, 2 | 3);
+    let successor_closure = matches!(construction_fact_version, 2 | 3 | 4);
     let closed_collision = result
         .iter()
         .any(|fact| fact.kind == SourceFactKind::CollisionMask && fact.version == 3);
@@ -868,7 +892,7 @@ pub(crate) fn validate_source_facts(
                 "building parameter owner bytes or qualified objective chain changed".to_owned(),
             );
         }
-        if construction_version == 3 {
+        if matches!(construction_version, 3 | 4) {
             validate_construction_owner_parameters(feature_inputs, bytes)?;
         }
     }
@@ -1016,6 +1040,109 @@ mod tests {
         missing[8..10].copy_from_slice(&(selectors.len() as u16 - 1).to_le_bytes());
         assert!(
             super::validate_construction_selectors(&missing, &authored, &[], true, Some(&entities))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn initial_castle_bank_v4_requires_authored_tiers_and_preserves_v3_closure() {
+        let generated =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_INITIAL_CASTLE_PACKAGE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                generated.join("ribbon-20261104-integration/group-zero-owner-package-v4/level9")
+            });
+        let legacy = generated.join("tremor-20261104-integration/current-owner-package/level9");
+        let authored = std::fs::read(package.join("authored-level.bin")).unwrap();
+        let entities = std::fs::read(package.join("entities.bin")).unwrap();
+        let bytes = std::fs::read(package.join("feature-construction-inputs.bin")).unwrap();
+        let owner_parameters = std::fs::read(package.join("building-parameters.bin")).unwrap();
+        let old = std::fs::read(legacy.join("feature-construction-inputs.bin")).unwrap();
+        assert_eq!(
+            std::fs::read(legacy.join("authored-level.bin")).unwrap(),
+            authored
+        );
+        assert_eq!(
+            std::fs::read(legacy.join("entities.bin")).unwrap(),
+            entities
+        );
+        assert_eq!(&authored[11..19], &[0, 0, 0, 0, 3, 0, 0, 0]);
+        assert_eq!(super::read_u16(&bytes, 4, "version").unwrap(), 4);
+        assert_eq!(super::read_u16(&old, 4, "version").unwrap(), 3);
+        super::validate_construction_selectors(&bytes, &authored, &[], true, Some(&entities))
+            .unwrap();
+        super::validate_construction_owner_parameters(&bytes, &owner_parameters).unwrap();
+        super::validate_construction_selectors(&old, &authored, &[], true, Some(&entities))
+            .expect("v3 retains its exact pre-Castle-input contract");
+        let selectors = super::decode_feature_construction_inputs(&bytes).unwrap();
+        let old_selectors = super::decode_feature_construction_inputs(&old).unwrap();
+        let construction = crate::house::decode_house_construction_inputs(&bytes).unwrap();
+        let parameters = crate::house::decode_campaign_house_parameters(&bytes).unwrap();
+        assert!(
+            !selectors.contains(&0),
+            "source BUILD0 remains an empty no-op"
+        );
+        for required in [1, 2, 3] {
+            assert!(selectors.contains(&required));
+            assert!(!old_selectors.contains(&required));
+            assert!(construction.contains_key(&(required as u8)));
+            assert!(parameters.contains_key(&(required as u8)));
+            let mut cursor = 16;
+            let mut removed = None;
+            for &selector in &selectors {
+                let extent = super::read_u32(&bytes, cursor + 8, "extent").unwrap() as usize;
+                if selector == required {
+                    removed = Some(cursor..cursor + 12 + extent);
+                    break;
+                }
+                cursor += 12 + extent;
+            }
+            let mut missing = bytes.clone();
+            missing.drain(removed.expect("required real source BUILD row"));
+            missing[8..10].copy_from_slice(&(selectors.len() as u16 - 1).to_le_bytes());
+            assert!(
+                super::validate_construction_selectors(
+                    &missing,
+                    &authored,
+                    &[],
+                    true,
+                    Some(&entities)
+                )
+                .is_err(),
+                "v4 requires BUILD{required}, including the first callback's next tier"
+            );
+        }
+        let mut mislabeled = bytes.clone();
+        mislabeled[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        assert!(
+            super::validate_construction_selectors(
+                &mislabeled,
+                &authored,
+                &[],
+                true,
+                Some(&entities)
+            )
+            .is_err(),
+            "v3 cannot admit additional Castle inputs"
+        );
+        let mut missing_castle_bank = old;
+        missing_castle_bank[4..6].copy_from_slice(&4_u16.to_le_bytes());
+        assert!(
+            super::validate_construction_selectors(
+                &missing_castle_bank,
+                &authored,
+                &[],
+                true,
+                Some(&entities)
+            )
+            .is_err()
+        );
+        assert!(
+            super::validate_construction_selectors(&bytes, &authored, &[], true, None).is_err()
+        );
+        assert!(
+            super::validate_construction_selectors(&bytes, &authored, &[], false, Some(&entities))
                 .is_err()
         );
     }
