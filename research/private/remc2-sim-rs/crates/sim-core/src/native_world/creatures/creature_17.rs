@@ -211,6 +211,8 @@ pub(crate) struct Creature17Effects {
     pub population_decrements: u32,
     pub kill: bool,
     pub route_hide: bool,
+    /// Shared sub_1E580 expiry: mode13 adds model73 before the common impact.
+    pub stage_expiry: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -336,7 +338,11 @@ fn settle(actor: &mut Creature17State, terrain: &SessionTerrain) {
         &mut actor.position,
         terrain,
         RULES.ground_clearance,
-        RULES.descent,
+        if actor.descriptor == STRIKE_DESCRIPTOR {
+            RULES.stance_descent
+        } else {
+            RULES.descent
+        },
     );
 }
 
@@ -344,10 +350,10 @@ fn move_actor(
     actor: &mut Creature17State,
     terrain: &SessionTerrain,
     effects: &mut Creature17Effects,
-) {
+) -> bool {
     if actor.control_flags & 0x800 != 0 {
         actor.control_flags &= !0x800;
-        return;
+        return false;
     }
     let motion = crate::ground_creature_motion::step_ground_creature_motion(
         actor.position,
@@ -359,8 +365,16 @@ fn move_actor(
             half_width: actor.half_width,
             half_height: actor.half_height,
             ground_clearance: RULES.ground_clearance,
-            descent: RULES.descent,
-            turn_limit: RULES.turn_limit,
+            descent: if actor.descriptor == STRIKE_DESCRIPTOR {
+                RULES.stance_descent
+            } else {
+                RULES.descent
+            },
+            turn_limit: if actor.descriptor == STRIKE_DESCRIPTOR {
+                RULES.stance_turn_limit
+            } else {
+                RULES.turn_limit
+            },
             terrain_mask: RULES.terrain_mask,
             maximum_tile_slope: RULES.maximum_slope,
         },
@@ -376,6 +390,7 @@ fn move_actor(
         actor.life = -1;
         effects.population_decrements = effects.population_decrements.wrapping_add(1);
     }
+    motion.result == crate::ground_creature_motion::GroundCreatureMoveResult::Alternate
 }
 
 fn follow_heading(actor: &mut Creature17State, target: Position) {
@@ -430,21 +445,15 @@ fn pursue(
     }
     if hit == 1 {
         actor.target = actor.attacker;
-        if actor.route_mode != 14 {
-            settle(actor, ctx.terrain);
-            return;
-        }
     }
-    move_actor(actor, ctx.terrain, effects);
+    let alternate_heading = move_actor(actor, ctx.terrain, effects);
     let selected = ctx.target(actor.target);
     let selected = stage::alliance_target(actor, ctx, effects, selected);
-    let Some(target) = selected
-        .filter(|target| target.alive() && (actor.route_mode == 14 || target.player()))
-    else {
+    let Some(target) = selected.filter(|target| target.alive()) else {
         reset_from_bad_target(actor);
         return;
     };
-    if actor.phase & 3 == 0 {
+    if actor.phase & 3 == 0 && matches!(actor.attack_phase, 0 | 4) {
         follow_heading(actor, target.position);
         if let Some(peer) = ctx
             .model17
@@ -460,29 +469,36 @@ fn pursue(
             actor.roll = heading_for_positions(peer.position, actor.position) as i16;
         }
     }
-    if actor.phase % RULES.source_scan_period != 0 {
-        return;
-    }
-    let range = distance(actor.position, target.position);
-    if range >= RULES.target_range {
-        actor.action = 137;
-    } else if actor.attack_phase == 0 {
-        if range >= RULES.projectile_min_range {
+    if actor.attack_phase == 0 {
+        if actor.phase % RULES.source_scan_period != 0 {
+            return;
+        }
+        let range = distance(actor.position, target.position);
+        if range >= RULES.target_range {
+            actor.action = 137;
+        } else if range >= RULES.projectile_min_range {
             effects.projectile = Some(ProjectileIntent {
                 target: target.slot,
             });
         } else {
-            actor.roll = heading_for_positions(actor.position, target.position) as i16;
-            actor.yaw = actor.roll;
-            actor.descriptor = STRIKE_DESCRIPTOR;
-            actor.timer = 0;
-            actor.attack_phase = 2;
-            actor.speed = actor.minimum_speed.saturating_mul(3);
-            return;
+            actor.attack_phase = 1;
         }
+        return;
+    }
+    if actor.attack_phase == 1 {
+        actor.roll = heading_for_positions(actor.position, target.position) as i16;
+        actor.yaw = actor.roll;
+        actor.descriptor = STRIKE_DESCRIPTOR;
+        actor.timer = 0;
+        actor.attack_phase = 2;
+        actor.speed = actor.minimum_speed.wrapping_mul(3);
+        return;
     }
 
     if matches!(actor.attack_phase, 2 | 3) {
+        if !alternate_heading {
+            actor.yaw = actor.roll;
+        }
         let time = actor.timer;
         let vertical = if time <= 4 {
             i32::from(RULES.strike_vertical_step) >> time.clamp(0, 15)
@@ -493,7 +509,7 @@ fn pursue(
         };
         actor.timer = actor.timer.wrapping_add(1);
         if actor.speed > actor.maximum_speed {
-            actor.speed = actor.speed.saturating_sub(RULES.strike_speed_decay);
+            actor.speed = actor.speed.wrapping_sub(RULES.strike_speed_decay);
         }
         let ground = ctx.terrain.ground_height(actor.position);
         if i32::from(actor.position.z).wrapping_add(vertical) <= i32::from(ground) {
@@ -504,7 +520,11 @@ fn pursue(
             if actor.attack_phase != 3
                 && distance(actor.position, target.position) < RULES.melee_range
             {
-                effects.melee = Some((target.slot, i32::from(RULES.melee_damage), actor.source_id));
+                effects.melee = Some((
+                    target.slot,
+                    i32::from(actor.constructor_subspell),
+                    actor.source_id,
+                ));
                 actor.attack_phase = 3;
             }
         }
@@ -514,7 +534,7 @@ fn pursue(
         if remaining == RULES.strike_duration {
             actor.descriptor = DESCRIPTOR;
             actor.speed = actor.maximum_speed;
-        } else if actor.timer == 0 {
+        } else if remaining == 0 {
             actor.attack_phase = 0;
             actor.speed = actor.minimum_speed;
         }

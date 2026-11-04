@@ -397,6 +397,377 @@ fn peer_cones_differ_for_stationary_and_roaming_and_zero_proximity_skips_both_sc
 }
 
 #[test]
+fn attack_stance_and_recovery_follow_each_source_visit() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let runtime = simulation.runtime();
+    let mut counter = 0;
+    let point = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 8_000,
+    };
+    let mut actor = construct(41, 9, 0x1234, point, &mut counter);
+    let mut ordinary = actor;
+    ordinary.position.z = terrain.ground_height(point).wrapping_add(500);
+    ordinary.speed = 0;
+    ordinary.yaw = 0;
+    ordinary.roll = 512;
+    let mut strike = ordinary;
+    strike.descriptor = STRIKE_DESCRIPTOR;
+    let above_floor = ordinary.position.z;
+    move_actor(&mut ordinary, terrain, &mut Creature17Effects::default());
+    move_actor(&mut strike, terrain, &mut Creature17Effects::default());
+    assert_eq!(
+        (ordinary.position.z, strike.position.z),
+        (
+            above_floor + RULES.descent,
+            above_floor + RULES.stance_descent
+        )
+    );
+    assert_eq!(
+        (ordinary.yaw, strike.yaw),
+        (RULES.turn_limit, 512),
+        "actual current descriptor87 owns its1024 turn bound and zero relaxation"
+    );
+    ordinary.position.z = above_floor;
+    strike.position.z = above_floor;
+    settle(&mut ordinary, terrain);
+    settle(&mut strike, terrain);
+    assert_eq!(
+        (ordinary.position.z, strike.position.z),
+        (
+            above_floor + RULES.descent,
+            above_floor + RULES.stance_descent
+        )
+    );
+    actor.action = 138;
+    actor.target = 10;
+    actor.phase = RULES.source_scan_period;
+    let mut target = Target {
+        slot: 10,
+        source_id: 10,
+        class: 3,
+        model: 0,
+        life: 1000,
+        position: Position {
+            x: point.x + 500,
+            ..point
+        },
+        ..Target::default()
+    };
+    let visit = |actor: &mut Creature17State, target: Target| {
+        actor.control_flags |= 0x800;
+        step(
+            actor,
+            &Creature17Context {
+                terrain,
+                runtime,
+                targets: &[target],
+                class3: &[10],
+                model17: &[],
+            },
+        )
+        .unwrap()
+    };
+    visit(&mut actor, target);
+    assert_eq!(
+        (actor.attack_phase, actor.descriptor, actor.timer),
+        (1, DESCRIPTOR, 0),
+        "cadenced phase0 selects phase1 without executing its next callback"
+    );
+    actor.phase = actor.phase.wrapping_add(1);
+    visit(&mut actor, target);
+    assert_eq!(
+        (
+            actor.attack_phase,
+            actor.descriptor,
+            actor.timer,
+            actor.speed
+        ),
+        (2, STRIKE_DESCRIPTOR, 0, RULES.minimum_speed * 3)
+    );
+    let roll = actor.roll;
+    target.position.x = point.x + 4000;
+    actor.phase = actor.phase.wrapping_add(1);
+    let z = actor.position.z;
+    visit(&mut actor, target);
+    assert_eq!(
+        (actor.action, actor.attack_phase, actor.timer, actor.roll),
+        (138, 2, 1, roll),
+        "airborne phases neither wait for cadence nor refresh their heading/range choice"
+    );
+    assert_eq!(actor.position.z, z + RULES.strike_vertical_step);
+    actor.phase = actor.phase.wrapping_add(1);
+    target.position = actor.position;
+    let strike = visit(&mut actor, target);
+    assert_eq!(
+        strike.melee,
+        Some((10, i32::from(RULES.melee_damage), actor.source_id))
+    );
+    assert_eq!((actor.attack_phase, actor.timer), (3, 2));
+    actor.attack_phase = 4;
+    actor.timer = 1;
+    visit(&mut actor, target);
+    assert_eq!(
+        (actor.attack_phase, actor.timer),
+        (4, 0),
+        "recovery tests the previous counter"
+    );
+    visit(&mut actor, target);
+    assert_eq!(
+        (actor.attack_phase, actor.timer, actor.speed),
+        (0, -1, actor.minimum_speed)
+    );
+}
+#[test]
+fn configured_stage13_and16_preserve_countdown_target_damage_and_expiry_products() {
+    let mut simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain().clone();
+    let runtime = simulation.runtime().clone();
+    let point = Position {
+        x: 20_000,
+        y: 20_000,
+        z: 0,
+    };
+    let parent = Target {
+        slot: 10,
+        source_id: 10,
+        class: 3,
+        model: 0,
+        life: 100,
+        position: point,
+        ..Target::default()
+    };
+    let hostile = Target {
+        slot: 11,
+        source_id: 11,
+        position: Position { x: 22_000, ..point },
+        ..parent
+    };
+    for mode in [13, 16] {
+        let mut count = 0;
+        let mut actor = construct(41, 9, 0x1234, point, &mut count);
+        actor.action = 143;
+        actor.route_mode = mode;
+        actor.parent = parent.slot;
+        actor.route_remaining = 10;
+        actor.phase = 1;
+        actor.target = hostile.slot;
+        actor.control_flags |= 0x800;
+        let effects = step(
+            &mut actor,
+            &Creature17Context {
+                terrain: &terrain,
+                runtime: &runtime,
+                targets: &[parent, hostile],
+                class3: &[10, 11],
+                model17: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(actor.route_remaining, if mode == 13 { 9 } else { 10 });
+        assert_eq!(effects.stage_expiry, None);
+        actor.target = 0;
+        actor.control_flags |= 0x800;
+        step(
+            &mut actor,
+            &Creature17Context {
+                terrain: &terrain,
+                runtime: &runtime,
+                targets: &[parent],
+                class3: &[10],
+                model17: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            actor.route_remaining,
+            if mode == 13 { 4 } else { 6 },
+            "parent fallback costs4 after mode13's own tick"
+        );
+        assert_eq!(actor.target, 0);
+        actor.target = hostile.slot;
+        actor.pending_damage = 1;
+        actor.pending_attacker = hostile.slot;
+        actor.control_flags |= 0x800;
+        let effects = step(
+            &mut actor,
+            &Creature17Context {
+                terrain: &terrain,
+                runtime: &runtime,
+                targets: &[parent, hostile],
+                class3: &[10, 11],
+                model17: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (actor.life, actor.action, actor.attack_phase),
+            (RULES.max_life - 1, 138, 0)
+        );
+        assert_eq!(effects.feedback, [(parent.slot, 19)]);
+    }
+    // These are explicitly configured helper modes, not a claim that the
+    // ordinary Army table creates model17. Use real constructors/allocators
+    // and the shared expiry publisher for their advertised consequences.
+    for mode in [13, 16] {
+        let particles = simulation.session.definition.presentation.particles.clone();
+        let live = &mut simulation.session.state.live;
+        let slot = add_creature(&mut live.economy, &mut live.terrain, &particles, point, 143);
+        live.economy.entities[usize::from(slot)].record[77] = mode;
+        let before = live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active)
+            .map(|row| (row.index, live.economy.slot_generation(row.index)))
+            .collect::<Vec<_>>();
+        let classes = class3_slots(&live.economy);
+        let families = model_slots(&live.economy);
+        mc2::step_row(
+            &mut live.economy,
+            &mut live.core.runtime,
+            &mut live.terrain,
+            &particles,
+            slot,
+            &classes,
+            &families,
+        )
+        .unwrap();
+        assert!(live.economy.entities[usize::from(slot)].drawing_disabled());
+        let children = live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| {
+                row.active
+                    && !before.contains(&(row.index, live.economy.slot_generation(row.index)))
+            })
+            .map(|row| (row.class, row.model))
+            .collect::<Vec<_>>();
+        assert!(children.contains(&(10, 0)));
+        assert_eq!(children.contains(&(10, 73)), mode == 13);
+    }
+}
+
+#[test]
+fn summoned_fixed_addresses_read_retained_parent_target_and_current_reuse() {
+    let mut simulation = crate::native_world::tests::level_two_campaign_session();
+    let particles = simulation.session.definition.presentation.particles.clone();
+    let live = &mut simulation.session.state.live;
+    let parent = live.core.state.entity_index;
+    let target = live
+        .economy
+        .entities
+        .iter()
+        .find(|row| row.active && (row.class, row.model) == (3, 1))
+        .unwrap()
+        .index;
+    let point = live.economy.entities[usize::from(parent)].position;
+    let slot = add_creature(&mut live.economy, &mut live.terrain, &particles, point, 143);
+    {
+        let actor = &mut live.economy.entities[usize::from(slot)];
+        actor.record[77] = 16;
+        put(actor, 44, parent);
+        put(actor, 154, target);
+        put(actor, 50, 10);
+        actor.set_phase(1);
+        actor.set_control_flags(actor.control_flags | 0x800);
+    }
+    // Explicitly controlled source release exercises the fixed-address read
+    // contract, not an assertion that ordinary player death frees this row.
+    // Real imported packets retain their life/pose/model after class clears.
+    for (address, life) in [(target, 100), (parent, 0)] {
+        let position = live.economy.entities[usize::from(address)].position;
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            address,
+            position,
+            false,
+            false,
+        )
+        .unwrap();
+        live.economy.entities[usize::from(address)].set_life(life);
+        live.economy.entities[usize::from(address)].reclaim_source_row();
+        live.economy.economy.release_slot(address, None);
+    }
+    let families = model_slots(&live.economy);
+    let original_generation = live.economy.slot_generation(parent);
+    mc2::step_row(
+        &mut live.economy,
+        &mut live.core.runtime,
+        &mut live.terrain,
+        &particles,
+        slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    let actor = &live.economy.entities[usize::from(slot)];
+    assert!(
+        !actor.drawing_disabled(),
+        "source1E580 admits zero-life current parent packets"
+    );
+    assert_eq!(
+        put_word(actor, 154),
+        target,
+        "positive-life retained selected target stays readable"
+    );
+    assert_eq!(
+        put_word(actor, 50),
+        10,
+        "mode16 retains its timer while a selected target exists"
+    );
+
+    let replacement = crate::world::effects::allocate(
+        &mut live.economy,
+        &mut live.terrain,
+        sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+        point,
+        &particles,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        replacement, parent,
+        "the actual NewEvent consumes the last released source address"
+    );
+    assert!(live.economy.slot_generation(parent) > original_generation);
+    let flags = live.economy.entities[usize::from(slot)].control_flags;
+    live.economy.entities[usize::from(slot)].set_control_flags(flags | 0x800);
+    mc2::step_row(
+        &mut live.economy,
+        &mut live.core.runtime,
+        &mut live.terrain,
+        &particles,
+        slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(
+        !live.economy.entities[usize::from(slot)].drawing_disabled(),
+        "the fixed parent pointer follows the new live impact rather than an old generation"
+    );
+    live.economy.entities[usize::from(parent)].set_life(-1);
+    mc2::step_row(
+        &mut live.economy,
+        &mut live.core.runtime,
+        &mut live.terrain,
+        &particles,
+        slot,
+        &[],
+        &families,
+    )
+    .unwrap();
+    assert!(
+        live.economy.entities[usize::from(slot)].drawing_disabled(),
+        "the current replacement parent's negative life triggers real expiry"
+    );
+}
+#[test]
 fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass() {
     let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
         || {
@@ -564,6 +935,7 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     .expect("retained Level 17 campaign")
     .simulation()
     .clone();
+    let mut melee = scheduled.clone();
     let (actor_slot, actor_source_id, target_slot) = {
         let live = &mut scheduled.session.state.live;
         let target_slot = live.core.state.entity_index;
@@ -585,12 +957,11 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
             z: target_position.z,
         };
         actor.set_position(position);
-        actor.set_source_action(138);
+        assert_eq!(actor.action, 143, "retain the real authored StageVar birth");
         actor.set_yaw(actor_yaw);
         actor.set_source_roll(actor_yaw);
-        actor.set_phase(RULES.source_scan_period);
+        actor.set_phase(RULES.source_scan_period.wrapping_sub(1));
         actor.set_control_flags(actor.control_flags | 0x800);
-        put(actor, 154, target_slot);
         let (slot, source_id) = (actor.index, actor.source_id);
         crate::world::effects::sync_position(
             &mut live.economy,
@@ -601,8 +972,20 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
             false,
         )
         .expect("publish the retained model17 position");
+        crate::native_world::area_damage::contact(&mut live.economy, None, slot, 1, target_slot)
+            .expect("ordinary incoming damage selects the actual player attacker");
         (slot, source_id, target_slot)
     };
+    scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert_eq!(
+        scheduled.entities()[usize::from(actor_slot)].action,
+        138,
+        "the real143 damage callback selects pursue without a forced target/action"
+    );
+    assert_eq!(
+        put_word(&scheduled.entities()[usize::from(actor_slot)], 154),
+        target_slot
+    );
     scheduled.step_outer_turn(crate::PlayerCommand::default(), 0);
     assert!(
         !scheduled
@@ -702,8 +1085,138 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
             "source projectile and impact are reclaimed or their addresses reused"
         );
     }
-}
 
+    // A second genuine imported actor takes the close branch from the same
+    // StageVar incoming-damage path. Only combat positions and initial source
+    // cadence are controls; stance, strike, hit and recovery all schedule.
+    // A fresh player has100 source protection visits. Let those callbacks
+    // expire naturally before combat; the protected prefix clears incoming
+    // contact mailboxes instead of applying them to life.
+    let initial_protection = melee.session.state.live.player_protection_ticks;
+    assert!(initial_protection > 0);
+    for _ in 0..initial_protection {
+        let live = &melee.session.state.live;
+        let player = &live.economy.entities[usize::from(live.core.state.entity_index)];
+        assert!(
+            !live.economy.player_castle_shift_aabb_overlap(player),
+            "the declared combat observer must not refresh Castle protection"
+        );
+        if live.player_protection_ticks == 0 {
+            break;
+        }
+        melee.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            melee
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "natural player protection prelude: {:?}",
+            melee.dispatch_events()
+        );
+    }
+    assert_eq!(
+        melee.session.state.live.player_protection_ticks, 0,
+        "ordinary scheduled player visits expire the source protection counter"
+    );
+    let player = melee.state.entity_index;
+    let player_life = melee.canonical_player_life_for_test();
+    let actor = {
+        let live = &mut melee.session.state.live;
+        let player_pose = live.core.state.position;
+        let actor = live
+            .economy
+            .entities
+            .iter_mut()
+            .find(|row| row.active && (row.class, row.model) == (5, SOURCE_MODEL))
+            .unwrap();
+        assert_eq!(actor.action, 143);
+        let pose = Position {
+            x: player_pose.x.wrapping_add(384),
+            ..player_pose
+        };
+        actor.set_position(pose);
+        let yaw = heading_for_positions(pose, player_pose) as i16;
+        actor.set_yaw(yaw);
+        actor.set_source_roll(yaw);
+        actor.set_phase(RULES.source_scan_period.wrapping_sub(2));
+        actor.set_control_flags(actor.control_flags | 0x800);
+        let slot = actor.index;
+        crate::world::effects::sync_position(
+            &mut live.economy,
+            &mut live.terrain,
+            slot,
+            pose,
+            true,
+            false,
+        )
+        .unwrap();
+        crate::native_world::area_damage::contact(&mut live.economy, None, slot, 1, player)
+            .unwrap();
+        slot
+    };
+    let mut phases = Vec::new();
+    let mut contact_receipts = Vec::new();
+    let mut recovered = false;
+    for _ in 0..80 {
+        melee.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            melee
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+            "actual model17 strike: {:?}",
+            melee.dispatch_events()
+        );
+        let row = &melee.entities()[usize::from(actor)];
+        let phase = row.record[74];
+        if phases.last() != Some(&phase) {
+            phases.push(phase);
+        }
+        if phase == 2 {
+            assert_eq!(row.parameter_relation, Some(STRIKE_DESCRIPTOR));
+        }
+        // This actor precedes the player numerically, so the player's later
+        // visit consumes the owner mailbox before the outer-turn observation.
+        // The existing event retains the applied payload and its attribution.
+        for event in melee.dispatch_events() {
+            if let crate::native_world::Mc2DispatchEvent::Economy {
+                event:
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index,
+                        attacker_entity_index,
+                        damage,
+                        lethal,
+                    },
+                ..
+            } = event
+                && *target_entity_index == player
+                && *attacker_entity_index == row.source_id
+            {
+                contact_receipts.push((*damage, *lethal));
+            }
+        }
+        if phases.contains(&4) && phase == 0 {
+            assert_eq!(row.parameter_relation, Some(DESCRIPTOR));
+            recovered = true;
+            break;
+        }
+    }
+    assert!(
+        phases.windows(4).any(|phases| phases == [1, 2, 3, 4]),
+        "ordinary source strike phases must remain distinct: {phases:?}"
+    );
+    assert!(
+        contact_receipts.contains(&(i32::from(RULES.melee_damage), false))
+            && melee.canonical_player_life_for_test() < player_life,
+        "the actual actor's350 contact is consumed by the live player: actor={actor}, \
+         player={player}, receipts={contact_receipts:?}, life={player_life}->{current_life}",
+        current_life = melee.canonical_player_life_for_test()
+    );
+    assert!(
+        recovered,
+        "the full18-count recovery restores descriptor85 and phase0"
+    );
+}
 #[test]
 fn prekill_inherits_owned_child_credit_without_running_death_early() {
     let mut simulation = crate::native_world::tests::level_two_campaign_session();

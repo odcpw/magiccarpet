@@ -265,6 +265,7 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
             | CreatureKind::Firefly
             | CreatureKind::Skeleton
             | CreatureKind::Spider
+            | CreatureKind::Creature17
             | CreatureKind::Creature26
             | CreatureKind::Creature24
     )

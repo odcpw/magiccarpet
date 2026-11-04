@@ -1180,6 +1180,12 @@ impl EffectLists {
         }
     }
 
+    /// Follow the captured source head through each current next_0 word.
+    /// A late consumer must observe replacement/link changes since capture.
+    pub(crate) fn current_class3_slots(&self, arena: &SourceArena) -> Vec<u16> {
+        self.class3_chain.current_slots(&arena.economy, &arena.entities)
+    }
+
     pub(crate) fn model45_slots(&self, arena: &SourceArena) -> &[u16] {
         if self.is_current(arena) {
             &self.model45
@@ -1336,6 +1342,18 @@ pub(crate) fn take_effect_damage_trace() -> Vec<EffectDamageReceipt> {
     EFFECT_DAMAGE_TRACE.with(|trace| trace.borrow_mut().take().map_or_else(Vec::new, |v| v.1))
 }
 
+#[cfg(test)]
+fn trace_current_bounty(targets: &ArenaTargets<'_, '_>, slot: u16) -> Option<(i32, u16)> {
+    // Match source_bounty and the actual writer: imported typed actors need
+    // not publish their authoritative mailbox into a generic raw projection.
+    targets
+        .actors
+        .as_ref()
+        .and_then(|actors| actors.source_view(slot))
+        .map(|view| (view.pending_damage, view.pending_attacker))
+        .or_else(|| read_arena_bounty(targets.arena, slot).ok())
+}
+
 pub(crate) fn apply_effect(
     arena: &mut SourceArena,
     actors: Option<ActorDomains<'_>>,
@@ -1392,7 +1410,7 @@ pub(crate) fn apply_effect(
             target_slot,
             target: world.actor(target_slot),
             target_in_scanned_cells,
-            mailbox_before: read_arena_bounty(world.targets.arena, target_slot).ok(),
+            mailbox_before: trace_current_bounty(&world.targets, target_slot),
             mailbox_after: None,
             hit_count: None,
         })
@@ -1400,7 +1418,7 @@ pub(crate) fn apply_effect(
     let result = crate::world::effects::apply_damage(&mut world, request);
     #[cfg(test)]
     if let Some(mut receipt) = receipt {
-        receipt.mailbox_after = read_arena_bounty(world.targets.arena, receipt.target_slot).ok();
+        receipt.mailbox_after = trace_current_bounty(&world.targets, receipt.target_slot);
         receipt.hit_count = result.as_ref().ok().copied();
         EFFECT_DAMAGE_TRACE.with(|trace| {
             if let Some((_, receipts)) = trace.borrow_mut().as_mut() {

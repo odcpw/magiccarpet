@@ -1,5 +1,33 @@
 # Shared-engine delivery plan
 
+Active next capability: `mc-bhq.8` terrain disasters, starting with actual
+Tremor acquisition → cast → scheduled deformation/damage → player clearance →
+natural cleanup. MaroonMarsh owns that path through integration. CalmBeaver owns
+the missing source585D0 post-dispatch clearance join and sole builds/install.
+The actual Creature17 prerequisite is corrected: all 12 owner checks pass on
+candidate5, including real melee after natural initial protection, slowdown,
+stance, follow/expiry and retained addresses. Its real Level9 absence sensor
+passes with clone-only objective activation controls, and group3 now reaches
+the existing model17 constructor. Fresh bounded source review supports these
+joins; the full creature bead/dependency remains open.
+The connected Tremor check now passes all three tiers (candidate7, 21.360s):
+actual Level9 switch/vault demolition → authored165 pickup → public acquired
+hand/carry → paid cast → real flyer/controller → terrain/attributed Goat damage
+and XP15 → same-pass player clearance → natural hide/following reclaim.
+The old retained package lacked BUILD23→24→28 successor inputs. Rebuilt the
+existing exporter and generated complete Level9/2 packages under
+`generated/tremor-20261104-integration/current-owner-package`; the old packages
+are preserved. Package structure/BUILD closure checks pass. A separate check
+matches all 160 exporter compile-input hashes and its binary provenance marker
+to current source/pinned remc2; campaign verification's source flags alone do
+not check those hashes. No runtime fallback or injected BUILD record.
+The existing test-only damage observer now reads the actual typed Goat mailbox,
+with raw fallback, matching its real writer; receipt predicates are unchanged.
+Source-order, acquired Fireball and workspace all-target checks pass on the
+byte-identical candidate5 production. Fresh bounded review supports these joins.
+This batch is verified in Rust, pending commit/native installation. Full terrain
+and creature acceptance/dependencies remain open; do not restart delivered work.
+
 Current installed checkpoint: ordinary checkpoint smoke lifecycle
 `ee6fd24c`, native `69410e96a7fe`.
 

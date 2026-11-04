@@ -1464,6 +1464,29 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             PassPhase::PostDispatch => {
                 self.owner.session.state.live.goats.finish_source_turn();
                 self.owner.flush_shared_effects();
+                // Source585D0 observes final terrain before21F60's
+                // registered protection. The family writes only source Z;
+                // publish those same poses to the existing player carriers.
+                let clearance = self.owner.session.definition.presentation.entity_parameters
+                    .get(66)
+                    .map(|row| i16::from_le_bytes([row[12], row[13]]))
+                    .ok_or("source player clearance parameter66 is absent")?;
+                let slots = self.effect_lists.current_class3_slots(
+                    &self.owner.session.state.live.economy,
+                );
+                let live = &mut self.owner.session.state.live;
+                let changed = crate::world::terrain::disasters::mc2::runtime::clamp_player_clearance(
+                    &mut live.economy, &live.terrain, &slots, clearance,
+                );
+                for (slot, position) in changed {
+                    if slot == self.player_entity_index {
+                        live.core.state.position = position;
+                        self.player_position = position;
+                    }
+                    live.shared_spells.sync_player_entity_from_authority(
+                        &live.economy.entities[usize::from(slot)],
+                    );
+                }
                 let live = &mut self.owner.session.state.live;
                 let slot = live.core.runtime.registered_protection_slot()
                     .ok_or("source registered-protection word is absent")?;
@@ -11912,7 +11935,7 @@ impl Mc2Simulation {
             && !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1 | 2 | 6 | 7)
-                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 26 | 27 | 28)
+                    | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
                         0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90

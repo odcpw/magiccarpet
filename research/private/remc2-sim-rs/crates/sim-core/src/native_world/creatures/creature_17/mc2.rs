@@ -463,7 +463,12 @@ pub(crate) fn step_row(
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model-17 callback lost slot{slot}"))?;
     let mut actor = load(actor_row, arena.slot_generation(slot));
-    let pointers: Vec<_> = crate::native_world::source_target::alliance_direct_references(arena, actor_row)?.into_iter().collect();
+    let mut pointers: Vec<_> =
+        crate::native_world::source_target::alliance_direct_references(arena, actor_row)?
+            .into_iter()
+            .collect();
+    pointers.extend(crate::native_world::source_target::summoned_direct_references(arena, actor_row)?);
+    pointers.extend_from_slice(class3);
     let targets = targets(arena, &pointers);
     let callback_action = actor.action;
     let context = Creature17Context {
@@ -518,6 +523,9 @@ pub(crate) fn step_row(
             launch_projectile(arena, terrain, particles, slot, intent.target)?;
     }
     crate::world::effects::sync_position(arena, terrain, slot, actor.position, true, false)?;
+    if let Some(summoned) = effects.stage_expiry.take() {
+        super::super::creature_24::mc2::expire(arena, terrain, particles, slot, summoned)?;
+    }
     if effects.kill {
         kill(arena, terrain, particles, slot)?;
     }

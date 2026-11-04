@@ -142,6 +142,98 @@ pub(super) fn alliance_target(actor: &mut Creature17State, ctx: &Creature17Conte
     (target.slot != parent.slot && (selected == 0 || selected == target.slot)).then_some(target)
 }
 
+/// sub_1E580 -> sub_1E700. Fixed-address parent/target reads retain their
+/// source life/flag tests; only mode13 consumes the ordinary countdown.
+fn follow_summoner(
+    actor: &mut Creature17State,
+    ctx: &Creature17Context<'_>,
+    effects: &mut Creature17Effects,
+) {
+    let parent = live(ctx, actor.parent);
+    if parent.is_none() {
+        actor.route_remaining = 0;
+    } else if actor.route_mode == 13 {
+        actor.route_remaining = actor.route_remaining.wrapping_sub(1);
+    }
+    if actor.route_remaining <= 0 {
+        effects.stage_expiry = Some(actor.route_mode == 13);
+        return;
+    }
+    let parent = parent.expect("live source parent checked above");
+    let mut target = ctx
+        .target(actor.target)
+        .filter(|target| target.life > 0 && target.flags & 0x400 == 0);
+    if target.is_none() {
+        actor.target = 0;
+        if actor.phase & 7 == 0 {
+            // sub_16FC0 scans frozen membership/current packets, testing
+            // model and source identity without another life/hide filter.
+            target = ctx
+                .class3
+                .iter()
+                .filter_map(|slot| ctx.target(*slot))
+                .filter(|candidate| {
+                    matches!(candidate.model, 0 | 1) && candidate.source_id != parent.source_id
+                })
+                .min_by_key(|candidate| super::xy_squared(parent.position, candidate.position));
+            actor.target = target.map_or(0, |target| target.slot);
+        }
+    }
+    if target.is_none() {
+        actor.target = actor.parent;
+    }
+    match consume(actor, ctx) {
+        2 => actor.route_remaining = 1,
+        hit => {
+            move_actor(actor, ctx.terrain, effects);
+            if hit == 1 {
+                if actor.attacker != actor.parent
+                    && ctx.target(actor.attacker).is_none_or(|attacker| {
+                        (attacker.class, attacker.model)
+                            != (super::SOURCE_CLASS, super::SOURCE_MODEL)
+                    })
+                {
+                    actor.target = actor.attacker;
+                    actor.action = 138;
+                    effects.feedback.push((actor.parent, 19));
+                }
+            } else if actor.phase & 7 == 0 {
+                let destination = target.unwrap_or(parent);
+                if actor.control_flags & 0x40000 == 0 {
+                    actor.roll = heading_for_positions(actor.position, destination.position) as i16;
+                    if actor.phase & 63 == 0 {
+                        jitter(actor);
+                    }
+                }
+                if let Some(peer) = ctx
+                    .model17
+                    .iter()
+                    .filter_map(|slot| ctx.target(*slot))
+                    .find(|peer| {
+                        peer.source_id != actor.source_id
+                            && actor.position.x.abs_diff(peer.position.x)
+                                < actor.half_width.max(0) as u16
+                            && actor.position.y.abs_diff(peer.position.y)
+                                < actor.half_width.max(0) as u16
+                    })
+                {
+                    actor.roll = heading_for_positions(peer.position, actor.position) as i16;
+                }
+            }
+        }
+    }
+    if let Some(target) = target {
+        if actor.phase & 7 == 0
+            && super::distance(actor.position, target.position) < RULES.target_range
+        {
+            actor.action = 138;
+        }
+    } else {
+        actor.target = 0;
+        actor.route_remaining = actor.route_remaining.wrapping_sub(4);
+    }
+}
+
 pub(super) fn step(
     actor: &mut Creature17State,
     ctx: &Creature17Context<'_>,
@@ -234,24 +326,7 @@ pub(super) fn step(
             }
         }
         12 => follow_parent(actor, ctx, effects),
-        13 | 16 => {
-            if actor.parent == 0 || live(ctx, actor.parent).is_none() {
-                actor.route_remaining = 0;
-            } else {
-                actor.route_remaining = actor.route_remaining.wrapping_sub(1);
-                let follow = live(ctx, actor.target).map_or_else(
-                    || live(ctx, actor.parent).map(|parent| parent.position),
-                    |target| Some(target.position),
-                );
-                if let Some(position) = follow {
-                    actor.roll = heading_for_positions(actor.position, position) as i16;
-                    move_actor(actor, ctx.terrain, effects);
-                }
-            }
-            if actor.route_remaining <= 0 {
-                effects.route_hide = true;
-            }
-        }
+        13 | 16 => follow_summoner(actor, ctx, effects),
         14 => {
             actor.route_remaining = actor.route_remaining.wrapping_sub(1);
             if actor.route_remaining > 0 { alliance_blink(actor, ctx, effects, false); }

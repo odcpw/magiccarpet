@@ -3,11 +3,37 @@
 
 use super::{AreaDamage, ribbon, travelling, tremor, volcano};
 use crate::{
-    Position,
+    FlightWorld, Position,
     campaign::source_arena::SourceArena,
     level_definition::{EffectKind, TerrainDisasterDefinition, TerrainDisasterKind},
     native_world::{ParticleParameter, SessionTerrain},
 };
+
+/// Source `sub_585D0` follows `dword_38519` after the numeric walk. Its current
+/// model0 occupants use BLDGPRM66's clearance, even if callbacks changed life
+/// or class. Only altitude changes: no map insertion, phase or random draw.
+pub(crate) fn clamp_player_clearance(
+    arena: &mut SourceArena,
+    terrain: &SessionTerrain,
+    class3_slots: &[u16],
+    clearance: i16,
+) -> Vec<(u16, Position)> {
+    let mut changed = Vec::new();
+    for &slot in class3_slots {
+        let row = &mut arena.entities[usize::from(slot)];
+        if row.model != 0 {
+            continue;
+        }
+        let minimum = i32::from(terrain.ground_height(row.position)) + i32::from(clearance);
+        if i32::from(row.position.z) < minimum {
+            let mut position = row.position;
+            position.z = minimum as i16;
+            row.set_position(position);
+            changed.push((slot, position));
+        }
+    }
+    changed
+}
 
 /// Direct constructors8/28/29/31/50 and61..64. Authored linked paths use their
 /// real chain producers instead of calling these terminal marker factories.
