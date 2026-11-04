@@ -1,29 +1,37 @@
 # Shared-engine delivery plan
 
-Current installed checkpoint: effect continuation and Possession contact packets
-`b395b5e4`, native `e739c2ff0f23`.
+Current installed checkpoint: authored ambient smoke and spell-thief consumers
+`bae0a599`, native `a911fd3b0eee`.
 
-Delivered on 2026-11-04: GroundFire commits its particle change before allocating
-DarkSmoke through the real parent-position address, then continues on the current
-occupant. Both ordinary Possession contacts (12/70) now retain the source clock,
-slot phase and current flags through hidden reads, owning reclaim and hashing.
-Actual acquired all-tier contacts and authored Volcano/debris/fire/smoke checks
-pass, including terminal/reclaim/reuse and declared allocation-failure/replacement
-controls. Three affected current-address/light/Cave checks, workspace all-target
-check and native build also pass. All 443 Rust and 162 upstream inputs match rig
-and the installed original client. Source is committed/pushed; the native is
-installed without Unity/art changes.
+Delivered on 2026-11-04: AmbientSmoke60 now leaves each DarkSmoke child's own
+NewEvent identity intact; other effect producers retain their source-required
+parent attribution. The real Level6 nested groups remain unfiltered: group13
+creates all six authored model26 roots and group16 creates its actual smoke
+controller. Its children reach original sprite descriptors and unshortened
+natural hide/reclaim; the source 32-free-slot constructor gate remains intact.
 
-Root viewed the original map/loading artwork and verified NightSpire's load-open
-event with the matching mapped native, then stopped its smoke processes. The
-last screenshot still showed loading artwork; no mission-render visual claim.
-Evidence: `research/private/generated/effect-state-20261104-integration/candidate-3/`.
-Rare pressure checks isolate one actual scheduled callback after real `49F90`;
-they do not prove natural owner-package exhaustion. Full `mc-bhq.9` acceptance
-stays open. Remaining family producers/consumers, human combat, FPS, hardware
-audio, complete missions and old-save migration remain unverified. Continue
-unmet real paths; do not restart this checkpoint. Formatting and whole-file
-scanner debt remain; no critical changed-hunk defect was identified.
+Fixed model26's missing shared admission and its real theft consumer: current
+player A4 supplies held spells, commit validation and hand publication, rather
+than unrelated word94. Genuine Speed acquisition, theft, detached return and
+remembered-hand recovery pass. All 19 existing owner checks pass in candidate5;
+Ambient/Volcano/source-order results from candidate3 use byte-identical production
+code. Only the theft check's declared pickup geometry changed: one real Army
+neighbor is relocated, preserving its identity/lifecycle, so unrelated pickups
+cannot invalidate the intended scenario. RNG, lifetime and hand expectations
+were preserved.
+
+Source is committed/pushed and the matching native installed. All 443 Rust and
+162 upstream inputs match rig and the original client. Root viewed its normal
+map/loading/NightSpire terrain/HUD with the mapped matching native, then stopped
+the smoke processes. No Unity/art changes. Evidence:
+`research/private/generated/ambient-smoke-20261104-integration/candidate-5/`.
+
+Full `mc-bhq.9` and `mc-1pb.13` acceptance/dependencies remain open. This is not
+unmodified mission travel, human combat, FPS, hardware audio, complete missions
+or old-save proof. Formatting and whole-file scanner debt remain; no critical
+changed-hunk defect was identified. Continue unmet real paths, not these completed
+checkpoints. The prior effect/contact checkpoint `b395b5e4`/`e739c2ff0f23` remains
+delivered; its evidence is under `generated/effect-state-20261104-integration/`.
 
 Previous ordinary Cave smoke checkpoint: `3555793f`, native `fa95bcc1ff52`.
 
@@ -112,7 +120,9 @@ producer/consumer paths before broader closure; do not restart the delivered
 checkpoints. Evidence: `research/private/generated/shared-effects-20261104-integration/candidate-5/`.
 
 CalmBeaver owns the sole build/push/install slot; MaroonMarsh implements shared
-joins with the feature owners. VioletGrove and WildSpring are the Terra workers.
+joins with the feature owners. The Terra owner hit model capacity; work was
+preserved and root/Sol completed the batch. Discover available agents on resume;
+do not retry unavailable models in a loop.
 Use exclusive file windows. Original-client delivery uses the verified isolated
 `magiccarpet-original-client-70e76b9e-20261103` input snapshot while unrelated
 Modern renderer work is present in the canonical Unity source.
