@@ -65,11 +65,14 @@ Shader "MagicCarpet/ModernVegetation"
             clip(texel.a-_Cutoff);
             return texel*vertexColor;
         }
+        float4 _ModernWind, _ModernWindOffset;
         float3 WindPosition(float3 positionWS, float weight)
         {
-            float phase = dot(positionWS.xz, float2(0.14,0.09)) + _Time.y*_WindSpeed;
-            float sway = sin(phase) + 0.35*sin(phase*1.83+positionWS.y*0.21);
-            positionWS.xz += float2(0.85,0.4)*sway*_WindStrength*saturate(weight);
+            float2 p=(positionWS.xz-_ModernWindOffset.xy)*0.006135923;
+            float phase=dot(p,float2(23,15));
+            float sway=sin(phase)+0.35*sin(dot(p,float2(41,27))+positionWS.y*0.21);
+            float2 direction=_ModernWind.xy/max(0.1,length(_ModernWind.xy));
+            positionWS.xz += direction*sway*_WindStrength*saturate(weight)*min(2,_ModernWind.z);
             return positionWS;
         }
         ENDHLSL

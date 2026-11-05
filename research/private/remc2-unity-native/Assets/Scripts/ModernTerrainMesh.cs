@@ -135,7 +135,7 @@ namespace MagicCarpet.Native
             }
         }
 
-        // Conservative world-space bounds include the water shader's vertical wave.
+        // Conservative bounds include choppy horizontal waves and local ripples.
         // Present must have been called for the camera's current position first.
         internal bool WaterVisible(Camera camera)
         {
@@ -159,7 +159,7 @@ namespace MagicCarpet.Native
                         Mathf.Abs(x.y) + Mathf.Abs(y.y) + Mathf.Abs(z.y),
                         Mathf.Abs(x.z) + Mathf.Abs(y.z) + Mathf.Abs(z.z));
                     var bounds = new Bounds(matrix.MultiplyPoint3x4(local.center), extents * 2f);
-                    bounds.Expand(new Vector3(0f, wave * 2f, 0f));
+                    bounds.Expand(new Vector3(wave * 2f, (wave + 2.15f) * 2f, wave * 2f));
                     if (GeometryUtility.TestPlanesAABB(frustumPlanes, bounds)) return true;
                 }
             }
@@ -407,6 +407,12 @@ namespace MagicCarpet.Native
             mesh.SetTriangles(land, 0, false);
             mesh.SetTriangles(water, 1, false);
             mesh.RecalculateBounds();
+            if (water.Count != 0)
+            {
+                var bounds = mesh.bounds;
+                bounds.Expand(new Vector3(6, 10.3f, 6));
+                mesh.bounds = bounds;
+            }
         }
 
         private static void ValidatePlane(byte[] plane, string name)

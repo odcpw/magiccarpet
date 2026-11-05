@@ -1,0 +1,116 @@
+#pragma kernel Clear
+#pragma kernel Scroll
+#pragma kernel Step
+
+Texture2D<float4> _Input;
+Texture2D<float4> _Coast;
+Texture2D<float4> _Breaking;
+SamplerState sampler_linear_clamp;
+SamplerState sampler_point_repeat;
+SamplerState sampler_linear_repeat;
+RWTexture2D<float4> _Output;
+int _Resolution;
+int2 _Scroll;
+float _CellSize, _Step, _WaveSpeedSquared;
+float4 _WorldRect, _FoamDrift;
+float4 _Wind;
+float _WaterTime;
+int _HasBreaking;
+int _ImpulseCount;
+float4 _Impulses[32]; // wrapped world x,z, support radius, velocity impulse
+
+bool Inside(int2 p) { return all(p >= 0) && all(p < _Resolution); }
+float2 WorldPosition(int2 p) { return _WorldRect.xy + (float2(p) + .5) * _CellSize; }
+bool Wet(float2 world) { return _Coast.SampleLevel(sampler_point_repeat, frac(world / 1024.0), 0).r > 0; }
+
+[numthreads(8,8,1)]
+void Clear(uint3 id : SV_DispatchThreadID)
+{
+    if (all(id.xy < (uint)_Resolution)) _Output[id.xy] = 0;
+}
+
+[numthreads(8,8,1)]
+void Scroll(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= (uint)_Resolution)) return;
+    int2 source = int2(id.xy) + _Scroll;
+    _Output[id.xy] = Inside(source) ? _Input.Load(int3(source,0)) : 0;
+}
+
+float NeighborHeight(int2 p, float center)
+{
+    // Absorbing patch borders never connect to the opposite border. Solid land
+    // has a no-flux face and reflects the incident disturbance locally.
+    if (!Inside(p)) return 0;
+    if (!Wet(WorldPosition(p))) return center;
+    return _Input.Load(int3(p,0)).r;
+}
+
+float PressurePotential(float2 delta, float inverseRadiusSquared)
+{
+    float a = saturate(1-dot(delta,delta)*inverseRadiusSquared);
+    return a*a*a;
+}
+
+[numthreads(8,8,1)]
+void Step(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= (uint)_Resolution)) return;
+    int2 p = int2(id.xy);
+    float2 world = WorldPosition(p);
+    if (!Wet(world)) { _Output[p] = 0; return; }
+    float4 state = _Input.Load(int3(p,0));
+    float laplacian = (NeighborHeight(p+int2(-1,0),state.r) + NeighborHeight(p+int2(1,0),state.r)
+        + NeighborHeight(p+int2(0,-1),state.r) + NeighborHeight(p+int2(0,1),state.r) - 4*state.r)
+        / (_CellSize * _CellSize);
+    float velocity = state.g + laplacian * _WaveSpeedSquared * _Step;
+    float foamSource = 0;
+    float4 coast = _Coast.SampleLevel(sampler_linear_repeat, frac(world / 1024.0), 0);
+    float windSpeed = length(_Wind.xy);
+    float2 windDirection = _Wind.xy / max(windSpeed, .001);
+    float exposure = saturate(-dot(windDirection, coast.ba));
+    float lapping = smoothstep(.78, .98, sin(max(coast.r,0)*.8 + _WaterTime*1.25));
+    // Controlled coastline fronts, not a bathymetric/refraction solver. Persistent
+    // coverage survives after each incoming front and drifts with the wind below.
+    foamSource += (1-smoothstep(.5,4.5,max(coast.r,0))) * lapping
+        * (.12 + exposure*.88) * saturate(windSpeed*.16) * _Step * .8;
+    if (_HasBreaking != 0)
+    {
+        float compression = _Breaking.SampleLevel(sampler_linear_repeat, frac(world/256.0)+.5/256.0, 0).b;
+        foamSource += saturate(compression) * smoothstep(1,6,coast.r) * _Step * .8;
+    }
+    [loop] for (int i = 0; i < _ImpulseCount; i++)
+    {
+        float4 impulse = _Impulses[i];
+        float2 delta = world - impulse.xy;
+        delta -= floor(delta / 1024.0 + .5) * 1024.0;
+        float u = saturate(dot(delta,delta) / (impulse.z * impulse.z));
+        // The discrete Laplacian telescopes to zero over an unobstructed grid,
+        // even when a source is between cells. Sampling the continuous Mexican
+        // hat alone has a small DC bias that repeated hovering would accumulate.
+        float invRadiusSquared = 1/(impulse.z*impulse.z);
+        float profile = (PressurePotential(delta+float2(_CellSize,0),invRadiusSquared)
+            + PressurePotential(delta-float2(_CellSize,0),invRadiusSquared)
+            + PressurePotential(delta+float2(0,_CellSize),invRadiusSquared)
+            + PressurePotential(delta-float2(0,_CellSize),invRadiusSquared)
+            - 4*PressurePotential(delta,invRadiusSquared))
+            * (impulse.z*impulse.z) / (12*_CellSize*_CellSize);
+        velocity += profile * impulse.w;
+        // A flying carpet's gentle pressure is not a continuously breaking jet.
+        float pressureFoam=lerp(.08,.20,smoothstep(.5,3,abs(impulse.w)));
+        foamSource += (1-u)*(1-u) * abs(impulse.w) * pressureFoam;
+    }
+    float edgeCells = min(min(p.x,p.y), min(_Resolution-1-p.x,_Resolution-1-p.y));
+    float edge = 1-saturate(edgeCells / 16.0);
+    float damping = exp(-(.38 + edge*edge*18) * _Step);
+    velocity = clamp(velocity * damping, -8, 8);
+    float height = clamp((state.r + velocity * _Step) * damping, -2, 2);
+    float2 foamWorld = world - _FoamDrift.xy * _Step;
+    float2 foamUV = (foamWorld - _WorldRect.xy) * _WorldRect.w;
+    float foam = 0;
+    if (all(foamUV > 0) && all(foamUV < 1) && Wet(foamWorld))
+        foam = _Input.SampleLevel(sampler_linear_clamp, foamUV, 0).b;
+    foam = saturate(foam * exp(-.32 * _Step) + foamSource);
+    foam *= exp(-edge*edge*8*_Step);
+    _Output[p] = float4(height, velocity, foam, 0);
+}

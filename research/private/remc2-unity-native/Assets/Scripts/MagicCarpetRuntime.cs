@@ -3172,6 +3172,7 @@ namespace MagicCarpet.Native
             DrainDeferredAudio(pooledAudio);
             foreach (var effect in campaignSession.DrainEffects())
             {
+                modernEnvironment?.ObserveEffect(effect);
                 if (effect.kind == NativeSim.CampaignEffectSharedSpell && effect.code == 5)
                 {
                     Require(gameRuntimeAbilityNotification != null, "materialized source spell notification text");

@@ -27,6 +27,7 @@ Shader "MagicCarpet/ModernSky"
                 float _CloudAmount, _UseCloudNoise;
             CBUFFER_END
             TEXTURE3D(_CloudNoise); SAMPLER(sampler_CloudNoise);
+            float4 _ModernCloudWindOffset;
             struct Attributes { float4 positionOS:POSITION; };
             struct Varyings { float4 positionCS:SV_POSITION; float3 direction:TEXCOORD0; };
             Varyings Vert(Attributes v)
@@ -68,7 +69,7 @@ Shader "MagicCarpet/ModernSky"
                 float height=(positionWS.y-260.0)/120.0;
                 if (height <= 0 || height >= 1) return 0;
                 float3 q=float3(positionWS.x*0.006,positionWS.y*0.012,positionWS.z*0.006);
-                q.xz+=float2(_Time.y*0.006,_Time.y*0.0025);
+                q.xz-=_ModernCloudWindOffset.xy*0.006;
                 float baseShape=Noise(q)*0.58+Noise(q*2.03+11.7)*0.28;
                 float detail=lerp(0.5,Noise(q*4.11-6.2),fineWeight);
                 float shape=baseShape+detail*0.14;
@@ -84,7 +85,7 @@ Shader "MagicCarpet/ModernSky"
                 float height=(positionWS.y-260.0)/120.0;
                 if (height <= 0 || height >= 1) return 0;
                 float3 q=float3(positionWS.x*0.006,positionWS.y*0.012,positionWS.z*0.006);
-                q.xz+=float2(_Time.y*0.006,_Time.y*0.0025);
+                q.xz-=_ModernCloudWindOffset.xy*0.006;
                 float shape=Noise(q)*0.67+Noise(q*2.03+11.7)*0.33;
                 float weather=Noise(float3(positionWS.x*0.0013,17.0,positionWS.z*0.0013));
                 float threshold=lerp(0.53,0.37,saturate(_CloudAmount))+(0.5-weather)*0.08+0.03;

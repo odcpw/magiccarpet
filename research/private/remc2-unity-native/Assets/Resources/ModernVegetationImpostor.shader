@@ -41,12 +41,14 @@ Shader "MagicCarpet/ModernVegetationImpostor"
             clip(noise >= threshold ? 1.0 : -1.0);
         }
 
+        float4 _ModernWind, _ModernWindOffset;
         float3 WindPosition(float3 world, float3 local)
         {
             float weight=saturate((local.y-_WindMinY)*_WindInvHeight);
-            float phase=dot(world.xz,float2(0.14,0.09))+_Time.y*_WindSpeed;
-            float sway=sin(phase)+0.35*sin(phase*1.83+world.y*0.21);
-            world.xz+=float2(0.85,0.4)*sway*_WindStrength*weight;
+            float2 p=(world.xz-_ModernWindOffset.xy)*0.006135923;
+            float sway=sin(dot(p,float2(23,15)))+0.35*sin(dot(p,float2(41,27))+world.y*0.21);
+            float2 direction=_ModernWind.xy/max(0.1,length(_ModernWind.xy));
+            world.xz+=direction*sway*_WindStrength*weight*min(2,_ModernWind.z);
             return world;
         }
 

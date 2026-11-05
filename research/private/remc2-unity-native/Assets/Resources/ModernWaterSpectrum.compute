@@ -1,0 +1,144 @@
+#pragma kernel UpdateAmplitudes
+#pragma kernel EvolveSpectrum
+#pragma kernel InverseRows
+#pragma kernel InverseColumns
+#pragma kernel Assemble
+#pragma target 5.0
+
+// JONSWAP-shaped deep-water wind sea, not a coastal fluid solver. FFT frequency
+// cells contain physical amplitudes; our inverse transform deliberately sums
+// without the conventional 1/N² normalization. No copied third-party code.
+#define N 256
+#define PI 3.14159265358979323846
+Texture2D<float2> _Gaussian;
+RWTexture2D<float> _Amplitude;
+RWTexture2DArray<float2> _Spectrum;
+Texture2DArray<float2> _TransformInput;
+RWTexture2DArray<float2> _TransformOutput;
+RWTexture2D<float4> _Displacement;
+RWTexture2D<float4> _NormalFoam;
+float _Period, _TimeSeconds, _DeltaSeconds, _MaximumDisplacement;
+float4 _Wind;
+int _Detail, _Initialize;
+
+float2 ComplexProduct(float2 a, float2 b) { return float2(a.x*b.x-a.y*b.y,a.x*b.y+a.y*b.x); }
+float2 WaveVector(uint2 p)
+{
+    int2 index = int2(p);
+    index -= int2(p.x >= N/2 ? N : 0, p.y >= N/2 ? N : 0);
+    return index * (2*PI/_Period);
+}
+float TargetAmplitude(uint2 p)
+{
+    if (p.x == N/2 || p.y == N/2) return 0;
+    float2 k = WaveVector(p); float magnitude = length(k);
+    if (magnitude < .0001) return 0;
+    float speed = min(length(_Wind.xy), 18.0);
+    float2 direction = length(_Wind.xy) > .01 ? normalize(_Wind.xy) : float2(1,0);
+    float omega = sqrt(9.81*magnitude), peak = 9.81*1.05/max(speed,2.0);
+    float sigma = omega <= peak ? .07 : .09;
+    float peakShape = exp(-.5*pow((omega-peak)/(sigma*peak),2));
+    float density = .0081*9.81*9.81/pow(omega,5) * exp(-1.25*pow(peak/omega,4)) * pow(3.3,peakShape);
+    float directional = pow(max(0,dot(k/magnitude,direction)),4)*(8/(3*PI));
+    float wavelength = 2*PI/magnitude;
+    float broadWeight = smoothstep(16,24,wavelength);
+    float weight = _Detail != 0 ? 1-broadWeight : broadWeight;
+    weight *= smoothstep(2,4,wavelength/(_Period/N));
+    float dk = 2*PI/_Period;
+    float variance = density*directional*(.5*9.81/omega)/magnitude*dk*dk;
+    return .5*sqrt(max(0,variance*weight))*saturate(speed/2);
+}
+
+[numthreads(8,8,1)]
+void UpdateAmplitudes(uint3 id : SV_DispatchThreadID)
+{
+    float target = TargetAmplitude(id.xy);
+    // Short wind chop adjusts faster than existing swell. Frequency/phase remains
+    // fixed when wind changes, so there is no wavefront reseed or rotation jump.
+    float response = 1-exp(-_DeltaSeconds/(_Detail != 0 ? 2.5 : 9.0));
+    _Amplitude[id.xy] = _Initialize != 0 ? target : lerp(_Amplitude[id.xy],target,response);
+}
+
+[numthreads(8,8,1)]
+void EvolveSpectrum(uint3 id : SV_DispatchThreadID)
+{
+    uint2 p = id.xy, opposite = (N-p)&(N-1);
+    float2 k = WaveVector(p); float magnitude = length(k);
+    float phase = sqrt(9.81*magnitude)*_TimeSeconds;
+    float s,c; sincos(phase,s,c);
+    float2 h0 = _Gaussian.Load(int3(p,0))*_Amplitude[p];
+    float2 oppositeH0 = _Gaussian.Load(int3(opposite,0))*_Amplitude[opposite];
+    float2 h = ComplexProduct(h0,float2(c,-s)) + ComplexProduct(oppositeH0*float2(1,-1),float2(c,s));
+    float2 direction = magnitude > .0001 ? k/magnitude : 0;
+    // Positive i displacement compresses crests. Opposite/Nyquist bins retain
+    // Hermitian symmetry; the unrepresentable Nyquist axes have zero amplitude.
+    float2 horizontal = float2(-h.y,h.x)*.82;
+    _Spectrum[uint3(p,0)] = h;
+    _Spectrum[uint3(p,1)] = horizontal*direction.x;
+    _Spectrum[uint3(p,2)] = horizontal*direction.y;
+}
+
+groupshared float2 transformValues[N];
+void Butterfly(uint index)
+{
+    // All 256 lanes reach both barriers. Each lane computes its own output from
+    // the previous complete stage before any lane overwrites shared storage.
+    [unroll] for (uint span=2; span<=N; span<<=1)
+    {
+        uint halfSpan=span>>1, local=index&(span-1), j=local&(halfSpan-1);
+        uint left=(index/span)*span+j, right=left+halfSpan;
+        float s,c; sincos(2*PI*j/span,s,c);
+        float2 a=transformValues[left], b=ComplexProduct(transformValues[right],float2(c,s));
+        float2 result=local<halfSpan ? a+b : a-b;
+        GroupMemoryBarrierWithGroupSync();
+        transformValues[index]=result;
+        GroupMemoryBarrierWithGroupSync();
+    }
+}
+
+[numthreads(N,1,1)]
+void InverseRows(uint3 group : SV_GroupID, uint index : SV_GroupIndex)
+{
+    uint reverse = reversebits(index) >> 24;
+    transformValues[index] = _TransformInput.Load(int4(reverse,group.x,group.z,0));
+    GroupMemoryBarrierWithGroupSync();
+    Butterfly(index);
+    _TransformOutput[uint3(index,group.x,group.z)] = transformValues[index];
+}
+
+[numthreads(N,1,1)]
+void InverseColumns(uint3 group : SV_GroupID, uint index : SV_GroupIndex)
+{
+    uint reverse = reversebits(index) >> 24;
+    transformValues[index] = _TransformInput.Load(int4(group.x,reverse,group.z,0));
+    GroupMemoryBarrierWithGroupSync();
+    Butterfly(index);
+    _TransformOutput[uint3(group.x,index,group.z)] = transformValues[index];
+}
+
+float3 DisplacementAt(int2 p)
+{
+    p=(p+N)&(N-1);
+    float3 d=float3(_TransformInput.Load(int4(p,1,0)).x,
+        _TransformInput.Load(int4(p,0,0)).x,_TransformInput.Load(int4(p,2,0)).x);
+    // The declared renderer culling envelope is enforced even under extreme wind.
+    // Tanh compression has continuous derivatives; neighbors below use the same
+    // bounded field, so shading still follows the actually displaced geometry.
+    return _MaximumDisplacement*tanh(d/_MaximumDisplacement);
+}
+
+[numthreads(8,8,1)]
+void Assemble(uint3 id : SV_DispatchThreadID)
+{
+    int2 p=int2(id.xy);
+    float3 displacement=DisplacementAt(p);
+    float spacing=_Period/N;
+    float3 dx=(DisplacementAt(p+int2(1,0))-DisplacementAt(p-int2(1,0)))/(2*spacing);
+    float3 dz=(DisplacementAt(p+int2(0,1))-DisplacementAt(p-int2(0,1)))/(2*spacing);
+    float jacobian=(1+dx.x)*(1+dz.z)-dz.x*dx.z;
+    float denominator=max(.15,jacobian);
+    float2 slopes=float2(dx.y*(1+dz.z)-dz.y*dx.z,dz.y*(1+dx.x)-dx.y*dz.x)/denominator;
+    float breaking=saturate((.72-jacobian)*2.5);
+    _Displacement[p]=float4(displacement,jacobian);
+    _NormalFoam[p]=float4(slopes,breaking,dot(slopes,slopes));
+}

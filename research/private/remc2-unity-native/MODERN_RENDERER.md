@@ -31,7 +31,8 @@ The environment includes:
   boulders, with wind, instancing and finite draw distances.
 - Moonlight, cascaded shadows, a world-space volumetric cloud layer with
   extinction and moonward self-shadowing, distance fog and tone mapping.
-- Water with layered ripples, depth-based shallow color, shoreline foam and a
+- Spectrum-driven wind waves, bounded local ripples and persistent foam,
+  generated visual coast/depth fields, splash/condensation particles and a
   separate camera reflecting the actual scene, including instanced vegetation.
 
 The nature models and surface textures are CC0 Poly Haven assets. Their source
@@ -711,6 +712,109 @@ The final build10 ordinary frontend/flight/stop/F5 path also passes with normal
 exit and a saved replay: `(310,80.50,890)`→`(310,91.00,780)`. Root inspected the
 capture; evidence is
 `../generated/nightspire-rendering-20261104/rework_spatial10_flight*`.
+
+## Wind and water video prototype, 2026-11-05
+
+The implementation follows `WATER_RESEARCH.md` as a focused URP prototype:
+
+- `ModernWind` supplies continuous wind changes and integrated advection to
+  vegetation, clouds, waves and particles. This is cosmetic weather; Rust's
+  Wind spell, flight forces, collision, damage and RNG remain authoritative.
+- `ModernWaterSpectrum` evaluates two 256² GPU FFT bands with 256/32-unit
+  periods, stable Gaussian phases and a directional JONSWAP-shaped spectrum.
+  Broad wavelengths are at least 16 units; the short band contributes filtered
+  shading on the existing two-unit water mesh. Wind changes relax amplitudes
+  rather than reseeding the surface. Displacement, slopes and compression
+  derive from the same spectrum. Both periods divide the 1024-unit world.
+- `ModernWaterCoast` computes periodic Euclidean coast distances from the actual
+  wet mask, gradients and explicitly generated visual depth. It refreshes on
+  terrain revisions and invalidates incompatible local wave history. This is
+  not recovered seabed geometry or depth-buffer-derived bathymetry.
+- `ModernWaterInteractions` uses a 256², 128-unit local GPU field, cell-snapped
+  history scrolling, a stable 60Hz fixed step, absorbing borders and solid land
+  barriers. Bounded swept pressure sources generate ripples without steadily
+  adding water. Foam persists, drifts approximately with wind and decays.
+- `ModernWaterSystem` composes these once per main frame; reflection views reuse
+  the results. Shore attenuation affects horizontal and vertical displacement;
+  normals differentiate the complete surface. A small controlled incoming wave
+  accompanies lapping foam. Bounds include 3 units of spectral displacement,
+  2 units of local height and 0.15 units of lapping.
+- `ModernWaterEffects` owns bounded droplet and condensation pools. It adds no
+  audio. Water-height clipping includes an approximate inverse horizontal
+  displacement lookup; this is not exact particle/fluid collision.
+
+Actual player/rival class-3 positions feed cosmetic downwash. The presenter
+samples actors at bounded intervals and connects positions with swept stamps.
+The normal event drain forwards already-consumed effects; water does not poll
+the journal again. A source sound-27 update on a still-live class-10/model-5
+splash can produce droplets and a ripple. This is a splash-update consumer,
+**not** a new exact fireball-contact contract. A dedicated stable contact payload
+is still needed to identify hot quenches independently of audio/actor lifetime.
+The demonstration's fireballs and condensation are explicitly staged visual
+inputs, labeled in the video. No gameplay quench/audio proof is claimed.
+
+The first video exposed overly solid white foam. Subsequent iterations changed
+the foam's coverage/bubble masks, pressure-to-foam response and coast injection,
+and added a closer camera approach. The ordinary runtime leaves review controls
+off. Run the reproducible owner-local capture tool with an installed player:
+
+```sh
+python3 Tools/capture-water-review.py /path/to/new/output-directory \
+  --player /path/to/Builds/Linux/MagicCarpetNative.x86_64 --contact-sheet
+```
+
+It loads the existing NightSpire review replay, creates a private X display,
+records 30 seconds at 1600×900, retains commands/logs/MP4/receipt, and stops only
+its owned processes. `--baseline-command` selects another complete owner-local
+replay command. Capture/encoding overhead is not a performance measurement.
+The desktop remained locked throughout this work.
+
+All 51 focused Modern EditMode tests passed on Unity 6000.3.20f1 with Vulkan,
+including the actual FFT versus an independent direct-Fourier reference, GPU
+impulse propagation, land barriers, scrolling/wrap/reset, periodic coast
+distances and continuous wind. No test was skipped. Evidence:
+`../generated/water-build-20261105/tests.xml` and `test-command.json`.
+The matching player is installed as `build-x_vc2jl7`, retaining the same frozen
+native `a98a8317e89a0cf5cebffb6e05091ecf78970394458b766647aa0234e29f3d09`
+used for the rendering control; unrelated concurrent Rust edits are not part of
+this Modern installation. This remains a video prototype, not the complete
+water research acceptance or a foreground 60Hz/VR qualification.
+
+Final video: `../generated/water-review-20261105/water-review.mp4` (30s,
+900 encoded frames); `frame22.png` and `impact-sequence.jpg` retain the close
+splash review. Root inspected the contact sheets and consecutive impact samples,
+including the final droplet/condensation/foam sequence. These show improved
+breakup without a visible local-patch boundary in the sampled view; they do not
+establish every viewpoint or exact wave/particle collision. The capture receipt
+confirms its private processes stopped. All 401 recorded Unity inputs match
+canonical source and `build-player.sh --check-installed` passes.
+
+Repeated no-encoder, 1600×900 private-Wayland runs, same replay/camera/native:
+
+| Run | Mean ms | Median ms | p95 ms |
+| --- | ---: | ---: | ---: |
+| Final water 1 | 18.76 | 23.67 | 26.68 |
+| Prior water control 1 | 17.47 | 23.10 | 26.69 |
+| Prior water control 2 | 21.90 | 25.57 | 30.77 |
+| Final water 2 | 17.73 | 23.25 | 26.46 |
+
+Each samples 120 frames after a 20s warmup. Final means correspond to roughly
+53–56fps, not a 60Hz guarantee. Clocks vary in this isolated display path; the
+comparison supports bounded whole-frame cost, not an isolated GPU speedup.
+An earlier candidate reread the event journal and all actors every tick and
+took 22.76ms mean; the final shared-event/swept-observation path removes that
+avoidable CPU work. Water simulation submission is about 0.03ms CPU here,
+**excluding GPU execution**. Logs, captures and clock telemetry are
+`../generated/nightspire-rework-20261105/water_final_*`; structured results are
+`../generated/water-build-20261105/performance-comparison.json`.
+
+New water/wind C# scanning reports no critical/warning findings. The broader
+terrain scan remains partial due to dataflow limits; the one-line optional
+event-forwarding join in `MagicCarpetRuntime.cs` was reviewed directly rather
+than relabeling its whole-file legacy scanner backlog as candidate findings.
+Root self-verified the installed prototype and video; the exact hot-contact
+payload, nonlinear run-up, curling breakers, independent water geometry LOD,
+all-view motion checks and foreground performance remain unfinished.
 
 ## Current limits
 

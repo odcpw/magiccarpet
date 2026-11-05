@@ -19,6 +19,7 @@ namespace MagicCarpet.Native
         private readonly ModernTerrainMesh terrain;
         private readonly ModernVegetation vegetation;
         private readonly ModernWaterReflection waterReflection;
+        private readonly ModernWaterSystem waterSystem;
         private readonly ModernEntityPresenter entities;
         private readonly Material landMaterial, waterMaterial, skyMaterial;
         private readonly Texture3D cloudNoise;
@@ -167,6 +168,7 @@ namespace MagicCarpet.Native
             vegetation = new ModernVegetation(terrain);
             entities = new ModernEntityPresenter(root.transform, cache);
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
+            waterSystem = new ModernWaterSystem(root.transform, terrain);
             camera.gameObject.AddComponent<ModernCapture>();
             Debug.Log($"MC_MODERN_CREATED graphics={SystemInfo.graphicsDeviceName} api={SystemInfo.graphicsDeviceType}");
             }
@@ -244,6 +246,7 @@ namespace MagicCarpet.Native
             }
             var actorsStart = ModernCapture.BeginMeasurement();
             entities.Present(session, pose.yaw);
+            waterSystem.Observe(session, snapshot);
             ModernCapture.EndMeasurement("modern_actors_present", actorsStart);
             Ready = true;
             if (snapshotCount++ == 0)
@@ -256,6 +259,8 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal void ObserveEffect(NativeSim.NativeEvent effect) => waterSystem.ObserveEffect(effect);
+
         internal void Render()
         {
             if (!Ready || disposed) return;
@@ -263,6 +268,7 @@ namespace MagicCarpet.Native
             var blend = 1f - Mathf.Exp(-Time.unscaledDeltaTime * 22f);
             camera.transform.SetPositionAndRotation(ModernCapture.ReviewPosition ?? Vector3.Lerp(camera.transform.position, targetPosition, blend),
                 ModernCapture.ReviewPosition.HasValue ? ModernCapture.ReviewRotation : Quaternion.Slerp(camera.transform.rotation, targetRotation, blend));
+            waterSystem.Update(camera);
             terrain.Present(camera.transform.position);
             vegetation.Render(camera);
             entities.Render(camera);
@@ -279,6 +285,7 @@ namespace MagicCarpet.Native
 
         internal void DrawHud(string instruction)
         {
+            waterSystem?.DrawReviewLabel();
             if (snapshot?.player_vitals == null || ModernCapture.HideHud) return;
             if (mapOpen && worldMap != null)
             {
@@ -306,6 +313,7 @@ namespace MagicCarpet.Native
             if (disposed) return;
             disposed = true;
             waterReflection?.Dispose();
+            waterSystem?.Dispose();
             vegetation?.Dispose();
             entities?.Dispose();
             terrain?.Dispose();
