@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -291,6 +292,91 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(Version(), Is.GreaterThan(moved));
             }
             finally { UnityEngine.Object.DestroyImmediate(cameraObject); }
+        }
+
+        [Test]
+        public void VisibleBatchingPreservesMatricesFadesKeysAndCapacity()
+        {
+            var expected = new Dictionary<(int camera, int kind, int level, ShadowCastingMode shadows, int binX, int binZ), List<(Matrix4x4 matrix, float fade)>>();
+            var actual = new Dictionary<(int camera, int kind, int level, ShadowCastingMode shadows, int binX, int binZ), List<(Matrix4x4 matrix, float fade)>>();
+            var submissions = new List<int>();
+            var fullShadowBin = false;
+            void Capture(int camera, ModernVegetation.BatchBuffer buffer)
+            {
+                Assert.That(buffer.Instances.Count, Is.InRange(1, 256));
+                submissions.Add(buffer.Instances.Count);
+                if (buffer.Shadows == ShadowCastingMode.On && buffer.Instances.Count == 256) fullShadowBin = true;
+                var key = (camera, buffer.Kind, buffer.Level, buffer.Shadows,
+                    buffer.Shadows == ShadowCastingMode.On ? buffer.BinX : 0,
+                    buffer.Shadows == ShadowCastingMode.On ? buffer.BinZ : 0);
+                if (!actual.TryGetValue(key, out var entries)) actual[key] = entries = new List<(Matrix4x4, float)>();
+                var properties = buffer.Properties();
+                var uploaded = properties == null ? null : properties.GetFloatArray("_LodThreshold");
+                for (var i = 0; i < buffer.Instances.Count; i++)
+                {
+                    if (buffer.Shadows == ShadowCastingMode.On)
+                    {
+                        var position = buffer.Instances[i].GetColumn(3);
+                        Assert.That(Mathf.FloorToInt(position.x / 64f), Is.EqualTo(buffer.BinX));
+                        Assert.That(Mathf.FloorToInt(position.z / 64f), Is.EqualTo(buffer.BinZ));
+                    }
+                    var fade = buffer.Fades[i];
+                    if (uploaded == null) Assert.That(fade, Is.EqualTo(buffer.Level == 2 ? 0f : -1f));
+                    else Assert.That(uploaded[i], Is.EqualTo(fade));
+                    entries.Add((buffer.Instances[i], fade));
+                }
+            }
+            var main = new ModernVegetation.BatchAccumulator(buffer => Capture(0, buffer));
+            var reflection = new ModernVegetation.BatchAccumulator(buffer => Capture(1, buffer));
+            var serial = 0;
+            void Add(ModernVegetation.BatchAccumulator accumulator, int camera, int kind, int level,
+                ShadowCastingMode shadows, int count, bool withFades)
+            {
+                var matrices = new List<Matrix4x4>(count);
+                var fades = withFades ? new float[count] : null;
+                for (var i = 0; i < count; i++)
+                {
+                    // On-mode includes negative bins, a boundary, and a 256 m
+                    // direct-map collision. Off-mode remains globally grouped.
+                    var x = shadows == ShadowCastingMode.On ?
+                        (kind == 5 ? .1f : i % 4 == 0 ? 0f : i % 4 == 1 ? 256f : i % 4 == 2 ? -.1f : 64f) : serial;
+                    var z = shadows == ShadowCastingMode.On ? (kind == 5 || i % 4 < 2 ? 0f : -.1f) : level;
+                    var matrix = Matrix4x4.Translate(new Vector3(x, serial++, z));
+                    var fade = withFades ? ((i % 19) - 9) / 10f : level == 2 ? 0f : -1f;
+                    var key = (camera, kind, level, shadows,
+                        shadows == ShadowCastingMode.On ? Mathf.FloorToInt(x / 64f) : 0,
+                        shadows == ShadowCastingMode.On ? Mathf.FloorToInt(z / 64f) : 0);
+                    if (!expected.TryGetValue(key, out var entries)) expected[key] = entries = new List<(Matrix4x4, float)>();
+                    matrices.Add(matrix);
+                    if (fades != null) fades[i] = fade;
+                    entries.Add((matrix, fade));
+                }
+                accumulator.Add(kind, level, shadows, matrices, fades);
+            }
+
+            Add(main, 0, 0, 0, ShadowCastingMode.Off, 170, false);
+            Add(main, 0, 4, 2, ShadowCastingMode.ShadowsOnly, 37, false);
+            Add(main, 0, 0, 0, ShadowCastingMode.Off, 130, true);
+            Add(reflection, 1, 0, 0, ShadowCastingMode.Off, 23, true);
+            Add(main, 0, 0, 0, ShadowCastingMode.Off, 300, false);
+            Add(main, 0, 4, 2, ShadowCastingMode.On, 265, true);
+            Add(main, 0, 4, 2, ShadowCastingMode.On, 70, false);
+            Add(main, 0, 5, 1, ShadowCastingMode.On, 300, true);
+            Add(reflection, 1, 4, 2, ShadowCastingMode.On, 7, false);
+            main.Flush(); reflection.Flush();
+            // Buffers may be reused after a completed camera render.
+            Add(main, 0, 0, 0, ShadowCastingMode.Off, 3, false);
+            main.Flush();
+
+            Assert.That(actual.Count, Is.EqualTo(expected.Count));
+            foreach (var entry in expected)
+            {
+                Assert.That(actual.ContainsKey(entry.Key), Is.True, $"missing key {entry.Key}");
+                CollectionAssert.AreEqual(entry.Value, actual[entry.Key], $"matrix/fade stream {entry.Key}");
+            }
+            Assert.That(submissions, Does.Contain(256), "large streams must flush at the proven cap");
+            Assert.That(fullShadowBin, Is.True, "a single shadow bin must also split at 256");
+            Assert.Throws<ArgumentOutOfRangeException>(() => main.Add(0, 0, ShadowCastingMode.TwoSided, new List<Matrix4x4>(), null));
         }
 
         private static T Field<T>(object owner, string name) => (T)owner.GetType()

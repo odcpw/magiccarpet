@@ -263,6 +263,8 @@
         "triangles": 4448,
         "authoring_ms": 71.912
       }
-    }
+    },
+    "factory_source_revision": "12f45229",
+    "factory_source_note": "The complete file SHA identifies the code at generation, retained in this revision. Later rendering-only batching edits do not regenerate the assets; the exact geometry/attribute/index parity test also checks the current factory."
   }
 }

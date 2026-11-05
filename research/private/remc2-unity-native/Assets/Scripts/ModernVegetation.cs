@@ -44,6 +44,10 @@ namespace MagicCarpet.Native
         private readonly Plane[] frustum = new Plane[6];
         private readonly ViewVersion mainView = new ViewVersion();
         private readonly ViewVersion reflectedView = new ViewVersion();
+        private readonly BatchAccumulator mainBatches;
+        private readonly BatchAccumulator reflectedBatches;
+        private Camera mainSubmissionCamera;
+        private Camera reflectedSubmissionCamera;
         private Bounds treeLocalBounds;
         private int centerX = int.MinValue;
         private int centerZ = int.MinValue;
@@ -99,9 +103,126 @@ namespace MagicCarpet.Native
             internal float[] NearFade;
             internal float[] IntermediateFade;
             internal float[] FarFade;
-            internal MaterialPropertyBlock NearProperties;
-            internal MaterialPropertyBlock IntermediateProperties;
-            internal MaterialPropertyBlock FarProperties;
+        }
+
+        // Groups only already-selected instances. Each key has a bounded reusable
+        // buffer; a full buffer is submitted immediately and reused.
+        internal sealed class BatchAccumulator
+        {
+            internal const int Capacity = 256;
+            private const int SpatialSlotsPerAxis = 4;
+            private const float ShadowBinSize = 64f;
+            internal readonly BatchBuffer[] Buffers = new BatchBuffer[7 * 3 * 3];
+            private readonly BatchBuffer[] shadowBins = new BatchBuffer[7 * 3 * SpatialSlotsPerAxis * SpatialSlotsPerAxis];
+            private readonly Action<BatchBuffer> submit;
+
+            internal BatchAccumulator(Action<BatchBuffer> submit)
+            {
+                this.submit = submit ?? throw new ArgumentNullException(nameof(submit));
+                for (var kind = 0; kind < 7; kind++)
+                for (var level = 0; level < 3; level++)
+                for (var shadowKey = 0; shadowKey < 3; shadowKey++)
+                {
+                    var shadows = shadowKey == 0 ? ShadowCastingMode.Off :
+                        shadowKey == 1 ? ShadowCastingMode.On : ShadowCastingMode.ShadowsOnly;
+                    Buffers[(kind * 3 + level) * 3 + shadowKey] = new BatchBuffer(kind, level, shadows);
+                }
+                for (var kind = 0; kind < 7; kind++)
+                for (var level = 0; level < 3; level++)
+                for (var slot = 0; slot < SpatialSlotsPerAxis * SpatialSlotsPerAxis; slot++)
+                    shadowBins[(kind * 3 + level) * SpatialSlotsPerAxis * SpatialSlotsPerAxis + slot] =
+                        new BatchBuffer(kind, level, ShadowCastingMode.On);
+            }
+
+            internal void Add(int kind, int level, ShadowCastingMode shadows, List<Matrix4x4> instances, float[] fades)
+            {
+                if (instances == null) throw new ArgumentNullException(nameof(instances));
+                if (fades != null && fades.Length < instances.Count) throw new ArgumentException("Fade array is shorter than the instance list", nameof(fades));
+                var shadowKey = shadows == ShadowCastingMode.Off ? 0 : shadows == ShadowCastingMode.On ? 1 :
+                    shadows == ShadowCastingMode.ShadowsOnly ? 2 : throw new ArgumentOutOfRangeException(nameof(shadows));
+                if (kind < 0 || kind >= 7) throw new ArgumentOutOfRangeException(nameof(kind));
+                if (level < 0 || level >= 3) throw new ArgumentOutOfRangeException(nameof(level));
+                if (shadows == ShadowCastingMode.On)
+                {
+                    for (var i = 0; i < instances.Count; i++)
+                    {
+                        var position = instances[i].GetColumn(3);
+                        var binX = Mathf.FloorToInt(position.x / ShadowBinSize);
+                        var binZ = Mathf.FloorToInt(position.z / ShadowBinSize);
+                        var slot = (binX & (SpatialSlotsPerAxis - 1)) * SpatialSlotsPerAxis +
+                            (binZ & (SpatialSlotsPerAxis - 1));
+                        var spatial = shadowBins[(kind * 3 + level) * SpatialSlotsPerAxis * SpatialSlotsPerAxis + slot];
+                        if (spatial.Instances.Count > 0 && (spatial.BinX != binX || spatial.BinZ != binZ)) Submit(spatial);
+                        spatial.BinX = binX;
+                        spatial.BinZ = binZ;
+                        spatial.Append(instances, i, 1, fades);
+                        if (spatial.Instances.Count == Capacity) Submit(spatial);
+                    }
+                    return;
+                }
+                var index = (kind * 3 + level) * 3 + shadowKey;
+                var buffer = Buffers[index];
+                var offset = 0;
+                while (offset < instances.Count)
+                {
+                    var count = Math.Min(Capacity - buffer.Instances.Count, instances.Count - offset);
+                    buffer.Append(instances, offset, count, fades);
+                    offset += count;
+                    if (buffer.Instances.Count == Capacity) Submit(buffer);
+                }
+            }
+
+            internal void Flush()
+            {
+                foreach (var buffer in Buffers) if (buffer.Instances.Count > 0) Submit(buffer);
+                foreach (var buffer in shadowBins) if (buffer.Instances.Count > 0) Submit(buffer);
+            }
+
+            internal void Clear()
+            {
+                foreach (var buffer in Buffers) buffer.Clear();
+                foreach (var buffer in shadowBins) buffer.Clear();
+            }
+
+            private void Submit(BatchBuffer buffer)
+            {
+                submit(buffer);
+                buffer.Clear();
+            }
+        }
+
+        internal sealed class BatchBuffer
+        {
+            internal readonly int Kind;
+            internal readonly int Level;
+            internal readonly ShadowCastingMode Shadows;
+            internal int BinX;
+            internal int BinZ;
+            internal readonly List<Matrix4x4> Instances = new List<Matrix4x4>(BatchAccumulator.Capacity);
+            internal readonly float[] Fades = new float[BatchAccumulator.Capacity];
+            private readonly MaterialPropertyBlock properties = new MaterialPropertyBlock();
+            private bool hasOverrides;
+
+            internal BatchBuffer(int kind, int level, ShadowCastingMode shadows)
+            { Kind = kind; Level = level; Shadows = shadows; }
+
+            internal void Append(List<Matrix4x4> source, int offset, int count, float[] fades)
+            {
+                var start = Instances.Count;
+                if (offset == 0 && count == source.Count) Instances.AddRange(source);
+                else for (var i = 0; i < count; i++) Instances.Add(source[offset + i]);
+                if (fades == null) Array.Fill(Fades, Level == 2 ? 0f : -1f, start, count);
+                else { Array.Copy(fades, offset, Fades, start, count); hasOverrides = true; }
+            }
+
+            internal MaterialPropertyBlock Properties()
+            {
+                if (!hasOverrides) return null;
+                properties.SetFloatArray("_LodThreshold", Fades);
+                return properties;
+            }
+
+            internal void Clear() { Instances.Clear(); hasOverrides = false; }
         }
 
         private sealed class ViewVersion
@@ -131,6 +252,8 @@ namespace MagicCarpet.Native
         internal ModernVegetation(ModernTerrainMesh terrain)
         {
             this.terrain = terrain ?? throw new ArgumentNullException(nameof(terrain));
+            mainBatches = new BatchAccumulator(SubmitMainBatch);
+            reflectedBatches = new BatchAccumulator(SubmitReflectedBatch);
             var shader = Resources.Load<Shader>("ModernVegetation");
             if (shader == null)
                 throw new InvalidOperationException("Missing Resources/ModernVegetation shader");
@@ -208,6 +331,11 @@ namespace MagicCarpet.Native
             var version = (reflection ? reflectedView : mainView).Update(camera);
             RefreshChunks(position);
             GeometryUtility.CalculateFrustumPlanes(camera, frustum);
+            var batches = reflection ? reflectedBatches : mainBatches;
+            if (reflection) reflectedSubmissionCamera = camera;
+            else mainSubmissionCamera = camera;
+            try
+            {
             foreach (var entry in chunks)
             {
                 var distance = DistanceToChunk(position.x, position.z, entry.Key.x, entry.Key.y);
@@ -227,14 +355,14 @@ namespace MagicCarpet.Native
                         var referenceShadows = kind >= 3 && !reflection
                             ? (visible ? ShadowCastingMode.On : ShadowCastingMode.ShadowsOnly)
                             : ShadowCastingMode.Off;
-                        DrawBatch(camera, kind, list, 0, referenceShadows, reflection, null);
+                        DrawBatch(batches, kind, list, 0, referenceShadows, reflection, null);
                         continue;
                     }
                     if (!visible)
                     {
                         // Draw a cheap proxy only into shadow maps. Submitting the
                         // main mesh offscreen made the reported cost misleading.
-                        DrawBatch(camera, kind, list, 2, ShadowCastingMode.ShadowsOnly, false, null);
+                        DrawBatch(batches, kind, list, 2, ShadowCastingMode.ShadowsOnly, false, null);
                         continue;
                     }
                     var buckets = reflection ? entry.Value.Reflection : entry.Value.Main;
@@ -246,16 +374,24 @@ namespace MagicCarpet.Native
                         bucket.Version = version;
                     }
                     var cast = kind >= 3 && !reflection ? ShadowCastingMode.On : ShadowCastingMode.Off;
-                    if (bucket.Mode == 1) DrawBatch(camera, kind, list, 0, cast, reflection, null);
-                    else if (bucket.Mode == 2) DrawBatch(camera, kind, list, 1, cast, reflection, null);
-                    else if (bucket.Mode == 3) DrawBatch(camera, kind, list, 2, cast, reflection, null);
+                    if (bucket.Mode == 1) DrawBatch(batches, kind, list, 0, cast, reflection, null);
+                    else if (bucket.Mode == 2) DrawBatch(batches, kind, list, 1, cast, reflection, null);
+                    else if (bucket.Mode == 3) DrawBatch(batches, kind, list, 2, cast, reflection, null);
                     else
                     {
-                        DrawBatch(camera, kind, bucket.Near, 0, cast, reflection, bucket.NearProperties);
-                        DrawBatch(camera, kind, bucket.Intermediate, 1, cast, reflection, bucket.IntermediateProperties);
-                        DrawBatch(camera, kind, bucket.Far, 2, cast, reflection, bucket.FarProperties);
+                        DrawBatch(batches, kind, bucket.Near, 0, cast, reflection, bucket.NearFade);
+                        DrawBatch(batches, kind, bucket.Intermediate, 1, cast, reflection, bucket.IntermediateFade);
+                        DrawBatch(batches, kind, bucket.Far, 2, cast, reflection, bucket.FarFade);
                     }
                 }
+            }
+            batches.Flush();
+            }
+            finally
+            {
+                batches.Clear();
+                if (reflection) reflectedSubmissionCamera = null;
+                else mainSubmissionCamera = null;
             }
         }
 
@@ -317,7 +453,6 @@ namespace MagicCarpet.Native
             {
                 bucket.Near = new List<Matrix4x4>(); bucket.Intermediate = new List<Matrix4x4>(); bucket.Far = new List<Matrix4x4>();
                 bucket.NearFade = new float[256]; bucket.IntermediateFade = new float[256]; bucket.FarFade = new float[256];
-                bucket.NearProperties = new MaterialPropertyBlock(); bucket.IntermediateProperties = new MaterialPropertyBlock(); bucket.FarProperties = new MaterialPropertyBlock();
             }
             bucket.Near.Clear(); bucket.Intermediate.Clear(); bucket.Far.Clear();
             var instances = chunk.Instances[kind];
@@ -339,28 +474,35 @@ namespace MagicCarpet.Native
                 }
                 if (impostorFade < 1f) { bucket.FarFade[bucket.Far.Count] = impostorFade; bucket.Far.Add(instances[i]); }
             }
-            if (bucket.Near.Count > 0) bucket.NearProperties.SetFloatArray("_LodThreshold", bucket.NearFade);
-            if (bucket.Intermediate.Count > 0) bucket.IntermediateProperties.SetFloatArray("_LodThreshold", bucket.IntermediateFade);
-            if (bucket.Far.Count > 0) bucket.FarProperties.SetFloatArray("_LodThreshold", bucket.FarFade);
         }
 
-        private void DrawBatch(Camera camera, int kind, List<Matrix4x4> batch, int level,
-            ShadowCastingMode shadows, bool reflection, MaterialPropertyBlock properties)
+        private void DrawBatch(BatchAccumulator batches, int kind, List<Matrix4x4> batch, int level,
+            ShadowCastingMode shadows, bool reflection, float[] fades)
         {
             if (batch.Count == 0) return;
             var triangles = (level == 0 ? detailTriangleCounts[kind] : level == 1 ? intermediateTriangleCounts[kind] : distantTriangleCounts[kind]) * batch.Count;
             if (!reflection)
             {
-                DrawCount++;
                 SubmittedTriangleCount += triangles;
                 if (shadows == ShadowCastingMode.ShadowsOnly) ShadowOnlyTriangleCount += triangles;
                 if (level == 0) DetailInstanceCount += batch.Count;
                 else if (level == 1) IntermediateInstanceCount += batch.Count;
                 else DistantInstanceCount += batch.Count;
             }
+            batches.Add(kind, level, shadows, batch, fades);
+        }
+
+        private void SubmitMainBatch(BatchBuffer batch) => SubmitBatch(mainSubmissionCamera, batch, false);
+        private void SubmitReflectedBatch(BatchBuffer batch) => SubmitBatch(reflectedSubmissionCamera, batch, true);
+
+        private void SubmitBatch(Camera camera, BatchBuffer batch, bool reflection)
+        {
+            if (!reflection) DrawCount++;
+            var kind = batch.Kind;
+            var level = batch.Level;
             Graphics.DrawMeshInstanced(level == 0 ? meshes[kind] : level == 1 ? intermediateMeshes[kind] : distantMeshes[kind], 0,
                 level == 2 ? distantMaterials[kind] : materials[kind],
-                batch, properties, shadows, true, 0, camera, LightProbeUsage.Off);
+                batch.Instances, batch.Properties(), batch.Shadows, true, 0, camera, LightProbeUsage.Off);
         }
 
         private static Material ImpostorMaterial(Material source, Mesh mesh, string name)

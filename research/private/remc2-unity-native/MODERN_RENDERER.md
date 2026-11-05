@@ -623,6 +623,95 @@ clock records and resource measurements are under
 `../generated/nightspire-rework-20261105/`. Flight evidence is
 `../generated/nightspire-rendering-20261104/rework_journal7_flight*`.
 
+## Spatial vegetation submission
+
+The three-tier selector still culls 32-metre chunks and chooses the same
+instances, meshes and complementary fades. A second stage now combines the
+already-selected instances into reusable buffers of at most 256. Camera,
+species, representation and shadow mode remain separate. Visible shadow casters
+also retain 64-metre X/Z bins, so one large instanced bound does not unnecessarily
+span the whole visible landscape. A fixed direct-mapped slot set flushes on
+spatial collision; it cannot combine distinct world bins. Non-casting foliage
+and cheap offscreen shadow-only proxies remain globally grouped.
+
+The regression check compares complete matrix/fade streams per key and covers
+negative coordinates, bin boundaries/collisions, capacity splitting, mixed
+material defaults/overrides, separate cameras and reuse. All 33 selected Modern
+EditMode tests pass on the spatial candidate. Preallocated managed buffers are
+bounded; the spatial pilot adds about 11.2MiB of matrix/fade arrays over the
+global-batch pilot, including currently unused reflected shadow-caster slots.
+First-use native property-array storage is not claimed allocation-free.
+
+The initial global-batch pilot reduced the fixed-view submissions from 475 to
+33, but widened instance bounds. Its last-100 Nsight GPU busy median was 10.93ms
+versus 10.11ms control; mixed P5/P8 clocks prevent attributing that difference
+solely to shadow grouping. The spatial candidate instead submits 139 calls.
+All selected triangle/instance counts remain identical to control:
+3,553,604 vegetation triangles, 153,010 shadow-only triangles and
+226/1,632/1,953 detail/middle/distant instances. Density, source geometry,
+placement, wind, ranges and selected LOD fades were not reduced for batching.
+
+Sequential C–B–B–C release-player runs at 1600×900 use the same native
+`a98a8317e89a`, scene, save, camera, 20-second warmup and 120 samples. No profiler,
+compilation or other owned player ran concurrently with these four runs.
+
+| Complete frame / submission scope | Control 1 / 2 | Spatial candidate 1 / 2 |
+| --- | --- | --- |
+| Frame mean | 20.53 / 20.95 ms | 18.18 / 18.61 ms |
+| Frame median | 23.86 / 24.04 ms | 23.49 / 23.39 ms |
+| Frame p95 | 33.98 / 34.39 ms | 27.86 / 28.90 ms |
+| `modern_render` mean | 1.18 / 1.17 ms | 0.99 / 1.02 ms |
+| `modern_render` median | 1.39 / 1.37 ms | 0.72 / 0.75 ms |
+
+Mean and p95 improve in both pairs; median whole-frame gains are modest.
+Reflection cadence/reuse changes with frame pacing, so the submission scope
+is not a pure isolated batching measurement. The result is approximately
+54–55fps from mean frame time in private Wayland, with 28–29ms p95; it does not
+establish smooth foreground 60fps. Root and an independent reviewer found no
+new coverage, placement, silhouette, visible-shadow or reflection regression in
+the matched shore stills. Motion/cascade transitions remain a separate check.
+Evidence: `../generated/nightspire-rework-20261105/frame_spatial_*`.
+
+The spatial candidate's last-100 Nsight GPU busy mean/median/p95 was
+11.63/10.58/16.60ms versus control 11.32/10.11/16.33ms. The traced clock states
+are recorded separately from startup clocks. These mixed, sampled P5/P8 states
+do not establish a GPU speedup, and a small GPU regression is not excluded.
+The spatial version is retained for its repeated unprofiled whole-frame/p95
+improvement and bounded shadow grouping, rather than claiming that batching
+makes every stage faster. No global GPU clock, power or driver setting changed.
+
+The middle-mesh provenance retains the actual generation-time factory hash at
+revision `12f45229`. Rendering-only batching edits did not regenerate those
+assets; the exact current-factory geometry/attribute/index parity test passes.
+
+Build9 (`build-8xxdkmdt`) was installed with native `a98a8317e89a`; both Modern
+and separate Original install validators pass. The ordinary frontend, five-second
+Up-arrow flight, Backspace stop and F5 save pass on the private X display:
+`(310,80.50,890)`→`(310,90.50,755)`, normal exit and no fatal/shader error.
+Root inspected the flight capture. This is a live input/save check, not a
+performance benchmark. Its evidence is
+`../generated/nightspire-rendering-20261104/rework_spatial9_flight*`.
+Fresh changed-source UBS reports zero critical findings and two test-only
+`TryGetValue` warnings: both dictionaries are private test constructions whose
+only inserted values are non-null lists. C# conditional-compilation analysis
+remains partial; Unity compiled and ran the actual tests/player. No scanner
+suppression was added. Root self-verified this integration against the request.
+
+The final source-closure check exposed a stale `__pycache__` in the isolated
+project's Resources directory. Its bytecode and generated metadata are preserved
+outside Assets, along with the canonical bytecode copy. Build10
+(`build-pdk4fzxx`) packages the cleanup: all 375 recorded Unity inputs now match
+canonical source, and no shared input or native hash changed from build9.
+Only the seven obsolete bytecode/metadata inputs disappeared. The earlier
+negative source-check result is retained separately from the successful check.
+The 24-frame safe orbit was also recaptured with the spatial renderer; root
+inspected angles 0, 6, 12 and 18 without finding a new gap or coverage defect.
+These samples do not establish artifact-free continuous motion.
+The final build10 ordinary frontend/flight/stop/F5 path also passes with normal
+exit and a saved replay: `(310,80.50,890)`→`(310,91.00,780)`. Root inspected the
+capture; evidence is
+`../generated/nightspire-rendering-20261104/rework_spatial10_flight*`.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game
