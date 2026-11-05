@@ -26,7 +26,7 @@ passing Modern EditMode tests cover their encoded behavior, not visual quality.
 | Method | Useful property | Important limit | Decision |
 | --- | --- | --- | --- |
 | Authored smoke flipbook with six-way lighting | Detailed baked motion and directional light response at particle cost | Baked motion, flat close views and no coherent interior between cards | Distant steam and secondary torch smoke |
-| Persistent local 3D density and velocity fields | Continuous interior, overlapping plumes and lasting swept disturbances | Simulation bandwidth, ray sampling and light attenuation cost | Leading candidate for near steam we fly through |
+| Persistent local 3D density with analytic transport | Continuous interior, overlapping plumes and lasting swept disturbances | Advection diffusion, ray sampling and light attenuation cost | First candidate for near steam; stored velocity is an escalation |
 | World-scale fluid simulation | General coupled motion | Unnecessary scope and cost for isolated quenches | Do not adopt |
 | Authored flame flipbook with separate emission/opacity | Controllable silhouette and exposure | Needs actual quality art, not a generic noise mask | Torch flame baseline |
 
@@ -44,11 +44,12 @@ asset before attributing performance to a rendering-path change.
 
 [GPU Gems 3, chapter 30](https://developer.nvidia.com/gpugems/gpugems3/part-v-physics-simulation/chapter-30-real-time-simulation-and-rendering-3d-fluids)
 provides the concrete density/velocity, moving-obstacle and volume-rendering
-foundation. For our first experiment, compare 48³ and 64³ cells over one bounded
-local region, sharing it among nearby impacts. These sizes are trial parameters,
-not demonstrated sufficiency. Inject condensate/heat from the existing model;
-advect density with wind, buoyancy and a persistent swept-carpet velocity
-disturbance. Procedural [curl noise](https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf)
+foundation. Following the Oracle critique below, first compare 32³, 48³ and 64³
+cells over the same fixed, world-anchored 12m region shared by nearby impacts.
+These sizes are trial parameters, not demonstrated sufficiency. Keep scalar
+thermodynamics separate; inject condensate and advect density with analytic
+wind, buoyancy and a bounded list of persistent, decaying carpet-wake primitives.
+Do not begin with a stored velocity texture. Procedural [curl noise](https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf)
 can add unresolved eddies; it is not a substitute for persistent state or a
 pressure solve. Escalate to pressure projection when divergence/compression
 actually breaks the observed result. Pure advection is an explicit visual
@@ -98,10 +99,50 @@ Retain the tested variable-wind and heat/water contracts, with the authored 2MJ
 calibration and entrainment assumptions explicit. Retain the wake input contract,
 but replace its puff consumer. FrankenSim was evaluated for property calculations;
 it does not currently supply the required ready-made moist-plume integrator or
-Unity renderer. This research adds no dependency. Oracle CLI was unavailable;
-the attempted Claude CLI cross-examination failed with expired authentication,
-so no complementary-model verdict is claimed. The recommendation is based on
-the observed failed capture, inspected project code and cited primary sources.
+Unity renderer. This research adds no dependency. The initial claim that Oracle
+was unavailable was incorrect: only PATH lookup had failed. Oracle 0.22.2 is
+installed at
+`/home/oliver/.npm/_npx/76f9f399e0e37feb/node_modules/@steipete/oracle/dist/bin/oracle-cli.js`
+and its configured browser profile is usable. The source-backed review completed
+as `magiccarpe-steam-volume-review`, with verified browser picker selection of
+GPT-5.6 Sol and Extra High effort. Six files supplied approximately 17.43k input
+tokens; retained output is
+`../generated/night-weather-20261105/oracle-steam-review.md`.
+The attempted Claude CLI cross-examination failed with expired authentication;
+no complementary-family verdict is claimed. The recommendation above is based
+on the observed failed capture, inspected project code and cited primary sources.
+
+### Oracle critique and resulting adjustment
+
+The review supports a continuous density volume but challenges the need to
+simulate velocity. Start with one persistent scalar density texture transported
+by analytic wind/buoyancy and persistent wake primitives. Stored velocity and
+pressure projection are separate escalation steps. A 12m box gives 25cm cells
+at 48³ and 18.75cm at 64³; growing the box to 40m would degrade those to roughly
+83cm and 63cm. Fix world-space coverage before comparing resolutions.
+
+The first experiment therefore excludes local volumetric torch lighting and
+uses simple moon/ambient scattering. Verify the explicit transparent-water
+intersection separately from opaque depth. Inject overlapping sources into one
+field so independently sorted volumes cannot double-count their overlap.
+Measure advection smearing and raymarch cost independently. A larger grid does
+not automatically repair poor transport or lighting.
+
+Oracle suggests renormalizing density to the parcel's condensed mass after
+advection. Accept this only with an explicit mass budget: escaped, transferred
+and evaporated material must leave that budget, and injection must not add the
+entire existing mass again every frame. Blindly restoring the full parcel mass
+inside a cropped box would brighten remaining material as others leave. This
+qualification is our engineering review of the suggestion, not a tested result.
+A shared field also needs a deliberate treatment of multiple parcels' phase
+changes; a global normalization alone cannot establish local thermodynamics.
+
+The decisive comparison is whether density-only transport preserves a convincing
+swept wake through overlapping plumes without unacceptable smearing or
+compression at the tested resolutions. If it does, no velocity solver is needed.
+If it fails, diagnose transport/resolution versus missing flow state before
+adding stored velocity. The review changes the next experiment; it proves no
+runtime performance or visual quality. It did not inspect the video directly.
 
 ## Initial water research at revision 49c68f15
 
@@ -443,5 +484,7 @@ goal. Adversarial review corrected that distinction: FFT is the leading desktop
 quality candidate, with the same local interaction/coast architecture. The
 uncertain point is the actual analytic/FFT crossover and whether synthetic coast
 control meets the desired look; the experiments above settle those questions.
-Oracle CLI is absent and the installed complementary-family CLI is not signed
-in, so no external-family Oracle verdict is claimed.
+At that initial checkpoint Oracle was not found on PATH and the installed
+complementary-family CLI was not signed in. The later installation discovery
+and Oracle review are recorded in the post-capture section above; the earlier
+absence claim was incorrect.
