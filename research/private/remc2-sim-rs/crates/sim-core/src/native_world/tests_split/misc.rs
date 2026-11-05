@@ -1016,11 +1016,10 @@ fn level_two_model76_callback_enters_terminal_state_for_dead_target() {
 
 #[test]
 fn level_two_model76_generic_collision_callback_is_exact() {
-    // The model-45 branch consumes the qualified bank with the source's
-    // second VGA half-size and effective-width stride. This synthetic
-    // carrier isolates that arithmetic; package admission separately pins
-    // the real carrier byte identity.
-    let mask_bank = |occupied: bool| {
+    // Pinned bitmap_pos_struct_t::data is uint8_t*. sub_10C80 compares its
+    // uncast byte with -1, so even 0xff accepts. This is distinct from the
+    // signed-cell CollisionMaskBank API; package admission still pins masks.
+    let mask_bank = |width: u16, height: u16, occupied: bool| {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"MCM1");
         bytes.extend_from_slice(&1_u16.to_le_bytes());
@@ -1030,34 +1029,26 @@ fn level_two_model76_generic_collision_callback_is_exact() {
         bytes.extend_from_slice(&1_u32.to_le_bytes());
         bytes.extend_from_slice(&12_u32.to_le_bytes());
         bytes.extend_from_slice(&64_u16.to_le_bytes());
-        bytes.extend_from_slice(&4_u16.to_le_bytes());
-        bytes.extend_from_slice(&5_u16.to_le_bytes());
+        bytes.extend_from_slice(&width.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
         bytes.extend_from_slice(&0_u16.to_le_bytes());
-        bytes.extend_from_slice(&40_u32.to_le_bytes());
-        let mut pixels = [-1_i16; 20];
+        let count = usize::from(width) * usize::from(height);
+        bytes.extend_from_slice(&(u32::try_from(count).unwrap() * 2).to_le_bytes());
+        let mut pixels = vec![-1_i16; count];
         if occupied {
-            pixels[3] = 0;
+            pixels[0] = 0;
         }
         for pixel in pixels {
             bytes.extend_from_slice(&pixel.to_le_bytes());
         }
         CollisionMaskBank::parse(&bytes).expect("bounded model-45 mask")
     };
-    let mask_probe_position = Position {
-        x: 10 << 8,
-        y: 10 << 8,
-        z: 0,
-    };
-    assert!(level2_model76_model45_occupancy(
-        &mask_bank(true),
-        64,
-        mask_probe_position,
-    ));
-    assert!(!level2_model76_model45_occupancy(
-        &mask_bank(false),
-        64,
-        mask_probe_position,
-    ));
+    assert!(level2_model76_model45_occupancy(&mask_bank(4, 5, true), 64));
+    assert!(level2_model76_model45_occupancy(&mask_bank(4, 5, false), 64));
+    // Day2 selector26 is 2x1. Its old signed-index interpretation rejected
+    // odd tile parity; the actual unsigned-byte predicate has no such gate.
+    assert!(level2_model76_model45_occupancy(&mask_bank(2, 1, false), 64));
+    assert!(!level2_model76_model45_occupancy(&mask_bank(2, 1, false), 65));
 
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
@@ -1110,119 +1101,210 @@ fn level_two_model76_generic_collision_callback_is_exact() {
             .collect::<Vec<_>>()
     );
 
-    // Reach row 112 through its ordinary imported switch. The local
-    // class-3/model-0 player is a genuine generic-map target, not the
-    // already-covered model-2 diagnostic branch.
-    let run_positive =
-        || {
-            let mut session = inspection
-                .level2_reset_session()
-                .expect("Level 2 model-76 generic collision session");
-            let baseline_hash = session.campaign_state_hash();
-            let switch = session
-                .level2_group10_switch25
-                .expect("live group-10 switch slot 25");
-            let local_player = session.state.entity_index;
-            assert_eq!(
-                (
-                    session.economy.entities[usize::from(local_player)].class,
-                    session.economy.entities[usize::from(local_player)].model
-                ),
-                (3, 0)
-            );
+    // Reach row 112 through the ordinary descriptor-backed campaign and its
+    // imported switch. The export-only reset above lacks semantic bindings;
+    // it remains an explicit allocator control, not the gameplay entry.
+    // The local class-3/model-0 player is a genuine generic-map target.
+    let run_positive = || {
+        let mut session = level_two_campaign_session();
+        assert!(session.semantic_level_definition().is_some());
+        let baseline_hash = session.campaign_state_hash();
+        let current_root_handles = |session: &Mc2Simulation| {
             session
-                .set_level2_entity_position(local_player, switch.position)
-                .expect("move local player through the public Level 2 carrier");
-            for _ in 0..level_two_model76_switch25_activation_turns(switch.phase) {
-                session.step_outer_turn(PlayerCommand::default(), 0);
-            }
-            let root = session
                 .economy()
-                .authored_model76()
-                .iter()
-                .find(|source| source.authored_index == 112)
-                .copied()
-                .expect("switch production route materializes row 112");
-            let mut preview = session.clone();
-            preview.step_outer_turn(PlayerCommand::default(), 0);
-            let positive_position = preview
-                .economy()
-                .model76_children()
-                .iter()
-                .find(|child| {
-                    child.parent_entity_index == root.source_entity_index && child.column_index == 0
+                .live_arena_cursor_rows()
+                .into_iter()
+                .filter(|cursor| cursor.kind == Level2DynamicArenaKind::AuthoredModel76)
+                .map(|cursor| {
+                    let view = crate::native_world::source_target::read(
+                        session.source_arena(),
+                        crate::native_world::source_target::Context {
+                            particles: Some(&session.session.definition.presentation.particles),
+                            ..Default::default()
+                        },
+                        cursor.source_slot,
+                    )
+                    .expect("read the current typed Fire Spheres carrier")
+                    .expect("the live Fire Spheres cursor retains its source occupant");
+                    assert!(view.active);
+                    assert_eq!((view.class, view.model), (10, 76));
+                    let handle = session.source_arena().handle(cursor.source_slot).unwrap();
+                    assert_eq!(handle.generation, cursor.generation);
+                    handle
                 })
-                .map(|child| child.position)
-                .expect("preview retains a column-zero child");
-            session
-                .set_level2_entity_position(local_player, positive_position)
-                .expect("move local player to the deterministic collision point");
-            let target_before = session.economy.entities[usize::from(local_player)].clone();
-            session.step_outer_turn(PlayerCommand::default(), 0);
-            let root = session
-                .economy()
-                .authored_model76()
-                .iter()
-                .find(|source| source.authored_index == 112)
-                .copied()
-                .expect("row 112 remains live for the collision turn");
-            let target = &session.economy.entities[usize::from(local_player)];
-            let payload_delta = target
-                .source_wind_spell_payload()
-                .wrapping_sub(target_before.source_wind_spell_payload());
-            assert!(payload_delta > 0);
-            assert_eq!(payload_delta % i32::from(root.subspell_index), 0);
-            let hit_children = usize::try_from(payload_delta / i32::from(root.subspell_index))
-                .expect("positive model-76 hit count fits usize");
-            assert_eq!(target.source_wind_spell_owner(), root.entity_id);
-            assert_eq!(target.entity_rng, target_before.entity_rng);
-            assert_eq!(target.class, 3);
-            assert_eq!(target.model, 0);
-
-            let sounds = session
-                .dispatch_events()
-                .iter()
-                .filter_map(|event| match event {
-                    Mc2DispatchEvent::Economy {
-                        source_slot,
-                        event:
-                            Level2EconomyEvent::FireSphereCollisionSound {
-                                source_entity_index,
-                                sound_id,
-                            },
-                        ..
-                    } if *source_slot == root.source_entity_index
-                        && *source_entity_index == root.source_entity_index =>
-                    {
-                        Some((*source_slot, *source_entity_index, *sound_id))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            // The local-player payload counts that one target's hits. Sound 3
-            // is broader: source sub_33C00 emits once for every column-zero
-            // child that hits any admitted target, including v4 model-45
-            // targets now backed by the qualified collision-mask carrier.
-            let sound_children = session
-                .economy()
-                .model76_children()
-                .iter()
-                .filter(|child| {
-                    child.parent_entity_index == root.source_entity_index && child.column_index == 0
-                })
-                .count();
-            assert_eq!(sounds.len(), sound_children);
-            assert!(sounds.len() >= hit_children);
-            assert!(sounds.iter().all(|sound| {
-                *sound == (root.source_entity_index, root.source_entity_index, 3)
-            }));
-            let state_hash = session.campaign_state_hash();
-            let event_hash = session.dispatch_observability_hash();
-            session.reset();
-            assert_eq!(session.campaign_state_hash(), baseline_hash);
-            assert!(session.economy().authored_model76().is_empty());
-            (state_hash, event_hash, hit_children)
+                .collect::<Vec<_>>()
         };
+        let mut pre_pass_roots = current_root_handles(&session);
+        assert_eq!(
+            session
+                .mission()
+                .authored_features()
+                .iter()
+                .filter(|row| row.activation_group == 10 && row.kind != 0)
+                .map(|row| (row.index, row.kind, row.subtype))
+                .collect::<Vec<_>>(),
+            [(112, 10, 76)],
+            "the switch group has one actual Fire Spheres constructor"
+        );
+        let switch = session
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let local_player = session.state.entity_index;
+        assert_eq!(
+            (
+                session.economy.entities[usize::from(local_player)].class,
+                session.economy.entities[usize::from(local_player)].model
+            ),
+            (3, 0)
+        );
+        session
+            .set_level2_entity_position(local_player, switch.position)
+            .expect("move local player through the public Level 2 carrier");
+        for _ in 0..level_two_model76_switch25_activation_turns(switch.phase) {
+            pre_pass_roots = current_root_handles(&session);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "ordinary model76 switch dispatch: {:?}",
+                session.dispatch_events()
+            );
+        }
+        assert!(session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 25, group: 10, authored_indices, .. }
+                    if authored_indices.as_ref() == [112])));
+        assert!(
+            session
+                .session
+                .state
+                .live
+                .authored_features_consumed
+                .contains(&112)
+        );
+        // The shared effect constructor owns this source carrier; its
+        // compatibility authored_index is not an authored-record link.
+        // Join the sole published constructor to its new current handle.
+        let new_roots = current_root_handles(&session)
+            .into_iter()
+            .filter(|handle| !pre_pass_roots.contains(handle))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            new_roots.len(),
+            1,
+            "one new current root from group10 row112"
+        );
+        let root_handle = new_roots[0];
+        let root = session
+            .economy()
+            .authored_model76()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == root_handle.source_slot)
+            .copied()
+            .expect("switch production route publishes its canonical Fire Spheres root");
+        let mut preview = session.clone();
+        preview.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            preview.source_arena().handle(root_handle.source_slot),
+            Some(root_handle)
+        );
+        let child = preview
+            .economy()
+            .model76_children()
+            .iter()
+            .find(|child| {
+                child.parent_entity_index == root.source_entity_index && child.column_index == 0
+            })
+            .copied()
+            .expect("preview retains a column-zero child");
+        let child_handle = preview
+            .source_arena()
+            .handle(child.source_entity_index)
+            .unwrap();
+        let positive_position = child.position;
+        session
+            .set_level2_entity_position(local_player, positive_position)
+            .expect("move local player to the deterministic collision point");
+        let target_before = session.economy.entities[usize::from(local_player)].clone();
+        let root_before = root;
+        let sound_sequence = session
+            .effect_journal()
+            .records()
+            .last()
+            .map(|row| row.sequence);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.source_arena().handle(root_handle.source_slot),
+            Some(root_handle)
+        );
+        assert_eq!(
+            session.source_arena().handle(child_handle.source_slot),
+            Some(child_handle)
+        );
+        let root = session
+            .economy()
+            .authored_model76()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == root_handle.source_slot)
+            .copied()
+            .expect("row 112 remains live for the collision turn");
+        assert_eq!(root.life, root_before.life.wrapping_sub(1));
+        assert_eq!(root.phase, root_before.phase.wrapping_add(1));
+        let target = &session.economy.entities[usize::from(local_player)];
+        let payload_delta = target
+            .source_wind_spell_payload()
+            .wrapping_sub(target_before.source_wind_spell_payload());
+        assert!(payload_delta > 0);
+        assert_eq!(payload_delta % i32::from(root.subspell_index), 0);
+        let hit_children = usize::try_from(payload_delta / i32::from(root.subspell_index))
+            .expect("positive model-76 hit count fits usize");
+        assert_eq!(target.source_wind_spell_owner(), root.entity_id);
+        assert_eq!(target.entity_rng, target_before.entity_rng);
+        assert_eq!(target.class, 3);
+        assert_eq!(target.model, 0);
+
+        let sounds = session
+            .effect_journal()
+            .records()
+            .iter()
+            .filter(|row| sound_sequence.is_none_or(|sequence| row.sequence > sequence))
+            .filter_map(|row| match &row.effect {
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index,
+                    audio_site: crate::MissionAudioSite::FireSphereCollision,
+                    sound_id,
+                    ..
+                }) if *entity_index == root.source_entity_index => Some((*entity_index, *sound_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        // The local-player payload counts that one target's hits. Sound 3
+        // is broader: source sub_33C00 emits once for every column-zero
+        // child that hits any admitted target, including v4 model-45
+        // targets now backed by the qualified collision-mask carrier.
+        let sound_children = session
+            .economy()
+            .model76_children()
+            .iter()
+            .filter(|child| {
+                child.parent_entity_index == root.source_entity_index && child.column_index == 0
+            })
+            .count();
+        assert_eq!(sounds.len(), sound_children);
+        assert!(sounds.len() >= hit_children);
+        assert!(
+            sounds
+                .iter()
+                .all(|sound| { *sound == (root.source_entity_index, 3) })
+        );
+        let state_hash = session.campaign_state_hash();
+        let event_hash = session.dispatch_observability_hash();
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert!(session.economy().authored_model76().is_empty());
+        (state_hash, event_hash, hit_children)
+    };
 
     let first = run_positive();
     let replay = run_positive();

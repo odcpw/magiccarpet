@@ -8,6 +8,14 @@ pub(crate) mod runtime;
 pub(crate) mod stage;
 pub use stage::SettlementStageLinks;
 
+#[cfg(test)]
+std::thread_local! {
+    static BUILDER_HOUSE_BIRTHS: std::cell::RefCell<Vec<(
+        crate::campaign::source_arena::SourceEntityHandle,
+        crate::campaign::source_arena::SourceEntityHandle,
+    )>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 use crate::house::{HOUSE_CLASS, HOUSE_MODEL};
 use crate::level_definition::{
     BUILDER_CLASS_PROPERTIES, TRADER_CLASS_PROPERTIES, VILLAGER_CLASS_PROPERTIES,
@@ -2659,6 +2667,8 @@ impl crate::campaign::source_arena::SourceArena {
                 self.spawn_death_burst_from_death_with_id(dead_slot, resident.source_id, position);
         }
         if let Some(request) = request {
+            #[cfg(test)]
+            let builder_handle = self.handle(slot);
             let parameter = *parameters
                 .get(&request.building_index)
                 .ok_or_else(|| format!("Builder BLDGPRM row {} absent", request.building_index))?;
@@ -2701,6 +2711,10 @@ impl crate::campaign::source_arena::SourceArena {
                 crate::world::effects::sync_position(
                     self, terrain, house_slot, position, true, false,
                 )?;
+                #[cfg(test)]
+                if let (Some(builder), Some(house)) = (builder_handle, self.handle(house_slot)) {
+                    BUILDER_HOUSE_BIRTHS.with(|births| births.borrow_mut().push((builder, house)));
+                }
             }
         }
         resident.phase = resident.phase.wrapping_add(1);
@@ -3759,6 +3773,448 @@ mod production_tests {
             live.economy.free_slot_count(),
             free,
             "retired family rows cannot free a reused address again"
+        );
+    }
+
+    #[test]
+    fn public_house_demolition_builder_constructs_and_player_claims_house() {
+        use crate::PlayerCommand;
+        use crate::house::HouseStepEvent;
+        use crate::native_world::Mc2DispatchEvent;
+
+        let mut session = ordinary_level_two();
+        let player = session.state.entity_index;
+        let victim = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == 12)
+            .expect("actual resident-producing Level2 House12");
+        assert!(victim.active && victim.parameter.produces_villagers());
+        assert_eq!(victim.parameter.destruction_successor, 0);
+        let victim_handle = session.source_arena().handle(victim.entity_index).unwrap();
+        let initial_houses = session
+            .ordinary()
+            .houses()
+            .iter()
+            .filter(|house| house.active)
+            .filter_map(|house| session.source_arena().handle(house.entity_index))
+            .map(|handle| (handle.source_slot, handle.generation))
+            .collect::<std::collections::BTreeSet<_>>();
+        session
+            .apply_carried_spell_families(&[0, 1], Some(0))
+            .unwrap();
+        // Declared player resources and aim only; House, Builder, terrain,
+        // ownership and source timing remain under ordinary game callbacks.
+        {
+            let live = &mut session.session.state.live;
+            live.economy
+                .economy
+                .owner_base_max_mana
+                .insert(player, 200_000);
+            live.economy
+                .economy
+                .rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            let health = live.shared_spells.player_entity.max_life;
+            live.player_life = health;
+            live.shared_spells.set_player_entity_life(health);
+            live.shared_spells.set_local_player_mana_for_test(200_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_life(health);
+            parent.set_mana(200_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+            live.shared_spells
+                .sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = 200_000;
+            }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        let fire = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        let _ = BUILDER_HOUSE_BIRTHS.with(|births| std::mem::take(&mut *births.borrow_mut()));
+        let mut paid = 0;
+        let mut damaged = false;
+        let mut demolished = false;
+        let mut builder = None;
+        let mut trace = Vec::new();
+        for turn in 0..2400 {
+            let live_house = session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == victim.entity_index)
+                .map(|row| (row.life, row.action, row.occupants, row.active));
+            let ready = session.shared_spells().pickup(fire).is_some_and(|holder| {
+                holder.active_value == 0
+                    && session.shared_spells().player_entity().mana >= holder.max_mana
+            });
+            let mut command = PlayerCommand::default();
+            if ready && live_house.is_some_and(|(life, _, _, active)| life >= 0 && active) {
+                let yaw = 1024_i16;
+                let mut launch = victim.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 2304);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw
+                    .wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity)
+                    & 0x07ff;
+                let hand = if parent.control_flags & 0x0100 != 0 {
+                    Some(parent_yaw.wrapping_sub(512))
+                } else if parent.control_flags & 0x0200 != 0 {
+                    Some(parent_yaw.wrapping_add(512))
+                } else {
+                    None
+                };
+                if let Some(hand) = hand {
+                    crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256);
+                }
+                let centre = victim
+                    .position
+                    .z
+                    .wrapping_add(victim.collision_vertical_offset);
+                position.z = centre
+                    .wrapping_sub(parent.array_fov())
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(position)
+                            .wrapping_add(256),
+                    )
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(launch)
+                            .wrapping_add(256),
+                    );
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch,
+                    Position {
+                        z: centre,
+                        ..victim.position
+                    },
+                );
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                command = PlayerCommand {
+                    opcode: 6,
+                    argument_1: fire_ui,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                };
+            }
+            let before = session.shared_spells().player_entity().mana;
+            let cost = session.shared_spells().pickup(fire).unwrap().max_mana;
+            session.step_outer_turn(command, 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "real House demolition turn={turn}: {:?}",
+                session.dispatch_events()
+            );
+            if before.saturating_sub(session.shared_spells().player_entity().mana) >= cost {
+                paid += 1;
+            }
+            for event in session.dispatch_events() {
+                if let Mc2DispatchEvent::House { events, .. } = event {
+                    damaged |= events.iter().any(|event| matches!(event, HouseStepEvent::Damaged {
+                        entity_index, attacker_entity_index, life, .. } if *entity_index == victim.entity_index
+                            && *attacker_entity_index == player && *life < victim.life));
+                    demolished |= events.iter().any(|event| matches!(event, HouseStepEvent::RemoveFootprint {
+                        entity_index, attacker_entity_index, .. } if *entity_index == victim.entity_index
+                            && *attacker_entity_index == player));
+                }
+            }
+            builder = session
+                .economy()
+                .house_residents()
+                .iter()
+                .find(|row| {
+                    row.active
+                        && row.model == BUILDER_MODEL
+                        && row.parent_house_entity_index == victim.entity_index
+                })
+                .and_then(|row| session.source_arena().handle(row.source_entity_index));
+            if trace.len() < 24 && turn % 50 == 0 {
+                trace.push((
+                    turn,
+                    paid,
+                    live_house.map(|(life, action, occupants, _)| (life, action, occupants)),
+                    session.canonical_player_life_for_test(),
+                ));
+            }
+            if turn == 100 {
+                assert!(
+                    paid > 0 && damaged,
+                    "public Fireball must reach House12: house={victim:?} trace={trace:?}"
+                );
+            }
+            if builder.is_some() || session.canonical_player_life_for_test() < 0 {
+                break;
+            }
+        }
+        let builder = builder.expect(&format!("real House12 must produce a Builder: paid={paid} damaged={damaged} demolished={demolished} trace={trace:?}"));
+        assert!(paid > 0 && damaged && demolished);
+        assert_eq!(
+            session.source_arena().handle(victim.entity_index),
+            Some(victim_handle)
+        );
+        let terrain_before_build = session.terrain_hash();
+        let mut retreat = victim.position;
+        retreat.x = retreat.x.wrapping_add(12_000);
+        retreat.z = session
+            .canonical_terrain()
+            .ground_height(retreat)
+            .wrapping_add(2_000);
+        session.set_level2_entity_position(player, retreat).unwrap();
+        let mut born = None;
+        let mut post_build_role = false;
+        let mut build_trace = Vec::new();
+        for turn in 0..4096 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "real Builder source turn={turn}: {:?}",
+                session.dispatch_events()
+            );
+            if session.source_arena().handle(builder.source_slot) == Some(builder)
+                && let Some(row) = session
+                    .economy()
+                    .house_residents()
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == builder.source_slot)
+            {
+                post_build_role |= matches!(row.action, 104 | 105);
+            }
+            for (producer, house) in
+                BUILDER_HOUSE_BIRTHS.with(|births| std::mem::take(&mut *births.borrow_mut()))
+            {
+                if producer == builder
+                    && !initial_houses.contains(&(house.source_slot, house.generation))
+                {
+                    born = Some(house);
+                }
+            }
+            if build_trace.len() < 16 && turn % 256 == 0 {
+                build_trace.push((
+                    turn,
+                    session
+                        .economy()
+                        .house_residents()
+                        .iter()
+                        .find(|row| row.source_entity_index == builder.source_slot)
+                        .copied(),
+                    born,
+                ));
+            }
+            if let Some(handle) = born
+                && session.source_arena().handle(handle.source_slot) == Some(handle)
+                && session.ordinary().houses().iter().any(|house| {
+                    house.entity_index == handle.source_slot
+                        && house.active
+                        && house.action == crate::house::HOUSE_LIVE_ACTION
+                })
+            {
+                break;
+            }
+        }
+        let house = born.expect(&format!(
+            "the actual Builder must construct a House: {build_trace:?}"
+        ));
+        assert!(
+            post_build_role,
+            "the same Builder must enter its post-build household role: {build_trace:?}"
+        );
+        assert_eq!(
+            session.source_arena().handle(house.source_slot),
+            Some(house)
+        );
+        let built = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == house.source_slot)
+            .expect("Builder's published House");
+        assert!(
+            built.active
+                && built.action == crate::house::HOUSE_LIVE_ACTION
+                && built.capacity > 0
+                && built.occupants >= 2
+                && built.collision_half_width > 0
+                && built.collision_half_depth > 0
+        );
+        assert!(session.economy().map_chains.is_linked(house.source_slot));
+        assert_ne!(session.terrain_hash(), terrain_before_build);
+        let raw = &session.entities()[usize::from(house.source_slot)];
+        assert_eq!(
+            (raw.class, raw.model, raw.action, raw.position),
+            (10, 45, built.action, built.position)
+        );
+        assert_eq!(built.owner_entity_index, 0);
+        assert!(!built.parameter.possession_blocked());
+
+        let possession = session.shared_spells().local_player().enabled_spell_holders[1];
+        let holder = session
+            .shared_spells()
+            .pickup(possession)
+            .expect("declared Possession holder");
+        assert!(
+            holder.active_value == 0
+                && session.shared_spells().player_entity().mana >= holder.max_mana
+        );
+        let mut position = Position {
+            y: built.position.y.wrapping_add(1024),
+            z: built.position.z.wrapping_add(512),
+            ..built.position
+        };
+        position.z = position.z.max(
+            session
+                .canonical_terrain()
+                .ground_height(position)
+                .wrapping_add(256),
+        );
+        session
+            .set_level2_entity_position(player, position)
+            .unwrap();
+        let mut launch = position;
+        launch.z = launch
+            .z
+            .wrapping_add(session.shared_spells().player_entity().array_fov());
+        let target = Position {
+            z: built
+                .position
+                .z
+                .wrapping_add(built.collision_vertical_offset),
+            ..built.position
+        };
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(launch, target);
+        session.set_level2_player_aim_for_test(yaw, pitch);
+        let possession_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 1)
+            .unwrap() as i8;
+        let cost = session.shared_spells().pickup(possession).unwrap().max_mana;
+        assert!(cost > 0);
+        session.step_outer_turn(
+            PlayerCommand {
+                opcode: 6,
+                argument_1: possession_ui,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        let cast_mana = session.shared_spells().player_entity().mana;
+        let queued_regen = session.shared_spells().player_entity().mana_regen;
+        assert_eq!(
+            queued_regen, -cost,
+            "the real Possession holder must queue its source mana cost"
+        );
+        let mut possession_paid = false;
+        let mut flyer = false;
+        let mut effect = false;
+        let mut claimed = false;
+        for turn in 0..128 {
+            flyer |= session
+                .economy()
+                .possession_projectiles()
+                .iter()
+                .any(|row| row.source_id_entity_index == player);
+            effect |= session
+                .economy()
+                .possession_effects()
+                .iter()
+                .any(|row| row.source_id_entity_index == player);
+            claimed |= session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::House { events, .. }
+                if events.iter().any(|event| matches!(event, HouseStepEvent::Possessed { entity_index, owner_entity_index, .. }
+                    if *entity_index == house.source_slot && *owner_entity_index == player))));
+            if possession_paid
+                && claimed
+                && session.ordinary().houses().iter().any(|row| {
+                    row.entity_index == house.source_slot && row.owner_entity_index == player
+                })
+            {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            if turn == 0 {
+                let parent = session.shared_spells().player_entity();
+                let expected = cast_mana
+                    .wrapping_add(queued_regen)
+                    .clamp(0, parent.max_mana);
+                assert_eq!(
+                    parent.mana, expected,
+                    "the next real player upkeep must consume the queued cost"
+                );
+                possession_paid = true;
+            }
+        }
+        assert!(
+            possession_paid && flyer && effect && claimed,
+            "public Possession must claim the actual built House: paid={possession_paid} flyer={flyer} effect={effect} claimed={claimed}"
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.source_arena().handle(house.source_slot),
+            Some(house)
+        );
+        assert_eq!(session.economy().source_owner(house.source_slot), player);
+        let mana = session
+            .economy()
+            .owner_mana_rows
+            .iter()
+            .find(|row| {
+                row.source_entity_index == house.source_slot && row.player_entity_index == player
+            })
+            .expect("the actual built House contributes to its player's source mana census");
+        assert_eq!(
+            mana.mana,
+            (1_000 * i32::from(built.parameter.life_mana_scalar)) >> 7
+        );
+        assert!(
+            session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == house.source_slot)
+        );
+        eprintln!(
+            "public House{} -> Builder{builder:?} -> House{house:?} owner{player}",
+            victim.entity_index
         );
     }
 

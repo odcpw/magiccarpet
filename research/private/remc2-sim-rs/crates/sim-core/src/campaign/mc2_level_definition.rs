@@ -695,6 +695,7 @@ impl Mc2LevelDefinition {
                         | CreatureKind::Spider
                         | CreatureKind::Trader
                         | CreatureKind::Villager
+                        | CreatureKind::Builder
                         | CreatureKind::Worm
                 ) {
                     let max_life = match kind {
@@ -755,6 +756,9 @@ impl Mc2LevelDefinition {
                         }
                         CreatureKind::Trader => crate::native_world::level2_class5::TRADER_MAX_LIFE,
                         CreatureKind::Villager => crate::villager::VILLAGER_MAX_LIFE,
+                        CreatureKind::Builder => {
+                            crate::level_definition::BUILDER_CLASS_PROPERTIES.max_life
+                        }
                         CreatureKind::Worm => crate::native_world::level2_class5::WORM_MAX_LIFE,
                         _ => {
                             return Err(format!(
@@ -1686,6 +1690,152 @@ fn bind_private_entity(
 #[cfg(test)]
 mod spell_family_binding_tests {
     use super::*;
+
+    #[test]
+    fn ordinary_level_seven_builders_bind_authored_constructor_health() {
+        let package = std::env::var_os("MC_LEVEL7_SETTLEMENT_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/settlement-20261105-integration/owner-current/level7")
+            },
+            std::path::PathBuf::from,
+        );
+        let campaign = crate::campaign::CampaignSession::open(
+            &package,
+            CampaignSelection::ordinary(7).unwrap(),
+        )
+        .expect("current whole Level7 owner package");
+        let mut simulation = campaign.simulation().clone();
+        for authored in [139, 140] {
+            let feature = simulation
+                .mission()
+                .authored_features()
+                .iter()
+                .find(|feature| feature.index == authored)
+                .unwrap();
+            assert_eq!((feature.kind, feature.subtype), (5, 12));
+            assert_eq!(
+                simulation
+                    .session
+                    .definition
+                    .authored_creature_max_life(authored),
+                Some(crate::level_definition::BUILDER_CLASS_PROPERTIES.max_life as u32),
+                "the ordinary constructor must receive its typed authored health binding"
+            );
+        }
+        let feature = *simulation
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 139)
+            .unwrap();
+        let original = simulation.semantic_level_definition().unwrap();
+        let entity = original
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.kind() == LevelEntityKind::Creature(CreatureKind::Builder)
+                    && entity.position()
+                        == TilePosition {
+                            x: feature.tile_x,
+                            y: feature.tile_y,
+                        }
+            })
+            .unwrap();
+        let id = entity.id().clone();
+        let mut encoded = serde_json::to_value(original).unwrap();
+        let supplied = encoded["entities"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entity| entity["id"].as_str() == Some(id.as_str()))
+            .unwrap();
+        supplied["creature_health"]["max_life"] = serde_json::json!(40_000);
+        let variant: LevelDefinition = serde_json::from_value(encoded).unwrap();
+        variant.verify_session_reset_variant_of(original).unwrap();
+        assert_eq!(
+            variant
+                .entity(&id)
+                .unwrap()
+                .creature_health()
+                .unwrap()
+                .default_max_life(),
+            1_000
+        );
+        simulation
+            .replace_semantic_level_definition(variant)
+            .unwrap();
+        let captured = simulation
+            .economy()
+            .house_residents()
+            .iter()
+            .filter(|resident| resident.initial_package && resident.model == 12)
+            .map(|resident| {
+                (
+                    simulation
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .handle(resident.source_entity_index)
+                        .unwrap(),
+                    simulation.entities()[usize::from(resident.source_entity_index)].clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !captured.is_empty(),
+            "the actual package already captured its reset Builders"
+        );
+        for _ in 0..2 {
+            // Explicit supplied-definition constructor control: row139 is a
+            // real group0 record whose original actor was already captured.
+            // Do not republish group0 or call this an ordinary second birth.
+            let max_life = simulation
+                .session
+                .definition
+                .authored_creature_max_life(feature.index)
+                .unwrap();
+            assert_eq!(max_life, 40_000);
+            let live = &mut simulation.session.state.live;
+            let slot = crate::campaign::authored_spawn::construct(
+                &mut live.economy,
+                &mut live.terrain,
+                &mut live.core.runtime,
+                feature,
+                max_life,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            let current = live
+                .economy
+                .house_residents()
+                .iter()
+                .find(|resident| resident.source_entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                (current.model, current.max_life, current.life),
+                (12, 40_000, 40_000)
+            );
+            assert_eq!(
+                (
+                    live.economy.entities[usize::from(slot)].max_life,
+                    live.economy.entities[usize::from(slot)].life
+                ),
+                (40_000, 40_000)
+            );
+            assert!(live.economy.handle(slot).is_some() && live.economy.map_chains.is_linked(slot));
+            for (handle, original) in &captured {
+                assert_eq!(live.economy.handle(handle.source_slot), Some(*handle));
+                assert_eq!(
+                    &live.economy.entities[usize::from(handle.source_slot)],
+                    original
+                );
+            }
+            simulation.reset();
+        }
+    }
 
     #[test]
     fn starting_spells_army_magic_mine_and_alliance_bind_ordinary_source_rows() {

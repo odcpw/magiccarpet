@@ -252,7 +252,7 @@ impl Level2EconomyState {
         max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
-        if !is_authored_trader_row(authored_index) || max_life <= 0 {
+        if max_life <= 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -974,6 +974,123 @@ mod tests {
     use super::super::super::tests::level_two_fixture_path;
     use super::*;
     use crate::native_world::{Level2DynamicArenaKind, NativeWorld};
+
+    #[test]
+    fn level_twenty_two_reset_adoption_and_actual_row_constructor_are_distinct() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        let package = std::env::var_os("MC_LEVEL22_SETTLEMENT_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../../generated/settlement-20261105-integration/owner-current/level22",
+                )
+            },
+            std::path::PathBuf::from,
+        );
+        let mut campaign =
+            CampaignSession::open(&package, CampaignSelection::ordinary(22).unwrap())
+                .expect("qualified current whole Level22 owner package");
+        let session = campaign.simulation_mut();
+        let feature = *session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 237)
+            .unwrap();
+        assert_eq!(
+            (feature.kind, feature.subtype, feature.activation_group),
+            (5, 14, 0)
+        );
+        let captured = session.entities()[147].clone();
+        assert_eq!((captured.class, captured.model), (5, 14));
+        assert_eq!(
+            (captured.position.x >> 8, captured.position.y >> 8),
+            (feature.tile_x, feature.tile_y)
+        );
+        let captured_handle = session.source_arena().handle(147).unwrap();
+        assert_eq!(
+            session
+                .economy()
+                .house_residents()
+                .iter()
+                .filter(|row| row.initial_package && row.model == TRADER_MODEL)
+                .count(),
+            1
+        );
+        let baseline = session.campaign_state_hash();
+        session
+            .session
+            .state
+            .live
+            .economy
+            .adopt_reset_settlement_sources();
+        session
+            .session
+            .state
+            .live
+            .economy
+            .adopt_reset_settlement_sources();
+        assert_eq!(
+            session.campaign_state_hash(),
+            baseline,
+            "adoption cannot allocate or rerun construction"
+        );
+        assert_eq!(session.entities()[147], captured);
+        assert_eq!(session.source_arena().handle(147), Some(captured_handle));
+
+        // Separate constructor control using the actual qualified authored row.
+        // The captured group0 actor above is already present; this is not an
+        // ordinary second birth or a claim that reset lost its Trader.
+        let max_life = session
+            .session
+            .definition
+            .authored_creature_max_life(feature.index)
+            .unwrap() as i32;
+        let live = &mut session.session.state.live;
+        let before_phase = live.economy.class5_model14_constructor_phase;
+        let free = live.economy.free_slot_count();
+        for invalid in [0, -1] {
+            assert!(
+                live.economy
+                    .allocate_authored_trader(
+                        feature.index,
+                        feature.world_position(0),
+                        invalid,
+                        &live.terrain
+                    )
+                    .is_none()
+            );
+            assert_eq!(live.economy.free_slot_count(), free);
+            assert_eq!(live.economy.class5_model14_constructor_phase, before_phase);
+        }
+        let source = live
+            .economy
+            .allocate_authored_trader(
+                feature.index,
+                feature.world_position(0),
+                max_life,
+                &live.terrain,
+            )
+            .expect("shared typed Trader constructor admits real non-Level2 row237");
+        assert_ne!(source.source_entity_index, captured_handle.source_slot);
+        assert_eq!(source.authored_index, feature.index);
+        assert_eq!(
+            (source.model, source.action, source.life, source.max_life),
+            (TRADER_MODEL, TRADER_ACTION, max_life, max_life)
+        );
+        assert_eq!(
+            live.economy.class5_model14_constructor_phase,
+            before_phase.wrapping_add(1)
+        );
+        assert_eq!(live.economy.free_slot_count(), free - 1);
+        let child = live.economy.handle(source.source_entity_index).unwrap();
+        assert!(
+            live.economy.resolve(child).is_some(),
+            "actual typed arena publication"
+        );
+        assert!(live.economy.map_chains.is_linked(child.source_slot));
+        assert_eq!(live.economy.handle(147), Some(captured_handle));
+        assert_eq!(live.economy.entities[147], captured);
+    }
 
     fn trader_position() -> Position {
         Position {

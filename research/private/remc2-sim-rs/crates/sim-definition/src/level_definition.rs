@@ -313,6 +313,7 @@ pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
         | CreatureKind::Spider
         | CreatureKind::Trader
         | CreatureKind::Villager
+        | CreatureKind::Builder
         | CreatureKind::Worm => Some(2_147_483_647),
         CreatureKind::Wyvern
         | CreatureKind::Creature17
@@ -2501,6 +2502,42 @@ impl LevelDefinition {
 #[cfg(test)]
 mod tests {
     use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn builder_authored_health_preserves_source_signed_dword_range() {
+        use super::*;
+        let id = LevelEntityId::parse("creature.builder.health").unwrap();
+        let entity = crate::adapter::creature_entity_definition(
+            id.clone(),
+            CreatureKind::Builder,
+            TilePosition { x: 66, y: 196 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+            BUILDER_CLASS_PROPERTIES.max_life as u32,
+            LevelEntityParameterAccess::SessionReset,
+        );
+        let definition = LevelDefinition::new(vec![entity], vec![], vec![]).unwrap();
+        for max_life in [1, 40_000, i32::MAX as u32] {
+            let candidate = definition.with_creature_max_life(&id, max_life).unwrap();
+            assert!(
+                candidate
+                    .verify_session_reset_variant_of(&definition)
+                    .is_ok()
+            );
+            assert_eq!(
+                candidate
+                    .entity(&id)
+                    .unwrap()
+                    .creature_health()
+                    .unwrap()
+                    .max_life(),
+                max_life
+            );
+        }
+        for max_life in [0, i32::MAX as u32 + 1, u32::MAX] {
+            assert!(definition.with_creature_max_life(&id, max_life).is_err());
+        }
+    }
 
     #[test]
     fn bee_authored_health_admission_preserves_source_dword_range() {

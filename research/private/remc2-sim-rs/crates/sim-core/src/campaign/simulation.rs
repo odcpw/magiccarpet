@@ -24466,7 +24466,6 @@ impl Mc2Simulation {
                         level2_model76_model45_occupancy(
                             bank,
                             u16::from(house.building_index),
-                            step.position,
                         )
                     })
             })
@@ -25007,7 +25006,7 @@ impl Mc2Simulation {
                             .collision_masks
                             .as_ref()
                             .is_some_and(|bank| {
-                                level2_model76_model45_occupancy(bank, selector, child.position)
+                                level2_model76_model45_occupancy(bank, selector)
                             })
                     });
                 if hit {

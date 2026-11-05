@@ -77,7 +77,81 @@ reuse current evidence; source inspection must identify the actual unmet link
 before editing. MagentaPuma owns the complete capability, AzureGate implements
 shared joins, BrightCastle supplies bounded source/consumer diagnosis and root
 GreenCave serializes Cargo/push/install. `.16` is in_progress; existing real
-checks must distinguish missing code from incomplete evidence. The following
+checks must distinguish missing code from incomplete evidence.
+
+Current settlement source trace corrects the friendly Trader wording: source
+237B0 enters an eligible House, increases occupancy, then hides/reclaims the
+Trader. It does not deposit current mana in a Castle. House mana is the source
+fixed BLDGPRM scalar, independent of occupancy; ownership and next-boundary60F00
+census feed actual wizard capacity and Castle/defender consumers. No invented
+direct deposit is added. Fresh wholeLevel7 unforced resetTrader→House occupancy/
+hide/reclaim passes72.120s on the installed Archer source; seeded House→next
+boundary Castle projection passes0.382s and is labelled a narrow control.
+
+Pending four-file settlement candidate1 compiles on strict rig147.632s with all
+444inputs stable. Builder typed health now reaches the existing definition/
+constructor and validator: nondefault40000 construction/reset passes0.546s;
+signed-dword range control passes remotely10.869s. Trader's Level2 row-number
+guard is removed behind its typed constructor; freshLevel22 reset/adoption and
+separate real-row237 constructor control pass0.973s. Captured reset Trader147
+was already present: the earlier suspected lost actor is explicitly withdrawn.
+The separate constructor control is not an ordinary second birth.
+
+The new paid public House12→Builder→House→paid Possession check initially fails
+7.950s at the unchanged100-turn guard:20paid casts, House life20000 unchanged.
+Candidate2's capped trajectory shows real impact at that House's centre. The
+shared special model45 damage predicate incorrectly reads signed mask cells;
+pinned10C80 actually dereferences uint8_t*, whose promoted0..255 comparison with
+-1 always succeeds. Actual-header C++ type/exhaustive-byte proof confirms this,
+including0xff. The canonical helper now preserves selector admission and caller
+strict-axis checks without inventing signed transparency, negative-index
+padding or a new asset format. Regular signed-cell collision API is unchanged.
+
+Candidate3 proves demolition, natural Builder construction and public House
+claim, but its immediate payment-delta assertion fails26.294s. Source Possession
+queues negative mana_regen; upkeep consumes it on the next player visit. The
+corrected source-timed assertion requires that actual queue and exact next
+debit. Candidate4 full unchanged gameplay path passes27.232s: House12→same
+Builder121/gen2→constructed House120/gen67→paid Possession/owner/census and
+presentation. Actual writer/missing-bank/strict-axis control passes1.025s;
+integrated workspace/all-target check passes46.715s, all444Rust+37extra inputs
+stable. Rig/local compiled binary hashes/extents are independently compared.
+Original negatives remain; package overrides are now recorded explicitly.
+
+An affected existing model76/FireSpheres test has a preexisting row112 switch
+failure, reproduced on installedc7 in0.369s. Switching export-only reset to the
+normal semantic session was insufficient. Candidate5's same7-turn trace confirms
+real25/group10/[112] activation and a current root119, whose generic-effect
+constructor deliberately stores marker65535 rather than authored112. Its real
+sound is a Flight PrepareSound/site3 projection, not the legacy economy event.
+Sol corrects these two obsolete observations using publication/consumed-row
+evidence, unique new generation-bound handle and the actual sound journal;
+the current selector reader must also use the typed arena/source_target view,
+not raw retained entity shadows. Candidate7's corrected existing gate passes
+2.774s with original timing/count/RNG/payload/owner/reset/replay assertions.
+Final Builder typed-health and Trader adoption/constructor checks pass0.443s/
+0.986s. All444current inputs match candidate7; the only change since passing
+candidate4 public/workspace evidence is that model76 test observer. Production
+and the public House consumer are byte-identical, so their evidence is reused.
+Fresh independent bounded review supports the unsigned-byte/caller/gate fix
+without a concrete introduced defect. No production, wait, admission or
+asset-format change was needed to repair these obsolete test observations.
+Finite `.9` is not reopened. Full `.16` remains open for its actual Villager
+death/population/target/reclaim and Builder/Villager conversion consumers, not
+closed on this useful House batch. This coherent batch is verified and pending
+commit/push/native delivery; it is not yet installed.
+Current Archer installation and its clean qualified source snapshot are kept.
+UBS has zero critical added-line findings; whole-file format/heuristic debt
+remains. Cleanup keeps all proof binaries/current/previous natives intact;
+only disposable dispatcher caches and a closed Nov4 incremental generation
+were removed under Oliver's explicit build-file cleanup authorization, retaining
+the full local code-generation cache and remote warm generations. Two closed
+metadata-only local check caches were also pruned to provide measured output
+headroom; source, owner data, proofs and current/previous native pins stay.
+The proposed four older Archer
+proof-binary prune was blocked by DCG and was not executed or bypassed.
+
+The following
 records the Archer integration and its preserved negative results.
 
 Oliver explicitly resumed the full existing creature queue and authorized

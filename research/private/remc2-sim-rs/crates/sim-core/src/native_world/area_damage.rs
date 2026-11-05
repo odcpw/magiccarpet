@@ -1666,7 +1666,6 @@ impl crate::world::effects::DamageWorld for EffectTargets<'_, '_, '_> {
         Ok(super::level2_model76_model45_occupancy(
             bank,
             u16::from(selector),
-            request.position,
         ))
     }
 }
@@ -2026,6 +2025,118 @@ impl ArenaTargets<'_, '_> {
 mod tests {
     use super::*;
     use crate::world::terrain::disasters::{RingProfile, mc2};
+
+    #[test]
+    fn model45_effect_damage_preserves_unsigned_probe_and_strict_axis_admission() {
+        let mut session = super::super::tests::level_two_campaign_session();
+        let owner = session.state.entity_index;
+        let house = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 12)
+            .expect("actual Day2 House12");
+        assert_eq!((house.pending_damage, house.pending_attacker), (0, 0));
+        assert_eq!(
+            ((house.position.x >> 8) + (house.position.y >> 8)) & 1,
+            1,
+            "the failed public Fireball impact has odd source tile parity"
+        );
+        let masks = session.session.definition.collision_masks.clone().unwrap();
+        let mask = masks.mask(u16::from(house.building_index)).unwrap();
+        assert_eq!((mask.width(), mask.height()), (2, 1));
+        let handle = session.source_arena().handle(house.entity_index).unwrap();
+        let live = &mut session.session.state.live;
+        let lists = capture_effect_lists(
+            &mut live.economy,
+            Some(ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+        );
+        let mut request = crate::world::effects::DamagePulse {
+            position: house.position,
+            owner,
+            payload: 200,
+            half_width: 128,
+            vertical_offset: 0,
+            half_height: 128,
+            continuous: false,
+            selector: (10, 45),
+        };
+        assert!(
+            apply_effect(
+                &mut live.economy,
+                Some(ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                None,
+                None,
+                &lists,
+                request,
+            )
+            .is_err(),
+            "the source byte predicate still requires its admitted mask bank"
+        );
+        for outside_x in [true, false] {
+            request.position = house.position;
+            if outside_x {
+                request.position.x = request
+                    .position
+                    .x
+                    .wrapping_add_signed(house.collision_half_width + request.half_width);
+            } else {
+                request.position.y = request
+                    .position
+                    .y
+                    .wrapping_add_signed(house.collision_half_depth + request.half_width);
+            }
+            apply_effect(
+                &mut live.economy,
+                Some(ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                None,
+                Some(&masks),
+                &lists,
+                request,
+            )
+            .unwrap();
+            let current = live
+                .ordinary
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == house.entity_index)
+                .unwrap();
+            assert_eq!(
+                (current.pending_damage, current.pending_attacker),
+                (0, 0),
+                "strict XY rejects equality at the source collision boundary"
+            );
+        }
+        request.position = house.position;
+        assert!(
+            apply_effect(
+                &mut live.economy,
+                Some(ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                None,
+                Some(&masks),
+                &lists,
+                request,
+            )
+            .unwrap()
+                > 0
+        );
+        let current = live
+            .ordinary
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == house.entity_index)
+            .unwrap();
+        assert_eq!(
+            (current.pending_damage, current.pending_attacker),
+            (200, owner.cast_signed()),
+            "the actual model45 writer accepts the odd-parity House centre"
+        );
+        assert_eq!(
+            current.life, house.life,
+            "the later House callback owns consumption"
+        );
+        assert_eq!(live.economy.handle(house.entity_index), Some(handle));
+    }
 
     #[test]
     fn rival_class5_heads_follow_real_castle_seed_allocation() {

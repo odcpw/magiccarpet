@@ -3660,39 +3660,13 @@ fn level2_model76_sub106c0_matches(
         && dz < fov_limit
 }
 
-/// Source model-45 MSPRD probe inside `sub_10C80(a2 = 0)`. The qualified
-/// bank retains the runtime TAB dimensions and signed pixels; VGA selector 1
-/// halves the dimensions once more at this call site before the source uses
-/// the resulting width as its row stride.
-fn level2_model76_model45_occupancy(
-    bank: &CollisionMaskBank,
-    selector: u16,
-    source_position: Position,
-) -> bool {
-    let Some(mask) = bank.mask(selector) else {
-        return false;
-    };
-    let width = i32::from(mask.width() >> 1);
-    let height = i32::from(mask.height() >> 1);
-    let source_x = i32::from(source_position.x) >> 8;
-    let source_y = i32::from(source_position.y) >> 8;
-    let mut left = source_x - (width >> 1);
-    let top = source_y - (height >> 1);
-    if (top + left) % 2 != 0 {
-        left += 1;
-    }
-    let pixel_x = source_x - left;
-    let pixel_y = source_y - top;
-    let Some(pixel_index) = pixel_y
-        .checked_mul(width)
-        .and_then(|row| row.checked_add(pixel_x))
-        .and_then(|index| usize::try_from(index).ok())
-    else {
-        return false;
-    };
-    mask.pixels()
-        .get(pixel_index)
-        .is_some_and(|pixel| *pixel != -1)
+/// Source model-45 MSPRD predicate inside `sub_10C80(a2 = 0)`.
+/// `bitmap_pos_struct_t::data` is `uint8_t*`: the uncast dereference promotes
+/// to 0..255, so its comparison with -1 always succeeds. Preserve selector
+/// authority without inventing signed-pixel transparency or reading outside
+/// a retained mask. Callers separately perform the source's strict XY test.
+fn level2_model76_model45_occupancy(bank: &CollisionMaskBank, selector: u16) -> bool {
+    bank.mask(selector).is_some()
 }
 
 fn level2_model76_map_search_slots(
