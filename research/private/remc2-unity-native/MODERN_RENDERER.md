@@ -287,6 +287,143 @@ on its separately qualified native `ab1095b7514a`.
 Commands, manifests, XML, logs and actual captures are retained under
 `../generated/nightspire-rendering-20261104/`.
 
+## Native CPU, shader and display-path diagnosis, 2026-11-05
+
+This pass is installed but does **not** establish smooth foreground play.
+The actual 3090 Wayland session remained locked. No input was sent to that
+locked desktop and no unlock was attempted. Native CPU improvements are measurable; overall frame throughput
+still needs work and an unlocked-desktop check.
+
+Source commits: `956e756f` (native CPU), `23792e0e` (terrain sampling/diagnostics),
+`ae06965c` (identity decoder), `0b4cabc2` (release timing queries), and
+`ed1f1549` (Wayland launcher). These commits were made locally; this work did
+not push the shared branch. The separate Original installation validator also
+passes, retaining its own native `ecbf096983e4`.
+
+Delivered changes:
+
+- Seven source-slot lookups use the parser's existing slot/index invariant,
+  retaining their exact predicates and source priority. The presentation adapter
+  shares the campaign's existing immutable inspection `Arc` instead of making
+  a deep copy. Rust commit: `956e756f`.
+- Pure soil terrain pixels skip 18 unused rock texture reads; pure rock pixels
+  skip nine unused soil reads. Mixed pixels retain all 27. Texture gradients
+  are calculated before branching, including the rotated rock UVs, to preserve
+  mip selection. `-mc-modern-full-terrain-material` runs the full sampling path.
+- Canonical runtime identities use a faster field-based JSON decoder. Required
+  fields, primitive shapes, case aliases, duplicates, UTF8 and legacy XML
+  noncharacters are checked before admission. Other syntax falls back to the
+  original DataContract decoder; other receipt types always retain it. Objects
+  remain fresh. The official Unity Newtonsoft package is pinned at 3.2.2.
+  `-mc-runtime-legacy-json` selects the old decoder within the same player.
+- The NVIDIA native-Wayland launcher sets `__NV_DISABLE_EXPLICIT_SYNC=1` for
+  this process when the operator has not supplied a value. This avoids the
+  reproduced fatal "surface already exists" protocol error. X11/default routing
+  and explicit overrides remain available; no driver or desktop configuration
+  was changed.
+- Always-on Frame Timing Statistics are disabled in release player settings.
+  A control trace confirmed that GPU query-result polling disappeared. This
+  does not change artwork or rendering settings. Normal play retains VSync;
+  `-mc-modern-no-vsync` is only an explicit diagnostic option. Metrics log the
+  actual device/settings and accept a bounded `-mc-modern-warmup` interval.
+
+Native measurements use optimized release baseline and candidate artifacts,
+the same input sequence and hardware, with two sequential A/B pairs:
+
+| Measurement | Baseline | Candidate |
+| --- | --- | --- |
+| Step median, pair 1 | 12.891 ms | 8.776 ms |
+| Step median, pair 2 | 12.890 ms | 8.746 ms |
+| Snapshot median, pair 2 | 2.943 ms | 2.967 ms |
+
+The step reduction is about 32%; snapshot time did not improve. Every turn's
+state, terrain and journal digests match for 240 turns, and the complete final
+snapshot matches. Twelve focused Rust tests pass: scheduler/order/RNG controls,
+holder expiry, slot replacement/reclaim, and actual runtime inspection pointer
+sharing with snapshot equality. Native SHA256:
+`2fdafc823e977fa7bc2791aadc0e1c6b9b8a0b3b8aca65419aae596dbe5bde86`.
+Its frozen source is `793b7ef62973d4153ab1372ffee3afc559585813` plus the three
+performance-owned Rust files, with all 444 inputs recorded. It intentionally
+excludes the other team's concurrent, unfinished gameplay edits. An earlier
+installed development artifact was unoptimized and is excluded from speedup
+comparisons.
+
+The endpoint shader's same-build screening changed frame median from 39.81 to
+38.55 ms at 1600x900. Root inspected the full captures and terrain crops without
+finding an obvious detail loss. Animated vegetation/shadows prevent claiming
+bit-identical full images. A separate 64 MiB terrain noise cache gave no useful
+frame-time gain and was removed; its candidate source/evidence is preserved.
+Texture resolution, vegetation density, view distances, main shadows, MSAA and
+lighting quality were not lowered in this pass.
+
+Six final Unity EditMode decoder cases pass, including four runtime states,
+nulls, fresh/concurrent reads, Unicode and integer boundaries, and negative
+admission controls. A standalone bundled-Mono differential sweep matches the
+old decoder across 38 cases. The compatibility-gated microbenchmark measured
+about 0.269 to 0.129 ms/read; the actual player showed a smaller gain:
+
+| Same-build ABBA run | Legacy 1 | Fast 1 | Fast 2 | Legacy 2 |
+| --- | --- | --- | --- | --- |
+| Identity decode median | 0.33 ms | 0.25 ms | 0.25 ms | 0.36 ms |
+| Frame median | 39.36 ms | 38.86 ms | 38.93 ms | 38.78 ms |
+| Frame p95 | 47.54 ms | 45.36 ms | 47.17 ms | 46.20 ms |
+
+There is no consistent whole-frame improvement from the decoder. Each run uses
+1600x900 Vulkan, the same replay/camera/native, 20 seconds of warmup and 120
+samples per scope. Scope windows are independent and must not be added together.
+
+An eight-second Nsight Systems trace contains 194 matched presentation calls:
+GPU drawing median 13.43 ms, `vkQueuePresentKHR` median 36.16 ms, and median
+22.09 ms between GPU completion and that API returning. The build has no debug
+pass markers, so this is not a per-URP-pass attribution. Disabling the in-game
+metrics did not remove that wait. Disabling global frame statistics removed
+query polling but left approximately 22 ms of post-GPU waiting; its small
+single-run frame change is not a strong speedup claim.
+
+The final canonical launcher ran successfully on the actual locked Wayland
+desktop without a caller-supplied explicit-sync override, captured the real
+player at 1920x1080 and exited normally: median 50.46 ms, p95 60.18 ms. No fatal
+runtime/shader/protocol error was logged. A private KWin virtual display, using
+its own socket, configuration and D-Bus session, measured 27.50 ms median and
+38.56 ms p95 at 1600x900. This demonstrates sensitivity to the display path;
+it is one isolation experiment, not an unlocked-desktop or 60-fps qualification.
+
+Installed player: `Builds/build-ezjziev5` in
+`/home/oliver/Projects/odcpw/magiccarpet-modern-performance-20261105/research/private/remc2-unity-native`.
+The canonical `Builds/Modern` selects it; the previous selector and players
+are retained. All 12 changed Unity/launcher inputs match canonical source and
+the install validator passes. Build output now resides on the larger disk under
+`/mnt/pinokio-shared/magiccarpet-build-proofs-20261105/current-modern-builds`,
+with the original directory retained alongside the qualified project. Older
+generated Modern rollback players were preserved on that disk with verified
+file hashes. Profiler downloads also have a verified archive there; their local
+copies remain because cleanup/relocation was rejected by the deletion guard.
+
+The final player also passed the normal frontend-to-flight/save route on a
+private X display: Up-arrow input moved its actual camera from
+`(310,80.50,890)` to `(310,89.13,783.75)`, Backspace stopped movement and F5
+wrote a runtime replay save. It captured the resulting view and exited zero,
+with no fatal runtime or shader error. Root inspected that capture. This is a
+bounded input/save smoke, not human playthrough or flight-pacing qualification.
+Evidence: `../generated/nightspire-rendering-20261104/performance_final_flight_20261105*`.
+
+UBS coverage remains partial: missing standalone dotnet and bounded C# semantic
+analysis. Reported dictionary values are non-null by their private construction;
+decoder catches deliberately fall back to the old decoder, and the six critical
+credential-pattern hits are unchanged Guid test fixtures. No suppression or
+relaxed scanner gate was added. Unity compiled the actual assemblies/player.
+
+Primary API references: [Unity JSON package](https://docs.unity3d.com/Packages/com.unity.nuget.newtonsoft-json@3.2/manual/index.html),
+[DataContract serializer](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.serialization.json.datacontractjsonserializer),
+and [Unity VSync behavior](https://docs.unity.com/en-us/engine/6000.0/script-reference/unityengine/qualitysettings/vsynccount).
+Reproduction commands, source/artifact manifests, per-turn comparisons, test XML,
+profiling data and captures are retained under
+`../generated/nightspire-performance-20261105/` and
+`../generated/nightspire-diagnosis-20261104/`. Remaining acceptance is open:
+smooth foreground performance, p95 pacing during ordinary flight and visual
+transition checks on the actual desktop. No tick-keyed gameplay/hash cache or
+asynchronous simulation redesign was introduced without mutation/race proof.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game
