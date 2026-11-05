@@ -138,9 +138,25 @@ without a concrete introduced defect. No production, wait, admission or
 asset-format change was needed to repair these obsolete test observations.
 Finite `.9` is not reopened. Full `.16` remains open for its actual Villager
 death/population/target/reclaim and Builder/Villager conversion consumers, not
-closed on this useful House batch. This coherent batch is verified and pending
-commit/push/native delivery; it is not yet installed.
-Current Archer installation and its clean qualified source snapshot are kept.
+closed on this useful House batch. This coherent batch is implemented, verified,
+committed/pushed as `7afb95566c0c0259a3ac45421595ff2b10bda952` and installed.
+Matching native `bb1d511247b23e450bd255b0ffcf14f513551cb2f4d2067d282e49532dfea829`
+passes strict rig build51.384s; independent SSH hashes/extent match the returned
+artifact. All444Rust+162upstream inputs match canonical and isolated source;
+both Original plugin copies and its444-input installed receipt match. Native-only
+installation/qualification pass. Root viewed normal canonical map, original
+loading artwork and NightSpire terrain/HUD/spawn flash with that mapped native:
+one portal click, no retry, no private save. Owned smoke processes are stopped.
+Evidence: settlement candidate7 and
+`Builds/delivery-settlement-20261105-batch1/runtime-proof.json`. No Unity/art
+change, native settlement encounter visual, human combat/FPS, hardware audio,
+full-mission or old-save proof. Archer native remains preserved as the immediate
+previous checkpoint.
+MagentaPuma now owns actual paid Villager death/current-generation living-root
+and following-boundary target/reclaim consequences; AzureGate supports the
+actual Builder/Villager Skeleton-conversion join. Source excludes models12–15
+from the global creature-population census, so an invented global decrement is
+not an acceptance gate. Full `.16` and its original dependencies stay open.
 UBS has zero critical added-line findings; whole-file format/heuristic debt
 remains. Cleanup keeps all proof binaries/current/previous natives intact;
 only disposable dispatcher caches and a closed Nov4 incremental generation
