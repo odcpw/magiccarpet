@@ -547,6 +547,82 @@ Linux native plugin. It is not a ready Linux/URP integration for this project.
 No undocumented environment power toggle, global maximum-performance setting,
 or custom Vulkan interception layer was added to this renderer task.
 
+## Retained event-history CPU fix
+
+A user-only Linux LBR profile of the real release player found approximately
+8.2% of sampled process cycles in `EffectJournal::append` shifting the retained
+16,384-record array. After filling, every new event drained its first element
+and moved the whole remaining array. The journal now exposes the same contiguous
+logical slice over a private active window. Physical compaction is batched;
+expired payloads are released immediately. A full spare window is reserved on
+first expiry, including awkward partial-length clones, so tiny repeated
+compactions cannot return. Clones copy only live records; equality, debug,
+paging and receipts exclude retired storage. Requested capacity stays bounded
+by two retention windows, as the focused capacity/compaction controls verify.
+
+Five focused journal tests pass, including actual source event ordering and
+failed-command atomicity, plus an independent eager-queue comparison across
+multiple retention/compaction boundaries with boxed events and prepared audio.
+The old assertion on private physical length now checks the public retained
+slice, with separate per-append physical length/capacity and compaction bounds.
+This preserves retention rather than relaxing its limit. The change was also
+independently reviewed. No hash format, event order, cursor/expiry policy,
+simulation arithmetic, scheduling, RNG or public ABI changed.
+
+Two sequential release-native A/B pairs use identical inputs, 60 warmup turns
+and 540 measured turns. All 600 per-turn state/terrain/journal digests and
+event heads, and complete final snapshots, match exactly. Final event head
+69,613 crosses three physical compactions.
+
+| Native measurement | Baseline 1 / 2 | Candidate 1 / 2 |
+| --- | --- | --- |
+| Step median | 9.199 / 8.861 ms | 5.314 / 5.217 ms |
+| Step p95 | 9.893 / 9.693 ms | 5.878 / 5.804 ms |
+| Snapshot median | 3.047 / 2.975 ms | 2.997 / 2.988 ms |
+
+Candidate compaction-turn steps were 5.16–5.38ms, without a new observed spike;
+overall candidate step p99 was 13.00–13.14ms versus 19.35–21.05ms baseline.
+Peak process RSS was 155,140–155,292KiB versus 155,512–155,576KiB baseline.
+These bounded runs do not prove all future gameplay pacing or memory behavior.
+
+The actual Unity A/B control contains 170 identical player files except the
+native library. On private Wayland at 1600×900, with the same scene/save,
+20-second warmup and 120 samples per scope:
+
+| Complete frame | Baseline 1 / 2 | Candidate 1 / 2 |
+| --- | --- | --- |
+| Mean | 25.94 / 26.25 ms | 20.24 / 19.68 ms |
+| Median | 28.46 / 28.14 ms | 23.99 / 23.50 ms |
+| p95 | 31.30 / 37.99 ms | 32.41 / 32.69 ms |
+
+Mean and median improve repeatedly; p95 is mixed. This is approximately
+38→50fps from mean frame time in this isolated display path, not a 60fps or
+unlocked-desktop qualification. Graphics/geometry and submission scopes remain
+unchanged between these native controls. GPU clock telemetry is retained;
+no graphics quality or machine power settings changed.
+
+Native artifact SHA256:
+`a98a8317e89a0cf5cebffb6e05091ecf78970394458b766647aa0234e29f3d09`.
+It is built from the recorded 444-input `2fdafc823e97` source closure with only
+`sim-core/src/campaign/journal.rs` changed, excluding concurrent gameplay work.
+Native-only refresh `build-43318akm` is installed into the same build7 player
+and its install validator passes. Ordinary frontend/flight/stop/F5 save also
+passes with this native: `(310,80.50,890)`→`(310,92.88,776.25)`; normal exit,
+no fatal/shader error. Root inspected both ordinary-flight captures, including
+this new native consumer path.
+
+UBS on the journal reports zero critical findings. Warnings are test assertions,
+bounded conversions/indexing and deliberate cloned test controls; no suppression
+was added. The source formatter and frozen workspace all-target check pass.
+The latter initially found a missing existing `sim-input` compile-time recording
+fixture in the execution copy; copying the unchanged canonical fixture with its
+recorded checksum resolved it, without modifying a test or production input.
+Reproduction commands, frozen input
+hashes, native benchmark raw distributions, LBR data, whole-frame A/B commands,
+clock records and resource measurements are under
+`../generated/nightspire-rework-20261105/`. Flight evidence is
+`../generated/nightspire-rendering-20261104/rework_journal7_flight*`.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game

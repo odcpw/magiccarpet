@@ -6,7 +6,7 @@
 //! projections.  Diagnostic parity traces are deliberately excluded.
 
 use sha2::{Digest as _, Sha256};
-use std::sync::OnceLock;
+use std::{fmt, sync::OnceLock};
 
 use crate::{
     FlightEvent,
@@ -67,21 +67,46 @@ pub enum EffectPageError {
     },
 }
 
-#[derive(Clone, Debug)]
 pub struct EffectJournal {
     first_sequence: u64,
     next_sequence: u64,
     records: Vec<EffectRecord>,
+    // Keep the retained window contiguous for existing readers, but reclaim
+    // its expired prefix in batches instead of moving it on every append.
+    retained_start: usize,
     // Observations of one unchanged journal share its exact receipt. This is
     // derived data, excluded from canonical equality and invalidated on append.
     receipt: OnceLock<CanonicalDigest>,
+}
+
+impl Clone for EffectJournal {
+    fn clone(&self) -> Self {
+        Self {
+            first_sequence: self.first_sequence,
+            next_sequence: self.next_sequence,
+            records: self.records().to_vec(),
+            retained_start: 0,
+            receipt: self.receipt.clone(),
+        }
+    }
+}
+
+impl fmt::Debug for EffectJournal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EffectJournal")
+            .field("first_sequence", &self.first_sequence)
+            .field("next_sequence", &self.next_sequence)
+            .field("records", &self.records())
+            .field("receipt", &self.receipt)
+            .finish()
+    }
 }
 
 impl PartialEq for EffectJournal {
     fn eq(&self, other: &Self) -> bool {
         self.first_sequence == other.first_sequence
             && self.next_sequence == other.next_sequence
-            && self.records == other.records
+            && self.records() == other.records()
     }
 }
 
@@ -100,6 +125,7 @@ impl EffectJournal {
             first_sequence: 0,
             next_sequence: 0,
             records: Vec::new(),
+            retained_start: 0,
             receipt: OnceLock::new(),
         }
     }
@@ -114,7 +140,7 @@ impl EffectJournal {
 
     #[must_use]
     pub fn records(&self) -> &[EffectRecord] {
-        &self.records
+        &self.records[self.retained_start..]
     }
 
     pub(crate) fn append_dispatch(&mut self, turn: u32, event: Mc2DispatchEvent) {
@@ -155,6 +181,19 @@ impl EffectJournal {
 
     fn append(&mut self, turn: u32, effect: CampaignEffect) {
         self.receipt.take();
+        if self.retained_start > 0 && self.records.len() == self.records.capacity() {
+            self.records.drain(..self.retained_start);
+            self.retained_start = 0;
+        }
+        // Partial-length clones may have non-power-of-two capacities. Reserve
+        // a full spare window once retention starts, avoiding repeated tiny
+        // compactions when such a capacity is only slightly above the limit.
+        if self.records().len() == MAX_RETAINED_EFFECTS
+            && self.records.capacity() < MAX_RETAINED_EFFECTS * 2
+        {
+            self.records
+                .reserve_exact(MAX_RETAINED_EFFECTS * 2 - self.records.len());
+        }
         self.records.push(EffectRecord {
             sequence: self.next_sequence,
             turn,
@@ -162,13 +201,14 @@ impl EffectJournal {
             audio: None,
         });
         self.next_sequence = self.next_sequence.wrapping_add(1);
-        if self.records.len() > MAX_RETAINED_EFFECTS {
-            let expired = self.records.len() - MAX_RETAINED_EFFECTS;
-            self.records.drain(..expired);
-            self.first_sequence = self
-                .records
-                .first()
-                .map_or(self.next_sequence, |record| record.sequence);
+        if self.records().len() > MAX_RETAINED_EFFECTS {
+            // Release boxed event payloads at logical expiry, as before. This
+            // private retired slot is excluded from every observation and hash.
+            let retired = &mut self.records[self.retained_start];
+            retired.effect = CampaignEffect::SceneChange { scene: 0 };
+            retired.audio = None;
+            self.retained_start += 1;
+            self.first_sequence = self.records[self.retained_start].sequence;
         }
     }
 
@@ -196,17 +236,16 @@ impl EffectJournal {
                 requested: cursor.next_sequence,
             });
         }
+        let retained = self.records();
         let offset = usize::try_from(cursor.next_sequence - self.first_sequence)
             .expect("retained effect offset fits usize")
-            .min(self.records.len());
-        let pending = self.records.len() - offset;
+            .min(retained.len());
+        let pending = retained.len() - offset;
         if pending > 0 && capacity == 0 {
             return Err(EffectPageError::OutputTooSmall { pending });
         }
         let count = pending.min(capacity);
-        let records = self.records[offset..offset + count]
-            .to_vec()
-            .into_boxed_slice();
+        let records = retained[offset..offset + count].to_vec().into_boxed_slice();
         let next_cursor = EffectCursor {
             generation,
             next_sequence: cursor.next_sequence + u64::try_from(count).expect("count fits u64"),
@@ -227,7 +266,7 @@ impl EffectJournal {
         hasher.update(b"carpet-flight-effect-journal-v1");
         hasher.update(self.first_sequence.to_le_bytes());
         hasher.update(self.next_sequence.to_le_bytes());
-        for record in &self.records {
+        for record in self.records() {
             hasher.update(record.sequence.to_le_bytes());
             hasher.update(record.turn.to_le_bytes());
             if let Some(audio) = record.audio {
@@ -494,7 +533,8 @@ mod tests {
         clone.append_scene_change(MAX_RETAINED_EFFECTS as u32, 2);
         assert!(clone.receipt.get().is_none());
         assert_eq!(clone.first_sequence, 1);
-        assert_eq!(clone.records.len(), MAX_RETAINED_EFFECTS);
+        // Retention is the public logical window, not private spare storage.
+        assert_eq!(clone.records().len(), MAX_RETAINED_EFFECTS);
         assert_eq!(clone.receipt(), clone.calculate_receipt());
         assert_ne!(clone.receipt(), retained);
         assert_eq!(journal.receipt(), retained);
@@ -509,6 +549,182 @@ mod tests {
         assert_eq!(journal.receipt.get(), Some(&retained));
         journal = EffectJournal::new();
         assert_eq!(journal.receipt(), empty);
+    }
+
+    #[test]
+    fn batched_retention_matches_eager_order_audio_pages_and_receipts() {
+        use std::collections::VecDeque;
+
+        let mut journal = EffectJournal::new();
+        let mut eager = VecDeque::new();
+        let checkpoints = [
+            0,
+            MAX_RETAINED_EFFECTS - 1,
+            MAX_RETAINED_EFFECTS,
+            MAX_RETAINED_EFFECTS + 1,
+            MAX_RETAINED_EFFECTS * 2 - 1,
+            MAX_RETAINED_EFFECTS * 2,
+            MAX_RETAINED_EFFECTS * 2 + 1,
+            MAX_RETAINED_EFFECTS * 3,
+        ];
+        for turn in 0..=MAX_RETAINED_EFFECTS * 3 {
+            let turn = u32::try_from(turn).expect("bounded test turn");
+            let audio = crate::PreparedEventSoundCommand {
+                play_type: (turn % 4) as u8,
+                command: crate::PositionalSoundCommand {
+                    relative_x: turn as i32,
+                    relative_y: -(turn as i32),
+                    relative_z: 17,
+                    distance_xy: turn,
+                    relative_yaw: (turn % 2048) as u16,
+                    volume_q15: 8192,
+                    pan_q16: 32768,
+                    rate_delta_percent: -7,
+                    sound_flags: 3,
+                    audible: turn % 2 == 0,
+                },
+            };
+            let (effect, prepared) = match turn % 3 {
+                0 => (
+                    CampaignEffect::SceneChange {
+                        scene: (turn % 7) as u8,
+                    },
+                    None,
+                ),
+                1 => (
+                    CampaignEffect::Dispatch(Mc2DispatchEvent::AuthoredGroupActivated {
+                        pass: 1,
+                        source_slot: 7,
+                        group: 3,
+                        authored_indices: vec![turn as u16, 23].into_boxed_slice(),
+                    }),
+                    None,
+                ),
+                _ => (
+                    CampaignEffect::Flight(FlightEvent::UpdateMusic {
+                        mode: 2,
+                        timer_multiplier: 3,
+                    }),
+                    Some(audio),
+                ),
+            };
+            match effect.clone() {
+                CampaignEffect::SceneChange { scene } => journal.append_scene_change(turn, scene),
+                CampaignEffect::Dispatch(event) => journal.append_dispatch(turn, event),
+                CampaignEffect::Flight(event) => {
+                    journal.append_prepared_flight(turn, event, prepared)
+                }
+                _ => unreachable!("three test producers"),
+            }
+            eager.push_back(EffectRecord {
+                sequence: u64::from(turn),
+                turn,
+                effect,
+                audio: prepared,
+            });
+            if eager.len() > MAX_RETAINED_EFFECTS {
+                eager.pop_front();
+            }
+            assert!(journal.records().len() <= MAX_RETAINED_EFFECTS);
+            assert!(journal.records.len() <= MAX_RETAINED_EFFECTS * 2);
+            assert!(journal.records.capacity() <= MAX_RETAINED_EFFECTS * 2);
+            if !checkpoints.contains(&(turn as usize)) {
+                continue;
+            }
+
+            // Independent eager queue supplies the exact public sequence; no
+            // retired prefix exists in this reference representation.
+            let reference = EffectJournal {
+                first_sequence: eager.front().expect("nonempty").sequence,
+                next_sequence: u64::from(turn) + 1,
+                records: eager.iter().cloned().collect(),
+                retained_start: 0,
+                receipt: OnceLock::new(),
+            };
+            assert_eq!(journal.records(), reference.records());
+            assert_eq!(journal, reference);
+            assert_eq!(journal.receipt(), reference.receipt());
+            let clone = journal.clone();
+            assert_eq!(clone.retained_start, 0);
+            assert_eq!(clone.records.len(), reference.records.len());
+            assert_eq!(clone, journal);
+            assert_eq!(clone.receipt(), journal.receipt());
+            assert_eq!(format!("{clone:?}"), format!("{journal:?}"));
+            assert!(
+                journal.records[..journal.retained_start]
+                    .iter()
+                    .all(|record| matches!(
+                        record.effect,
+                        CampaignEffect::SceneChange { scene: 0 }
+                    ) && record.audio.is_none())
+            );
+
+            let first = reference.first_sequence;
+            let head = reference.next_sequence;
+            for cursor in [
+                first.saturating_sub(1),
+                first,
+                (first + 17).min(head),
+                head - 1,
+                head,
+                head + 1,
+            ] {
+                for capacity in [0, 1, 17, MAX_RETAINED_EFFECTS] {
+                    let cursor = EffectCursor {
+                        generation: 7,
+                        next_sequence: cursor,
+                    };
+                    assert_eq!(
+                        journal.page(7, cursor, capacity),
+                        reference.page(7, cursor, capacity)
+                    );
+                    assert_eq!(
+                        journal.page(8, cursor, capacity),
+                        reference.page(8, cursor, capacity)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_clone_retention_has_a_full_spare_window_and_amortized_compaction() {
+        for initial in [
+            MAX_RETAINED_EFFECTS / 2 + 1,
+            MAX_RETAINED_EFFECTS - 1,
+            MAX_RETAINED_EFFECTS,
+        ] {
+            let mut original = EffectJournal::new();
+            for turn in 0..initial {
+                original.append_scene_change(turn as u32, 1);
+            }
+            let mut journal = original.clone();
+            let mut compactions = 0;
+            for turn in initial..initial + MAX_RETAINED_EFFECTS * 4 {
+                let before = journal.retained_start;
+                journal.append_scene_change(turn as u32, 2);
+                if journal.retained_start < before {
+                    compactions += 1;
+                }
+                assert!(journal.records.capacity() <= MAX_RETAINED_EFFECTS * 2);
+                assert!(journal.records.len() <= MAX_RETAINED_EFFECTS * 2);
+                assert_eq!(
+                    journal.records().len(),
+                    (turn + 1).min(MAX_RETAINED_EFFECTS)
+                );
+            }
+            assert!(
+                compactions <= 4,
+                "must not move the full window every few appends"
+            );
+            assert_eq!(original.records().len(), initial);
+            assert!(
+                original.records().iter().all(|record| matches!(
+                    record.effect,
+                    CampaignEffect::SceneChange { scene: 1 }
+                ))
+            );
+        }
     }
 
     #[test]
