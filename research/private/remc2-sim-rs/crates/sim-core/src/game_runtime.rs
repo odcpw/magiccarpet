@@ -1678,6 +1678,16 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         }
     }
 
+    /// Crate-internal access for typed, validated presentation inputs. Source
+    /// rendering continues while paused; this never exposes a public mutable
+    /// session or permits a gameplay step in that mode.
+    pub(crate) fn presentation_session_mut(&mut self) -> Option<&mut GameSession<B>> {
+        match &mut self.state {
+            RuntimeState::Playing { session, .. } => Some(session),
+            _ => None,
+        }
+    }
+
     fn set_paused(
         &mut self,
         guard: RuntimeGuard,

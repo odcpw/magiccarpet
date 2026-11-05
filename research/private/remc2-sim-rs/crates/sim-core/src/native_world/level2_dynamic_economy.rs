@@ -1564,6 +1564,7 @@ impl Level2EconomyState {
             defer_birth,
             None,
             false,
+            None,
         )
         .expect("legacy Fireball advance does not use current-address views")
     }
@@ -1576,8 +1577,12 @@ impl Level2EconomyState {
         defer_birth: bool,
         views: Option<&[std::result::Result<Option<super::source_target::View>, String>]>,
         initial_capture: bool,
+        frozen_targets: Option<&[Level2FireballGuidanceTarget]>,
     ) -> std::result::Result<Level2FireballStep, String> {
-        let guidance_targets = self.fireball_guidance_targets(imported_entities)?;
+        let guidance_targets = match frozen_targets {
+            Some(targets) => targets.to_vec(),
+            None => self.fireball_guidance_targets(imported_entities)?,
+        };
         let collision_targets = if views.is_none() {
             self.fireball_collision_targets(imported_entities)
         } else {
@@ -2290,6 +2295,7 @@ impl Level2EconomyState {
                         && entity.life >= 0
                         && entity.class == 5
                         && entity.model == model
+                        && !matches!(entity.action, 180 | 232 | 234)
                         && entity.record_bytes().get(61).copied().unwrap_or_default() != 0
                         && entity.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                 })
@@ -2335,6 +2341,7 @@ impl Level2EconomyState {
                         && source.drawing_enabled
                         && source.life >= 0
                         && source.model == model
+                        && !matches!(source.action, 180 | 232 | 234)
                         && source.source_byte_39 != 0
                 }) {
                     let (source_id, stage_mode, parent_entity_index) =
@@ -2384,9 +2391,8 @@ impl Level2EconomyState {
                         && source.drawing_enabled
                         && source.life >= 0
                         && source.model == model
-                        && render.control_flags & 8 != 0
-                        && render.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-                        && self.map_chains.is_linked(source.source_entity_index))
+                        && !matches!(source.action, 180 | 232 | 234)
+                        && source.source_byte_39 != 0)
                     .then_some(Level2FireballGuidanceTarget {
                         source_slot: source.source_entity_index,
                         source_id: render.entity_id,
@@ -2397,27 +2403,6 @@ impl Level2EconomyState {
                         top_position: Position {
                             z: source.position.z.wrapping_add(render.render_yaw),
                             ..source.position
-                        },
-                    })
-                }));
-                bucket.extend(self.authored_dragon_parts.iter().filter_map(|part| {
-                    (part.active
-                        && part.drawing_enabled
-                        && part.life >= 0
-                        && part.model == model
-                        && self.map_chains.is_linked(part.source_entity_index))
-                    .then_some(Level2FireballGuidanceTarget {
-                        source_slot: part.source_entity_index,
-                        source_id: part.entity_id,
-                        class: 5,
-                        model: part.model,
-                        // sub_4B240 copies the root's constructor StageVar2;
-                        // the retained part carrier has no stage callback.
-                        stage_mode: 0,
-                        parent_entity_index: part.parent_entity_index,
-                        top_position: Position {
-                            z: part.position.z.wrapping_add(part.render_yaw),
-                            ..part.position
                         },
                     })
                 }));

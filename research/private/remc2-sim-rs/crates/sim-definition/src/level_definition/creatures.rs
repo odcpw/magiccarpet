@@ -5,6 +5,55 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Dragon constructor, movement and combat defaults shared by ordinary and
+/// encounter-produced roots. Source descriptor and sprite identities belong
+/// to the MC2 adapter, not to these game rules.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DragonClassProperties {
+    pub max_life: i32,
+    pub max_mana: i32,
+    pub initial_mana: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub initial_speed: i16,
+    pub contact_damage: u16,
+    pub projectile_damage: u16,
+    pub scan_period: u8,
+    pub target_range: u16,
+    pub target_half_angle: i16,
+    pub turn_limit: i16,
+    pub ground_clearance: i16,
+    pub descent: i16,
+    pub maximum_slope: i32,
+    pub body_width: i16,
+    pub body_height: i16,
+    pub part_spacing: [i16; 16],
+    pub part_height: [i16; 16],
+}
+
+/// Source sub_4B240, descriptor 71 and sub_1CC20.
+pub const DRAGON_CLASS_PROPERTIES: DragonClassProperties = DragonClassProperties {
+    max_life: 4_000,
+    max_mana: 4_500,
+    initial_mana: 2_250,
+    minimum_speed: 80,
+    maximum_speed: 16,
+    initial_speed: 30,
+    contact_damage: 100,
+    projectile_damage: 500,
+    scan_period: 30,
+    target_range: 5_120,
+    target_half_angle: 170,
+    turn_limit: 34,
+    ground_clearance: 0,
+    descent: -4,
+    maximum_slope: 30,
+    body_width: 342,
+    body_height: 280,
+    part_spacing: [196, 215, 241, 261, 274, 274, 261, 248, 222, 209, 196, 170, 143, 117, 91, 78],
+    part_height: [150, 165, 185, 200, 210, 210, 200, 190, 170, 160, 150, 130, 110, 90, 70, 60],
+};
+
 /// Final encounter actor construction. Source selectors and sprite bindings
 /// remain in its MC2 adapter.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -3653,6 +3653,10 @@ impl Level2EconomyState {
                 phase: source_entity_index as u8,
                 active: true,
             });
+        #[cfg(test)]
+        super::area_damage::trace_fireball_impact_birth(
+            self, source_entity_index, parent_entity_index, parent_entity_id,
+        );
         Some(source_entity_index)
     }
 

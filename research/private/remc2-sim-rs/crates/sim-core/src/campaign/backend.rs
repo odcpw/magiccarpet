@@ -741,6 +741,14 @@ struct Mc2DynamicLightingChange {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+struct Mc2PrimaryVisibilityChange {
+    before_operation: usize,
+    tick: u64,
+    identities: Vec<(u16, u32)>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Mc2CampaignReplaySave {
     save_contract: String,
     paused: bool,
@@ -757,6 +765,8 @@ struct Mc2CampaignReplaySave {
     initial_dynamic_lighting: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
     // v5 did not retain the campaign frontier. Omission must remain omission
     // when checking its original receipt; it cannot imply earned completions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -794,6 +804,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     initial_dynamic_lighting: bool,
     #[serde(skip_serializing_if = "<[Mc2DynamicLightingChange]>::is_empty")]
     dynamic_lighting_changes: &'a [Mc2DynamicLightingChange],
+    #[serde(skip_serializing_if = "<[Mc2PrimaryVisibilityChange]>::is_empty")]
+    primary_visibility_changes: &'a [Mc2PrimaryVisibilityChange],
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_levels: Option<&'a [SemanticLevelId]>,
     #[serde(skip_serializing_if = "<[crate::game_runtime::CompletedLevelStatistics]>::is_empty")]
@@ -832,6 +844,7 @@ impl Mc2CampaignReplaySave {
             global_context_changes: Vec::new(),
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
+            primary_visibility_changes: Vec::new(),
             completed_levels: Some(completed_levels),
             level_statistics: Vec::new(),
             secret_flow: None,
@@ -860,6 +873,7 @@ impl Mc2CampaignReplaySave {
             global_context_changes: &self.global_context_changes,
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
+            primary_visibility_changes: &self.primary_visibility_changes,
             completed_levels: self.completed_levels.as_deref(),
             level_statistics: &self.level_statistics,
             secret_flow: self.secret_flow.as_ref(),
@@ -1998,6 +2012,7 @@ impl Mc2RuntimePackageResolver {
             .source_arena()
             .dynamic_lighting_enabled;
         save.dynamic_lighting_changes = session.backend().dynamic_lighting_changes.clone();
+        save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
         let bytes =
             serde_json::to_vec(&save).map_err(|error| Mc2CampaignReplaySaveError::InvalidSave {
@@ -2233,6 +2248,21 @@ impl Mc2RuntimePackageResolver {
                 message: "dynamic-light changes have an invalid replay boundary".to_owned(),
             });
         }
+        if save.primary_visibility_changes.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 1
+            || save.primary_visibility_changes.iter().any(|change| {
+                change.before_operation > save.operations.len()
+                    || change.identities.is_empty() || change.identities.len() > 1000
+                    // Imported reset carriers legitimately have generation0;
+                    // the canonical current-handle consumer validates it.
+                    || change.identities.iter().any(|&(slot, _)| slot == 0 || slot >= 1000)
+            })
+            || save.primary_visibility_changes.windows(2)
+                .any(|pair| pair[0].before_operation >= pair[1].before_operation)
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "primary sprite changes have an invalid replay boundary or identity".to_owned(),
+            });
+        }
         save.definition
             .verify_identity()
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
@@ -2318,6 +2348,7 @@ impl Mc2RuntimePackageResolver {
         let mut global_context_changes = save.global_context_changes.into_iter().peekable();
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
+        let mut primary_visibility_changes = save.primary_visibility_changes.into_iter().peekable();
         let completed_levels = save.completed_levels.unwrap_or_default();
         let level_statistics = save.level_statistics;
         let operations = save.operations;
@@ -2370,6 +2401,13 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_mission_rewards(initial_rewards)
                 },
                 move |candidate, operation_index| {
+                    if primary_visibility_changes.peek()
+                        .is_some_and(|change| change.before_operation == operation_index)
+                    {
+                        let change = primary_visibility_changes.next().expect("matched source primary boundary");
+                        candidate.backend_mut().apply_primary_visibility_change(change.tick, &change.identities)
+                            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+                    }
                     while dynamic_lighting_changes
                         .peek()
                         .is_some_and(|change| change.before_operation == operation_index)
@@ -2946,9 +2984,61 @@ pub struct Mc2CampaignBackend {
     replay_operations: Vec<crate::game_runtime::ReplayOperation<GameCommand>>,
     global_context_changes: Vec<Mc2GlobalContextChange>,
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
+    primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
+}
+
+impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
+    /// Accept only the real native frame carrier; client code cannot submit
+    /// arbitrary actor IDs or set gameplay visibility flags through this API.
+    pub fn acknowledge_primary_sprite_frame(
+        &mut self,
+        frame: &crate::day_indexed_frame::DayIndexedFrame,
+    ) -> std::result::Result<(), String> {
+        let session = self.presentation_session_mut()
+            .ok_or_else(|| "primary sprite feedback requires a playing or paused authority".to_owned())?;
+        let generation = session.identity().generation;
+        session.backend_mut().acknowledge_primary_sprite_frame(frame, generation)
+    }
 }
 
 impl Mc2CampaignBackend {
+    /// A completed native primary frame is a source input, not a client flag
+    /// setter. Retain only changed identities at their exact replay boundary.
+    pub fn acknowledge_primary_sprite_frame(
+        &mut self,
+        frame: &crate::day_indexed_frame::DayIndexedFrame,
+        generation: u64,
+    ) -> std::result::Result<(), String> {
+        let changed = frame.apply_primary_visibility(self.campaign.simulation_mut(), generation)
+            .map_err(|error| error.to_string())?;
+        self.retain_primary_visibility_change(frame.tick, changed);
+        Ok(())
+    }
+
+    fn retain_primary_visibility_change(&mut self, tick: u64, changed: Vec<(u16, u32)>) {
+        if changed.is_empty() { return; }
+        let boundary = self.replay_operations.len();
+        if let Some(previous) = self.primary_visibility_changes.last_mut()
+            .filter(|change| change.before_operation == boundary && change.tick == tick)
+        {
+            previous.identities.extend(changed);
+            previous.identities.sort_unstable();
+            previous.identities.dedup();
+        } else {
+            self.primary_visibility_changes.push(Mc2PrimaryVisibilityChange {
+                before_operation: boundary, tick, identities: changed,
+            });
+        }
+    }
+
+    fn apply_primary_visibility_change(&mut self, tick: u64, identities: &[(u16, u32)]) -> std::result::Result<(), String> {
+        let handles = identities.iter().map(|&(source_slot, generation)|
+            crate::campaign::source_arena::SourceEntityHandle { source_slot, generation }).collect::<Vec<_>>();
+        let changed = self.campaign.simulation_mut().apply_primary_sprite_visibility(tick, &handles)?;
+        self.retain_primary_visibility_change(tick, changed);
+        Ok(())
+    }
+
     #[must_use]
     pub fn dynamic_lighting_enabled(&self) -> bool {
         self.campaign
@@ -3241,6 +3331,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             replay_operations: Vec::new(),
             global_context_changes: Vec::new(),
             dynamic_lighting_changes: Vec::new(),
+            primary_visibility_changes: Vec::new(),
             package_base,
         })
     }
@@ -3755,6 +3846,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.replay_operations.clear();
         self.global_context_changes.clear();
         self.dynamic_lighting_changes.clear();
+        self.primary_visibility_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
         // option then takes effect at the new replay's operation-zero boundary.
         self.set_dynamic_lighting_enabled(dynamic_lighting_enabled);
@@ -4031,10 +4123,9 @@ impl Mc2CampaignBackend {
         Ok((carry.acquired, carry.selected))
     }
 
-    /// Read-only view of this backend's one live campaign authority for the
-    /// retained `mc_native_campaign_*` presentation projections. No mutable
-    /// counterpart exists: the neutral session lifecycle stays the only
-    /// campaign gameplay writer.
+    /// Read-only view for retained presentation projections. The separate
+    /// typed primary-frame acknowledgement returns source render feedback to
+    /// this authority; no general mutable compatibility view exists.
     #[doc(hidden)]
     #[must_use]
     pub fn compatibility_campaign(&self) -> &CampaignSession {
@@ -4573,6 +4664,69 @@ pub(crate) mod tests {
     fn level_one_owner_cache_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/level1-unity-asset-cache-plan29-final")
+    }
+
+    #[test]
+    fn primary_visibility_history_roundtrips_and_replays_the_actual_source_input() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let root = std::env::var_os("MC_LEVEL25_PACKAGE").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("mc-bhq10-owner-v3-level25-20261029"));
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map(PathBuf::from)
+            .unwrap_or_else(|| generated.join("dragon-bee-20261105-integration/current-level25-environment"));
+        let definition = load_mc2_campaign_with_owner_cache(&root, &cache, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(&Mc2CampaignAdapter, Arc::new(definition), 920,
+            Mc2CampaignInputs::with_owner_cache(&root, &cache)).unwrap();
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        // Prior encounter progression and player placement are explicit
+        // controls. The receipt itself comes from the real owner renderer.
+        let simulation = session.backend_mut().campaign.simulation_mut();
+        simulation.activate_authored_group_prerequisite_for_test(29).unwrap();
+        let boss = simulation.entities().iter().find(|row| row.active && (row.class, row.model) == (5, 10)).unwrap().index;
+        let player = simulation.state.entity_index;
+        let mut position = simulation.entities()[usize::from(boss)].position;
+        crate::move_entity(&mut position, simulation.state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        position.z = simulation.canonical_terrain().ground_height(position).wrapping_add(768);
+        simulation.set_level2_entity_position(player, position).unwrap();
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(cache).unwrap();
+        for _ in 0..256 {
+            session.step(guard(&session), GameCommand::default()).unwrap();
+            let generation = session.identity().generation;
+            let campaign = &session.backend().campaign;
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+            let before = campaign.clone();
+            let history_before = session.backend().primary_visibility_changes.clone();
+            session.backend_mut().acknowledge_primary_sprite_frame(&frame, generation).unwrap();
+            if session.backend().primary_visibility_changes == history_before { continue; }
+            let expected = session.backend().campaign.state_hash();
+            let mut save = Mc2CampaignReplaySave::new(false, session.definition().as_ref().clone(),
+                session.backend().initial_semantic_spell_carry().unwrap(), Vec::new(),
+                session.backend().replay_operations.clone(), &session.backend().snapshot());
+            save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
+            save.receipt_sha256 = save.compute_receipt_sha256();
+            let decoded: Mc2CampaignReplaySave = serde_json::from_slice(&serde_json::to_vec(&save).unwrap()).unwrap();
+            assert!(decoded.verify());
+            let change = decoded.primary_visibility_changes.last().unwrap();
+            assert_eq!(change.before_operation, session.backend().replay_operations.len());
+            assert_eq!(change.tick, session.identity().tick);
+            let backend = session.backend_mut();
+            backend.campaign = before;
+            backend.primary_visibility_changes = history_before;
+            let before_hash = backend.campaign.state_hash();
+            let mut stale = change.identities.clone();
+            stale[0].1 = stale[0].1.wrapping_add(1);
+            assert!(backend.apply_primary_visibility_change(change.tick, &stale).is_err());
+            assert_eq!(backend.campaign.state_hash(), before_hash);
+            backend.apply_primary_visibility_change(change.tick, &change.identities).unwrap();
+            assert_eq!(backend.campaign.state_hash(), expected,
+                "the replay consumer must reproduce the actual render input without rerendering or RNG");
+            assert_eq!(backend.primary_visibility_changes, decoded.primary_visibility_changes);
+            session.step(guard(&session), GameCommand::default()).unwrap();
+            assert!(session.backend().campaign.events().iter().all(|event|
+                !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })));
+            return;
+        }
+        panic!("ordinary boss primary rendering produced no retained replay input");
     }
 
     #[test]
@@ -16615,9 +16769,8 @@ pub(crate) mod tests {
     ) -> Option<DragonDamageAttribution> {
         if current.life == prior.life - crate::level1_mission::FIREBALL_PAYLOAD
             && current.attacker == player
-            && (current.source_slot != current.root_slot
-                || corroborated_player_recipients
-                    .contains(&(current.source_slot, current.generation)))
+            && corroborated_player_recipients
+                .contains(&(current.source_slot, current.generation))
         {
             return Some(DragonDamageAttribution::Player);
         }
@@ -17942,9 +18095,59 @@ pub(crate) mod tests {
         );
     }
 
+    fn step_dragon_public_command_with_impact_trace_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        command: GameCommand,
+        target: u16,
+        callbacks: &mut Vec<crate::native_world::area_damage::EffectDamageReceipt>,
+        launches: &mut BTreeSet<(u16, u32, u16)>,
+        impact_births: &mut BTreeSet<(u16, u32, u16, u32, u16)>,
+    ) {
+        let targets = level_three_dragon_fireball_targets(session).iter()
+            .map(|row| row.source_slot).chain([target]).collect::<BTreeSet<_>>();
+        crate::native_world::area_damage::start_effect_damage_trace_for_targets(
+            &targets.into_iter().collect::<Vec<_>>(),
+        );
+        crate::native_world::area_damage::start_fireball_launch_trace();
+        let outcome = session.step(guard(session), command);
+        callbacks.extend(crate::native_world::area_damage::take_effect_damage_trace());
+        launches.extend(crate::native_world::area_damage::take_fireball_launch_trace());
+        impact_births.extend(crate::native_world::area_damage::take_fireball_impact_birth_trace());
+        outcome.unwrap();
+    }
+
+    fn actual_dragon_player_impact_for_test(
+        impact_slot: u16,
+        impact_generation: u32,
+        parent_slot: u16,
+        owner: u16,
+        launches: &BTreeSet<(u16, u32, u16)>,
+        births: &BTreeSet<(u16, u32, u16, u32, u16)>,
+    ) -> bool {
+        births.iter().any(|&(slot, generation, parent, parent_generation, parent_owner)| {
+            (slot, generation, parent, parent_owner)
+                == (impact_slot, impact_generation, parent_slot, owner)
+                && launches.contains(&(parent, parent_generation, owner))
+        })
+    }
+
     fn fire_real_player_fireball_at_level_three_dragon_for_test(
         session: &mut GameSession<Mc2CampaignBackend>,
         desired_root: Option<u16>,
+        observed_player_dodges: &mut BTreeSet<u16>,
+        aim_at_body: bool,
+    ) -> DragonFireballCastOutcome {
+        fire_real_player_fireball_at_level_three_dragon_with_boundary_for_test(
+            session, desired_root, observed_player_dodges, aim_at_body, false,
+        )
+    }
+
+    fn fire_real_player_fireball_at_level_three_dragon_with_boundary_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+        desired_root: Option<u16>,
+        observed_player_dodges: &mut BTreeSet<u16>,
+        aim_at_body: bool,
+        stop_at_damage: bool,
     ) -> DragonFireballCastOutcome {
         let mut public_requests = 0_usize;
         let mut chronology = vec![level_three_dragon_survival_snapshot_for_test(
@@ -18247,11 +18450,20 @@ pub(crate) mod tests {
                     .collect::<BTreeSet<_>>(),
             )
         };
-        let aimed = before
-            .iter()
-            .find(|target| target.source_slot == aimed.source_slot)
-            .copied()
-            .expect("aimed Dragon occurrence remains current at the cast boundary");
+        let aimed = if aim_at_body {
+            before
+                .iter()
+                .filter(|target| target.root_slot == aimed.root_slot)
+                .find(|target| target.source_slot != target.root_slot)
+                .copied()
+                .expect("public body aim requires a real current linked Dragon part")
+        } else {
+            before
+                .iter()
+                .find(|target| target.source_slot == aimed.source_slot)
+                .copied()
+                .expect("aimed Dragon occurrence remains current at the cast boundary")
+        };
         // The public selected cast always uses the left hand. Forecast the
         // same public Coast body turn first, preserving actual motion:
         // look deltas offset auxiliary spell
@@ -18303,18 +18515,25 @@ pub(crate) mod tests {
             crate::level1_mission::projectile_guidance_angles(launch_position, target_position);
         let cast_tick = session.identity().tick;
         let activation_cursor = session.snapshot().value.effect_head;
-        session
-            .step(
-                guard(session),
-                GameCommand {
-                    select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
-                    cast_selected: true,
-                    look_yaw: aim_yaw.wrapping_sub(cast_state.yaw),
-                    look_pitch: aim_pitch.wrapping_sub(cast_state.display_pitch),
-                    ..GameCommand::default()
-                },
-            )
-            .unwrap();
+        let mut actual_impact_callbacks = Vec::new();
+        let mut impact_callback_diagnostics = Vec::new();
+        let mut callback_confirmed_recipients = BTreeSet::new();
+        let mut actual_projectile_launches = BTreeSet::new();
+        let mut actual_impact_births = BTreeSet::new();
+        step_dragon_public_command_with_impact_trace_for_test(
+            session,
+            GameCommand {
+                select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+                cast_selected: true,
+                look_yaw: aim_yaw.wrapping_sub(cast_state.yaw),
+                look_pitch: aim_pitch.wrapping_sub(cast_state.display_pitch),
+                ..GameCommand::default()
+            },
+            aimed.source_slot,
+            &mut actual_impact_callbacks,
+            &mut actual_projectile_launches,
+            &mut actual_impact_births,
+        );
         public_requests += 1;
         chronology.push(level_three_dragon_survival_snapshot_for_test(
             session,
@@ -18344,20 +18563,112 @@ pub(crate) mod tests {
             let compatibility = session.backend().campaign.simulation();
             let economy = compatibility.economy();
             launched_projectile_slots.extend(
-                compatibility
-                    .effect_journal()
-                    .records()
-                    .iter()
-                    .filter(|record| record.sequence >= activation_cursor)
-                    .filter_map(|record| match record.effect {
-                        CampaignEffect::Flight(FlightEvent::PrepareSound {
-                            audio_site: crate::MissionAudioSite::FireballLaunch,
-                            entity_index,
-                            ..
-                        }) => Some(entity_index),
-                        _ => None,
-                    }),
+                actual_projectile_launches.iter().filter_map(|&(slot, generation, owner)| {
+                    (owner == player && generation != 0).then_some(slot)
+                }),
             );
+            // A source impact can execute and reclaim within this outer turn.
+            // The existing callback trace captures its current typed lineage
+            // and generation before reuse; a later empty impact list does not
+            // erase that actual class-10 execution.
+            for callback in actual_impact_callbacks.drain(..) {
+                impact_callback_diagnostics.push(format!("source={:?}/{:?} target={}/{} actor={:?} mailbox={:?}->{:?} pulse={:?}",
+                    callback.source_slot, callback.source_impact, callback.target_slot,
+                    callback.target_generation, callback.target, callback.mailbox_before,
+                    callback.mailbox_after, callback.pulse));
+                let current_impact = callback.source_impact.map(|(generation, impact)| (
+                    impact.source_entity_index, generation, impact.parent_entity_index,
+                    impact.parent_entity_id, impact.subspell_index, impact.position,
+                )).or_else(|| callback.source_raw_impact.as_ref().and_then(|(generation, impact)| {
+                    actual_impact_births.iter()
+                        .find(|&&(slot, born_generation, _, _, owner)|
+                            slot == impact.index && born_generation == *generation && owner == impact.source_id)
+                        .map(|&(_, _, parent, _, _)| (impact.index, *generation, parent,
+                            impact.source_id, impact.subspell_index, impact.position))
+                }));
+                let Some((impact_slot, generation, parent_slot, owner, payload, position)) = current_impact else { continue; };
+                if callback.source_slot != Some(impact_slot)
+                    || owner != player
+                    || !actual_dragon_player_impact_for_test(
+                        impact_slot, generation, parent_slot,
+                        player, &actual_projectile_launches, &actual_impact_births,
+                    )
+                    || payload != crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    || impact_occurrences_before.contains(&(impact_slot, generation))
+                    || callback.pulse.owner != player
+                    || callback.pulse.selector != (u8::MAX, u8::MAX)
+                    || callback.pulse.payload != crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    || callback.pulse.position != position
+                {
+                    continue;
+                }
+                saw_projectile = true;
+                saw_impact = true;
+                impact_position = Some(callback.pulse.position);
+                if callback.target.is_some_and(|target| {
+                        crate::level1_mission::source_entities_overlap(
+                            callback.pulse.position,
+                            callback.pulse.half_width,
+                            callback.pulse.vertical_offset,
+                            callback.pulse.half_height,
+                            target.position,
+                            target.shape.half_width,
+                            target.shape.vertical_offset,
+                            target.shape.half_height,
+                        )
+                    })
+                    && callback.mailbox_before.zip(callback.mailbox_after).is_some_and(
+                        |(before, after)| {
+                            let expected = if before.1 == 0 {
+                                crate::level1_mission::FIREBALL_PAYLOAD
+                            } else {
+                                before.0.wrapping_add(crate::level1_mission::FIREBALL_PAYLOAD)
+                            };
+                            after.0 == expected
+                                && after.1 == player
+                        },
+                    )
+                {
+                    callback_confirmed_recipients.insert((
+                        callback.target_slot,
+                        callback.target_generation,
+                    ));
+                }
+            }
+            // Observe the ordinary targeting/reaction join independently of
+            // damage: an evaded public shot can legitimately miss.  The root
+            // must retain this actual player projectile as its current threat,
+            // and at least one of the five lateral steps must have run.
+            for projectile in economy
+                .fireball_projectiles()
+                .iter()
+                .filter(|projectile| {
+                    projectile.active
+                        && actual_projectile_launches.contains(&(
+                            projectile.source_entity_index,
+                            economy.slot_generation(projectile.source_entity_index),
+                            player,
+                        ))
+                        && projectile.owner_entity_index == player
+                })
+            {
+                let Some(root) = economy.authored_class5().iter().find(|root| {
+                    root.active
+                        && root.model == 0
+                        && root.source_entity_index == projectile.target_source_entity_index
+                        && root.byte_0x46_70 != 0
+                        && root.word_0x24 == projectile.source_entity_index
+                }) else {
+                    continue;
+                };
+                if economy.authored_dragons().iter().any(|state| {
+                    state.source_entity_index == root.source_entity_index
+                        && (1..32).contains(&state.font_type_index)
+                        && (0..5).contains(&state.dodge_remaining)
+                }) {
+                    observed_player_dodges.insert(root.source_entity_index);
+                }
+            }
             let flyers = economy
                 .fireball_projectiles()
                 .iter()
@@ -18507,11 +18818,10 @@ pub(crate) mod tests {
                 })
                 .collect::<Vec<_>>();
             if !changed.is_empty() {
-                let corroborated_recipients = impact_overlap_recipients
-                    .iter()
-                    .copied()
-                    .chain(impact_mailbox_recipients.iter().copied())
-                    .collect::<BTreeSet<_>>();
+                // A later overlap or pending mailbox is useful diagnostics,
+                // but only the actual callback's paired geometry/mailbox
+                // receipt proves this player's current impact caused damage.
+                let corroborated_recipients = callback_confirmed_recipients.clone();
                 let attributed = changed
                     .iter()
                     .filter_map(|(prior, current)| {
@@ -18540,7 +18850,7 @@ pub(crate) mod tests {
                     }
                     assert_eq!(
                         current.source_slot, current.root_slot,
-                        "only a linked root adoption may accompany exact attributed Dragon damage: changed={changed:?} attributed={attributed:?}"
+                        "only a linked root adoption may accompany exact attributed Dragon damage: changed={changed:?} attributed={attributed:?} launches={actual_projectile_launches:?} births={actual_impact_births:?} callbacks={impact_callback_diagnostics:#?}"
                     );
                     let minimum_child = after
                         .iter()
@@ -18573,7 +18883,14 @@ pub(crate) mod tests {
                 if directly_changed.is_empty() {
                     before = after;
                     let command = level_three_dragon_retreat_command(session, retreat_heading);
-                    session.step(guard(session), command).unwrap();
+                    step_dragon_public_command_with_impact_trace_for_test(
+                        session,
+                        command,
+                        aimed.source_slot,
+                        &mut actual_impact_callbacks,
+                        &mut actual_projectile_launches,
+                        &mut actual_impact_births,
+                    );
                     continue;
                 }
                 impact_position.unwrap_or_else(|| {
@@ -18609,6 +18926,9 @@ pub(crate) mod tests {
                     "impact.damage_receipt",
                     public_requests,
                 ));
+                if stop_at_damage {
+                    return outcome;
+                }
                 retreat_beyond_level_three_dragon_fireballs_for_test(
                     session,
                     holder_index,
@@ -18618,7 +18938,14 @@ pub(crate) mod tests {
                 return outcome;
             }
             let command = level_three_dragon_retreat_command(session, retreat_heading);
-            session.step(guard(session), command).unwrap();
+            step_dragon_public_command_with_impact_trace_for_test(
+                session,
+                command,
+                aimed.source_slot,
+                &mut actual_impact_callbacks,
+                &mut actual_projectile_launches,
+                &mut actual_impact_births,
+            );
         }
         if !saw_projectile {
             assert!(!saw_impact);
@@ -18683,10 +19010,20 @@ pub(crate) mod tests {
             .local_player()
             .enabled_spell_holders[0];
         let mut receipt = None;
+        let mut observed_player_dodges = BTreeSet::new();
+        let body_slots = level_three_dragon_fireball_targets(&session)
+            .into_iter()
+            .filter(|target| target.root_slot == root_slot && target.source_slot != root_slot)
+            .map(|target| target.source_slot)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(body_slots.len(), 16);
         for _ in 0..4 {
-            let outcome = fire_real_player_fireball_at_level_three_dragon_for_test(
+            let outcome = fire_real_player_fireball_at_level_three_dragon_with_boundary_for_test(
                 &mut session,
                 Some(root_slot),
+                &mut observed_player_dodges,
+                true,
+                true,
             );
             if let DragonFireballCastOutcome::Damage(receipts) = outcome {
                 receipt = Some(receipts);
@@ -18694,6 +19031,8 @@ pub(crate) mod tests {
             }
         }
         let receipt = receipt.expect("one public carried Fireball reaches a real Dragon row");
+        assert!(receipt.iter().any(|receipt| body_slots.contains(&receipt.source_slot)),
+            "the actual public hit must include a Dragon body row");
         assert!(!receipt.is_empty());
         assert!(receipt.iter().all(|receipt| {
             receipt.life_after
@@ -18712,60 +19051,6 @@ pub(crate) mod tests {
         );
         assert!(compatibility.economy().player_death_markers().is_empty());
 
-        let mut successful_casts = 1_usize;
-        for _ in 1..(17 * 4) {
-            let root_is_terminal = session
-                .backend()
-                .campaign
-                .simulation()
-                .economy()
-                .authored_class5()
-                .iter()
-                .find(|root| root.source_entity_index == root_slot)
-                .is_none_or(|root| root.life < 0 || matches!(root.action, 4 | 5));
-            if root_is_terminal {
-                break;
-            }
-            if let DragonFireballCastOutcome::Damage(receipts) =
-                fire_real_player_fireball_at_level_three_dragon_for_test(
-                    &mut session,
-                    Some(root_slot),
-                )
-            {
-                successful_casts += 1;
-                assert!(!receipts.is_empty());
-                assert!(receipts.iter().all(|receipt| {
-                    receipt.life_after
-                        == receipt
-                            .life_before
-                            .wrapping_sub(crate::level1_mission::FIREBALL_PAYLOAD)
-                }));
-            }
-            let compatibility = session.backend().campaign.simulation();
-            assert!(compatibility.shared_spells().player_entity().life >= 0);
-            assert_eq!(
-                compatibility
-                    .shared_spells()
-                    .local_player()
-                    .enabled_spell_holders[0],
-                holder
-            );
-            assert!(compatibility.economy().player_death_markers().is_empty());
-        }
-        let terminal_root = session
-            .backend()
-            .campaign
-            .simulation()
-            .economy()
-            .authored_class5()
-            .iter()
-            .find(|root| root.source_entity_index == root_slot)
-            .copied();
-        assert!(
-            terminal_root.is_none_or(|root| root.life < 0 || matches!(root.action, 4 | 5)),
-            "exact public command macros exhausted the source hit budget before one guardian root became terminal: successful_casts={successful_casts} root={terminal_root:?}"
-        );
-        assert!(successful_casts >= 17);
     }
 
     /// Resume one bounded public-command exchange after the production replay
@@ -18780,8 +19065,12 @@ pub(crate) mod tests {
             .min_by_key(|target| target.source_slot)
             .expect("retained guardian failure has a current living root")
             .source_slot;
-        let outcome =
-            fire_real_player_fireball_at_level_three_dragon_for_test(session, Some(root_slot));
+        let outcome = fire_real_player_fireball_at_level_three_dragon_for_test(
+            session,
+            Some(root_slot),
+            &mut BTreeSet::new(),
+            false,
+        );
         eprintln!(
             "replayed guardian exchange: root={root_slot} tick={} outcome={outcome:?}",
             session.identity().tick,
@@ -19483,6 +19772,9 @@ pub(crate) mod tests {
         let mut actual_damage_sources = history.as_ref().map_or_else(BTreeSet::new, |history| {
             history.damage_by_root.values().flatten().copied().collect()
         });
+        let player = compatibility.state.entity_index;
+        let kills_before = compatibility.economy().authored_bee_kill_census(player);
+        let mut observed_player_dodges = BTreeSet::new();
         for (dragon_index, root_slot) in dragon_source_slots.iter().copied().enumerate() {
             let mut observed_root_actions = history
                 .as_ref()
@@ -19528,6 +19820,10 @@ pub(crate) mod tests {
                 let outcome = fire_real_player_fireball_at_level_three_dragon_for_test(
                     session,
                     Some(root_slot),
+                    &mut observed_player_dodges,
+                    root_damage_sources
+                        .iter()
+                        .all(|source| dragon_source_slots.contains(source)),
                 );
                 eprintln!(
                     "guardian exchange complete: root={root_slot} cast={cast_index} tick={} elapsed={:?} outcome={outcome:?}",
@@ -19662,6 +19958,27 @@ pub(crate) mod tests {
             }
         }
         assert!(actual_damage_sources.is_subset(&expected_death_sources));
+        assert!(
+            actual_damage_sources
+                .iter()
+                .any(|source| !dragon_source_slots.contains(source)),
+            "the complete public guardian exchange must damage a real body row"
+        );
+        if history.is_none() {
+            assert_eq!(
+                observed_player_dodges,
+                dragon_source_slots.iter().copied().collect()
+            );
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .simulation()
+                    .economy()
+                    .authored_bee_kill_census(player)
+                    >= kills_before + u32::try_from(dragon_source_slots.len()).unwrap()
+            );
+        }
 
         let compatibility = session.backend().campaign.simulation();
         let economy = compatibility.economy();
@@ -22964,6 +23281,17 @@ pub(crate) mod tests {
             half_height: 92,
         };
         let player = 119;
+        let launches = BTreeSet::from([(148, 6, player)]);
+        let births = BTreeSet::from([(298, 7, 148, 6, player)]);
+        assert!(actual_dragon_player_impact_for_test(298, 7, 148, player, &launches, &births));
+        assert!(!actual_dragon_player_impact_for_test(298, 8, 148, player, &launches, &births),
+            "a later impact occupant at the same address is not this shot");
+        assert!(!actual_dragon_player_impact_for_test(298, 7, 148, player,
+            &BTreeSet::from([(148, 5, player)]), &births),
+            "a later projectile occupant cannot inherit an earlier launch receipt");
+        assert!(!actual_dragon_player_impact_for_test(298, 7, 148, player,
+            &BTreeSet::from([(148, 6, player + 1)]), &births),
+            "the same slot and generation from another owner is not the player's shot");
         let prior_player = target(260, 258, 4_000, 0);
         let current_player = target(260, 258, 3_750, player);
         let prior_hostile = target(261, 258, 3_750, 0);
@@ -22980,7 +23308,22 @@ pub(crate) mod tests {
                 player,
                 &corroborated,
             ),
+            None,
+            "a body life delta alone is not proof of this player's impact"
+        );
+        let corroborated = BTreeSet::from([(260, 1)]);
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                prior_player, current_player, &current, player, &corroborated,
+            ),
             Some(DragonDamageAttribution::Player)
+        );
+        assert_eq!(
+            level_three_direct_dragon_damage_attribution_for_test(
+                prior_player, current_player, &current, player, &BTreeSet::from([(260, 2)]),
+            ),
+            None,
+            "a reused address with a different generation cannot corroborate a hit"
         );
         assert_eq!(
             level_three_direct_dragon_damage_attribution_for_test(
@@ -23226,6 +23569,145 @@ pub(crate) mod tests {
                 )),
             "dense noise without the exact impact receipt must remain negative"
         );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_ordinary_dragon_fireball_reaches_player() {
+        let package = level_three_descriptor_fixture_path();
+        let definition = Arc::new(load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter, definition, 69, Mc2CampaignInputs::new(&package),
+        ).unwrap();
+        session.backend_mut().campaign.simulation_mut()
+            .activate_authored_group_prerequisite_for_test(1)
+            .expect("the real Level3 guardian group is the declared encounter boundary");
+        let simulation = session.backend().campaign.simulation();
+        let player = simulation.state.entity_index;
+        let player_handle = simulation.source_arena().handle(player).expect("current player");
+        let roots = simulation.economy().authored_class5().iter()
+            .filter(|row| row.active && row.model == 0 && [141, 142].contains(&row.authored_index))
+            .map(|row| (row.source_entity_index,
+                simulation.source_arena().handle(row.source_entity_index).unwrap()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(roots.len(), 2, "actual group1 constructs both guardian roots");
+        let first = simulation.economy().authored_class5().iter()
+            .filter(|row| roots.contains_key(&row.source_entity_index))
+            .min_by_key(|row| row.source_entity_index).unwrap();
+        let mut encounter = first.position;
+        crate::move_entity(&mut encounter, first.yaw, 0, 2_048);
+        // Only the player is placed in the Dragon's real view. All actors,
+        // allocation capacity, target selection, clocks and damage stay live.
+        session.backend_mut().campaign.simulation_mut()
+            .set_level2_entity_position(player, encounter).unwrap();
+
+        let mut observed_projectiles = BTreeSet::<(u16, u32, u16)>::new();
+        let mut impact_births = BTreeSet::<(u16, u32, u16, u32, u16)>::new();
+        let mut confirmed_hits = BTreeSet::<u16>::new();
+        let mut damage_owners = BTreeSet::<u16>::new();
+        let mut sounding_roots = BTreeSet::<u16>::new();
+        let mut fallback_used = false;
+        let mut first_projectile_turn = None;
+        let mut diagnostics = Vec::new();
+        for turn in 0..256 {
+            let before = session.backend().campaign.simulation();
+            let events_before = before.economy().events().len();
+            let journal_before = before.effect_journal().clone();
+            let life_before = before.shared_spells().player_entity().life;
+            if turn >= 48 && !fallback_used && confirmed_hits.is_empty()
+                && let Some(projectile) = before.economy().fireball_projectiles().iter()
+                    .find(|row| row.active && row.origin == crate::native_world::FireballProjectileOrigin::Dragon
+                        && row.target_source_entity_index == player
+                        && observed_projectiles.contains(&(row.source_entity_index,
+                            before.economy().slot_generation(row.source_entity_index), row.owner_entity_index)))
+                    .copied()
+            {
+                // If the literal root-facing encounter has not hit by turn48,
+                // move only the player ahead of an already observed real flyer.
+                let mut position = projectile.position;
+                crate::move_entity(&mut position, projectile.yaw, projectile.pitch, projectile.actual_speed);
+                session.backend_mut().campaign.simulation_mut()
+                    .set_level2_entity_position(player, position).unwrap();
+                fallback_used = true;
+            }
+            let mut callbacks = Vec::new();
+            let mut player_launches = BTreeSet::new();
+            step_dragon_public_command_with_impact_trace_for_test(
+                &mut session, GameCommand::default(), player, &mut callbacks,
+                &mut player_launches, &mut impact_births,
+            );
+            let after = session.backend().campaign.simulation();
+            assert!(after.dispatch_events().iter().all(|event| !matches!(event,
+                crate::native_world::Mc2DispatchEvent::Error { .. })),
+                "ordinary Dragon source turn {turn}: {:?}", after.dispatch_events());
+            for projectile in after.economy().fireball_projectiles().iter().filter(|row|
+                row.active && row.origin == crate::native_world::FireballProjectileOrigin::Dragon
+                    && row.target_source_entity_index == player)
+            {
+                if roots.get(&projectile.owner_entity_index).is_some_and(|handle|
+                    after.source_arena().handle(projectile.owner_entity_index) == Some(*handle))
+                {
+                    observed_projectiles.insert((projectile.source_entity_index,
+                        after.economy().slot_generation(projectile.source_entity_index),
+                        projectile.owner_entity_index));
+                    first_projectile_turn.get_or_insert(turn);
+                }
+            }
+            for record in level_three_effect_records_after_for_test(&journal_before, after.effect_journal())
+                .expect("ordinary encounter audio journal remains readable")
+            {
+                if let crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::DragonFireball,
+                    entity_index, sound_id: 8, ..
+                }) = record.effect
+                    && roots.contains_key(&entity_index)
+                { sounding_roots.insert(entity_index); }
+            }
+            for callback in callbacks {
+                let impact = callback.source_impact.map(|(generation, row)|
+                    (row.source_entity_index, generation, row.parent_entity_index, row.parent_entity_id, row.subspell_index))
+                    .or_else(|| callback.source_raw_impact.as_ref().and_then(|(generation, row)| {
+                        impact_births.iter().find(|&&(slot, born, _, _, owner)|
+                            slot == row.index && born == *generation && owner == row.source_id)
+                            .map(|&(_, _, parent, _, _)| (row.index, *generation, parent, row.source_id, row.subspell_index))
+                    }));
+                let Some((slot, generation, parent, owner, payload)) = impact else { continue; };
+                let wrote_player = callback.mailbox_before.zip(callback.mailbox_after).is_some_and(|(before, after)| {
+                    let damage = if before.1 == 0 { 500 } else { before.0.wrapping_add(500) };
+                    after == (damage, owner)
+                });
+                if callback.target_slot == player && callback.target_generation == player_handle.generation
+                    && callback.source_slot == Some(slot) && callback.pulse.owner == owner
+                    && callback.pulse.payload == 500 && payload == 500 && wrote_player
+                    && roots.get(&owner).is_some_and(|handle| after.source_arena().handle(owner) == Some(*handle))
+                    && actual_dragon_player_impact_for_test(slot, generation, parent, owner,
+                        &observed_projectiles, &impact_births)
+                { confirmed_hits.insert(owner); }
+            }
+            for event in &after.economy().events()[events_before..] {
+                if let crate::native_world::Level2EconomyEvent::DamageApplied {
+                    target_entity_index, attacker_entity_index, damage: 500, ..
+                } = event
+                    && *target_entity_index == player && confirmed_hits.contains(attacker_entity_index)
+                { damage_owners.insert(*attacker_entity_index); }
+            }
+            if diagnostics.len() < 12 && (turn < 4 || first_projectile_turn == Some(turn)
+                || !confirmed_hits.is_empty() || life_before != after.shared_spells().player_entity().life)
+            {
+                diagnostics.push(format!("turn={turn} player_life={life_before}->{} projectiles={observed_projectiles:?} births={impact_births:?} hits={confirmed_hits:?} damage={damage_owners:?} sounds={sounding_roots:?}",
+                    after.shared_spells().player_entity().life));
+            }
+            if confirmed_hits.iter().any(|owner| damage_owners.contains(owner) && sounding_roots.contains(owner)) {
+                eprintln!("ordinary Dragon attack: shot={observed_projectiles:?} impacts={impact_births:?} hit={confirmed_hits:?} damage={damage_owners:?} sounds={sounding_roots:?} player_contact_control={fallback_used}");
+                return;
+            }
+            assert!(after.shared_spells().player_entity().life >= 0,
+                "player died before correlated Dragon damage: {diagnostics:#?}");
+            if turn == 64 {
+                assert!(!observed_projectiles.is_empty(),
+                    "no live Dragon-owned player-target Fireball by turn64: {diagnostics:#?}");
+            }
+        }
+        panic!("ordinary Dragon attack did not reach player: projectiles={observed_projectiles:?} births={impact_births:?} hits={confirmed_hits:?} damage={damage_owners:?} sounds={sounding_roots:?} fallback={fallback_used} trace={diagnostics:#?}");
     }
 
     #[test]
@@ -24115,7 +24597,12 @@ pub(crate) mod tests {
         let mut saw_damage = false;
         for _ in 0..4 {
             if matches!(
-                fire_real_player_fireball_at_level_three_dragon_for_test(&mut session, None),
+                fire_real_player_fireball_at_level_three_dragon_for_test(
+                    &mut session,
+                    None,
+                    &mut BTreeSet::new(),
+                    false,
+                ),
                 DragonFireballCastOutcome::Damage(_)
             ) {
                 saw_damage = true;
@@ -27652,6 +28139,271 @@ pub(crate) mod tests {
                 .life
                 >= 0
         );
+    }
+
+    #[test]
+    fn campaign_backend_level_three_public_guardian_exchange_reaches_reveal_objective() {
+        let root = level_three_descriptor_fixture_path();
+        let catalog = default_catalog().unwrap();
+        let definition = Arc::new(load_mc2_campaign(&root, &catalog).unwrap());
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            definition,
+            65,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let player = session.backend().campaign.simulation().state.entity_index;
+        {
+            let simulation = session.backend_mut().campaign.simulation_mut();
+            simulation.apply_carried_spell_families(&[0], Some(0)).unwrap();
+            // Declared earlier-objective and player-resource controls. Group 1,
+            // the guardian callbacks, paid casts and objective consumer below
+            // still run through their normal source scheduler.
+            simulation.stage_level_three_guardian_prerequisites_for_test(50_000).unwrap();
+        }
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        assert!(session.backend().campaign.simulation().dispatch_events().iter().any(|event| matches!(event,
+            crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
+                group: 1, authored_indices, ..
+            } if authored_indices.as_ref() == [141, 142])));
+        let simulation = session.backend().campaign.simulation();
+        let roots = simulation.economy().authored_class5().iter()
+            .filter(|row| row.active && row.model == 0 && [141, 142].contains(&row.authored_index))
+            .map(|row| row.source_entity_index).collect::<Vec<_>>();
+        assert_eq!(roots.len(), 2);
+        let targets = level_three_dragon_fireball_targets(&session);
+        let handles = targets.iter().map(|row| (row.source_slot,
+            simulation.source_arena().handle(row.source_slot).unwrap())).collect::<BTreeMap<_, _>>();
+        assert_eq!(handles.len(), 34);
+        let body_slots = targets.iter().filter(|row| row.source_slot != row.root_slot)
+            .map(|row| row.source_slot).collect::<BTreeSet<_>>();
+        let expected_mana = simulation.economy().authored_class5().iter()
+            .filter(|row| roots.contains(&row.source_entity_index))
+            .map(|row| (row.source_entity_index, row.mana))
+            .chain(simulation.economy().authored_dragon_parts().iter()
+                .filter(|row| roots.contains(&row.entity_id))
+                .map(|row| (row.source_entity_index, row.mana)))
+            .collect::<BTreeMap<_, _>>();
+        let events_start = simulation.economy().events().len();
+        let kills_before = simulation.economy().authored_bee_kill_census(player);
+        let holder = simulation.shared_spells().local_player().enabled_spell_holders[0];
+        let initial_holder = simulation.shared_spells().pickups().iter()
+            .chain(simulation.shared_spells().holders())
+            .chain(simulation.shared_spells().dynamic_pickups())
+            .find(|row| row.index == holder)
+            .expect("carried Fireball holder remains addressable");
+        let production_bound = 64_usize.max(usize::from(initial_holder.activation_value).saturating_add(8));
+        let mut paid_casts = 0;
+        let mut public_requests = 0;
+        let mut production_trace = Vec::new();
+        let mut attributed_body = BTreeSet::new();
+        let mut actions = BTreeMap::<u16, BTreeSet<u8>>::new();
+        let mut dodges = BTreeSet::new();
+        let mut hidden = BTreeSet::new();
+        let mut reclaimed = BTreeSet::new();
+        let mut launches = BTreeSet::new();
+        let mut impact_births = BTreeSet::new();
+        let mut pending_receipts = BTreeSet::new();
+        let mut reaction_receipts = BTreeSet::new();
+        for turn in 0..2400 {
+            let before = level_three_dragon_fireball_targets(&session);
+            // The type-7 objective reads the pass-start class-5 model list,
+            // whose membership also excludes specific source actions.
+            let before_living_roots = {
+                let simulation = session.backend().campaign.simulation();
+                let models = simulation.source_arena().rebuilt_class5_model_slots();
+                roots.iter().copied().filter(|root| models[0].contains(root)
+                    && simulation.source_arena().handle(*root) == handles.get(root).copied())
+                    .collect::<BTreeSet<_>>()
+            };
+            // A declared longer-range reaction shot gives the selected root
+            // time to consume the source threat while the real flyer exists.
+            // Later shots retain the close body-damage encounter control.
+            let reaction_target = before.iter().copied()
+                .filter(|row| row.source_slot == row.root_slot && roots.contains(&row.root_slot)
+                    && !dodges.contains(&row.root_slot))
+                .min_by_key(|row| row.source_slot);
+            let target = reaction_target.or_else(|| before.iter().copied()
+                .filter(|row| roots.contains(&row.root_slot))
+                .min_by_key(|row| (row.life, row.source_slot == row.root_slot, row.source_slot)));
+            let shared = session.backend().campaign.simulation().shared_spells();
+            let holder_row = shared.pickups().iter().chain(shared.holders()).chain(shared.dynamic_pickups())
+                .find(|row| row.index == holder);
+            let holder_diagnostic = holder_row.map(|row| (row.active, row.class, row.model, row.action,
+                row.source_spell_parent_entity_index(), row.active_value, row.activation_value,
+                row.level_gate, row.mana_cost));
+            let ready = holder_row.is_some_and(|row| row.active && row.class == 15 && row.model == 0
+                && row.action == 0 && row.source_spell_parent_entity_index() == player
+                && row.active_value == 0 && (0..=2).contains(&row.level_gate)
+                && shared.player_mana() >= row.mana_cost);
+            let mut command = GameCommand::default();
+            let mut aim = None;
+            if let Some(target) = target {
+                let simulation = session.backend_mut().campaign.simulation_mut();
+                let mut position = target.position;
+                if ready {
+                    // Declared player aim/position control, including the real
+                    // left-hand displacement; no Dragon state is assigned.
+                    let yaw = 1024_i16;
+                    let distance = if reaction_target.is_some() { 1_536 } else { 384 };
+                    crate::move_entity(&mut position, yaw.wrapping_add(1024), 0, distance);
+                    let mut launch = position;
+                    let parent = simulation.shared_spells().player_entity();
+                    let parent_yaw = yaw.wrapping_sub(simulation.shared_spells().beyond_sight_auxiliary().next_entity) & 0x07ff;
+                    let hand_yaw = parent_yaw.wrapping_sub(512);
+                    crate::move_entity(&mut position, hand_yaw.wrapping_add(1024), 0, 256);
+                    let center_z = target.position.z.wrapping_add(target.vertical_offset);
+                    position.z = center_z.wrapping_sub(parent.array_fov())
+                        .max(simulation.canonical_terrain().ground_height(position).wrapping_add(256))
+                        .max(simulation.canonical_terrain().ground_height(launch).wrapping_add(256));
+                    launch.z = position.z.wrapping_add(parent.array_fov());
+                    let (_, pitch) = crate::level1_mission::projectile_guidance_angles(launch,
+                        crate::Position { z: center_z, ..target.position });
+                    aim = Some((yaw, pitch, launch, center_z));
+                    simulation.set_level2_entity_position(player, position).unwrap();
+                    simulation.set_level2_player_aim_for_test(yaw, pitch);
+                    command.select_spell = Some(SemanticId::parse("spell.fireball").unwrap());
+                    command.cast_selected = true;
+                    public_requests += 1;
+                } else {
+                    // Retreat while the real holder cools down; do not change
+                    // actor health, target, phase, RNG, or lifetime.
+                    crate::move_entity(&mut position, 0, 0, 4096);
+                    position.z = position.z.max(simulation.canonical_terrain().ground_height(position).wrapping_add(256));
+                    simulation.set_level2_entity_position(player, position).unwrap();
+                }
+            }
+            let mana_before = session.backend().campaign.simulation().shared_spells().player_entity().mana;
+            let player_position = session.backend().campaign.simulation().shared_spells().player_entity().position;
+            let launches_before = launches.clone();
+            let mut callbacks = Vec::new();
+            crate::native_world::start_dragon_reaction_trace();
+            step_dragon_public_command_with_impact_trace_for_test(&mut session, command,
+                target.map_or(roots[0], |row| row.source_slot), &mut callbacks,
+                &mut launches, &mut impact_births);
+            reaction_receipts.extend(crate::native_world::take_dragon_reaction_trace());
+            let simulation = session.backend().campaign.simulation();
+            assert!(simulation.dispatch_events().iter().all(|event| !matches!(event,
+                crate::native_world::Mc2DispatchEvent::Error { .. })), "guardian dispatch at turn {turn}: {:?}", simulation.dispatch_events());
+            if mana_before > simulation.shared_spells().player_entity().mana { paid_casts += 1; }
+            let new_launches = launches.difference(&launches_before).copied().collect::<Vec<_>>();
+            if production_trace.len() < 16 && (turn < 4 || ready || !new_launches.is_empty()) {
+                production_trace.push(format!("turn={turn} ready={ready} holder={holder_diagnostic:?} target={target:?} player_position={player_position:?} aim={aim:?} mana={mana_before}->{} new_launches={new_launches:?} impacts={} callbacks={}",
+                    simulation.shared_spells().player_entity().mana, impact_births.len(), callbacks.len()));
+            }
+            if turn == production_bound {
+                assert!(public_requests > 0 && paid_casts > 0 && launches.iter().any(|&(_, _, owner)| owner == player),
+                    "guardian public Fireball production absent by turn {turn}: requests={public_requests} paid={paid_casts} launches={launches:?} trace={production_trace:#?}");
+            }
+            for callback in callbacks {
+                let impact = callback.source_impact.map(|(generation, row)|
+                    (row.source_entity_index, generation, row.parent_entity_index, row.parent_entity_id, row.subspell_index, row.position))
+                    .or_else(|| callback.source_raw_impact.as_ref().and_then(|(generation, row)| {
+                        impact_births.iter().find(|&&(slot, born, _, _, owner)|
+                            slot == row.index && born == *generation && owner == row.source_id)
+                            .map(|&(_, _, parent, _, _)| (row.index, *generation, parent, row.source_id, row.subspell_index, row.position))
+                    }));
+                let Some((slot, generation, parent, owner, payload, position)) = impact else { continue; };
+                let mailbox = callback.mailbox_before.zip(callback.mailbox_after).is_some_and(|(before, after)| {
+                    let expected = if before.1 == 0 { crate::level1_mission::FIREBALL_PAYLOAD }
+                        else { before.0.wrapping_add(crate::level1_mission::FIREBALL_PAYLOAD) };
+                    after == (expected, player)
+                });
+                if callback.source_slot == Some(slot) && owner == player
+                    && actual_dragon_player_impact_for_test(slot, generation, parent, player, &launches, &impact_births)
+                    && payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && callback.pulse.owner == player && callback.pulse.selector == (u8::MAX, u8::MAX)
+                    && callback.pulse.payload == payload && callback.pulse.position == position
+                    && mailbox && callback.target.is_some_and(|row| crate::level1_mission::source_entities_overlap(
+                        position, callback.pulse.half_width, callback.pulse.vertical_offset,
+                        callback.pulse.half_height, row.position, row.shape.half_width,
+                        row.shape.vertical_offset, row.shape.half_height))
+                { pending_receipts.insert((callback.target_slot, callback.target_generation)); }
+            }
+            for current in level_three_dragon_fireball_targets(&session) {
+                if body_slots.contains(&current.source_slot)
+                    && pending_receipts.contains(&(current.source_slot, current.generation))
+                    && before.iter().any(|prior| prior.source_slot == current.source_slot
+                        && prior.generation == current.generation
+                        && current.life == prior.life - crate::level1_mission::FIREBALL_PAYLOAD)
+                    && current.attacker == player
+                {
+                    attributed_body.insert(current.source_slot);
+                    pending_receipts.remove(&(current.source_slot, current.generation));
+                }
+            }
+            for root in simulation.economy().authored_class5().iter().filter(|row| roots.contains(&row.source_entity_index)) {
+                actions.entry(root.source_entity_index).or_default().insert(root.action);
+                if root.byte_0x46_70 != 0 && simulation.economy().fireball_projectiles().iter().any(|projectile|
+                    projectile.active && projectile.owner_entity_index == player
+                        && projectile.target_source_entity_index == root.source_entity_index
+                        && root.word_0x24 == projectile.source_entity_index
+                        && launches.contains(&(projectile.source_entity_index,
+                            simulation.economy().slot_generation(projectile.source_entity_index), player))
+                        && handles.get(&root.source_entity_index).is_some_and(|handle|
+                            reaction_receipts.contains(&(projectile.source_entity_index,
+                                simulation.economy().slot_generation(projectile.source_entity_index), player,
+                                root.source_entity_index, handle.generation))))
+                    && simulation.economy().authored_dragons().iter().any(|state|
+                        state.source_entity_index == root.source_entity_index
+                            && (1..32).contains(&state.font_type_index)
+                            && (0..5).contains(&state.dodge_remaining))
+                { dodges.insert(root.source_entity_index); }
+            }
+            for (&slot, &handle) in &handles {
+                if simulation.source_arena().handle(slot) != Some(handle) {
+                    reclaimed.insert(slot);
+                } else if simulation.economy().authored_class5().iter().any(|row| row.source_entity_index == slot && !row.drawing_enabled)
+                    || simulation.economy().authored_dragon_parts().iter().any(|row| row.source_entity_index == slot && !row.drawing_enabled)
+                { hidden.insert(slot); }
+            }
+            if roots.iter().filter(|root| reclaimed.contains(root)).count() == 1
+                && roots.iter().any(|root| !reclaimed.contains(root) && before_living_roots.contains(root)
+                    && simulation.source_arena().handle(*root) == handles.get(root).copied()
+                    && simulation.economy().authored_class5().iter().any(|row|
+                        row.source_entity_index == *root && row.active && row.drawing_enabled
+                            && row.life >= 0 && !matches!(row.action, 180 | 232 | 234)))
+            {
+                assert_eq!(simulation.runtime().objectives[0].stage_selectors[1], 1,
+                    "objective advanced with a surviving original root in the source list: turn={turn} before_living_roots={before_living_roots:?} reclaimed={reclaimed:?} roots={:?}",
+                    simulation.economy().authored_class5().iter().filter(|row| roots.contains(&row.source_entity_index))
+                        .map(|row| (row.source_entity_index, row.active, row.drawing_enabled, row.life, row.action,
+                            simulation.source_arena().handle(row.source_entity_index))).collect::<Vec<_>>());
+            }
+            if reclaimed.len() == handles.len() && simulation.runtime().objectives[0].stage_selectors[1] == 2 { break; }
+            assert!(simulation.shared_spells().player_entity().life >= 0, "player died during controlled guardian exchange at turn {turn}");
+        }
+        let simulation = session.backend().campaign.simulation();
+        assert!(paid_casts > 0 && !attributed_body.is_empty(),
+            "guardian casts failed to produce attributed body damage: requests={public_requests} paid={paid_casts} launches={launches:?} impacts={impact_births:?} pending={pending_receipts:?} trace={production_trace:#?}");
+        assert_eq!(dodges, roots.iter().copied().collect(),
+            "each actual player projectile must trigger the root's lateral reaction; current-launch reaction receipts={:?}; all receipts={reaction_receipts:?}; trace={production_trace:#?}",
+            reaction_receipts.iter().filter(|&&(slot, generation, owner, target, target_generation)|
+                owner == player && launches.contains(&(slot, generation, owner))
+                    && handles.get(&target).is_some_and(|handle| handle.generation == target_generation))
+                .collect::<Vec<_>>());
+        assert!(roots.iter().all(|root| actions.get(root).is_some_and(|a| a.contains(&4) && a.contains(&5))), "root death actions: {actions:?}");
+        assert_eq!(hidden.len(), handles.len(), "all 34 source rows must hide before reclaim");
+        assert_eq!(reclaimed.len(), handles.len(), "all 34 source generations must reclaim");
+        assert!(simulation.economy().authored_bee_kill_census(player) >= kills_before + 2);
+        let outputs = &simulation.economy().events()[events_start..];
+        let sphere_rows = outputs.iter().filter_map(|event| match event {
+            crate::native_world::Level2EconomyEvent::ManaSphereSpawned { source_entity_index, mana, .. } => Some((*source_entity_index, *mana)), _ => None,
+        }).filter(|(slot, _)| handles.contains_key(slot)).collect::<Vec<_>>();
+        assert_eq!(sphere_rows.len(), handles.len());
+        assert!(sphere_rows.iter().all(|(slot, mana)| expected_mana.get(slot) == Some(mana)));
+        let spheres = sphere_rows.into_iter().map(|(slot, _)| slot).collect::<BTreeSet<_>>();
+        let bursts = outputs.iter().filter_map(|event| match event {
+            crate::native_world::Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. } => Some(*parent_entity_index), _ => None,
+        }).filter(|slot| handles.contains_key(slot)).collect::<BTreeSet<_>>();
+        assert_eq!(spheres.len(), handles.len());
+        assert_eq!(bursts, spheres);
+        assert_eq!(&simulation.runtime().objectives[0].stage_selectors[..5], &[2, 2, 1, 1, 1]);
+        assert_eq!(simulation.runtime().objectives[0].text_selector, 2);
+        let progress = session.snapshot().value.objective_progress;
+        assert_eq!(progress.completed_count, 2);
+        assert_eq!(progress.current_objective.as_ref().map(SemanticId::as_str), Some("objective.charge.reveal_entrance"));
     }
 
     #[test]

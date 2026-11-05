@@ -101,11 +101,18 @@ fresh whole package is structurally/exporter-qualified, not runtime-qualified.
 No human combat/FPS/hardware audio, all missions, old-save or arbitrary custom
 particle-override claim. Retired pane maps and the deleted heartbeat stay retired.
 
-### Preserved next batch: Dragon and Bee
+### Active batch: Dragon and Bee
 
-Dragon ScarletValley, Bee LavenderAnchor and integrator CrimsonGlacier have
-stopped writes and released their exact leases. Their new source is preserved
-but **uncompiled, unrun, uncommitted and uninstalled**. Frozen copies, hashes
+Dragon ScarletValley, Bee LavenderAnchor and integrator CrimsonGlacier handed
+back the original frozen source. Oliver resumed this batch on2026-11-05.
+Current root CrimsonBay uses Terra/xhigh MagentaPuma (`bee_runtime`) and
+BrightCastle (`dragon_connected_review`, now implementing Dragon ownership).
+StormyCrane (`dragon_runtime`) and Sol/xhigh CyanBridge hit confirmed model
+capacity and are stopped; available owners continued their preserved work.
+Root owns shared joins and serialized build/install.
+The new batch is **not committed or installed**; the verified installation
+remains793b7ef6/ecbf0969.
+Frozen copies, hashes
 and the owned patch are under
 `generated/dragon-bee-20261105-integration/preserved-source/`. Full `.19`,
 `.20` and `.24` acceptance remains open; Fireball `.10` is already closed.
@@ -119,7 +126,120 @@ now admits source signed-dword Bee health instead of rejecting values above
 32767. Backend gates add real body targeting/damage, current projectile
 reaction, kill credit, natural cleanup and the original guardian objective.
 
-Resume the exact existing-module gates after a safe shared build window:
+Current bounded evidence is in `generated/dragon-bee-20261105-integration/`.
+Bee's actual Day group21/contact/audio/public paid Fireball→all3kills/credit/
+natural hide/reclaim/original absence passes on2 (10.804s). The unchanged Bee
+owner's remaining19 focused controls pass on3 (11.62s, root-observed execution
+receipt; raw stdout was not separately captured). Signed-dword definition
+admission passes on1 (11.704s). Actual whole Level25 group2 terrain14/1
+construction→group3 close markers→48 visits→terrain/flight query/audio and
+following marker reclaim pass on2 (12.051s); both group activations are declared
+progression controls. Full terrain `.8` stays open, including Level23 startup.
+
+Dragon's ordinary public player shot reaches real raw10/0 effects, exact
+three-part damage250 and later root adoption; its focused body gate passes on7
+(139.186s). The separate bounded guardian encounter exposed omitted source68BD0
+reaction and an incorrect body-row guidance census. Canonical guided acquisition
+now consumes the source frozen heads/current fields and writes the selected
+Dragon's reaction before movement/collision/Rebound. The actual guardian exchange
+passes17.018s on12 and17.736s on13 with paid casts, generation-correlated lateral
+reaction, body damage, source credit, all34 deaths/rewards/hide/reclaim and the
+original reveal objective. Player-only root-directed1536 shots give the real
+reaction time before the384 body shots; no actor/RNG/timer forcing or AI player.
+Actual launch/impact occurrence and target generations are observed at their
+own producer/writer boundaries; sound owner IDs and legacy typed-effect lists
+are not projectile/raw-effect identity.
+
+The real boss path exposed a missing source primary-render→visibility input.
+The existing indexed source compositor now emits qualifying primary completion
+receipts; internal clipping follows literal source behavior, and shadow/
+reflection or rejected traversal cannot emit them. Root joins private frame
+identity/source view to authority and replay, including neutral presentation's
+cloned-state boundary and paused-safe typed input. Actual frame/identity controls
+pass15.708s and serialized/direct replay-input consumption passes24.98s on7.
+The real CAPI paused/cached/fresh-presentation check passes51.357s on9; it is not
+a nonempty boss full saved-session restoration proof. Generation-bound tail
+provenance and linked-constructor publication now survive root reclaim/reuse;
+the focused reuse control passes1.014s on7. With the matching newly imported
+whole Level25 environment, the actual boss advances past visibility wait and
+summons real Dragons. Earlier apparent expiry was combat death. The corrected
+ordinary boss path now passes47.925s on12 and49.491s on13: actual17→16, lethal
+combat removes the player from frozen class3, the same living child counts down
+by4 to-2 with its original parent still live, real10/0 allocation, hide and all16
+body generations reclaim. No assigned life/timers or parent-loss substitution.
+Full `.19` remains open pending delivery and original acceptance verification.
+Acquired all-tier Fireball passes13.559s and the Bee combat path10.526s on12;
+the corrected guidance/collision census and source-order pass. Candidate9 CAPI
+compile passes74.459s;13 isolated core compile126.380s and14 compile69.290s.
+All failed logs remain preserved; no current candidate installation claim.
+
+Original acceptance review found missing typed Dragon ownership. `DragonClassProperties`
+now owns consumed constructor/movement/combat values, `MC2_DRAGON_ASSETS` owns
+descriptor/particle/sound bindings, and the family produces attack projectiles,
+current-target feedback and audio before the scheduler's current-occupant tail.
+The wildcard import is removed. Shared projectile construction consumes the
+family payload; Firefly keeps its source500. The default binding check passes
+1.075s on13. A separate unfiltered Day3 group1 Dragon attack passes9.434s on14:
+actual live projectile/Impact/root/player generations, attributed500 damage and
+sound8. It used one disclosed player-only contact position control; no NPC life,
+RNG, target, timer or capacity writes. The older Skeleton-controlled test fails
+before its attack setup and is not a positive claim. Four affected shared flyer
+constructor/alias/lifetime controls pass7.628s and source-order0.580s on14.
+
+Bee `.20` additionally names class11/model15, beyond the already-qualified type7
+objective. Real Level5 row237/slot263 is its producer; the old retained package
+lacks initial Castle BUILD1. Root regenerated the entire Level5 package with
+the byte-qualified exporterbe08/160 matching compile inputs/actual embedded
+marker. Structural validation passes; authored rows and ten reset Bees remain
+unchanged. Set `MC_LEVEL5_PACKAGE` to this batch's `level5-owner-current/level5`.
+Candidate14 reaches all ten original-generation hide/reclaim, natural16..1 then
+seventeenth-clear-visit publication, exact12 successor Bees and switch reclaim.
+Its added all-ten-player-credit requirement fails: real rival damage kills one
+Bee and actual construction kills three. Candidate19's corrected gate passes
+40.555s: all ten original generations have a successful causal writer, hide and
+reclaim; paid player lethals have exact observed census credit; the original
+switch visits16..1 and publishes the exact twelve group5 rows on its seventeenth
+clear visit, then hides/reclaims. Source construction can rewrite an already-dead
+retained actor's credit. The gate requires the first construction receipt to see
+live life, every later receipt to see negative life, and the last owner to match
+observed death credit. It rejects dead-only, wrong-generation, revival/re-kill
+and final-credit mismatch chains. No fixed player-kill count, actor state forcing
+or weakened admission. The actual two-owner burial control checks this writer
+order independently. All earlier failures and candidate15's pre-Cargo headroom
+stop remain preserved. This passes the connected consumer, not native visuals.
+
+Dragon's unfiltered Level9 group18/row403 actual subtype route moves its root/body
+to the real mode1 terminal on17 (3.242s). Current all30 owner-package inspection
+finds112 Dragon rows, with actual bound routes1/2/6; levels4–25/31–35 are separately
+matched to packed owner inputs. Levels1–3 lack the sidecars used for that check;
+their missing sidecar qualification is explicit. Default Army/Morph selectors do
+not produce Dragon mode13; custom selector reachability is unqualified. Source
+enabled-null/orphan callbacks retain classification. Guardian, normal outgoing
+500-damage attack and actual boss17→16 natural expiry pass on16 (19.849s/10.803s/
+53.266s). Later candidates change tests/observers only. Final candidate19 compiles
+on healthy rig in65.222s; all444 inputs match canonical and isolated source.
+Independent review supports the final Bee gate. The full25-file UBS scan has no
+added-line errors; its legacy whole-file errors and formatting debt remain.
+The final two-file scan flags an intentional cfg(test) failure panic, not a new
+production panic. No findings or assertions were suppressed. The actual two-owner
+construction writer control passes1.013s. Strict rig workspace/all-target check
+passes4.974s after restoring missing ignored compile inputs in the existing
+isolated worktree:24 atlas CSVs match their embedded expected hashes, and the
+recording probe is byte-identical to canonical. Both failed missing-input runs
+are preserved; no gameplay code or gate was changed to fix that environment.
+All444 Rust inputs and53 additional literal/atlas inputs match before and after
+the passing check. Native checks, source commit/push and matching installation
+remain pending.
+
+After unrelated `journal.rs` changed during12, root separately verified all444
+rig inputs still matched that compilation manifest. Its proof excludes the newer
+local journal. Further verification uses the existing native isolated worktree,
+with only owned Rust changes copied and exact before/after hashes, preserving
+other writers. Separate commits12f45229/9dc7a58e are inherited, not this team's
+work. The isolated base is now49c68f15; canonical latera6a65532 is a disjoint research
+document commit. No new worktree or infrastructure was made.
+
+Reference filters below; reuse completed evidence rather than replaying it:
 
 - `sim-definition`: `level_definition::tests::bee_authored_health_admission_preserves_source_dword_range`.
 - `sim-core`: `native_world::creatures::bee::tests::authored_day_bees_contact_player_and_public_fireball_drives_absence`.
@@ -138,24 +258,36 @@ default); backend uses existing real Day3 descriptors/seed65. Set
 `generated/mc-bhq10-owner-v3-level25-20261029` for the boss check: the all-spells
 ordinary-package root contains only Level18. Boss group29 is a declared prior
 progression control, not a claim of the preceding BUILD mission chain. Actual
-boss RNG/selection,17→16 and natural expiry are unrun. Backend reaction is
-sampled at outer-turn boundaries; any missed transient needs a faithful source
-observation seam, not a weakened assertion. Recheck the affected acquired
-all-tier Fireball consumer on the coherent batch; do not repeat unrelated long
-creature/effects checks.
+boss RNG/selection,17→16 and natural targetless expiry now execute. The latest
+pending check is the actual Level5 class11/15 consumer diagnostic, followed by
+final source checks, owned commit/push and matching original-client delivery.
+Do not repeat unrelated long creature/effects checks.
 
-**Build resource stop:** concurrent local scheduler tests and a separate
+**Resolved build resource stop:** concurrent local scheduler tests and a separate
 Modern-performance baseline Cargo build reduced root free space below5GB
 (observed low0.56GB; later4.31GB), below both the floor and measured core5.45GB /
 native5.75GB stage budgets. No new expensive checks were started by this team.
-GrayElk holds the external `simulation.rs` performance reservation; root sent
-Mail16235/16236 requesting source/resource handback. His raw-slot lookup edits,
-other CAPI/campaign instrumentation and Modern/Library work are unrelated and
-must remain untouched/uncommitted by this team. No destructive cleanup or
-retry loop was attempted. Resume only with sufficient measured headroom and a
-serialized concrete source/build window, retaining the current Original player
-and immediate previous native. The latest qualified installation stays793b7ef6
-/ecbf0969. Only `git diff --check` has passed on the preserved new source.
+The external performance work is now committed through12318238. Its changes
+are inherited source, not this team's edits. No Cargo process was active at
+resumption and all four preserved creature files still matched their hashes.
+Root byte-preserved two closed Nov3 local incremental graphs on healthy rig:
+20 files/1531926916bytes match SHA256 before and after relocation. Receipt:
+`generated/dragon-bee-20261105-integration/closed-incremental-archive/receipt.json`.
+This recovered headroom to6.21GB without touching source/data, current local
+or RCH warm caches, installed player or immediate previous native. Rig is
+healthy/idle; root started one serialized integrated compile. Keep the5GB floor
+and measured core5.45GB/native5.75GB stage budgets. No repeated baseline tests
+or destructive cleanup were used. The latest qualified installation remains
+793b7ef6/ecbf0969 until a new batch actually qualifies and is installed.
+
+Additional closed Nov3 compiler graphs were byte-preserved on healthy rig after
+the candidate9 return reduced free space below the stage budget. The extra
+single graph and three delivery-headroom graphs retain exact SHA256 before and
+after relocation; receipts are `closed-incremental-extra-archive/receipt.json`
+and `closed-incremental-delivery-archive/receipt.json` in this batch. Newer local
+and RCH warm caches, all source/data and current/previous natives remain intact.
+Completed test executables and returned auxiliary files are also retained on
+rig with per-candidate hashes; the earlier bad exFAT copy is never used.
 
 ## Delivered request: remaining spell E2E paths
 
@@ -994,14 +1126,15 @@ and a level-content expansion are separate. Do not restart planning.
 
 ## Coordination and prompts
 
-The current team uses native collaboration: two Terra 6.1/xhigh workers and
-one Sol 6.1/xhigh integrator. Discover actual agent status and Mail identities
-before resuming them. The earlier four-team NTM sessions are retired; do not
-resurrect their panes or credentials. Use NTM only if live state warrants it.
-Root CalmBeaver owns acceptance, tracker updates and sole Cargo/RCH, commit/push
-and native installation. MaroonMarsh implements shared joins with the Terra
-workers; discover their current Mail identities on resume. Preserve dirty source,
-staged work, warm caches and current installations.
+The current team uses native collaboration; the current capability section
+above records live owners and model-capacity stops. Oliver's chosen roles remain
+Terra6.1/xhigh workers and Sol6.1/xhigh integration when available. Discover actual
+status and private Mail identity before resuming anyone; do not revive retired
+names or retry confirmed capacity in a loop. Root owns acceptance, tracker,
+serialized Cargo/RCH, shared joins when the integrator is unavailable, commit/push
+and native installation. Earlier four-team NTM sessions are retired; use NTM only
+if live state warrants it. Preserve dirty source, staged work, warm caches and
+current installations.
 
 Integrator ownership includes implementation of shared joins. Never hold a
 shared-root reservation while waiting on another family: negotiate brief exact

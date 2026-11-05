@@ -1022,6 +1022,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 crate::world::scenery::trees::prepare_reclaim(economy, &mut live.terrain)?;
                 crate::native_world::effects::prepare_retained_effects_reclaim(economy)?;
                 economy.reclaim_inactive_slots_at_source_boundary();
+                economy.prune_dynamic_dragon_part_origins();
             }
             PassPhase::RebuildMemberships => {
                 {
@@ -4379,6 +4380,8 @@ impl Mc2Simulation {
             )
             .expect("source-allocated Fireball map membership");
         }
+        #[cfg(test)]
+        area_damage::trace_fireball_launch(&self.session.state.live.economy, slot, current_parent.source_id);
         self.clear_fireball_auxiliary(&current_parent);
         mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
         self.push_flight_effect(FlightEvent::PrepareSound {
@@ -6761,6 +6764,33 @@ impl Mc2Simulation {
         &mut self.session.state.live.economy
     }
 
+    pub(crate) fn apply_primary_sprite_visibility(
+        &mut self,
+        tick: u64,
+        handles: &[crate::campaign::source_arena::SourceEntityHandle],
+    ) -> std::result::Result<Vec<(u16, u32)>, String> {
+        if tick != self.state.tick {
+            return Err("primary sprite feedback tick no longer matches authority".into());
+        }
+        let arena = &mut self.session.state.live.economy;
+        for &handle in handles {
+            match arena.resolve(handle) {
+                Some(crate::campaign::source_arena::SourceEntityView::Imported(row))
+                    if row.control_flags & 0x4000_0000 != 0 => {}
+                _ => return Err(format!("primary sprite feedback lost current source identity {handle:?}")),
+            }
+        }
+        let mut changed = Vec::new();
+        for &handle in handles {
+            let row = &mut arena.entities[usize::from(handle.source_slot)];
+            if row.subspell_index & 0x40 == 0 {
+                row.set_subspell_index(row.subspell_index | 0x40);
+                changed.push((handle.source_slot, handle.generation));
+            }
+        }
+        Ok(changed)
+    }
+
     /// Borrow the one terrain owner used by all Level 2 production handlers.
     pub fn canonical_terrain(&self) -> &SessionTerrain {
         self.campaign_state().terrain()
@@ -7569,6 +7599,40 @@ impl Mc2Simulation {
         }
         self.session.state.live.level2_objective_pause = 0;
         self.session.state.live.level2_objective_done = false;
+        Ok(())
+    }
+
+    /// Declared player progression/resources for the focused guardian
+    /// encounter. No creature, health, RNG, phase or lifetime is changed.
+    #[cfg(test)]
+    pub(crate) fn stage_level_three_guardian_prerequisites_for_test(
+        &mut self,
+        mana: i32,
+    ) -> std::result::Result<(), String> {
+        if mana < 0 || !self.session.definition.semantic_level()
+            .and_then(|level| level.objectives().get(1))
+            .is_some_and(|objective| objective.id().as_str() == "objective.clear.guardian_dragons"
+                && objective.condition() == ObjectiveCondition::NoLivingCreatures(CreatureKind::Dragon))
+        {
+            return Err("guardian prerequisite requires the actual Level3 Dragon objective".into());
+        }
+        let live = &mut self.session.state.live;
+        live.core.runtime.set_level2_objective_stage_selector_for(0, 0, 2);
+        live.core.runtime.set_level2_objective_stage_selector_for(0, 1, 1);
+        live.core.runtime.set_level2_objective_text_selector_for(0, 1);
+        let player = live.core.state.entity_index;
+        live.economy.economy.owner_base_max_mana.insert(player, mana);
+        live.economy.economy.rebuild_source_owner_max_mana_projection();
+        let capacity = live.economy.economy.owner_max_mana_capacity(player);
+        live.shared_spells.set_local_player_mana_for_test(mana);
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_mana(mana);
+        parent.max_mana = capacity;
+        parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = mana; }
         Ok(())
     }
 
@@ -11945,7 +12009,7 @@ impl Mc2Simulation {
                         0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
                     )
                     | (11, 0..=44)
-                    | (14, 2 | 3 | 4 | 5)
+                    | (14, 1 | 2 | 3 | 4 | 5)
                     | (15, 0 | 1 | 2..=22 | 23 | 24 | 25)
             )
         }) {
@@ -12960,6 +13024,21 @@ impl Mc2Simulation {
                             .live
                             .level2_model32_activated
                             .insert(feature.index);
+                    }
+                }
+                (14, 1) => {
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    if let Some(slot) = terrain_strip::construct(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                        feature.parameter_1 as i8,
+                        i32::from(feature.parameter_2),
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
                     }
                 }
                 (14, 2) => {
@@ -16046,7 +16125,12 @@ impl Mc2Simulation {
             )
             || creature_handler
         {
-            validate_semantic_creature_dispatch(source_slot, semantic_creature, visit.handler)?;
+            validate_semantic_creature_dispatch(source_slot, semantic_creature, visit.handler)
+                .map_err(|error| format!("{error}; handler={:?} route={:?} generation={} raw={:?} part={:?}",
+                    visit.handler, visit.route,
+                    self.session.state.live.economy.slot_generation(source_slot),
+                    self.entities().get(usize::from(source_slot)).map(|row| (row.class, row.model, row.action, row.source_id, row.active)),
+                    self.economy().authored_dragon_parts().iter().find(|row| row.source_entity_index == source_slot)))?;
         }
         let semantic_scenery = self.scenery_kind_for_source_slot(source_slot);
         if semantic_scenery.is_some()
@@ -16377,6 +16461,8 @@ impl Mc2Simulation {
         player_slot: u16,
         player_position: Position,
     ) -> std::result::Result<(), String> {
+        #[cfg(test)]
+        let _source_trace = area_damage::trace_effect_source(source_slot);
         let particles = &self.session.definition.presentation.particles;
         let masks = self.session.definition.collision_masks.as_ref();
         let source_model = match retained {
@@ -19222,34 +19308,24 @@ impl Mc2Simulation {
                             )?
                         };
                         if let Some(launch) = step.fireball {
-                            let live = &mut self.session.state.live;
-                            let targets = source_target::Context {
-                                spells: Some(&live.shared_spells),
-                                player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
-                                player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
-                                ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                            let sound = {
+                                let live = &mut self.session.state.live;
+                                let targets = source_target::Context {
+                                    spells: Some(&live.shared_spells),
+                                    map_type: Some(live.terrain.map_type()),
+                                    player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                                    player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                                    particles: Some(&self.session.definition.presentation.particles),
+                                    ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                                };
+                                level2_class5::dragon::produce_attack_fireball(
+                                    &mut live.economy, &mut live.terrain,
+                                    &self.session.definition.presentation.particles,
+                                    targets, source_slot, launch,
+                                )?
                             };
-                            let spawned = guided_projectile::boss::construct_creature_fireball(
-                                &mut live.economy, &mut live.terrain,
-                                &self.session.definition.presentation.particles, targets,
-                                source_slot, launch.target_entity_index, FireballProjectileOrigin::Dragon,
-                            )?;
-                            if spawned.is_some() {
-                                if source_target::read(&live.economy, targets, launch.target_entity_index)?
-                                    .is_some_and(|target| (target.class, target.model) == (3, 0))
-                                {
-                                    let _ = Level2EconomyState::apply_creature_fireball_target_feedback(
-                                        &mut live.economy.entities, launch.target_entity_index,
-                                    );
-                                }
-                                mark_source_audio_call(SourceAudioCallTag::DragonAction02Fireball);
-                                self.push_flight_effect(FlightEvent::PrepareSound {
-                                    #[cfg(test)]
-                                    audio_site: crate::MissionAudioSite::DragonFireball,
-                                    entity_index: source_slot,
-                                    player_index: -1,
-                                    sound_id: 8,
-                                });
+                            if let Some(sound) = sound {
+                                self.push_flight_effect(sound);
                             }
                         }
                         let threats = self.current_dragon_projectile_threats();
@@ -19572,6 +19648,7 @@ impl Mc2Simulation {
                                 &mut live.economy, &mut live.terrain,
                                 &self.session.definition.presentation.particles, targets,
                                 source_slot, launch.target_entity_index, FireballProjectileOrigin::Firefly,
+                                500,
                             )?;
                             if spawned.is_some() {
                                 if source_target::read(&live.economy, targets, launch.target_entity_index)?
@@ -19689,6 +19766,12 @@ impl Mc2Simulation {
                         } else {
                             &[]
                         };
+                        let empty_models = std::array::from_fn(|_| Vec::new());
+                        let frozen_targets = if effect_lists.is_current(&live.economy) {
+                            (pass_start_class3_slots, pass_start_class5_model_slots)
+                        } else {
+                            (&[][..], &empty_models)
+                        };
                         crate::native_world::effects::step_projectile(
                             &mut live.economy,
                             &mut live.terrain,
@@ -19697,6 +19780,7 @@ impl Mc2Simulation {
                             context,
                             capture_slots,
                             owner_range,
+                            Some(frozen_targets),
                         )?
                     };
                     if let Some(reflection) = step.reflection {
@@ -25321,6 +25405,7 @@ impl Mc2Simulation {
                     context,
                     &[],
                     0,
+                    settlement_memberships.map(|(models, players)| (players, models)),
                 ) {
                     Ok(step) => step,
                     Err(message) => {
@@ -25742,7 +25827,24 @@ impl Mc2Simulation {
                     .step_model17_spawned_child_slot(source_slot, terrain);
                 if step.first_impact {
                     if step.damage_pulse {
+                        #[cfg(test)]
+                        let trace = area_damage::begin_model0_damage_trace(
+                            &mut self.session.state.live.economy,
+                            source_slot,
+                            crate::world::effects::DamagePulse {
+                                position: step.position,
+                                owner: step.owner_entity_index,
+                                payload: step.payload,
+                                half_width: LEVEL2_FIREBALL_COLLISION_HALF_WIDTH,
+                                vertical_offset: LEVEL2_FIREBALL_COLLISION_VERTICAL_OFFSET,
+                                half_height: LEVEL2_FIREBALL_COLLISION_HALF_HEIGHT,
+                                continuous: false,
+                                selector: (u8::MAX, u8::MAX),
+                            },
+                        );
                         self.apply_level2_class10_model0_damage(step);
+                        #[cfg(test)]
+                        area_damage::finish_model0_damage_trace(&self.session.state.live.economy, trace);
                     }
                     mark_source_audio_call(SourceAudioCallTag::Class10Action00FirstEligibleSound);
                     self.push_flight_effect(FlightEvent::PrepareSound {
@@ -29245,6 +29347,112 @@ mod tests {
         award_source_spell_experience(&mut live, owner, 19);
         award_source_spell_experience(&mut live, owner, u8::MAX);
         assert_eq!(live, suppressed, "completed-entry suppression precedes family lookup and publishes no reward");
+    }
+
+    #[test]
+    fn source24_group_two_strips_receive_group_three_close_commands() {
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
+            std::path::PathBuf::from,
+        );
+        let mut campaign = CampaignSession::open(
+            package,
+            CampaignSelection::ordinary(25).unwrap(),
+        ).expect("actual source24 owner package opens");
+
+        // These are declared progression boundaries, not a claim that the
+        // preceding Firefly and creature waves were completed here. Both
+        // groups use all their actual authored rows and normal constructors.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(2)
+            .expect("actual group2 constructs its unfiltered authored rows");
+        let expected = [(21_u16, 115_u16, 96_u16), (22, 140, 98),
+            (23, 116, 98), (24, 115, 129)];
+        let mut controllers = Vec::new();
+        for (index, x, y) in expected {
+            let feature = campaign.simulation().session.state.live.mission.authored_features()
+                .iter().find(|row| row.index == index).copied().unwrap();
+            assert_eq!((feature.kind, feature.subtype, feature.activation_group,
+                feature.tile_x, feature.tile_y), (14, 1, 2, x, y));
+            let position = feature.world_position(0);
+            let row = campaign.simulation().entities().iter().find(|row|
+                row.active && row.class == 14 && row.model == 1
+                    && row.position.x == position.x && row.position.y == position.y)
+                .unwrap_or_else(|| panic!("group2 did not construct strip row{index}"));
+            assert_eq!((row.action, row.life, row.source_dword_10()),
+                (6, 0, i32::from(feature.parameter_2)));
+            controllers.push(row.index);
+        }
+        campaign.simulation_mut().step_level2_source_pass(0);
+        for slot in &controllers {
+            let row = &campaign.simulation().entities()[usize::from(*slot)];
+            assert_eq!((row.class, row.model, row.action, row.life, row.subspell_index),
+                (14, 1, 6, 3, 48), "real controller must initialize before the close command");
+        }
+
+        // Row45 shares row21's cell. Sample its interior, where source
+        // sub_59F60 closes a direction-zero strip, using the same ground
+        // query read by flight and collision as well as the terrain plane.
+        let sample = |terrain: &SessionTerrain| {
+            (118_u16..=139).flat_map(|x| (96_u16..=97).map(move |y| {
+                let position = Position { x: x << 8, y: y << 8, z: 0 };
+                (terrain.ground_heights()[usize::from(y) * 256 + usize::from(x)],
+                    terrain.ground_height(position))
+            })).collect::<Vec<_>>()
+        };
+        let before_close = sample(campaign.simulation().canonical_terrain());
+        let journal_start = campaign.simulation().effect_journal().records().len();
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(3)
+            .expect("actual group3 constructs its unfiltered authored rows");
+        let markers: Vec<_> = campaign.simulation().economy().terrain_strip_close_triggers()
+            .iter().filter(|row| (45..=48).contains(&row.authored_index))
+            .map(|row| (row.authored_index, row.source_entity_index, row.position))
+            .collect();
+        assert_eq!(markers.len(), 4, "group3 constructs all four real close markers");
+        for (marker_index, controller_index) in [(45, 21), (46, 23), (47, 22), (48, 24)] {
+            let marker = markers.iter().find(|marker| marker.0 == marker_index).unwrap();
+            let feature = campaign.simulation().session.state.live.mission.authored_features()
+                .iter().find(|row| row.index == controller_index).unwrap();
+            let position = feature.world_position(0);
+            assert_eq!((marker.2.x, marker.2.y), (position.x, position.y));
+        }
+        campaign.simulation_mut().step_level2_source_pass(1);
+        for (_, slot, _) in &markers {
+            let marker = campaign.simulation().economy().terrain_strip_close_triggers()
+                .iter().find(|row| row.source_entity_index == *slot)
+                .expect("marker remains through its callback epilogue");
+            assert!(!marker.active && !marker.drawing_enabled);
+            let receipts = campaign.simulation().cf10_production_schedule_receipts();
+            assert!(receipts.iter().any(|receipt| matches!(receipt,
+                ScheduleReceipt::CallbackCompleted { slot: visited, .. } if visited == slot)));
+            assert!(receipts.iter().any(|receipt| matches!(receipt,
+                ScheduleReceipt::EpilogueCompleted { slot: visited, .. } if visited == slot)));
+        }
+        campaign.simulation_mut().step_level2_source_pass(2);
+        assert!(markers.iter().all(|(_, slot, _)| campaign.simulation().economy()
+            .terrain_strip_close_triggers().iter().all(|row| row.source_entity_index != *slot)),
+            "the next source pass reclaims the four hidden markers");
+
+        for pass in 3..=64 {
+            if campaign.simulation().entities()[usize::from(controllers[0])].life == 4 { break; }
+            campaign.simulation_mut().step_level2_source_pass(pass);
+        }
+        let controller = &campaign.simulation().entities()[usize::from(controllers[0])];
+        assert_eq!((controller.life, controller.subspell_index), (4, 0),
+            "the real row21 controller must complete its close lifecycle");
+        let after_close = sample(campaign.simulation().canonical_terrain());
+        assert!(before_close.iter().zip(&after_close).any(|(before, after)|
+            before.0 != after.0 && before.1 != after.1),
+            "the close must change a real strip height and its flight/collision ground query");
+        let journal = &campaign.simulation().effect_journal().records()[journal_start..];
+        assert!(journal.iter().any(|record| matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                entity_index, sound_id: 47, ..
+            }) if entity_index == controllers[0])));
+        assert!(journal.iter().any(|record| matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(FlightEvent::EndLoop {
+                entity_index, sound_id: 47, ..
+            }) if entity_index == controllers[0])));
     }
 
     #[test]

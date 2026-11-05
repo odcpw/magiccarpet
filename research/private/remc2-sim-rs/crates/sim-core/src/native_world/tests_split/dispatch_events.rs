@@ -6708,6 +6708,7 @@ fn level_two_public_family0_fireball_reaches_authored_bee_mailbox() {
             crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
             &[],
             0,
+            None,
         )
         .expect("the ordinary Fireball impact allocation may fail");
         assert_eq!(failed.collision_target, Some(bee_slot));

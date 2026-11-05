@@ -20,6 +20,7 @@ pub use creatures::{
     Creature17ClassProperties, Creature18ClassProperties, Creature21ClassProperties,
     Creature22ClassProperties, Creature23ClassProperties, Creature24ClassProperties,
     Creature26ClassProperties, Creature27ClassProperties, Creature28ClassProperties,
+    DRAGON_CLASS_PROPERTIES, DragonClassProperties,
     CymmerianClassProperties, FINAL_BOSS_CLASS_PROPERTIES, FinalBossClassProperties,
     WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
 };
@@ -294,8 +295,8 @@ pub const fn supports_authorable_creature_placement(kind: CreatureKind) -> bool 
 #[must_use]
 pub const fn creature_max_life_upper_bound(kind: CreatureKind) -> Option<u32> {
     match kind {
-        CreatureKind::Bee => Some(32_767),
-        CreatureKind::Archer
+        CreatureKind::Bee
+        | CreatureKind::Archer
         | CreatureKind::CastleDefender
         | CreatureKind::Creature22
         | CreatureKind::Creature23
@@ -2498,6 +2499,53 @@ impl LevelDefinition {
 #[cfg(test)]
 mod tests {
     use super::{ObjectiveCondition, RivalWizardId};
+
+    #[test]
+    fn bee_authored_health_admission_preserves_source_dword_range() {
+        use super::*;
+        use crate::adapter::creature_entity_definition;
+
+        let id = LevelEntityId::parse("creature.bee.health").unwrap();
+        let entity = creature_entity_definition(
+            id.clone(),
+            CreatureKind::Bee,
+            TilePosition { x: 10, y: 20 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+            3_000,
+            LevelEntityParameterAccess::SessionReset,
+        );
+        let original = LevelDefinition::new(vec![entity.clone()], vec![], vec![]).unwrap();
+        assert_eq!(
+            creature_max_life_upper_bound(CreatureKind::Bee),
+            Some(i32::MAX as u32)
+        );
+        for max_life in [40_000, i32::MAX as u32] {
+            let authored = original.with_creature_max_life(&id, max_life).unwrap();
+            let health = authored.entities[0].creature_health.unwrap();
+            assert_eq!((health.default_max_life, health.max_life), (3_000, max_life));
+            assert!(authored.verify_session_reset_variant_of(&original).is_ok());
+            assert!(LevelDefinition::new(authored.entities, vec![], vec![]).is_ok());
+
+            // Package import also validates the constructor default, rather
+            // than only admitting a later session-reset proposal.
+            let mut imported = entity.clone();
+            imported.creature_health = Some(CreatureHealthDefinition::new(
+                max_life,
+                LevelEntityParameterAccess::SessionReset,
+            ));
+            assert!(LevelDefinition::new(vec![imported], vec![], vec![]).is_ok());
+        }
+        for max_life in [0, i32::MAX as u32 + 1, u32::MAX] {
+            assert!(original.with_creature_max_life(&id, max_life).is_err());
+            let mut invalid = entity.clone();
+            invalid.creature_health.as_mut().unwrap().max_life = max_life;
+            assert!(LevelDefinition::new(vec![invalid.clone()], vec![], vec![]).is_err());
+            let mut variant = original.clone();
+            variant.entities[0] = invalid;
+            assert!(variant.verify_session_reset_variant_of(&original).is_err());
+        }
+    }
 
     #[test]
     fn target_objectives_require_a_package_present_target() {

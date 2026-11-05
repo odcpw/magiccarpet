@@ -1589,6 +1589,7 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
                     },
                     &[],
                     0,
+                    None,
                 )
                 .unwrap();
                 assert!(hit.impact_slot.is_some(), "actual actor impact allocates");
@@ -1614,6 +1615,7 @@ fn level_two_fireball_tiers_reach_actor_hit_experience_and_fire_spheres() {
                 },
                 &[],
                 0,
+                None,
             )
             .unwrap();
             assert!(failed.live);

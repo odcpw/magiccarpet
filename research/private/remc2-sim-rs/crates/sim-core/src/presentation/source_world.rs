@@ -49,6 +49,7 @@ pub(crate) struct SourceWorldSprites<'a> {
     reflections: bool,
     previous_pixel_mode: u8,
     stats: SourceWorldSpriteStats,
+    primary_visibility_completions: Vec<u16>,
 }
 
 impl<'a> SourceWorldSprites<'a> {
@@ -177,6 +178,7 @@ impl<'a> SourceWorldSprites<'a> {
                 && camera.eye_z < REFLECTION_EYE_Z_LIMIT,
             previous_pixel_mode,
             stats: SourceWorldSpriteStats::default(),
+            primary_visibility_completions: Vec::new(),
         })
     }
 
@@ -188,6 +190,14 @@ impl<'a> SourceWorldSprites<'a> {
     }
     pub(crate) fn last_pixel_mode(&self) -> u8 {
         self.previous_pixel_mode
+    }
+
+    /// Source DrawSprite's primary rotated branch sets subSpellIndex bit 6
+    /// after the call for entities whose control byte 3 has bit 6. The result
+    /// identifies source slots in this frame; the session owner binds their
+    /// allocator generations before applying the feedback to live state.
+    pub(crate) fn primary_visibility_completions(&self) -> &[u16] {
+        &self.primary_visibility_completions
     }
 
     pub(crate) fn draw_cell(
@@ -268,6 +278,12 @@ impl<'a> SourceWorldSprites<'a> {
             let result = draw(primary, mode, SourceSpritePass::Primary)?;
             self.stats.primary_calls += 1;
             self.stats.primary_writes += u64::from(result.framebuffer_writes);
+            if !primary.quarter_sum_anchor && source.control_flags & 0x4000_0000 != 0 {
+                // In the source this write follows the primary rotated draw
+                // branch, including its internal clip exits. It is not
+                // conditioned on a nontransparent framebuffer write.
+                self.primary_visibility_completions.push(source.entity_index);
+            }
         }
         Ok(())
     }
@@ -316,7 +332,7 @@ mod tests {
             owner_color: 123,
             brightness: 8192,
             draw_order: 0,
-            control_flags: 0,
+            control_flags: 0x4000_0000,
             primary_depth_adjustment: 0,
         };
         let particle = ParticleParameter {
@@ -371,6 +387,8 @@ mod tests {
                 &tables,
             )
             .unwrap();
+        assert!(world.primary_visibility_completions().is_empty(),
+            "a reflected draw cannot publish primary visibility");
         let reflection = indices[140 * 320 + 160];
         assert!(
             matches!(reflection, 2 | 3),
@@ -410,5 +428,77 @@ mod tests {
         assert_eq!(world.stats().shadow_calls, 1);
         assert_eq!(world.stats().primary_calls, 1);
         assert!(world.stats().shadow_writes > 0);
+        assert_eq!(world.primary_visibility_completions(), &[1]);
+    }
+
+    #[test]
+    fn primary_completion_follows_source_admission_even_when_internally_clipped() {
+        let camera = Level1TerrainFrameCamera {
+            render_x: 1000, render_y: 1000, eye_z: 0, yaw: 0, pitch: 0,
+            roll: 0, fov: 128, source_turn: 0, reflections: true,
+        };
+        let row = CampaignEntityPresentation {
+            entity_index: 31, source_id: 31, render_parameter_index: 0,
+            base_tmap: 1, selected_tmap: 1, logical_height: 128, render_mode: 17,
+            orientation_sector: 0, mirrored: false,
+            position: crate::Position { x: 3000, y: 488, z: 64 },
+            yaw: 0, pixel_mode: 0, owner_color: 123, brightness: 8192,
+            draw_order: 0, control_flags: 0x4000_0000, primary_depth_adjustment: 0,
+        };
+        let particle = ParticleParameter {
+            base_tmap: 1, word_2: 0, word_4: 0, speed: 0, rotation_speed: 128,
+            byte_10: 0, byte_11: 0, render_mode: 17, byte_13: 0,
+        };
+        let bank = SourceSpriteTmapBank::new(vec![SourceSpriteTmapFrame {
+            selector: 1, width: 2, height: 2, pixels: vec![2; 4].into_boxed_slice(),
+        }]).unwrap();
+        let ground = vec![0; 65536];
+        let mut cells = vec![0; 65536];
+        cells[usize::from(row.position.x >> 8) + 256 * usize::from(row.position.y >> 8)] = 1;
+        let mut indices = vec![0; 320 * 200];
+        let tables = vec![0; 83456];
+        let particles = [particle];
+        let create = |row, cells: &[u16]| SourceWorldSprites::new(
+            camera, crate::terrain_frame::level1_projection(camera), MapType::Night,
+            vec![row], &particles, &bank, cells, &ground, 0, true,
+        ).unwrap();
+
+        let mut world = create(row, &cells);
+        world.draw_cell(TerrainPass::Reflected, 1, 0, 320, 200, &mut indices, &tables).unwrap();
+        assert!(world.primary_visibility_completions().is_empty());
+        world.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut indices, &tables).unwrap();
+        assert_eq!(world.stats().primary_calls, 1);
+        assert_eq!(world.stats().primary_writes, 0, "sprite lies outside the viewport");
+        assert_eq!(world.primary_visibility_completions(), &[31],
+            "source primary draw completion is not gated on framebuffer writes");
+
+        let mut unvisited = create(row, &vec![0; 65536]);
+        unvisited.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut indices, &tables).unwrap();
+        assert!(unvisited.primary_visibility_completions().is_empty());
+
+        let mut unflagged = row;
+        unflagged.control_flags = 0;
+        let mut no_feedback = create(unflagged, &cells);
+        no_feedback.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut indices, &tables).unwrap();
+        assert_eq!(no_feedback.stats().primary_calls, 1);
+        assert!(no_feedback.primary_visibility_completions().is_empty());
+
+        let mut behind = row;
+        behind.position.y = 1128;
+        let mut behind_cells = vec![0; 65536];
+        behind_cells[usize::from(behind.position.x >> 8)
+            + 256 * usize::from(behind.position.y >> 8)] = 1;
+        let mut rejected = create(behind, &behind_cells);
+        rejected.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut indices, &tables).unwrap();
+        assert!(rejected.primary_visibility_completions().is_empty(),
+            "a near-plane rejected sprite never calls DrawSprite");
+
+        let mut special = row;
+        special.render_mode = 21;
+        let mut special_world = create(special, &cells);
+        special_world.draw_cell(TerrainPass::Primary, 1, 0, 320, 200, &mut indices, &tables).unwrap();
+        assert_eq!(special_world.stats().primary_calls, 1);
+        assert!(special_world.primary_visibility_completions().is_empty(),
+            "the source special-pivot branch has no primary visibility write");
     }
 }

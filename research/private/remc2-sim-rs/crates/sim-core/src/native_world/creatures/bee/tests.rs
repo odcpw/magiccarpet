@@ -142,6 +142,408 @@ fn public_day_morph_bee() -> (crate::native_world::Mc2Simulation, u16, u16) {
     panic!("ordinary Morph cast did not produce its real Bee");
 }
 
+#[test]
+fn authored_day_bees_contact_player_and_public_fireball_drives_absence() {
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+    use crate::PlayerCommand;
+
+    let mut session = crate::native_world::tests::level_two_campaign_session();
+    assert_eq!(session.canonical_terrain().map_type(), MapType::Day);
+    let player = session.state.entity_index;
+    session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+    // Declared player resources: one normal full-health encounter and an
+    // owner base/balance sufficient for the real paid Fireball casts.
+    {
+        let live = &mut session.session.state.live;
+        live.economy.economy.owner_base_max_mana.insert(player, 50_000);
+        live.economy.economy.rebuild_source_owner_max_mana_projection();
+        let capacity = live.economy.economy.owner_max_mana_capacity(player);
+        let health = live.shared_spells.player_entity.max_life;
+        live.player_life = health;
+        live.shared_spells.set_player_entity_life(health);
+        live.shared_spells.set_local_player_mana_for_test(50_000);
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_life(health);
+        parent.set_mana(50_000);
+        parent.max_mana = capacity;
+        parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = 50_000; }
+    }
+    // Allow the source's initial player protection to expire; do not shorten it.
+    for _ in 0..256 {
+        if session.session.state.live.player_protection_ticks == 0 { break; }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "protection dispatch: {:?}", session.dispatch_events());
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0);
+
+    // Select the real group-21 model32 objective trigger, then leave the
+    // original type7/model2 absence objective selected and incomplete.
+    let (producer, producer_stage) = session.entities().iter().find(|row|
+        row.active && row.class == 11 && row.model == 32 && row.action == 32
+            && row.source_id == 21 && !row.drawing_disabled())
+        .map(|row| (row.index, usize::try_from(row.level_gate).unwrap()))
+        .expect("the actual Level 2 group21 source producer");
+    session.runtime.set_level2_objective_text_selector(2);
+    for owner in 0..session.runtime.objectives.len() {
+        session.runtime.set_level2_objective_stage_selector_for(owner, producer_stage, 2);
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 21, .. }
+            if *source_slot == producer)), "group21 production: {:?}", session.dispatch_events());
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 1);
+    let bees = [229_u16, 230, 231].map(|authored| {
+        let row = session.economy().bee_creatures().iter().find(|row|
+            row.active && row.authored_index() == Some(authored)).expect("authored group21 Bee");
+        let handle = session.source_arena().handle(row.source_entity_index).unwrap();
+        let sprite = session.campaign_entity_presentations(0).unwrap().into_iter()
+            .find(|view| view.entity_index == handle.source_slot).expect("real Bee sprite projection");
+        assert_eq!((sprite.render_parameter_index, sprite.position), (row.particle_index, row.position));
+        (authored, handle, row.life)
+    });
+    let first = session.economy().bee_creatures().iter().find(|row|
+        row.source_entity_index == bees[0].1.source_slot).copied().unwrap();
+    let mut encounter = first.position;
+    crate::move_entity(&mut encounter, first.yaw, 0, 768);
+    encounter.z = first.position.z.wrapping_sub(session.entities()[usize::from(player)].array_yaw())
+        .max(session.canonical_terrain().ground_height(encounter).wrapping_add(256));
+    session.set_level2_entity_position(player, encounter).unwrap();
+    let initial_player_life = session.canonical_player_life_for_test();
+    let event_start = session.economy().events().len();
+    let mut acquired = false;
+    let mut contact = false;
+    let mut bee_audio = false;
+    let mut encounter_trace = Vec::new();
+    for _ in 0..256 {
+        let row = session.economy().bee_creatures().iter()
+            .find(|row| row.source_entity_index == first.source_entity_index).copied();
+        if let Some(row) = row {
+            acquired |= row.action == 18 && row.target_entity_index == Some(player);
+            if encounter_trace.len() < 40 { encounter_trace.push((row.action, row.position,
+                row.yaw, row.source_byte_3e, row.target_entity_index, session.state.position)); }
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Bee contact dispatch: {:?}", session.dispatch_events());
+        contact |= session.economy().events()[event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, .. }
+                if *target_entity_index == player && *attacker_entity_index == first.entity_id && *damage > 0));
+        bee_audio |= session.effect_journal().records().iter().any(|record| matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::BeeAttack, entity_index, sound_id: 12 | 13, ..
+            }) if entity_index == first.source_entity_index)
+                && record.audio.is_some_and(|audio| audio.play_type == 3));
+        if acquired && contact && bee_audio { break; }
+        if session.canonical_player_life_for_test() < 0 { break; }
+    }
+    assert!(acquired && contact && bee_audio && session.canonical_player_life_for_test() < initial_player_life,
+        "actual Bee must acquire and contact the player with positional audio: acquired={acquired} contact={contact} audio={bee_audio} life={initial_player_life}->{}, trace={encounter_trace:?}",
+        session.canonical_player_life_for_test());
+
+    let holder = session.shared_spells().local_player().enabled_spell_holders[0];
+    let fire_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 0).unwrap() as i8;
+    let credit_before = session.economy().authored_bee_kill_census(player);
+    let mut paid_casts = 0;
+    let mut retreats = 0;
+    let mut observed_damage = [false; 3];
+    let mut hidden = [false; 3];
+    let mut reclaimed = [false; 3];
+    let mut trace = Vec::new();
+    for turn in 0..1600 {
+        let target = bees.iter().find_map(|(_, handle, _)| {
+            if session.source_arena().handle(handle.source_slot) != Some(*handle) { return None; }
+            session.economy().bee_creatures().iter().find(|row|
+                row.active && row.source_entity_index == handle.source_slot && row.life >= 0).copied()
+        });
+        let ready = session.shared_spells().pickup(holder).is_some_and(|row|
+            row.active_value == 0 && session.shared_spells().player_entity().mana >= row.max_mana);
+        let mut command = PlayerCommand::default();
+        if let Some(target) = target.filter(|_| ready) {
+            let yaw = 1024_i16;
+            let mut launch = target.position;
+            crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 384);
+            let mut position = launch;
+            let parent = session.shared_spells().player_entity();
+            let parent_yaw = yaw.wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity) & 0x07ff;
+            let hand = if parent.control_flags & 0x0100 != 0 { Some(parent_yaw.wrapping_sub(512)) }
+                else if parent.control_flags & 0x0200 != 0 { Some(parent_yaw.wrapping_add(512)) } else { None };
+            if let Some(hand) = hand { crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256); }
+            let centre_z = target.position.z.wrapping_add(target.collision_vertical_offset);
+            position.z = centre_z.wrapping_sub(parent.array_fov())
+                .max(session.canonical_terrain().ground_height(position).wrapping_add(256))
+                .max(session.canonical_terrain().ground_height(launch).wrapping_add(256));
+            launch.z = position.z.wrapping_add(parent.array_fov());
+            let (_, pitch) = crate::level1_mission::projectile_guidance_angles(launch,
+                Position { z: centre_z, ..target.position });
+            session.set_level2_entity_position(player, position).unwrap();
+            session.set_level2_player_aim_for_test(yaw, pitch);
+            command = PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40, ..PlayerCommand::default() };
+        } else if let Some(target) = target {
+            // Declared player travel control: retreat during the real holder
+            // cooldown, then return to the normal firing position when ready.
+            // Bees retain their actual targets, motion, damage and cadence.
+            let mut position = target.position;
+            crate::move_entity(&mut position, 0, 0, 4096);
+            position.z = position.z.max(session.canonical_terrain().ground_height(position).wrapping_add(256));
+            session.set_level2_entity_position(player, position).unwrap();
+            retreats += 1;
+        }
+        let mana_before = session.shared_spells().player_entity().mana;
+        let cost = session.shared_spells().pickup(holder).unwrap().max_mana;
+        session.step_outer_turn(command, 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Bee retaliation dispatch turn={turn}: {:?}", session.dispatch_events());
+        if mana_before.saturating_sub(session.shared_spells().player_entity().mana) >= cost { paid_casts += 1; }
+        for (index, (_, handle, initial_life)) in bees.iter().enumerate() {
+            if session.source_arena().handle(handle.source_slot) != Some(*handle) {
+                reclaimed[index] = true;
+            } else if let Some(row) = session.economy().bee_creatures().iter().find(|row|
+                row.active && row.source_entity_index == handle.source_slot)
+            {
+                observed_damage[index] |= row.life < *initial_life && row.damage_attacker_entity_index == player;
+                hidden[index] |= !row.drawing_enabled;
+            }
+        }
+        if trace.len() < 32 && paid_casts > 0 {
+            trace.push((turn, paid_casts, session.canonical_player_life_for_test(),
+                bees.map(|(_, handle, _)| session.economy().bee_creatures().iter().find(|row|
+                    row.source_entity_index == handle.source_slot).map(|row|
+                    (row.life, row.action, row.position, row.target_entity_index, row.drawing_enabled)))));
+        }
+        if reclaimed.iter().all(|value| *value) && session.runtime().objectives[0].stage_selectors[2] == 2 { break; }
+        if session.canonical_player_life_for_test() < 0 { break; }
+    }
+    assert!(paid_casts > 0 && retreats > 0 && observed_damage.iter().all(|value| *value)
+        && hidden.iter().all(|value| *value) && reclaimed.iter().all(|value| *value)
+        && session.economy().authored_bee_kill_census(player) == credit_before + 3
+        && session.runtime().objectives[0].stage_selectors[2] == 2,
+        "real group21 Bee kills must advance the original absence objective: paid={paid_casts} retreats={retreats} damage={observed_damage:?} hidden={hidden:?} reclaimed={reclaimed:?} credit={}->{} objective={} player_life={} trace={trace:?}",
+        credit_before, session.economy().authored_bee_kill_census(player),
+        session.runtime().objectives[0].stage_selectors[2], session.canonical_player_life_for_test());
+}
+
+#[test]
+fn level_five_real_bee_absence_switch_publishes_its_authored_group() {
+    use crate::native_world::{BeeCreatureOrigin, Mc2DispatchEvent};
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+        std::path::PathBuf::from,
+    );
+    let mut session = CampaignSession::open(&package, CampaignSelection::ordinary(5).unwrap())
+        .expect("unfiltered owner Level 5 campaign").simulation().clone();
+    assert_eq!(session.canonical_terrain().map_type(), MapType::Day);
+    let player = session.state.entity_index;
+    let switch = 263_u16;
+    let source = &session.entities()[usize::from(switch)];
+    assert!(source.active && (source.class, source.model, source.action, source.source_id) == (11, 15, 15, 5));
+    let switch_handle = session.source_arena().handle(switch).expect("real reset absence switch");
+    assert_eq!(source.source_dword_10(), 0);
+    session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+    // Declared player resources; the source Bees, their health and the
+    // countdown retain their package values and normal callbacks.
+    {
+        let live = &mut session.session.state.live;
+        live.economy.economy.owner_base_max_mana.insert(player, 50_000);
+        live.economy.economy.rebuild_source_owner_max_mana_projection();
+        let capacity = live.economy.economy.owner_max_mana_capacity(player);
+        let health = live.shared_spells.player_entity.max_life;
+        live.player_life = health;
+        live.shared_spells.set_player_entity_life(health);
+        live.shared_spells.set_local_player_mana_for_test(50_000);
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_life(health);
+        parent.set_mana(50_000);
+        parent.max_mana = capacity;
+        parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = 50_000; }
+    }
+    let initial_slots = [136_u16, 137, 144, 244, 245, 246, 247, 260, 261, 262];
+    let reset_rows = initial_slots.map(|slot| {
+        let row = &session.entities()[usize::from(slot)];
+        (slot, row.life, row.action, row.position, row.word_26(), row.source_dword_10())
+    });
+    let reset_handles = initial_slots.map(|slot| session.source_arena().handle(slot)
+        .expect("each original reset Bee has a current source generation"));
+    let initial_events = session.economy().events().len();
+    crate::native_world::area_damage::start_construction_kill_trace();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+        "Level 5 initial dispatch: {:?}", session.dispatch_events());
+    let bees = initial_slots.map(|slot| {
+        let row = session.economy().bee_creatures().iter().find(|row|
+            row.active && row.source_entity_index == slot && row.origin == BeeCreatureOrigin::InitialPackage)
+            .expect("actual initial Level 5 Bee");
+        (session.source_arena().handle(slot).unwrap(), row.life)
+    });
+    assert!(bees.iter().zip(reset_handles).all(|((handle, _), reset)| *handle == reset),
+        "the first source pass must retain each original Bee generation");
+    assert_eq!(session.entities()[usize::from(switch)].source_dword_10(), 0,
+        "real living Bees block the source countdown");
+    let credit_before = session.economy().authored_bee_kill_census(player);
+    let holder = session.shared_spells().local_player().enabled_spell_holders[0];
+    let fire_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 0).unwrap() as i8;
+    let mut paid_casts = 0;
+    let mut damaged = [false; 10];
+    let mut hidden = [false; 10];
+    let mut reclaimed = [false; 10];
+    let mut switch_hidden = false;
+    let mut switch_reclaimed = false;
+    let mut published = false;
+    let mut timers = Vec::new();
+    let mut trace = Vec::new();
+    let mut death_owners = [None; 10];
+    let mut lethal_owners = [None; 10];
+    let adopted_rows = bees.map(|(handle, _)| session.economy().bee_creatures().iter()
+        .find(|row| row.source_entity_index == handle.source_slot).copied());
+    let initial_damage = session.economy().events()[initial_events..].iter().filter(|event| matches!(event,
+        crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, .. }
+            if initial_slots.contains(target_entity_index))).cloned().collect::<Vec<_>>();
+    let mut retirements = Vec::new();
+    for turn in 0..2400 {
+        let before_rows = bees.map(|(handle, _)| session.economy().bee_creatures().iter()
+            .find(|row| row.active && row.source_entity_index == handle.source_slot).copied());
+        let target = bees.iter().find_map(|(handle, _)| {
+            if session.source_arena().handle(handle.source_slot) != Some(*handle) { return None; }
+            session.economy().bee_creatures().iter().find(|row|
+                row.active && row.source_entity_index == handle.source_slot && row.life >= 0).copied()
+        });
+        let ready = session.shared_spells().pickup(holder).is_some_and(|row|
+            row.active_value == 0 && session.shared_spells().player_entity().mana >= row.max_mana);
+        let mut command = PlayerCommand::default();
+        if let Some(target) = target.filter(|_| ready) {
+            // Declared player aim/travel control, with the real hand offset.
+            let yaw = 1024_i16;
+            let mut launch = target.position;
+            crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 384);
+            let mut position = launch;
+            let parent = session.shared_spells().player_entity();
+            let parent_yaw = yaw.wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity) & 0x07ff;
+            let hand = if parent.control_flags & 0x0100 != 0 { Some(parent_yaw.wrapping_sub(512)) }
+                else if parent.control_flags & 0x0200 != 0 { Some(parent_yaw.wrapping_add(512)) } else { None };
+            if let Some(hand) = hand { crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256); }
+            let centre_z = target.position.z.wrapping_add(target.collision_vertical_offset);
+            position.z = centre_z.wrapping_sub(parent.array_fov())
+                .max(session.canonical_terrain().ground_height(position).wrapping_add(256))
+                .max(session.canonical_terrain().ground_height(launch).wrapping_add(256));
+            launch.z = position.z.wrapping_add(parent.array_fov());
+            let (_, pitch) = crate::level1_mission::projectile_guidance_angles(launch,
+                Position { z: centre_z, ..target.position });
+            session.set_level2_entity_position(player, position).unwrap();
+            session.set_level2_player_aim_for_test(yaw, pitch);
+            command = PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40, ..PlayerCommand::default() };
+        } else if let Some(target) = target {
+            let mut position = target.position;
+            crate::move_entity(&mut position, 0, 0, 4096);
+            position.z = position.z.max(session.canonical_terrain().ground_height(position).wrapping_add(256));
+            session.set_level2_entity_position(player, position).unwrap();
+        }
+        let mana_before = session.shared_spells().player_entity().mana;
+        let cost = session.shared_spells().pickup(holder).unwrap().max_mana;
+        let event_cursor = session.economy().events().len();
+        session.step_outer_turn(command, 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "Level 5 Bee countdown dispatch turn={turn}: {:?}", session.dispatch_events());
+        if mana_before.saturating_sub(session.shared_spells().player_entity().mana) >= cost { paid_casts += 1; }
+        for (index, (handle, initial_life)) in bees.iter().enumerate() {
+            let original_is_current = session.source_arena().handle(handle.source_slot) == Some(*handle);
+            let after = original_is_current.then(|| session.economy().bee_creatures().iter().find(|row|
+                row.active && row.source_entity_index == handle.source_slot).copied()).flatten();
+            if let Some(row) = after.filter(|row| row.life < 0) {
+                death_owners[index].get_or_insert(row.kill_credit_entity_index);
+                if session.economy().events()[event_cursor..].iter().any(|event| matches!(event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied {
+                        target_entity_index, attacker_entity_index, lethal: true, ..
+                    } if *target_entity_index == handle.source_slot
+                        && *attacker_entity_index == row.kill_credit_entity_index))
+                { lethal_owners[index] = Some(row.kill_credit_entity_index); }
+            }
+            if before_rows[index].is_some_and(|row| row.life >= 0 && row.drawing_enabled)
+                && after.is_none_or(|row| row.life < 0 || !row.drawing_enabled)
+            {
+                let damage_events = session.economy().events()[event_cursor..].iter().filter(|event| matches!(event,
+                    crate::native_world::Level2EconomyEvent::DamageApplied { target_entity_index, .. }
+                        if *target_entity_index == handle.source_slot)).cloned().collect::<Vec<_>>();
+                retirements.push(format!("turn={turn} slot={} before={:?} after={after:?} events={damage_events:?}",
+                    handle.source_slot, before_rows[index]));
+            }
+            if session.source_arena().handle(handle.source_slot) != Some(*handle) {
+                reclaimed[index] = true;
+            } else if let Some(row) = session.economy().bee_creatures().iter().find(|row|
+                row.active && row.source_entity_index == handle.source_slot) {
+                damaged[index] |= row.life < *initial_life && row.damage_attacker_entity_index == player;
+                hidden[index] |= !row.drawing_enabled;
+            }
+        }
+        published |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 5, authored_indices, .. }
+                if *source_slot == switch && authored_indices.as_ref() == [239, 247, 254, 255, 262, 263, 281, 282, 289, 290, 297, 298]));
+        if session.source_arena().handle(switch) != Some(switch_handle) {
+            switch_reclaimed = true;
+        } else {
+            let source = &session.entities()[usize::from(switch)];
+            switch_hidden |= source.drawing_disabled();
+            let timer = source.source_dword_10();
+            if timer != 0 && timers.last() != Some(&timer) { timers.push(timer); }
+            if target.is_some() { assert_eq!(timer, 0, "living Bee must freeze the switch countdown at turn {turn}"); }
+        }
+        if trace.len() < 32 && paid_casts > 0 {
+            trace.push((turn, paid_casts, target.map(|row| (row.source_entity_index, row.life)),
+                session.canonical_player_life_for_test(), timers.last().copied(), published));
+        }
+        if published && switch_reclaimed && reclaimed.iter().all(|value| *value) { break; }
+        if session.canonical_player_life_for_test() < 0 { break; }
+    }
+    let expected_timers = (1..=16).rev().collect::<Vec<_>>();
+    let construction_receipts = crate::native_world::area_damage::take_construction_kill_trace();
+    let causal_retirements = std::array::from_fn::<_, 10, _>(|index| {
+        let (handle, _) = bees[index];
+        let Some(owner) = death_owners[index].filter(|owner| *owner != 0) else { return false; };
+        if owner == player {
+            damaged[index] && lethal_owners[index] == Some(player)
+        } else {
+            lethal_owners[index] == Some(owner) || {
+                // The source may revisit an already-dead retained address and
+                // replace its credit. The first actual write must kill a live
+                // original generation; later writes must all see it dead.
+                let mut writes = construction_receipts.iter().filter(|&&(slot, generation, _, _)|
+                    (slot, generation) == (handle.source_slot, handle.generation));
+                let Some(&(_, _, first_owner, first_life)) = writes.next() else { return false; };
+                if first_owner == 0 || first_owner == player
+                    || !first_life.is_some_and(|life| life >= 0) { return false; }
+                let mut final_owner = first_owner;
+                for &(_, _, source, life) in writes {
+                    if !life.is_some_and(|life| life < 0) { return false; }
+                    final_owner = source;
+                }
+                final_owner == owner
+            }
+        }
+    });
+    let player_kills = u32::try_from(death_owners.iter().filter(|owner| **owner == Some(player)).count())
+        .expect("ten initial Bee deaths fit the source census");
+    let group_bees = session.economy().bee_creatures().iter().filter_map(|row| {
+        row.authored_index().filter(|index| [239, 247, 254, 255, 262, 263, 281, 282, 289, 290, 297, 298].contains(index))
+    }).collect::<std::collections::BTreeSet<_>>();
+    assert!(paid_casts > 0 && player_kills > 0 && causal_retirements.iter().all(|value| *value) && hidden.iter().all(|value| *value)
+        && reclaimed.iter().all(|value| *value) && switch_hidden && switch_reclaimed && published
+        && timers == expected_timers && group_bees.len() == 12
+        && session.economy().authored_bee_kill_census(player) == credit_before + player_kills,
+        "actual Bee absence must publish group5 after 17 clear visits: paid={paid_casts} damaged={damaged:?} deaths={death_owners:?} lethal={lethal_owners:?} construction={construction_receipts:?} causal={causal_retirements:?} hidden={hidden:?} reclaimed={reclaimed:?} switch_hidden={switch_hidden} switch_reclaimed={switch_reclaimed} published={published} timers={timers:?} group_bees={group_bees:?} credit={}->{} player_life={} trace={trace:?} reset_rows={reset_rows:?} adopted_rows={adopted_rows:?} initial_damage={initial_damage:?} retirements={retirements:#?}",
+        credit_before, session.economy().authored_bee_kill_census(player), session.canonical_player_life_for_test());
+}
+
 fn terrain() -> SessionTerrain {
     let plane = || vec![0; 65_536].into_boxed_slice();
     SessionTerrain::from_planes(

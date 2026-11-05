@@ -232,6 +232,16 @@ struct RawCreaturePartBinding {
     kind: CreatureKind,
 }
 
+/// A summoned Dragon's parts can outlive their root while predecessor links
+/// retire one callback at a time. Their birth identity must therefore survive
+/// root reclaim, but never a reuse of the part's own source address.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DynamicDragonPartOrigin {
+    child_generation: u32,
+    root: SourceEntityHandle,
+    origin: CreatureRootOrigin,
+}
+
 /// Source-ordered creature roots frozen by a caller for one observation or
 /// UpdateEntities pass. Multipart limbs and projectile children remain owned
 /// by their roots and are deliberately not counted as additional creatures.
@@ -271,6 +281,7 @@ pub struct SourceArena {
     // Producer provenance only; all mutable creature fields remain in entities.
     raw_creature_origins: BTreeMap<u16, (u32, CreatureKind, CreatureRootOrigin)>,
     raw_creature_parts: BTreeMap<u16, RawCreaturePartBinding>,
+    dynamic_dragon_part_origins: BTreeMap<u16, DynamicDragonPartOrigin>,
     creature_parents: BTreeMap<u16, (u32, SourceEntityHandle)>,
 }
 
@@ -286,6 +297,7 @@ impl SourceArena {
             replacement_slots: Vec::new(),
             raw_creature_origins: BTreeMap::new(),
             raw_creature_parts: BTreeMap::new(),
+            dynamic_dragon_part_origins: BTreeMap::new(),
             creature_parents: BTreeMap::new(),
         };
         arena.adopt_reset_settlement_sources();
@@ -311,6 +323,7 @@ impl SourceArena {
             && self.replacement_slots.is_empty()
             && self.raw_creature_origins.is_empty()
             && self.raw_creature_parts.is_empty()
+            && self.dynamic_dragon_part_origins.is_empty()
             && self.creature_parents.is_empty()
         {
             return arena;
@@ -373,6 +386,19 @@ impl SourceArena {
                 hash.update(binding.kind.as_str().as_bytes());
             }
         }
+        if !self.dynamic_dragon_part_origins.is_empty() {
+            hash.update(b"dynamic-dragon-part-origins-v1");
+            for (slot, binding) in &self.dynamic_dragon_part_origins {
+                hash.update(slot.to_le_bytes());
+                hash.update(binding.child_generation.to_le_bytes());
+                hash.update(binding.root.source_slot.to_le_bytes());
+                hash.update(binding.root.generation.to_le_bytes());
+                // Dragon admission below permits only creature conversion.
+                if let CreatureRootOrigin::CreatureConversion { producer_slot } = binding.origin {
+                    hash.update(producer_slot.to_le_bytes());
+                }
+            }
+        }
         if !self.creature_parents.is_empty() {
             hash.update(b"creature-parents-v1");
             for (slot, (generation, parent)) in &self.creature_parents {
@@ -427,6 +453,26 @@ impl SourceArena {
         true
     }
 
+    /// Discard provenance only after a part's own carrier has retired or its
+    /// address has been allocated to a different generation.
+    pub(crate) fn prune_dynamic_dragon_part_origins(&mut self) {
+        let current = self
+            .economy
+            .authored_dragon_parts()
+            .iter()
+            .filter(|part| part.active)
+            .map(|part| {
+                (
+                    part.source_entity_index,
+                    (self.slot_generation(part.source_entity_index), part.entity_id),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        self.dynamic_dragon_part_origins.retain(|slot, binding| {
+            current.get(slot) == Some(&(binding.child_generation, binding.root.source_slot))
+        });
+    }
+
     /// Bind provenance for a live typed model19 Firefly. The typed
     /// `authored_class5` row remains authoritative; this map contributes only
     /// the cast origin and the source-slot generation that created it.
@@ -470,6 +516,34 @@ impl SourceArena {
         }
         self.raw_creature_origins
             .insert(handle.source_slot, binding);
+        if kind == CreatureKind::Dragon {
+            let parts = self.economy.authored_dragon_parts().iter()
+                .filter(|part| {
+                    part.active && part.entity_id == handle.source_slot
+                        && part.root_authored_index == u16::MAX
+                })
+                .map(|part| {
+                    (part.source_entity_index, self.slot_generation(part.source_entity_index))
+                })
+                .collect::<Vec<_>>();
+            for (slot, generation) in parts {
+                // A previous root may have occupied the same address while
+                // its already-bound tail is still naturally retiring.
+                if self.dynamic_dragon_part_origins.get(&slot)
+                    .is_some_and(|prior| prior.child_generation == generation)
+                {
+                    continue;
+                }
+                self.dynamic_dragon_part_origins.insert(
+                    slot,
+                    DynamicDragonPartOrigin {
+                        child_generation: generation,
+                        root: handle,
+                        origin,
+                    },
+                );
+            }
+        }
         true
     }
 
@@ -1008,6 +1082,7 @@ impl SourceArena {
         crate::world::scenery::trees::prepare_reclaim(self, terrain)?;
         crate::native_world::prepare_retained_effects_reclaim(self)?;
         self.economy.reclaim_inactive_slots_at_source_boundary();
+        self.prune_dynamic_dragon_part_origins();
         let retired_morph_holders = crate::native_world::creatures::morph::holder_generations(&self.economy)
             .filter_map(|(slot, generation)| {
                 (self.slot_generation(slot) != generation || self.handle(slot).is_none())
@@ -1061,6 +1136,7 @@ impl SourceArena {
         self.entities[usize::from(slot)] = raw;
         crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
         self.raw_creature_origins.remove(&slot);
+        self.dynamic_dragon_part_origins.remove(&slot);
         self.creature_parents.remove(&slot);
         self.clear_raw_creature_part_bindings_for_slot(slot);
     }
@@ -1275,6 +1351,7 @@ impl SourceArena {
         self.effects.forget_source_slot(slot);
         crate::native_world::creatures::morph::forget_holder(&mut self.economy, slot);
         self.raw_creature_origins.remove(&slot);
+        self.dynamic_dragon_part_origins.remove(&slot);
         self.creature_parents.remove(&slot);
         self.clear_raw_creature_part_bindings_for_slot(slot);
         Some(slot)
@@ -1779,20 +1856,22 @@ impl SourceArena {
         if let Some(source) = self.economy.authored_dragon_parts().iter().find(|source| {
             (include_retained || source.active) && source.source_entity_index == source_slot
         }) {
-            if let Some((root_generation, kind, origin)) =
-                self.raw_creature_origins.get(&source.entity_id)
-                && *root_generation == self.slot_generation(source.entity_id)
-                && *kind == CreatureKind::Dragon
+            if let Some(binding) = self.dynamic_dragon_part_origins.get(&source_slot)
+                && binding.child_generation == dynamic_handle.generation
+                && binding.root.source_slot == source.entity_id
             {
                 return Some(CreatureRuntimeIdentity {
                     handle: dynamic_handle,
-                    kind: *kind,
+                    kind: CreatureKind::Dragon,
                     root_slot: source.entity_id,
                     role: CreatureRuntimeRole::MultipartPart,
-                    origin: *origin,
+                    origin: binding.origin,
                     raw_model: None,
                     living: false,
                 });
+            }
+            if source.root_authored_index == u16::MAX {
+                return None;
             }
             let &kind = authored_bindings.get(&source.root_authored_index)?;
             return Some(CreatureRuntimeIdentity {

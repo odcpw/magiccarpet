@@ -600,7 +600,27 @@ pub(super) fn with_campaign_presentation_session_mut<T>(
         ));
     };
     let mut record = runtime.take_campaign_presentation_record()?;
+    let prior_frame = match &record.kind {
+        CampaignSessionKind::Campaign { day_frame_state, .. } => day_frame_state.current_frame()
+            .map(|frame| (frame.generation, frame.tick, frame.scene_revision)),
+        _ => None,
+    };
     let result = operation(&mut record, true);
+    // Rendering borrows a presentation snapshot. Its source visibility input
+    // must return to the neutral session's real authority, never just the copy.
+    let result = match result {
+        Ok(value) => {
+            let current_frame = match &record.kind {
+                CampaignSessionKind::Campaign { day_frame_state, .. } => day_frame_state.current_frame()
+                    .map(|frame| (frame.generation, frame.tick, frame.scene_revision)),
+                _ => None,
+            };
+            if current_frame != prior_frame {
+                runtime.commit_primary_sprite_visibility(&record).map(|()| value)
+            } else { Ok(value) }
+        }
+        Err(error) => Err(error),
+    };
     runtime.retain_campaign_presentation_record(record);
     result
 }
@@ -2163,6 +2183,10 @@ pub extern "C" fn mc_native_campaign_presentation_frame_copy(
             let frame = day_frame_state
                 .current_frame()
                 .expect("successful Day render commits a current frame");
+            if newly_committed {
+                frame.apply_primary_visibility(reset, query.generation)
+                    .map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error.to_string()))?;
+            }
             // SAFETY: the index buffer was checked non-null and large enough
             // for the exact fixed-profile frame before any presentation state
             // was mutated.
@@ -2560,6 +2584,7 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
             let same_tick = day_frame_state
                 .current_frame()
                 .is_some_and(|frame| frame.generation == generation && frame.tick == expected_tick);
+            let prior_revision = day_frame_state.current_frame().map(|frame| frame.scene_revision);
             let rendered = if same_tick {
                 day_frame_state.render_current(inspection, reset, assets, generation)
             } else {
@@ -2571,6 +2596,10 @@ pub extern "C" fn mc_native_campaign_day_indexed_frame_render(
                     format!("campaign Day indexed frame render failed: {error}"),
                 )
             })?;
+            if prior_revision != Some(frame.scene_revision) {
+                frame.apply_primary_visibility(reset, generation)
+                    .map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error.to_string()))?;
+            }
             Ok(campaign_day_indexed_frame_info(&frame))
         })
     })

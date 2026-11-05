@@ -938,26 +938,14 @@ fn construct_strip(
     terrain: &mut SessionTerrain,
     feature: AuthoredFeature,
 ) -> Result<Option<u16>, String> {
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
-        return Ok(None);
-    };
     let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
-    let mut source = new_event(slot, arena.economy.new_event_rng(slot), position);
-    terrain_strip::bind_startup_construction(
-        &mut source,
+    terrain_strip::construct(
+        arena,
+        terrain,
+        position,
         feature.parameter_1 as i8,
         i32::from(feature.parameter_2),
-    );
-    arena.economy.map_chains.sync_entity(RenderableMapSeed {
-        entity_index: slot,
-        active: true,
-        x: position.x,
-        y: position.y,
-    })?;
-    arena.economy.source_rng.insert(slot, source.entity_rng);
-    arena.entities[usize::from(slot)] = source;
-    synchronize_links(arena, terrain, slot);
-    Ok(Some(slot))
+    )
 }
 
 fn construct_house(

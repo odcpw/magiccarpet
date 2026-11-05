@@ -7596,7 +7596,7 @@ fn level_two_mana_sphere_new_event_life_fades_and_reclaims_on_source_boundaries(
 }
 
 #[test]
-fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() {
+fn level_two_fireball_guidance_uses_source_dragon_list_and_collision_keeps_parts() {
     let mut session = level_two_possession_lifecycle_session();
     let terrain = session.terrain.clone();
     let mut position = Position {
@@ -7637,7 +7637,9 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
         .filter(|target| expected.contains(&target.source_slot))
         .map(|target| target.source_slot)
         .collect::<BTreeSet<_>>();
-    assert_eq!(guidance, expected);
+    // Source's class-5 list excludes action232 body parts; collision still
+    // follows every live map-linked part independently.
+    assert_eq!(guidance, BTreeSet::from([root_slot]));
     assert_eq!(collision, expected);
     let root_render = session
         .economy()
@@ -7709,6 +7711,10 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
     let hidden_part = part_slots[2];
     {
         let mut economy = session.economy_mut();
+        economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == root_slot)
+            .expect("Dragon root")
+            .action = 180;
         economy
             .authored_dragon_parts
             .iter_mut()
@@ -7747,6 +7753,8 @@ fn level_two_fireball_target_census_includes_only_live_map_linked_dragon_rows() 
     assert!(!guidance.contains(&inactive_part));
     assert!(!guidance.contains(&unlinked_part));
     assert!(!guidance.contains(&hidden_part));
+    assert!(!guidance.contains(&root_slot), "action180 is excluded from the source model list");
+    assert!(collision.contains(&root_slot), "the separate collision path still sees the root");
     assert!(!collision.contains(&inactive_part));
     assert!(!collision.contains(&unlinked_part));
     assert!(!collision.contains(&hidden_part));

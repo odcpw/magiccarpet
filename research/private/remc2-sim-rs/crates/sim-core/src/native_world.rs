@@ -570,6 +570,8 @@ pub(crate) mod final_volcano;
 mod countdown_switch;
 pub(crate) mod creatures;
 mod effects;
+#[cfg(test)]
+pub(crate) use effects::{start_dragon_reaction_trace, take_dragon_reaction_trace};
 mod guided_projectile;
 #[cfg(test)]
 pub(crate) use guided_projectile::boss as test_guided_boss;

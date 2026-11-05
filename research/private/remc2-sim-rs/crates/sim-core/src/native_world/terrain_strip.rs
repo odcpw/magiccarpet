@@ -115,6 +115,36 @@ pub(crate) fn bind_startup_construction(source: &mut EntitySnapshot, direction: 
     source.set_source_dword_10(span);
 }
 
+/// The same sub_51660/NewEvent carrier is used by startup and later authored
+/// groups. It remains on the ordinary numeric scheduler and terrain map.
+pub(crate) fn construct(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+    position: Position,
+    direction: i8,
+    span: i32,
+) -> Result<Option<u16>, String> {
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    let mut source = crate::world::terrain::cave_features::new_event(
+        slot,
+        arena.economy.new_event_rng(slot),
+        position,
+    );
+    bind_startup_construction(&mut source, direction, span);
+    arena.economy.map_chains.sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+        entity_index: slot,
+        active: true,
+        x: position.x,
+        y: position.y,
+    })?;
+    arena.economy.source_rng.insert(slot, source.entity_rng);
+    arena.entities[usize::from(slot)] = source;
+    crate::world::terrain::cave_features::synchronize_links(arena, terrain, slot);
+    Ok(Some(slot))
+}
+
 /// Visit the same authoritative row from ordinary play and startup replay.
 /// The caller publishes the returned audio before its common epilogue.
 pub(crate) fn visit_source(

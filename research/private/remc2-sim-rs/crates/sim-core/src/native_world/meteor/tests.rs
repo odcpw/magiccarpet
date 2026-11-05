@@ -784,7 +784,7 @@ fn eruption_impact_retains_current_payload_and_self_replacement_reads_new_row() 
         let outcome = super::super::effects::step_projectile(
             &mut live.economy, &mut live.terrain, &particles, slot,
             super::super::source_target::Context::from_ordinary(&live.goats, &live.ordinary),
-            &[], 0,
+            &[], 0, None,
         ).unwrap();
         let impact = outcome.impact_slot.expect("ordinary terminal impact allocates");
         assert_eq!(impact == slot, replace_self);

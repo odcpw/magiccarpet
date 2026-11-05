@@ -421,7 +421,7 @@ pub(super) fn acquire_capture(
 
 /// Models3/4 share this sub_67CB0 branch. The other terrain flyers may
 /// acquire a capture trap, but are absent from ordinary target acquisition.
-fn acquire(
+pub(super) fn acquire(
     arena: &mut SourceArena,
     row: &mut EntitySnapshot,
     targets: &Targets<'_>,

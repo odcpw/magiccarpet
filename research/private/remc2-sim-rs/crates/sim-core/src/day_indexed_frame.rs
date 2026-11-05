@@ -612,6 +612,12 @@ pub struct DayIndexedFrame {
     pub source_sprites_composited: bool,
     pub(crate) source_sprite_stats: SourceWorldSpriteStats,
     pub(crate) source_sprite_pixel_mode: u8,
+    // Only actual primary DrawSprite completions enter this private carrier.
+    // Bind immutable NewEvent identities before the renderer lends state back.
+    primary_visibility: Vec<crate::campaign::source_arena::SourceEntityHandle>,
+    visibility_package: String,
+    visibility_camera: sim_session::CameraPose,
+    visibility_sources: Vec<crate::native_world::EntitySnapshot>,
     pub palette_rgb8: Vec<u8>,
     /// Last source cell to paint each Cave terrain pixel; zero is unpainted.
     pub cave_terrain_orders: Option<Vec<u16>>,
@@ -622,6 +628,36 @@ pub struct DayIndexedFrame {
     pub terrain_command_hash: u64,
     pub cache_content_sha256: String,
     pub package_sha256: String,
+}
+
+impl DayIndexedFrame {
+    /// Apply source DrawSprite visibility feedback to the same authority that
+    /// produced this frame. Pixel copying and cached reads invent no receipts.
+    pub fn apply_primary_visibility(
+        &self,
+        session: &mut Mc2Simulation,
+        generation: u64,
+    ) -> Result<Vec<(u16, u32)>, DayIndexedFrameError> {
+        if self.generation != generation || self.tick != session.state.tick {
+            return Err(DayIndexedFrameError::new("primary sprite feedback belongs to a stale frame"));
+        }
+        if self.visibility_package != session.package_sha256()
+            || self.visibility_camera != session.source_camera_pose()
+        {
+            return Err(DayIndexedFrameError::new("primary sprite feedback belongs to a different source view"));
+        }
+        for prior in &self.visibility_sources {
+            let current = &session.entities()[usize::from(prior.index)];
+            let mut acknowledged = prior.clone();
+            acknowledged.set_subspell_index(prior.subspell_index | 0x40);
+            if current != prior && current != &acknowledged {
+                return Err(DayIndexedFrameError::new("primary sprite source changed after rendering"));
+            }
+        }
+        session.apply_primary_sprite_visibility(self.tick, &self.primary_visibility)
+            .map_err(DayIndexedFrameError::new)
+    }
+
 }
 
 /// Original runtime graphics switches. These change presentation, never
@@ -1301,6 +1337,16 @@ fn render_environment_indexed_frame(
         source_sprite_pixel_mode: source_sprites
             .as_ref()
             .map_or(0, SourceWorldSprites::last_pixel_mode),
+        primary_visibility: source_sprites.as_ref().map_or_else(Vec::new, |sprites| {
+            sprites.primary_visibility_completions().iter()
+                .filter_map(|&slot| session.source_arena().handle(slot)).collect()
+        }),
+        visibility_package: session.package_sha256().to_owned(),
+        visibility_camera: session.source_camera_pose(),
+        visibility_sources: source_sprites.as_ref().map_or_else(Vec::new, |sprites| {
+            sprites.primary_visibility_completions().iter()
+                .map(|&slot| session.entities()[usize::from(slot)].clone()).collect()
+        }),
         palette_rgb8,
         cave_terrain_orders,
         cave_cell_orders,
@@ -1963,12 +2009,67 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FlightWorld;
     use crate::native_world::{NativeWorld, OwnerPackageProfile};
     use std::{
         fs,
         path::PathBuf,
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn primary_visibility_feedback_binds_actual_frame_and_current_source_identity() {
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map(PathBuf::from)
+            .unwrap_or_else(|| generated_path("mc-bhq10-owner-v3-level25-20261029"));
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map(PathBuf::from)
+            .unwrap_or_else(|| generated_path("dragon-bee-20261105-integration/current-level25-environment"));
+        let assets = DayIndexedFrameAssets::load(&cache).unwrap();
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            package, cache, crate::campaign::spec::CampaignSelection::ordinary(25).unwrap(),
+        ).unwrap();
+        campaign.step(crate::PlayerCommand::default(), 0);
+        // Declared encounter progression and player positioning only. The
+        // original boss constructor, clocks and renderer produce the receipt.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(29).unwrap();
+        let boss = campaign.simulation().entities().iter()
+            .find(|row| row.active && (row.class, row.model) == (5, 10)).unwrap().index;
+        let player = campaign.simulation().state.entity_index;
+        let mut position = campaign.simulation().entities()[usize::from(boss)].position;
+        crate::move_entity(&mut position, campaign.simulation().state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        position.z = campaign.simulation().canonical_terrain().ground_height(position).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, position).unwrap();
+        for _ in 0..256 {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let generation = campaign.generation();
+            let frame = render_level2_day_indexed_frame(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+            if frame.primary_visibility.is_empty() { continue; }
+            let before = campaign.state_hash();
+            let mut wrong = frame.clone();
+            wrong.visibility_package.push('!');
+            assert!(wrong.apply_primary_visibility(campaign.simulation_mut(), generation).is_err());
+            wrong = frame.clone();
+            wrong.visibility_camera.yaw ^= 1;
+            assert!(wrong.apply_primary_visibility(campaign.simulation_mut(), generation).is_err());
+            wrong = frame.clone();
+            wrong.primary_visibility[0].generation = wrong.primary_visibility[0].generation.wrapping_add(1);
+            assert!(wrong.apply_primary_visibility(campaign.simulation_mut(), generation).is_err());
+            assert_eq!(campaign.state_hash(), before, "all invalid receipts reject before any write");
+            let mut changed_source = campaign.clone();
+            let slot = frame.primary_visibility[0].source_slot;
+            let row = &mut changed_source.simulation_mut().source_arena_mut().entities[usize::from(slot)];
+            row.set_life(row.life - 1);
+            let changed_hash = changed_source.state_hash();
+            assert!(frame.apply_primary_visibility(changed_source.simulation_mut(), generation).is_err());
+            assert_eq!(changed_source.state_hash(), changed_hash);
+            let changed = frame.apply_primary_visibility(campaign.simulation_mut(), generation).unwrap();
+            assert!(changed.iter().any(|&(slot, _)| slot == boss));
+            assert!(frame.apply_primary_visibility(campaign.simulation_mut(), generation).unwrap().is_empty(),
+                "repeating an acknowledged carrier is idempotent");
+            assert_eq!(campaign.simulation().entities()[usize::from(boss)].subspell_index & 0x40, 0x40);
+            return;
+        }
+        panic!("actual boss primary rendering produced no visibility completion");
+    }
 
     #[test]
     fn original_render_options_control_live_world_passes_and_invalidate_both_cached_views() {

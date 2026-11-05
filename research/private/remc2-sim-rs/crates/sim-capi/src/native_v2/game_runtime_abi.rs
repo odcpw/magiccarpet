@@ -733,6 +733,24 @@ impl RuntimeRecord {
         self.campaign_presentation = Some(record);
     }
 
+    pub(super) fn commit_primary_sprite_visibility(
+        &mut self,
+        record: &super::campaign_abi::CampaignSessionRecord,
+    ) -> AbiResult<()> {
+        let super::campaign_abi::CampaignSessionKind::Campaign { day_frame_state, .. } = &record.kind else {
+            return Ok(());
+        };
+        let Some(frame) = day_frame_state.current_frame() else { return Ok(()); };
+        // A non-rendering presentation call may retain an older cached frame.
+        // It provides no new current input and must not replay that receipt.
+        if frame.tick != self.session()?.identity().tick { return Ok(()); }
+        if frame.generation != self.session()?.identity().generation {
+            return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, "primary frame generation differs from live authority"));
+        }
+        self.runtime.acknowledge_primary_sprite_frame(frame)
+            .map_err(|message| AbiError::new(MC_STATUS_GENERATION_MISMATCH, message))
+    }
+
     fn pause(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Playing)?;
         self.runtime
@@ -4126,6 +4144,95 @@ mod tests {
             ),
             MC_STATUS_GENERATION_MISMATCH
         );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn paused_runtime_presentation_reads_and_fresh_frame_preserve_visibility_history() {
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let packages = serde_json::to_vec(&serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [
+                {"package_dir": generated.join("mc-bhq8-level1-collision-v5-night"), "owner_cache_path": generated.join("mc-oi68-level1-fullbank-v2-20261029")},
+                {"package_dir": generated.join("mc-level2-vault-successor-closure-20261025"), "owner_cache_path": generated.join("mc-oi68-level2-fullbank-v2-20261029")},
+                {"package_dir": generated.join("level3-day-block32-campaign-recipe-v2"), "owner_cache_path": generated.join("mc-oi68-level3-fullbank-v2-20261029")}
+            ]
+        })).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, packages.as_ptr(), packages.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+
+        let make_query = || {
+            let state = identity(handle);
+            let generation = state["session"]["generation"].as_str().unwrap().parse().unwrap();
+            let tick = state["session"]["tick"].as_str().unwrap().parse().unwrap();
+            McPresentationFrameQueryV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McPresentationFrameQueryV2>(),
+                generation, tick, presentation_revision: tick,
+                viewport_width: 320, viewport_height: 200, screen_stride: 320, vga_resolution: 1,
+                ..McPresentationFrameQueryV2::default()
+            }
+        };
+        let history = || {
+            let save = with_runtime(handle, |record| {
+                let runtime = record.runtime.identity();
+                let session = record.session()?.identity();
+                record.save_replay(handle, runtime.generation, session.generation, session.tick)
+            }).unwrap();
+            let save: Value = serde_json::from_slice(&save).unwrap();
+            save.get("primary_visibility_changes").cloned().unwrap_or_else(|| serde_json::json!([]))
+        };
+        let render = |query: &McPresentationFrameQueryV2| {
+            let mut pixels = vec![0_u8; LEVEL1_VIEW_PIXELS];
+            let mut info = McPresentationFrameInfoV2::default();
+            assert_eq!(mc_native_campaign_presentation_frame_copy(
+                handle, query, pixels.as_mut_ptr(), pixels.len() as u32,
+                std::ptr::null_mut(), 0, &raw mut info, struct_size::<McPresentationFrameInfoV2>(),
+            ), MC_STATUS_OK, "{}", LAST_ERROR.with(|value| value.borrow().clone()));
+            info
+        };
+        render(&make_query());
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        let paused = identity(handle);
+        assert_eq!(paused["mode"], "paused");
+        let query = make_query();
+        render(&query); // New generation: a real paused frame, not a copied old frame.
+        let before_reads = history();
+        render(&query);
+        let mut world = McCampaignWorldInfoV2::default();
+        assert_eq!(mc_native_campaign_world_info(handle, &raw mut world, struct_size::<McCampaignWorldInfoV2>()), MC_STATUS_OK);
+        let mut music = McCampaignDayMusicSnapshotV2::default();
+        assert_eq!(mc_native_campaign_day_music_state(handle, query.generation, query.tick,
+            &raw mut music, struct_size::<McCampaignDayMusicSnapshotV2>()), MC_STATUS_OK);
+        assert_eq!((music.loaded, music.playing), (1, 0));
+        assert_eq!(history(), before_reads, "cached frame and music/world reads add no visibility receipt");
+
+        // A real graphics preference change invalidates the cached view while paused.
+        let profile = std::env::temp_dir().join(format!("mc-paused-frame-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let install = serde_json::to_vec(&serde_json::json!({"operation": "install", "profile_dir": profile})).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, install.as_ptr(), install.len() as u32), MC_STATUS_OK);
+        let mut prefs = with_runtime(handle, |record| Ok(record.runtime.identity().player_preferences.preferences)).unwrap();
+        prefs.reflections = !prefs.reflections;
+        let apply = serde_json::to_vec(&serde_json::json!({"operation": "apply", "preferences": prefs})).unwrap();
+        assert_eq!(mc_game_runtime_preferences_command_json_v1(handle, 4, apply.as_ptr(), apply.len() as u32), MC_STATUS_OK);
+        let previous_revision = with_runtime(handle, |record| {
+            let super::super::campaign_abi::CampaignSessionKind::Campaign { day_frame_state, .. } = &record.campaign_presentation.as_ref().unwrap().kind else { unreachable!() };
+            Ok(day_frame_state.current_frame().unwrap().scene_revision)
+        }).unwrap();
+        render(&query);
+        let new_revision = with_runtime(handle, |record| {
+            let super::super::campaign_abi::CampaignSessionKind::Campaign { day_frame_state, .. } = &record.campaign_presentation.as_ref().unwrap().kind else { unreachable!() };
+            Ok(day_frame_state.current_frame().unwrap().scene_revision)
+        }).unwrap();
+        assert!(new_revision > previous_revision, "the changed view really rendered while paused");
+        let after_fresh = history();
+        render(&query);
+        assert_eq!(history(), after_fresh, "copying the fresh paused frame adds no visibility receipt");
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        assert_eq!(identity(handle)["mode"], "playing");
         assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 

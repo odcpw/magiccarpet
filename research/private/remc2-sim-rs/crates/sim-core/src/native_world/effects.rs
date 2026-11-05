@@ -5,6 +5,21 @@
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, SessionTerrain};
 use crate::{Position, campaign::source_arena::SourceArena, world::effects as rules};
 
+#[cfg(test)]
+thread_local! {
+    static DRAGON_REACTION_TRACE: std::cell::RefCell<Option<Vec<(u16, u32, u16, u16, u32)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_dragon_reaction_trace() {
+    DRAGON_REACTION_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_dragon_reaction_trace() -> Vec<(u16, u32, u16, u16, u32)> {
+    DRAGON_REACTION_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 impl super::Level2EconomyState {
     pub(crate) fn record_raw_death_burst_spawn(
         &mut self,
@@ -37,6 +52,7 @@ pub(crate) fn step_projectile(
     context: super::source_target::Context<'_>,
     capture_slots: &[u16],
     owner_target_range: u16,
+    frozen_targets: Option<(&[u16], &[Vec<u16>; 29])>,
 ) -> Result<super::level2_dynamic_economy::Level2FireballStep, String> {
     use super::level2_dynamic_economy::FireballBirth;
     let entry = arena
@@ -68,17 +84,38 @@ pub(crate) fn step_projectile(
         view.set_yaw(projectile.yaw);
         view.set_pitch(projectile.pitch);
         let empty_models = std::array::from_fn(|_| Vec::new());
-        initial_capture = super::guided_projectile::acquire_capture(
+        let (class3, class5) = frozen_targets.unwrap_or((&[], &empty_models));
+        let targets = super::guided_projectile::Targets {
+            class3,
+            class5,
+            class10: capture_slots,
+            owner_target_range,
+        };
+        let mut outcome = super::guided_projectile::StepOutcome::default();
+        initial_capture = if frozen_targets.is_some() {
+            super::guided_projectile::acquire(
+                arena, &mut view, &targets, &mut outcome, context,
+            )?
+        } else {
+            super::guided_projectile::acquire_capture(
             arena,
             &mut view,
-            &super::guided_projectile::Targets {
-                class3: &[],
-                class5: &empty_models,
-                class10: capture_slots,
-                owner_target_range,
-            },
+            &targets,
             context,
-        )?;
+            )?
+        };
+        #[cfg(test)]
+        if initial_capture && super::source_target::read(arena, context, view.source_word_96())?
+            .is_some_and(|row| (row.class, row.model) == (5, 0))
+        {
+            let target = view.source_word_96();
+            DRAGON_REACTION_TRACE.with(|trace| {
+                if let Some(trace) = trace.borrow_mut().as_mut() {
+                    trace.push((slot, arena.economy.slot_generation(slot), projectile.owner_entity_index,
+                        target, arena.economy.slot_generation(target)));
+                }
+            });
+        }
         if initial_capture {
             let row = arena
                 .economy
@@ -89,6 +126,12 @@ pub(crate) fn step_projectile(
             row.target_source_entity_index = view.source_word_96();
             row.roll = view.source_roll();
             row.fov = view.fov;
+        } else if frozen_targets.is_some() {
+            // The real source performs this search only once, including a miss.
+            let row = arena.economy.fireball_projectiles.iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .ok_or("ordinary acquisition lost its Fireball carrier")?;
+            row.acquisition_attempted = true;
         }
     }
     let current_bound = arena
@@ -104,13 +147,51 @@ pub(crate) fn step_projectile(
         .entities
         .iter()
         .map(|row| {
-            if row.index == current_bound || arena.economy.map_chains.is_linked(row.index) {
+            if row.index == current_bound || arena.economy.map_chains.is_linked(row.index)
+                || frozen_targets.is_some_and(|(class3, class5)| class3.contains(&row.index)
+                    || class5.iter().any(|slots| slots.contains(&row.index))) {
                 super::source_target::read(arena, context, row.index)
             } else {
                 Ok(None)
             }
         })
         .collect::<Vec<_>>();
+    // The source traverses the class heads frozen at the pass boundary, but
+    // reads each candidate's current identity and byte39 during acquisition.
+    // In particular, do not re-filter the frozen list by current life/action.
+    let frozen_guidance = if let Some((class3, class5)) = frozen_targets.filter(|_| {
+        entry.is_some_and(|row| !matches!((row.source_model, row.action), (0, 0) | (28, 29))
+            && row.target_source_entity_index == 0 && !row.acquisition_attempted)
+            && !initial_capture
+    }) {
+        let owner = entry.map_or(0, |row| row.owner_entity_index);
+        let mut candidates = Vec::new();
+        for (source_slot, creature) in class3.iter().copied().map(|slot| (slot, false))
+            .chain(class5.iter().enumerate().filter(|(model, _)| *model != 22)
+                .flat_map(|(_, slots)| slots.iter().copied().map(|slot| (slot, true))))
+        {
+            if creature && !super::guided_projectile::class5_eligible(arena, source_slot, owner, false) {
+                continue;
+            }
+            let Some(current) = views.get(usize::from(source_slot))
+                .ok_or("Fireball frozen target address is outside arena")?
+                .as_ref().map_err(Clone::clone)? else { continue; };
+            if !creature && current.control_flags & 0x20 != 0 { continue; }
+            let top_position = if current.model == 2 {
+                current.position
+            } else {
+                let shape = current.collision.ok_or_else(||
+                    format!("Fireball acquisition target {source_slot} lacks current source axes"))?;
+                super::guided_projectile::centre(current.position, current.model, shape.vertical_offset)
+            };
+            candidates.push(super::level2_dynamic_economy::Level2FireballGuidanceTarget {
+                source_slot, source_id: current.source_id, class: current.class, model: current.model,
+                stage_mode: current.relations.stage_mode.unwrap_or(0),
+                parent_entity_index: current.relations.parent.unwrap_or(0), top_position,
+            });
+        }
+        Some(candidates)
+    } else { None };
     let mut step = arena.economy.advance_fireball_projectile_with_views(
         slot,
         terrain,
@@ -118,6 +199,7 @@ pub(crate) fn step_projectile(
         true,
         Some(&views),
         initial_capture,
+        frozen_guidance.as_deref(),
     )?;
     if let Some(position) = arena
         .economy
@@ -374,6 +456,14 @@ pub(crate) fn step_projectile(
         }
         child
     };
+    #[cfg(test)]
+    if let Some(child) = child
+        && (arena.entities[usize::from(child)].class, arena.entities[usize::from(child)].model) == (10, 0)
+    {
+        super::area_damage::trace_fireball_impact_birth(
+            &arena.economy, child, slot, arena.entities[usize::from(child)].source_id,
+        );
+    }
     let impact_replaced_source = child == Some(slot)
         && birth == FireballBirth::Impact
         && projectile.origin != super::FireballProjectileOrigin::Eruption
@@ -1581,6 +1671,7 @@ mod tests {
                 },
                 &[mine],
                 5_120,
+                None,
             )
             .unwrap();
             assert_eq!(outcome.collision_target, Some(mine));

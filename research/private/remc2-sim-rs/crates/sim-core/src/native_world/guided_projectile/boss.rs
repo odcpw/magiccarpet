@@ -194,6 +194,7 @@ pub(crate) fn construct_creature_fireball(
     shooter_slot: u16,
     target_slot: u16,
     origin: FireballProjectileOrigin,
+    damage: u16,
 ) -> Result<Option<u16>, String> {
     let product = match origin {
         FireballProjectileOrigin::Firefly => Product::FireflyFireball,
@@ -220,7 +221,7 @@ pub(crate) fn construct_creature_fireball(
             target_class: u8::MAX,
             target_model: u8::MAX,
             target: 0,
-            damage: 500,
+            damage,
             effect_life: 0,
             descriptor: None,
         },
@@ -485,6 +486,7 @@ mod tests {
                 shooter_slot,
                 target_slot,
                 FireballProjectileOrigin::Firefly,
+                500,
             )
             .unwrap(),
             None
@@ -500,6 +502,7 @@ mod tests {
             shooter_slot,
             target_slot,
             FireballProjectileOrigin::Firefly,
+            500,
         )
         .unwrap()
         .expect("ordinary Firefly constructor allocates");
@@ -570,6 +573,7 @@ mod tests {
             shooter_slot,
             replaceable,
             FireballProjectileOrigin::Firefly,
+            500,
         )
         .unwrap()
         .expect("frozen fallback allocates the target address");
@@ -674,6 +678,7 @@ mod tests {
             source_target::Context::default(),
             &[],
             0,
+            None,
         )
         .expect("water callback tolerates a full source arena");
         assert_eq!(failed.impact_slot, None);
@@ -693,6 +698,7 @@ mod tests {
             source_target::Context::default(),
             &[],
             0,
+            None,
         )
         .expect("water callback uses the real frozen source allocator");
         assert_eq!(step.impact_slot, Some(slot));
@@ -802,6 +808,7 @@ mod tests {
             source_target::Context::default(),
             &[],
             0,
+            None,
         )
         .expect("the real terminal Fireball callback completes");
         assert_eq!(step.impact_slot, Some(slot));

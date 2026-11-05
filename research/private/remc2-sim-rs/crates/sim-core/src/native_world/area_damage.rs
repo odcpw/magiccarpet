@@ -434,6 +434,21 @@ pub(crate) fn read_arena_life(arena: &SourceArena, slot: u16) -> Option<i32> {
         .map(|s| s.life)
 }
 
+#[cfg(test)]
+thread_local! {
+    static CONSTRUCTION_KILL_TRACE: std::cell::RefCell<Option<Vec<(u16, u32, u16, Option<i32>)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_construction_kill_trace() {
+    CONSTRUCTION_KILL_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_construction_kill_trace() -> Vec<(u16, u32, u16, Option<i32>)> {
+    CONSTRUCTION_KILL_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 /// The direct life/credit write made by source 57390 after terrain admission.
 /// This leaves ordinary pending damage intact for the actual family callback.
 pub(crate) fn apply_construction_kill(
@@ -449,7 +464,18 @@ pub(crate) fn apply_construction_kill(
     if target.class != 5 || target.source_id == source_id {
         return Ok(false);
     }
-    write_direct_creature_kill(arena, actors, slot, source_id, Some(source_id))
+    #[cfg(test)]
+    let previous_life = source_life(arena, actors.as_mut().map(ActorDomains::reborrow), slot);
+    let wrote = write_direct_creature_kill(arena, actors, slot, source_id, Some(source_id))?;
+    #[cfg(test)]
+    if wrote {
+        CONSTRUCTION_KILL_TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                trace.push((slot, arena.slot_generation(slot), source_id, previous_life));
+            }
+        });
+    }
+    Ok(wrote)
 }
 
 /// `KillAllCreatures_1B5F0` walks the existing source lists, including friendly
@@ -1316,8 +1342,13 @@ pub(crate) fn capture_effect_lists(
 #[derive(Clone, Debug)]
 pub(crate) struct EffectDamageReceipt {
     pub(crate) source_slot: Option<u16>,
+    /// Current typed impact and its generation at the actual damage callback,
+    /// before later passes can reclaim or replace the fixed source address.
+    pub(crate) source_impact: Option<(u32, super::Level2Model17SpawnedChild)>,
+    pub(crate) source_raw_impact: Option<(u32, super::EntitySnapshot)>,
     pub(crate) pulse: crate::world::effects::DamagePulse,
     pub(crate) target_slot: u16,
+    pub(crate) target_generation: u32,
     pub(crate) target: Option<crate::combat::area::Actor>,
     pub(crate) target_in_scanned_cells: bool,
     pub(crate) mailbox_before: Option<(i32, u16)>,
@@ -1327,14 +1358,77 @@ pub(crate) struct EffectDamageReceipt {
 
 #[cfg(test)]
 thread_local! {
-    static EFFECT_DAMAGE_TRACE: std::cell::RefCell<Option<(u16, Vec<EffectDamageReceipt>)>> =
+    static EFFECT_DAMAGE_TRACE: std::cell::RefCell<Option<(Vec<u16>, Vec<EffectDamageReceipt>)>> =
         const { std::cell::RefCell::new(None) };
+    static FIREBALL_LAUNCH_TRACE: std::cell::RefCell<Option<Vec<(u16, u32, u16)>>> =
+        const { std::cell::RefCell::new(None) };
+    static FIREBALL_IMPACT_BIRTH_TRACE: std::cell::RefCell<Option<Vec<(u16, u32, u16, u32, u16)>>> =
+        const { std::cell::RefCell::new(None) };
+    static CURRENT_EFFECT_SOURCE: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct EffectSourceTrace(Option<u16>);
+
+#[cfg(test)]
+impl Drop for EffectSourceTrace {
+    fn drop(&mut self) { CURRENT_EFFECT_SOURCE.with(|source| source.set(self.0)); }
+}
+
+#[cfg(test)]
+pub(crate) fn trace_effect_source(slot: u16) -> EffectSourceTrace {
+    EffectSourceTrace(CURRENT_EFFECT_SOURCE.with(|source| source.replace(Some(slot))))
+}
+
+#[cfg(test)]
+pub(crate) fn start_fireball_launch_trace() {
+    FIREBALL_LAUNCH_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+    FIREBALL_IMPACT_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn trace_fireball_impact_birth(
+    economy: &super::Level2EconomyState,
+    impact: u16,
+    parent: u16,
+    owner: u16,
+) {
+    FIREBALL_IMPACT_BIRTH_TRACE.with(|trace| {
+        if let Some(births) = trace.borrow_mut().as_mut() {
+            births.push((impact, economy.slot_generation(impact), parent,
+                economy.slot_generation(parent), owner));
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn take_fireball_impact_birth_trace() -> Vec<(u16, u32, u16, u32, u16)> {
+    FIREBALL_IMPACT_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn trace_fireball_launch(arena: &SourceArena, slot: u16, owner: u16) {
+    FIREBALL_LAUNCH_TRACE.with(|trace| {
+        if let Some(launches) = trace.borrow_mut().as_mut() {
+            launches.push((slot, arena.economy.slot_generation(slot), owner));
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn take_fireball_launch_trace() -> Vec<(u16, u32, u16)> {
+    FIREBALL_LAUNCH_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
 }
 
 /// Record actual effect callbacks on the current test thread until taken.
 #[cfg(test)]
 pub(crate) fn start_effect_damage_trace(target_slot: u16) {
-    EFFECT_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((target_slot, Vec::new())));
+    start_effect_damage_trace_for_targets(&[target_slot]);
+}
+
+#[cfg(test)]
+pub(crate) fn start_effect_damage_trace_for_targets(target_slots: &[u16]) {
+    EFFECT_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((target_slots.to_vec(), Vec::new())));
 }
 
 #[cfg(test)]
@@ -1352,6 +1446,57 @@ fn trace_current_bounty(targets: &ArenaTargets<'_, '_>, slot: u16) -> Option<(i3
         .and_then(|actors| actors.source_view(slot))
         .map(|view| (view.pending_damage, view.pending_attacker))
         .or_else(|| read_arena_bounty(targets.arena, slot).ok())
+}
+
+/// Observe the legacy class10/model0 callback at its actual writer boundary.
+/// The world-effect adapter below is a different producer; it cannot witness
+/// this callback merely because it also writes source damage mailboxes.
+#[cfg(test)]
+pub(crate) fn begin_model0_damage_trace(
+    arena: &mut SourceArena,
+    source_slot: u16,
+    request: crate::world::effects::DamagePulse,
+) -> Vec<EffectDamageReceipt> {
+    let target_slots = EFFECT_DAMAGE_TRACE.with(|trace| {
+        trace.borrow().as_ref().map(|(slots, _)| slots.clone())
+    });
+    let Some(target_slots) = target_slots else { return Vec::new(); };
+    let source_impact = arena.economy.model17_spawned_children().iter()
+        .find(|impact| impact.source_entity_index == source_slot)
+        .copied()
+        .map(|impact| (arena.economy.slot_generation(source_slot), impact));
+    let targets = ArenaTargets { arena, actors: None, player: None };
+    let center_x = (i32::from(request.position.x) + 128) / 256;
+    let center_y = (i32::from(request.position.y) + 128) / 256;
+    let radius = (i32::from(request.half_width) + 255) / 256;
+    target_slots.into_iter().map(|target_slot| EffectDamageReceipt {
+        source_slot: Some(source_slot),
+        source_impact,
+        source_raw_impact: None,
+        pulse: request,
+        target_slot,
+        target_generation: targets.arena.economy.slot_generation(target_slot),
+        target: targets.actor(target_slot),
+        target_in_scanned_cells: (-radius..=radius).any(|y| {
+            (-radius..=radius).any(|x| targets.cell_slots((center_x + x) as u8, (center_y + y) as u8)
+                .contains(&target_slot))
+        }),
+        mailbox_before: trace_current_bounty(&targets, target_slot),
+        mailbox_after: None,
+        hit_count: None,
+    }).collect()
+}
+
+#[cfg(test)]
+pub(crate) fn finish_model0_damage_trace(arena: &SourceArena, mut receipts: Vec<EffectDamageReceipt>) {
+    for receipt in &mut receipts {
+        receipt.mailbox_after = read_arena_bounty(arena, receipt.target_slot).ok();
+    }
+    EFFECT_DAMAGE_TRACE.with(|trace| {
+        if let Some((_, recorded)) = trace.borrow_mut().as_mut() {
+            recorded.extend(receipts);
+        }
+    });
 }
 
 pub(crate) fn apply_effect(
@@ -1372,10 +1517,9 @@ pub(crate) fn apply_effect(
         lists,
     };
     #[cfg(test)]
-    let receipt = EFFECT_DAMAGE_TRACE.with(|trace| {
+    let receipts = EFFECT_DAMAGE_TRACE.with(|trace| {
         let trace = trace.borrow();
-        let (target_slot, _) = trace.as_ref()?;
-        let target_slot = *target_slot;
+        let Some((target_slots, _)) = trace.as_ref() else { return Vec::new(); };
         let mut matching_sources = world
             .targets
             .arena
@@ -1389,14 +1533,16 @@ pub(crate) fn apply_effect(
             })
             .map(|row| row.index);
         let first_source = matching_sources.next();
-        let source_slot = if matching_sources.next().is_none() {
+        let inferred_source = if matching_sources.next().is_none() {
             first_source
         } else {
             None
         };
+        let source_slot = CURRENT_EFFECT_SOURCE.with(|source| source.get()).or(inferred_source);
         let center_x = (i32::from(request.position.x) + 128) / 256;
         let center_y = (i32::from(request.position.y) + 128) / 256;
         let radius = (i32::from(request.half_width) + 255) / 256;
+        target_slots.iter().copied().map(|target_slot| {
         let target_in_scanned_cells = (-radius..=radius).any(|y| {
             (-radius..=radius).any(|x| {
                 world
@@ -1404,20 +1550,34 @@ pub(crate) fn apply_effect(
                     .contains(&target_slot)
             })
         });
-        Some(EffectDamageReceipt {
+        EffectDamageReceipt {
             source_slot,
+            source_raw_impact: source_slot.and_then(|slot| world.targets.arena.entities.get(usize::from(slot))
+                .filter(|row| row.active && (row.class, row.model) == (10, 0))
+                .map(|row| (world.targets.arena.economy.slot_generation(slot), row.clone()))),
+            source_impact: source_slot.and_then(|source_slot| {
+                world.targets.arena.economy.model17_spawned_children().iter()
+                    .find(|impact| impact.active && impact.source_entity_index == source_slot)
+                    .copied()
+                    .map(|impact| (
+                        world.targets.arena.economy.slot_generation(source_slot),
+                        impact,
+                    ))
+            }),
             pulse: request,
             target_slot,
+            target_generation: world.targets.arena.economy.slot_generation(target_slot),
             target: world.actor(target_slot),
             target_in_scanned_cells,
             mailbox_before: trace_current_bounty(&world.targets, target_slot),
             mailbox_after: None,
             hit_count: None,
-        })
+        }
+        }).collect::<Vec<_>>()
     });
     let result = crate::world::effects::apply_damage(&mut world, request);
     #[cfg(test)]
-    if let Some(mut receipt) = receipt {
+    for mut receipt in receipts {
         receipt.mailbox_after = trace_current_bounty(&world.targets, receipt.target_slot);
         receipt.hit_count = result.as_ref().ok().copied();
         EFFECT_DAMAGE_TRACE.with(|trace| {
@@ -2436,6 +2596,8 @@ mod tests {
             .allocate_authored_bee(1, position, None, 3000, terrain)
             .expect("ordinary authored Bee constructor");
         let slot = bee.source_entity_index;
+        let generation = arena.slot_generation(slot);
+        start_construction_kill_trace();
         crate::world::terrain::disasters::mc2::burial::cell(&mut arena, None, x, y, bee.entity_id)
             .unwrap();
         assert_eq!(
@@ -2465,6 +2627,19 @@ mod tests {
             ),
             (-1, owner, owner)
         );
+        // A different source can rewrite an already-dead retained Bee's
+        // credit; the first writer remains the only lethal one.
+        let later_owner = (1_u16..).find(|candidate| *candidate != owner && *candidate != bee.entity_id)
+            .expect("another source identity");
+        crate::world::terrain::disasters::mc2::burial::cell(&mut arena, None, x, y, later_owner).unwrap();
+        assert_eq!(take_construction_kill_trace(), vec![
+            (slot, generation, owner, Some(3000)),
+            (slot, generation, later_owner, Some(-1)),
+        ]);
+        let rewritten = arena.economy.bee_creatures.iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((rewritten.life, rewritten.kill_credit_entity_index, rewritten.damage_attacker_entity_index),
+            (-1, later_owner, later_owner));
         assert!(arena.economy.step_authored_bee_slot(slot, None, terrain));
         let after = arena
             .economy

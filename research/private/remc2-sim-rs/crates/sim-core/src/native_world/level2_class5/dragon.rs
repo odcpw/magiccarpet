@@ -5,9 +5,17 @@
 //! only the model-0 constructor sidecar, its sixteen action-232 body rows,
 //! and the source-shaped undamaged action-1 callback reached by Level 3.
 
-use super::super::*;
 use crate::campaign::source_arena::{CreatureRootOrigin, SourceArena, SourceEntityHandle};
 use crate::goat::GoatPlayerTarget;
+use crate::level_definition::DRAGON_CLASS_PROPERTIES;
+use crate::native_world::{
+    AuthoredDragonPart, AuthoredDragonRuntime, ENTITY_DRAW_DISABLED_BIT, EntitySnapshot,
+    FireballProjectileOrigin, Level2AuthoredClass5RuntimeState, Level2AuthoredClass5Source,
+    Level2DynamicArenaKind, Level2EconomyState, ParticleParameter, RuntimeRelation,
+    RuntimeSnapshot, SessionTerrain, level2_next_rng16, source_target,
+};
+use crate::renderable_map_chain::RenderableMapSeed;
+use crate::{FlightEvent, FlightWorld, Position, SourceAudioCallTag, mark_source_audio_call};
 
 pub(crate) const DRAGON_MODEL: u8 = 0;
 /// NewEvent's source flags, copied from the root into every body row.
@@ -19,14 +27,26 @@ pub(crate) const DRAGON_STAGE_ACTION: u8 = 7;
 pub(crate) const DRAGON_PRE_KILL_ACTION: u8 = 4;
 pub(crate) const DRAGON_KILL_ACTION: u8 = 5;
 pub(crate) const DRAGON_PART_ACTION: u8 = 232;
-pub(crate) const DRAGON_PART_COUNT: usize = 16;
-pub(crate) const DRAGON_DESCRIPTOR: u16 = 71;
-pub(crate) const DRAGON_ROOT_PARTICLE: u16 = 40;
-pub(crate) const DRAGON_MINIMUM_SPEED: i16 = 80;
-pub(crate) const DRAGON_MAXIMUM_SPEED: i16 = 16;
-pub(crate) const DRAGON_ACTUAL_SPEED: i16 = 30;
-pub(crate) const DRAGON_LIFE: i32 = 4_000;
-pub(crate) const DRAGON_MAX_MANA: i32 = 4_500;
+pub(crate) const DRAGON_PART_COUNT: usize = DRAGON_CLASS_PROPERTIES.part_spacing.len();
+pub(crate) const DRAGON_ACTUAL_SPEED: i16 = DRAGON_CLASS_PROPERTIES.initial_speed;
+pub(crate) const DRAGON_LIFE: i32 = DRAGON_CLASS_PROPERTIES.max_life;
+
+/// Source-only bindings consumed by the Dragon constructor and attack
+/// producer. The gameplay properties are independent of these MC2 indices.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Mc2DragonAssets {
+    descriptor: u16,
+    root_particle: u16,
+    first_part_particle: u16,
+    attack_sound: u16,
+}
+
+const MC2_DRAGON_ASSETS: Mc2DragonAssets = Mc2DragonAssets {
+    descriptor: 71,
+    root_particle: 40,
+    first_part_particle: 19,
+    attack_sound: 8,
+};
 
 /// Current class9 carrier fields read by source sub_1F0C0. The caller
 /// projects raw and typed projectiles before the Dragon's actual visit.
@@ -100,7 +120,7 @@ pub(crate) fn step_attack_in_arena(
         source_slot, target, frozen_model0_slots, terrain, true,
     )
 }
-pub(crate) const DRAGON_INITIAL_MANA: i32 = 2_250;
+pub(crate) const DRAGON_INITIAL_MANA: i32 = DRAGON_CLASS_PROPERTIES.initial_mana;
 
 /// Live Dragon fields read and written by the Alliance terminal. The raw
 /// arena packet is only a projection; movement and stage remain typed here.
@@ -206,24 +226,37 @@ fn alliance_attack_target_allowed(
     Ok(selected == 0 || selected == target_slot)
 }
 
-pub(crate) const DRAGON_SEGMENT_MANA: i32 = DRAGON_MAX_MANA >> 5;
-pub(crate) const DRAGON_SUBSPELL_INDEX: u16 = 100;
-const DRAGON_DESCRIPTOR_CADENCE: u8 = 30;
-const DRAGON_TURN_LIMIT: i16 = 34;
-const DRAGON_GROUND_CLEARANCE: i16 = 0;
-const DRAGON_DESCENT: i16 = -4;
-const DRAGON_MAX_TILE_SLOPE: i32 = 30;
-const DRAGON_RANGE: u16 = 5_120;
-const DRAGON_VIEW_HALF_ANGLE: i16 = 170;
-const DRAGON_RENDER_SPEED: i16 = 342;
-const DRAGON_RENDER_ROTATION: i16 = 280;
-const DRAGON_FIREBALL_PAYLOAD: u16 = 500;
-const DRAGON_PART_SPEEDS: [i16; DRAGON_PART_COUNT] = [
-    196, 215, 241, 261, 274, 274, 261, 248, 222, 209, 196, 170, 143, 117, 91, 78,
-];
-const DRAGON_PART_ROTATIONS: [i16; DRAGON_PART_COUNT] = [
-    150, 165, 185, 200, 210, 210, 200, 190, 170, 160, 150, 130, 110, 90, 70, 60,
-];
+pub(crate) const DRAGON_SEGMENT_MANA: i32 = DRAGON_CLASS_PROPERTIES.max_mana >> 5;
+pub(crate) const DRAGON_SUBSPELL_INDEX: u16 = DRAGON_CLASS_PROPERTIES.contact_damage;
+const DRAGON_DESCRIPTOR_CADENCE: u8 = DRAGON_CLASS_PROPERTIES.scan_period;
+const DRAGON_TURN_LIMIT: i16 = DRAGON_CLASS_PROPERTIES.turn_limit;
+const DRAGON_GROUND_CLEARANCE: i16 = DRAGON_CLASS_PROPERTIES.ground_clearance;
+const DRAGON_DESCENT: i16 = DRAGON_CLASS_PROPERTIES.descent;
+const DRAGON_MAX_TILE_SLOPE: i32 = DRAGON_CLASS_PROPERTIES.maximum_slope;
+const DRAGON_RANGE: u16 = DRAGON_CLASS_PROPERTIES.target_range;
+const DRAGON_VIEW_HALF_ANGLE: i16 = DRAGON_CLASS_PROPERTIES.target_half_angle;
+const DRAGON_RENDER_SPEED: i16 = DRAGON_CLASS_PROPERTIES.body_width;
+const DRAGON_RENDER_ROTATION: i16 = DRAGON_CLASS_PROPERTIES.body_height;
+const DRAGON_FIREBALL_PAYLOAD: u16 = DRAGON_CLASS_PROPERTIES.projectile_damage;
+
+// Test-only observations at the actual producer and callback boundaries.
+// A child allocated above the boss's slot may execute before the outer turn
+// returns, so its initial mode need not be visible in an outer snapshot.
+#[cfg(test)]
+#[derive(Debug)]
+enum BossDragonReceipt {
+    Born { child: SourceEntityHandle, parent: SourceEntityHandle, stage: u8, parts: Vec<SourceEntityHandle> },
+    Follow(SourceEntityHandle),
+    NoTarget { child: SourceEntityHandle, class3: Vec<u16>, before: i16, after: i16, living: bool },
+    Expired { child: SourceEntityHandle, effect: Option<SourceEntityHandle>, hidden: bool,
+        parent_live: bool, countdown: i16 },
+}
+
+#[cfg(test)]
+thread_local! {
+    static BOSS_DRAGON_RECEIPTS: std::cell::RefCell<Option<Vec<BossDragonReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// Construct the boss's real Dragon and its sixteen body segments, then apply
 /// the post-constructor launch fields from `sub_21AB0`.
@@ -257,24 +290,30 @@ pub(crate) fn allocate_boss_summoned(
     {
         root.position = position;
     }
-    for part in arena
-        .economy
-        .authored_dragon_parts
-        .iter_mut()
-        .filter(|part| part.active && part.entity_id == slot)
-    {
+    // Follow the new constructor's linked head, not all rows carrying this
+    // numeric root address: an earlier generation's tail can still be live
+    // when the root address is reused.
+    let mut next = arena.economy.authored_class5_runtime.iter()
+        .find(|row| row.source_entity_index == slot)
+        .ok_or_else(|| format!("boss Dragon constructor lost runtime {slot}"))?
+        .linked_head;
+    let mut occupied = Vec::new();
+    while next != 0 {
+        if occupied.len() >= DRAGON_PART_COUNT {
+            return Err(format!("boss Dragon {slot} has an invalid part chain"));
+        }
+        let part = arena.economy.authored_dragon_parts.iter_mut()
+            .find(|part| part.active && part.source_entity_index == next)
+            .ok_or_else(|| format!("boss Dragon {slot} lost part {next}"))?;
         part.position = position;
+        occupied.push((part.source_entity_index, position));
+        next = part.next_entity_index;
     }
     // The economy constructor owns the real slots and map chains. Publish
     // those same occupants into the shared terrain map and clear any stale
     // raw packet left at a reused address.
-    let mut occupied = arena
-        .economy
-        .authored_dragon_parts
-        .iter()
-        .filter(|part| part.active && part.entity_id == slot)
-        .map(|part| (part.source_entity_index, part.position))
-        .collect::<Vec<_>>();
+    #[cfg(test)]
+    let born_parts = occupied.iter().filter_map(|(slot, _)| arena.handle(*slot)).collect();
     occupied.push((slot, position));
     for (occupied_slot, occupied_position) in occupied {
         arena.entities[usize::from(occupied_slot)].reclaim_source_row();
@@ -326,6 +365,15 @@ pub(crate) fn allocate_boss_summoned(
     if !arena.bind_carried_creature_parent(handle, parent) {
         return Err(format!("boss Dragon {slot} lost its parent generation binding"));
     }
+    #[cfg(test)]
+    BOSS_DRAGON_RECEIPTS.with(|receipts| {
+        if let Some(receipts) = receipts.borrow_mut().as_mut() {
+            let stage = arena.economy.authored_dragons.iter()
+                .find(|row| row.source_entity_index == slot)
+                .expect("new boss Dragon stage").stage_var2;
+            receipts.push(BossDragonReceipt::Born { child: handle, parent, stage, parts: born_parts });
+        }
+    });
     Ok(Some(handle))
 }
 
@@ -428,8 +476,7 @@ pub(crate) fn step_alliance_stage_slot(
                         peer.active && peer.model == DRAGON_MODEL && peer.source_entity_index == *peer_slot
                             && arena.economy.authored_dragons.iter().any(|other|
                                 other.source_entity_index == *peer_slot && other.entity_id != state.entity_id)
-                            && i32::from(peer.position.x.wrapping_sub(source.position.x).cast_signed()).abs() < i32::from(source.shift_rot_x)
-                            && i32::from(peer.position.y.wrapping_sub(source.position.y).cast_signed()).abs() < i32::from(source.shift_rot_x)
+                            && dragon_axes_within(source.position, peer.position, source.shift_rot_x)
                     })
                 }) {
                     source.roll = i16::try_from(crate::heading_for_positions(peer.position, source.position))
@@ -509,6 +556,14 @@ pub(crate) fn step_boss_stage_slot(
     let mut source = arena.economy.authored_class5[source_index];
     let mut state = arena.economy.authored_dragons[state_index];
     let mut runtime = arena.economy.authored_class5_runtime[runtime_index];
+    #[cfg(test)]
+    let entered_stage = state.stage_var2;
+    #[cfg(test)]
+    let mut expired = false;
+    #[cfg(test)]
+    let mut expiry_effect = None;
+    #[cfg(test)]
+    let mut expiry_parent = (false, 0);
     let entered_handle = arena
         .handle(slot)
         .ok_or_else(|| format!("boss Dragon {slot} lost its source generation"))?;
@@ -561,11 +616,15 @@ pub(crate) fn step_boss_stage_slot(
         } else {
             None
         };
+        #[cfg(test)]
+        { expiry_parent = (parent_position.is_some(), state.stage_remaining); }
         if parent_position.is_none() {
             state.stage_remaining = 0;
         }
         if state.stage_remaining <= 0 {
-            let _ = crate::world::effects::allocate(
+            #[cfg(test)]
+            { expired = source.life >= 0; }
+            let effect = crate::world::effects::allocate(
                 arena,
                 terrain,
                 sim_definition::adapter::mc2_effect_definition(
@@ -574,6 +633,18 @@ pub(crate) fn step_boss_stage_slot(
                 source.position,
                 particles,
             )?;
+            #[cfg(test)]
+            {
+                if expired {
+                    expiry_effect = effect.map(|slot| {
+                        let row = &arena.entities()[usize::from(slot)];
+                        assert_eq!((row.class, row.model), (10, 0), "expiry must allocate the actual Impact carrier");
+                        arena.handle(slot).expect("new expiry effect generation")
+                    });
+                }
+            }
+            #[cfg(not(test))]
+            let _ = effect;
             if arena.resolve(entered_handle).is_none() {
                 return Ok(DragonBossStageStep::default());
             }
@@ -689,22 +760,7 @@ pub(crate) fn step_boss_stage_slot(
                                 && arena.economy.authored_dragons.iter().any(|other| {
                                     other.source_entity_index == *peer_slot && other.entity_id != entity_id
                                 })
-                                && i32::from(
-                                    peer.position
-                                        .x
-                                        .wrapping_sub(source.position.x)
-                                        .cast_signed(),
-                                )
-                                .abs()
-                                    < i32::from(source.shift_rot_x)
-                                && i32::from(
-                                    peer.position
-                                        .y
-                                        .wrapping_sub(source.position.y)
-                                        .cast_signed(),
-                                )
-                                .abs()
-                                    < i32::from(source.shift_rot_x)
+                                && dragon_axes_within(source.position, peer.position, source.shift_rot_x)
                         })
                     }) {
                         source.roll = i16::try_from(crate::heading_for_positions(
@@ -723,7 +779,17 @@ pub(crate) fn step_boss_stage_slot(
                 }
             } else {
                 source.word_0x96_150 = 0;
+                #[cfg(test)]
+                let before = state.stage_remaining;
                 state.stage_remaining = state.stage_remaining.wrapping_sub(4);
+                #[cfg(test)]
+                BOSS_DRAGON_RECEIPTS.with(|receipts| {
+                    if let Some(receipts) = receipts.borrow_mut().as_mut() {
+                        receipts.push(BossDragonReceipt::NoTarget { child: entered_handle,
+                            class3: class3_slots.to_vec(), before, after: state.stage_remaining,
+                            living: source.life >= 0 });
+                    }
+                });
             }
         }
     }
@@ -768,6 +834,19 @@ pub(crate) fn step_boss_stage_slot(
         source.active,
         false,
     )?;
+    #[cfg(test)]
+    BOSS_DRAGON_RECEIPTS.with(|receipts| {
+        if let Some(receipts) = receipts.borrow_mut().as_mut() {
+            if entered_stage == 17 && state.stage_var2 == 16 {
+                receipts.push(BossDragonReceipt::Follow(entered_handle));
+            }
+            if expired {
+                receipts.push(BossDragonReceipt::Expired { child: entered_handle,
+                    effect: expiry_effect, hidden: !source.drawing_enabled,
+                    parent_live: expiry_parent.0, countdown: expiry_parent.1 });
+            }
+        }
+    });
     Ok(DragonBossStageStep { retained_for_epilogue: true, spell_feedback })
 }
 
@@ -1065,8 +1144,7 @@ pub(crate) fn step_authored_stage_in_arena(
                     peer.active && peer.model == DRAGON_MODEL && peer.source_entity_index == *peer_slot
                         && arena.economy.authored_dragons.iter().any(|other|
                             other.source_entity_index == *peer_slot && other.entity_id != state.entity_id)
-                        && i32::from(peer.position.x.cast_signed()).abs_diff(i32::from(source.position.x.cast_signed())) < source.shift_rot_x as u32
-                        && i32::from(peer.position.y.cast_signed()).abs_diff(i32::from(source.position.y.cast_signed())) < source.shift_rot_x as u32
+                        && dragon_axes_within(source.position, peer.position, source.shift_rot_x)
                 })
             }) {
                 source.roll = i16::try_from(crate::heading_for_positions(peer.position, source.position))
@@ -1151,6 +1229,41 @@ pub(crate) struct DragonFireballLaunch {
     pub(crate) yaw: i16,
     pub(crate) pitch: i16,
     pub(crate) payload: u16,
+}
+
+/// Complete sub_1CC20's real allocation and target feedback before its
+/// Dragon-specific sound and subsequent action-2 tails. NewEvent may replace
+/// either fixed address, so feedback resolves the current target afterward.
+pub(crate) fn produce_attack_fireball(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    context: crate::native_world::source_target::Context<'_>,
+    source_slot: u16,
+    launch: DragonFireballLaunch,
+) -> std::result::Result<Option<FlightEvent>, String> {
+    let spawned = crate::native_world::guided_projectile::boss::construct_creature_fireball(
+        arena, terrain, particles, context, source_slot, launch.target_entity_index,
+        FireballProjectileOrigin::Dragon, launch.payload,
+    )?;
+    if spawned.is_none() {
+        return Ok(None);
+    }
+    if crate::native_world::source_target::read(arena, context, launch.target_entity_index)?
+        .is_some_and(|target| (target.class, target.model) == (3, 0))
+    {
+        let _ = Level2EconomyState::apply_creature_fireball_target_feedback(
+            &mut arena.entities, launch.target_entity_index,
+        );
+    }
+    mark_source_audio_call(SourceAudioCallTag::DragonAction02Fireball);
+    Ok(Some(FlightEvent::PrepareSound {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite::DragonFireball,
+        entity_index: source_slot,
+        player_index: -1,
+        sound_id: MC2_DRAGON_ASSETS.attack_sound,
+    }))
 }
 
 /// Current occupant of the fixed predecessor address read by sub_1B6B0.
@@ -1355,9 +1468,10 @@ impl Level2EconomyState {
     }
 
     /// Reproduce `sub_4B240`: one Dragon root followed by sixteen copied body
-    /// rows, then map-link the root after the body chain. The adapter keeps
-    /// the constructor transactional so arena exhaustion cannot publish a
-    /// partial typed chain.
+    /// rows, then map-link the root after the body chain. Source admission
+    /// requires sixteen ordinary free slots, although root plus sixteen parts
+    /// need seventeen allocations. NewEvent may replace an existing row for
+    /// the last part; if it cannot, the fifteen-part chain remains live.
     pub(crate) fn allocate_authored_dragon(
         &mut self,
         authored_index: u16,
@@ -1365,7 +1479,7 @@ impl Level2EconomyState {
         max_life: i32,
         terrain: &SessionTerrain,
     ) -> Option<Level2AuthoredClass5Source> {
-        if !(1..=i32::MAX).contains(&max_life) {
+        if !(1..=i32::MAX).contains(&max_life) || self.free_slot_count() < DRAGON_PART_COUNT {
             return None;
         }
         let before = self.clone();
@@ -1383,13 +1497,13 @@ impl Level2EconomyState {
             authored_index,
             model: DRAGON_MODEL,
             action: DRAGON_ROAM_ACTION,
-            minimum_speed: DRAGON_MINIMUM_SPEED,
-            maximum_speed: DRAGON_MAXIMUM_SPEED,
+            minimum_speed: DRAGON_CLASS_PROPERTIES.minimum_speed,
+            maximum_speed: DRAGON_CLASS_PROPERTIES.maximum_speed,
             actual_speed: DRAGON_ACTUAL_SPEED,
             max_life,
             life: max_life,
             mana: DRAGON_INITIAL_MANA,
-            max_mana: DRAGON_MAX_MANA,
+            max_mana: DRAGON_CLASS_PROPERTIES.max_mana,
             subspell_index: DRAGON_SUBSPELL_INDEX,
             dword_0x10: i32::from(source_entity_index % 100),
             pending_word_0x62: 0,
@@ -1398,7 +1512,7 @@ impl Level2EconomyState {
             byte_0x3b: 0,
             word_0x96_150: 0,
             byte_0x46_70: 0,
-            particle_index: DRAGON_ROOT_PARTICLE,
+            particle_index: MC2_DRAGON_ASSETS.root_particle,
             source_byte_3e,
             source_byte_39: DRAGON_DESCRIPTOR_CADENCE
                 .wrapping_sub(source_byte_3e % DRAGON_DESCRIPTOR_CADENCE)
@@ -1419,11 +1533,13 @@ impl Level2EconomyState {
         let mut first_part = 0;
         for part_index in 0..DRAGON_PART_COUNT {
             let Some(part_slot) = self.allocate_slot() else {
-                *self = before;
-                return None;
+                // With the source admission check only the final allocation
+                // can fail; earlier successful rows and the root survive.
+                debug_assert_eq!(part_index, DRAGON_PART_COUNT - 1);
+                break;
             };
-            let speed = DRAGON_PART_SPEEDS[part_index];
-            let rotation = DRAGON_PART_ROTATIONS[part_index];
+            let speed = DRAGON_CLASS_PROPERTIES.part_spacing[part_index];
+            let rotation = DRAGON_CLASS_PROPERTIES.part_height[part_index];
             if self
                 .map_chains
                 .sync_entity(RenderableMapSeed {
@@ -1467,7 +1583,7 @@ impl Level2EconomyState {
                 subspell_index: source.subspell_index,
                 particle_index: u16::try_from(part_index)
                     .expect("Dragon part index fits u16")
-                    .wrapping_add(19),
+                    .wrapping_add(MC2_DRAGON_ASSETS.first_part_particle),
                 yaw: heading,
                 pitch: heading,
                 roll: heading,
@@ -1518,7 +1634,7 @@ impl Level2EconomyState {
                 source_entity_index,
                 byte_0x38: 1,
                 xtype: 3,
-                descriptor_index: DRAGON_DESCRIPTOR,
+                descriptor_index: MC2_DRAGON_ASSETS.descriptor,
                 pending_damage: 0,
                 linked_head: first_part,
             });
@@ -1696,7 +1812,9 @@ impl Level2EconomyState {
                         source,
                         frozen_model0_slots,
                         &self.authored_class5,
+                        &self.authored_dragons,
                         DRAGON_RENDER_SPEED / 2,
+                        false,
                     ) {
                         source.roll = i16::try_from(crate::heading_for_positions(
                             peer.position,
@@ -1892,7 +2010,9 @@ impl Level2EconomyState {
                                 source,
                                 frozen_model0_slots,
                                 &self.authored_class5,
+                                &self.authored_dragons,
                                 256,
+                                true,
                             ) {
                                 source.roll = i16::try_from(crate::heading_for_positions(
                                     close_peer.position,
@@ -2235,10 +2355,10 @@ fn step_dragon_vertical(source: &mut Level2AuthoredClass5Source, terrain: &Sessi
     source.position.z = source.position.z.wrapping_add(source.dword_0x10 as i16);
     source.dword_0x10 = source.dword_0x10.wrapping_sub(5);
     let ground = terrain.ground_height(source.position);
-    if source.position.z < ground.wrapping_add(256) {
+    if i32::from(source.position.z) < i32::from(ground) + 256 {
         source.dword_0x10 = 150;
     } else if let Some(ceiling) = terrain.ceiling_height(source.position)
-        && source.position.z > ceiling.wrapping_sub(256)
+        && i32::from(source.position.z) > i32::from(ceiling) - 256
     {
         source.dword_0x10 = -150;
     }
@@ -2294,7 +2414,7 @@ fn step_dragon_font_counter(
         .find(|slot| {
             projectiles
                 .iter()
-                .any(|row| row.source_slot == *slot && row.target == source.source_entity_index)
+                .any(|row| row.source_slot == *slot && row.target == state.entity_id)
         });
         if let Some(threat) = threat {
             state.dodge_remaining = 5;
@@ -2308,8 +2428,11 @@ fn first_close_dragon(
     source: Level2AuthoredClass5Source,
     frozen_model0_slots: &[u16],
     roots: &[Level2AuthoredClass5Source],
+    dragons: &[AuthoredDragonRuntime],
     separation: i16,
+    signed_axes: bool,
 ) -> Option<Level2AuthoredClass5Source> {
+    let source_id = dragons.iter().find(|row| row.source_entity_index == source.source_entity_index)?.entity_id;
     frozen_model0_slots
         .iter()
         .find_map(|slot| {
@@ -2317,27 +2440,29 @@ fn first_close_dragon(
                 peer.active
                     && peer.life >= 0
                     && peer.source_entity_index == *slot
-                    && peer.source_entity_index != source.source_entity_index
                     && peer.model == DRAGON_MODEL
-                    && i32::from(
-                        peer.position
-                            .x
-                            .wrapping_sub(source.position.x)
-                            .cast_signed(),
-                    )
-                    .abs()
-                        < i32::from(separation)
-                    && i32::from(
-                        peer.position
-                            .y
-                            .wrapping_sub(source.position.y)
-                            .cast_signed(),
-                    )
-                    .abs()
-                        < i32::from(separation)
+                    && dragons.iter().any(|row| row.source_entity_index == *slot && row.entity_id != source_id)
+                    && if signed_axes {
+                        dragon_signed_axes_within(source.position, peer.position, separation)
+                    } else {
+                        dragon_axes_within(source.position, peer.position, separation)
+                    }
             })
         })
         .copied()
+}
+
+/// The source's u16 coordinates promote to int before subtraction; map-edge
+/// positions are not adjacent for this rectangular separation check.
+fn dragon_axes_within(left: Position, right: Position, separation: i16) -> bool {
+    (i32::from(left.x) - i32::from(right.x)).abs() < i32::from(separation)
+        && (i32::from(left.y) - i32::from(right.y)).abs() < i32::from(separation)
+}
+
+/// Unlike 1C310/1E700, 1C560 explicitly casts each coordinate to i16 first.
+fn dragon_signed_axes_within(left: Position, right: Position, separation: i16) -> bool {
+    (i32::from(left.x.cast_signed()) - i32::from(right.x.cast_signed())).abs() < i32::from(separation)
+        && (i32::from(left.y.cast_signed()) - i32::from(right.y.cast_signed())).abs() < i32::from(separation)
 }
 
 fn distance_3d_wrapped(left: Position, right: Position) -> u32 {
@@ -2423,6 +2548,387 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
 #[cfg(test)]
 mod lightning_consumer_tests {
     use super::*;
+
+    #[test]
+    fn level_nine_authored_dragon_patrol_reaches_its_real_terminal() {
+        let package = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9",
+            ),
+            std::path::PathBuf::from,
+        );
+        let mut campaign = crate::campaign::CampaignSession::open(
+            &package,
+            crate::campaign::spec::CampaignSelection::ordinary(9).unwrap(),
+        ).unwrap_or_else(|error| panic!("Level9 package {}: {error}", package.display()));
+
+        // Declare only the authored progression boundary and put the player
+        // well away from the encounter. The Dragon and its route are not edited.
+        let player = campaign.simulation().state.entity_index;
+        let mut retreat = Position { x: 100 * 256, y: 100 * 256, z: 0 };
+        retreat.z = campaign.simulation().canonical_terrain().ground_height(retreat).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, retreat).unwrap();
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(18)
+            .expect("Level9 authored progression admits group18");
+
+        let source = *campaign.simulation().economy().authored_class5().iter()
+            .find(|row| row.active && row.authored_index == 403 && row.model == DRAGON_MODEL)
+            .expect("group18 constructs the owner Dragon row403");
+        let slot = source.source_entity_index;
+        let generation = campaign.simulation().source_arena().handle(slot)
+            .expect("authored Dragon occupies a live source generation");
+        let stage = campaign.simulation().runtime().stage_variables[7];
+        assert_eq!((stage.kind, stage.word_2 as u8), (1, 0));
+        assert_eq!(stage.relation, RuntimeRelation::AxisScalar(13 * 256 | (35 * 256) << 16));
+        let state = campaign.simulation().economy().authored_dragons().iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((source.action, state.stage_var1, state.stage_var2), (7, 7, 1));
+        let body: Vec<_> = campaign.simulation().economy().authored_dragon_parts().iter()
+            .filter(|part| part.active && part.root_authored_index == 403)
+            .map(|part| (part.source_entity_index, part.position)).collect();
+        assert_eq!(body.len(), DRAGON_PART_COUNT, "the real constructor admits the whole body");
+
+        let mut moved = false;
+        let mut body_moved = false;
+        let mut last = None;
+        let mut terminal = false;
+        for turn in 0..4096 {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let simulation = campaign.simulation();
+            assert!(simulation.dispatch_events().iter().all(|event|
+                !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+                "Level9 route source turn {turn}: {:?}", simulation.dispatch_events());
+            assert_eq!(simulation.source_arena().handle(slot), Some(generation),
+                "the same Dragon remains in its original source generation");
+            let current = simulation.economy().authored_class5().iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .expect("the authored Dragon remains live during its route");
+            let state = simulation.economy().authored_dragons().iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            moved |= current.position != source.position;
+            body_moved |= simulation.economy().authored_dragon_parts().iter().any(|part|
+                body.iter().any(|(body_slot, initial)| part.active
+                    && part.source_entity_index == *body_slot && part.position != *initial));
+            last = Some((turn, current.position, current.action, current.life,
+                state.stage_var1, state.stage_var2, state.movement_blocked));
+            if (state.stage_var1, state.stage_var2, current.action) == (0, 0, 1) {
+                assert!(current.life >= 0 && current.drawing_enabled,
+                    "route termination retains the living Dragon: {last:?}");
+                terminal = true;
+                break;
+            }
+        }
+        assert!(moved && body_moved && terminal,
+            "row403 and its real body must move before the natural patrol terminal: {last:?}");
+    }
+
+    #[test]
+    fn dragon_boss_level25_natural_summon_and_expiry() {
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+                || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
+                |root| std::path::PathBuf::from(root).join("level25"),
+            ),
+            std::path::PathBuf::from,
+        );
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-oi62-environment-level25-v2"),
+            std::path::PathBuf::from,
+        );
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache)
+            .unwrap_or_else(|error| panic!("Level25 environment {}: {error}", cache.display()));
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            &package,
+            &cache,
+            crate::campaign::spec::CampaignSelection::ordinary(25).unwrap(),
+        ).unwrap_or_else(|error| panic!("Level25 package {} with environment {} startup: {error}",
+            package.display(), cache.display()));
+        campaign.step(crate::PlayerCommand::default(), 0);
+        let errors: Vec<_> = campaign.simulation().dispatch_events().iter()
+            .filter(|event| matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+            .collect();
+        assert!(errors.is_empty(), "Level25 first source turn: {errors:?}");
+
+        // Declare arrival at the final encounter's authored progression
+        // boundary. The source boss and every Dragon callback remain live.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(29)
+            .expect("Level25 progression admits authored boss group29");
+        let boss = campaign.simulation().entities().iter()
+            .find(|row| row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
+            .expect("group29 constructs the actual boss").index;
+        let parent = campaign.simulation().source_arena().handle(boss).expect("live boss generation");
+        let player = campaign.simulation().state.entity_index;
+        let boss_position = campaign.simulation().entities()[usize::from(boss)].position;
+        // Place the player behind the retained initial view direction so the
+        // normal camera faces the actual boss without assigning a boss field.
+        let mut approach = boss_position;
+        let yaw = campaign.simulation().state.yaw;
+        crate::move_entity(&mut approach, yaw.wrapping_add(1024) & 2047, 0, 2048);
+        approach.z = campaign.simulation().canonical_terrain().ground_height(approach).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        #[derive(Debug)]
+        struct ObservedChild {
+            handle: SourceEntityHandle,
+            parts: Vec<SourceEntityHandle>,
+            followed: bool,
+            expired: bool,
+            no_target_after_death: bool,
+            expiry_effect: Option<SourceEntityHandle>,
+            countdown_tail: Option<i16>,
+            last_state: Option<(usize, u8, i16, u8, i32, bool, u16, i32)>,
+        }
+        BOSS_DRAGON_RECEIPTS.with(|receipts| *receipts.borrow_mut() = Some(Vec::new()));
+        let mut children: Vec<ObservedChild> = Vec::new();
+        let mut saw_player_death = false;
+        let mut previous_player_life = campaign.simulation().shared_spells().player_entity().life;
+        let mut boss_states = std::collections::BTreeMap::new();
+        let mut last_boss = None;
+        let mut waiting_for_visibility = 0_u16;
+        let mut saw_boss_visibility = false;
+        let mut previous_frame: Option<crate::day_indexed_frame::DayIndexedFrame> = None;
+        let mut checked_stale_tick = false;
+        for turn in 0..4096 {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+                "Level25 boss source turn {turn}: {:?}", campaign.simulation().dispatch_events());
+            let generation = campaign.generation();
+            if let Some(ref old_frame) = previous_frame
+                && !checked_stale_tick && old_frame.tick != campaign.tick()
+            {
+                let before = campaign.state_hash();
+                assert!(old_frame.apply_primary_visibility(campaign.simulation_mut(), generation).is_err(),
+                    "an actual previous-tick frame cannot acknowledge the current arena");
+                assert_eq!(campaign.state_hash(), before);
+                checked_stale_tick = true;
+            }
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation,
+            ).unwrap_or_else(|error| panic!("Level25 real source render turn {turn}: {error}"));
+            assert!(frame.source_sprites_composited, "the real owner TMAP bank must render source sprites");
+            if turn == 0 {
+                let before = campaign.state_hash();
+                assert!(frame.apply_primary_visibility(campaign.simulation_mut(), generation.wrapping_add(1)).is_err(),
+                    "a wrong session generation cannot acknowledge this frame");
+                assert_eq!(campaign.state_hash(), before);
+            }
+            let observed = frame.apply_primary_visibility(campaign.simulation_mut(), generation)
+                .unwrap_or_else(|error| panic!("Level25 primary draw feedback turn {turn}: {error}"));
+            saw_boss_visibility |= observed.iter().any(|&(slot, slot_generation)|
+                slot == boss && slot_generation == parent.generation);
+            previous_frame = Some(frame);
+            let simulation = campaign.simulation();
+            let arena = simulation.source_arena();
+            let boss_row = &simulation.entities()[usize::from(boss)];
+            let player_row = &simulation.entities()[usize::from(player)];
+            let player_life = simulation.shared_spells().player_entity().life;
+            if previous_player_life >= 0 && player_life < 0 {
+                saw_player_death = true;
+            }
+            previous_player_life = player_life;
+            let boss_actor = crate::native_world::creatures::creature_10::mc2::load(boss_row);
+            if let Some(actor) = boss_actor {
+                *boss_states.entry((actor.phase, actor.subspell_index)).or_insert(0_u32) += 1;
+                let distance = crate::legacy_sqrt(
+                    crate::native_world::level2_wrapping_source_distance_3d(
+                        actor.position, player_row.position,
+                    ),
+                );
+                last_boss = Some((turn, actor.phase, actor.subspell_index, actor.timer,
+                    actor.summon_mode, actor.attack_remaining, actor.rng, actor.life,
+                    actor.position, player_row.position, player_row.life, distance));
+                if actor.phase == 1 && actor.subspell_index & 0x10 != 0
+                    && actor.subspell_index & 0x40 == 0 && actor.timer == 0 {
+                    waiting_for_visibility = waiting_for_visibility.saturating_add(1);
+                } else {
+                    waiting_for_visibility = 0;
+                }
+                assert!(waiting_for_visibility < 128,
+                    "boss remains in source approach visibility wait for 128 turns: boss={last_boss:?} states={boss_states:?}");
+            }
+            let receipts = BOSS_DRAGON_RECEIPTS.with(|receipts| {
+                std::mem::take(receipts.borrow_mut().as_mut().unwrap())
+            });
+            for receipt in receipts {
+                match receipt {
+                    BossDragonReceipt::Born { child, parent: producer, stage, parts } if producer == parent => {
+                        assert_eq!(stage, 17, "the real boss constructor launches in source mode17");
+                        children.push(ObservedChild { handle: child, parts, followed: false,
+                            expired: false, no_target_after_death: false,
+                            expiry_effect: None, countdown_tail: None, last_state: None });
+                    }
+                    BossDragonReceipt::Follow(handle) => {
+                        if let Some(child) = children.iter_mut().find(|child| child.handle == handle) {
+                            child.followed = true;
+                        }
+                    }
+                    BossDragonReceipt::NoTarget { child: handle, class3, before, after, living } => {
+                        assert_eq!(after, before.wrapping_sub(4), "source no-target mode16 decrements by four");
+                        if living && saw_player_death && !class3.contains(&player)
+                            && let Some(child) = children.iter_mut().find(|child| child.handle == handle) {
+                            if let Some(previous) = child.countdown_tail {
+                                assert_eq!(before, previous, "same child generation must retain its actual countdown between targetless visits");
+                            }
+                            child.countdown_tail = Some(after);
+                            child.no_target_after_death = true;
+                        }
+                    }
+                    BossDragonReceipt::Expired { child: handle, effect, hidden, parent_live, countdown } => {
+                        if let Some(child) = children.iter_mut().find(|child| child.handle == handle) {
+                            assert!(hidden, "actual expiry callback must hide its current root");
+                            child.expired = parent_live && countdown <= 0
+                                && child.countdown_tail == Some(countdown);
+                            child.expiry_effect = effect;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for child in &mut children {
+                if arena.resolve(child.handle).is_none() {
+                    if child.parts.len() == DRAGON_PART_COUNT && child.followed && child.expired
+                        && child.no_target_after_death && child.expiry_effect.is_some()
+                        && child.parts.iter().all(|part| arena.resolve(*part).is_none())
+                    {
+                        assert!(saw_boss_visibility && checked_stale_tick,
+                            "actual boss visibility and stale-frame rejection must be observed");
+                        eprintln!("boss Dragon natural expiry: turn={turn} child={:?} body={:?} last={:?}",
+                            child.handle, child.parts, child.last_state);
+                        BOSS_DRAGON_RECEIPTS.with(|receipts| *receipts.borrow_mut() = None);
+                        return;
+                    }
+                } else {
+                    let root = arena.economy.authored_class5().iter()
+                        .find(|row| row.source_entity_index == child.handle.source_slot).unwrap();
+                    let state = arena.economy.authored_dragons().iter()
+                        .find(|row| row.source_entity_index == child.handle.source_slot).unwrap();
+                    child.last_state = Some((turn, state.stage_var2, state.stage_remaining, root.action,
+                        root.life, root.drawing_enabled, root.word_0x96_150,
+                        simulation.shared_spells().player_entity().life));
+                }
+            }
+            if saw_player_death && !children.is_empty() {
+                let remaining_candidate = children.iter().any(|child| {
+                    child.expired && child.expiry_effect.is_some() && child.no_target_after_death
+                        || arena.resolve(child.handle).is_some()
+                            && arena.economy.authored_class5().iter().any(|row|
+                                row.source_entity_index == child.handle.source_slot && row.life >= 0)
+                });
+                assert!(remaining_candidate,
+                    "actual combat left no living pre-death summon to exercise no-target expiry: turn={turn} children={children:?} boss={last_boss:?}");
+            }
+        }
+        panic!("natural boss Dragon did not complete launch/follow/expiry: boss={boss} children={children:?} visibility={saw_boss_visibility} boss_state={last_boss:?} states={boss_states:?}");
+    }
+
+    #[test]
+    fn dragon_separation_uses_source_ids_and_each_callback_axis_rules() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let terrain = &session.session.state.live.terrain;
+        let mut economy = session.source_arena().economy.clone();
+        let mut first = economy.allocate_authored_dragon(575, session.state.position, DRAGON_LIFE, terrain).unwrap();
+        let mut second = economy.allocate_authored_dragon(576, session.state.position, DRAGON_LIFE, terrain).unwrap();
+        first.position.x = 100;
+        second.position.x = 110;
+        let ids = [first.source_entity_index, second.source_entity_index];
+        let mut states = economy.authored_dragons.clone();
+        let first_id = states.iter().find(|row| row.source_entity_index == ids[0]).unwrap().entity_id;
+        states.iter_mut().find(|row| row.source_entity_index == ids[1]).unwrap().entity_id = first_id;
+        assert!(first_close_dragon(first, &ids, &[first, second], &states, 171, false).is_none(),
+            "summons carrying one source id do not repel each other");
+        states.iter_mut().find(|row| row.source_entity_index == ids[1]).unwrap().entity_id = ids[1];
+        assert_eq!(first_close_dragon(first, &ids, &[first, second], &states, 171, false).unwrap().source_entity_index, ids[1]);
+        first.position.x = 0;
+        second.position.x = u16::MAX;
+        assert!(!dragon_axes_within(first.position, second.position, 171));
+        assert!(dragon_signed_axes_within(first.position, second.position, 256));
+        first.position.x = 32767;
+        second.position.x = 32768;
+        assert!(dragon_axes_within(first.position, second.position, 171));
+        assert!(!dragon_signed_axes_within(first.position, second.position, 256));
+    }
+
+    #[test]
+    fn dragon_default_properties_and_source_assets_reach_the_constructor() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let terrain = &session.session.state.live.terrain;
+        let mut economy = session.source_arena().economy.clone();
+        let root = economy.allocate_authored_dragon(
+            575, session.state.position, DRAGON_CLASS_PROPERTIES.max_life, terrain,
+        ).expect("source-default Dragon constructor");
+        let properties = DRAGON_CLASS_PROPERTIES;
+        assert_eq!((root.max_life, root.life, root.max_mana), (4_000, 4_000, 4_500));
+        assert_eq!((root.minimum_speed, root.maximum_speed, root.actual_speed),
+            (properties.minimum_speed, properties.maximum_speed, properties.initial_speed));
+        assert_eq!((root.subspell_index, root.particle_index),
+            (properties.contact_damage, MC2_DRAGON_ASSETS.root_particle));
+        let runtime = economy.authored_class5_runtime.iter()
+            .find(|row| row.source_entity_index == root.source_entity_index).unwrap();
+        assert_eq!(runtime.descriptor_index, MC2_DRAGON_ASSETS.descriptor);
+        let parts = economy.authored_dragon_parts.iter()
+            .filter(|part| part.active && part.entity_id == root.source_entity_index)
+            .collect::<Vec<_>>();
+        assert_eq!(parts.len(), DRAGON_PART_COUNT);
+        for (index, part) in parts.iter().enumerate() {
+            assert_eq!(part.particle_index, MC2_DRAGON_ASSETS.first_part_particle + index as u16);
+            assert_eq!(part.word_0x36, properties.part_spacing[index] / 2);
+            assert_eq!((part.render_yaw, part.render_fov),
+                (properties.part_height[index] / 2, properties.part_height[index] / 2));
+            assert_eq!(part.mana, if index == 0 { properties.initial_mana } else { properties.max_mana >> 5 });
+        }
+        assert_eq!(MC2_DRAGON_ASSETS.attack_sound, 8);
+    }
+
+    #[test]
+    fn dragon_constructor_respects_source_free_stack_and_partial_chain() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let terrain = &session.session.state.live.terrain;
+        let mut economy = session.source_arena().economy.clone();
+        while economy.free_slot_count() > 17 {
+            economy.allocate_slot().expect("consume an ordinary free slot");
+        }
+        let mut replaceable = Vec::new();
+        economy.for_each_live_replaceable_arena_row(|slot, _| replaceable.push(slot));
+        economy.replacement_cursor_exclusions.extend(replaceable);
+
+        let mut refused = economy.clone();
+        refused.allocate_slot().unwrap();
+        refused.allocate_slot().unwrap();
+        let before = refused.reset_hash();
+        assert!(refused.allocate_authored_dragon(575, session.state.position, DRAGON_LIFE, terrain).is_none());
+        assert_eq!(refused.free_slot_count(), 15);
+        assert_eq!(refused.reset_hash(), before, "admission must precede NewEvent");
+
+        let mut partial = economy.clone();
+        partial.allocate_slot().unwrap();
+        let root = partial.allocate_authored_dragon(575, session.state.position, DRAGON_LIFE, terrain)
+            .expect("sixteen free slots admit a partial chain");
+        let body: Vec<_> = partial.authored_dragon_parts.iter()
+            .filter(|row| row.active && row.entity_id == root.source_entity_index).collect();
+        assert_eq!(body.len(), 15);
+        assert_eq!(partial.free_slot_count(), 0);
+        assert_eq!(root.mana, DRAGON_SEGMENT_MANA);
+        assert_eq!(body[0].mana, DRAGON_INITIAL_MANA);
+        assert!(body[1..].iter().all(|part| part.mana == DRAGON_SEGMENT_MANA));
+        let runtime = partial.authored_class5_runtime.iter().find(|row|
+            row.source_entity_index == root.source_entity_index).unwrap();
+        let mut previous = root.source_entity_index;
+        let mut next = runtime.linked_head;
+        for part in body {
+            assert_eq!((part.source_entity_index, part.previous_entity_index), (next, previous));
+            previous = part.source_entity_index;
+            next = part.next_entity_index;
+        }
+        assert_eq!(next, 0);
+
+        let root = economy.allocate_authored_dragon(575, session.state.position, DRAGON_LIFE, terrain)
+            .expect("seventeen free slots admit the full chain");
+        assert_eq!(economy.authored_dragon_parts.iter().filter(|row|
+            row.active && row.entity_id == root.source_entity_index).count(), 16);
+        assert_eq!(economy.free_slot_count(), 0);
+    }
 
     #[test]
     fn alliance_impact_controls_dragon_attack_and_returns_original_actor() {
@@ -2516,6 +3022,81 @@ mod lightning_consumer_tests {
             let resumed = step_authored_stage_in_arena(&mut arena, &runtime, &mut terrain, slot, &[], &[slot], &[], Default::default()).unwrap();
             assert!(resumed.retained_for_epilogue, "restored Dragon stage {mode} executes");
         }
+    }
+
+    #[test]
+    fn boss_dragon_constructor_preserves_live_tail_when_root_slot_is_reused() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let parent_slot = session.state.entity_index;
+        let parent = arena.handle(parent_slot).unwrap();
+        let old = allocate_boss_summoned(
+            &mut arena, &mut terrain, session.state.position, parent,
+            parent_slot, parent_slot, 0,
+        ).unwrap().unwrap();
+        let tail = *arena.economy.authored_dragon_parts.iter()
+            .find(|part| part.active && part.entity_id == old.source_slot).unwrap();
+        let tail_handle = arena.handle(tail.source_entity_index).unwrap();
+        let empty = std::collections::BTreeMap::new();
+        let identity = arena.creature_runtime_identity(tail.source_entity_index, &empty, &empty)
+            .expect("summoned tail has its own generation-bound origin");
+        assert_eq!(identity.handle, tail_handle);
+        assert_eq!(identity.kind, crate::level_definition::CreatureKind::Dragon);
+        assert_eq!(identity.root_slot, old.source_slot);
+        assert_eq!(identity.role, crate::campaign::source_arena::CreatureRuntimeRole::MultipartPart);
+        assert_eq!(identity.origin, CreatureRootOrigin::CreatureConversion { producer_slot: parent_slot });
+        let hash = arena.reset_hash_with_terrain(&terrain);
+        assert_eq!(arena.clone().reset_hash_with_terrain(&terrain), hash);
+        let tile = ((tail.position.x >> 8) as u8, (tail.position.y >> 8) as u8);
+        assert!(arena.economy.map_chains.entity_chain(tile.0, tile.1)
+            .contains(&tail.source_entity_index));
+
+        // Explicit retirement prerequisite; the real encounter gate supplies
+        // its own unforced expiry and remains the end-to-end acceptance.
+        arena.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == old.source_slot).unwrap().drawing_enabled = false;
+        prepare_retiring_dragon_rows(&mut arena, &mut terrain).unwrap();
+        retire_hidden_boss_dragons_at_source_boundary(&mut arena);
+        arena.economy.reclaim_inactive_slots_at_source_boundary();
+        arena.prune_dynamic_dragon_part_origins();
+        assert!(arena.resolve(old).is_none());
+        assert_eq!(arena.creature_runtime_identity(tail.source_entity_index, &empty, &empty), Some(identity));
+
+        let mut new_position = session.state.position;
+        new_position.x = new_position.x.wrapping_add(4096);
+        let fresh = allocate_boss_summoned(
+            &mut arena, &mut terrain, new_position, parent,
+            parent_slot, parent_slot, 0,
+        ).unwrap().unwrap();
+        assert_eq!(fresh.source_slot, old.source_slot);
+        assert_ne!(fresh.generation, old.generation);
+        assert_eq!(arena.handle(tail.source_entity_index), Some(tail_handle));
+        assert_eq!(arena.creature_runtime_identity(tail.source_entity_index, &empty, &empty), Some(identity));
+        let retained = arena.economy.authored_dragon_parts.iter()
+            .find(|part| part.source_entity_index == tail.source_entity_index).unwrap();
+        assert_eq!(retained.position, tail.position);
+        assert_eq!(retained.previous_entity_index, tail.previous_entity_index);
+        assert_eq!(retained.next_entity_index, tail.next_entity_index);
+        assert!(arena.economy.map_chains.entity_chain(tile.0, tile.1)
+            .contains(&tail.source_entity_index));
+        let head = arena.economy.authored_class5_runtime.iter()
+            .find(|row| row.source_entity_index == fresh.source_slot).unwrap().linked_head;
+        assert_ne!(head, tail.source_entity_index);
+        assert_eq!(arena.economy.authored_dragon_parts.iter()
+            .find(|part| part.source_entity_index == head).unwrap().position, new_position);
+
+        arena.economy.authored_dragon_parts.iter_mut()
+            .find(|part| part.source_entity_index == tail.source_entity_index)
+            .unwrap().drawing_enabled = false;
+        prepare_retiring_dragon_rows(&mut arena, &mut terrain).unwrap();
+        retire_hidden_boss_dragons_at_source_boundary(&mut arena);
+        arena.economy.reclaim_inactive_slots_at_source_boundary();
+        arena.prune_dynamic_dragon_part_origins();
+        assert!(arena.resolve(tail_handle).is_none());
+        assert_eq!(arena.allocate_source_slot(), Some(tail.source_entity_index));
+        assert_ne!(arena.slot_generation(tail.source_entity_index), tail_handle.generation);
+        assert!(arena.creature_runtime_identity(tail.source_entity_index, &empty, &empty).is_none());
     }
 
     #[test]
@@ -3032,6 +3613,20 @@ mod lightning_consumer_tests {
             flags: 4,
             yaw: 0,
         };
+        // Boss summons replace id with their boss owner's id. Source 1F0C0
+        // matches the projectile against that id, not the root's arena slot.
+        let mut summoned_source = source;
+        let mut summoned_state = state;
+        summoned_state.entity_id = source.source_entity_index.wrapping_add(1);
+        let mut summoned_threat = projectile;
+        summoned_threat.target = summoned_state.entity_id;
+        step_dragon_font_counter(
+            &mut summoned_source,
+            &mut summoned_state,
+            &live.economy.economy.map_chains,
+            &[summoned_threat],
+        );
+        assert_eq!((summoned_source.byte_0x46_70, summoned_source.word_0x24), (1, slot));
         let rng = source.entity_rng;
         let position = source.position;
         step_dragon_font_counter(
