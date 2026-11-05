@@ -51,6 +51,37 @@ remain open. No human combat/FPS, hardware audio, full missions, old-save or
 native Dragon/Bee encounter visual claim. Source-default orphan/null and custom
 selector limits below remain explicit. Next connected family is Archer `.21`.
 
+### Pending Archer capability: artifact integrity stop
+
+`mc-1pb.21` stays in_progress with MagentaPuma as accountable owner. Its whole
+Level1 group3 actual arrow/combat/death/reward/hide/reclaim→class11/17 countdown→
+group11 Speed gate is preserved, UNVERIFIED, in canonical `level2_class5/archer.rs`
+at SHA `e929c487d8647c69ca6e075f9156bba1abc87c351accc0446c44324d319d3e93`.
+No production Archer behavior changed. Remote candidate1 compilation succeeds
+57.07s, but RCH102/E309 refuses publication: the145942160-byte returned executable
+SHA `e1093bdf3018299e75229ce77456b080e644f45feb40ef09c1e482316032f226`
+differs from remote compiled SHA
+`78060ed3ff0a48d1e62f874e76a2fcbc41c82df4d8e719f4e81a65b9af4acc40`.
+One bounded comparison confirms all444 remote source inputs match candidate1.
+The bad artifact was not executed; no build/copy retry was made. Failed bytes,
+logs, frozen source/patch and comparison remain under
+`generated/archer-20261105-integration/candidate-1/`. Cause is not established.
+Root reverted only its isolated execution copy to the installedaeba96fc after
+preserving it; canonical uncommitted Archer work stays intact. Installed/current
+native hashes still match4d875c2e. Workers are stopped. Resume expensive delivery
+only after a concrete safe integrity resolution or operator direction; no loops.
+
+Remaining Archer acceptance includes actual house production and natural
+Skeleton conversion/StageVar consumers. Legacy tests force hide/predator state
+or directly call construction, so they do not establish those ordinary paths.
+Actual Level3 group5 StageVar selects Skeletons and moves toward them; the closest
+initial pair is1864 units apart, outside1537 conversion range. No natural
+conversion is claimed yet. The proposed exact cfg(test) conversion writer
+receipt was not implemented. An older closed Nov4 compiler generation was
+SHA-preserved on healthy rig for headroom; latest Nov5 local/RCH caches and the
+current/previous native pins remain intact. This does not qualify Archer or
+the rest of the shared engine.
+
 The previous Wyvern/defender batch remains a preserved delivered checkpoint.
 Runtime `793b7ef62973d4153ab1372ffee3afc559585813` is pushed; matching native
 `ecbf096983e4b60b3fe63a24a1c734ff569d5d12efd08b31c155a3c39a198b18`
