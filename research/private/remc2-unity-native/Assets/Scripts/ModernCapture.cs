@@ -18,6 +18,7 @@ namespace MagicCarpet.Native
         internal static readonly bool Measure = Arguments.Contains("-mc-modern-metrics");
         internal static readonly bool VisualDebug = Arguments.Contains("-mc-modern-visual-debug");
         internal static readonly bool ProceduralClouds = Arguments.Contains("-mc-modern-procedural-clouds");
+        internal static readonly bool FullTerrainMaterial = Arguments.Contains("-mc-modern-full-terrain-material");
         internal static int EntityVisibility { get; private set; }
         internal static bool IsolateSmoke { get; private set; }
         internal static int SmokeDebug { get; private set; }
@@ -54,8 +55,20 @@ namespace MagicCarpet.Native
 
         private void Awake()
         {
+            // Explicit profiling control; normal play keeps the user's quality settings.
+            if (Arguments.Contains("-mc-modern-no-vsync")) QualitySettings.vSyncCount = 0;
+            if (Measure)
+                Debug.Log($"MC_MODERN_DEVICE quality={QualitySettings.names[QualitySettings.GetQualityLevel()]} vsync={QualitySettings.vSyncCount} target_fps={Application.targetFrameRate} graphics={SystemInfo.graphicsDeviceType} gpu={SystemInfo.graphicsDeviceName} frame_timings={FrameTimingManager.IsFeatureEnabled()}");
             started = Time.realtimeSinceStartup;
             measurementReadyAt = started + 5f;
+            var warmupOption = Array.IndexOf(Arguments, "-mc-modern-warmup");
+            if (warmupOption >= 0 && warmupOption + 1 < Arguments.Length)
+            {
+                var warmup = float.Parse(Arguments[warmupOption + 1], CultureInfo.InvariantCulture);
+                if (float.IsNaN(warmup) || float.IsInfinity(warmup) || warmup < 5f || warmup > 120f)
+                    throw new ArgumentException("Modern measurement warmup must be between 5 and 120 seconds");
+                measurementReadyAt = started + warmup;
+            }
             EntityVisibility = 0;
             IsolateSmoke = false;
             SmokeDebug = 0;
@@ -110,7 +123,7 @@ namespace MagicCarpet.Native
                 if (Input.GetKeyDown(KeyCode.Insert)) { IsolateSmoke = !IsolateSmoke; capture = true; }
                 if (capture || Input.GetKeyDown(KeyCode.F9)) StartCoroutine(CaptureDiagnostic());
             }
-            if (!Measure || reported || Time.realtimeSinceStartup - started < 5f) return;
+            if (!Measure || reported || Time.realtimeSinceStartup < measurementReadyAt) return;
             frameTimes.Add(Time.unscaledDeltaTime * 1000f);
             if (frameTimes.Count < 120) return;
             frameTimes.Sort();

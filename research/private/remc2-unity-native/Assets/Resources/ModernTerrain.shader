@@ -14,6 +14,7 @@ Shader "MagicCarpet/ModernTerrain"
         _GroundNormal ("Ground normal (RGB)", 2D) = "bump" {}
         _RockRoughness ("Rock roughness (R)", 2D) = "white" {}
         _GroundRoughness ("Ground roughness (R)", 2D) = "white" {}
+        _UseMaterialEndpoints ("Skip unused pure-material samples", Float) = 1
     }
     SubShader
     {
@@ -40,7 +41,7 @@ Shader "MagicCarpet/ModernTerrain"
             TEXTURE2D(_GroundRoughness); SAMPLER(sampler_GroundRoughness);
             CBUFFER_START(UnityPerMaterial)
                 half4 _RockColor, _SoilColor, _MossColor;
-                float _DetailScale, _UseTextures, _TextureScale;
+                float _DetailScale, _UseTextures, _TextureScale, _UseMaterialEndpoints;
             CBUFFER_END
             struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; half4 color : COLOR; };
             struct Varyings { float4 positionCS : SV_POSITION; float3 positionWS : TEXCOORD0; half3 normalWS : TEXCOORD1; half4 color : COLOR; half fog : TEXCOORD2; };
@@ -72,6 +73,10 @@ Shader "MagicCarpet/ModernTerrain"
             {
                 return float2(-uv.y,uv.x)*0.71+float2(13.1,-7.3);
             }
+            float2 AlternateRockGradient(float2 gradient)
+            {
+                return float2(-gradient.y,gradient.x)*0.71;
+            }
             half2 AlternateRockNormal(half2 encoded)
             {
                 half2 n=encoded*2-1;
@@ -100,43 +105,64 @@ Shader "MagicCarpet/ModernTerrain"
                 {
                     float3 q = i.positionWS * _TextureScale;
                     float2 altX=AlternateRockUV(q.yz), altY=AlternateRockUV(q.xz), altZ=AlternateRockUV(q.xy);
+                    // Compute gradients before material-dependent control flow.
+                    // Implicit derivatives within a divergent branch could
+                    // select different mips at the rock/soil boundary.
+                    float3 qdx=ddx(q), qdy=ddy(q);
+                    float2 altXdx=AlternateRockGradient(qdx.yz), altXdy=AlternateRockGradient(qdy.yz);
+                    float2 altYdx=AlternateRockGradient(qdx.xz), altYdy=AlternateRockGradient(qdy.xz);
+                    float2 altZdx=AlternateRockGradient(qdx.xy), altZdy=AlternateRockGradient(qdy.xy);
                     float rockMix=lerp(0.28,0.62,rockVariation);
-                    half3 rockX = SAMPLE_TEXTURE2D(_RockAlbedo, sampler_RockAlbedo, q.yz).rgb;
-                    half3 rockY = SAMPLE_TEXTURE2D(_RockAlbedo, sampler_RockAlbedo, q.xz).rgb;
-                    half3 rockZ = SAMPLE_TEXTURE2D(_RockAlbedo, sampler_RockAlbedo, q.xy).rgb;
-                    rockX=lerp(rockX,SAMPLE_TEXTURE2D(_RockAlbedo,sampler_RockAlbedo,altX).rgb,rockMix);
-                    rockY=lerp(rockY,SAMPLE_TEXTURE2D(_RockAlbedo,sampler_RockAlbedo,altY).rgb,rockMix);
-                    rockZ=lerp(rockZ,SAMPLE_TEXTURE2D(_RockAlbedo,sampler_RockAlbedo,altZ).rgb,rockMix);
-                    half3 soilX = SAMPLE_TEXTURE2D(_GroundAlbedo, sampler_GroundAlbedo, q.yz).rgb;
-                    half3 soilY = SAMPLE_TEXTURE2D(_GroundAlbedo, sampler_GroundAlbedo, q.xz).rgb;
-                    half3 soilZ = SAMPLE_TEXTURE2D(_GroundAlbedo, sampler_GroundAlbedo, q.xy).rgb;
-                    half3 rockTex = rockX*weights.x + rockY*weights.y + rockZ*weights.z;
-                    half3 soilTex = soilX*weights.x + soilY*weights.y + soilZ*weights.z;
-                    rockTex *= lerp(half3(0.77,0.82,0.80),half3(1.07,1.02,0.95),rockVariation);
-                    soilTex *= lerp(half3(0.84,0.85,0.78),half3(0.69,0.79,0.60),dampPatch*0.7);
+                    half3 rockTex=0, soilTex=0;
+                    half rockR=0, soilR=0;
+                    half2 rockNX=0, rockNY=0, rockNZ=0, soilNX=0, soilNY=0, soilNZ=0;
+                    // Saturated material weights have exact endpoints. On
+                    // those pixels the other material contributes nothing.
+                    [branch] if (_UseMaterialEndpoints < 0.5 || rock > 0)
+                    {
+                        half3 rockX = SAMPLE_TEXTURE2D_GRAD(_RockAlbedo, sampler_RockAlbedo, q.yz,qdx.yz,qdy.yz).rgb;
+                        half3 rockY = SAMPLE_TEXTURE2D_GRAD(_RockAlbedo, sampler_RockAlbedo, q.xz,qdx.xz,qdy.xz).rgb;
+                        half3 rockZ = SAMPLE_TEXTURE2D_GRAD(_RockAlbedo, sampler_RockAlbedo, q.xy,qdx.xy,qdy.xy).rgb;
+                        rockX=lerp(rockX,SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,altX,altXdx,altXdy).rgb,rockMix);
+                        rockY=lerp(rockY,SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,altY,altYdx,altYdy).rgb,rockMix);
+                        rockZ=lerp(rockZ,SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,altZ,altZdx,altZdy).rgb,rockMix);
+                        rockTex = rockX*weights.x + rockY*weights.y + rockZ*weights.z;
+                        rockTex *= lerp(half3(0.77,0.82,0.80),half3(1.07,1.02,0.95),rockVariation);
+                        rockR = SAMPLE_TEXTURE2D_GRAD(_RockRoughness, sampler_RockRoughness, q.yz,qdx.yz,qdy.yz).r*weights.x
+                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness, sampler_RockRoughness, q.xz,qdx.xz,qdy.xz).r*weights.y
+                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness, sampler_RockRoughness, q.xy,qdx.xy,qdy.xy).r*weights.z;
+                        half altRockR=SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,altX,altXdx,altXdy).r*weights.x
+                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,altY,altYdx,altYdy).r*weights.y
+                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,altZ,altZdx,altZdy).r*weights.z;
+                        rockR=lerp(rockR,altRockR,rockMix);
+                        // Maps are linear RGB tangent normals, not DXT5nm.
+                        rockNX=SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,q.yz,qdx.yz,qdy.yz).rg*2-1;
+                        rockNY=SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,q.xz,qdx.xz,qdy.xz).rg*2-1;
+                        rockNZ=SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,q.xy,qdx.xy,qdy.xy).rg*2-1;
+                        rockNX=lerp(rockNX,AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,altX,altXdx,altXdy).rg),rockMix);
+                        rockNY=lerp(rockNY,AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,altY,altYdx,altYdy).rg),rockMix);
+                        rockNZ=lerp(rockNZ,AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,altZ,altZdx,altZdy).rg),rockMix);
+                    }
+                    [branch] if (_UseMaterialEndpoints < 0.5 || rock < 1)
+                    {
+                        half3 soilX = SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo, sampler_GroundAlbedo, q.yz,qdx.yz,qdy.yz).rgb;
+                        half3 soilY = SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo, sampler_GroundAlbedo, q.xz,qdx.xz,qdy.xz).rgb;
+                        half3 soilZ = SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo, sampler_GroundAlbedo, q.xy,qdx.xy,qdy.xy).rgb;
+                        soilTex = soilX*weights.x + soilY*weights.y + soilZ*weights.z;
+                        soilTex *= lerp(half3(0.84,0.85,0.78),half3(0.69,0.79,0.60),dampPatch*0.7);
+                        soilR = SAMPLE_TEXTURE2D_GRAD(_GroundRoughness, sampler_GroundRoughness, q.yz,qdx.yz,qdy.yz).r*weights.x
+                            + SAMPLE_TEXTURE2D_GRAD(_GroundRoughness, sampler_GroundRoughness, q.xz,qdx.xz,qdy.xz).r*weights.y
+                            + SAMPLE_TEXTURE2D_GRAD(_GroundRoughness, sampler_GroundRoughness, q.xy,qdx.xy,qdy.xy).r*weights.z;
+                        soilNX=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,q.yz,qdx.yz,qdy.yz).rg*2-1;
+                        soilNY=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,q.xz,qdx.xz,qdy.xz).rg*2-1;
+                        soilNZ=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,q.xy,qdx.xy,qdy.xy).rg*2-1;
+                    }
                     half3 textured = lerp(soilTex, rockTex, rock) * lerp(0.82,1.15,broad);
                     albedo = lerp(albedo, textured, saturate(_UseTextures));
-                    half rockR = SAMPLE_TEXTURE2D(_RockRoughness, sampler_RockRoughness, q.yz).r*weights.x
-                        + SAMPLE_TEXTURE2D(_RockRoughness, sampler_RockRoughness, q.xz).r*weights.y
-                        + SAMPLE_TEXTURE2D(_RockRoughness, sampler_RockRoughness, q.xy).r*weights.z;
-                    half altRockR=SAMPLE_TEXTURE2D(_RockRoughness,sampler_RockRoughness,altX).r*weights.x
-                        + SAMPLE_TEXTURE2D(_RockRoughness,sampler_RockRoughness,altY).r*weights.y
-                        + SAMPLE_TEXTURE2D(_RockRoughness,sampler_RockRoughness,altZ).r*weights.z;
-                    rockR=lerp(rockR,altRockR,rockMix);
-                    half soilR = SAMPLE_TEXTURE2D(_GroundRoughness, sampler_GroundRoughness, q.yz).r*weights.x
-                        + SAMPLE_TEXTURE2D(_GroundRoughness, sampler_GroundRoughness, q.xz).r*weights.y
-                        + SAMPLE_TEXTURE2D(_GroundRoughness, sampler_GroundRoughness, q.xy).r*weights.z;
                     smoothness = lerp(smoothness, 1-saturate(lerp(soilR,rockR,rock)), saturate(_UseTextures));
-                    // Maps are linear RGB tangent normals, not Unity's platform-specific DXT5nm packing.
-                    half2 rockNX=SAMPLE_TEXTURE2D(_RockNormal,sampler_RockNormal,q.yz).rg*2-1;
-                    half2 rockNY=SAMPLE_TEXTURE2D(_RockNormal,sampler_RockNormal,q.xz).rg*2-1;
-                    half2 rockNZ=SAMPLE_TEXTURE2D(_RockNormal,sampler_RockNormal,q.xy).rg*2-1;
-                    rockNX=lerp(rockNX,AlternateRockNormal(SAMPLE_TEXTURE2D(_RockNormal,sampler_RockNormal,altX).rg),rockMix);
-                    rockNY=lerp(rockNY,AlternateRockNormal(SAMPLE_TEXTURE2D(_RockNormal,sampler_RockNormal,altY).rg),rockMix);
-                    rockNZ=lerp(rockNZ,AlternateRockNormal(SAMPLE_TEXTURE2D(_RockNormal,sampler_RockNormal,altZ).rg),rockMix);
-                    half2 nx=lerp(SAMPLE_TEXTURE2D(_GroundNormal,sampler_GroundNormal,q.yz).rg*2-1,rockNX,rock);
-                    half2 ny=lerp(SAMPLE_TEXTURE2D(_GroundNormal,sampler_GroundNormal,q.xz).rg*2-1,rockNY,rock);
-                    half2 nz=lerp(SAMPLE_TEXTURE2D(_GroundNormal,sampler_GroundNormal,q.xy).rg*2-1,rockNZ,rock);
+                    half2 nx=lerp(soilNX,rockNX,rock);
+                    half2 ny=lerp(soilNY,rockNY,rock);
+                    half2 nz=lerp(soilNZ,rockNZ,rock);
                     float3 perturb = float3(0,nx.x,nx.y)*weights.x + float3(ny.x,0,ny.y)*weights.y
                         + float3(nz.x,nz.y,0)*weights.z;
                     perturb -= n*dot(n,perturb);

@@ -98,6 +98,7 @@ namespace MagicCarpet.Native
                     landMaterial.SetTexture("_" + layer + channel, Resources.Load<Texture2D>("ModernTextures/" + layer + channel));
             landMaterial.SetFloat("_UseTextures", 1f);
             landMaterial.SetFloat("_TextureScale", .20f);
+            landMaterial.SetFloat("_UseMaterialEndpoints", ModernCapture.FullTerrainMaterial ? 0f : 1f);
             waterMaterial = Material("ModernWater");
             skyMaterial = Material("ModernSky");
             if (!ModernCapture.ProceduralClouds)
