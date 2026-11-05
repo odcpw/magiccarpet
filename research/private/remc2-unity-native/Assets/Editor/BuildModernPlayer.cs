@@ -13,6 +13,8 @@ namespace MagicCarpet.Native.Editor
         public static void Prepare()
         {
             ModernNatureImport.Prepare();
+            ModernVegetationMeshLods.Validate();
+            ModernTerrainTextures.Prepare();
             foreach (var texturePath in Directory.GetFiles("Assets/Resources/ModernTextures", "*.jpg"))
             {
                 var importer = (TextureImporter)AssetImporter.GetAtPath(texturePath);

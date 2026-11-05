@@ -424,6 +424,129 @@ smooth foreground performance, p95 pacing during ordinary flight and visual
 transition checks on the actual desktop. No tick-keyed gameplay/hash cache or
 asynchronous simulation redesign was introduced without mutation/race proof.
 
+## Terrain and vegetation representation rework
+
+Terrain now packs unmodified source albedo RGB and linear roughness R into
+RGBA BC7 textures; normal maps and both rock texture scales remain. Continuous
+sparse triplanar weights skip axes with zero contribution. Logical reads per
+active axis are two for soil and four for the two-scale rock material, versus
+three and six previously. These are sampling budgets, not measured GPU speedups.
+Geometry, source heights, wrapping and deformation behavior are unchanged.
+Matched wall/shore captures showed no obvious new material seam or loss of
+surface detail. Exact offline channel checks reject separate one-byte color and
+roughness corruptions; actual Vulkan sampling at three mip sizes remains within
+the original 0.015 mean linear-channel compression budget. The exact check uses
+pinned Pillow 13.0.0 because unchanged native Unity pixel conversions were
+intermittently inconsistent; no textures were regenerated to accept that failure.
+
+Vegetation uses three representations selected by projected bounding size:
+full scanned geometry, prebuilt middle meshes, then camera-facing multiview
+impostors. Complementary dither bands are 40–56px and 12–20px. Spatial groups
+entirely within an endpoint avoid per-instance classification; transition
+partitions are cached separately for the main and reflection cameras. Density,
+placement seeds, terrain anchors and 115/200-metre residency ranges remain.
+Offscreen landmark proxies still cast shadows. Counters distinguish submitted
+detail/middle/distant instances and shadow-only triangles; transition draws count
+both meshes and are not a count of unique visible plants.
+
+Seven middle Mesh assets preserve the qualifying pilot's exact normalized
+vertices, normals, tangents, colors, UVs, topology, indices and bounds. Their
+reducers compile only in the Editor. The player loads and clones the assets.
+The one-time batch authoring entry is
+`MagicCarpet.Native.Editor.ModernVegetationMeshLods.Generate`; it refuses existing
+assets or metadata. Preserve prior outputs before deliberate regeneration.
+`Prepare()` validates the resources rather than silently generating a fallback.
+
+Four foliage species have 40 full-sphere captured views each (8 azimuths ×
+5 elevations), stored in 1024×640 guarded atlases. Four neighboring views blend
+continuously on one quad. Unlit sRGB color/coverage is separate from linear
+object normals and view depth; the source normal maps participate in the bake.
+Depth reconstruction is shared by color/depth passes and light-oriented shadow
+views. Source opacity is clipped before capture, and transparent-border dilation
+preserves opacity. Bake bounds are checked against actual Unity-imported vertices,
+including rejection of displaced/scaled capture metadata. The CC0 source and
+derived output hashes and authoring commands are in
+`Assets/Resources/ModernNature/LODS_PROVENANCE.json`; CPU Blender/Pillow tools
+live under `Tools/`, outside player Resources.
+
+Early two/three-plane and early-takeover multiview candidates reduced geometry
+but produced dark plant clumps and were rejected. Moving the middle meshes back
+into the chain restored open stems/fronds in matched actual-player views.
+The first three-tier screening submits 3,553,604 vegetation triangles versus
+6,544,292 in the pinned baseline, but 475 versus 297 batches. Its single private
+Wayland run measured 26.42ms mean / 28.23ms median / 38.31ms p95 frames, versus
+25.20/27.54/37.51ms baseline: **this is not a frame-rate improvement**.
+Campaign CPU processing remained approximately 20ms per fixed tick; terrain
+observation and actor presentation each measured below 1ms. Independent timing
+scope windows must not be added together. Ordinary foreground smoothness remains
+unqualified while the desktop is locked.
+
+For same-build controls use `-mc-modern-full-vegetation`, or
+`-mc-modern-unpacked-terrain -mc-modern-full-terrain-projection`.
+`-mc-modern-review-orbit center-x,y,z,radius,height,degrees-per-second` plus
+`-mc-modern-capture-count` and `-mc-modern-capture-interval` provide bounded
+presentation-only angle captures. They bypass gameplay camera collision; an
+orbit entering a cliff is not a terrain-hole or flight-collision test. Readback
+capture sequences are not performance benchmarks. The safe shoreline orbit
+used `145,2,862,20,25,90` with 24 captures at 0.2-second intervals.
+
+Research references:
+[Crytek's vegetation rendering](https://developer.nvidia.com/gpugems/gpugems3/part-iii-rendering/chapter-16-vegetation-procedural-animation-and-shading-crysis),
+[Epic's multiview impostors](https://dev.epicgames.com/documentation/en-us/unreal-engine/impostor-baker-plugin-in-unreal-engine),
+and [Unity's grouped instancing culling](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Graphics.DrawMeshInstanced.html).
+
+Integrated self-verification: all 32 selected Modern EditMode tests pass,
+including exact middle-mesh parity, imported bake bounds, terrain wrapping and
+deformation, packed texture imports and corrupted-channel controls. Build7
+(`build-_zq1ip_d`) is installed and its validator passes; its native at this
+rendering checkpoint was
+`2fdafc823e97`. All 64 renderer source/asset/tool inputs match the qualified
+project. Build6's identical runtime geometry/code passed the ordinary frontend,
+Up-arrow flight, Backspace stop and F5 save on a private X display: actual pose
+`(310,80.50,890)` to `(310,91.00,780)`, normal exit and no fatal/shader error.
+Build7 adds only the recorded capture-history caveat to provenance. Root viewed
+shore, close, safe-orbit samples and flight captures; the source/orbit reviews
+do not establish continuous motion quality on the locked desktop.
+Evidence: `../generated/nightspire-rework-20261105/` and
+`../generated/nightspire-rendering-20261104/rework_offline6_flight*`.
+
+Changed-source UBS found zero critical issues but returned partial C# coverage
+at its dataflow limit. Dictionary values are private non-null constructions;
+diagnostic argument parsing intentionally fails malformed input; test task
+results are read only after bounded successful completion. The PNG packer's
+single-frame Pillow conversions fully load their images. No suppression or
+weakened gate was used. Unity compiled and ran the actual assemblies/player.
+
+## Clock-state qualification of isolated measurements
+
+The 2026-11-05 rework added one-second NVIDIA clock/power telemetry to the
+isolated Vulkan traces. The eight-second `gpu_terrain3` capture starts at
+17:28:12.374 local time. Its initial samples use 705 MHz SM / 810 MHz memory
+(P5); subsequent samples use 420→330 MHz SM / 405 MHz memory (P8).
+The 1695/9751 MHz P0 samples belong to startup before the captured interval.
+The unchanged scene's GPU workload duration rises from approximately 6.46 to
+13.31 ms as the clocks fall. Thus the earlier aggregate GPU-duration comparison
+does **not** establish a shader speedup: clock state explains a large change
+inside one unchanged run. Private Wayland runs also downclock, although their
+clock behavior and presentation waits differ from Xvfb. No GPU power, clock,
+driver, compositor or desktop setting was changed for these measurements.
+
+Use matched camera/save/native, repeated runs, actual device/clock records,
+and foreground desktop pacing before making a complete-frame performance claim.
+Triangle submissions, logical texture-read budgets and CPU submission scopes
+describe different costs; none alone establishes a frame-rate improvement.
+The native campaign still takes substantial CPU time independently of terrain
+and vegetation. Evidence and timestamped telemetry:
+`../generated/nightspire-rework-20261105/gpu_terrain3*`,
+`gpu_terrain_control3*`, and `clocks_wayland3*`.
+
+NVIDIA documents a swapchain-scoped boost hint through
+[`VK_NV_low_latency2`](https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/latest/gaming.html#reflex-native),
+but the inspected official Unity Reflex package contains a Windows DLL and no
+Linux native plugin. It is not a ready Linux/URP integration for this project.
+No undocumented environment power toggle, global maximum-performance setting,
+or custom Vulkan interception layer was added to this renderer task.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game

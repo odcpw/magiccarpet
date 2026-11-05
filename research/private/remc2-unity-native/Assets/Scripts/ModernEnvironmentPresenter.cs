@@ -93,10 +93,17 @@ namespace MagicCarpet.Native
             QualitySettings.renderPipeline = null;
             root = new GameObject("NightSpire modern environment");
             landMaterial = Material("ModernTerrain");
+            var unpackedTerrain = Environment.GetCommandLineArgs().Contains("-mc-modern-unpacked-terrain");
             foreach (var layer in new[] { "Rock", "Ground" })
-                foreach (var channel in new[] { "Albedo", "Normal", "Roughness" })
-                    landMaterial.SetTexture("_" + layer + channel, Resources.Load<Texture2D>("ModernTextures/" + layer + channel));
+                foreach (var channel in unpackedTerrain ? new[] { "Albedo", "Normal", "Roughness" } : new[] { "AlbedoRoughness", "Normal" })
+                {
+                    var texture = Resources.Load<Texture2D>("ModernTextures/" + layer + channel);
+                    if (texture == null) throw new InvalidOperationException("Missing terrain material map: " + layer + channel);
+                    landMaterial.SetTexture("_" + layer + channel, texture);
+                }
             landMaterial.SetFloat("_UseTextures", 1f);
+            landMaterial.SetFloat("_UsePackedRoughness", unpackedTerrain ? 0f : 1f);
+            landMaterial.SetFloat("_UseSparseProjection", Environment.GetCommandLineArgs().Contains("-mc-modern-full-terrain-projection") ? 0f : 1f);
             landMaterial.SetFloat("_TextureScale", .20f);
             landMaterial.SetFloat("_UseMaterialEndpoints", ModernCapture.FullTerrainMaterial ? 0f : 1f);
             waterMaterial = Material("ModernWater");
@@ -204,6 +211,7 @@ namespace MagicCarpet.Native
                 worldMap.SetPixels32(pixels);
                 worldMap.Apply(false);
             }
+            var terrainStart = ModernCapture.BeginMeasurement();
             var state = session.TerrainState();
             if (generation != state.generation) positioned = false;
             if (generation != state.generation || terrainSequence != state.mutationSequence)
@@ -214,6 +222,7 @@ namespace MagicCarpet.Native
                 generation = state.generation;
                 terrainSequence = state.mutationSequence;
             }
+            ModernCapture.EndMeasurement("modern_terrain_observe", terrainStart);
             var pose = snapshot.source_camera_pose;
             var wrapped = new Vector3(pose.x / 64f, pose.z / 64f, pose.y / 64f);
             if (positioned)
@@ -233,7 +242,9 @@ namespace MagicCarpet.Native
                 camera.transform.SetPositionAndRotation(targetPosition, targetRotation);
                 positioned = true;
             }
+            var actorsStart = ModernCapture.BeginMeasurement();
             entities.Present(session, pose.yaw);
+            ModernCapture.EndMeasurement("modern_actors_present", actorsStart);
             Ready = true;
             if (snapshotCount++ == 0)
                 Debug.Log($"MC_MODERN_LIVE generation={generation} tick={state.tick} terrain={state.terrainHash:x16} position={wrapped} native_session={session.Handle}");
@@ -261,7 +272,7 @@ namespace MagicCarpet.Native
             ModernCapture.EndMeasurement("modern_render", renderStart);
             if (ModernCapture.Measure && !reportedGeometry && reflectionStart != 0)
             {
-                Debug.Log($"MC_MODERN_GEOMETRY range_triangles={terrain.VisibleTriangleCount} detail_copies={terrain.VisibleDetailCopies} far_copies={terrain.VisibleFarCopies} nature_triangles={vegetation.SubmittedTriangleCount} nature_draws={vegetation.DrawCount} nature_detail={vegetation.DetailInstanceCount} nature_distant={vegetation.DistantInstanceCount} reflections={waterReflection.RenderedFrames} reflection_reuse={waterReflection.ReusedFrames} reflection_invisible={waterReflection.InvisibleFrames}");
+                Debug.Log($"MC_MODERN_GEOMETRY range_triangles={terrain.VisibleTriangleCount} detail_copies={terrain.VisibleDetailCopies} far_copies={terrain.VisibleFarCopies} nature_triangles={vegetation.SubmittedTriangleCount} nature_shadow_only_triangles={vegetation.ShadowOnlyTriangleCount} nature_draws={vegetation.DrawCount} nature_detail={vegetation.DetailInstanceCount} nature_intermediate={vegetation.IntermediateInstanceCount} nature_distant={vegetation.DistantInstanceCount} reflections={waterReflection.RenderedFrames} reflection_reuse={waterReflection.ReusedFrames} reflection_invisible={waterReflection.InvisibleFrames}");
                 reportedGeometry = true;
             }
         }

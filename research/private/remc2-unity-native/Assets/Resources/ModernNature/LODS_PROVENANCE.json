@@ -1,0 +1,268 @@
+{
+  "purpose": "Experimental relightable multiview vegetation and solid LODs derived from existing CC0 Poly Haven assets; upstream origins and license are in PROVENANCE.json.",
+  "tools": "Blender 5.2.3 LTS Cycles CPU, Pillow 13.0.0",
+  "generator": {
+    "derive_modern_foliage.py": "a0fbbd4af91bc66eda703e128589f47557e6348456c0d859d482581f15a0a52a",
+    "pack_modern_foliage.py": "40301f1ff00d52d4657fc0af4970ecadb0072989210f13c5acf65bc9229374d3",
+    "derive_modern_solid_lods.py": "19ca709357618f14c98b04500c0b939840a78ef2095ffbd90007a4dfb7fe6014"
+  },
+  "commands": [
+    "env -u DISPLAY -u WAYLAND_DISPLAY blender --factory-startup -b -t 4 --python Tools/derive_modern_foliage.py",
+    "uv run --no-project --with pillow==13.0.0 python Tools/pack_modern_foliage.py",
+    "env -u DISPLAY -u WAYLAND_DISPLAY blender --factory-startup -b -t 4 --python Tools/derive_modern_solid_lods.py"
+  ],
+  "method": "8 azimuths by 5 elevations; orthographic 128px CPU renders. Source opacity is clipped per surface at 0.4. Color atlas stores unlit sRGB and coverage. Linear data atlas stores Unity-basis object normals in RGB and normalized view depth in alpha. Each 128px tile contains a 112px capture with an 8px guard. Rock and tree solid meshes use UV-preserving Blender decimation.",
+  "intermediate_frames": {
+    "count": 480,
+    "sorted_name_and_sha256_sha256": "143347c815c58dac2f3ada545e7455d853e24f4a9c1ce1161d5bb80fbbb3918a",
+    "path": "research/private/generated/nightspire-rework-20261105/multiview-foliage",
+    "capture_history": {
+      "grass_fern_tree": "Captured using transformed local bounding-box corners before the baker was corrected to use tight transformed-vertex bounds. Offline point-cloud comparison found maximum Blender-unit center differences of 1.491e-8, 1.491e-8 and 5.365e-7, and radius differences of 9.666e-9, 6.695e-9 and 2.653e-7 respectively. The two approaches agree within those tolerances, but byte-identical regeneration has not been tested.",
+      "shrub": "Rebaked after the correction using tight transformed-vertex bounds.",
+      "current_baker": "The current authoring script uses tight transformed-vertex bounds for all four assets."
+    }
+  },
+  "sources": {
+    "grass_medium_01_1k.fbx": {
+      "sha256": "ef823eba5c7114b98fb544a85ab7b17dd1c2ddd6f3e785cd232029b980ae7c44",
+      "bytes": 1056796
+    },
+    "fern_02_1k.fbx": {
+      "sha256": "6d8238b9cc1bbb5f5766396c2db26f2219c0d0e5ca226fb81dcc44bdb35045e8",
+      "bytes": 223596
+    },
+    "shrub_02_1k.fbx": {
+      "sha256": "7bd42e635ed83a9341a9953280845dc2685615a4a4a5441e31eedd39d5431ec8",
+      "bytes": 832300
+    },
+    "tree_small_02_derived.fbx": {
+      "sha256": "879f3e02d8cc51fbc273d4daa1f544a9a797d7a87714a7f88408e969e0a7a34a",
+      "bytes": 956044
+    },
+    "rock_moss_set_01_1k.fbx": {
+      "sha256": "8fa2a2666ecc4591f59e1d45db05d86857115b55492c8522917f3de5e650e6f9",
+      "bytes": 2652988
+    },
+    "grass_medium_01_diff_1k.jpg": {
+      "sha256": "71495bd6a11fddcab0aaff38246fea1a7b802a705483f1c7cbca53955daa8050",
+      "bytes": 395673
+    },
+    "grass_medium_01_alpha_1k.png": {
+      "sha256": "711a8e49af758d6a6ce1f610db858899a27be19da6d1866bd35c13bc7b8ffeff",
+      "bytes": 648718
+    },
+    "grass_medium_01_nor_gl_1k.jpg": {
+      "sha256": "cae298d3d1d7ff7c7e210ad8ac772b96706e356f9315a6b04fde373ce01ccf1e",
+      "bytes": 956166
+    },
+    "fern_02_diff_1k.jpg": {
+      "sha256": "a828a6e7b4c01c826911e2eac4b3afc7457dab7b3b392a31c681ed88b7d50029",
+      "bytes": 315705
+    },
+    "fern_02_alpha_1k.png": {
+      "sha256": "ea3c64284c7ebdeedf484d2d816eae92825ec526140c3bb83859ddc7a64001f9",
+      "bytes": 114589
+    },
+    "fern_02_nor_gl_1k.jpg": {
+      "sha256": "45bce132c6e96a0864bc89ab5da51361ab3f4afa83a6669ae499ab5ca811f621",
+      "bytes": 367222
+    },
+    "shrub_02_diff_1k.jpg": {
+      "sha256": "9956eff294034d70516d867e9668428a23d782feb3d4c34061dce5e44bacd5a8",
+      "bytes": 395120
+    },
+    "shrub_02_alpha_1k.png": {
+      "sha256": "5c2c31bac311051db77443e1780078403c2df0a832c40fe6ed7bcd982695cdf0",
+      "bytes": 91741
+    },
+    "shrub_02_nor_gl_1k.jpg": {
+      "sha256": "54c24e433365d5410223b7ebd2b33042b80831f80976e10768114db5ef6911d7",
+      "bytes": 490815
+    },
+    "tree_small_02_leaves_diff_1k.jpg": {
+      "sha256": "261e7d7a5ac7d2e16ea8823ff8510be8f3f615999724232994039ad2885e5c36",
+      "bytes": 340003
+    },
+    "tree_small_02_leaves_alpha_1k.png": {
+      "sha256": "4f143e2dda8a6a572f427ac378b92255d21761e4611de0d26e21816c01aa533b",
+      "bytes": 264711
+    },
+    "tree_small_02_leaves_nor_gl_1k.jpg": {
+      "sha256": "8c72e04fb23e16ae1df79c01385a638473d1dd4dede3d51e83d70153c129f09b",
+      "bytes": 681604
+    }
+  },
+  "outputs": {
+    "grass_lod_color.png": {
+      "sha256": "88177b64cc604efc0e6efa2ceedd3c9b7fce6b6a1eb74b36be0ea213aed8fb1b",
+      "bytes": 405143
+    },
+    "grass_lod_normal_depth.png": {
+      "sha256": "1eed1b1d50e0135336bc3c0f876b3df1feadced5845e789b35fa7ceb368b8e48",
+      "bytes": 397814
+    },
+    "fern_lod_color.png": {
+      "sha256": "330465933fc07517cccfaa84c2387b7ed354cc5baf7ac0e5ae200c098f35be95",
+      "bytes": 388941
+    },
+    "fern_lod_normal_depth.png": {
+      "sha256": "b03c4e5fa6b24f28dfd52e4484b8bdd7887ace44489e83026243cdb8e6c314f9",
+      "bytes": 416826
+    },
+    "shrub_lod_color.png": {
+      "sha256": "614a96975dc5a8df08470a7c30a07159d4f908a27d07f398dccc8c1647aad9d7",
+      "bytes": 429981
+    },
+    "shrub_lod_normal_depth.png": {
+      "sha256": "d53646d25b39fb395bde7214219103246212fce142a4fdfbe78eec9d0d8b71fc",
+      "bytes": 417928
+    },
+    "tree_leaves_lod_color.png": {
+      "sha256": "fd1bd24f164b8e68633a0a5e08ef942c011ecb902ed84e5869b3da61ffb6a43b",
+      "bytes": 612193
+    },
+    "tree_leaves_lod_normal_depth.png": {
+      "sha256": "0bb3c7f28ef38dd9721c1fbbf27b527ac18e2be80c1dbcd0ab4d990e177d14ce",
+      "bytes": 654223
+    },
+    "rock_moss_set_01_lod.fbx": {
+      "sha256": "19c91e8c80d1ec1b76aff7328a7453c7d77a50e3dc82605e6f75a75373f84203",
+      "bytes": 38780
+    },
+    "tree_small_02_lod.fbx": {
+      "sha256": "1674a3a9d7e4fca2f7f49e7676787d7719f2d1407de7cfac875d8d80485910ae",
+      "bytes": 114748
+    }
+  },
+  "bake_bounds": {
+    "grass_lod": {
+      "source_fbx": "grass_medium_01_1k.fbx",
+      "part": "grass_medium_01_mid_b_LOD0",
+      "blender_world_center": [
+        -0.7825602889060974,
+        -0.012829549610614777,
+        0.08551640342921019
+      ],
+      "blender_world_sphere_diameter": 0.29161606341725904,
+      "expected_unity_import_center": [
+        78.25602889060974,
+        8.551640342921019,
+        1.2829549610614777
+      ],
+      "expected_unity_import_sphere_diameter": 29.161606341725903,
+      "unity_units_per_blender_unit": 100
+    },
+    "fern_lod": {
+      "source_fbx": "fern_02_1k.fbx",
+      "part": "fern_02_b",
+      "blender_world_center": [
+        -0.03326934576034546,
+        -0.02496980130672455,
+        0.18333707563579082
+      ],
+      "blender_world_sphere_diameter": 1.324883671982011,
+      "expected_unity_import_center": [
+        3.326934576034546,
+        18.333707563579082,
+        2.496980130672455
+      ],
+      "expected_unity_import_sphere_diameter": 132.4883671982011,
+      "unity_units_per_blender_unit": 100
+    },
+    "shrub_lod": {
+      "source_fbx": "shrub_02_1k.fbx",
+      "part": "shrub_02_b_LOD0",
+      "blender_world_center": [
+        0.004210412502288818,
+        -0.10046808421611786,
+        0.6054529619868845
+      ],
+      "blender_world_sphere_diameter": 1.4226592008024785,
+      "expected_unity_import_center": [
+        -0.42104125022888184,
+        60.54529619868845,
+        10.046808421611786
+      ],
+      "expected_unity_import_sphere_diameter": 142.26592008024787,
+      "unity_units_per_blender_unit": 100
+    },
+    "tree_leaves_lod": {
+      "source_fbx": "tree_small_02_derived.fbx",
+      "part": "tree_leaves",
+      "blender_world_center": [
+        0.1501631736755371,
+        -0.7740552425384521,
+        2.9997937083244324
+      ],
+      "blender_world_sphere_diameter": 4.885404689538383,
+      "expected_unity_import_center": [
+        -15.016317367553711,
+        299.97937083244324,
+        77.40552425384521
+      ],
+      "expected_unity_import_sphere_diameter": 488.5404689538383,
+      "unity_units_per_blender_unit": 100
+    }
+  },
+  "intermediate_mesh_authoring": {
+    "unity": "6000.3.20f1",
+    "entry": "MagicCarpet.Native.Editor.ModernVegetationMeshLods.Generate",
+    "editor_source": "Assets/Editor/ModernVegetationMeshLods.cs",
+    "editor_source_sha256": "9206f9e07757dfd6a4f1f0cdbb5d87f6324389aa148dd91b05d42dbe7dbc2387",
+    "factory_source": "Assets/Scripts/ModernVegetation.cs",
+    "factory_source_sha256": "e34f93ffbd12da66e4c1de1e8ac5e8ad6ec0fd46337ae200dbdd49f3b0645162",
+    "method": "Exact normalized pilot mesh geometry: UV-aware vertex clustering for grass, fern, shrub, trunk, rock and branches; whole-card spatial/orientation selection for tree leaves. Player loads and clones the seven saved Mesh assets.",
+    "authoring_timings": "Per-mesh elapsed editor generation times from offline-mid-generation.log; not runtime frame or startup measurements.",
+    "assets": {
+      "grass_mid": {
+        "sha256": "f70cf044aeaaee8c65f51ba0571a6e9c15f28783446754592ad8a623aaec84bc",
+        "bytes": 186604,
+        "meta_sha256": "21db21b9064463331982dbcf73c8b98983cd8beb8bebaa72c7692bdea065ea3b",
+        "triangles": 477,
+        "authoring_ms": 85.473
+      },
+      "fern_mid": {
+        "sha256": "6e8a56edd905162f9def683519319e2951f539f7a2bc16638c2b12336c6bc4f9",
+        "bytes": 237108,
+        "meta_sha256": "6b3c2ebf23f11241fbb4bcf74ecd102fd38509b917081bb374aca9c948b5391e",
+        "triangles": 2114,
+        "authoring_ms": 4.248
+      },
+      "shrub_mid": {
+        "sha256": "b1ce03c4fe05169c7d7b08a973e55669e62ae6d683910d24483dda285e20f8fd",
+        "bytes": 549227,
+        "meta_sha256": "6efa9137fe2212fd403280419cd75b206ee146440955667951d06f13c0f554d3",
+        "triangles": 2323,
+        "authoring_ms": 8.709
+      },
+      "tree_trunk_mid": {
+        "sha256": "359fb9d242c70fa60a149cb16657a6d9c552516dd227e8a91b44ef1414d984bb",
+        "bytes": 264538,
+        "meta_sha256": "6a815d53534f23689b653ba8645cb636f0d6cbdd45a72bbf204dfdc448f59dcf",
+        "triangles": 1591,
+        "authoring_ms": 7.917
+      },
+      "rock_mid": {
+        "sha256": "e99db6fedbfb9113e85ade836a64fdac39ac98704b18f241c353e5c72cba90f9",
+        "bytes": 391056,
+        "meta_sha256": "28fbe7b5753216e489b748a6117b394549308da5da6c383bf923738b597554b6",
+        "triangles": 3056,
+        "authoring_ms": 7.367
+      },
+      "tree_branches_mid": {
+        "sha256": "b8b7ddfbe88b0ddef9f0cdea497315c66424bf32d891687bc5bdec0b1d14349a",
+        "bytes": 746865,
+        "meta_sha256": "97bd5e5ac4125f589563a64337a45f1db20d4e49eb9e4ad66c4ca40db453a1ca",
+        "triangles": 2532,
+        "authoring_ms": 8.394
+      },
+      "tree_leaves_mid": {
+        "sha256": "c0585cc3aea6d78449c3127a606949377bb0246132d72fe4dc6877ec78595120",
+        "bytes": 2660931,
+        "meta_sha256": "97c2c7cded248db9e0cfb7e7a5ef473aefbe45e2cb6c76cd521daebb0998f491",
+        "triangles": 4448,
+        "authoring_ms": 71.912
+      }
+    }
+  }
+}

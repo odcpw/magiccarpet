@@ -32,6 +32,8 @@ namespace MagicCarpet.Native
         private static float measurementReadyAt = float.PositiveInfinity;
         private readonly FrameTiming[] timings = new FrameTiming[1];
         private ulong lastTimingTimestamp;
+        private Vector3? orbitCenter;
+        private float orbitRadius, orbitHeight, orbitSpeed;
 
         internal static long BeginMeasurement() => Measure && Time.realtimeSinceStartup >= measurementReadyAt
             ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -88,10 +90,27 @@ namespace MagicCarpet.Native
                 ReviewRotation = Quaternion.Euler(values[4], values[3], 0);
                 Debug.Log($"MC_MODERN_REVIEW_CAMERA presentation_only=True position={ReviewPosition} rotation={ReviewRotation.eulerAngles}");
             }
+            var orbit = Array.IndexOf(args, "-mc-modern-review-orbit");
+            if (orbit >= 0)
+            {
+                if (orbit + 1 >= args.Length) throw new ArgumentException("Review orbit requires center-x,y,z,radius,height,degrees-per-second");
+                var values = args[orbit + 1].Split(',').Select(value => float.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+                if (values.Length != 6 || values.Any(value => float.IsNaN(value) || float.IsInfinity(value)) || values[3] <= 0)
+                    throw new ArgumentException("Review orbit requires six finite values and positive radius");
+                orbitCenter = new Vector3(values[0], values[1], values[2]);
+                orbitRadius = values[3]; orbitHeight = values[4]; orbitSpeed = values[5];
+                Debug.Log("MC_MODERN_REVIEW_ORBIT presentation_only=True readback_captures_are_not_performance_measurements=True");
+            }
         }
 
         private void Update()
         {
+            if (orbitCenter.HasValue)
+            {
+                var angle = (Time.realtimeSinceStartup - started) * orbitSpeed * Mathf.Deg2Rad;
+                ReviewPosition = orbitCenter.Value + new Vector3(Mathf.Cos(angle) * orbitRadius, orbitHeight, Mathf.Sin(angle) * orbitRadius);
+                ReviewRotation = Quaternion.LookRotation(orbitCenter.Value - ReviewPosition.Value);
+            }
             if (Measure && !reported)
             {
                 FrameTimingManager.CaptureFrameTimings();
@@ -152,11 +171,26 @@ namespace MagicCarpet.Native
             var delayOption = Array.IndexOf(args, "-mc-modern-capture-delay");
             var delay = delayOption >= 0 && delayOption + 1 < args.Length
                 ? float.Parse(args[delayOption + 1], CultureInfo.InvariantCulture) : 10f;
+            var countOption = Array.IndexOf(args, "-mc-modern-capture-count");
+            var count = countOption >= 0 && countOption + 1 < args.Length
+                ? int.Parse(args[countOption + 1], CultureInfo.InvariantCulture) : 1;
+            if (count < 1 || count > 120) throw new ArgumentException("Capture count must be between 1 and 120");
+            var intervalOption = Array.IndexOf(args, "-mc-modern-capture-interval");
+            var interval = intervalOption >= 0 && intervalOption + 1 < args.Length
+                ? float.Parse(args[intervalOption + 1], CultureInfo.InvariantCulture) : .25f;
+            if (float.IsNaN(interval) || float.IsInfinity(interval) || interval < .05f || interval > 10f)
+                throw new ArgumentException("Capture interval must be between .05 and 10 seconds");
             yield return new WaitForSecondsRealtime(Mathf.Max(1, delay));
-            yield return new WaitForEndOfFrame();
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            ScreenCapture.CaptureScreenshot(path);
-            Debug.Log($"MC_MODERN_CAPTURE path={path} camera={transform.position} rotation={transform.eulerAngles} frame_ms={Time.unscaledDeltaTime * 1000:F2}");
+            for (var frame = 0; frame < count; frame++)
+            {
+                yield return new WaitForEndOfFrame();
+                var output = count == 1 ? path : Path.Combine(Path.GetDirectoryName(path),
+                    Path.GetFileNameWithoutExtension(path) + $"-{frame:D3}" + Path.GetExtension(path));
+                ScreenCapture.CaptureScreenshot(output);
+                Debug.Log($"MC_MODERN_CAPTURE path={output} camera={transform.position} rotation={transform.eulerAngles} frame_ms={Time.unscaledDeltaTime * 1000:F2}");
+                if (frame + 1 < count) yield return new WaitForSecondsRealtime(interval);
+            }
             yield return new WaitForSecondsRealtime(2);
             if (args.Contains("-mc-modern-exit-after-capture")) Application.Quit();
         }

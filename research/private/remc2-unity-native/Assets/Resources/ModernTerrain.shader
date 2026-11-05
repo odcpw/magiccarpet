@@ -14,7 +14,11 @@ Shader "MagicCarpet/ModernTerrain"
         _GroundNormal ("Ground normal (RGB)", 2D) = "bump" {}
         _RockRoughness ("Rock roughness (R)", 2D) = "white" {}
         _GroundRoughness ("Ground roughness (R)", 2D) = "white" {}
+        _RockAlbedoRoughness ("Rock albedo (RGB), roughness (A)", 2D) = "white" {}
+        _GroundAlbedoRoughness ("Ground albedo (RGB), roughness (A)", 2D) = "white" {}
+        _UsePackedRoughness ("Use packed albedo and roughness", Float) = 0
         _UseMaterialEndpoints ("Skip unused pure-material samples", Float) = 1
+        _UseSparseProjection ("Skip zero-weight projections", Float) = 1
     }
     SubShader
     {
@@ -39,9 +43,11 @@ Shader "MagicCarpet/ModernTerrain"
             TEXTURE2D(_GroundNormal); SAMPLER(sampler_GroundNormal);
             TEXTURE2D(_RockRoughness); SAMPLER(sampler_RockRoughness);
             TEXTURE2D(_GroundRoughness); SAMPLER(sampler_GroundRoughness);
+            TEXTURE2D(_RockAlbedoRoughness); SAMPLER(sampler_RockAlbedoRoughness);
+            TEXTURE2D(_GroundAlbedoRoughness); SAMPLER(sampler_GroundAlbedoRoughness);
             CBUFFER_START(UnityPerMaterial)
                 half4 _RockColor, _SoilColor, _MossColor;
-                float _DetailScale, _UseTextures, _TextureScale, _UseMaterialEndpoints;
+                float _DetailScale, _UseTextures, _TextureScale, _UseMaterialEndpoints, _UseSparseProjection, _UsePackedRoughness;
             CBUFFER_END
             struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; half4 color : COLOR; };
             struct Varyings { float4 positionCS : SV_POSITION; float3 positionWS : TEXCOORD0; half3 normalWS : TEXCOORD1; half4 color : COLOR; half fog : TEXCOORD2; };
@@ -82,11 +88,54 @@ Shader "MagicCarpet/ModernTerrain"
                 half2 n=encoded*2-1;
                 return half2(n.y,-n.x)*0.71;
             }
+            void RockProjection(float2 uv, float2 dx, float2 dy, float mixFactor,
+                out half3 color, out half roughness, out half2 normal)
+            {
+                float2 alt=AlternateRockUV(uv);
+                float2 altDx=AlternateRockGradient(dx), altDy=AlternateRockGradient(dy);
+                if (_UsePackedRoughness > 0.5)
+                {
+                    half4 packed=lerp(SAMPLE_TEXTURE2D_GRAD(_RockAlbedoRoughness,sampler_RockAlbedoRoughness,uv,dx,dy),
+                        SAMPLE_TEXTURE2D_GRAD(_RockAlbedoRoughness,sampler_RockAlbedoRoughness,alt,altDx,altDy),mixFactor);
+                    color=packed.rgb; roughness=packed.a;
+                }
+                else
+                {
+                    color=lerp(SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,uv,dx,dy).rgb,
+                        SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,alt,altDx,altDy).rgb,mixFactor);
+                    roughness=lerp(SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,uv,dx,dy).r,
+                        SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,alt,altDx,altDy).r,mixFactor);
+                }
+                normal=lerp(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,uv,dx,dy).rg*2-1,
+                    AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,alt,altDx,altDy).rg),mixFactor);
+            }
+            void GroundProjection(float2 uv, float2 dx, float2 dy,
+                out half3 color, out half roughness, out half2 normal)
+            {
+                if (_UsePackedRoughness > 0.5)
+                {
+                    half4 packed=SAMPLE_TEXTURE2D_GRAD(_GroundAlbedoRoughness,sampler_GroundAlbedoRoughness,uv,dx,dy);
+                    color=packed.rgb; roughness=packed.a;
+                }
+                else
+                {
+                    color=SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo,sampler_GroundAlbedo,uv,dx,dy).rgb;
+                    roughness=SAMPLE_TEXTURE2D_GRAD(_GroundRoughness,sampler_GroundRoughness,uv,dx,dy).r;
+                }
+                normal=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,uv,dx,dy).rg*2-1;
+            }
             half4 Frag(Varyings i) : SV_Target
             {
                 float3 n = normalize(i.normalWS), p = i.positionWS * _DetailScale;
-                float3 weights = pow(abs(n), 4.0); weights /= max(dot(weights, float3(1,1,1)), 0.0001);
-                float detail = Detail(p.yz * 0.65)*weights.x + Detail(p.xz * 0.65)*weights.y + Detail(p.xy * 0.65)*weights.z;
+                // Remove only smoothly vanishing projections; every surface
+                // keeps its strongest axis, including three-way corners.
+                float3 axes=max(abs(n)-(_UseSparseProjection > 0.5 ? 0.2 : 0),0);
+                float3 weights=axes*axes; weights*=weights;
+                weights /= max(dot(weights, float3(1,1,1)), 0.0001);
+                float detail=0;
+                [branch] if (weights.x > 0) detail+=Detail(p.yz * 0.65)*weights.x;
+                [branch] if (weights.y > 0) detail+=Detail(p.xz * 0.65)*weights.y;
+                [branch] if (weights.z > 0) detail+=Detail(p.xy * 0.65)*weights.z;
                 // Attenuate sub-pixel grain at distance to prevent temporal shimmer.
                 detail = lerp(0.5, detail, 1-smoothstep(0.12, 0.8, length(fwidth(p))));
                 float broad = Noise(p.xz * 0.032) * 0.65 + Noise(p.xz * 0.095) * 0.35;
@@ -104,58 +153,30 @@ Shader "MagicCarpet/ModernTerrain"
                 if (_UseTextures > 0.001)
                 {
                     float3 q = i.positionWS * _TextureScale;
-                    float2 altX=AlternateRockUV(q.yz), altY=AlternateRockUV(q.xz), altZ=AlternateRockUV(q.xy);
                     // Compute gradients before material-dependent control flow.
                     // Implicit derivatives within a divergent branch could
                     // select different mips at the rock/soil boundary.
                     float3 qdx=ddx(q), qdy=ddy(q);
-                    float2 altXdx=AlternateRockGradient(qdx.yz), altXdy=AlternateRockGradient(qdy.yz);
-                    float2 altYdx=AlternateRockGradient(qdx.xz), altYdy=AlternateRockGradient(qdy.xz);
-                    float2 altZdx=AlternateRockGradient(qdx.xy), altZdy=AlternateRockGradient(qdy.xy);
                     float rockMix=lerp(0.28,0.62,rockVariation);
                     half3 rockTex=0, soilTex=0;
                     half rockR=0, soilR=0;
                     half2 rockNX=0, rockNY=0, rockNZ=0, soilNX=0, soilNY=0, soilNZ=0;
+                    half3 axisColor; half axisR; half2 axisNormal;
                     // Saturated material weights have exact endpoints. On
                     // those pixels the other material contributes nothing.
                     [branch] if (_UseMaterialEndpoints < 0.5 || rock > 0)
                     {
-                        half3 rockX = SAMPLE_TEXTURE2D_GRAD(_RockAlbedo, sampler_RockAlbedo, q.yz,qdx.yz,qdy.yz).rgb;
-                        half3 rockY = SAMPLE_TEXTURE2D_GRAD(_RockAlbedo, sampler_RockAlbedo, q.xz,qdx.xz,qdy.xz).rgb;
-                        half3 rockZ = SAMPLE_TEXTURE2D_GRAD(_RockAlbedo, sampler_RockAlbedo, q.xy,qdx.xy,qdy.xy).rgb;
-                        rockX=lerp(rockX,SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,altX,altXdx,altXdy).rgb,rockMix);
-                        rockY=lerp(rockY,SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,altY,altYdx,altYdy).rgb,rockMix);
-                        rockZ=lerp(rockZ,SAMPLE_TEXTURE2D_GRAD(_RockAlbedo,sampler_RockAlbedo,altZ,altZdx,altZdy).rgb,rockMix);
-                        rockTex = rockX*weights.x + rockY*weights.y + rockZ*weights.z;
+                        [branch] if (weights.x > 0) { RockProjection(q.yz,qdx.yz,qdy.yz,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.x; rockR+=axisR*weights.x; rockNX=axisNormal; }
+                        [branch] if (weights.y > 0) { RockProjection(q.xz,qdx.xz,qdy.xz,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.y; rockR+=axisR*weights.y; rockNY=axisNormal; }
+                        [branch] if (weights.z > 0) { RockProjection(q.xy,qdx.xy,qdy.xy,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.z; rockR+=axisR*weights.z; rockNZ=axisNormal; }
                         rockTex *= lerp(half3(0.77,0.82,0.80),half3(1.07,1.02,0.95),rockVariation);
-                        rockR = SAMPLE_TEXTURE2D_GRAD(_RockRoughness, sampler_RockRoughness, q.yz,qdx.yz,qdy.yz).r*weights.x
-                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness, sampler_RockRoughness, q.xz,qdx.xz,qdy.xz).r*weights.y
-                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness, sampler_RockRoughness, q.xy,qdx.xy,qdy.xy).r*weights.z;
-                        half altRockR=SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,altX,altXdx,altXdy).r*weights.x
-                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,altY,altYdx,altYdy).r*weights.y
-                            + SAMPLE_TEXTURE2D_GRAD(_RockRoughness,sampler_RockRoughness,altZ,altZdx,altZdy).r*weights.z;
-                        rockR=lerp(rockR,altRockR,rockMix);
-                        // Maps are linear RGB tangent normals, not DXT5nm.
-                        rockNX=SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,q.yz,qdx.yz,qdy.yz).rg*2-1;
-                        rockNY=SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,q.xz,qdx.xz,qdy.xz).rg*2-1;
-                        rockNZ=SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,q.xy,qdx.xy,qdy.xy).rg*2-1;
-                        rockNX=lerp(rockNX,AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,altX,altXdx,altXdy).rg),rockMix);
-                        rockNY=lerp(rockNY,AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,altY,altYdx,altYdy).rg),rockMix);
-                        rockNZ=lerp(rockNZ,AlternateRockNormal(SAMPLE_TEXTURE2D_GRAD(_RockNormal,sampler_RockNormal,altZ,altZdx,altZdy).rg),rockMix);
                     }
                     [branch] if (_UseMaterialEndpoints < 0.5 || rock < 1)
                     {
-                        half3 soilX = SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo, sampler_GroundAlbedo, q.yz,qdx.yz,qdy.yz).rgb;
-                        half3 soilY = SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo, sampler_GroundAlbedo, q.xz,qdx.xz,qdy.xz).rgb;
-                        half3 soilZ = SAMPLE_TEXTURE2D_GRAD(_GroundAlbedo, sampler_GroundAlbedo, q.xy,qdx.xy,qdy.xy).rgb;
-                        soilTex = soilX*weights.x + soilY*weights.y + soilZ*weights.z;
+                        [branch] if (weights.x > 0) { GroundProjection(q.yz,qdx.yz,qdy.yz,axisColor,axisR,axisNormal); soilTex+=axisColor*weights.x; soilR+=axisR*weights.x; soilNX=axisNormal; }
+                        [branch] if (weights.y > 0) { GroundProjection(q.xz,qdx.xz,qdy.xz,axisColor,axisR,axisNormal); soilTex+=axisColor*weights.y; soilR+=axisR*weights.y; soilNY=axisNormal; }
+                        [branch] if (weights.z > 0) { GroundProjection(q.xy,qdx.xy,qdy.xy,axisColor,axisR,axisNormal); soilTex+=axisColor*weights.z; soilR+=axisR*weights.z; soilNZ=axisNormal; }
                         soilTex *= lerp(half3(0.84,0.85,0.78),half3(0.69,0.79,0.60),dampPatch*0.7);
-                        soilR = SAMPLE_TEXTURE2D_GRAD(_GroundRoughness, sampler_GroundRoughness, q.yz,qdx.yz,qdy.yz).r*weights.x
-                            + SAMPLE_TEXTURE2D_GRAD(_GroundRoughness, sampler_GroundRoughness, q.xz,qdx.xz,qdy.xz).r*weights.y
-                            + SAMPLE_TEXTURE2D_GRAD(_GroundRoughness, sampler_GroundRoughness, q.xy,qdx.xy,qdy.xy).r*weights.z;
-                        soilNX=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,q.yz,qdx.yz,qdy.yz).rg*2-1;
-                        soilNY=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,q.xz,qdx.xz,qdy.xz).rg*2-1;
-                        soilNZ=SAMPLE_TEXTURE2D_GRAD(_GroundNormal,sampler_GroundNormal,q.xy,qdx.xy,qdy.xy).rg*2-1;
                     }
                     half3 textured = lerp(soilTex, rockTex, rock) * lerp(0.82,1.15,broad);
                     albedo = lerp(albedo, textured, saturate(_UseTextures));

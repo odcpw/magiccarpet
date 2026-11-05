@@ -40,19 +40,26 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void DistantScannedMeshesRetainUvAndHaveValidTriangleIndices()
+        public void DistantRepresentationsHaveValidIndicesAndPreserveCoverage()
         {
             var original = Field<Mesh[]>(vegetation, "meshes");
+            var intermediate = Field<Mesh[]>(vegetation, "intermediateMeshes");
             var distant = Field<Mesh[]>(vegetation, "distantMeshes");
+            var nearMaterials = Field<Material[]>(vegetation, "materials");
+            var farMaterials = Field<Material[]>(vegetation, "distantMaterials");
             long originalTriangles = 0;
             long distantTriangles = 0;
             for (var kind = 0; kind < original.Length; kind++)
             {
-                CollectionAssert.AreEqual(original[kind].vertices, distant[kind].vertices);
-                CollectionAssert.AreEqual(original[kind].uv, distant[kind].uv);
-                for (var sub = 0; sub < original[kind].subMeshCount; sub++)
+                Assert.That(nearMaterials[kind].enableInstancing, Is.True);
+                Assert.That(farMaterials[kind].enableInstancing, Is.True);
+                Assert.That(nearMaterials[kind].GetFloat("_LodThreshold"), Is.EqualTo(-1f));
+                Assert.That(farMaterials[kind].GetFloat("_LodThreshold"), Is.Zero);
+                Assert.That(distant[kind].uv.Length, Is.EqualTo(distant[kind].vertexCount));
+                Assert.That(intermediate[kind].GetIndexCount(0), Is.GreaterThan(0).And.LessThanOrEqualTo(original[kind].GetIndexCount(0)));
+                for (var sub = 0; sub < distant[kind].subMeshCount; sub++)
                 {
-                    originalTriangles += original[kind].GetTriangles(sub).Length / 3;
+                    if (sub < original[kind].subMeshCount) originalTriangles += original[kind].GetTriangles(sub).Length / 3;
                     var indices = distant[kind].GetTriangles(sub);
                     distantTriangles += indices.Length / 3;
                     Assert.That(indices.Length % 3, Is.Zero);
@@ -68,13 +75,50 @@ namespace MagicCarpet.Native.Tests
             }
             Assert.That(distantTriangles, Is.GreaterThan(0).And.LessThan(originalTriangles),
                 "The actual imported meshes must produce a smaller distant geometry set.");
-            Assert.That(distant[5].GetIndexCount(0), Is.LessThan(original[5].GetIndexCount(0) * .8f), "tree branches");
-            Assert.That(distant[6].GetIndexCount(0), Is.LessThan(original[6].GetIndexCount(0) * .75f), "tree leaf cards");
-            AssertWholeLeafCards(original[6], distant[6]);
-            var originalBounds = ReferencedBounds(original[6]);
-            var distantBounds = ReferencedBounds(distant[6]);
-            Assert.That(Vector3.Distance(originalBounds.min, distantBounds.min), Is.LessThan(.0001f));
-            Assert.That(Vector3.Distance(originalBounds.max, distantBounds.max), Is.LessThan(.0001f));
+            foreach (var kind in new[] { 0, 1, 2, 6 })
+            {
+                Assert.That(farMaterials[kind].shader.name, Is.EqualTo("MagicCarpet/ModernVegetationImpostor"));
+                Assert.That(farMaterials[kind].GetTexture("_BaseMap"), Is.Not.Null);
+                Assert.That(farMaterials[kind].GetTexture("_ImpostorData"), Is.Not.Null);
+                Assert.That(distant[kind].GetIndexCount(0), Is.EqualTo(6), "one camera-facing quad");
+                Assert.That(distant[kind].bounds.Contains(original[kind].bounds.min), Is.True);
+                Assert.That(distant[kind].bounds.Contains(original[kind].bounds.max), Is.True);
+            }
+            Assert.That(distant[4].GetIndexCount(0), Is.LessThan(original[4].GetIndexCount(0) / 2), "rock");
+            Assert.That(distant[5].GetIndexCount(0), Is.LessThan(original[5].GetIndexCount(0) / 2), "tree branches");
+            AssertWholeLeafCards(original[6], intermediate[6]);
+            var originalLeafBounds = ReferencedBounds(original[6]);
+            var intermediateLeafBounds = ReferencedBounds(intermediate[6]);
+            Assert.That(Vector3.Distance(originalLeafBounds.min, intermediateLeafBounds.min), Is.LessThan(.0001f));
+            Assert.That(Vector3.Distance(originalLeafBounds.max, intermediateLeafBounds.max), Is.LessThan(.0001f));
+        }
+
+        [Test]
+        public void AuthoredIntermediateMeshesMatchTheQualifiedPilotFactory()
+        {
+            var authored = Field<Mesh[]>(vegetation, "intermediateMeshes");
+            for (var kind = 0; kind < authored.Length; kind++)
+            {
+                var reference = ModernVegetation.CreateIntermediateForAuthoring(kind);
+                try
+                {
+                    var actual = authored[kind];
+                    Assert.That(actual.vertexCount, Is.EqualTo(reference.vertexCount), $"kind {kind}");
+                    Assert.That(actual.subMeshCount, Is.EqualTo(reference.subMeshCount), $"kind {kind}");
+                    CollectionAssert.AreEqual(reference.vertices, actual.vertices, $"vertices kind {kind}");
+                    CollectionAssert.AreEqual(reference.normals, actual.normals, $"normals kind {kind}");
+                    CollectionAssert.AreEqual(reference.tangents, actual.tangents, $"tangents kind {kind}");
+                    CollectionAssert.AreEqual(reference.colors, actual.colors, $"colors kind {kind}");
+                    CollectionAssert.AreEqual(reference.uv, actual.uv, $"UV kind {kind}");
+                    Assert.That(actual.bounds, Is.EqualTo(reference.bounds), $"bounds kind {kind}");
+                    for (var sub = 0; sub < reference.subMeshCount; sub++)
+                    {
+                        Assert.That(actual.GetTopology(sub), Is.EqualTo(reference.GetTopology(sub)), $"topology kind {kind}");
+                        CollectionAssert.AreEqual(reference.GetIndices(sub), actual.GetIndices(sub), $"indices kind {kind}");
+                    }
+                }
+                finally { UnityEngine.Object.DestroyImmediate(reference); }
+            }
         }
 
         private static void AssertWholeLeafCards(Mesh original, Mesh distant)
@@ -148,6 +192,7 @@ namespace MagicCarpet.Native.Tests
             var instances = ChunkInstances(before);
             Assert.That(instances[0].Count, Is.GreaterThan(0));
             var oldPosition = ((Matrix4x4)instances[0][0]).GetColumn(3);
+            var oldLodCenter = LodCenter(before, 0, 0);
 
             vegetation.RefreshChunks(new Vector3(33f, 0f, 1f));
             Assert.That(chunks[key], Is.SameAs(before), "moving one chunk should retain overlapping batches");
@@ -163,10 +208,101 @@ namespace MagicCarpet.Native.Tests
             Assert.That(newPosition.x, Is.EqualTo(oldPosition.x).Within(.0001f));
             Assert.That(newPosition.z, Is.EqualTo(oldPosition.z).Within(.0001f));
             Assert.That(newPosition.y, Is.EqualTo(oldPosition.y + 4f).Within(.0001f));
+            var newLodCenter = LodCenter(after, 0, 0);
+            Assert.That(newLodCenter.x, Is.EqualTo(oldLodCenter.x).Within(.0001f));
+            Assert.That(newLodCenter.z, Is.EqualTo(oldLodCenter.z).Within(.0001f));
+            Assert.That(newLodCenter.y, Is.EqualTo(oldLodCenter.y + 4f).Within(.0001f));
+        }
+
+        [Test]
+        public void ProjectedSizeRespondsToDistanceFieldOfViewAndInstanceScale()
+        {
+            var cameraObject = new GameObject("LOD camera");
+            try
+            {
+                var camera = cameraObject.AddComponent<Camera>();
+                camera.pixelRect = new Rect(0, 0, 1280, 720);
+                camera.fieldOfView = 60f;
+                var method = typeof(ModernVegetation).GetMethod("ProjectedPixels", BindingFlags.Static | BindingFlags.NonPublic);
+                var bounds = new Bounds(Vector3.zero, Vector3.one * 2f);
+                float Project(Vector3 position, float scale) => (float)method.Invoke(null, new object[] {
+                    camera.transform.position, camera.transform.forward,
+                    Mathf.Abs(camera.projectionMatrix.m11) * camera.pixelHeight * .5f, camera.orthographic,
+                    Matrix4x4.TRS(position, Quaternion.identity, Vector3.one * scale), bounds });
+                var near = Project(new Vector3(0, 0, 10), 1);
+                var far = Project(new Vector3(0, 0, 20), 1);
+                Assert.That(near, Is.EqualTo(far * 2).Within(.01f));
+                Assert.That(Project(new Vector3(0, 0, 10), 2), Is.EqualTo(near * 2).Within(.01f));
+                Assert.That(Project(new Vector3(8, 0, 10), 1), Is.EqualTo(near).Within(.01f),
+                    "objects at equal view depth have the same projected scale across the screen");
+                camera.fieldOfView = 90f;
+                Assert.That(Project(new Vector3(0, 0, 10), 1), Is.LessThan(near));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(cameraObject); }
+        }
+
+        [Test]
+        public void ImpostorQuadAndBoundingSphereCoverOriginalMesh()
+        {
+            var originals = Field<Mesh[]>(vegetation, "meshes");
+            var cards = Field<Mesh[]>(vegetation, "distantMeshes");
+            var materials = Field<Material[]>(vegetation, "distantMaterials");
+            foreach (var kind in new[] { 0, 1, 2, 6 })
+            {
+                CollectionAssert.AreEqual(new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }, cards[kind].uv);
+                var center = (Vector3)materials[kind].GetVector("_ImpostorCenter");
+                var radius = materials[kind].GetFloat("_ImpostorDiameter") * .5f;
+                Assert.That(Vector3.Distance(center, originals[kind].bounds.center), Is.LessThan(.0001f));
+                foreach (var vertex in originals[kind].vertices)
+                    Assert.That(Vector3.Distance(vertex, center), Is.LessThanOrEqualTo(radius));
+            }
+        }
+
+        [Test]
+        public void GroupClassificationIsConservativeAcrossTheTransitionBand()
+        {
+            var method = typeof(ModernVegetation).GetMethod("GroupLodMode", BindingFlags.Static | BindingFlags.NonPublic);
+            int Classify(float nearDepth, float farDepth) => (int)method.Invoke(null, new object[] {
+                new Bounds(new Vector3(0, 0, (nearDepth + farDepth) * .5f), new Vector3(0, 0, farDepth - nearDepth)),
+                2f, 2f, Vector3.zero, Vector3.forward, 360f, false });
+            Assert.That(Classify(10, 12), Is.EqualTo(1), "both objects exceed the detail threshold");
+            Assert.That(Classify(25, 30), Is.EqualTo(2), "both objects belong to the intermediate mesh band");
+            Assert.That(Classify(80, 100), Is.EqualTo(3), "both objects are below the distant threshold");
+            Assert.That(Classify(10, 80), Is.EqualTo(4), "a group spanning thresholds must partition");
+        }
+
+        [Test]
+        public void ViewCacheInvalidatesForMovementAndProjectionChanges()
+        {
+            var cameraObject = new GameObject("LOD cache camera");
+            try
+            {
+                var camera = cameraObject.AddComponent<Camera>();
+                camera.pixelRect = new Rect(0, 0, 1280, 720);
+                var view = Field<object>(vegetation, "mainView");
+                var update = view.GetType().GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic);
+                int Version() => (int)update.Invoke(view, new object[] { camera });
+                var initial = Version();
+                Assert.That(Version(), Is.EqualTo(initial));
+                cameraObject.transform.position = Vector3.right;
+                var moved = Version();
+                Assert.That(moved, Is.GreaterThan(initial));
+                camera.fieldOfView = 80f;
+                Assert.That(Version(), Is.GreaterThan(moved));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(cameraObject); }
         }
 
         private static T Field<T>(object owner, string name) => (T)owner.GetType()
             .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(owner);
+
+        private static Vector3 LodCenter(object chunk, int kind, int index)
+        {
+            var lists = (Array)chunk.GetType().GetField("LodInstances", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(chunk);
+            var entry = ((IList)lists.GetValue(kind))[index];
+            return (Vector3)entry.GetType().GetField("Center", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(entry);
+        }
 
         private static IList[] ChunkInstances(object chunk)
         {

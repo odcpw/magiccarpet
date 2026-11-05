@@ -17,6 +17,7 @@ Shader "MagicCarpet/ModernVegetation"
         _WindUseHeight ("Use object height for wind", Float) = 0
         _WindMinY ("Wind base height", Float) = 0
         _WindInvHeight ("Inverse wind height", Float) = 1
+        _LodThreshold ("Signed detail coverage", Float) = -1
     }
     SubShader
     {
@@ -35,8 +36,23 @@ Shader "MagicCarpet/ModernVegetation"
             float _UseAlphaMap, _UseNormalMap, _UseRoughnessMap, _Cutoff;
             float _WindUseHeight, _WindMinY, _WindInvHeight;
         CBUFFER_END
+        UNITY_INSTANCING_BUFFER_START(VegetationLod)
+            UNITY_DEFINE_INSTANCED_PROP(float, _LodThreshold)
+        UNITY_INSTANCING_BUFFER_END(VegetationLod)
         // Global diagnostic switch; zero for normal presentation.
         float _ModernVegetationDebug;
+        void ApplyLodFade(float2 pixel)
+        {
+            // Both representations use the same screen-space sample, so their
+            // clipped pixels are complementary through the transition band.
+            float signedThreshold=UNITY_ACCESS_INSTANCED_PROP(VegetationLod, _LodThreshold);
+            bool nearRepresentation=signedThreshold < 0.0;
+            float threshold=abs(signedThreshold);
+            if ((nearRepresentation && threshold >= 1.0) || (!nearRepresentation && threshold <= 0.0)) return;
+            float noise=frac(52.9829189*frac(dot(floor(pixel),float2(0.06711056,0.00583715))));
+            bool keep=nearRepresentation ? noise < threshold : noise >= threshold;
+            clip(keep ? 1.0 : -1.0);
+        }
         float WindWeight(float3 positionOS, float uvWeight)
         {
             return lerp(uvWeight, saturate((positionOS.y-_WindMinY)*_WindInvHeight), saturate(_WindUseHeight));
@@ -86,6 +102,7 @@ Shader "MagicCarpet/ModernVegetation"
             half4 Frag(Varyings i, FRONT_FACE_TYPE face:FRONT_FACE_SEMANTIC):SV_Target
             {
                 UNITY_SETUP_INSTANCE_ID(i);
+                ApplyLodFade(i.positionCS.xy);
                 half4 texel=FoliageSample(i.uv,i.color);
                 half3 n=normalize(i.normalWS) * (IS_FRONT_VFACE(face,1.0,-1.0));
                 if (_UseTextures > 0.5 && _UseNormalMap > 0.5)
@@ -133,10 +150,10 @@ Shader "MagicCarpet/ModernVegetation"
             float3 _LightDirection;
             float3 _LightPosition;
             struct ShadowAttributes { float4 positionOS:POSITION; float3 normalOS:NORMAL; float2 uv:TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
-            struct ShadowVaryings { float4 positionCS:SV_POSITION; float2 uv:TEXCOORD0; };
+            struct ShadowVaryings { float4 positionCS:SV_POSITION; float2 uv:TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
             ShadowVaryings ShadowVert(ShadowAttributes v)
             {
-                UNITY_SETUP_INSTANCE_ID(v); ShadowVaryings o;
+                UNITY_SETUP_INSTANCE_ID(v); ShadowVaryings o; UNITY_TRANSFER_INSTANCE_ID(v,o);
                 float3 world=WindPosition(TransformObjectToWorld(v.positionOS.xyz),WindWeight(v.positionOS.xyz,v.uv.y));
                 float3 normal=TransformObjectToWorldNormal(v.normalOS);
                 #if _CASTING_PUNCTUAL_LIGHT_SHADOW
@@ -148,7 +165,7 @@ Shader "MagicCarpet/ModernVegetation"
                 o.uv=TRANSFORM_TEX(v.uv,_BaseMap);
                 return o;
             }
-            half4 ShadowFrag(ShadowVaryings i):SV_Target { FoliageSample(i.uv,half4(1,1,1,1)); return 0; }
+            half4 ShadowFrag(ShadowVaryings i):SV_Target { UNITY_SETUP_INSTANCE_ID(i); ApplyLodFade(i.positionCS.xy); FoliageSample(i.uv,half4(1,1,1,1)); return 0; }
             ENDHLSL
         }
         Pass
@@ -162,14 +179,15 @@ Shader "MagicCarpet/ModernVegetation"
             #pragma fragment DepthFrag
             #pragma multi_compile_instancing
             struct DepthAttributes { float4 positionOS:POSITION; float2 uv:TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
-            struct DepthVaryings { float4 positionCS:SV_POSITION; float2 uv:TEXCOORD0; };
+            struct DepthVaryings { float4 positionCS:SV_POSITION; float2 uv:TEXCOORD0; UNITY_VERTEX_INPUT_INSTANCE_ID };
             DepthVaryings DepthVert(DepthAttributes v)
             {
-                UNITY_SETUP_INSTANCE_ID(v); DepthVaryings o;
+                UNITY_SETUP_INSTANCE_ID(v); DepthVaryings o; UNITY_TRANSFER_INSTANCE_ID(v,o);
                 float3 world=WindPosition(TransformObjectToWorld(v.positionOS.xyz),WindWeight(v.positionOS.xyz,v.uv.y));
-                o.positionCS=TransformWorldToHClip(world); o.uv=TRANSFORM_TEX(v.uv,_BaseMap); return o;
+                o.positionCS=TransformWorldToHClip(world);
+                o.uv=TRANSFORM_TEX(v.uv,_BaseMap); return o;
             }
-            half4 DepthFrag(DepthVaryings i):SV_Target { FoliageSample(i.uv,half4(1,1,1,1)); return 0; }
+            half4 DepthFrag(DepthVaryings i):SV_Target { UNITY_SETUP_INSTANCE_ID(i); ApplyLodFade(i.positionCS.xy); FoliageSample(i.uv,half4(1,1,1,1)); return 0; }
             ENDHLSL
         }
     }

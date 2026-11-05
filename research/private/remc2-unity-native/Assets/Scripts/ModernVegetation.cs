@@ -15,18 +15,36 @@ namespace MagicCarpet.Native
         private const float LandmarkRadius = 200f;
         private const int CellsPerChunk = 8;
         private const float ChunkSize = Cell * CellsPerChunk;
-        private const float LodDistance = 55f;
-        private const float TreeLodDistance = 96f;
-        private const float LodHysteresis = 8f;
+        // The scanned mesh is useful only while its silhouette occupies enough
+        // pixels to show its geometry. Whole groups use conservative bounds;
+        // only groups intersecting the transition band need per-instance work.
+        private const float DetailPixels = 48f;
+        private const float FadeHalfWidth = 8f;
+        private const float ImpostorPixels = 16f;
+        private const float ImpostorFadeHalfWidth = 4f;
+        private static readonly string[] IntermediateResourceNames =
+        {
+            "grass_mid", "fern_mid", "shrub_mid", "tree_trunk_mid", "rock_mid", "tree_branches_mid", "tree_leaves_mid"
+        };
+        // Quality reference only: preserve placement, view ranges and shadow
+        // routing while rendering the full scanned meshes at every distance.
+        private static readonly bool FullVegetationReference =
+            Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-modern-full-vegetation") >= 0;
         private readonly ModernTerrainMesh terrain;
         private readonly Material[] materials;
+        private readonly Material[] distantMaterials;
         private readonly Mesh[] meshes;
+        private readonly Mesh[] intermediateMeshes;
         private readonly Mesh[] distantMeshes;
         private readonly long[] detailTriangleCounts;
+        private readonly long[] intermediateTriangleCounts;
         private readonly long[] distantTriangleCounts;
         private readonly Dictionary<Vector2Int, Chunk> chunks = new Dictionary<Vector2Int, Chunk>();
         private readonly List<Vector2Int> expired = new List<Vector2Int>();
         private readonly Plane[] frustum = new Plane[6];
+        private readonly ViewVersion mainView = new ViewVersion();
+        private readonly ViewVersion reflectedView = new ViewVersion();
+        private Bounds treeLocalBounds;
         private int centerX = int.MinValue;
         private int centerZ = int.MinValue;
         private ulong terrainRevision = ulong.MaxValue;
@@ -34,24 +52,79 @@ namespace MagicCarpet.Native
         private bool disposed;
 
         internal long SubmittedTriangleCount { get; private set; }
+        internal long ShadowOnlyTriangleCount { get; private set; }
         internal int DrawCount { get; private set; }
         internal int DetailInstanceCount { get; private set; }
+        internal int IntermediateInstanceCount { get; private set; }
         internal int DistantInstanceCount { get; private set; }
 
         private sealed class Chunk
         {
             internal readonly List<Matrix4x4>[] Instances = new List<Matrix4x4>[7];
+            internal readonly List<LodInstance>[] LodInstances = new List<LodInstance>[7];
+            internal readonly Bounds[] LodCenters = new Bounds[7];
+            internal readonly float[] MinimumDiameter = new float[7];
+            internal readonly float[] MaximumDiameter = new float[7];
+            internal readonly LodBucket[] Main = new LodBucket[7];
+            internal readonly LodBucket[] Reflection = new LodBucket[7];
             internal bool HasDetail;
             internal bool HasBounds;
-            internal bool Distant;
-            internal bool DistantTrees;
-            internal bool ReflectionDistant;
-            internal bool ReflectionDistantTrees;
             internal Bounds Bounds;
 
             internal Chunk()
             {
-                for (var i = 0; i < Instances.Length; i++) Instances[i] = new List<Matrix4x4>();
+                for (var i = 0; i < Instances.Length; i++)
+                {
+                    Instances[i] = new List<Matrix4x4>();
+                    LodInstances[i] = new List<LodInstance>();
+                    MinimumDiameter[i] = float.PositiveInfinity;
+                }
+            }
+        }
+
+        private struct LodInstance
+        {
+            internal Vector3 Center;
+            internal float Diameter;
+        }
+
+        private sealed class LodBucket
+        {
+            // 1 = all detail, 2 = all intermediate, 3 = all distant, 4 = partition.
+            internal int Mode;
+            internal int Version = -1;
+            internal List<Matrix4x4> Near;
+            internal List<Matrix4x4> Intermediate;
+            internal List<Matrix4x4> Far;
+            internal float[] NearFade;
+            internal float[] IntermediateFade;
+            internal float[] FarFade;
+            internal MaterialPropertyBlock NearProperties;
+            internal MaterialPropertyBlock IntermediateProperties;
+            internal MaterialPropertyBlock FarProperties;
+        }
+
+        private sealed class ViewVersion
+        {
+            internal int Version;
+            private bool valid;
+            private Matrix4x4 view;
+            private Matrix4x4 projection;
+            private int width, height;
+
+            internal int Update(Camera camera)
+            {
+                var currentView = camera.worldToCameraMatrix;
+                var currentProjection = camera.projectionMatrix;
+                if (!valid || view != currentView || projection != currentProjection ||
+                    width != camera.pixelWidth || height != camera.pixelHeight)
+                {
+                    view = currentView; projection = currentProjection;
+                    width = camera.pixelWidth; height = camera.pixelHeight;
+                    valid = true;
+                    unchecked { Version++; }
+                }
+                return Version;
             }
         }
 
@@ -62,20 +135,17 @@ namespace MagicCarpet.Native
             if (shader == null)
                 throw new InvalidOperationException("Missing Resources/ModernVegetation shader");
             meshes = new Mesh[7];
+            intermediateMeshes = new Mesh[7];
             distantMeshes = new Mesh[7];
             detailTriangleCounts = new long[7];
+            intermediateTriangleCounts = new long[7];
             distantTriangleCounts = new long[7];
             materials = new Material[7];
+            distantMaterials = new Material[7];
             try
             {
-                meshes[0] = LoadScannedMesh("grass_medium_01", "grass_medium_01_mid_b_LOD0", 1.4f);
-                meshes[1] = LoadScannedMesh("fern_02", "fern_02_b", 1.7f);
-                meshes[2] = LoadScannedMesh("shrub_02", "shrub_02_b_LOD0", 1.7f);
                 var treeBounds = ScannedTreeBounds();
-                meshes[3] = LoadScannedMesh("tree_small_02_derived", "tree_trunk", 4.5f, treeBounds);
-                meshes[4] = LoadScannedMesh("rock_moss_set_01", "rock_moss_set_01_rock03", 2.4f);
-                meshes[5] = LoadScannedMesh("tree_small_02_derived", "tree_branches", 4.5f, treeBounds);
-                meshes[6] = LoadScannedMesh("tree_small_02_derived", "tree_leaves", 4.5f, treeBounds);
+                for (var i = 0; i < meshes.Length; i++) meshes[i] = LoadSourceMesh(i, treeBounds);
                 materials[0] = ScannedMaterial(shader, "grass_medium_01", meshes[0], true);
                 materials[1] = ScannedMaterial(shader, "fern_02", meshes[1], true);
                 materials[2] = ScannedMaterial(shader, "shrub_02", meshes[2], true);
@@ -86,10 +156,28 @@ namespace MagicCarpet.Native
                 materials[6] = ScannedMaterial(shader, "tree_small_02_leaves", meshes[6], true);
                 for (var i = 0; i < meshes.Length; i++)
                 {
-                    distantMeshes[i] = i == 6 ? MakeDistantLeafCards(meshes[i]) : MakeDistantMesh(meshes[i], i == 5 ? .01f : .045f);
+                    var intermediate = Resources.Load<Mesh>("ModernNature/" + IntermediateResourceName(i));
+                    if (intermediate == null) throw new InvalidOperationException("Missing authored vegetation mesh: " + IntermediateResourceName(i));
+                    intermediateMeshes[i] = UnityEngine.Object.Instantiate(intermediate);
+                    if (i < 3 || i == 6)
+                    {
+                        distantMeshes[i] = MakeImpostorCards(meshes[i]);
+                        var name = i == 0 ? "grass" : i == 1 ? "fern" : i == 2 ? "shrub" : "tree_leaves";
+                        distantMaterials[i] = ImpostorMaterial(materials[i], meshes[i], name);
+                    }
+                    else if (i == 3 || i == 5)
+                        distantMeshes[i] = LoadScannedMesh("tree_small_02_lod", i == 3 ? "tree_trunk" : "tree_branches", 4.5f, treeBounds);
+                    else
+                        distantMeshes[i] = LoadScannedMesh("rock_moss_set_01_lod", "rock_moss_set_01_rock03", 2.4f);
+                    if (distantMaterials[i] == null)
+                        distantMaterials[i] = new Material(materials[i]) { enableInstancing = true, name = materials[i].name + " distant" };
+                    // Endpoint batches need no per-instance MaterialPropertyBlock.
+                    distantMaterials[i].SetFloat("_LodThreshold", 0f);
                     detailTriangleCounts[i] = (long)meshes[i].GetIndexCount(0) / 3;
+                    intermediateTriangleCounts[i] = (long)intermediateMeshes[i].GetIndexCount(0) / 3;
                     distantTriangleCounts[i] = (long)distantMeshes[i].GetIndexCount(0) / 3;
                 }
+                treeLocalBounds = CombinedTreeBounds();
             }
             catch
             {
@@ -106,12 +194,18 @@ namespace MagicCarpet.Native
             if (!reflection)
             {
                 SubmittedTriangleCount = 0;
+                ShadowOnlyTriangleCount = 0;
                 DrawCount = 0;
                 DetailInstanceCount = 0;
+                IntermediateInstanceCount = 0;
                 DistantInstanceCount = 0;
             }
             if (disposed || camera == null || !SystemInfo.supportsInstancing) return;
             var position = camera.transform.position;
+            var forward = camera.transform.forward;
+            var pixelsPerUnit = Mathf.Abs(camera.projectionMatrix.m11) * camera.pixelHeight * .5f;
+            var orthographic = camera.orthographic;
+            var version = (reflection ? reflectedView : mainView).Update(camera);
             RefreshChunks(position);
             GeometryUtility.CalculateFrustumPlanes(camera, frustum);
             foreach (var entry in chunks)
@@ -120,45 +214,195 @@ namespace MagicCarpet.Native
                 if (distance > LandmarkRadius) continue;
                 var visible = entry.Value.HasBounds && GeometryUtility.TestPlanesAABB(frustum, entry.Value.Bounds);
                 if (reflection && !visible) continue;
-                // Altitude and target resolution both affect projected size.
-                // Reflection keeps its own hysteresis state and the same visible
-                // radius, so distant shoreline trees retain their counterparts.
-                var lodDistance = entry.Value.HasBounds ? Mathf.Sqrt(entry.Value.Bounds.SqrDistance(position)) : distance;
-                if (reflection) lodDistance /= Mathf.Clamp(resolutionScale, .1f, 1f);
-                var distant = reflection ? entry.Value.ReflectionDistant : entry.Value.Distant;
-                var distantTrees = reflection ? entry.Value.ReflectionDistantTrees : entry.Value.DistantTrees;
-                if (lodDistance >= LodDistance + LodHysteresis) distant = true;
-                else if (lodDistance <= LodDistance - LodHysteresis) distant = false;
-                if (lodDistance >= TreeLodDistance + LodHysteresis) distantTrees = true;
-                else if (lodDistance <= TreeLodDistance - LodHysteresis) distantTrees = false;
-                if (reflection)
-                { entry.Value.ReflectionDistant = distant; entry.Value.ReflectionDistantTrees = distantTrees; }
-                else
-                { entry.Value.Distant = distant; entry.Value.DistantTrees = distantTrees; }
                 for (var kind = 0; kind < meshes.Length; kind++)
                 {
-                    var treePart = kind == 3 || kind == 5 || kind == 6;
-                    var useDistant = treePart ? distantTrees : distant;
                     // Landmark batches are still submitted offscreen: their shadows
                     // can fall into view even when their geometry does not.
                     if (!visible && kind < 3) continue;
                     if (kind < 3 && distance > DetailRadius) continue;
                     var list = entry.Value.Instances[kind];
                     if (list.Count == 0) continue;
-                    if (!reflection)
+                    if (FullVegetationReference)
                     {
-                        DrawCount++;
-                        SubmittedTriangleCount += (useDistant ? distantTriangleCounts[kind] : detailTriangleCounts[kind]) * list.Count;
-                        if (useDistant) DistantInstanceCount += list.Count;
-                        else DetailInstanceCount += list.Count;
+                        var referenceShadows = kind >= 3 && !reflection
+                            ? (visible ? ShadowCastingMode.On : ShadowCastingMode.ShadowsOnly)
+                            : ShadowCastingMode.Off;
+                        DrawBatch(camera, kind, list, 0, referenceShadows, reflection, null);
+                        continue;
                     }
-                    // At most 256 tufts per chunk, and far fewer landmarks: no 1023 split
-                    // and the batch bounds stay local for Unity's camera and shadow culling.
-                    Graphics.DrawMeshInstanced(useDistant ? distantMeshes[kind] : meshes[kind], 0, materials[kind], list, null,
-                        kind >= 3 && !reflection ? ShadowCastingMode.On : ShadowCastingMode.Off,
-                        true, 0, camera, LightProbeUsage.Off);
+                    if (!visible)
+                    {
+                        // Draw a cheap proxy only into shadow maps. Submitting the
+                        // main mesh offscreen made the reported cost misleading.
+                        DrawBatch(camera, kind, list, 2, ShadowCastingMode.ShadowsOnly, false, null);
+                        continue;
+                    }
+                    var buckets = reflection ? entry.Value.Reflection : entry.Value.Main;
+                    var bucket = buckets[kind];
+                    if (bucket == null) buckets[kind] = bucket = new LodBucket();
+                    if (bucket.Version != version)
+                    {
+                        PrepareBucket(entry.Value, kind, bucket, position, forward, pixelsPerUnit, orthographic);
+                        bucket.Version = version;
+                    }
+                    var cast = kind >= 3 && !reflection ? ShadowCastingMode.On : ShadowCastingMode.Off;
+                    if (bucket.Mode == 1) DrawBatch(camera, kind, list, 0, cast, reflection, null);
+                    else if (bucket.Mode == 2) DrawBatch(camera, kind, list, 1, cast, reflection, null);
+                    else if (bucket.Mode == 3) DrawBatch(camera, kind, list, 2, cast, reflection, null);
+                    else
+                    {
+                        DrawBatch(camera, kind, bucket.Near, 0, cast, reflection, bucket.NearProperties);
+                        DrawBatch(camera, kind, bucket.Intermediate, 1, cast, reflection, bucket.IntermediateProperties);
+                        DrawBatch(camera, kind, bucket.Far, 2, cast, reflection, bucket.FarProperties);
+                    }
                 }
             }
+        }
+
+        private Bounds CombinedTreeBounds()
+        {
+            var bounds = meshes[3].bounds;
+            bounds.Encapsulate(meshes[5].bounds);
+            bounds.Encapsulate(meshes[6].bounds);
+            return bounds;
+        }
+
+        private static float ProjectedPixels(Vector3 cameraPosition, Vector3 cameraForward,
+            float pixelsPerUnit, bool orthographic, Matrix4x4 matrix, Bounds bounds)
+        {
+            var size = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+            var scale = Mathf.Max(matrix.GetColumn(0).magnitude,
+                Mathf.Max(matrix.GetColumn(1).magnitude, matrix.GetColumn(2).magnitude));
+            return ProjectedPixelsForCenter(cameraPosition, cameraForward, pixelsPerUnit, orthographic,
+                matrix.MultiplyPoint3x4(bounds.center), size * scale);
+        }
+
+        private static float ProjectedPixelsForCenter(Vector3 cameraPosition, Vector3 cameraForward,
+            float pixelsPerUnit, bool orthographic, Vector3 center, float diameter)
+        {
+            if (orthographic) return diameter * pixelsPerUnit;
+            // Perspective projection depends on view-space depth, not radial
+            // distance. The latter underestimates size near the screen edge.
+            var depth = Vector3.Dot(cameraForward, center - cameraPosition);
+            return diameter * pixelsPerUnit / Mathf.Max(.01f, depth);
+        }
+
+        private static int GroupLodMode(Bounds centers, float minimumDiameter, float maximumDiameter,
+            Vector3 position, Vector3 forward, float pixelsPerUnit, bool orthographic)
+        {
+            var nearPixels = maximumDiameter * pixelsPerUnit;
+            var farPixels = minimumDiameter * pixelsPerUnit;
+            if (!orthographic)
+            {
+                var depth = Vector3.Dot(forward, centers.center - position);
+                var e = centers.extents;
+                var range = Mathf.Abs(forward.x) * e.x + Mathf.Abs(forward.y) * e.y + Mathf.Abs(forward.z) * e.z;
+                nearPixels /= Mathf.Max(.01f, depth - range);
+                farPixels /= Mathf.Max(.01f, depth + range);
+            }
+            if (farPixels >= DetailPixels + FadeHalfWidth) return 1;
+            if (nearPixels <= ImpostorPixels - ImpostorFadeHalfWidth) return 3;
+            if (farPixels >= ImpostorPixels + ImpostorFadeHalfWidth &&
+                nearPixels <= DetailPixels - FadeHalfWidth) return 2;
+            return 4;
+        }
+
+        private static void PrepareBucket(Chunk chunk, int kind, LodBucket bucket, Vector3 position,
+            Vector3 forward, float pixelsPerUnit, bool orthographic)
+        {
+            bucket.Mode = GroupLodMode(chunk.LodCenters[kind], chunk.MinimumDiameter[kind],
+                chunk.MaximumDiameter[kind], position, forward, pixelsPerUnit, orthographic);
+            if (bucket.Mode != 4) return;
+            if (bucket.Near == null)
+            {
+                bucket.Near = new List<Matrix4x4>(); bucket.Intermediate = new List<Matrix4x4>(); bucket.Far = new List<Matrix4x4>();
+                bucket.NearFade = new float[256]; bucket.IntermediateFade = new float[256]; bucket.FarFade = new float[256];
+                bucket.NearProperties = new MaterialPropertyBlock(); bucket.IntermediateProperties = new MaterialPropertyBlock(); bucket.FarProperties = new MaterialPropertyBlock();
+            }
+            bucket.Near.Clear(); bucket.Intermediate.Clear(); bucket.Far.Clear();
+            var instances = chunk.Instances[kind];
+            var lods = chunk.LodInstances[kind];
+            for (var i = 0; i < instances.Count; i++)
+            {
+                var lod = lods[i];
+                var pixels = ProjectedPixelsForCenter(position, forward, pixelsPerUnit, orthographic, lod.Center, lod.Diameter);
+                var detailFade = Mathf.Clamp01((pixels - (DetailPixels - FadeHalfWidth)) / (2f * FadeHalfWidth));
+                var impostorFade = Mathf.Clamp01((pixels - (ImpostorPixels - ImpostorFadeHalfWidth)) / (2f * ImpostorFadeHalfWidth));
+                if (detailFade > 0f) { bucket.NearFade[bucket.Near.Count] = -detailFade; bucket.Near.Add(instances[i]); }
+                if (detailFade < 1f && impostorFade > 0f)
+                {
+                    // Complement the full mesh in its band, or complement the
+                    // impostor in the lower band. Between them the mesh is full.
+                    bucket.IntermediateFade[bucket.Intermediate.Count] = detailFade > 0f ? detailFade :
+                        impostorFade < 1f ? -impostorFade : 0f;
+                    bucket.Intermediate.Add(instances[i]);
+                }
+                if (impostorFade < 1f) { bucket.FarFade[bucket.Far.Count] = impostorFade; bucket.Far.Add(instances[i]); }
+            }
+            if (bucket.Near.Count > 0) bucket.NearProperties.SetFloatArray("_LodThreshold", bucket.NearFade);
+            if (bucket.Intermediate.Count > 0) bucket.IntermediateProperties.SetFloatArray("_LodThreshold", bucket.IntermediateFade);
+            if (bucket.Far.Count > 0) bucket.FarProperties.SetFloatArray("_LodThreshold", bucket.FarFade);
+        }
+
+        private void DrawBatch(Camera camera, int kind, List<Matrix4x4> batch, int level,
+            ShadowCastingMode shadows, bool reflection, MaterialPropertyBlock properties)
+        {
+            if (batch.Count == 0) return;
+            var triangles = (level == 0 ? detailTriangleCounts[kind] : level == 1 ? intermediateTriangleCounts[kind] : distantTriangleCounts[kind]) * batch.Count;
+            if (!reflection)
+            {
+                DrawCount++;
+                SubmittedTriangleCount += triangles;
+                if (shadows == ShadowCastingMode.ShadowsOnly) ShadowOnlyTriangleCount += triangles;
+                if (level == 0) DetailInstanceCount += batch.Count;
+                else if (level == 1) IntermediateInstanceCount += batch.Count;
+                else DistantInstanceCount += batch.Count;
+            }
+            Graphics.DrawMeshInstanced(level == 0 ? meshes[kind] : level == 1 ? intermediateMeshes[kind] : distantMeshes[kind], 0,
+                level == 2 ? distantMaterials[kind] : materials[kind],
+                batch, properties, shadows, true, 0, camera, LightProbeUsage.Off);
+        }
+
+        private static Material ImpostorMaterial(Material source, Mesh mesh, string name)
+        {
+            var texture = LoadTexture(name + "_lod_color");
+            var normalDepth = LoadTexture(name + "_lod_normal_depth");
+            var shader = Resources.Load<Shader>("ModernVegetationImpostor");
+            if (shader == null) throw new InvalidOperationException("Missing Resources/ModernVegetationImpostor shader");
+            var material = new Material(shader) { name = name + " relightable impostor", enableInstancing = true };
+            material.SetTexture("_BaseMap", texture);
+            material.SetTexture("_ImpostorData", normalDepth);
+            foreach (var property in new[] { "_WindStrength", "_WindSpeed", "_WindMinY", "_WindInvHeight", "_Smoothness", "_Cutoff" })
+                material.SetFloat(property, source.GetFloat(property));
+            material.SetVector("_ImpostorCenter", mesh.bounds.center);
+            material.SetFloat("_ImpostorDiameter", ImpostorDiameter(mesh));
+            return material;
+        }
+
+        private static float ImpostorDiameter(Mesh source)
+        {
+            var center = source.bounds.center;
+            var radiusSquared = 0f;
+            foreach (var vertex in source.vertices)
+                radiusSquared = Mathf.Max(radiusSquared, (vertex - center).sqrMagnitude);
+            return Mathf.Sqrt(radiusSquared) * 2.02f;
+        }
+
+        // A single shader-oriented quad samples a full-sphere source atlas.
+        // Bounds cover its padded rotating plane and wind in every direction.
+        private static Mesh MakeImpostorCards(Mesh source)
+        {
+            var mesh = new Mesh { name = source.name + " multiview impostor" };
+            mesh.vertices = new[] { new Vector3(-.5f, -.5f, 0), new Vector3(.5f, -.5f, 0),
+                new Vector3(.5f, .5f, 0), new Vector3(-.5f, .5f, 0) };
+            mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            mesh.normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward };
+            mesh.colors = new[] { Color.white, Color.white, Color.white, Color.white };
+            mesh.triangles = new[] { 0, 2, 1, 0, 3, 2 };
+            var extent = ImpostorDiameter(source) * (128f / 112f);
+            mesh.bounds = new Bounds(source.bounds.center, Vector3.one * (extent + 2f));
+            mesh.RecalculateTangents();
+            return mesh;
         }
 
         // Kept independent of draw submission so terrain updates and residency can
@@ -317,13 +561,27 @@ namespace MagicCarpet.Native
                 Quaternion.FromToRotation(Vector3.up, normal) * Quaternion.Euler(0f, yaw, 0f), Vector3.one * scale);
             chunk.Instances[kind].Add(matrix);
             IncludeBounds(chunk, meshes[kind].bounds, matrix);
+            IncludeLod(chunk, kind, matrix, kind == 3 ? treeLocalBounds : meshes[kind].bounds, scale);
             if (kind == 3)
             {
                 chunk.Instances[5].Add(matrix);
                 chunk.Instances[6].Add(matrix);
                 IncludeBounds(chunk, meshes[5].bounds, matrix);
                 IncludeBounds(chunk, meshes[6].bounds, matrix);
+                IncludeLod(chunk, 5, matrix, treeLocalBounds, scale);
+                IncludeLod(chunk, 6, matrix, treeLocalBounds, scale);
             }
+        }
+
+        private static void IncludeLod(Chunk chunk, int kind, Matrix4x4 matrix, Bounds local, float scale)
+        {
+            var center = matrix.MultiplyPoint3x4(local.center);
+            var diameter = Mathf.Max(local.size.x, Mathf.Max(local.size.y, local.size.z)) * scale;
+            if (chunk.LodInstances[kind].Count == 0) chunk.LodCenters[kind] = new Bounds(center, Vector3.zero);
+            else chunk.LodCenters[kind].Encapsulate(center);
+            chunk.MinimumDiameter[kind] = Mathf.Min(chunk.MinimumDiameter[kind], diameter);
+            chunk.MaximumDiameter[kind] = Mathf.Max(chunk.MaximumDiameter[kind], diameter);
+            chunk.LodInstances[kind].Add(new LodInstance { Center = center, Diameter = diameter });
         }
 
         private static void IncludeBounds(Chunk chunk, Bounds local, Matrix4x4 matrix)
@@ -396,6 +654,7 @@ namespace MagicCarpet.Native
             return texture;
         }
 
+#if UNITY_EDITOR
         // Cluster nearby vertices only when their texture coordinates also agree.
         // Keeping the original vertex attributes preserves the scanned materials,
         // normals and alpha cutouts; degenerate triangles disappear at distance.
@@ -591,16 +850,54 @@ namespace MagicCarpet.Native
             return Vector3.Cross(b - a, c - a).normalized;
         }
 
+#endif
+
+        internal static string IntermediateResourceName(int kind)
+        {
+            if (kind < 0 || kind >= IntermediateResourceNames.Length) throw new ArgumentOutOfRangeException(nameof(kind));
+            return IntermediateResourceNames[kind];
+        }
+
+        private static Mesh LoadSourceMesh(int kind, Bounds treeBounds)
+        {
+            switch (kind)
+            {
+                case 0: return LoadScannedMesh("grass_medium_01", "grass_medium_01_mid_b_LOD0", 1.4f);
+                case 1: return LoadScannedMesh("fern_02", "fern_02_b", 1.7f);
+                case 2: return LoadScannedMesh("shrub_02", "shrub_02_b_LOD0", 1.7f);
+                case 3: return LoadScannedMesh("tree_small_02_derived", "tree_trunk", 4.5f, treeBounds);
+                case 4: return LoadScannedMesh("rock_moss_set_01", "rock_moss_set_01_rock03", 2.4f);
+                case 5: return LoadScannedMesh("tree_small_02_derived", "tree_branches", 4.5f, treeBounds);
+                case 6: return LoadScannedMesh("tree_small_02_derived", "tree_leaves", 4.5f, treeBounds);
+                default: throw new ArgumentOutOfRangeException(nameof(kind));
+            }
+        }
+
+#if UNITY_EDITOR
+        // Authoring-only factory. The player loads its prebuilt Mesh assets.
+        internal static Mesh CreateIntermediateForAuthoring(int kind)
+        {
+            var source = LoadSourceMesh(kind, ScannedTreeBounds());
+            try { return kind == 6 ? MakeDistantLeafCards(source) : MakeDistantMesh(source, kind == 5 ? .01f : .045f); }
+            finally { Destroy(source); }
+        }
+#endif
+
         // FBX collections contain separate objects with display offsets. Bake the
         // selected object's import transform, then center its base on the terrain.
         private static Mesh LoadScannedMesh(string asset, string part, float targetWidth, Bounds? sharedBounds = null)
         {
-            var resourceName = asset.EndsWith("_derived", StringComparison.Ordinal) ? asset : asset + "_1k";
+            var resourceName = asset.EndsWith("_derived", StringComparison.Ordinal) || asset.EndsWith("_lod", StringComparison.Ordinal) ? asset : asset + "_1k";
             var prefab = Resources.Load<GameObject>("ModernNature/" + resourceName);
             if (prefab == null) throw new InvalidOperationException("Missing scanned nature model: " + asset);
             MeshFilter selected = null;
-            foreach (var filter in prefab.GetComponentsInChildren<MeshFilter>(true))
-                if (filter.name == part) { selected = filter; break; }
+            var filters = prefab.GetComponentsInChildren<MeshFilter>(true);
+            foreach (var filter in filters)
+            {
+                if (filter.sharedMesh == null || (filter.name != part && filter.sharedMesh.name != part)) continue;
+                if (selected != null) throw new InvalidOperationException("Ambiguous scanned nature mesh: " + part);
+                selected = filter;
+            }
             if (selected == null || selected.sharedMesh == null)
                 throw new InvalidOperationException("Missing scanned nature mesh: " + part);
             var source = selected.sharedMesh;
@@ -852,8 +1149,10 @@ namespace MagicCarpet.Native
             if (disposed) return;
             disposed = true;
             foreach (var mesh in meshes) Destroy(mesh);
+            foreach (var mesh in intermediateMeshes) Destroy(mesh);
             foreach (var mesh in distantMeshes) Destroy(mesh);
             foreach (var value in materials) Destroy(value);
+            foreach (var value in distantMaterials) Destroy(value);
         }
 
         private static void Destroy(UnityEngine.Object value)
