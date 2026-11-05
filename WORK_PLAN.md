@@ -14,7 +14,7 @@ in their canonical owner when a real connected failure exposes them.
 
 - [x] Wyvern16 — `mc-1pb.5`.
 - [x] Castle defenders15 — `mc-1pb.4`.
-- [ ] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
+- [x] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
 - [ ] Archer4 — `mc-1pb.21`; Skeleton9 — `mc-1pb.22`;
       Firefly19 — `mc-1pb.23`.
 - [ ] Creature17 — `mc-1pb.6`; Creature18 — `mc-1pb.7`.
@@ -35,10 +35,27 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-The first creature batch is implemented, verified, committed and installed.
+The current Dragon/Bee batch is implemented, verified, committed and installed.
+Runtime `aeba96fc687271fa2cb3b32182f245f4545f8cc4` is pushed; matching native
+`4d875c2e74bd480f3f603ce2112ef9b2b7ac32c95b457b5df3e602d9d15962bd`
+is installed and qualified in the Original client. Strict rig native build
+passes66.955s; all444 Rust and162 upstream inputs match the frozen candidate,
+isolated source and installation. Native-only installation/qualification pass.
+Root viewed the canonical map, loading and NightSpire terrain/HUD with the exact
+mapped native on the first attempt: one portal click, no retry or gameplay, no
+private save. Both owned smoke processes were stopped. Evidence is candidate19
+under `generated/dragon-bee-20261105-integration/` and
+`Builds/delivery-dragon-bee-20261105-batch1/runtime-proof.json`. Finite `.19` and
+`.20` original acceptance is delivered; parent/shared `.24` and terrain `.8`
+remain open. No human combat/FPS, hardware audio, full missions, old-save or
+native Dragon/Bee encounter visual claim. Source-default orphan/null and custom
+selector limits below remain explicit. Next connected family is Archer `.21`.
+
+The previous Wyvern/defender batch remains a preserved delivered checkpoint.
 Runtime `793b7ef62973d4153ab1372ffee3afc559585813` is pushed; matching native
 `ecbf096983e4b60b3fe63a24a1c734ff569d5d12efd08b31c155a3c39a198b18`
-is installed in the qualified Original client. Strict rig native build passed
+was installed in the qualified Original client and is the preserved previous
+native. Strict rig native build passed
 48.397s; native-only installation and installed qualification passed. All444
 Rust and162 upstream inputs match rig/canonical/isolated source, and the
 installed receipt matches all444 Rust inputs. Root viewed the normal canonical
@@ -101,7 +118,7 @@ fresh whole package is structurally/exporter-qualified, not runtime-qualified.
 No human combat/FPS/hardware audio, all missions, old-save or arbitrary custom
 particle-override claim. Retired pane maps and the deleted heartbeat stay retired.
 
-### Active batch: Dragon and Bee
+### Delivered batch: Dragon and Bee
 
 Dragon ScarletValley, Bee LavenderAnchor and integrator CrimsonGlacier handed
 back the original frozen source. Oliver resumed this batch on2026-11-05.
@@ -110,12 +127,12 @@ BrightCastle (`dragon_connected_review`, now implementing Dragon ownership).
 StormyCrane (`dragon_runtime`) and Sol/xhigh CyanBridge hit confirmed model
 capacity and are stopped; available owners continued their preserved work.
 Root owns shared joins and serialized build/install.
-The new batch is **not committed or installed**; the verified installation
-remains793b7ef6/ecbf0969.
+The batch is now committed/pushed asaeba96fc and installed as4d875c2e; the older
+793b7ef6/ecbf0969 checkpoint remains preserved as the immediate previous native.
 Frozen copies, hashes
-and the owned patch are under
-`generated/dragon-bee-20261105-integration/preserved-source/`. Full `.19`,
-`.20` and `.24` acceptance remains open; Fireball `.10` is already closed.
+and the original owned patch are under
+`generated/dragon-bee-20261105-integration/preserved-source/`. Finite `.19` and
+`.20` acceptance is delivered; shared `.24` stays open. Fireball `.10` is closed.
 
 Dragon fixes source4B240 admission/partial body allocation, source-ID threat
 comparison, promoted vertical arithmetic and each handler's distinct coordinate
@@ -167,7 +184,7 @@ ordinary boss path now passes47.925s on12 and49.491s on13: actual17→16, lethal
 combat removes the player from frozen class3, the same living child counts down
 by4 to-2 with its original parent still live, real10/0 allocation, hide and all16
 body generations reclaim. No assigned life/timers or parent-loss substitution.
-Full `.19` remains open pending delivery and original acceptance verification.
+The later delivered checkpoint above qualifies finite `.19` acceptance.
 Acquired all-tier Fireball passes13.559s and the Bee combat path10.526s on12;
 the corrected guidance/collision census and source-order pass. Candidate9 CAPI
 compile passes74.459s;13 isolated core compile126.380s and14 compile69.290s.
@@ -228,8 +245,12 @@ isolated worktree:24 atlas CSVs match their embedded expected hashes, and the
 recording probe is byte-identical to canonical. Both failed missing-input runs
 are preserved; no gameplay code or gate was changed to fix that environment.
 All444 Rust inputs and53 additional literal/atlas inputs match before and after
-the passing check. Native checks, source commit/push and matching installation
-remain pending.
+the passing check. Source/native delivery and its limits are recorded above.
+The native return exceeded the former5.75GB stage budget and temporarily left
+4.91GB free. Root started no further stage until735560955 returned auxiliary
+bytes were SHA-verified/preserved on healthy rig, restoring5.65GB. Current and
+previous native pins remain regular local files; future native preflight is
+raised to5.90GB from the measured return. No source/data/warm-cache deletion.
 
 After unrelated `journal.rs` changed during12, root separately verified all444
 rig inputs still matched that compilation manifest. Its proof excludes the newer
@@ -258,10 +279,10 @@ default); backend uses existing real Day3 descriptors/seed65. Set
 `generated/mc-bhq10-owner-v3-level25-20261029` for the boss check: the all-spells
 ordinary-package root contains only Level18. Boss group29 is a declared prior
 progression control, not a claim of the preceding BUILD mission chain. Actual
-boss RNG/selection,17→16 and natural targetless expiry now execute. The latest
-pending check is the actual Level5 class11/15 consumer diagnostic, followed by
-final source checks, owned commit/push and matching original-client delivery.
-Do not repeat unrelated long creature/effects checks.
+boss RNG/selection,17→16 and natural targetless expiry now execute. The actual
+Level5 class11/15 consumer, final source checks, owned commit/push and matching
+Original delivery now pass as recorded above. Do not repeat these delivered
+checks or unrelated long creature/effects checks.
 
 **Resolved build resource stop:** concurrent local scheduler tests and a separate
 Modern-performance baseline Cargo build reduced root free space below5GB
