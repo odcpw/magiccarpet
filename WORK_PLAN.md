@@ -152,9 +152,22 @@ Evidence: settlement candidate7 and
 change, native settlement encounter visual, human combat/FPS, hardware audio,
 full-mission or old-save proof. Archer native remains preserved as the immediate
 previous checkpoint.
-MagentaPuma now owns actual paid Villager death/current-generation living-root
-and following-boundary target/reclaim consequences; AzureGate supports the
-actual Builder/Villager Skeleton-conversion join. Source excludes models12–15
+Actual paid Villager death is now verified in candidate10 (15.805s): real
+Fireball launch generation→impact generation→original77/gen0 accepted fatal
+mailbox250/life0→-250/player credit, living presentation then immediate hidden
+removal, semantic living-root loss and following source reclaim/target removal.
+Candidate8/9 negatives remain: end-of-turn mana deltas falsely classified all
+launches unpaid. The repaired gate observes the real holder's queued negative
+cost and later exact player upkeep debit in existing ordered CF10 receipts,
+and pins the latest accepted carried mailbox rather than any older equal tuple.
+No actor, timing, RNG, payment or damage expectation was weakened. Compile
+62.058s/444stable and independently matched rig executable; root reviewed the
+gate and UBS has no critical added line. Only the existing cfg(test) module
+changed; all production and other443inputs match installed7afb, so no duplicate
+native build/smoke is required. This is real in-process gameplay evidence, not
+a native Villager encounter visual or whole-family completion.
+MagentaPuma next owns actual Builder/Villager Skeleton conversion through the
+ordinary Level7 producer, with AzureGate supporting shared joins. Source excludes models12–15
 from the global creature-population census, so an invented global decrement is
 not an acceptance gate. Full `.16` and its original dependencies stay open.
 UBS has zero critical added-line findings; whole-file format/heuristic debt
@@ -166,6 +179,12 @@ metadata-only local check caches were also pruned to provide measured output
 headroom; source, owner data, proofs and current/previous native pins stay.
 The proposed four older Archer
 proof-binary prune was blocked by DCG and was not executed or bypassed.
+For the next settlement checks, diagnostic executables2/3/5 were byte-preserved
+on rig's ext4 proof archive using the existing preservation helper, with SHA
+verification before and after the move. Receipts retain their exact locations;
+current candidate7, all source/packages and current/previous natives stay local.
+The obsolete candidate6 observer executable is preserved there by the same
+before/after verified move; its negative receipts remain local.
 
 The following
 records the Archer integration and its preserved negative results.

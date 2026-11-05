@@ -3681,6 +3681,442 @@ mod production_tests {
     }
 
     #[test]
+    fn public_fireball_kills_reset_villager_and_reclaims_its_target() {
+        use crate::PlayerCommand;
+        use crate::campaign::schedule::{CurrentOccupant, ScheduleReceipt};
+        use crate::level_definition::CreatureKind;
+        use crate::native_world::{Mc2DispatchEvent, area_damage};
+        use crate::villager::VillagerStepEffect;
+        use std::collections::BTreeSet;
+
+        let mut session = ordinary_level_two();
+        let player = session.state.entity_index;
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        // Only the player's resources and encounter position are controlled.
+        {
+            let live = &mut session.session.state.live;
+            live.economy
+                .economy
+                .owner_base_max_mana
+                .insert(player, 200_000);
+            live.economy
+                .economy
+                .rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            let health = live.shared_spells.player_entity.max_life;
+            live.player_life = health;
+            live.shared_spells.set_player_entity_life(health);
+            live.shared_spells.set_local_player_mana_for_test(200_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_life(health);
+            parent.set_mana(200_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+            live.shared_spells
+                .sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = 200_000;
+            }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        let victim = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|row| row.active && row.action == 105 && row.life > 0)
+            .expect("a living ordinary reset Villager")
+            .clone();
+        let handle = session.source_arena().handle(victim.entity_index).unwrap();
+        let player_handle = session.source_arena().handle(player).unwrap();
+        assert!(
+            session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row.entity_index == handle.source_slot
+                        && row.source_id == victim.source_id
+                        && row.render_parameter_index == victim.render_parameter_index
+                }),
+            "the living original Villager must reach the real presentation consumer"
+        );
+        assert!(
+            session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Villager)
+                .any(|root| root.handle == handle && root.living)
+        );
+        assert!(session.source_arena().rebuilt_class5_model_slots()[13].contains(&handle.source_slot));
+        let fire = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        let mut launches = BTreeSet::new();
+        let mut paid_launches = BTreeSet::new();
+        let mut queued_payment: Option<(Vec<(u16, u32, u16)>, i32)> = None;
+        let mut births = BTreeSet::new();
+        let mut callbacks = Vec::new();
+        let mut death = None;
+        let mut death_before = None;
+        let mut carried_from = None;
+        let mut death_carried_from = None;
+        let mut hidden = false;
+        let mut burst = false;
+        let mut reclaimed = false;
+        let mut trace = Vec::new();
+        for turn in 0..512 {
+            let current = session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|row| row.entity_index == handle.source_slot)
+                .cloned();
+            let ready = session.shared_spells().pickup(fire).is_some_and(|holder| {
+                holder.active_value == 0
+                    && session.shared_spells().player_entity().mana >= holder.max_mana
+            });
+            let mut command = PlayerCommand::default();
+            if death.is_none()
+                && ready
+                && session.source_arena().handle(handle.source_slot) == Some(handle)
+                && let Some(row) = current.as_ref().filter(|row| row.active && row.life >= 0)
+            {
+                let yaw = 1024_i16;
+                let mut launch = row.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 1536);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw
+                    .wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity)
+                    & 0x07ff;
+                let hand = if parent.control_flags & 0x0100 != 0 {
+                    Some(parent_yaw.wrapping_sub(512))
+                } else if parent.control_flags & 0x0200 != 0 {
+                    Some(parent_yaw.wrapping_add(512))
+                } else {
+                    None
+                };
+                if let Some(hand) = hand {
+                    crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256);
+                }
+                let centre = row.position.z.wrapping_add(row.collision_vertical_offset);
+                position.z = centre
+                    .wrapping_sub(parent.array_fov())
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(position)
+                            .wrapping_add(256),
+                    )
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(launch)
+                            .wrapping_add(256),
+                    );
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch,
+                    Position {
+                        z: centre,
+                        ..row.position
+                    },
+                );
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                command = PlayerCommand {
+                    opcode: 6,
+                    argument_1: fire_ui,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                };
+            }
+            let cost = session.shared_spells().pickup(fire).unwrap().max_mana;
+            let callback_start = callbacks.len();
+            area_damage::start_effect_damage_trace(handle.source_slot);
+            area_damage::start_fireball_launch_trace();
+            session.step_outer_turn(command, 0);
+            let new_launches = area_damage::take_fireball_launch_trace();
+            births.extend(area_damage::take_fireball_impact_birth_trace());
+            callbacks.extend(area_damage::take_effect_damage_trace());
+            let local_launches = new_launches
+                .iter()
+                .copied()
+                .filter(|launch| launch.2 == player)
+                .collect::<Vec<_>>();
+            for receipt in session.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current: CurrentOccupant::Known { selector, .. },
+                    ..
+                } = receipt
+                else {
+                    continue;
+                };
+                let (Some(before), Some(after)) = (
+                    original.observed_player_resources(),
+                    selector.observed_player_resources(),
+                ) else {
+                    continue;
+                };
+                if slot == fire && !local_launches.is_empty() {
+                    assert!(cost > 0 && queued_payment.is_none());
+                    let expected_regen = if before.2 >= 0 {
+                        -cost
+                    } else {
+                        before.2.wrapping_sub(cost)
+                    };
+                    assert_eq!(
+                        (before.0, after.0, after.1, after.2),
+                        (player_handle, player_handle, before.1, expected_regen),
+                        "the real Fireball holder queues its cost at the successful launch"
+                    );
+                    queued_payment = Some((local_launches.clone(), expected_regen));
+                } else if slot == player
+                    && let Some((_, regen)) = queued_payment.as_ref()
+                    && before.0 == player_handle
+                    && before.2 == *regen
+                {
+                    assert_eq!(
+                        (after.0, after.1),
+                        (
+                            player_handle,
+                            before.1.wrapping_add(before.2).clamp(0, before.3)
+                        ),
+                        "the real player visit debits the queued launch cost"
+                    );
+                    paid_launches.extend(queued_payment.take().unwrap().0);
+                }
+            }
+            launches.extend(new_launches);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "turn {turn}: {:?}",
+                session.dispatch_events()
+            );
+            if session.source_arena().handle(handle.source_slot) == Some(handle) {
+                if let Some(row) = session
+                    .ordinary()
+                    .villagers()
+                    .iter()
+                    .find(|row| row.entity_index == handle.source_slot)
+                {
+                    if death.is_none() && row.life < 0 {
+                        death = Some((
+                            row.life,
+                            row.current_attacker,
+                            row.kill_credit_entity,
+                            row.reset_counter,
+                            row.control_flags,
+                        ));
+                        death_before = current
+                            .clone()
+                            .map(|before| (before, callback_start, callbacks.len()));
+                        death_carried_from = carried_from;
+                    }
+                    if !row.active
+                        && session.entities()[usize::from(handle.source_slot)].drawing_disabled()
+                    {
+                        assert!(
+                            !session
+                                .campaign_entity_presentations(0)
+                                .unwrap()
+                                .iter()
+                                .any(|presentation| {
+                                    presentation.entity_index == handle.source_slot
+                                }),
+                            "the hidden original Villager must leave presentation immediately"
+                        );
+                        hidden = true;
+                    }
+                }
+                burst |= session.dispatch_events().iter().any(|event| matches!(event,
+                    Mc2DispatchEvent::Villager { source_slot, effects, .. } if *source_slot == handle.source_slot
+                        && effects.iter().any(|effect| matches!(effect, VillagerStepEffect::DeathBurst { source_entity_index, .. } if *source_entity_index == handle.source_slot))));
+                if let Some(row) =
+                    session.ordinary().villagers().iter().find(|row| {
+                        row.entity_index == handle.source_slot && row.active && row.life >= 0
+                    })
+                {
+                    let mailbox = (row.pending_damage, row.pending_attacker.cast_unsigned());
+                    if let Some(index) = (callback_start..callbacks.len()).rev().find(|&index| {
+                        callbacks[index].mailbox_before != callbacks[index].mailbox_after
+                    }) {
+                        carried_from =
+                            (callbacks[index].mailbox_after == Some(mailbox)).then_some(index);
+                    } else if carried_from
+                        .is_some_and(|index| callbacks[index].mailbox_after != Some(mailbox))
+                    {
+                        carried_from = None;
+                    }
+                }
+            } else if hidden {
+                reclaimed = true;
+                break;
+            }
+            if turn % 32 == 0 {
+                trace.push((
+                    turn,
+                    current.map(|r| (r.life, r.action, r.position)),
+                    launches.len(),
+                    births.len(),
+                    callbacks.len(),
+                ));
+            }
+        }
+        let credited = death.expect(&format!(
+            "actual Villager death missing: victim={victim:?} trace={trace:?}"
+        ));
+        assert!(
+            credited.0 < 0 && credited.1 == player.cast_signed() && credited.2 == player.cast_signed(),
+            "wrong fatal credit: {credited:?}"
+        );
+        let (before_death, callback_start, callback_end) =
+            death_before.expect("pre-death original generation");
+        let latest_before = callbacks[..callback_start]
+            .iter()
+            .rposition(|receipt| receipt.mailbox_before != receipt.mailbox_after);
+        let latest_during = callbacks[..callback_end]
+            .iter()
+            .rposition(|receipt| receipt.mailbox_before != receipt.mailbox_after);
+        let paid_hit = callbacks.iter().enumerate().any(|(index, callback)| {
+            let impact = callback
+                .source_impact
+                .map(|(generation, row)| {
+                    (
+                        row.source_entity_index,
+                        generation,
+                        row.parent_entity_index,
+                        row.parent_entity_id,
+                        row.subspell_index,
+                        row.position,
+                    )
+                })
+                .or_else(|| {
+                    callback
+                        .source_raw_impact
+                        .as_ref()
+                        .and_then(|(generation, row)| {
+                            births
+                                .iter()
+                                .find(|&&(slot, born, _, _, owner)| {
+                                    slot == row.index && born == *generation && owner == row.source_id
+                                })
+                                .map(|&(_, _, parent, _, _)| {
+                                    (
+                                        row.index,
+                                        *generation,
+                                        parent,
+                                        row.source_id,
+                                        row.subspell_index,
+                                        row.position,
+                                    )
+                                })
+                        })
+                });
+            let Some((slot, generation, parent, owner, payload, position)) = impact else {
+                return false;
+            };
+            let lineage = births.iter().any(|&(s, g, p, pg, o)| {
+                (s, g, p, o) == (slot, generation, parent, player)
+                    && paid_launches.contains(&(p, pg, o))
+            });
+            let mailbox = callback
+                .mailbox_before
+                .zip(callback.mailbox_after)
+                .is_some_and(|(before, after)| {
+                    let expected = if before.1 == 0 {
+                        crate::level1_mission::FIREBALL_PAYLOAD
+                    } else {
+                        before
+                            .0
+                            .wrapping_add(crate::level1_mission::FIREBALL_PAYLOAD)
+                    };
+                    let fatal = if index < callback_start {
+                        Some(index) == latest_before
+                            && Some(index) == death_carried_from
+                            && before_death.pending_attacker == player.cast_signed()
+                            && before_death.pending_damage > before_death.life
+                            && after == (before_death.pending_damage, player)
+                    } else {
+                        index < callback_end
+                            && Some(index) == latest_during
+                            && before_death.pending_attacker == 0
+                            && after.0 > before_death.life
+                    };
+                    after == (expected, player)
+                        && before_death.life >= 0
+                        && credited.0 == before_death.life.wrapping_sub(after.0)
+                        && fatal
+                });
+            callback.target_slot == handle.source_slot
+                && callback.target_generation == handle.generation
+                && callback.source_slot == Some(slot)
+                && owner == player
+                && lineage
+                && payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                && callback.pulse.owner == player
+                && callback.pulse.selector == (u8::MAX, u8::MAX)
+                && callback.pulse.payload == payload
+                && callback.pulse.position == position
+                && mailbox
+                && callback.target.is_some_and(|target| {
+                    crate::level1_mission::source_entities_overlap(
+                        position,
+                        callback.pulse.half_width,
+                        callback.pulse.vertical_offset,
+                        callback.pulse.half_height,
+                        target.position,
+                        target.shape.half_width,
+                        target.shape.vertical_offset,
+                        target.shape.half_height,
+                    )
+                })
+        });
+        // KillTownie_23680 hides immediately for a nonzero reset counter;
+        // otherwise KillEntity_1C930 emits the burst unless it is suppressed.
+        let expects_burst = credited.3 == 0 && credited.4 & 0x0010_0000 == 0;
+        assert!(
+            paid_hit && hidden && burst == expects_burst && reclaimed,
+            "paid_hit={paid_hit} hidden={hidden} burst={burst} expected_burst={expects_burst} reclaimed={reclaimed} credited={credited:?} before_death={before_death:?} callback_range={callback_start}..{callback_end} latest_before={latest_before:?} latest_during={latest_during:?} paid_launches={paid_launches:?} trace={trace:?}"
+        );
+        // PreKillEntity_1C890 excludes model13 from player creature kills;
+        // Rust's source_creature_population likewise excludes models12..15.
+        // Check the living root and next-boundary target list directly.
+        assert!(
+            !session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Villager)
+                .any(|root| root.handle == handle && root.living)
+        );
+        assert!(!session.source_arena().rebuilt_class5_model_slots()[13].contains(&handle.source_slot));
+        assert!(
+            !session
+                .ordinary()
+                .villagers()
+                .iter()
+                .any(|row| row.entity_index == handle.source_slot)
+        );
+        assert_ne!(session.entities()[usize::from(handle.source_slot)].class, 5);
+    }
+
+    #[test]
     fn ordinary_demolition_resident_publishes_and_reclaims_its_actual_arena_row() {
         let mut session = ordinary_level_two();
         let victim = *session
