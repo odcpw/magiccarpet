@@ -19,6 +19,9 @@ namespace MagicCarpet.Native
     /// </summary>
     internal sealed class GameRuntimeTransport : IDisposable
     {
+        private static readonly bool LegacyRuntimeJson =
+            Environment.GetCommandLineArgs().Contains("-mc-runtime-legacy-json");
+        private static readonly RuntimeIdentityJsonDecoder IdentityJson = new(typeof(Identity));
         internal const string RuntimeContract = "carpet-flight-game-runtime/v12";
         internal const string TransportContract =
             "carpet-flight-native-game-runtime-json/v12";
@@ -594,7 +597,7 @@ namespace MagicCarpet.Native
             // before completion, and no speech on a results screen. Preserve
             // those tokens rather than treating fabricated zero stats as real.
             var decodeStart = ModernCapture.BeginMeasurement();
-            var identity = DecodeRuntimeJson<Identity>(bytes);
+            var identity = DecodeRuntimeJson<Identity>(bytes, LegacyRuntimeJson);
             ModernCapture.EndMeasurement("runtime_decode_Identity", decodeStart);
             ValidateIdentity(identity, handle);
             return identity;
@@ -1987,7 +1990,7 @@ namespace MagicCarpet.Native
                 // identity; preserve absent session/statistics there as well.
                 var value = typeof(T) == typeof(Contract)
                     ? JsonUtility.FromJson<T>(Encoding.UTF8.GetString(bytes))
-                    : DecodeRuntimeJson<T>(bytes);
+                    : DecodeRuntimeJson<T>(bytes, LegacyRuntimeJson);
                 if (decodeStart != 0) ModernCapture.EndMeasurement("runtime_decode_" + typeof(T).Name, decodeStart);
                 return value ?? throw new InvalidOperationException(operation + " returned null JSON");
             }
@@ -1997,8 +2000,9 @@ namespace MagicCarpet.Native
             }
         }
 
-        private static T DecodeRuntimeJson<T>(byte[] bytes) where T : class
+        internal static T DecodeRuntimeJson<T>(byte[] bytes, bool legacy) where T : class
         {
+            if (!legacy && typeof(T) == typeof(Identity)) return IdentityJson.Decode(bytes) as T;
             using var stream = new MemoryStream(bytes, false);
             return new DataContractJsonSerializer(typeof(T)).ReadObject(stream) as T;
         }

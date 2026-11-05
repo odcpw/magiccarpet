@@ -5,6 +5,8 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using NUnit.Framework;
 using UnityEngine;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -213,6 +215,99 @@ namespace MagicCarpet.Native.Tests
             using var stream = new MemoryStream();
             new DataContractJsonSerializer(typeof(T)).WriteObject(stream, value);
             return Encoding.UTF8.GetString(stream.ToArray());
+        }
+
+        [TestCase("title")]
+        [TestCase("loading")]
+        [TestCase("playing")]
+        [TestCase("paused")]
+        public void RuntimeJsonDecoderPreservesCompleteIdentityGraphAndNulls(string mode)
+        {
+            var identity = mode == "loading" ? SecretLoadingIdentity(null)
+                : mode == "title" ? new GameRuntimeTransport.Identity { mode = mode }
+                : SecretPlayingIdentity(mode, "22", SecretOriginLevel,
+                    SecretSession("7", "18446744073709551615", 'd'), null);
+            var bytes = Encoding.UTF8.GetBytes(SerializeDataContractJson(identity));
+            var expected = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(bytes, true);
+            var actual = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(bytes, false);
+            Assert.That(SerializeDataContractJson(actual), Is.EqualTo(SerializeDataContractJson(expected)));
+            Assert.That(actual, Is.Not.SameAs(expected));
+            actual.mode = "mutated";
+            if (actual.session != null) actual.session.generation = "mutated";
+            var fresh = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(bytes, false);
+            Assert.That(SerializeDataContractJson(fresh), Is.EqualTo(SerializeDataContractJson(expected)));
+            Assert.That(fresh, Is.Not.SameAs(actual));
+            if (actual.session != null) Assert.That(fresh.session, Is.Not.SameAs(actual.session));
+        }
+
+        [Test]
+        public void RuntimeJsonDecoderPreservesUnicodeAndIntegerBoundariesConcurrently()
+        {
+            var value = SecretPlayingIdentity("playing", "22", SecretOriginLevel,
+                SecretSession("7", "18446744073709551615", 'd'), null);
+            value.player_preferences = new PlayerPreferencesSnapshot {
+                assistance_sequence = ulong.MaxValue,
+                preferences = new PlayerPreferences {
+                    player_name = "Oliver 🌙 \"\\\n\t ä",
+                    brightness = new[] { int.MinValue, 0, int.MaxValue },
+                    reflections = false, sky = false, shadows = false, dynamic_lighting = false
+                }
+            };
+            var json = Encoding.UTF8.GetBytes(JObject.Parse(SerializeDataContractJson(value)).ToString(Formatting.None));
+            var expected = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(json, true);
+            System.Threading.Tasks.Parallel.For(0, 64, _ => {
+                var actual = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(json, false);
+                Assert.That(SerializeDataContractJson(actual), Is.EqualTo(SerializeDataContractJson(expected)));
+                Assert.That(actual.player_preferences, Is.Not.SameAs(expected.player_preferences));
+                Assert.That(actual.player_preferences.preferences.brightness, Is.Not.SameAs(expected.player_preferences.preferences.brightness));
+            });
+        }
+
+        [Test]
+        public void RuntimeJsonDecoderPreservesLegacyAdmissionForNoncanonicalInputs()
+        {
+            var value = SecretPlayingIdentity("playing", "22", SecretOriginLevel,
+                SecretSession("7", "9", 'd'), null);
+            value.player_preferences = new PlayerPreferencesSnapshot { preferences = new PlayerPreferences { player_name = "~NAME" } };
+            var original = JObject.Parse(SerializeDataContractJson(value));
+            void Compare(string name, byte[] bytes)
+            {
+                GameRuntimeTransport.Identity legacy = null, actual = null;
+                Exception legacyError = null, actualError = null;
+                try { legacy = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(bytes, true); }
+                catch (Exception exception) { legacyError = exception; }
+                try { actual = GameRuntimeTransport.DecodeRuntimeJson<GameRuntimeTransport.Identity>(bytes, false); }
+                catch (Exception exception) { actualError = exception; }
+                Assert.That(actualError?.GetType(), Is.EqualTo(legacyError?.GetType()), name);
+                if (legacyError == null) Assert.That(SerializeDataContractJson(actual), Is.EqualTo(SerializeDataContractJson(legacy)), name);
+            }
+            void Mutate(string name, Action<JObject> change)
+            {
+                var json = (JObject)original.DeepClone(); change(json);
+                Compare(name, Encoding.UTF8.GetBytes(json.ToString(Formatting.None)));
+            }
+            Mutate("required string", json => json.Remove("mode"));
+            Mutate("required boolean", json => ((JObject)json["player_preferences"]["preferences"]).Remove("reflections"));
+            Mutate("required numeric", json => ((JObject)json["player_preferences"]["preferences"]).Remove("mouse_sensitivity"));
+            Mutate("wrong case", json => { json["MODE"] = json["mode"]; json.Remove("mode"); });
+            Mutate("optional wrong case", json => json["FRONTEND_MEDIA"] = new JObject { ["active"] = true });
+            Mutate("null boolean", json => json["player_preferences"]["preferences"]["reflections"] = null);
+            Mutate("null numeric", json => json["player_preferences"]["preferences"]["mouse_sensitivity"] = null);
+            Mutate("legacy boolean coercion", json => json["player_preferences"]["preferences"]["reflections"] = "1");
+            Mutate("legacy numeric coercion", json => json["player_preferences"]["preferences"]["mouse_sensitivity"] = 100.0);
+            Mutate("ignored metadata", json => json["$ref"] = "missing");
+            Mutate("DCS metadata", json => json["__type"] = "unknown");
+            Mutate("unknown extension", json => json["future_extension"] = new JObject { ["value"] = 1 });
+            Mutate("raw XML noncharacter FFFE", json => json["player_preferences"]["preferences"]["player_name"] = "\ufffe");
+            Mutate("raw XML noncharacter FFFF", json => json["player_preferences"]["preferences"]["player_name"] = "\uffff");
+            var compact = original.ToString(Formatting.None);
+            Compare("duplicate", Encoding.UTF8.GetBytes("{\"mode\":\"other\"," + compact.Substring(1)));
+            Compare("trailing comma", Encoding.UTF8.GetBytes(compact.Substring(0, compact.Length - 1) + ",}"));
+            Compare("trailing content", Encoding.UTF8.GetBytes(compact + " false"));
+            Compare("whitespace", Encoding.UTF8.GetBytes(" \n" + compact + "\t"));
+            var invalid = Encoding.UTF8.GetBytes(compact);
+            invalid[Array.IndexOf(invalid, (byte)'~')] = 255;
+            Compare("invalid UTF8", invalid);
         }
 
         private static T DataContractJsonRoundTrip<T>(T value) where T : class
