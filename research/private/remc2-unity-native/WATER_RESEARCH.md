@@ -1,8 +1,109 @@
 # Water, wind and interaction research
 
-2026-11-05. Decision report for the modern renderer at `49c68f15` and the
+2026-11-05. Initial decision report for the modern renderer at `49c68f15` and the
 current Unity 6000.3.20f1 / URP 17.3.0 project. Research only: no runtime,
 dependency, gameplay or installed-player changes accompany this report.
+The post-capture correction below supersedes the initial condensation-rendering
+recommendation where the player must enter and disturb the cloud.
+
+## Post-capture correction: steam, fire and night lighting
+
+The water prototype landed at `dda3a17d`. The subsequent uncommitted night/steam
+experiment was rejected visually on 2026-11-05. In capture `night-weather-02`,
+steam reads as overlapping cotton balls, torch cards as luminous triangles, and
+two staged torches produce an implausibly broad pink horizon. The capture is at
+`/mnt/pinokio-shared/magiccarpet-build-proofs-20261105/night-weather-02/`.
+This is evidence against the representation, not a reason to tune opacity again.
+
+The current steam uses 24 repeated billboard puffs per parcel, arranged around
+a spherical envelope, with approximately uniform lighting. Parcel heat/water
+accounting constrains quantities but cannot determine a turbulent 3D density
+field. Correct scalar thermodynamics does not validate those images. The 72
+passing Modern EditMode tests cover their encoded behavior, not visual quality.
+
+### Production methods and the choice for this game
+
+| Method | Useful property | Important limit | Decision |
+| --- | --- | --- | --- |
+| Authored smoke flipbook with six-way lighting | Detailed baked motion and directional light response at particle cost | Baked motion, flat close views and no coherent interior between cards | Distant steam and secondary torch smoke |
+| Persistent local 3D density and velocity fields | Continuous interior, overlapping plumes and lasting swept disturbances | Simulation bandwidth, ray sampling and light attenuation cost | Leading candidate for near steam we fly through |
+| World-scale fluid simulation | General coupled motion | Unnecessary scope and cost for isolated quenches | Do not adopt |
+| Authored flame flipbook with separate emission/opacity | Controllable silhouette and exposure | Needs actual quality art, not a generic noise mask | Torch flame baseline |
+
+Unity's [six-way lighting documentation](https://docs.unity3d.com/Packages/com.unity.visualeffectgraph@17.3/manual/six-way-lighting.html)
+describes baking directional responses into two RGBA flipbooks and relighting
+them at runtime. This is a real asset pipeline; renaming grayscale noise does
+not supply the missing directional information. Unity 6000.3 also exposes a
+[URP Six Way Shader Graph](https://docs.unity3d.com/6000.3/Documentation/Manual/urp/prebuilt-shader-graphs-urp-sixway.html).
+Our installed URP 17.3 contains this support; VFX Graph is not currently a
+project dependency. No engine migration is required. The project's custom
+eight-light arrays do not automatically become Unity lights: choose an explicit
+bridge or native URP light integration, and measure it. The existing builder
+already requests per-pixel additional lighting; inspect the installed renderer
+asset before attributing performance to a rendering-path change.
+
+[GPU Gems 3, chapter 30](https://developer.nvidia.com/gpugems/gpugems3/part-v-physics-simulation/chapter-30-real-time-simulation-and-rendering-3d-fluids)
+provides the concrete density/velocity, moving-obstacle and volume-rendering
+foundation. For our first experiment, compare 48³ and 64³ cells over one bounded
+local region, sharing it among nearby impacts. These sizes are trial parameters,
+not demonstrated sufficiency. Inject condensate/heat from the existing model;
+advect density with wind, buoyancy and a persistent swept-carpet velocity
+disturbance. Procedural [curl noise](https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf)
+can add unresolved eddies; it is not a substitute for persistent state or a
+pressure solve. Escalate to pressure projection when divergence/compression
+actually breaks the observed result. Pure advection is an explicit visual
+approximation, not a claim of resolved multiphase fluid dynamics.
+
+Render density with front-to-back extinction and scattering, scene-consistent
+moon/ambient/local light, and bounded light attenuation through the cloud.
+Steam is not emissive. Clip rays to the volume and scene depth, skip empty
+regions and stop once transmission is negligible. Establish a full-resolution
+reference before introducing reduced resolution or temporal reconstruction;
+camera entry, fast flight and disocclusion are the difficult cases. Share the
+simulation across views rather than stepping it again for reflections or eyes.
+
+For sky clouds, [Guerrilla's Nubis Evolved](https://www.guerrilla-games.com/read/nubis-evolved)
+is especially relevant because it explicitly addresses fly-through clouds and
+fast-motion artifacts. Its reported timings belong to its engine and content,
+not ours. Weather coverage and wind should control density independently of
+rendering quality. Two torch sources must not acquire city-scale atmospheric
+glow merely because a locality exists.
+
+For flames, use simulated/authored looping silhouettes, controlled emissive
+cores, and independent opacity/emission masks. [SideFX's Pyro Bake Volume](https://www.sidefx.com/docs/houdini/nodes/sop/pyrobakevolume.html)
+separates smoke, scattering, temperature color and fire intensity; that separation
+is the useful production lesson, not a requirement to adopt Houdini. Calibrate
+the flame and its ground illumination together under fixed exposure. Six-way
+lighting benefits associated smoke; it does not fix a triangular flame silhouette.
+
+### Smallest decisive next experiment
+
+Build one quench cloud in a simple scene under fixed daylight and moonlight.
+Record formation, orbit, entry, a swept carpet pass, the wake after exit, and
+two overlapping sources. Reject visible disks, spherical shell structure,
+camera-attached holes, clipping, temporal trails and unexplained self-glow.
+The disturbance must persist after the actor leaves. Compare identical camera,
+wind, source timing and exposure with effects off, the rejected renderer and
+the volume candidate. Measure simulation, rendering and total frame-time
+distributions without video encoding; include the inside-cloud case.
+
+An initial budget of about 2ms incremental GPU cost for one nearby plume at
+1080p is a proposed design constraint, not a measurement or guarantee. Bound
+active regions, emitters, light samples and screen coverage; do not multiply a
+large solver by every fireball. 128³ has eight times as many cells as 64³, and
+near-cloud pixel coverage can dominate even when cell counts are small. Distant
+effects use baked assets only after the transition is visually checked.
+
+Retain the tested variable-wind and heat/water contracts, with the authored 2MJ
+calibration and entrainment assumptions explicit. Retain the wake input contract,
+but replace its puff consumer. FrankenSim was evaluated for property calculations;
+it does not currently supply the required ready-made moist-plume integrator or
+Unity renderer. This research adds no dependency. Oracle CLI was unavailable;
+the attempted Claude CLI cross-examination failed with expired authentication,
+so no complementary-model verdict is claimed. The recommendation is based on
+the observed failed capture, inspected project code and cited primary sources.
+
+## Initial water research at revision 49c68f15
 
 The recommended target is a hybrid: a spectrum-driven broad surface, a coastline
 field for controlled shore motion, a bounded local GPU wave field for
@@ -13,7 +114,7 @@ not the winner by assumption. Keep the current URP stack. Use nonlinear shallow
 water only where actual run-up/current behavior is needed. These are engineering
 recommendations, not measured speed claims.
 
-## What the current code actually provides
+## What the initial source snapshot provides
 
 - `Assets/Resources/ModernWater.shader` has two small vertical sine waves,
   four unconditional procedural noise-gradient evaluations per fragment,

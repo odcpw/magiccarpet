@@ -816,6 +816,111 @@ Root self-verified the installed prototype and video; the exact hot-contact
 payload, nonlinear run-up, curling breakers, independent water geometry LOD,
 all-view motion checks and foreground performance remain unfinished.
 
+## Variable weather and night lighting follow-up
+
+**Uncommitted visual experiment; rejected, not delivered.** The following records
+implemented draft behavior. The 65s `night-weather-02` capture of installed
+candidate `build-8wjst540` showed cotton-ball steam, triangular luminous flames
+and excessive horizon glow from two staged torches. Oliver rejected the result
+and requested research. The replacement recommendation is recorded in
+[WATER_RESEARCH.md](WATER_RESEARCH.md#post-capture-correction-steam-fire-and-night-lighting).
+Source drafts are preserved; they are not an accepted visual upgrade. The later
+sky-color and torch-mask edits have not been built or viewed. The 72 passing
+Modern EditMode tests do not establish visual quality or performance. Both
+captures used a private display, not the locked actual desktop; there is no new
+foreground-performance result for this candidate.
+
+`ModernWind` now supplies autonomous speed and direction changes with analytic
+time integration. Explicit overrides and a continuous return to weather remain
+available. This is authored cosmetic weather, not a new Rust flight-force model.
+
+The fireball calibration treats a 0.65m luminous core as a magical store of
+2MJ **remaining thermal energy at water contact**. Its size alone does not imply
+that energy; MC2 damage values are not joules. At full quenching the default
+transfers all of that heat to water. Heating 20°C water to 100°C and vaporizing
+it costs approximately 2.592MJ/kg, yielding at most 0.772kg of steam occupying
+about 1.29m³ at atmospheric pressure/100°C. Warming surrounding water without
+boiling it would reduce that maximum. Reference: [NIST/IAPWS saturation
+tables](https://www.nist.gov/document/nistir5078-tab1pdf).
+
+Visible white mist is suspended liquid droplets, not the hot invisible vapor.
+The initial 10%-condensation/0.5g/m³ illustration (6.66m equivalent diameter)
+has been replaced in the renderer by an evolving moist parcel. Ambient
+temperature, relative humidity and entrainment are explicit inputs rather than
+an assumed fixed condensed fraction. NightSpire's authored review uses 12°C
+and 75% RH. Puffs approximate the parcel's volume and optical depth; they are
+not a resolved multiphase CFD simulation. See [NOAA's condensation
+explanation](https://www.noaa.gov/education/multimedia/video/cooking-up-storm-atmospheric-science-in-your-kitchen).
+
+`ModernSteamPlume` solves a constant-pressure, well-mixed parcel: entrained dry
+air brings its ambient humidity and enthalpy, saturation partitions vapor from
+liquid, and 48 bounded bisections close sensible plus latent heat. Ideal-mixture
+volume sets the envelope. The default entrainment coefficient is explicitly
+authored at 8kg dry air per kg initial steam per second; it is not a universal
+measured plume law. The renderer uses at most eight parcels with 24 overlapping
+puffs each, estimates extinction for 10µm droplets and advects their centers
+with wind and a bounded buoyant rise. It does not solve bubble dynamics, pressure
+waves, turbulent velocity fields or individual droplet growth.
+
+Players and rivals disturb individual puff positions/velocities through
+`ModernSteamWake`: a compact 3D swept path with radial displacement and paired
+rolling cores. Motion is evaluated relative to the cloud's moving air. Additional
+mixing goes through the same enthalpy/water solve; spreading reduces optical
+depth rather than abruptly erasing the cloud. Teleports, invalid inputs and
+unbounded speeds are rejected. This is a bounded visual wake approximation,
+not a resolved turbulent flow or a new force on gameplay actors.
+
+Actual C# parcel values for the authored night conditions (no carpet disturbance):
+
+| Age | Temperature | Condensed droplets | Equivalent parcel diameter |
+| --- | ---: | ---: | ---: |
+| 1s | 55.4°C | 0.088kg | 2.35m |
+| 4s | 32.1°C | 0.169kg | 3.50m |
+| 8s | 23.5°C | 0.192kg | 4.34m |
+| 18s | 16.8°C | 0.170kg | 5.62m |
+
+These diameters include entrained air; they do not describe solid opaque balls.
+Incoming humid air contributes water. Numerical heat residuals in the retained
+timeline are below 9e-8J, which verifies the chosen model's algebra, not real
+plume accuracy. CSV: `../generated/night-weather-20261105/plume-12c-75rh.csv`.
+
+FrankenSim was evaluated at `2cac4277a1ae7db2e7d269d3252fef776c85c1aa`.
+Its [water-property APIs](https://github.com/Dicklesworthstone/frankensim/blob/2cac4277a1ae7db2e7d269d3252fef776c85c1aa/crates/fs-thermochem/src/water.rs)
+and IF97 module provide saturation/enthalpy calculations, but not a ready moist
+plume time integrator. No FrankenSim code was copied or dependency adopted;
+the current model is independently implemented from NIST caloric anchors and
+the [published Buck saturation formula](https://www.eol.ucar.edu/data-software/conventions-and-standards/water-vapor-pressure-formulations).
+Future property-table cross-checking would first need dependency and license
+qualification; upstream's license has additional restrictions beyond MIT.
+
+`ModernNightLighting` consumes existing cached presentation rows, avoiding an
+extra arena serialization. Fireball/flame emission uses verified parameter/base
+TMAP pairs, including `(340,463)`, `(42,55)`, `(41,54)`, `(7,38)` and
+`(228..235,77)`. The `(41,54)` appearance can also be an explosion; it is not
+assumed to be a permanent torch. House rows `(177..184,96..103)` receive
+explicitly authored modern exterior torches; no original lamp socket is claimed.
+Eight selected shadowless local lights illuminate terrain, plants, actors,
+mist and water. Up to eight house localities contribute bounded sky/cloud glow.
+Torch geometry is pooled; no Unity collision or gameplay entities are added.
+
+The sky keeps a bounded cloud march, with wind-advected weather and detail,
+moonward scattering, antialiased angular stars and moon disk. Review controls
+show water and a flight through steam for 35 seconds, moon/clouds for 12, then
+a torch study on dry terrain.
+The staged quench label remains: the current campaign ABI still lacks a reliable
+hot-contact payload. Source ambient fires/projectiles and house observations
+drive ordinary lighting, while demonstration impacts remain explicit inputs.
+
+The frozen `a98a8317` native replay has no active houses or fire sources at
+ticks240/300/540; all16 source-yaw observations show smoke only. Fresh startup
+briefly presents fire/impact rows but these disappear before the capture warmup.
+Consequently this review explicitly stages its torch locations and makes no
+live-house gameplay claim. A public Fireball cast also reproduces the separately
+owned legacy auxiliary-record failure (index589 into573 bytes); the isolated
+probe stopped without creating a replay. Evidence is `native-light-census.json`,
+`native-light-startup.json` and `native-light-fireball.json` in the same evidence
+directory. No Rust/ABI change is bundled with this presentation work.
+
 ## Current limits
 
 This is a desktop environment upgrade, not a completed conversion of every game
