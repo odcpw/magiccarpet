@@ -7,6 +7,8 @@ use super::*;
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::campaign::source_arena::SourceArena;
+#[cfg(test)]
+use crate::campaign::source_arena::SourceEntityHandle;
 use crate::campaign::state::{
     CampaignDefinition, CampaignSession, CampaignState, CampaignStepError, CanonicalRuntimeState,
     ResetReceipt, ResetState, SemanticLevelBindings, digest_level_exit_sequence,
@@ -762,10 +764,68 @@ impl Mc2Simulation {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Model9ConversionOutcome {
+    AllocationFailed,
+    MapInsertionFailed,
+    PlacementBlocked,
+    Published { child: SourceEntityHandle },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Model9ConversionReceipt {
+    pub(crate) producer: SourceEntityHandle,
+    pub(crate) prey: SourceEntityHandle,
+    pub(crate) outcome: Model9ConversionOutcome,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ArcherChildDamageReceipt {
+    pub(crate) child: SourceEntityHandle,
+    pub(crate) parent: Option<SourceEntityHandle>,
+    pub(crate) target: SourceEntityHandle,
+    pub(crate) payload: u16,
+    pub(crate) attacker: u16,
+    pub(crate) mailbox_before: (i32, u16),
+    pub(crate) mailbox_after: (i32, u16),
+    pub(crate) player_life_before: i32,
+    pub(crate) player_life_after: i32,
+    pub(crate) event_cursor: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct ArcherChildDamageSource {
+    child: SourceEntityHandle,
+    parent: Option<SourceEntityHandle>,
+}
+
+#[cfg(test)]
+struct ArcherChildDamageTrace(Option<ArcherChildDamageSource>);
+
+#[cfg(test)]
+impl Drop for ArcherChildDamageTrace {
+    fn drop(&mut self) {
+        CURRENT_ARCHER_CHILD_DAMAGE_SOURCE.with(|source| source.set(self.0));
+    }
+}
+
+#[cfg(test)]
 std::thread_local! {
     static CF10_PRODUCTION_SCHEDULE_RECEIPTS:
         std::cell::RefCell<Vec<ScheduleReceipt<Level2ResolvedSourcePlan>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    static MODEL9_CONVERSION_RECEIPTS:
+        std::cell::RefCell<Vec<Model9ConversionReceipt>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static ARCHER_CHILD_DAMAGE_RECEIPTS:
+        std::cell::RefCell<Vec<ArcherChildDamageReceipt>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static CURRENT_ARCHER_CHILD_DAMAGE_SOURCE:
+        std::cell::Cell<Option<ArcherChildDamageSource>> =
+        const { std::cell::Cell::new(None) };
 }
 
 struct Level2SourceSchedulerWorld<'session, 'evidence> {
@@ -1887,6 +1947,16 @@ impl Mc2Simulation {
         &self,
     ) -> Vec<ScheduleReceipt<Level2ResolvedSourcePlan>> {
         CF10_PRODUCTION_SCHEDULE_RECEIPTS.with(|receipts| receipts.borrow().clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_model9_conversion_receipts(&self) -> Vec<Model9ConversionReceipt> {
+        MODEL9_CONVERSION_RECEIPTS.with(|receipts| std::mem::take(&mut *receipts.borrow_mut()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_archer_child_damage_receipts(&self) -> Vec<ArcherChildDamageReceipt> {
+        ARCHER_CHILD_DAMAGE_RECEIPTS.with(|receipts| std::mem::take(&mut *receipts.borrow_mut()))
     }
 
     #[cfg(test)]
@@ -3595,10 +3665,7 @@ impl Mc2Simulation {
                 .chain(live.core.players.iter_mut())
                 .filter(|player| player.entity_index == parent_slot)
             {
-                if let Some(aux) = player.type_str_164_auxiliary.as_mut() {
-                    aux.byte_0x154_340 = 0;
-                    player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
-                }
+                player.set_source_cast_auxiliary(0);
             }
             if live.shared_spells.local_player.entity_index == parent_slot
                 && let Some(player) = live
@@ -3866,10 +3933,7 @@ impl Mc2Simulation {
                         .chain(live.core.players.iter_mut())
                         .filter(|player| player.slot == index)
                     {
-                        if let Some(aux) = player.type_str_164_auxiliary.as_mut() {
-                            aux.byte_0x154_340 = 0;
-                            player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
-                        }
+                        player.set_source_cast_auxiliary(0);
                     }
                 }
             }
@@ -4215,10 +4279,7 @@ impl Mc2Simulation {
                     .chain(live.core.players.iter_mut())
                     .filter(|player| player.slot == index)
                 {
-                    if let Some(aux) = player.type_str_164_auxiliary.as_mut() {
-                        aux.byte_0x154_340 = 0;
-                    }
-                    player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                    player.set_source_cast_auxiliary(0);
                     if let Some(handle) = live.economy.handle(player.entity_index)
                         && let Some(dispatcher) = live.nyphur_dispatcher.get_mut(handle)
                     {
@@ -4762,8 +4823,7 @@ impl Mc2Simulation {
                             live.shared_spells.global_special_state.cast_auxiliary = 0;
                         } else if let EntitySpecialRelation::PlayerState(index) = parent.special_relation {
                             for player in live.shared_spells.players.iter_mut().chain(live.core.players.iter_mut()).filter(|player| player.slot == index) {
-                                if let Some(aux) = player.type_str_164_auxiliary.as_mut() { aux.byte_0x154_340 = 0; }
-                                player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                                player.set_source_cast_auxiliary(0);
                             }
                             if let Some(handle) = live.economy.handle(owner)
                                 && let Some(dispatcher) = live.nyphur_dispatcher.get_mut(handle) {
@@ -5092,10 +5152,7 @@ impl Mc2Simulation {
                         .iter_mut()
                         .find(|player| player.entity_index == parent_entity_index)
                     {
-                        if let Some(carrier) = player.type_str_164_auxiliary.as_mut() {
-                            carrier.byte_0x154_340 = 0;
-                            player.record[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
-                        }
+                        player.set_source_cast_auxiliary(0);
                         if self
                             .session
                             .state
@@ -21169,6 +21226,28 @@ impl Mc2Simulation {
             .class5_position(prey_slot)
             .ok_or_else(|| format!("Skeleton conversion lost prey {prey_slot}"))?;
         let producer_id = live.economy.entities[usize::from(producer_slot)].source_id;
+        #[cfg(test)]
+        let record_conversion = {
+            // Capture both identities before hide or NewEvent can retire or
+            // replace their fixed source addresses.
+            let producer = live
+                .economy
+                .handle(producer_slot)
+                .expect("live conversion producer");
+            let prey = live
+                .economy
+                .handle(prey_slot)
+                .expect("live conversion prey");
+            move |outcome| {
+                MODEL9_CONVERSION_RECEIPTS.with(|receipts| {
+                    receipts.borrow_mut().push(Model9ConversionReceipt {
+                        producer,
+                        prey,
+                        outcome,
+                    });
+                })
+            }
+        };
         // DisableEntityDrawing04 precedes NewEvent even when allocation fails.
         if let Some(prey) = live
             .economy
@@ -21200,6 +21279,8 @@ impl Mc2Simulation {
             live.economy.entities[usize::from(prey_slot)].disable_drawing();
         }
         let Some(slot) = live.economy.economy.allocate_slot() else {
+            #[cfg(test)]
+            record_conversion(Model9ConversionOutcome::AllocationFailed);
             return Ok(());
         };
         let rng = live.economy.economy.new_event_rng(slot);
@@ -21228,6 +21309,8 @@ impl Mc2Simulation {
             live.economy
                 .economy
                 .release_slot(slot, Some(child.entity_rng));
+            #[cfg(test)]
+            record_conversion(Model9ConversionOutcome::MapInsertionFailed);
             return Err(format!("Skeleton conversion map insertion failed: {error}"));
         }
         let old_head = live.economy.economy.map_chains.old_map_entity(slot);
@@ -21249,6 +21332,8 @@ impl Mc2Simulation {
             live.economy
                 .economy
                 .release_slot(slot, Some(child.entity_rng));
+            #[cfg(test)]
+            record_conversion(Model9ConversionOutcome::PlacementBlocked);
             return Ok(());
         }
         if old_head != 0
@@ -21279,6 +21364,13 @@ impl Mc2Simulation {
             .converted_skeleton_origins
             .insert(slot, producer_slot);
         live.economy.entities[usize::from(slot)] = child;
+        #[cfg(test)]
+        record_conversion(Model9ConversionOutcome::Published {
+            child: live
+                .economy
+                .handle(slot)
+                .expect("published conversion child"),
+        });
         Ok(())
     }
 
@@ -24690,6 +24782,22 @@ impl Mc2Simulation {
                             || target.model != crate::goat::GOAT_MODEL)
                         && overlaps_raw(target)
                 });
+            #[cfg(test)]
+            let archer_damage_source = {
+                let live = &self.session.state.live;
+                (hit && target_slot == live.core.state.entity_index)
+                    .then(|| CURRENT_ARCHER_CHILD_DAMAGE_SOURCE.with(|source| source.get()))
+                    .flatten()
+                    .map(|source| {
+                        (
+                            source,
+                            live.economy
+                                .handle(target_slot)
+                                .expect("accepted player damage target"),
+                            live.player_life,
+                        )
+                    })
+            };
             if hit
                 && let Some(target) = self
                     .session
@@ -24699,7 +24807,36 @@ impl Mc2Simulation {
                     .entities
                     .get_mut(usize::from(target_slot))
             {
+                #[cfg(test)]
+                let mailbox_before = (
+                    target.source_wind_spell_payload(),
+                    target.source_wind_spell_owner(),
+                );
                 target.apply_model76_mailbox(step.owner_entity_index, step.payload);
+                #[cfg(test)]
+                if let Some((source, target_handle, player_life)) = archer_damage_source {
+                    let mailbox_after = (
+                        target.source_wind_spell_payload(),
+                        target.source_wind_spell_owner(),
+                    );
+                    let event_cursor = self.session.state.live.economy.events().len();
+                    ARCHER_CHILD_DAMAGE_RECEIPTS.with(|receipts| {
+                        receipts.borrow_mut().push(ArcherChildDamageReceipt {
+                            child: source.child,
+                            parent: source.parent,
+                            target: target_handle,
+                            payload: step.payload,
+                            attacker: step.owner_entity_index,
+                            mailbox_before,
+                            mailbox_after,
+                            // This is the accepted mailbox write. The player
+                            // consumes it and changes life on its later visit.
+                            player_life_before: player_life,
+                            player_life_after: self.session.state.live.player_life,
+                            event_cursor,
+                        });
+                    });
+                }
             }
         }
     }
@@ -26239,6 +26376,18 @@ impl Mc2Simulation {
                     )
             }
             Level2DynamicArenaKind::AuthoredClass5ArcherChild => {
+                #[cfg(test)]
+                let damage_source = {
+                    let arena = &self.session.state.live.economy;
+                    arena
+                        .authored_class5_archer_children()
+                        .iter()
+                        .find(|child| child.active && child.source_entity_index == source_slot)
+                        .map(|child| ArcherChildDamageSource {
+                            child: arena.handle(source_slot).expect("scheduled Archer child"),
+                            parent: arena.handle(child.parent_entity_index),
+                        })
+                };
                 // AddArcherArrow prepares its first sound before movement or
                 // collision can hide/reuse the typed arrow. Freeze that source
                 // pose here; its inactive raw shadow is not the audio carrier.
@@ -26308,6 +26457,11 @@ impl Mc2Simulation {
                         .iter()
                         .find(|child| child.source_entity_index == source_slot)
                         .unwrap();
+                    #[cfg(test)]
+                    let _damage_trace = ArcherChildDamageTrace(
+                        CURRENT_ARCHER_CHILD_DAMAGE_SOURCE
+                            .with(|source| source.replace(damage_source)),
+                    );
                     self.apply_level2_damage_pulse(
                         damage,
                         (child.collision_half_width, child.collision_vertical_offset, child.collision_half_height),
@@ -28836,6 +28990,125 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fireball_auxiliary_clear_preserves_legacy_and_extended_player_contracts() {
+        for (package, selection, extended) in [
+            (
+                level_one_descriptor_fixture_path(),
+                CampaignSelection::LEVEL1,
+                false,
+            ),
+            (
+                level_three_descriptor_fixture_path(),
+                CampaignSelection::LEVEL3,
+                true,
+            ),
+        ] {
+            let mut campaign = CampaignSession::open(package, selection).unwrap();
+            let baseline = campaign.state_hash();
+            let session = campaign.simulation_mut();
+            let parent = session.entities()
+                [usize::from(session.session.state.live.core.state.entity_index)]
+            .clone();
+            let EntitySpecialRelation::PlayerState(index) = parent.special_relation else {
+                panic!("actual local player has a source A4 player relation");
+            };
+            {
+                let live = &mut session.session.state.live;
+                for player in live
+                    .shared_spells
+                    .players
+                    .iter_mut()
+                    .chain(live.core.players.iter_mut())
+                    .filter(|player| player.slot == index)
+                {
+                    assert_eq!(player.type_str_164_auxiliary().is_some(), extended);
+                    if !extended {
+                        assert_eq!(player.record.len(), PLAYER_LEGACY_RECORD_BYTES);
+                    }
+                    assert_eq!(player.set_source_cast_auxiliary(91), extended);
+                }
+                live.shared_spells.local_player = live
+                    .shared_spells
+                    .players
+                    .iter()
+                    .find(|player| player.slot == index)
+                    .unwrap()
+                    .clone();
+            }
+            let before_hash = session.campaign_state_hash();
+            let before_encoded =
+                crate::campaign::state::encode_reset_v1(&session.session.state.live);
+            let before_core = session.session.state.live.core.players.clone();
+            let before_shared = session.session.state.live.shared_spells.players.clone();
+            session.clear_fireball_auxiliary(&parent);
+            let live = &session.session.state.live;
+            for (before, after) in before_core
+                .iter()
+                .zip(&live.core.players)
+                .chain(before_shared.iter().zip(&live.shared_spells.players))
+            {
+                assert_eq!(
+                    after.record.len(),
+                    before.record.len(),
+                    "sealed record extent"
+                );
+                if after.slot == index && extended {
+                    assert_eq!(after.type_str_164_auxiliary().unwrap().byte_0x154_340, 0);
+                    let mut expected = before.record.clone();
+                    expected[PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+                    assert_eq!(after.record, expected, "only encoded byte0x154 changes");
+                } else {
+                    assert_eq!(after, before, "legacy or nonmatching player is unchanged");
+                }
+            }
+            assert_eq!(
+                live.shared_spells.local_player,
+                *live
+                    .shared_spells
+                    .players
+                    .iter()
+                    .find(|player| player.slot == index)
+                    .unwrap()
+            );
+            assert_eq!(
+                session.fireball_auxiliary(&parent).2,
+                0,
+                "next producer reads the clear"
+            );
+            let after_encoded =
+                crate::campaign::state::encode_reset_v1(&session.session.state.live);
+            assert_eq!(before_hash != session.campaign_state_hash(), extended);
+            assert_eq!(before_encoded != after_encoded, extended);
+            if extended {
+                // A present typed carrier must never silently drop a required
+                // encoded write, even when an internal caller corrupts its row.
+                let mut malformed = before_core
+                    .iter()
+                    .find(|player| player.slot == index)
+                    .unwrap()
+                    .clone();
+                malformed.record = malformed.record[..PLAYER_LEGACY_RECORD_BYTES].into();
+                assert!(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        malformed.set_source_cast_auxiliary(0);
+                    }))
+                    .is_err()
+                );
+                assert_eq!(
+                    malformed.type_str_164_auxiliary().unwrap().byte_0x154_340,
+                    91
+                );
+            }
+            campaign.reset();
+            assert_eq!(
+                campaign.state_hash(),
+                baseline,
+                "reset restores exact owner state"
+            );
+        }
+    }
 
     #[test]
     fn ordinary_cave_ground_feature_schedules_smoke_current_parent_tail_and_reclaim() {

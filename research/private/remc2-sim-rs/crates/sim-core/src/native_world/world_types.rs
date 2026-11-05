@@ -2076,6 +2076,19 @@ impl PlayerSnapshot {
         self.type_str_164_auxiliary.as_ref()
     }
 
+    /// Commit source A4 byte 0x154 to its typed and encoded carriers. Sealed
+    /// legacy player rows omit this field; do not invent an extension for them.
+    pub(crate) fn set_source_cast_auxiliary(&mut self, value: u8) -> bool {
+        let Some(auxiliary) = self.type_str_164_auxiliary.as_mut() else {
+            return false;
+        };
+        // A present carrier is decoded only from an extended player record.
+        // Keep that invariant strict instead of dropping an encoded write.
+        self.record[PLAYER_LEGACY_RECORD_BYTES + 16] = value;
+        auxiliary.byte_0x154_340 = value;
+        true
+    }
+
     /// Read the authoritative source kill-score matrix. Level 2 carries it
     /// inside Type_str_164; Level 1 carries the field omitted from its sealed
     /// row only after the source constructor has established its value.

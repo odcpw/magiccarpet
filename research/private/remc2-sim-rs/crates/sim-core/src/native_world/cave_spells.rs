@@ -199,11 +199,10 @@ pub(super) fn launch(
         .players
         .iter_mut()
         .find(|player| player.entity_index == parent.index)
-        && let Some(aux) = player.type_str_164_auxiliary.as_mut()
+        && let Some(aux) = player.type_str_164_auxiliary()
     {
         row.set_source_dword_10(i32::from(aux.byte_0x154_340));
-        aux.byte_0x154_340 = 0;
-        player.record[super::PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+        player.set_source_cast_auxiliary(0);
         if shared.local_player.entity_index == parent.index {
             shared.local_player = player.clone();
         }
@@ -212,10 +211,9 @@ pub(super) fn launch(
         .players
         .iter_mut()
         .find(|player| player.entity_index == parent.index)
-        && let Some(aux) = player.type_str_164_auxiliary.as_mut()
+        && player.type_str_164_auxiliary().is_some()
     {
-        aux.byte_0x154_340 = 0;
-        player.record[super::PLAYER_LEGACY_RECORD_BYTES + 16] = 0;
+        player.set_source_cast_auxiliary(0);
     }
     let slot = publish(arena, terrain, row)?;
     crate::mark_source_audio_call(crate::SourceAudioCallTag::ProjectileDeliveryLaunch);

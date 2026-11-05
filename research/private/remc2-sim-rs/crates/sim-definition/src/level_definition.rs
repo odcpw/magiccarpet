@@ -103,6 +103,7 @@ pub enum CreatureKind {
 /// retained sprite/audio bindings remain in the package adapter.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArcherClassProperties {
+    pub max_life: i32,
     pub minimum_speed: i16,
     pub maximum_speed: i16,
     pub attack_damage: u16,
@@ -119,6 +120,7 @@ pub struct ArcherClassProperties {
 }
 
 pub const ARCHER_CLASS_PROPERTIES: ArcherClassProperties = ArcherClassProperties {
+    max_life: 1000,
     minimum_speed: 30,
     maximum_speed: 0,
     attack_damage: 500,

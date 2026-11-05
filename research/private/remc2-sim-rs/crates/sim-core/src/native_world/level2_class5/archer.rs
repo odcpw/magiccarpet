@@ -23,6 +23,23 @@ use crate::native_world::{
 };
 use crate::{FlightWorld, Position, renderable_map_chain::RenderableMapSeed};
 
+struct Mc2ArcherAssets {
+    descriptor: u16,
+    visuals: ArcherVisualBindings,
+    arrow: u16,
+}
+
+const MC2_ARCHER_ASSETS: Mc2ArcherAssets = Mc2ArcherAssets {
+    descriptor: 75,
+    visuals: ArcherVisualBindings {
+        idle: 0,
+        attack_primary: 206,
+        attack_secondary: 1,
+    },
+    arrow: 195,
+};
+pub(crate) const ARCHER_CHILD_PARTICLE_INDEX: u16 = MC2_ARCHER_ASSETS.arrow;
+
 impl ArcherStageRuntime for RuntimeSnapshot {
     fn descriptor(&self, index: u8) -> Option<ArcherStageDescriptor> {
         let row = self
@@ -529,7 +546,7 @@ fn adopt_imported_archers(arena: &mut SourceArena) {
             slot_generation: arena.slot_generation(row.index),
             word_0x32: row.word_32(),
             word_0x34: word(56),
-            descriptor_index: row.parameter_relation.unwrap_or(ARCHER_DESCRIPTOR_INDEX),
+            descriptor_index: row.parameter_relation.unwrap_or(MC2_ARCHER_ASSETS.descriptor),
             byte_0x38: record[60],
             xtype: record[69],
             xsubtype: record[70],
@@ -816,6 +833,7 @@ pub(crate) fn step_source_runtime(
     let target = resolve(source.word_0x96_150);
     let context = ArcherActionContext {
         terrain,
+        visuals: MC2_ARCHER_ASSETS.visuals,
         control_flags: state.control_flags,
         pending_damage: state.pending_damage,
         linked_head: state.word_0x34,
@@ -966,6 +984,18 @@ pub(crate) fn construct_campaign_archer(
     Some(source)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static ARCHER_ARROW_LAUNCH_RECEIPTS:
+        std::cell::RefCell<Vec<(SourceEntityHandle, SourceEntityHandle)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn take_archer_arrow_launch_receipts() -> Vec<(SourceEntityHandle, SourceEntityHandle)> {
+    ARCHER_ARROW_LAUNCH_RECEIPTS.with(|receipts| std::mem::take(&mut *receipts.borrow_mut()))
+}
+
 fn construct_archer_arrow(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -978,12 +1008,18 @@ fn construct_archer_arrow(
     }) {
         return None;
     }
+    #[cfg(test)]
+    let parent_handle = arena.handle(request.parent_entity_index);
     let slot = arena.allocate_source_slot_with_terrain(terrain)?;
     let packet = arena
         .economy
         .initialize_class9_model13_child(slot, request, false)?;
     crate::world::effects::sync_position(arena, terrain, slot, packet.position, true, false)
         .expect("canonical Archer arrow retains its valid source slot");
+    #[cfg(test)]
+    if let (Some(parent), Some(child)) = (parent_handle, arena.handle(slot)) {
+        ARCHER_ARROW_LAUNCH_RECEIPTS.with(|receipts| receipts.borrow_mut().push((parent, child)));
+    }
     Some(packet)
 }
 
@@ -1071,11 +1107,11 @@ pub(crate) fn archer_constructor_payload(
         initial_dword_0x10: i32::from(source_entity_index % 100),
         dword_0x10: i32::from(source_entity_index % 100),
         byte_0x38: 1,
-        descriptor_index: ARCHER_DESCRIPTOR_INDEX,
+        descriptor_index: MC2_ARCHER_ASSETS.descriptor,
         source_byte_39,
         xtype: 3,
         source_byte_3e,
-        particle_index: ARCHER_PARTICLE_INDEX,
+        particle_index: MC2_ARCHER_ASSETS.visuals.idle,
         yaw: orientation,
         pitch: orientation,
         roll: orientation,
@@ -1217,7 +1253,12 @@ impl Level2EconomyState {
         castle_auxiliary_tail: bool,
     ) -> Option<ArcherChildPacket> {
         let entity_rng = self.new_event_rng(source_entity_index);
-        let mut packet = archer_child_packet(source_entity_index, entity_rng, request);
+        let mut packet = archer_child_packet(
+            source_entity_index,
+            entity_rng,
+            request,
+            ARCHER_CHILD_PARTICLE_INDEX,
+        );
         if castle_auxiliary_tail {
             // `sub_23E60` keeps AddEvent09_0D's NewEvent subspell (100),
             // then copies the model-15 auxiliary's xtype/xsubtype (3/-1).
@@ -1999,6 +2040,7 @@ mod tests {
     fn empty_context(terrain: &SessionTerrain) -> ArcherActionContext<'_> {
         ArcherActionContext {
             terrain,
+            visuals: MC2_ARCHER_ASSETS.visuals,
             control_flags: 4,
             pending_damage: 0,
             linked_head: 0,
@@ -2011,6 +2053,600 @@ mod tests {
             stage: ArcherStageState::default(),
             stage_runtime: None,
         }
+    }
+
+    #[test]
+    fn real_level_one_archers_attack_die_and_advance_their_absence_switch() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::Mc2DispatchEvent;
+        use crate::PlayerCommand;
+        use std::collections::BTreeMap;
+
+        let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq8-level1-collision-v5-night"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("the whole Level 1 owner campaign").simulation().clone();
+        let player = session.state.entity_index;
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        // Declared player resources and progression; the original group,
+        // targeting, damage, death and switch visits use the source scheduler.
+        {
+            let live = &mut session.session.state.live;
+            live.economy.economy.owner_base_max_mana.insert(player, 50_000);
+            live.economy.economy.rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            let health = live.shared_spells.player_entity.max_life;
+            live.player_life = health;
+            live.shared_spells.set_player_entity_life(health);
+            live.shared_spells.set_local_player_mana_for_test(50_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_life(health);
+            parent.set_mana(50_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells.sync_player_entity_from_authority(&parent);
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = 50_000; }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 { break; }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        session.activate_authored_group_prerequisite_for_test(3).unwrap();
+        let rows = [101_u16, 102, 103, 106];
+        let roots = rows.map(|authored| {
+            let root = session.economy().authored_class5().iter().find(|root|
+                root.active && root.model == 4 && root.authored_index == authored)
+                .expect("actual group3 Archer");
+            let handle = session.source_arena().handle(root.source_entity_index).unwrap();
+            let presentation = session.campaign_entity_presentations(0).unwrap().into_iter()
+                .find(|view| view.entity_index == handle.source_slot).expect("Archer presentation");
+            assert_eq!(presentation.render_parameter_index, root.particle_index);
+            (handle, root.life)
+        });
+        let switch = session.economy().authored_switch_producers().iter()
+            .find(|row| row.authored_index == 109 && row.active).copied()
+            .expect("actual group3 Archer-absence switch");
+        assert_eq!((switch.source_class, switch.model, switch.action, switch.stage_tag), (11, 17, 17, 11));
+        let switch_handle = session.source_arena().handle(switch.source_entity_index).unwrap();
+        let first = session.economy().authored_class5().iter().find(|row|
+            row.source_entity_index == roots[0].0.source_slot).copied().unwrap();
+        let mut encounter = first.position;
+        crate::move_entity(&mut encounter, first.yaw, 0, 1536);
+        encounter.z = encounter.z.max(session.canonical_terrain().ground_height(encounter).wrapping_add(256));
+        session.set_level2_entity_position(player, encounter).unwrap();
+        let life_before = session.canonical_player_life_for_test();
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let _ = session.take_archer_child_damage_receipts();
+        let _ = take_archer_arrow_launch_receipts();
+        let mut arrows = BTreeMap::<(u16, u32), u16>::new();
+        let mut launches = BTreeMap::new();
+        let mut accepted_arrow = None;
+        let mut fallback = false;
+        let mut player_hit = false;
+        for turn in 0..180 {
+            if turn >= 48 && !fallback && !player_hit
+                && let Some(arrow) = session.economy().authored_class5_archer_children().iter().find(|arrow|
+                    arrow.active && arrow.drawing_enabled && arrow.word_0x96 == player
+                        && arrows.contains_key(&(arrow.source_entity_index, arrow.slot_generation))).copied()
+            {
+                // Declared player-only interception of an already observed real arrow.
+                let mut position = arrow.position;
+                crate::move_entity(&mut position, arrow.yaw, arrow.pitch, arrow.actual_speed);
+                session.set_level2_entity_position(player, position).unwrap();
+                fallback = true;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Archer attack dispatch turn={turn}: {:?}", session.dispatch_events());
+            for arrow in session.economy().authored_class5_archer_children().iter().filter(|arrow|
+                arrow.active && roots.iter().any(|(handle, _)| handle.source_slot == arrow.parent_entity_index))
+            {
+                assert_eq!((arrow.source_class, arrow.model, arrow.subspell_index, arrow.particle_index), (9, 13, 250, 195));
+                arrows.insert((arrow.source_entity_index, arrow.slot_generation), arrow.entity_id);
+            }
+            for (parent, child) in take_archer_arrow_launch_receipts() {
+                launches.insert((child.source_slot, child.generation), parent);
+            }
+            for receipt in session.take_archer_child_damage_receipts() {
+                let key = (receipt.child.source_slot, receipt.child.generation);
+                let expected_payload = if receipt.mailbox_before.1 == 0 { 250 }
+                    else { receipt.mailbox_before.0.wrapping_add(250) };
+                if roots.iter().any(|(handle, _)| Some(*handle) == receipt.parent)
+                    && receipt.target == player_handle && receipt.payload == 250
+                    && launches.get(&key) == receipt.parent.as_ref()
+                    && arrows.get(&key) == Some(&receipt.attacker)
+                    && receipt.mailbox_after == (expected_payload, receipt.attacker)
+                {
+                    accepted_arrow = Some(receipt);
+                }
+            }
+            player_hit |= accepted_arrow.is_some_and(|receipt|
+                session.economy().events().get(receipt.event_cursor..).is_some_and(|events|
+                    events.iter().any(|event| matches!(event,
+                        Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage: 250, .. }
+                            if *target_entity_index == player && receipt.attacker == *attacker_entity_index))));
+            if player_hit { break; }
+            if session.canonical_player_life_for_test() < 0 { break; }
+        }
+        assert!(player_hit && session.canonical_player_life_for_test() < life_before,
+            "ordinary Archer arrow must damage the player: arrows={arrows:?} launches={launches:?} accepted={accepted_arrow:?} fallback={fallback} life={}->{}",
+            life_before, session.canonical_player_life_for_test());
+
+        let holder = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 0).unwrap() as i8;
+        let credit_before = session.economy().authored_bee_kill_census(player);
+        let mut paid = 0;
+        let mut damaged = [false; 4];
+        let mut player_killer = [false; 4];
+        let mut spheres = [false; 4];
+        let mut bursts = [false; 4];
+        let mut hidden = [false; 4];
+        let mut reclaimed = [false; 4];
+        let mut switch_hidden = false;
+        let mut switch_reclaimed = false;
+        let mut published = false;
+        let mut timers = Vec::new();
+        let mut trace = Vec::new();
+        for turn in 0..1200 {
+            let target = roots.iter().find_map(|(handle, _)| {
+                if session.source_arena().handle(handle.source_slot) != Some(*handle) { return None; }
+                session.economy().authored_class5().iter().find(|row|
+                    row.active && row.drawing_enabled && row.source_entity_index == handle.source_slot && row.life >= 0).copied()
+            });
+            let ready = session.shared_spells().pickup(holder).is_some_and(|row|
+                row.active_value == 0 && session.shared_spells().player_entity().mana >= row.max_mana);
+            let mut command = PlayerCommand::default();
+            if let Some(target) = target.filter(|_| ready) {
+                let yaw = 1024_i16;
+                let mut launch = target.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 384);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw.wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity) & 0x07ff;
+                let hand = if parent.control_flags & 0x0100 != 0 { Some(parent_yaw.wrapping_sub(512)) }
+                    else if parent.control_flags & 0x0200 != 0 { Some(parent_yaw.wrapping_add(512)) } else { None };
+                if let Some(hand) = hand { crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256); }
+                let view = crate::native_world::source_target::read(session.source_arena(),
+                    crate::native_world::source_target::Context { particles: Some(&session.session.definition.presentation.particles), ..Default::default() },
+                    target.source_entity_index).unwrap().expect("current Archer target");
+                let centre = target.position.z.wrapping_add(view.collision.expect("Archer collision axes").vertical_offset);
+                position.z = centre.wrapping_sub(parent.array_fov())
+                    .max(session.canonical_terrain().ground_height(position).wrapping_add(256))
+                    .max(session.canonical_terrain().ground_height(launch).wrapping_add(256));
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(launch,
+                    Position { z: centre, ..target.position });
+                session.set_level2_entity_position(player, position).unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                command = PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40, ..PlayerCommand::default() };
+            } else if let Some(target) = target {
+                let mut position = target.position;
+                crate::move_entity(&mut position, 0, 0, 4096);
+                position.z = position.z.max(session.canonical_terrain().ground_height(position).wrapping_add(256));
+                session.set_level2_entity_position(player, position).unwrap();
+            }
+            let mana_before = session.shared_spells().player_entity().mana;
+            let cost = session.shared_spells().pickup(holder).unwrap().max_mana;
+            let event_start = session.economy().events().len();
+            session.step_outer_turn(command, 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Archer absence dispatch turn={turn}: {:?}", session.dispatch_events());
+            if mana_before.saturating_sub(session.shared_spells().player_entity().mana) >= cost { paid += 1; }
+            for (index, (handle, initial_life)) in roots.iter().enumerate() {
+                if session.source_arena().handle(handle.source_slot) != Some(*handle) {
+                    reclaimed[index] = true;
+                } else if let Some(row) = session.economy().authored_class5().iter().find(|row|
+                    row.active && row.source_entity_index == handle.source_slot) {
+                    damaged[index] |= row.life < *initial_life && row.word_0x26 == player;
+                    player_killer[index] |= row.life < 0 && row.word_0x24 == player;
+                    hidden[index] |= !row.drawing_enabled;
+                    for event in &session.economy().events()[event_start..] {
+                        spheres[index] |= matches!(event, Level2EconomyEvent::ManaSphereSpawned {
+                            source_entity_index, mana: 500, .. } if *source_entity_index == handle.source_slot);
+                        bursts[index] |= matches!(event, Level2EconomyEvent::DeathBurstSpawned {
+                            parent_entity_index, .. } if *parent_entity_index == handle.source_slot);
+                    }
+                }
+            }
+            published |= session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 11, authored_indices, .. }
+                    if *source_slot == switch.source_entity_index && authored_indices.as_ref() == [100]));
+            if session.source_arena().handle(switch.source_entity_index) != Some(switch_handle) {
+                switch_reclaimed = true;
+            } else if let Some(row) = session.economy().authored_switch_producers().iter()
+                .find(|row| row.source_entity_index == switch.source_entity_index) {
+                switch_hidden |= !row.drawing_enabled;
+                if row.dword_0x10 != 0 && timers.last() != Some(&row.dword_0x10) { timers.push(row.dword_0x10); }
+                if target.is_some() { assert_eq!(row.dword_0x10, 0, "living Archer must freeze absence countdown"); }
+            }
+            if trace.len() < 32 && paid > 0 {
+                trace.push((turn, paid, target.map(|row| (row.source_entity_index, row.life, row.action)),
+                    session.canonical_player_life_for_test(), timers.last().copied(), published));
+            }
+            if published && switch_reclaimed && reclaimed.iter().all(|value| *value) { break; }
+            if session.canonical_player_life_for_test() < 0 { break; }
+        }
+        assert!(paid > 0 && damaged.iter().all(|value| *value) && hidden.iter().all(|value| *value)
+            && player_killer.iter().all(|value| *value)
+            && reclaimed.iter().all(|value| *value) && switch_hidden && switch_reclaimed && published
+            && timers == (1..=16).rev().collect::<Vec<_>>()
+            && spheres.iter().all(|value| *value) && bursts.iter().all(|value| *value)
+            && session.economy().authored_bee_kill_census(player) == credit_before + 4
+            && session.shared_spells().authored_pickup_slots().contains_key(&100),
+            "actual Archer deaths must publish group11: paid={paid} damaged={damaged:?} player_killer={player_killer:?} hidden={hidden:?} reclaimed={reclaimed:?} switch_hidden={switch_hidden} switch_reclaimed={switch_reclaimed} published={published} timers={timers:?} spheres={spheres:?} bursts={bursts:?} credit={}->{} life={} trace={trace:?}",
+            credit_before, session.economy().authored_bee_kill_census(player), session.canonical_player_life_for_test());
+    }
+
+    #[test]
+    fn real_level_one_house_demolition_produces_an_attacking_archer() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::house::HouseStepEvent;
+        use crate::native_world::Mc2DispatchEvent;
+        use crate::PlayerCommand;
+        use std::collections::BTreeMap;
+
+        let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq8-level1-collision-v5-night"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(&package, CampaignSelection::LEVEL1)
+            .expect("the whole Level 1 owner campaign").simulation().clone();
+        let player = session.state.entity_index;
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        // Only player resources are staged; House occupancy, life, source
+        // visits, allocation, Archer behavior and damage are ordinary.
+        {
+            let live = &mut session.session.state.live;
+            live.economy.economy.owner_base_max_mana.insert(player, 200_000);
+            live.economy.economy.rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            let health = live.shared_spells.player_entity.max_life;
+            live.player_life = health;
+            live.shared_spells.set_player_entity_life(health);
+            live.shared_spells.set_local_player_mana_for_test(200_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_life(health);
+            parent.set_mana(200_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells.sync_player_entity_from_authority(&parent);
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = 200_000; }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 { break; }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        let house = session.ordinary().houses().iter().find(|house| house.entity_index == 12)
+            .copied().expect("original resident-producing House 12");
+        assert_eq!((house.action, house.occupants, house.life, house.building_index), (52, 2, 20_000, 26));
+        assert!(house.parameter.produces_villagers());
+        let holder = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 0).unwrap() as i8;
+        let mut paid = 0;
+        let mut damaged = false;
+        let mut demolished = false;
+        let mut product = None;
+        let mut trace = Vec::new();
+        let _ = take_archer_arrow_launch_receipts();
+        for turn in 0..2400 {
+            let ready = session.shared_spells().pickup(holder).is_some_and(|row|
+                row.active_value == 0 && session.shared_spells().player_entity().mana >= row.max_mana);
+            let mut command = PlayerCommand::default();
+            if ready && !demolished {
+                let yaw = 1024_i16;
+                let mut launch = house.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 2304);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw.wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity) & 0x07ff;
+                let hand = if parent.control_flags & 0x0100 != 0 { Some(parent_yaw.wrapping_sub(512)) }
+                    else if parent.control_flags & 0x0200 != 0 { Some(parent_yaw.wrapping_add(512)) } else { None };
+                if let Some(hand) = hand { crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256); }
+                let centre = house.position.z.wrapping_add(house.collision_vertical_offset);
+                position.z = centre.wrapping_sub(parent.array_fov())
+                    .max(session.canonical_terrain().ground_height(position).wrapping_add(256))
+                    .max(session.canonical_terrain().ground_height(launch).wrapping_add(256));
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(launch,
+                    Position { z: centre, ..house.position });
+                session.set_level2_entity_position(player, position).unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                command = PlayerCommand { opcode: 6, argument_1: fire_ui, flags: 0x40, ..PlayerCommand::default() };
+            }
+            let mana_before = session.shared_spells().player_entity().mana;
+            let cost = session.shared_spells().pickup(holder).unwrap().max_mana;
+            session.step_outer_turn(command, 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "House demolition dispatch turn={turn}: {:?}", session.dispatch_events());
+            if mana_before.saturating_sub(session.shared_spells().player_entity().mana) >= cost { paid += 1; }
+            for event in session.dispatch_events() {
+                if let Mc2DispatchEvent::House { events, .. } = event {
+                    for event in events {
+                        damaged |= matches!(event, HouseStepEvent::Damaged { entity_index: 12, attacker_entity_index, life }
+                            if *attacker_entity_index == player && *life < house.life);
+                        demolished |= matches!(event, HouseStepEvent::RemoveFootprint { entity_index: 12, attacker_entity_index, occupants: 2, .. }
+                            if *attacker_entity_index == player);
+                    }
+                }
+            }
+            product = session.economy().authored_class5_archer().iter().find(|row|
+                row.origin == ArcherOrigin::HouseSpawn(12)).map(|row|
+                    crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: row.source_entity_index, generation: row.slot_generation,
+                    });
+            if trace.len() < 24 && turn % 50 == 0 {
+                trace.push((turn, paid, session.ordinary().houses().iter()
+                    .find(|row| row.entity_index == 12).map(|row| (row.life, row.action, row.occupants)),
+                    session.canonical_player_life_for_test()));
+            }
+            if turn == 100 {
+                assert!(paid > 0 && damaged,
+                    "public Fireball must reach the real House before continuing: paid={paid} damaged={damaged} trace={trace:?}");
+            }
+            if product.is_some() || session.canonical_player_life_for_test() < 0 { break; }
+        }
+        let archer = product.expect(&format!("real House must allocate an Archer: paid={paid} damaged={damaged} demolished={demolished} trace={trace:?}"));
+        assert!(paid > 0 && damaged && demolished, "the real player shot and House demolition must precede the product");
+        assert_eq!(session.source_arena().handle(archer.source_slot), Some(archer));
+        let mut arrows = BTreeMap::new();
+        let mut launches = BTreeMap::new();
+        for (parent, child) in take_archer_arrow_launch_receipts() {
+            launches.insert((child.source_slot, child.generation), parent);
+        }
+        let life_before = session.canonical_player_life_for_test();
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let _ = session.take_archer_child_damage_receipts();
+        let mut accepted_arrow = None;
+        let mut intercepted = false;
+        let mut hit = false;
+        for turn in 0..200 {
+            if turn >= 48 && !intercepted
+                && let Some(arrow) = session.economy().authored_class5_archer_children().iter().find(|arrow|
+                    arrow.active && arrow.parent_entity_index == archer.source_slot && arrow.word_0x96 == player).copied()
+            {
+                let mut position = arrow.position;
+                crate::move_entity(&mut position, arrow.yaw, arrow.pitch, arrow.actual_speed);
+                session.set_level2_entity_position(player, position).unwrap();
+                intercepted = true;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+            for arrow in session.economy().authored_class5_archer_children().iter().filter(|arrow|
+                arrow.active && arrow.parent_entity_index == archer.source_slot)
+            {
+                assert_eq!((arrow.source_class, arrow.model, arrow.subspell_index, arrow.particle_index), (9, 13, 250, 195));
+                arrows.insert((arrow.source_entity_index, arrow.slot_generation), arrow.entity_id);
+            }
+            for (parent, child) in take_archer_arrow_launch_receipts() {
+                launches.insert((child.source_slot, child.generation), parent);
+            }
+            for receipt in session.take_archer_child_damage_receipts() {
+                let key = (receipt.child.source_slot, receipt.child.generation);
+                let expected_payload = if receipt.mailbox_before.1 == 0 { 250 }
+                    else { receipt.mailbox_before.0.wrapping_add(250) };
+                if receipt.parent == Some(archer) && receipt.target == player_handle
+                    && launches.get(&key) == Some(&archer)
+                    && receipt.payload == 250 && arrows.get(&key) == Some(&receipt.attacker)
+                    && receipt.mailbox_after == (expected_payload, receipt.attacker)
+                {
+                    accepted_arrow = Some(receipt);
+                }
+            }
+            hit |= accepted_arrow.is_some_and(|receipt|
+                session.economy().events().get(receipt.event_cursor..).is_some_and(|events|
+                    events.iter().any(|event| matches!(event,
+                        Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage: 250, .. }
+                            if *target_entity_index == player && receipt.attacker == *attacker_entity_index))));
+            if hit || session.canonical_player_life_for_test() < 0 { break; }
+        }
+        assert!(hit && session.canonical_player_life_for_test() < life_before,
+            "House Archer must shoot and damage the real attacker: archer={archer:?} arrows={arrows:?} launches={launches:?} accepted={accepted_arrow:?} intercepted={intercepted} life={life_before}->{}", session.canonical_player_life_for_test());
+    }
+
+    #[test]
+    fn level_twelve_authored_archer_stage_guard_targets_and_shoots_player() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::Mc2DispatchEvent;
+        use crate::PlayerCommand;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let package = std::env::var_os("MC_ARCHER_LEVEL12_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/archer-20261105-integration/level12-owner-current/level12"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(&package, CampaignSelection::ordinary(12).unwrap())
+            .expect("the whole Level 12 owner campaign").simulation().clone();
+        let player = session.state.entity_index;
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 { break; }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        let stage = &session.runtime().stage_variables[2];
+        assert_eq!((stage.kind, stage.flags), (2, 1));
+        assert_eq!(stage.relation, crate::native_world::RuntimeRelation::AxisScalar((91_u32 << 24) | (130_u32 << 8)));
+        session.activate_authored_group_prerequisite_for_test(6).unwrap();
+        let guards = session.economy().authored_class5_archer().iter().filter_map(|state| {
+            let source = session.economy().authored_class5().iter().find(|row|
+                row.active && row.model == 4 && row.source_entity_index == state.source_entity_index)?;
+            (state.stage.index == 2 && state.stage.mode == 2).then_some((
+                (state.source_entity_index, state.slot_generation), source.authored_index,
+            ))
+        }).collect::<BTreeMap<_, _>>();
+        assert!(!guards.is_empty(), "real group6 Archers must bind StageVar2");
+        let first = session.economy().authored_class5().iter().find(|row|
+            row.authored_index == 93 && guards.keys().any(|(slot, _)| *slot == row.source_entity_index))
+            .copied().expect("actual Archer exemplar93 binds guard StageVar2");
+        // The player approaches the real guard; its cone, scan cadence,
+        // StageVar relation and projectile remain source-controlled.
+        let mut encounter = first.position;
+        crate::move_entity(&mut encounter, first.yaw, 0, 1536);
+        encounter.z = encounter.z.max(session.canonical_terrain().ground_height(encounter).wrapping_add(256));
+        session.set_level2_entity_position(player, encounter).unwrap();
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let initial_life = session.canonical_player_life_for_test();
+        let _ = take_archer_arrow_launch_receipts();
+        let _ = session.take_archer_child_damage_receipts();
+        let mut targeted = BTreeSet::new();
+        let mut launches = BTreeMap::new();
+        let mut arrows = BTreeMap::new();
+        let mut accepted = None;
+        let mut hit = false;
+        let mut intercepted = false;
+        let mut trace = Vec::new();
+        for turn in 0..240 {
+            if turn >= 48 && !intercepted
+                && let Some(arrow) = session.economy().authored_class5_archer_children().iter().find(|arrow|
+                    arrow.active && arrow.drawing_enabled && arrow.word_0x96 == player
+                        && launches.contains_key(&(arrow.source_entity_index, arrow.slot_generation))).copied()
+            {
+                let mut position = arrow.position;
+                crate::move_entity(&mut position, arrow.yaw, arrow.pitch, arrow.actual_speed);
+                session.set_level2_entity_position(player, position).unwrap();
+                intercepted = true;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "actual StageVar guard dispatch turn={turn}: {:?}", session.dispatch_events());
+            for state in session.economy().authored_class5_archer() {
+                let key = (state.source_entity_index, state.slot_generation);
+                if guards.contains_key(&key) && state.stage.index == 2 && state.stage.mode == 10
+                    && session.source_arena().handle(key.0).is_some_and(|handle| handle.generation == key.1)
+                    && session.economy().authored_class5().iter().any(|row|
+                        row.active && row.source_entity_index == key.0 && row.action == 34 && row.word_0x96_150 == player)
+                { targeted.insert(key); }
+            }
+            for (parent, child) in take_archer_arrow_launch_receipts() {
+                launches.insert((child.source_slot, child.generation), parent);
+            }
+            for arrow in session.economy().authored_class5_archer_children().iter().filter(|arrow| arrow.active) {
+                if launches.get(&(arrow.source_entity_index, arrow.slot_generation)).is_some_and(|parent|
+                    targeted.contains(&(parent.source_slot, parent.generation)))
+                {
+                    assert_eq!((arrow.source_class, arrow.model, arrow.subspell_index, arrow.particle_index), (9, 13, 250, 195));
+                    arrows.insert((arrow.source_entity_index, arrow.slot_generation), arrow.entity_id);
+                }
+            }
+            for receipt in session.take_archer_child_damage_receipts() {
+                let key = (receipt.child.source_slot, receipt.child.generation);
+                let expected_payload = if receipt.mailbox_before.1 == 0 { 250 }
+                    else { receipt.mailbox_before.0.wrapping_add(250) };
+                if receipt.parent.is_some_and(|parent| targeted.contains(&(parent.source_slot, parent.generation)))
+                    && launches.get(&key) == receipt.parent.as_ref() && receipt.target == player_handle
+                    && receipt.payload == 250 && arrows.get(&key) == Some(&receipt.attacker)
+                    && receipt.mailbox_after == (expected_payload, receipt.attacker)
+                { accepted = Some(receipt); }
+            }
+            hit |= accepted.is_some_and(|receipt|
+                session.economy().events().get(receipt.event_cursor..).is_some_and(|events|
+                    events.iter().any(|event| matches!(event,
+                        Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage: 250, .. }
+                            if *target_entity_index == player && receipt.attacker == *attacker_entity_index))));
+            if trace.len() < 12 && turn % 20 == 0 {
+                trace.push((turn, targeted.len(), launches.len(), arrows.len(), session.canonical_player_life_for_test()));
+            }
+            if hit || session.canonical_player_life_for_test() < 0 { break; }
+        }
+        assert!(hit && session.canonical_player_life_for_test() < initial_life,
+            "real StageVar guard must target and damage player: guards={guards:?} targeted={targeted:?} launches={launches:?} arrows={arrows:?} accepted={accepted:?} intercepted={intercepted} trace={trace:?}");
+    }
+
+    #[test]
+    fn level_three_skeleton_naturally_converts_and_reclaims_authored_archer() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::level_definition::CreatureKind;
+        use crate::native_world::{Mc2DispatchEvent, simulation::Model9ConversionOutcome};
+        use crate::PlayerCommand;
+        use std::collections::BTreeSet;
+
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE_LEVEL3_V1").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(&package, CampaignSelection::LEVEL3)
+            .expect("the whole Level 3 owner campaign").simulation().clone();
+        let player = session.state.entity_index;
+        // This is the existing progression boundary. All actors, scans, RNG
+        // and conversion writes remain under the source scheduler.
+        session.activate_authored_group_prerequisite_for_test(5).unwrap();
+        let roots = session.economy().authored_class5().iter()
+            .filter(|row| row.active && row.model == 4 && (177..=194).contains(&row.authored_index))
+            .map(|row| {
+                let handle = session.source_arena().handle(row.source_entity_index).unwrap();
+                (handle.source_slot, handle.generation)
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(roots.len(), 18, "the original group 5 Archer generation");
+        let first = session.economy().authored_class5().iter()
+            .find(|row| row.model == 4 && row.authored_index == 193).unwrap();
+        // Player-only encounter positioning puts this real pair in proximity
+        // without moving either creature or assigning its target or timing.
+        let mut player_position = first.position;
+        player_position.x = player_position.x.wrapping_sub(3_000);
+        player_position.z = session.canonical_terrain().ground_height(player_position).wrapping_add(3_000);
+        session.set_level2_entity_position(player, player_position).unwrap();
+        let _ = session.take_model9_conversion_receipts();
+        let mut diagnostics = Vec::new();
+        let mut converted = None;
+        for turn in 0..1200 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "natural Skeleton/Archer dispatch at turn {turn}: {:?}", session.dispatch_events());
+            for receipt in session.take_model9_conversion_receipts() {
+                if let Model9ConversionOutcome::Published { child } = receipt.outcome
+                    && roots.contains(&(receipt.prey.source_slot, receipt.prey.generation))
+                {
+                    converted = Some((receipt.producer, receipt.prey, child));
+                    break;
+                }
+            }
+            if diagnostics.len() < 12 && turn % 100 == 0 {
+                let pair = session.economy().authored_class5().iter()
+                    .find(|row| row.authored_index == 193).map(|row|
+                        (row.source_entity_index, row.position, row.action, row.life, row.source_byte_39));
+                let skeleton = session.entities().get(250).map(|row|
+                    (row.position, row.action, row.life, row.phase));
+                diagnostics.push((turn, pair, skeleton, session.canonical_player_life_for_test()));
+            }
+            if converted.is_some() || session.canonical_player_life_for_test() < 0 { break; }
+        }
+        let (producer, prey, child) = converted.expect(&format!(
+            "real Skeleton must convert an original group5 Archer: diagnostics={diagnostics:?}"
+        ));
+        eprintln!("actual Archer conversion: prey={prey:?} producer={producer:?} child={child:?}");
+        assert_ne!(producer, child);
+        assert_eq!(session.source_arena().handle(producer.source_slot), Some(producer));
+        let predator = &session.entities()[usize::from(producer.source_slot)];
+        assert_eq!((predator.class, predator.model), (5, 9));
+        assert_eq!(session.source_arena().handle(prey.source_slot), Some(prey));
+        let root = session.creature_identity_for_source_slot(prey.source_slot).expect("same-pass Archer root");
+        assert_eq!(root.handle, prey);
+        assert_eq!(root.kind, CreatureKind::Archer);
+        assert!(!root.living, "conversion immediately removes the living Archer root");
+        let child_identity = session.creature_identity_for_source_slot(child.source_slot).expect("actual Skeleton child");
+        assert_eq!((child_identity.handle, child_identity.kind), (child, CreatureKind::Skeleton));
+        assert!(child_identity.living);
+        assert!(!session.creature_runtime_census().roots_of_kind(CreatureKind::Archer)
+            .any(|identity| identity.handle == prey && identity.living));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert_ne!(session.source_arena().handle(prey.source_slot), Some(prey),
+            "the hidden original Archer generation must be reclaimed on the following pass");
     }
 
     #[test]
@@ -2743,11 +3379,12 @@ mod tests {
             .iter_mut()
             .find(|state| state.source_entity_index == root.source_entity_index)
             .unwrap();
+        assert_eq!(state.control_flags, 0x0c, "NewEvent and AddEventToMap retain both source flags");
         state.entity_id = 42;
         state.control_flags |= 0x10;
         assert_eq!(
             economy.archer_arrow_target_properties(root.source_entity_index, &[]),
-            Some((5, 4, 0x14, ARCHER_MANA))
+            Some((5, 4, 0x1c, ARCHER_MANA))
         );
         let parent = economy
             .allocate_authored_archer(
@@ -3398,6 +4035,37 @@ mod tests {
     }
 
     #[test]
+    fn archer_typed_defaults_and_supplied_asset_bindings_reach_consumers() {
+        use crate::level_definition::ARCHER_CLASS_PROPERTIES;
+
+        let payload = archer_constructor_payload(147, 0, 232, 3, archer_position(), ARCHER_MAX_LIFE);
+        assert_eq!(ARCHER_MAX_LIFE, ARCHER_CLASS_PROPERTIES.max_life);
+        assert_eq!((payload.max_life, payload.life, payload.mana), (1_000, 1_000, 500));
+        assert_eq!((payload.descriptor_index, payload.particle_index), (75, 0));
+        assert_eq!((MC2_ARCHER_ASSETS.arrow, MC2_ARCHER_ASSETS.visuals.attack_primary,
+            MC2_ARCHER_ASSETS.visuals.attack_secondary), (195, 206, 1));
+
+        // Distinct supplied bindings prove that the kernel consumes its
+        // adapter's selection, rather than reproducing MC2 numeric literals.
+        let visuals = ArcherVisualBindings { idle: 901, attack_primary: 902, attack_secondary: 903 };
+        let mut source = payload.into_class5_source();
+        assert_eq!(archer_idle_visual(&mut source, visuals).particle_index, 901);
+        source.entity_rng = 3;
+        assert_eq!(archer_attack_visual(&mut source, None, visuals).particle_index, 902);
+        source.entity_rng = 0;
+        assert_eq!(archer_attack_visual(&mut source, None, visuals).particle_index, 903);
+        let request = ArcherChildRequest {
+            parent_entity_index: 147, parent_entity_id: 147, parent_word_0x96: 1,
+            parent_roll: 0, parent_position: archer_position(), parent_fov: 0,
+            target_entity_index: 1, target_class: 3, target_model: 0,
+            target_position: Position { y: archer_position().y.wrapping_add(512), ..archer_position() },
+        };
+        assert_eq!(archer_child_packet(900, 0, request, 904).particle_index, 904);
+        let altered = archer_constructor_payload(147, 0, 232, 3, archer_position(), 1_234);
+        assert_eq!(altered.mana, 617, "constructor mana follows the actual maximum life");
+    }
+
+    #[test]
     fn archer_constructor_payload_preserves_pose_rng_and_descriptor_cadence() {
         let slot = 147_u16;
         let initial_rng = 0x1357_u16;
@@ -3488,7 +4156,7 @@ mod tests {
                 && source.mana == ARCHER_MANA
                 && source.max_mana == ARCHER_MAX_MANA
                 && source.subspell_index == ARCHER_SUBSPELL_INDEX
-                && source.particle_index == ARCHER_PARTICLE_INDEX
+                && source.particle_index == MC2_ARCHER_ASSETS.visuals.idle
                 && source.yaw == (source.entity_rng & 0x7ff) as i16 - 1
                 && source.pitch == source.yaw
                 && source.roll == source.yaw
@@ -3554,7 +4222,7 @@ mod tests {
                 .all(|state| {
                     state.byte_0x38 == 1
                         && state.xtype == 3
-                        && state.descriptor_index == ARCHER_DESCRIPTOR_INDEX
+                        && state.descriptor_index == MC2_ARCHER_ASSETS.descriptor
                         && state.pending_damage == 0
                         && state.word_0x34 == 0
                 })
@@ -3610,6 +4278,7 @@ mod tests {
         attack_source.word_0x96_150 = target.entity_index;
         let mut attack_context = ArcherActionContext {
             terrain: &session.session.state.live.terrain,
+            visuals: MC2_ARCHER_ASSETS.visuals,
             control_flags: 4,
             pending_damage: 0,
             linked_head: 0,
@@ -3634,7 +4303,7 @@ mod tests {
             Some(target.entity_index)
         );
 
-        let child = archer_child_packet(900, 0x2468, request);
+        let child = archer_child_packet(900, 0x2468, request, MC2_ARCHER_ASSETS.arrow);
         assert_eq!(child.entity_id, attack_source.source_entity_index);
         assert_eq!(child.parent_entity_index, attack_source.source_entity_index);
         assert_eq!(child.entity_rng, 0x2468);

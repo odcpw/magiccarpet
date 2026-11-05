@@ -705,7 +705,9 @@ impl Mc2LevelDefinition {
                             crate::native_world::level2_class5::firefly::FIREFLY_LIFE
                         }
                         CreatureKind::Goat => crate::goat::GOAT_CONSTRUCTOR_LIFE,
-                        CreatureKind::Archer => crate::native_world::level2_class5::ARCHER_MAX_LIFE,
+                        CreatureKind::Archer => {
+                            crate::level_definition::ARCHER_CLASS_PROPERTIES.max_life
+                        }
                         CreatureKind::CastleDefender => {
                             crate::level_definition::CASTLE_DEFENDER_CLASS_PROPERTIES.max_life
                                 as i32

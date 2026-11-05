@@ -51,7 +51,92 @@ remain open. No human combat/FPS, hardware audio, full missions, old-save or
 native Dragon/Bee encounter visual claim. Source-default orphan/null and custom
 selector limits below remain explicit. Next connected family is Archer `.21`.
 
-### Pending Archer capability: artifact integrity stop
+### Active Archer capability: connected consumer integration
+
+Oliver explicitly resumed the full existing creature queue and authorized
+cleanup of build outputs when space is tight. Continue this list with the
+small native team, one connected capability through delivery before starting
+the next: Terra/xhigh MagentaPuma owns Archer, Terra/xhigh BrightCastle supplies
+bounded source/gate review, Sol/xhigh AzureGate actively implements shared joins.
+Root GreenCave owns sole Cargo/RCH/push/install (prior CrimsonBay credential was
+unavailable; no retired NTM identity was reused). Existing acceptance/order stays.
+
+The initial failed return below remains preserved. A single fresh direct
+retrieval of the already compiled executable now matches remote SHA78060ed3
+exactly; all444 Rust and162 upstream inputs match before/after retrieval.
+No rebuild or validation weakening was used. Evidence:
+`candidate-1/verified-retrieval-receipt.json`. The first actual Archer gate ran
+and failed8.037s at a genuine shared Fireball clear: legacy NightSpire players
+have a sealed573-byte record and no optional auxiliary, while the old writer
+unconditionally addressed encoded offset589. AzureGate implemented the
+canonical typed/encoded auxiliary setter and all seven same-field writers,
+preserving legacy/extended formats and dispatcher/publication order. The exact
+legacy/extended contract check passes1.287s on unchanged shared source.
+
+The active consumers are authored Archer combat/death→class11/17 countdown,
+real reset House12 demolition→HouseSpawn Archer→arrow damage, real Level12
+group6 StageVar2 point-guard→player target/arrow, and separate actual Level3
+group5 Skeleton conversion. Root/gate review
+requires original-generation fatal credit/reward observations and exact arrow
+mailbox attribution; owner-ID-only damage events are insufficient. StageVar
+selected-target motion and actual converting predator are recorded separately
+when source scheduling does not guarantee they are the same actor.
+
+Candidate2 strict rig compile/return now passes115.411s, all444 frozen inputs
+match. Legacy/extended auxiliary contract passes1.287s. Actual authored
+combat/death/absence passes16.828s and House demolition/spawn/arrow damage
+passes38.446s. Their remaining parent-at-birth proof gap is corrected in the
+next candidate with a cfg(test) receipt at the actual owned arrow constructor;
+the passing earlier runs are diagnostic, not finite `.21` closure.
+The combined Level3 StageVar/conversion test fails45.111s: source data shows
+StageVar1 selects a Worm exemplar, not Archer. The test hypothesis was wrong;
+no gameplay change is justified by that failure. Current owner inputs instead
+bind Level12 StageVar2 to Archer exemplar93 as kind2 point guard at130,91.
+A NEW whole Level12 package is exported/structurally verified under
+`level12-owner-current/level12`, using the pinnedbe08 exporter with all160
+source hashes and actual embedded marker verified. Candidate3 passes all four
+actual consumers: authored combat/absence16.918s, House37.847s, natural
+conversion19.132s and Level12 guard5.616s. Exact arrow-birth and accepted-mailbox
+receipts now join the real child's generation to later actual player damage;
+conversion records the real producer/prey/child handles at the writer.
+
+An event-vector reset hypothesis was also withdrawn after checking actual
+callers: `begin_turn()` clears only in test-only callers; ordinary outer turns
+retain economy event history and reset a scratch cursor. Absolute writer event
+cursors remain valid across ordinary turns. The owner reverted only that losing
+test candidate, preserving birth/generation/reward and real timing predicates.
+
+Root recorded hashes and removed327 isolated dispatcher-generated return-cache
+files/obsolete executable (846029425bytes), with their strict rig regeneration
+path documented. Source, owner assets, current/previous native pins, remote/local
+warm caches and failed-artifact evidence were preserved. This restored7.2GB at
+that point; measure again before each expensive stage. A second bounded cleanup
+removed326 regenerated dispatcher return copies/700100448bytes after checking
+none were open/mapped, restoring6.48GB. The same source/data/cache/native and
+failed-artifact preservation boundaries hold.
+
+Archer's typed max-life1000 now feeds ordinary/House/semantic consumers, keeping
+constructor mana=max_life>>1. MC2 adapter-owned descriptor75 and idle/attack/arrow
+bindings reach actual kernel/packet consumers; a counterfactual supplied-binding
+check confirms that join. Independent bounded review found no concrete defect.
+Candidate4 strict rig compile passes106.833s with all444inputs unchanged. Its
+whole Archer module passes21/22, including all four real paths and the binding
+check. The remaining existing control expects flags0x14 after reflection, but
+source NewEvent8→AddMap4→test reflection16 requires0x1c. The corrected control
+first requires initial0x0c then exact0x1c, preserving its other death/reflection/
+mana assertions. Candidate5 strict rig compile passes65.965s and the corrected
+exact control passes0.145s; production is byte-identical to candidate4, whose
+other21 tests passed. The single integrated workspace/all-target check passes
+41.796s; all444Rust and37 extra compile inputs remain unchanged. The initial
+preflight stopped before Cargo because an older include inventory also listed
+three now-changed Rust files; those are correctly checked against candidate5's
+444-input snapshot, not the previous runtime hashes. Changed-source UBS reports
+no critical added-line finding; whole-file heuristic/formatting debt remains.
+Source is verified but not yet committed/installed; `.21` stays open through
+delivery. Skeleton `.22` still depends on settlement `.16`; finish that existing
+prerequisite before claiming full Skeleton acceptance. No dependency is bypassed.
+
+The following records the earlier stop and preserved starting point.
 
 `mc-1pb.21` stays in_progress with MagentaPuma as accountable owner. Its whole
 Level1 group3 actual arrow/combat/death/reward/hide/reclaim→class11/17 countdown→
@@ -67,17 +152,17 @@ The bad artifact was not executed; no build/copy retry was made. Failed bytes,
 logs, frozen source/patch and comparison remain under
 `generated/archer-20261105-integration/candidate-1/`. Cause is not established.
 Root reverted only its isolated execution copy to the installedaeba96fc after
-preserving it; canonical uncommitted Archer work stays intact. Installed/current
-native hashes still match4d875c2e. Workers are stopped. Resume expensive delivery
-only after a concrete safe integrity resolution or operator direction; no loops.
+preserving it; canonical uncommitted Archer work stayed intact. Installed/current
+native hashes still match4d875c2e. Workers were stopped at that checkpoint;
+operator-directed resumption and exact verified retrieval are recorded above.
 
 Remaining Archer acceptance includes actual house production and natural
 Skeleton conversion/StageVar consumers. Legacy tests force hide/predator state
 or directly call construction, so they do not establish those ordinary paths.
-Actual Level3 group5 StageVar selects Skeletons and moves toward them; the closest
-initial pair is1864 units apart, outside1537 conversion range. No natural
-conversion is claimed yet. The proposed exact cfg(test) conversion writer
-receipt was not implemented. An older closed Nov4 compiler generation was
+The earlier Level3 StageVar hypothesis was subsequently falsified as recorded
+above; it must not be used as an Archer producer claim. No natural conversion
+is claimed yet. Exact cfg(test) conversion and arrow writer receipts are now
+implemented and the next candidate consumes them. An older closed Nov4 compiler generation was
 SHA-preserved on healthy rig for headroom; latest Nov5 local/RCH caches and the
 current/previous native pins remain intact. This does not qualify Archer or
 the rest of the shared engine.

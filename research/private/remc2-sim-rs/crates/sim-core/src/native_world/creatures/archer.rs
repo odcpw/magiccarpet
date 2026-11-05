@@ -25,15 +25,14 @@ pub(crate) const ARCHER_ACTION_IDLE_VISUAL: u8 = 39;
 
 pub(crate) const ARCHER_MINIMUM_SPEED: i16 = ARCHER_CLASS_PROPERTIES.minimum_speed;
 pub(crate) const ARCHER_MAXIMUM_SPEED: i16 = ARCHER_CLASS_PROPERTIES.maximum_speed;
-pub(crate) const ARCHER_MAX_LIFE: i32 = 1_000;
-pub(crate) const ARCHER_MANA: i32 = 500;
+pub(crate) const ARCHER_MAX_LIFE: i32 = ARCHER_CLASS_PROPERTIES.max_life;
+#[cfg(test)]
+pub(crate) const ARCHER_MANA: i32 = ARCHER_MAX_LIFE >> 1;
 pub(crate) const ARCHER_MAX_MANA: i32 = 0;
 pub(crate) const ARCHER_SUBSPELL_INDEX: u16 = ARCHER_CLASS_PROPERTIES.attack_damage;
-pub(crate) const ARCHER_DESCRIPTOR_INDEX: u16 = 75;
 pub(crate) const ARCHER_DESCRIPTOR_CADENCE: u8 = ARCHER_CLASS_PROPERTIES.scan_period;
 pub(crate) const ARCHER_DESCRIPTOR_RANGE: u32 = ARCHER_CLASS_PROPERTIES.target_range;
 pub(crate) const ARCHER_DESCRIPTOR_HALF_ANGLE: i16 = ARCHER_CLASS_PROPERTIES.target_half_angle;
-pub(crate) const ARCHER_PARTICLE_INDEX: u16 = 0;
 pub(crate) const ARCHER_SHIFT_ROT_X: i16 = ARCHER_CLASS_PROPERTIES.collision_half_width;
 pub(crate) const ARCHER_SHIFT_ROT_Y: i16 = ARCHER_CLASS_PROPERTIES.collision_half_height;
 // Particle-0 collision extent, not the Archer's body orientation.
@@ -45,7 +44,6 @@ pub(crate) const ARCHER_CHILD_ACTION: u8 = 13;
 pub(crate) const ARCHER_CHILD_SPEED: i16 = 384;
 pub(crate) const ARCHER_CHILD_MAX_LIFE: i16 = 5120 / ARCHER_CHILD_SPEED;
 pub(crate) const ARCHER_CHILD_SUBSPELL_INDEX: u16 = ARCHER_CLASS_PROPERTIES.arrow_damage;
-pub(crate) const ARCHER_CHILD_PARTICLE_INDEX: u16 = 195;
 pub(crate) const ARCHER_CHILD_BODY_FOV: i16 = 0;
 
 /// The model-4-only words owned by `AddArchers_4BA10`.  The root remains in
@@ -262,6 +260,7 @@ pub(crate) struct ArcherTarget {
 /// mutable reference rather than this module creating a duplicate arena.
 pub(crate) struct ArcherActionContext<'a> {
     pub(crate) terrain: &'a SessionTerrain,
+    pub(crate) visuals: ArcherVisualBindings,
     pub(crate) control_flags: u32,
     pub(crate) pending_damage: i32,
     pub(crate) linked_head: u16,
@@ -273,6 +272,13 @@ pub(crate) struct ArcherActionContext<'a> {
     pub(crate) relations: &'a [ArcherRelation],
     pub(crate) stage: ArcherStageState,
     pub(crate) stage_runtime: Option<&'a mut dyn ArcherStageRuntime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ArcherVisualBindings {
+    pub(crate) idle: u16,
+    pub(crate) attack_primary: u16,
+    pub(crate) attack_secondary: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -459,13 +465,14 @@ fn archer_nearest_candidate(
 pub(crate) fn archer_attack_visual(
     source: &mut Level2AuthoredClass5Source,
     target: Option<ArcherTarget>,
+    visuals: ArcherVisualBindings,
 ) -> ArcherVisualUpdate {
     source.entity_rng = level2_next_rng16(source.entity_rng);
     source.actual_speed = 0;
     source.particle_index = if source.entity_rng % 0x14 <= 10 {
-        206
+        visuals.attack_primary
     } else {
-        1
+        visuals.attack_secondary
     };
     source.shift_rot_x = ARCHER_SHIFT_ROT_X;
     source.shift_rot_y = ARCHER_SHIFT_ROT_Y;
@@ -480,9 +487,12 @@ pub(crate) fn archer_attack_visual(
     }
 }
 
-pub(crate) fn archer_idle_visual(source: &mut Level2AuthoredClass5Source) -> ArcherVisualUpdate {
+pub(crate) fn archer_idle_visual(
+    source: &mut Level2AuthoredClass5Source,
+    visuals: ArcherVisualBindings,
+) -> ArcherVisualUpdate {
     source.actual_speed = source.minimum_speed;
-    source.particle_index = ARCHER_PARTICLE_INDEX;
+    source.particle_index = visuals.idle;
     source.shift_rot_x = ARCHER_SHIFT_ROT_X;
     source.shift_rot_y = ARCHER_SHIFT_ROT_Y;
     ArcherVisualUpdate {
@@ -1246,6 +1256,7 @@ pub(crate) fn step_archer_action39(
         effects.visual = Some(archer_attack_visual(
             source,
             archer_selected_target(context, source.word_0x96_150),
+            context.visuals,
         ));
     }
     effects
@@ -1300,6 +1311,7 @@ pub(crate) fn step_archer_action32(
         effects.visual = Some(archer_attack_visual(
             source,
             archer_selected_target(context, source.word_0x96_150),
+            context.visuals,
         ));
     }
     effects
@@ -1327,6 +1339,7 @@ pub(crate) fn step_archer_action33(
         effects.visual = Some(archer_attack_visual(
             source,
             archer_selected_target(context, source.word_0x26),
+            context.visuals,
         ));
         return effects;
     }
@@ -1413,7 +1426,7 @@ pub(crate) fn step_archer_action33(
                 source.word_0x96_150 = target.entity_index;
                 source.action = ARCHER_ACTION_ATTACK;
                 effects.selected_target = Some(target.entity_index);
-                effects.visual = Some(archer_attack_visual(source, Some(target)));
+                effects.visual = Some(archer_attack_visual(source, Some(target), context.visuals));
             }
             return effects;
         }
@@ -1448,7 +1461,7 @@ pub(crate) fn step_archer_action34(
         archer_settle(source, context.terrain);
     } else if mailbox_state == 2 {
         source.action = ARCHER_ACTION_HIT;
-        effects.visual = Some(archer_idle_visual(source));
+        effects.visual = Some(archer_idle_visual(source, context.visuals));
         return effects;
     } else {
         effects.population_decrement |= archer_move(source, context);
@@ -1458,7 +1471,7 @@ pub(crate) fn step_archer_action34(
             .filter(|target| archer_target_is_live(*target))
         else {
             source.action = ARCHER_ACTION;
-            effects.visual = Some(archer_idle_visual(source));
+            effects.visual = Some(archer_idle_visual(source, context.visuals));
             return effects;
         };
         if source.source_byte_3e & 3 == 0 {
@@ -1488,7 +1501,7 @@ pub(crate) fn step_archer_action34(
             )) >= ARCHER_DESCRIPTOR_RANGE
             {
                 source.action = ARCHER_ACTION;
-                effects.visual = Some(archer_idle_visual(source));
+                effects.visual = Some(archer_idle_visual(source, context.visuals));
                 return effects;
             }
             let request = ArcherChildRequest {
@@ -1563,6 +1576,7 @@ pub(crate) fn step_archer_action35(
             effects.visual = Some(archer_attack_visual(
                 source,
                 archer_selected_target(context, source.word_0x26),
+                context.visuals,
             ));
         }
         return effects;
@@ -1589,6 +1603,7 @@ pub(crate) fn step_archer_action35(
             effects.visual = Some(archer_attack_visual(
                 source,
                 archer_selected_target(context, source.word_0x96_150),
+                context.visuals,
             ));
             return effects;
         }
@@ -1649,6 +1664,7 @@ pub(crate) fn archer_child_packet(
     child_source_entity_index: u16,
     child_entity_rng: u16,
     request: ArcherChildRequest,
+    particle_index: u16,
 ) -> ArcherChildPacket {
     let yaw = i16::try_from(heading_for_positions(
         request.parent_position,
@@ -1706,7 +1722,7 @@ pub(crate) fn archer_child_packet(
         max_life: ARCHER_CHILD_MAX_LIFE,
         life: ARCHER_CHILD_MAX_LIFE,
         subspell_index: ARCHER_CHILD_SUBSPELL_INDEX,
-        particle_index: ARCHER_CHILD_PARTICLE_INDEX,
+        particle_index,
         dword_0x10: 0,
         // AddEvent09_0D clears NewEvent's damageable bit before map linking.
         control_flags: 4,
