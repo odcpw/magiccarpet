@@ -15,7 +15,8 @@ in their canonical owner when a real connected failure exposes them.
 - [x] Wyvern16 — `mc-1pb.5`.
 - [x] Castle defenders15 — `mc-1pb.4`.
 - [x] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
-- [ ] Archer4 — `mc-1pb.21`; Skeleton9 — `mc-1pb.22`;
+- [x] Archer4 — `mc-1pb.21`.
+- [ ] Skeleton9 — `mc-1pb.22`;
       Firefly19 — `mc-1pb.23`.
 - [ ] Creature17 — `mc-1pb.6`; Creature18 — `mc-1pb.7`.
 - [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
@@ -35,7 +36,7 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-The current Dragon/Bee batch is implemented, verified, committed and installed.
+The previous Dragon/Bee batch is implemented, verified, committed and installed.
 Runtime `aeba96fc687271fa2cb3b32182f245f4545f8cc4` is pushed; matching native
 `4d875c2e74bd480f3f603ce2112ef9b2b7ac32c95b457b5df3e602d9d15962bd`
 is installed and qualified in the Original client. Strict rig native build
@@ -49,9 +50,35 @@ under `generated/dragon-bee-20261105-integration/` and
 `.20` original acceptance is delivered; parent/shared `.24` and terrain `.8`
 remain open. No human combat/FPS, hardware audio, full missions, old-save or
 native Dragon/Bee encounter visual claim. Source-default orphan/null and custom
-selector limits below remain explicit. Next connected family is Archer `.21`.
+selector limits below remain explicit. Archer delivery follows below.
 
-### Active Archer capability: connected consumer integration
+### Archer delivered; settlement prerequisite next
+
+Archer runtime `c7f3b55cbef98ac66114471f60960cf66e23f78b` is committed/pushed.
+Matching native `fdeda626922471321f557d14ed3076675d36cb1a8ad3f59b25d5e5a72e811af8`
+passes strict rig build66.301s, native-only installation and installed qualification.
+All444Rust+162upstream inputs match canonical/isolated/rig source; the installed
+receipt's444Rust inputs match exactly. Root viewed canonical Original map,
+loading artwork and NightSpire terrain/HUD (including spawn flash) with the
+matching mapped native: one portal click, no retry, no private save. Owned smoke
+processes were stopped. Initial startup captures were blank while initialization
+continued; no startup timing/FPS claim. Evidence is candidate5 under
+`generated/archer-20261105-integration` and
+`Builds/delivery-archer-20261105-batch1/runtime-proof.json`.
+Finite `.21` acceptance is delivered; `.24`, Skeleton `.22`, settlement `.16`,
+other creature families and the shared engine remain open. This is focused
+producer/consumer verification plus launch/load, not native Archer encounter
+visuals, human combat/FPS, hardware audio, whole missions or old saves.
+
+Active next: complete existing settlement `.16` (Builder/Villager/Trader production,
+household/population and actual trade consumers), then Skeleton `.22`, whose
+original dependency on that family remains intact. Retain the small team and
+reuse current evidence; source inspection must identify the actual unmet link
+before editing. MagentaPuma owns the complete capability, AzureGate implements
+shared joins, BrightCastle supplies bounded source/consumer diagnosis and root
+GreenCave serializes Cargo/push/install. `.16` is in_progress; existing real
+checks must distinguish missing code from incomplete evidence. The following
+records the Archer integration and its preserved negative results.
 
 Oliver explicitly resumed the full existing creature queue and authorized
 cleanup of build outputs when space is tight. Continue this list with the
@@ -132,8 +159,8 @@ preflight stopped before Cargo because an older include inventory also listed
 three now-changed Rust files; those are correctly checked against candidate5's
 444-input snapshot, not the previous runtime hashes. Changed-source UBS reports
 no critical added-line finding; whole-file heuristic/formatting debt remains.
-Source is verified but not yet committed/installed; `.21` stays open through
-delivery. Skeleton `.22` still depends on settlement `.16`; finish that existing
+Source subsequently committed and installed as recorded above. Skeleton `.22`
+still depends on settlement `.16`; finish that existing
 prerequisite before claiming full Skeleton acceptance. No dependency is bypassed.
 
 The following records the earlier stop and preserved starting point.
