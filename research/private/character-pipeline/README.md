@@ -156,9 +156,11 @@ bottleneck in these trials; the local cache-integrity anomaly below must also
 be understood before unattended bulk generation.
 
 The first Kling in-place clip was rejected for isolated leg lifts; the revised
-forward-walking clip supplied these trials. The original Wan request stalled;
-cancellation was requested, but the provider still reported `IN_PROGRESS` at
-the last check. Its receipt is retained and no duplicate job was submitted.
+forward-walking clip supplied these trials. The original Wan request stalled
+and cancellation was requested, but it eventually completed. Its existing
+result was downloaded without resubmission. Ten sampled frames in
+`wan-contact.png` show mostly standing and isolated foreleg lifts; it was not
+selected as the walking reference. All provider receipts and results are retained.
 
 ## Integrity findings
 
