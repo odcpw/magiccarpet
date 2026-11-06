@@ -524,6 +524,292 @@ pub(crate) fn step_alliance_source_slot(
     Ok(outcome)
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct ActorStageVisit {
+    source: crate::campaign::source_arena::SourceEntityHandle,
+    before: EntitySnapshot,
+    after: EntitySnapshot,
+    target: Option<(
+        crate::campaign::source_arena::SourceEntityHandle,
+        source_target::View,
+    )>,
+    follow_heading: Option<i16>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static ACTOR_STAGE_VISITS: std::cell::RefCell<Vec<ActorStageVisit>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// sub_20FC0 -> sub_1D7C0/1D700/1D8C0: follow a current actor,
+/// optionally attacking it (mode3) or its target (mode4). The shared route
+/// prepass owns cache retirement and continuation; this callback never treats
+/// a model selector in the StageVar union as a point coordinate.
+pub(crate) fn step_actor_stage_in_arena(
+    arena: &mut SourceArena,
+    runtime: &crate::native_world::RuntimeSnapshot,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    parameters: &[[u8; 34]],
+    slot: u16,
+    frozen_models: &[Vec<u16>; 29],
+    context: source_target::Context<'_>,
+) -> Result<(), String> {
+    let mut row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| {
+            row.active
+                && (row.class, row.model, row.action) == (5, 9, 79)
+                && matches!(row.record[77], 3..=5)
+        })
+        .cloned()
+        .ok_or_else(|| format!("Skeleton {slot} lost its actor stage"))?;
+    let mode = row.record[77];
+    let stage_index = row.record[76];
+    let stage = runtime
+        .stage_variables
+        .get(usize::from(stage_index))
+        .filter(|_| stage_index != 0)
+        .ok_or_else(|| format!("Skeleton {slot} lost actor StageVar {stage_index}"))?;
+    let descriptor = parameters
+        .get(usize::from(row.parameter_relation.unwrap_or(
+            campaign_shared_families::MC2_SKELETON_ASSETS.descriptor,
+        )))
+        .ok_or_else(|| format!("Skeleton {slot} lacks its actor descriptor"))?;
+    if descriptor[32] & 8 != 0 {
+        return Err(format!(
+            "Skeleton {slot} actor descriptor selects unsupported flee action78"
+        ));
+    }
+    #[cfg(test)]
+    let before = row.clone();
+    #[cfg(test)]
+    let mut observed_target = None;
+    #[cfg(test)]
+    let mut follow_heading = None;
+
+    let hit = consume(arena, &mut row, context)?;
+    match hit {
+        0 => {
+            movement(arena, &mut row, terrain)?;
+            if row.phase & 7 == 0 {
+                let target_slot = if stage.flags as u8 & 2 != 0 {
+                    if word(&row, 78) == 0 {
+                        let mut selected = 0;
+                        if stage.flags as u8 & 1 != 0 {
+                            for &peer in &frozen_models[9] {
+                                let Some(peer) = source_target::read(arena, context, peer)? else {
+                                    continue;
+                                };
+                                if peer.relations.stage_index == Some(stage_index)
+                                    && let Some(cached) =
+                                        peer.relations.stage_relation.filter(|slot| *slot != 0)
+                                {
+                                    selected = cached;
+                                    break;
+                                }
+                            }
+                        }
+                        if selected == 0 {
+                            let model = match stage.relation {
+                                crate::native_world::RuntimeRelation::AxisScalar(model)
+                                | crate::native_world::RuntimeRelation::Scalar(model) => model,
+                                other => {
+                                    return Err(format!(
+                                        "Skeleton {slot} actor selector is {other:?}"
+                                    ));
+                                }
+                            };
+                            let mut nearest_distance = u32::MAX;
+                            for &candidate in
+                                frozen_models.get(model as usize).into_iter().flatten()
+                            {
+                                let Some(target) = source_target::read(arena, context, candidate)?
+                                else {
+                                    continue;
+                                };
+                                let dx = i32::from(
+                                    target.position.x.wrapping_sub(row.position.x) as i16
+                                );
+                                let dy = i32::from(
+                                    target.position.y.wrapping_sub(row.position.y) as i16
+                                );
+                                let distance =
+                                    dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+                                if distance < nearest_distance {
+                                    nearest_distance = distance;
+                                    selected = candidate;
+                                }
+                            }
+                        }
+                        put(&mut row, 78, selected);
+                    }
+                    word(&row, 78)
+                } else {
+                    match stage.relation {
+                        crate::native_world::RuntimeRelation::LiveEntity(slot)
+                        | crate::native_world::RuntimeRelation::LiveEntityIndex(slot) => slot,
+                        crate::native_world::RuntimeRelation::Null => 0,
+                        other => return Err(format!("Skeleton {slot} actor pointer is {other:?}")),
+                    }
+                };
+                if let Some(target) = source_target::read(arena, context, target_slot)? {
+                    #[cfg(test)]
+                    {
+                        observed_target = arena.handle(target_slot).map(|handle| (handle, target));
+                    }
+                    if row.control_flags & 0x0004_0000 == 0 {
+                        row.set_source_roll(crate::heading_for_positions(
+                            row.position,
+                            target.position,
+                        ) as i16);
+                        #[cfg(test)]
+                        {
+                            follow_heading = Some(row.source_roll());
+                        }
+                        if row.phase & 63 == 0 {
+                            let first = campaign_shared_families::next_source_rng16(row.entity_rng);
+                            let second = campaign_shared_families::next_source_rng16(first);
+                            row.set_entity_rng(second);
+                            let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                            row.set_source_roll(
+                                ((i32::from(row.source_roll())
+                                    + sign * (i32::from(second & 255) + 85))
+                                    & 2047) as i16,
+                            );
+                        }
+                    }
+                    let width = i32::from(row.array_pitch());
+                    for &peer in &frozen_models[9] {
+                        let Some(peer) = source_target::read(arena, context, peer)? else {
+                            continue;
+                        };
+                        if peer.source_id != row.source_id
+                            && (i32::from(row.position.x) - i32::from(peer.position.x)).abs()
+                                < width
+                            && (i32::from(row.position.y) - i32::from(peer.position.y)).abs()
+                                < width
+                        {
+                            row.set_source_roll(crate::heading_for_positions(
+                                peer.position,
+                                row.position,
+                            ) as i16);
+                            break;
+                        }
+                    }
+                    let overlap_width = width
+                        + target
+                            .collision
+                            .map_or(0, |shape| i32::from(shape.half_width));
+                    if (i32::from(row.position.x) - i32::from(target.position.x)).abs()
+                        < overlap_width
+                        && (i32::from(row.position.y) - i32::from(target.position.y)).abs()
+                            < overlap_width
+                    {
+                        row.set_source_roll(crate::heading_for_positions(
+                            target.position,
+                            row.position,
+                        ) as i16);
+                    }
+                } else if row.phase & 15 == 0 && row.control_flags & 0x0004_0000 == 0 {
+                    let rng = campaign_shared_families::next_source_rng16(row.entity_rng);
+                    row.set_entity_rng(rng);
+                    row.set_source_roll(
+                        row.source_roll().wrapping_add((rng % 113 + 142) as i16) & 2047,
+                    );
+                }
+            }
+        }
+        1 => {
+            let attacker_slot = row.word_26();
+            let attacker_kind = if attacker_slot == 0 {
+                arena
+                    .entities
+                    .first()
+                    .map(|sentinel| (sentinel.class, sentinel.model))
+            } else {
+                source_target::read(arena, context, attacker_slot)?
+                    .map(|attacker| (attacker.class, attacker.model))
+            }
+            .ok_or_else(|| format!("Skeleton {slot} lost damage attacker {attacker_slot}"))?;
+            if attacker_kind != (row.class, row.model) {
+                row.set_source_word_96(attacker_slot);
+                row.record[77] = 10;
+                row.set_source_action(74);
+            }
+            let ground = terrain.ground_height(row.position);
+            let clearance = i16::from_le_bytes([descriptor[12], descriptor[13]]);
+            let descent = i16::from_le_bytes([descriptor[14], descriptor[15]]);
+            if row.position.z > ground {
+                row.position.z = row.position.z.wrapping_add(descent);
+            }
+            if i32::from(row.position.z as i16) <= i32::from(ground) + i32::from(clearance) {
+                row.position.z = ground.wrapping_add(clearance);
+            }
+            row.set_position(row.position);
+        }
+        _ => row.set_source_action(76),
+    }
+    // The mode3/4 wrapper still runs this tail after damage or pre-kill.
+    // It rereads the existing cache; it does not perform another acquisition.
+    if matches!(mode, 3 | 4) && row.phase & 7 == 0 {
+        let actor_slot = if stage.flags as u8 & 2 != 0 {
+            word(&row, 78)
+        } else {
+            match stage.relation {
+                crate::native_world::RuntimeRelation::LiveEntity(slot)
+                | crate::native_world::RuntimeRelation::LiveEntityIndex(slot) => slot,
+                _ => 0,
+            }
+        };
+        if let Some(actor) = source_target::read(arena, context, actor_slot)? {
+            let target = if mode == 3 {
+                Some(actor)
+            } else {
+                match actor.relations.target.filter(|slot| *slot != 0) {
+                    Some(target) => source_target::read(arena, context, target)?,
+                    None => None,
+                }
+            };
+            if let Some(target) = target
+                && crate::distance_3d_wrapped(row.position, target.position)
+                    <= u32::from(u16::from_le_bytes([descriptor[28], descriptor[29]]))
+            {
+                row.set_source_word_96(target.slot);
+                row.record[77] = 10;
+                row.set_source_action(74);
+            }
+        }
+    }
+    if row.action == 74 {
+        attack_visual(arena, &mut row, particles, context)?;
+    }
+    #[cfg(test)]
+    ACTOR_STAGE_VISITS.with(|visits| {
+        let mut visits = visits.borrow_mut();
+        if visits.len() < 128 {
+            visits.push(ActorStageVisit {
+                source: arena.handle(slot).unwrap(),
+                before,
+                after: row.clone(),
+                target: observed_target,
+                follow_heading,
+            });
+        }
+    });
+    let position = row.position;
+    row.set_map_links(
+        arena.economy.map_chains.old_map_entity(slot),
+        arena.economy.map_chains.next_entity(slot),
+    );
+    arena.economy.source_rng.insert(slot, row.entity_rng);
+    arena.entities[usize::from(slot)] = row;
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
+}
+
 /// Read word94 through the current occupant of a frozen model9-list address.
 /// Membership is historical; ownership is read anew, including after reuse.
 pub(crate) fn current_source_player_entity_index(
@@ -657,6 +943,915 @@ pub(crate) fn allocate_from_controller(
 #[cfg(test)]
 mod alliance_tests {
     use super::*;
+
+    #[test]
+    fn ordinary_level_five_skeleton_emergence_follows_current_archer() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Mc2DispatchEvent, RuntimeRelation};
+
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            std::path::PathBuf::from,
+        );
+        let campaign = CampaignSession::open(package, CampaignSelection::ordinary(5).unwrap())
+            .expect("unmodified whole Level5");
+        let mut session = campaign.simulation().clone();
+        let reset_hash = session.state_hash();
+        let roots = session.source_arena().rebuilt_class5_model_slots()[9]
+            .iter()
+            .map(|&slot| session.source_arena().handle(slot).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), 39);
+        assert_eq!(
+            session.source_arena().rebuilt_class5_model_slots()[4].len(),
+            33
+        );
+        let route = session.runtime().stage_variables[1];
+        assert_eq!(
+            (route.kind, route.flags, route.relation),
+            (3, 3, RuntimeRelation::AxisScalar(4))
+        );
+        assert!(roots.iter().all(|root| {
+            let row = &session.entities()[usize::from(root.source_slot)];
+            row.action == 72 && word(row, 78) == 1
+        }));
+        ACTOR_STAGE_VISITS.with(|visits| visits.borrow_mut().clear());
+        let mut followed = std::collections::BTreeSet::new();
+        let mut retained_cache = false;
+        let mut moved = false;
+        let mut distinguished_point = false;
+        for turn in 0..40 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "ordinary actor route turn{turn}: {:?}",
+                session.dispatch_events()
+            );
+            let visits =
+                ACTOR_STAGE_VISITS.with(|visits| std::mem::take(&mut *visits.borrow_mut()));
+            for visit in visits {
+                assert!(roots.contains(&visit.source));
+                assert_eq!(
+                    session.source_arena().handle(visit.source.source_slot),
+                    Some(visit.source)
+                );
+                assert_eq!((visit.before.record[76], visit.before.record[77]), (1, 3));
+                if let Some((target_handle, target)) = visit.target {
+                    assert_eq!((target.class, target.model), (5, 4));
+                    assert_eq!(word(&visit.after, 78), target_handle.source_slot);
+                    assert_eq!(
+                        session.source_arena().handle(target_handle.source_slot),
+                        Some(target_handle)
+                    );
+                    assert!(
+                        session
+                            .creature_identity_for_source_slot(target_handle.source_slot)
+                            .is_some_and(
+                                |identity| identity.kind == CreatureKind::Archer && identity.living
+                            )
+                    );
+                    followed.insert(visit.source.source_slot);
+                    if let Some(heading) = visit.follow_heading {
+                        assert_eq!(
+                            heading,
+                            crate::heading_for_positions(visit.after.position, target.position)
+                                as i16,
+                            "steering reads the current actor after Skeleton movement"
+                        );
+                        distinguished_point |= heading
+                            != crate::heading_for_positions(
+                                visit.after.position,
+                                crate::Position { x: 4, y: 0, z: 0 },
+                            ) as i16;
+                    }
+                    moved |= (visit.before.position.x, visit.before.position.y)
+                        != (visit.after.position.x, visit.after.position.y);
+                }
+                retained_cache |= word(&visit.before, 78) != 0
+                    && word(&visit.before, 78) == word(&visit.after, 78);
+                assert!(
+                    session
+                        .economy()
+                        .map_chains()
+                        .is_linked(visit.source.source_slot)
+                );
+                let current = source_target::read(
+                    session.source_arena(),
+                    Default::default(),
+                    visit.source.source_slot,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(current.position, visit.after.position);
+                assert_eq!(
+                    current.relations.stage_relation,
+                    Some(word(&visit.after, 78))
+                );
+                assert_eq!(
+                    session.entities()[usize::from(visit.source.source_slot)]
+                        .particle_parameter_index,
+                    Some(campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle)
+                );
+            }
+            if followed.len() == roots.len() && retained_cache && moved && distinguished_point {
+                break;
+            }
+        }
+        assert_eq!(
+            followed.len(),
+            roots.len(),
+            "every genuine reset root emerges into actor follow"
+        );
+        assert!(retained_cache && moved && distinguished_point);
+        let presented_slot = *followed.first().unwrap();
+        let row = &session.entities()[usize::from(presented_slot)];
+        let sprite = session
+            .campaign_entity_presentations(0)
+            .unwrap()
+            .into_iter()
+            .find(|sprite| sprite.entity_index == presented_slot)
+            .expect("actual moving Skeleton sprite");
+        assert_eq!(
+            (
+                sprite.position,
+                sprite.source_id,
+                sprite.render_parameter_index
+            ),
+            (
+                row.position,
+                row.source_id,
+                campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle
+            )
+        );
+        session.reset();
+        assert_eq!(session.state_hash(), reset_hash);
+    }
+
+    #[test]
+    fn configured_actor_follow_damage_tail_and_route_continuation_preserve_source_order() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            std::path::PathBuf::from,
+        );
+        let mut campaign =
+            CampaignSession::open(package, CampaignSelection::ordinary(5).unwrap()).unwrap();
+        for _ in 0..32 {
+            let _ = campaign.step(PlayerCommand::default(), 0);
+        }
+        let session = campaign.simulation();
+        let source = session
+            .entities()
+            .iter()
+            .find(|row| {
+                row.active
+                    && (row.class, row.model, row.action, row.record[77]) == (5, 9, 79, 3)
+                    && word(row, 78) != 0
+            })
+            .unwrap()
+            .clone();
+        let slot = source.index;
+        let target = word(&source, 78);
+        let player = session.state.entity_index;
+        let particles = &session.session.definition.presentation.particles;
+        let parameters = &session.session.definition.presentation.entity_parameters;
+        let original_runtime = &session.session.state.live.core.runtime;
+        let target_position =
+            source_target::read(session.source_arena(), Default::default(), target)
+                .unwrap()
+                .unwrap()
+                .position;
+        // Declared near/far and damage exception controls, separate from the
+        // ordinary untouched Level5 emergence/follow check above.
+        for (damage, near) in [(0, true), (100, true), (1001, true), (1001, false)] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let mut runtime = original_runtime.clone();
+            let mut position = target_position;
+            position.x = position.x.wrapping_add(if near { 256 } else { 4096 });
+            position.z = terrain.ground_height(position);
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_position(position);
+            row.set_phase(8);
+            if damage != 0 {
+                row.apply_model76_mailbox(player, damage);
+            }
+            let models = arena.rebuilt_class5_model_slots();
+            step_actor_stage_in_arena(
+                &mut arena,
+                &runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &models,
+                Default::default(),
+            )
+            .unwrap();
+            let row = &arena.entities[usize::from(slot)];
+            assert_eq!(row.life, 1000 - i32::from(damage));
+            assert_eq!(row.source_upkeep_word_62(), 0);
+            if near {
+                assert_eq!(
+                    (row.action, row.record[77], row.source_word_96()),
+                    (74, 10, target),
+                    "mode3's near tail still follows hit or lethal common-prefix return"
+                );
+                assert_eq!(
+                    row.particle_parameter_index,
+                    Some(campaign_shared_families::MC2_SKELETON_ASSETS.reaction_particle)
+                );
+            } else {
+                assert_eq!(row.action, 76);
+            }
+            if damage != 0 {
+                assert_eq!(
+                    (row.position.x, row.position.y),
+                    (position.x, position.y),
+                    "damage suppresses movement and fresh acquisition"
+                );
+                assert_eq!(row.word_26(), player);
+                if damage == 1001 {
+                    assert_eq!(row.word_24(), player);
+                }
+            }
+            if damage == 100 {
+                // The actual attack callback leaves a now-distant target;
+                // the next shared source prepass restores its original route.
+                let mut far = target_position;
+                far.x = far.x.wrapping_add(4096);
+                far.z = terrain.ground_height(far);
+                arena.entities[usize::from(slot)].set_position(far);
+                arena.entities[usize::from(slot)].set_phase(25);
+                step_alliance_source_slot(
+                    &mut arena,
+                    &mut terrain,
+                    particles,
+                    parameters,
+                    slot,
+                    &models[9],
+                    Default::default(),
+                )
+                .unwrap();
+                assert_eq!(arena.entities[usize::from(slot)].action, 73);
+                super::super::stage_route::prepare_source_pass(
+                    &mut arena,
+                    &mut runtime,
+                    Default::default(),
+                    &[slot],
+                )
+                .unwrap();
+                let resumed = &arena.entities[usize::from(slot)];
+                assert_eq!(
+                    (
+                        resumed.action,
+                        resumed.record[76],
+                        resumed.record[77],
+                        word(resumed, 78)
+                    ),
+                    (79, 1, 3, 0)
+                );
+            }
+        }
+        // Configured linked-life exception: sub_1D8C0 may inherit attacker0,
+        // then dereferences the actual sentinel rather than refusing damage.
+        // No ordinary package linked-Skeleton producer is claimed here.
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let child = arena.rebuilt_class5_model_slots()[9]
+            .iter()
+            .copied()
+            .find(|child| *child != slot)
+            .unwrap();
+        let row = &mut arena.entities[usize::from(slot)];
+        row.record[77] = 5;
+        row.set_phase(9);
+        put(row, 56, child);
+        let linked = &mut arena.entities[usize::from(child)];
+        linked.set_life(999);
+        linked.set_damage_result_words(0, 0);
+        put(linked, 56, 0);
+        let models = arena.rebuilt_class5_model_slots();
+        step_actor_stage_in_arena(
+            &mut arena,
+            original_runtime,
+            &mut terrain,
+            particles,
+            parameters,
+            slot,
+            &models,
+            Default::default(),
+        )
+        .unwrap();
+        let row = &arena.entities[usize::from(slot)];
+        assert_eq!(
+            (
+                row.life,
+                row.word_26(),
+                row.source_word_96(),
+                row.action,
+                row.record[77]
+            ),
+            (999, 0, 0, 74, 10)
+        );
+        assert_eq!(
+            (row.record[69], row.record[70]),
+            (arena.entities[0].class, arena.entities[0].model)
+        );
+
+        // The direct-pointer union also admits null. It ignores any old
+        // cached model-selection relation and takes the no-target wander
+        // branch only on the source's sixteen-phase cadence.
+        for phase in [8, 16, 17] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let mut runtime = original_runtime.clone();
+            runtime.stage_variables[1].flags = 0;
+            runtime.stage_variables[1].relation = crate::native_world::RuntimeRelation::Null;
+            arena.entities[usize::from(slot)].set_phase(phase);
+            let before = arena.entities[usize::from(slot)].clone();
+            let models = arena.rebuilt_class5_model_slots();
+            step_actor_stage_in_arena(
+                &mut arena,
+                &runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &models,
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            assert_eq!(
+                (
+                    after.action,
+                    after.record[77],
+                    word(after, 78),
+                    after.source_word_96()
+                ),
+                (79, 3, word(&before, 78), before.source_word_96())
+            );
+            let draws = phase & 15 == 0 && after.control_flags & 0x0004_0000 == 0;
+            let expected_rng = if draws {
+                campaign_shared_families::next_source_rng16(before.entity_rng)
+            } else {
+                before.entity_rng
+            };
+            assert_eq!(after.entity_rng, expected_rng);
+            assert_eq!(
+                after.source_roll(),
+                if draws {
+                    before
+                        .source_roll()
+                        .wrapping_add((expected_rng % 113 + 142) as i16)
+                        & 2047
+                } else {
+                    before.source_roll()
+                }
+            );
+        }
+        for relation in [
+            crate::native_world::RuntimeRelation::LiveEntity(target),
+            crate::native_world::RuntimeRelation::LiveEntityIndex(target),
+        ] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let mut runtime = original_runtime.clone();
+            runtime.stage_variables[1].flags = 0;
+            runtime.stage_variables[1].relation = relation;
+            arena.entities[usize::from(slot)].set_phase(8);
+            let models = arena.rebuilt_class5_model_slots();
+            ACTOR_STAGE_VISITS.with(|visits| visits.borrow_mut().clear());
+            step_actor_stage_in_arena(
+                &mut arena,
+                &runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &models,
+                Default::default(),
+            )
+            .unwrap();
+            let visits =
+                ACTOR_STAGE_VISITS.with(|visits| std::mem::take(&mut *visits.borrow_mut()));
+            assert!(visits.iter().any(|visit| {
+                visit.target.is_some_and(|(handle, current)| {
+                    handle.source_slot == target && (current.class, current.model) == (5, 4)
+                })
+            }));
+        }
+
+        // This configured descriptor cannot select the explicitly unsupported
+        // action78. Reject it before damage, motion, RNG or route writes.
+        let mut arena = session.source_arena().clone();
+        let before = arena.clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let mut unsupported = parameters.to_vec();
+        let descriptor = usize::from(
+            source
+                .parameter_relation
+                .unwrap_or(campaign_shared_families::MC2_SKELETON_ASSETS.descriptor),
+        );
+        unsupported[descriptor][32] |= 8;
+        let models = arena.rebuilt_class5_model_slots();
+        let error = step_actor_stage_in_arena(
+            &mut arena,
+            original_runtime,
+            &mut terrain,
+            particles,
+            &unsupported,
+            slot,
+            &models,
+            Default::default(),
+        )
+        .unwrap_err();
+        assert!(error.contains("unsupported flee action78"));
+        assert_eq!(arena, before);
+    }
+
+    #[test]
+    fn ordinary_level_seven_paid_fireballs_kill_and_reclaim_skeleton() {
+        use crate::campaign::{
+            CampaignSession,
+            schedule::{CurrentOccupant, ScheduleReceipt},
+            spec::CampaignSelection,
+        };
+        use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
+        use crate::{PlayerCommand, Position};
+        use std::{collections::BTreeSet, path::PathBuf};
+
+        let package = std::env::var_os("MC_LEVEL7_HOUSE_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/settlement-20261105-integration/owner-collision-closure-v4/level7"),
+            PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
+            .expect("whole Level7 owner package")
+            .simulation()
+            .clone();
+        let player = session.state.entity_index;
+        let player_handle = session.source_arena().handle(player).unwrap();
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        {
+            // Declared player-only resources; no source actor state is staged.
+            let live = &mut session.session.state.live;
+            live.economy
+                .economy
+                .owner_base_max_mana
+                .insert(player, 200_000);
+            live.economy
+                .economy
+                .rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            live.player_life = 200_000;
+            live.shared_spells.set_player_entity_life(200_000);
+            live.shared_spells.set_local_player_mana_for_test(200_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_life(200_000);
+            parent.set_mana(200_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+            live.shared_spells
+                .sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = 200_000;
+            }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        let switch = session.entities()[279].clone();
+        assert_eq!(
+            (switch.class, switch.model, switch.action, switch.source_id),
+            (11, 0, 0, 19)
+        );
+        session
+            .set_level2_entity_position(player, switch.position)
+            .unwrap();
+        let mut skeleton = None;
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 279, group: 19, authored_indices, .. }
+                    if authored_indices.contains(&454)))
+            {
+                skeleton = session.creature_runtime_census().roots_of_kind(CreatureKind::Skeleton)
+                    .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 454 }))
+                    .map(|row| row.handle);
+                break;
+            }
+        }
+        let skeleton = skeleton.expect("ordinary switch279 publishes Skeleton454");
+        assert!(
+            session.source_arena().rebuilt_class5_model_slots()[9].contains(&skeleton.source_slot)
+        );
+        let fire = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        let mut fixed_pose = None;
+        let mut paid = BTreeSet::new();
+        let mut queued: Option<(Vec<(u16, u32, u16)>, i32)> = None;
+        let mut births = BTreeSet::new();
+        let mut callbacks = Vec::new();
+        let mut fatal = None;
+        let mut damage_visits = Vec::new();
+        let mut saw_76 = false;
+        let mut saw_77 = false;
+        let mut sphere = false;
+        let mut burst = false;
+        let mut hidden = false;
+        let mut reclaimed = false;
+        let mut following_target_loss = false;
+        let mut no_skeleton_kill_increment = false;
+        let mut trace = Vec::new();
+        for turn in 0..360 {
+            let same = session.source_arena().handle(skeleton.source_slot) == Some(skeleton);
+            if !same {
+                if hidden {
+                    reclaimed = true;
+                    break;
+                }
+                panic!("Skeleton generation changed before hide: {trace:?}");
+            }
+            let before = session.entities()[usize::from(skeleton.source_slot)].clone();
+            let mailbox = (
+                i32::from_le_bytes(before.record[98..102].try_into().unwrap()),
+                u16::from_le_bytes(before.record[102..104].try_into().unwrap()),
+            );
+            let callback_start = callbacks.len();
+            let was_fatal = fatal.is_some();
+            let credit_before = session.economy().authored_bee_kill_census(player);
+            let ready = session.shared_spells().pickup(fire).is_some_and(|holder| {
+                holder.active_value == 0
+                    && session.shared_spells().player_entity().mana >= holder.max_mana
+            });
+            let mut command = PlayerCommand::default();
+            if fatal.is_none()
+                && before.life >= 0
+                && ready
+                && before.action == 73
+                && fixed_pose.is_none()
+            {
+                // One fixed player-only firing line: left-hand offset is applied
+                // by the public command, and the real projectile moves 384 on its first visit.
+                let yaw = 0_i16;
+                let mut launch = before.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 384);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw
+                    .wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity)
+                    & 0x07ff;
+                crate::move_entity(&mut position, parent_yaw.wrapping_add(512), 0, 256);
+                let centre = before.position.z.wrapping_add(before.array_yaw());
+                position.z = centre
+                    .wrapping_sub(parent.array_fov())
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(position)
+                            .wrapping_add(256),
+                    )
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(launch)
+                            .wrapping_add(256),
+                    );
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch,
+                    Position {
+                        z: centre,
+                        ..before.position
+                    },
+                );
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                fixed_pose = Some((position, yaw, pitch));
+            }
+            if fatal.is_none() && before.life >= 0 && ready && fixed_pose.is_some() {
+                command = PlayerCommand {
+                    opcode: 6,
+                    argument_1: fire_ui,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                };
+            }
+            let cost = session.shared_spells().pickup(fire).unwrap().max_mana;
+            let event_start = session.economy().events().len();
+            area_damage::start_effect_damage_trace(skeleton.source_slot);
+            area_damage::start_fireball_launch_trace();
+            session.start_model9_callback_trace(skeleton);
+            session.step_outer_turn(command, 0);
+            let visits = session.take_model9_callback_trace();
+            let launches = area_damage::take_fireball_launch_trace()
+                .into_iter()
+                .filter(|launch| launch.2 == player)
+                .collect::<Vec<_>>();
+            births.extend(area_damage::take_fireball_impact_birth_trace());
+            callbacks.extend(area_damage::take_effect_damage_trace());
+            for visit in visits {
+                assert_eq!(visit.source, skeleton);
+                assert_eq!(
+                    visit.exit_handle,
+                    Some(skeleton),
+                    "the original callback must retain its generation"
+                );
+                assert!(
+                    visit.entry_damage_trace_cursor <= visit.exit_damage_trace_cursor
+                        && callback_start + visit.exit_damage_trace_cursor <= callbacks.len()
+                );
+                if visit.entry.life >= 0 && visit.exit.life < visit.entry.life {
+                    let consumed = visit.entry.mailbox;
+                    assert_eq!(
+                        consumed,
+                        (crate::level1_mission::FIREBALL_PAYLOAD, player),
+                        "each actual life reduction must consume one player Fireball"
+                    );
+                    assert_eq!(
+                        visit.exit.life,
+                        visit.entry.life - crate::level1_mission::FIREBALL_PAYLOAD
+                    );
+                    assert_eq!(
+                        visit.exit.mailbox.1, 0,
+                        "the real callback clears the consumed owner"
+                    );
+                    let entry_cursor = callback_start + visit.entry_damage_trace_cursor;
+                    assert!(entry_cursor <= callbacks.len());
+                    let writer = callbacks[..entry_cursor]
+                        .iter()
+                        .rposition(|receipt| receipt.mailbox_before != receipt.mailbox_after)
+                        .expect("a real mailbox writer precedes the callback");
+                    assert_eq!(
+                        callbacks[writer].mailbox_after,
+                        Some(consumed),
+                        "the latest writer before the callback supplies the consumed mailbox"
+                    );
+                    damage_visits.push((writer, visit.entry.life, consumed, visit.exit.life));
+                    if visit.exit.life < 0 {
+                        assert_eq!(visit.exit.killer, player);
+                        fatal = Some((writer, visit.entry.life, consumed, visit.exit.life));
+                    }
+                }
+            }
+            for receipt in session.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current: CurrentOccupant::Known { selector, .. },
+                    ..
+                } = receipt
+                else {
+                    continue;
+                };
+                let (Some(before), Some(after)) = (
+                    original.observed_player_resources(),
+                    selector.observed_player_resources(),
+                ) else {
+                    continue;
+                };
+                if slot == fire && !launches.is_empty() {
+                    assert!(cost > 0 && queued.is_none());
+                    let regen = if before.2 >= 0 {
+                        -cost
+                    } else {
+                        before.2.wrapping_sub(cost)
+                    };
+                    assert_eq!(
+                        (before.0, after.0, after.1, after.2),
+                        (player_handle, player_handle, before.1, regen)
+                    );
+                    queued = Some((launches.clone(), regen));
+                } else if slot == player
+                    && let Some((_, regen)) = queued.as_ref()
+                    && before.0 == player_handle
+                    && before.2 == *regen
+                {
+                    assert_eq!(
+                        (after.0, after.1),
+                        (
+                            player_handle,
+                            before.1.wrapping_add(before.2).clamp(0, before.3)
+                        )
+                    );
+                    paid.extend(queued.take().unwrap().0);
+                }
+            }
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            let same = session.source_arena().handle(skeleton.source_slot) == Some(skeleton);
+            if same {
+                let row = &session.entities()[usize::from(skeleton.source_slot)];
+                if before.action == 76 {
+                    assert_eq!(
+                        session.economy().authored_bee_kill_census(player),
+                        credit_before,
+                        "source PreKill excludes model9 from the player kill percentage"
+                    );
+                    no_skeleton_kill_increment = true;
+                }
+                if was_fatal {
+                    assert!(
+                        !session.source_arena().rebuilt_class5_model_slots()[9]
+                            .contains(&skeleton.source_slot)
+                    );
+                    assert!(
+                        !session
+                            .creature_runtime_census()
+                            .roots_of_kind(CreatureKind::Skeleton)
+                            .any(|root| root.handle == skeleton && root.living)
+                    );
+                    following_target_loss = true;
+                }
+                if fatal.is_some() && row.life < 0 {
+                    assert_eq!(row.word_24(), player);
+                }
+                saw_76 |= row.action == 76;
+                saw_77 |= row.action == 77;
+                for event in &session.economy().events()[event_start..] {
+                    if let Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        mana: 500,
+                    } = event
+                        && *source_entity_index == skeleton.source_slot
+                    {
+                        let actual = session
+                            .economy()
+                            .spheres()
+                            .iter()
+                            .find(|candidate| candidate.id == *sphere_id)
+                            .expect("the actual death sphere remains observable on its birth pass");
+                        assert_eq!((actual.mana, actual.owner_entity_index), (500, 0));
+                        sphere = true;
+                    }
+                    burst |= matches!(event, Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. } if *parent_entity_index == skeleton.source_slot);
+                }
+                if row.drawing_disabled() {
+                    hidden = true;
+                    assert!(
+                        !session
+                            .campaign_entity_presentations(0)
+                            .unwrap()
+                            .iter()
+                            .any(|view| view.entity_index == skeleton.source_slot)
+                    );
+                }
+            } else if hidden {
+                reclaimed = true;
+                break;
+            } else {
+                panic!("original Skeleton generation replaced before hide: {trace:?}");
+            }
+            if turn % 20 == 0 {
+                trace.push((
+                    turn,
+                    before.life,
+                    before.action,
+                    before.position,
+                    mailbox,
+                    paid.len(),
+                    callbacks.len(),
+                ));
+            }
+        }
+        let (fatal_index, before_life, mailbox, after_life) = fatal.expect(&format!(
+            "no real fatal hit: pose={fixed_pose:?} trace={trace:?} paid={paid:?}"
+        ));
+        assert_eq!(mailbox, (crate::level1_mission::FIREBALL_PAYLOAD, player));
+        assert_eq!(
+            damage_visits
+                .iter()
+                .map(|row| (row.1, row.3))
+                .collect::<Vec<_>>(),
+            [(1000, 750), (750, 500), (500, 250), (250, 0), (0, -250)],
+            "five actual single-pulse damage visits produce source-negative life"
+        );
+        for &(index, _, visit_mailbox, _) in &damage_visits {
+            let hit = &callbacks[index];
+            let impact = hit
+                .source_impact
+                .map(|(generation, row)| {
+                    (
+                        row.source_entity_index,
+                        generation,
+                        row.parent_entity_index,
+                        row.parent_entity_id,
+                    )
+                })
+                .or_else(|| {
+                    hit.source_raw_impact
+                        .as_ref()
+                        .and_then(|(generation, row)| {
+                            births
+                                .iter()
+                                .find(|&&(slot, born, _, _, owner)| {
+                                    slot == row.index
+                                        && born == *generation
+                                        && owner == row.source_id
+                                })
+                                .map(|&(_, _, parent, _, owner)| {
+                                    (row.index, *generation, parent, owner)
+                                })
+                        })
+                });
+            let (slot, generation, parent, owner) = impact.expect("actual fatal impact source");
+            assert!(
+                hit.target_slot == skeleton.source_slot
+                    && hit.target_generation == skeleton.generation
+                    && hit.source_slot == Some(slot)
+                    && owner == player
+                    && hit.pulse.owner == player
+                    && hit.pulse.payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    && hit.pulse.selector == (u8::MAX, u8::MAX)
+                    && births.iter().any(|&(s, g, p, pg, o)| (s, g, p, o)
+                        == (slot, generation, parent, owner)
+                        && paid.contains(&(p, pg, o)))
+                    && hit.mailbox_after == Some(visit_mailbox)
+                    && hit
+                        .mailbox_before
+                        .zip(hit.mailbox_after)
+                        .is_some_and(|(before, after)| {
+                            after
+                                == (
+                                    if before.1 == 0 {
+                                        crate::level1_mission::FIREBALL_PAYLOAD
+                                    } else {
+                                        before
+                                            .0
+                                            .wrapping_add(crate::level1_mission::FIREBALL_PAYLOAD)
+                                    },
+                                    player,
+                                )
+                        })
+                    && hit.target.is_some_and(|target| {
+                        crate::level1_mission::source_entities_overlap(
+                            hit.pulse.position,
+                            hit.pulse.half_width,
+                            hit.pulse.vertical_offset,
+                            hit.pulse.half_height,
+                            target.position,
+                            target.shape.half_width,
+                            target.shape.vertical_offset,
+                            target.shape.half_height,
+                        )
+                    }),
+                "each mailbox must originate at a paid, generation-matched real impact: hit={hit:?} paid={paid:?}"
+            );
+        }
+        assert_eq!(damage_visits.last().map(|row| row.0), Some(fatal_index));
+        assert!(
+            before_life >= 0
+                && after_life < 0
+                && saw_76
+                && saw_77
+                && sphere
+                && burst
+                && hidden
+                && reclaimed
+                && following_target_loss
+                && no_skeleton_kill_increment,
+            "source death and following reclaim: 76={saw_76} 77={saw_77} sphere={sphere} burst={burst} hidden={hidden} reclaimed={reclaimed} target_loss={following_target_loss} no_kill_increment={no_skeleton_kill_increment} trace={trace:?}"
+        );
+        assert!(
+            !session.source_arena().rebuilt_class5_model_slots()[9].contains(&skeleton.source_slot)
+        );
+        assert!(
+            !session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|row| row.handle == skeleton && row.living)
+        );
+        assert_ne!(
+            session.source_arena().handle(skeleton.source_slot),
+            Some(skeleton)
+        );
+    }
 
     #[test]
     fn ordinary_level_seven_skeleton_arrow_damages_player() {

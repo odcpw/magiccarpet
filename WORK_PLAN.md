@@ -126,6 +126,50 @@ Skeleton kill through strict negative life, source76/77 death/hide, following
 reclaim and real living-root/target loss; four250 hits leave1000 life at zero,
 so a fifth accepted hit is required. Keep `.22` open through this consumer.
 
+Fresh original-family review atf3b538f7 found another real enabled gap: the whole
+Level5 package86cb7654 binds39 reset Skeletons to StageVar1 kind3/flags3 and
+AxisScalar(4), with live Archer targets. After natural emergence, source1D8C0
+selects/caches a current model4 actor; the existing Skeleton action79 adapter
+instead treats4 as the coordinate(4,0) and calls its mode1 kernel. This is an
+ordinary behavior divergence, not a hypothetical custom route or the configured
+absence control. AzureGate owns its canonical target-follow implementation and
+real unmodified Level5 producer/consumer check, with narrow shared-root leases;
+Magenta retains the family and has frozen the separate UNRUN paid-kill gate at
+skeleton.rsaaa937d3. Serialize that file's handback. Root batches both checks
+after a coherent fix; a production change requires a new matching native.
+Neither the installed property/arrow batch nor the configured absence control
+closes this missing behavior. No level-specific patch or forced actor/timer is
+allowed, and unsupported/default-unreachable callback classification stays.
+
+That actor-follow fix and the paid-kill path are now verified in candidate6,
+pending matching native delivery. Actual unmodified Level5 reset/emergence→
+mode3→current Archer cache/following/map/presentation/reset passes2.718s.
+Configured near/hit/lethal/route-continuation/null/direct-pointer and unsupported
+flee controls pass3.470s on production-identical candidate5. The real Level7
+switch279/group19/authored454 paid path passes48.905s: five causal250 hits,
+1000→750→500→250→0→-250, actual76/77, credited word24/player with no model9
+killed-percent increment, neutral500 mana/burst, hide/presentation and following
+original-generation/target/living-root loss. Declared controls are player-only
+200000 life/mana/capacity, equipped Fireball and one fixed firing pose/aim;
+existing acquired-spell proof is reused, no NPC state/RNG/timer was forced.
+Candidate5's failed outer-turn mailbox assertion is preserved. The corrected
+test uses actual callback-entry/exit state and the latest accepted writer before
+that entry, retaining exact payment/impact/generation attribution. Its bounded
+enabled-only observer is cfg(test); the non-test dispatch call is unchanged.
+Core6 passes106.600s/444stable; exact worker/local executable hashes match.
+Source order passes0.638s and workspace/all-target36.442s passes444Rust+37extra
+stable. Whole-file formatting/scanner debt remains, no added critical finding.
+
+The original-family admission check also matched all22 existing L3–24 authored
+payload hashes against the pinned source-record closure. Besides L3 kind1 and
+L5 kind3, L16 binds97 Skeleton rows to kind4 targeting Creature24; that target
+is absent in its reset, so callback admission depends on actual group timing.
+No other bound kinds were found in those22 inputs. This does not prove all
+other source StageVar modes globally unreachable: remaining fallback modes,
+uninspected L1/2/25/secret routes and custom selectors stay unqualified. Full
+`.22` remains open; finish matching delivery, then resolve the real mode4
+producer/consumer admission without forced NPCs or invented spawning.
+
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
 

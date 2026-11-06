@@ -783,6 +783,38 @@ pub(crate) struct Model9ConversionReceipt {
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Model9CallbackState {
+    pub(crate) action: u8,
+    pub(crate) life: i32,
+    pub(crate) mailbox: (i32, u16),
+    pub(crate) killer: u16,
+}
+
+#[cfg(test)]
+impl Model9CallbackState {
+    fn capture(row: &EntitySnapshot) -> Self {
+        Self {
+            action: row.action,
+            life: row.life,
+            mailbox: (row.source_upkeep_payload(), row.source_upkeep_word_62()),
+            killer: row.word_24(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Model9CallbackReceipt {
+    pub(crate) source: SourceEntityHandle,
+    pub(crate) entry: Model9CallbackState,
+    pub(crate) exit: Model9CallbackState,
+    pub(crate) exit_handle: Option<SourceEntityHandle>,
+    pub(crate) entry_damage_trace_cursor: usize,
+    pub(crate) exit_damage_trace_cursor: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ArcherChildDamageReceipt {
     pub(crate) child: SourceEntityHandle,
     pub(crate) parent: Option<SourceEntityHandle>,
@@ -821,6 +853,9 @@ std::thread_local! {
     static MODEL9_CONVERSION_RECEIPTS:
         std::cell::RefCell<Vec<Model9ConversionReceipt>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    static MODEL9_CALLBACK_TRACE:
+        std::cell::RefCell<Option<(SourceEntityHandle, Vec<Model9CallbackReceipt>)>> =
+        const { std::cell::RefCell::new(None) };
     static ARCHER_CHILD_DAMAGE_RECEIPTS:
         std::cell::RefCell<Vec<ArcherChildDamageReceipt>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -1955,6 +1990,21 @@ impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn take_model9_conversion_receipts(&self) -> Vec<Model9ConversionReceipt> {
         MODEL9_CONVERSION_RECEIPTS.with(|receipts| std::mem::take(&mut *receipts.borrow_mut()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_model9_callback_trace(&self, target: SourceEntityHandle) {
+        MODEL9_CALLBACK_TRACE.with(|trace| *trace.borrow_mut() = Some((target, Vec::new())));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_model9_callback_trace(&self) -> Vec<Model9CallbackReceipt> {
+        MODEL9_CALLBACK_TRACE.with(|trace| {
+            trace
+                .borrow_mut()
+                .take()
+                .map_or_else(Vec::new, |(_, receipts)| receipts)
+        })
     }
 
     #[cfg(test)]
@@ -18254,6 +18304,50 @@ impl Mc2Simulation {
                 self.step_imported_stone(source_slot)?;
             }
             (ExistingHandler::Model9Family, SourceRoute::Imported) => {
+                #[cfg(test)]
+                {
+                    let entry = MODEL9_CALLBACK_TRACE.with(|trace| {
+                        let trace = trace.borrow();
+                        let (target, receipts) = trace.as_ref()?;
+                        let arena = &self.session.state.live.economy;
+                        (receipts.len() < 64 && arena.handle(source_slot) == Some(*target)).then(
+                            || {
+                                (
+                                    *target,
+                                    Model9CallbackState::capture(
+                                        &arena.entities[usize::from(source_slot)],
+                                    ),
+                                    area_damage::effect_damage_trace_len(),
+                                )
+                            },
+                        )
+                    });
+                    let result = self.step_imported_model9(
+                        source_slot,
+                        pass_start_class5_model_slots,
+                        pass_start_class3_slots,
+                    );
+                    if let Some((source, entry, entry_damage_trace_cursor)) = entry {
+                        let arena = &self.session.state.live.economy;
+                        let receipt = Model9CallbackReceipt {
+                            source,
+                            entry,
+                            exit: Model9CallbackState::capture(
+                                &arena.entities[usize::from(source_slot)],
+                            ),
+                            exit_handle: arena.handle(source_slot),
+                            entry_damage_trace_cursor,
+                            exit_damage_trace_cursor: area_damage::effect_damage_trace_len(),
+                        };
+                        MODEL9_CALLBACK_TRACE.with(|trace| {
+                            if let Some((_, receipts)) = trace.borrow_mut().as_mut() {
+                                receipts.push(receipt);
+                            }
+                        });
+                    }
+                    result?;
+                }
+                #[cfg(not(test))]
                 self.step_imported_model9(
                     source_slot,
                     pass_start_class5_model_slots,
@@ -20748,7 +20842,40 @@ impl Mc2Simulation {
                     pass_start_class3_slots,
                 );
             }
-            79 => return self.step_imported_model9_action79(source_slot),
+            79 => {
+                if matches!(
+                    self.session.state.live.economy.entities[usize::from(source_slot)].record[77],
+                    3..=5
+                ) {
+                    let live = &mut self.session.state.live;
+                    let context = source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        map_type: Some(live.terrain.map_type()),
+                        player: Some((
+                            live.core.state.entity_index,
+                            live.core.state.position,
+                            live.player_life,
+                        )),
+                        player_orientation: Some((
+                            live.core.state.yaw,
+                            live.core.state.roll_accumulator,
+                        )),
+                        particles: Some(&self.session.definition.presentation.particles),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    return creatures::skeleton::step_actor_stage_in_arena(
+                        &mut live.economy,
+                        &live.core.runtime,
+                        &mut live.terrain,
+                        &self.session.definition.presentation.particles,
+                        &self.session.definition.presentation.entity_parameters,
+                        source_slot,
+                        pass_start_class5_model_slots,
+                        context,
+                    );
+                }
+                return self.step_imported_model9_action79(source_slot);
+            }
             74 => {
                 return self
                     .step_imported_model9_action74(source_slot, pass_start_class5_model_slots);

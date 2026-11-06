@@ -1436,6 +1436,18 @@ pub(crate) fn take_effect_damage_trace() -> Vec<EffectDamageReceipt> {
     EFFECT_DAMAGE_TRACE.with(|trace| trace.borrow_mut().take().map_or_else(Vec::new, |v| v.1))
 }
 
+/// Cursor in the currently enabled trace, before a source callback consumes
+/// its mailbox. The caller retains its prior-turn base when draining traces.
+#[cfg(test)]
+pub(crate) fn effect_damage_trace_len() -> usize {
+    EFFECT_DAMAGE_TRACE.with(|trace| {
+        trace
+            .borrow()
+            .as_ref()
+            .map_or(0, |(_, receipts)| receipts.len())
+    })
+}
+
 #[cfg(test)]
 fn trace_current_bounty(targets: &ArenaTargets<'_, '_>, slot: u16) -> Option<(i32, u16)> {
     // Match source_bounty and the actual writer: imported typed actors need
