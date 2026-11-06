@@ -7,6 +7,9 @@ Continue the existing original `mc-1pb` acceptance and dependencies; this list
 tracks delivery, not missing-code counts. Settlement `.16` is delivered;
 continue Skeleton `.22`, retaining the delivered families below. Root
 serializes shared joins, Cargo and installation with the small native team.
+Complete one creature through verification and installation before starting the
+next. Parallel workers tackle disjoint parts of that same capability. Firefly
+is queued after Skeleton; its read-only findings are preserved, with no edits.
 Each family must connect ordinary production, source scheduling/arithmetic,
 behavior and spell interaction, consequences/rewards, natural cleanup,
 objective consumers and original presentation/assets. Preserve the delivered
@@ -187,6 +190,24 @@ group23→27 chain exposed a missing canonical source12870 group-end rearm.
 Azure owns that shared join and its active-count boundary; Magenta owns the
 real switch/group/Creature24-follow consumer. No NPC/group/timer forcing or
 mission-specific patch is permitted; preserve full acceptance and dependencies.
+
+The source12870 group-end join is implemented at both successful publication
+exits, before allocator reset, and bounded by the actual active StageVar count.
+Candidate8's conditional L16 switch92→group23→proximity361→group27→Skeleton399→
+current Creature24 follow passes3.103s, including generation, cache, movement,
+map and presentation. Objective3 completion2 and one player position are declared
+prerequisite controls, not natural upstream objective completion/full-mission proof.
+Candidate7's dynamic-only switch observer failed against the real imported92;
+the corrected observation retains exact raw/authored identity and requires an
+actual negative-path callback. Production and443 other inputs are identical.
+Core8 passes65.953s/444stable, workspace22.479s/444+37stable. Source-order0.687s,
+active-count bounds1.016s and previous L5 follow2.698s pass on identical production7.
+Independent bounded gate review found no further concrete defect; its target
+selection oracle does not independently establish candidate-list completeness.
+Root also inspected the actual source/frozen-list loop. UBS has30 legacy
+whole-file critical findings, none on added lines; formatting debt remains.
+Matching native delivery follows. Full `.22` stays open: uninspected source
+inputs and other StageVar fallthroughs are not proven equivalent or unreachable.
 
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.

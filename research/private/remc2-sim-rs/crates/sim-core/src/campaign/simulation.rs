@@ -12095,6 +12095,9 @@ impl Mc2Simulation {
             &self.session.state.live.authored_features_consumed,
         );
         if rows.is_empty() {
+            creatures::archer::ArcherStageRuntime::rearm_model_relations(
+                &mut self.session.state.live.core.runtime,
+            );
             self.session.state.live.economy.finish_source_group();
             return Ok(());
         }
@@ -13264,6 +13267,9 @@ impl Mc2Simulation {
                 }
             }
         }
+        creatures::archer::ArcherStageRuntime::rearm_model_relations(
+            &mut self.session.state.live.core.runtime,
+        );
         self.session.state.live.economy.finish_source_group();
         self.push_dispatch_effect(Mc2DispatchEvent::AuthoredGroupActivated {
             pass,

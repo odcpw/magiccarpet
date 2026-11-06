@@ -85,7 +85,14 @@ impl ArcherStageRuntime for RuntimeSnapshot {
     }
 
     fn rearm_model_relations(&mut self) {
-        for (index, row) in self.stage_variables.iter_mut().enumerate().skip(1) {
+        let active_count = usize::from(self.active_stage_variable_count());
+        for (index, row) in self
+            .stage_variables
+            .iter_mut()
+            .enumerate()
+            .skip(1)
+            .take(active_count)
+        {
             if matches!(row.kind, 3 | 4 | 5 | 8 | 9) && row.flags as u8 & 6 == 6 {
                 row.flags = (row.flags as u8 & !4) as i8;
                 self.bytes[392 + index * 12 + 1] = row.flags as u8;
@@ -2052,6 +2059,54 @@ mod tests {
             relations: &[],
             stage: ArcherStageState::default(),
             stage_runtime: None,
+        }
+    }
+
+    #[test]
+    fn model_relation_rearm_respects_active_count_and_preserves_other_bytes() {
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let mut baseline = session.runtime().clone();
+        // Configured source12870 bounds control: sentinel, holes, direct
+        // pointers and dormant rows retain their exact state and encoding.
+        let rows = [
+            (4, 7),
+            (4, 7),
+            (7, 7),
+            (3, 3),
+            (5, 6),
+            (9, 0xa7),
+            (8, 4),
+            (8, 6),
+            (1, 7),
+            (0, 7),
+            (4, 6),
+        ];
+        for (index, (kind, flags)) in rows.into_iter().enumerate() {
+            baseline.stage_variables[index].kind = kind;
+            baseline.stage_variables[index].flags = flags as i8;
+            baseline.bytes[392 + index * 12] = kind as u8;
+            baseline.bytes[392 + index * 12 + 1] = flags;
+        }
+        for (count, changed) in [
+            (0, &[][..]),
+            (1, &[1][..]),
+            (4, &[1, 4][..]),
+            (5, &[1, 4, 5][..]),
+            (10, &[1, 4, 5, 7, 10][..]),
+        ] {
+            let mut runtime = baseline.clone();
+            assert!(runtime.set_active_stage_variable_count(count));
+            let mut expected = runtime.clone();
+            for &index in changed {
+                expected.stage_variables[index].flags = match index {
+                    1 => 3,
+                    5 => 0xa3_u8 as i8,
+                    _ => 2,
+                };
+                expected.bytes[392 + index * 12 + 1] = expected.stage_variables[index].flags as u8;
+            }
+            runtime.rearm_model_relations();
+            assert_eq!(runtime, expected, "source12870 active end {count}");
         }
     }
 

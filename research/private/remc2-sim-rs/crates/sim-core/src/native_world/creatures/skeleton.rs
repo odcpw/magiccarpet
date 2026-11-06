@@ -526,6 +526,15 @@ pub(crate) fn step_alliance_source_slot(
 
 #[cfg(test)]
 #[derive(Clone, Debug)]
+struct ActorStageSelection {
+    position: crate::Position,
+    stage_index: u8,
+    peers: Vec<(u16, Option<u8>, Option<u16>)>,
+    candidates: Vec<(u16, crate::Position)>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
 struct ActorStageVisit {
     source: crate::campaign::source_arena::SourceEntityHandle,
     before: EntitySnapshot,
@@ -535,6 +544,7 @@ struct ActorStageVisit {
         source_target::View,
     )>,
     follow_heading: Option<i16>,
+    selection: Option<ActorStageSelection>,
 }
 
 #[cfg(test)]
@@ -590,6 +600,8 @@ pub(crate) fn step_actor_stage_in_arena(
     let mut observed_target = None;
     #[cfg(test)]
     let mut follow_heading = None;
+    #[cfg(test)]
+    let mut observed_selection = None;
 
     let hit = consume(arena, &mut row, context)?;
     match hit {
@@ -598,12 +610,21 @@ pub(crate) fn step_actor_stage_in_arena(
             if row.phase & 7 == 0 {
                 let target_slot = if stage.flags as u8 & 2 != 0 {
                     if word(&row, 78) == 0 {
+                        #[cfg(test)]
+                        let mut selection = ActorStageSelection {
+                            position: row.position,
+                            stage_index,
+                            peers: Vec::new(),
+                            candidates: Vec::new(),
+                        };
                         let mut selected = 0;
                         if stage.flags as u8 & 1 != 0 {
                             for &peer in &frozen_models[9] {
                                 let Some(peer) = source_target::read(arena, context, peer)? else {
                                     continue;
                                 };
+                                #[cfg(test)]
+                                selection.peers.push((peer.slot, peer.relations.stage_index, peer.relations.stage_relation));
                                 if peer.relations.stage_index == Some(stage_index)
                                     && let Some(cached) =
                                         peer.relations.stage_relation.filter(|slot| *slot != 0)
@@ -631,6 +652,8 @@ pub(crate) fn step_actor_stage_in_arena(
                                 else {
                                     continue;
                                 };
+                                #[cfg(test)]
+                                selection.candidates.push((candidate, target.position));
                                 let dx = i32::from(
                                     target.position.x.wrapping_sub(row.position.x) as i16
                                 );
@@ -645,6 +668,8 @@ pub(crate) fn step_actor_stage_in_arena(
                                 }
                             }
                         }
+                        #[cfg(test)]
+                        { observed_selection = Some(selection); }
                         put(&mut row, 78, selected);
                     }
                     word(&row, 78)
@@ -797,6 +822,7 @@ pub(crate) fn step_actor_stage_in_arena(
                 after: row.clone(),
                 target: observed_target,
                 follow_heading,
+                selection: observed_selection,
             });
         }
     });
@@ -943,6 +969,277 @@ pub(crate) fn allocate_from_controller(
 #[cfg(test)]
 mod alliance_tests {
     use super::*;
+
+    #[test]
+    fn level_sixteen_objective_switch_rearms_mode4_follow_of_creature24() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Mc2DispatchEvent, RuntimeRelation};
+
+        let package = std::env::var_os("MC_LEVEL16_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/skeleton-20261106-integration/current-owner-package/level16"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(16).unwrap())
+            .expect("whole current Level16 owner package")
+            .simulation()
+            .clone();
+        let player = session.state.entity_index;
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let switch_handle = session
+            .source_arena()
+            .handle(92)
+            .expect("reset switch92 handle");
+        assert_eq!(switch_handle.generation, 0);
+        let Some(crate::campaign::source_arena::SourceEntityView::Imported(objective)) =
+            session.source_arena().resolve(switch_handle)
+        else {
+            panic!("reset model32 switch92 must use the imported source carrier");
+        };
+        assert_eq!(
+            (
+                objective.index,
+                objective.class,
+                objective.model,
+                objective.action,
+                objective.source_id,
+                objective.level_gate,
+            ),
+            (92, 11, 32, 32, 23, 3)
+        );
+        assert!(objective.active && !objective.drawing_disabled());
+        let authored_switch = session
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .iter()
+            .find(|row| row.index == 393)
+            .expect("actual reset objective switch record393");
+        assert_eq!(
+            (
+                authored_switch.kind,
+                authored_switch.subtype,
+                authored_switch.stage_tag,
+                authored_switch.parameter_1
+            ),
+            (11, 32, 23, 3)
+        );
+        assert_eq!(
+            (objective.position.x, objective.position.y),
+            (
+                authored_switch.world_position(0).x,
+                authored_switch.world_position(0).y
+            )
+        );
+        assert_eq!(session.runtime().stage_index, 5);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
+        assert_eq!(
+            (
+                session.runtime().stage_variables[3].kind,
+                session.runtime().stage_variables[3].flags as u8,
+                session.runtime().stage_variables[3].relation
+            ),
+            (4, 7, RuntimeRelation::AxisScalar(24))
+        );
+        assert!(session.source_arena().rebuilt_class5_model_slots()[24].is_empty());
+
+        // The reset objective is incomplete: the ordinary switch visit must
+        // not publish its group. Then declare objective3 complete as the
+        // focused progression prerequisite; no creature or group is staged.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(
+                    receipt,
+                    crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot: 92, .. }
+                )),
+            "the real reset switch visits the incomplete objective"
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 23, .. }
+        )));
+        assert_eq!(session.source_arena().handle(92), Some(switch_handle));
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .unwrap();
+        let mut published23 = false;
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "group23: {:?}",
+                session.dispatch_events()
+            );
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 92, group: 23, authored_indices, .. }
+                    if authored_indices.contains(&361) && authored_indices.contains(&406)))
+            {
+                published23 = true;
+                break;
+            }
+        }
+        assert!(published23, "real objective switch92 must publish group23");
+        assert!(!session.source_arena().rebuilt_class5_model_slots()[24].is_empty());
+        assert_eq!(
+            session.runtime().stage_variables[3].flags as u8 & 4,
+            0,
+            "source group-end sub12870 rearms the latched model relation"
+        );
+        let trigger = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.active && row.authored_index == 361)
+            .copied()
+            .expect("actual group23 area switch361");
+        assert_eq!(
+            (trigger.source_class, trigger.model, trigger.stage_tag),
+            (11, 0, 27)
+        );
+        let trigger_handle = session
+            .source_arena()
+            .handle(trigger.source_entity_index)
+            .unwrap();
+        session
+            .set_level2_entity_position(player, trigger.position)
+            .unwrap();
+        assert_eq!(session.source_arena().handle(player), Some(player_handle));
+        ACTOR_STAGE_VISITS.with(|visits| visits.borrow_mut().clear());
+        let mut selected = None;
+        let mut followed = false;
+        let mut moved = false;
+        let mut selected_source = false;
+        let mut cache_retained = false;
+        let mut evidence = Vec::new();
+        for turn in 0..160 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "group27/follow turn {turn}: {:?}",
+                session.dispatch_events()
+            );
+            if selected.is_none() && session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 27, authored_indices, .. }
+                    if *source_slot == trigger_handle.source_slot && authored_indices.contains(&399)))
+            {
+                selected = session.creature_runtime_census().roots_of_kind(CreatureKind::Skeleton)
+                    .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 399 }))
+                    .map(|row| row.handle);
+            }
+            let visits =
+                ACTOR_STAGE_VISITS.with(|visits| std::mem::take(&mut *visits.borrow_mut()));
+            let Some(root) = selected else { continue };
+            for visit in visits.into_iter().filter(|visit| visit.source == root) {
+                assert_eq!(session.source_arena().handle(root.source_slot), Some(root));
+                assert_eq!((visit.before.record[76], visit.before.record[77]), (3, 4));
+                assert_eq!(session.runtime().stage_variables[3].flags as u8 & 4, 0);
+                if let Some((target_handle, target)) = visit.target {
+                    assert_eq!((target.class, target.model), (5, 24));
+                    assert_eq!(
+                        session.source_arena().handle(target_handle.source_slot),
+                        Some(target_handle)
+                    );
+                    let identity = session
+                        .creature_identity_for_source_slot(target_handle.source_slot)
+                        .expect("actual current Creature24 root");
+                    assert_eq!(
+                        (identity.handle, identity.kind),
+                        (target_handle, CreatureKind::Creature24)
+                    );
+                    assert!(
+                        matches!(identity.origin, CreatureRootOrigin::AuthoredRecord { authored_record:
+                        91 | 93 | 95 | 98 | 100 | 102 | 105 | 402..=410 | 468..=470 })
+                    );
+                    assert_eq!(word(&visit.after, 78), target_handle.source_slot);
+                    if let Some(heading) = visit.follow_heading {
+                        assert_eq!(
+                            heading,
+                            crate::heading_for_positions(visit.after.position, target.position)
+                                as i16
+                        );
+                        followed = true;
+                    }
+                    moved |= (visit.before.position.x, visit.before.position.y)
+                        != (visit.after.position.x, visit.after.position.y);
+                    cache_retained |= word(&visit.before, 78) != 0
+                        && word(&visit.before, 78) == word(&visit.after, 78);
+                    if let Some(selection) = &visit.selection {
+                        let inherited = selection.peers.iter().find_map(|(_, stage, relation)| {
+                            (*stage == Some(selection.stage_index))
+                                .then_some(*relation)
+                                .flatten()
+                                .filter(|slot| *slot != 0)
+                        });
+                        let nearest = selection
+                            .candidates
+                            .iter()
+                            .min_by_key(|(_, position)| {
+                                let dx =
+                                    i64::from(position.x.wrapping_sub(selection.position.x) as i16);
+                                let dy =
+                                    i64::from(position.y.wrapping_sub(selection.position.y) as i16);
+                                dx * dx + dy * dy
+                            })
+                            .map(|(slot, _)| *slot);
+                        assert_eq!(
+                            inherited.or(nearest),
+                            Some(target_handle.source_slot),
+                            "source 1E3E0 keeps the first same-stage peer cache, otherwise nearest wrapped XY target"
+                        );
+                        selected_source = true;
+                    }
+                    evidence.push((
+                        turn,
+                        root,
+                        target_handle,
+                        visit.before.position,
+                        visit.after.position,
+                        visit.follow_heading,
+                    ));
+                }
+            }
+            if followed && moved && selected_source && cache_retained {
+                break;
+            }
+        }
+        let root = selected.expect("actual area switch361 publishes Skeleton399 in group27");
+        assert!(
+            followed && moved && selected_source && cache_retained,
+            "ordinary model4 follow must select/retain a current model24 target and move: {evidence:?}"
+        );
+        assert!(session.economy().map_chains().is_linked(root.source_slot));
+        let row = &session.entities()[usize::from(root.source_slot)];
+        let sprite = session
+            .campaign_entity_presentations(0)
+            .unwrap()
+            .into_iter()
+            .find(|view| view.entity_index == root.source_slot)
+            .expect("real Skeleton presentation");
+        assert_eq!(
+            (
+                sprite.position,
+                sprite.source_id,
+                sprite.render_parameter_index
+            ),
+            (
+                row.position,
+                row.source_id,
+                campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle
+            )
+        );
+    }
 
     #[test]
     fn ordinary_level_five_skeleton_emergence_follows_current_archer() {
