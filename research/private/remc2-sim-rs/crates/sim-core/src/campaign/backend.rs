@@ -33480,6 +33480,8 @@ pub(crate) mod tests {
         let published = store.active_definition().unwrap();
 
         let construct_group_twenty_two = |session: &mut GameSession<Mc2CampaignBackend>| {
+            use crate::campaign::source_arena::CreatureRootOrigin;
+
             let compatibility = session.backend_mut().campaign.simulation_mut();
             compatibility
                 .activate_authored_group_prerequisite_for_test(22)
@@ -33488,27 +33490,58 @@ pub(crate) mod tests {
                 event,
                 Mc2DispatchEvent::AuthoredGroupActivated { group: 22, .. }
             )));
-            assert_eq!(
-                compatibility
-                    .economy()
-                    .authored_class5()
-                    .iter()
-                    .map(|source| source.authored_index)
-                    .collect::<Vec<_>>(),
-                GROUP_TWENTY_TWO_ROWS
-            );
-            compatibility
+            // Model9 promotion transfers the real generation into the raw
+            // arena; the other authored family remains in the typed carrier.
+            let mut rows = compatibility
                 .economy()
                 .authored_class5()
                 .iter()
-                .find(|source| source.authored_index == SKELETON_RECORD)
-                .copied()
-                .unwrap()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>();
+            let census = compatibility.creature_runtime_census();
+            let mut target = None;
+            for identity in census.roots_of_kind(crate::level_definition::CreatureKind::Skeleton) {
+                let CreatureRootOrigin::AuthoredRecord { authored_record } = identity.origin else {
+                    continue;
+                };
+                if !GROUP_TWENTY_TWO_ROWS.contains(&authored_record) {
+                    continue;
+                }
+                assert_eq!(
+                    compatibility
+                        .source_arena()
+                        .handle(identity.handle.source_slot),
+                    Some(identity.handle)
+                );
+                let source = &compatibility.source_arena().entities
+                    [usize::from(identity.handle.source_slot)];
+                assert_eq!((source.class, source.model), (5, 9));
+                assert!(identity.living && source.active && !source.drawing_disabled());
+                rows.push(authored_record);
+                if authored_record == SKELETON_RECORD {
+                    assert!(
+                        target.is_none(),
+                        "record239 must have exactly one current generation"
+                    );
+                    assert_eq!(
+                        i32::from_le_bytes(source.record_bytes()[8..12].try_into().unwrap()),
+                        source.max_life
+                    );
+                    assert_eq!(
+                        i32::from_le_bytes(source.record_bytes()[12..16].try_into().unwrap()),
+                        source.life
+                    );
+                    target = Some((source.max_life, source.life));
+                }
+            }
+            rows.sort_unstable();
+            assert_eq!(rows, GROUP_TWENTY_TWO_ROWS);
+            target.expect("real authored Skeleton239 with its current generation")
         };
 
         let package_skeleton = construct_group_twenty_two(&mut session);
         assert_eq!(
-            (package_skeleton.max_life, package_skeleton.life),
+            package_skeleton,
             (
                 PACKAGE_MAX_LIFE.cast_signed(),
                 PACKAGE_MAX_LIFE.cast_signed()
@@ -33520,7 +33553,7 @@ pub(crate) mod tests {
         let authored_frame_zero_hash = session.backend().campaign.state_hash();
         let authored_skeleton = construct_group_twenty_two(&mut session);
         assert_eq!(
-            (authored_skeleton.max_life, authored_skeleton.life),
+            authored_skeleton,
             (
                 AUTHORED_MAX_LIFE.cast_signed(),
                 AUTHORED_MAX_LIFE.cast_signed()
@@ -33533,7 +33566,7 @@ pub(crate) mod tests {
         );
         let reset_skeleton = construct_group_twenty_two(&mut session);
         assert_eq!(
-            (reset_skeleton.max_life, reset_skeleton.life),
+            reset_skeleton,
             (
                 AUTHORED_MAX_LIFE.cast_signed(),
                 AUTHORED_MAX_LIFE.cast_signed()

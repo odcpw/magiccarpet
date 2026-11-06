@@ -23,7 +23,24 @@ const MODEL9_ACTION_REACTION: u8 = 74;
 const MODEL9_ACTION_PRE_KILL: u8 = 76;
 const MODEL9_ACTION_RAW_MOVEMENT: u8 = 79;
 const MODEL9_MOVEMENT_COUNTDOWN: i32 = 400;
-const MODEL9_MOVEMENT_PARTICLE: u16 = 201;
+/// Source selectors for the MC2 Skeleton adapter; the family and constructor
+/// consume the same binding when creating the root and its arrow.
+pub(super) struct Mc2SkeletonAssets {
+    pub(super) descriptor: u16,
+    pub(super) initial_particle: u16,
+    pub(super) movement_particle: u16,
+    pub(super) reaction_particle: u16,
+    pub(super) arrow_particle: u16,
+}
+
+pub(super) const MC2_SKELETON_ASSETS: Mc2SkeletonAssets = Mc2SkeletonAssets {
+    descriptor: 80,
+    initial_particle: 220,
+    movement_particle: 201,
+    reaction_particle: 202,
+    arrow_particle: 203,
+};
+const MODEL9_MOVEMENT_PARTICLE: u16 = MC2_SKELETON_ASSETS.movement_particle;
 // Pinned remc2 `str_D7BD6[80]`, installed by `sub_4BBB0`.
 const MODEL9_TURN_LIMIT: i16 = 0x16;
 const MODEL9_SLOPE_LIMIT: i32 = 0x14;
@@ -165,14 +182,17 @@ pub(super) fn construct_skeleton_source(
     scan_period: u16,
     particle_pose: ParticlePose,
 ) -> EntitySnapshot {
+    let properties = crate::level_definition::SKELETON_CLASS_PROPERTIES;
+    let assets = MC2_SKELETON_ASSETS;
+    let mana = properties.max_life >> 1;
     let entity_rng = next_source_rng16(initial_rng);
     let angle = (entity_rng % 0x832) as i16 - 1;
     let control_flags = CONTROL_MAP_LINKED_BIT | 8;
     let mut record = vec![0_u8; 176].into_boxed_slice();
     record[0..2].copy_from_slice(&source_slot.to_le_bytes());
     record[2] = 1;
-    record[8..12].copy_from_slice(&1000_i32.to_le_bytes());
-    record[12..16].copy_from_slice(&1000_i32.to_le_bytes());
+    record[8..12].copy_from_slice(&properties.max_life.to_le_bytes());
+    record[12..16].copy_from_slice(&properties.max_life.to_le_bytes());
     record[16..20].copy_from_slice(&control_flags.to_le_bytes());
     record[20..24].copy_from_slice(&16_i32.to_le_bytes());
     record[24..26].copy_from_slice(&entity_rng.to_le_bytes());
@@ -180,7 +200,7 @@ pub(super) fn construct_skeleton_source(
     record[32..34].copy_from_slice(&angle.to_le_bytes());
     record[34..36].copy_from_slice(&angle.to_le_bytes());
     record[36..38].copy_from_slice(&angle.to_le_bytes());
-    record[46..48].copy_from_slice(&500_u16.to_le_bytes());
+    record[46..48].copy_from_slice(&properties.initial_subspell.to_le_bytes());
     record[60] = 1;
     record[61] = (scan_period - u16::from(phase) % scan_period).wrapping_add(4) as u8;
     record[66] = phase;
@@ -197,12 +217,12 @@ pub(super) fn construct_skeleton_source(
     for offset in [88, 90, 92] {
         record[offset..offset + 2].copy_from_slice(&128_i16.to_le_bytes());
     }
-    record[94..96].copy_from_slice(&220_u16.to_le_bytes());
+    record[94..96].copy_from_slice(&assets.initial_particle.to_le_bytes());
     record[97] = particle_pose.animation_limit;
-    record[134..136].copy_from_slice(&20_i16.to_le_bytes());
-    record[136..138].copy_from_slice(&20_i16.to_le_bytes());
-    record[148..152].copy_from_slice(&500_i32.to_le_bytes());
-    record[164..168].copy_from_slice(&81_u32.to_le_bytes());
+    record[134..136].copy_from_slice(&properties.minimum_speed.to_le_bytes());
+    record[136..138].copy_from_slice(&properties.minimum_speed.to_le_bytes());
+    record[148..152].copy_from_slice(&mana.to_le_bytes());
+    record[164..168].copy_from_slice(&(u32::from(assets.descriptor) + 1).to_le_bytes());
     record[168] = 2;
     record[172..176].copy_from_slice(&1_u32.to_le_bytes());
     EntitySnapshot {
@@ -210,8 +230,8 @@ pub(super) fn construct_skeleton_source(
         source_id: source_slot,
         authority: EntityAuthority::FrozenObserved,
         active: true,
-        max_life: 1000,
-        life: 1000,
+        max_life: properties.max_life,
+        life: properties.max_life,
         next_relation: None,
         class: 5,
         model: 9,
@@ -225,19 +245,19 @@ pub(super) fn construct_skeleton_source(
         pitch: angle,
         fov: 0,
         phase,
-        subspell_index: 500,
+        subspell_index: properties.initial_subspell,
         byte_3b: 0,
         byte_3c: 0,
         font_type_index: 0,
         active_value: 0,
         activation_value: 0,
         mana_regen: 0,
-        actual_speed: 20,
+        actual_speed: properties.minimum_speed,
         max_mana: 0,
         mana_cost: 0,
-        mana: 500,
-        particle_parameter_index: Some(220),
-        parameter_relation: Some(80),
+        mana,
+        particle_parameter_index: Some(assets.initial_particle),
+        parameter_relation: Some(assets.descriptor),
         special_relation: EntitySpecialRelation::GlobalSpecialState,
         record,
     }
@@ -592,8 +612,8 @@ fn apply_model9_reaction_pose(
         return;
     }
     entity.set_actual_speed(0);
-    entity.particle_parameter_index = Some(202);
-    entity.record[94..96].copy_from_slice(&202_u16.to_le_bytes());
+    entity.particle_parameter_index = Some(MC2_SKELETON_ASSETS.reaction_particle);
+    entity.record[94..96].copy_from_slice(&MC2_SKELETON_ASSETS.reaction_particle.to_le_bytes());
     entity.record[96] = 0;
     entity.record[97] = reaction_pose.animation_limit;
     entity.record[86..88].copy_from_slice(&reaction_pose.array_yaw.to_le_bytes());
@@ -918,8 +938,9 @@ pub(super) fn step_model9_action73<W: FlightWorld>(
     if timer > 0 {
         entity.set_source_dword_10(timer - 1);
         if timer == 1 {
-            entity.particle_parameter_index = Some(201);
-            entity.record[94..96].copy_from_slice(&201_u16.to_le_bytes());
+            entity.particle_parameter_index = Some(MC2_SKELETON_ASSETS.movement_particle);
+            entity.record[94..96]
+                .copy_from_slice(&MC2_SKELETON_ASSETS.movement_particle.to_le_bytes());
             entity.record[96] = 0;
             entity.record[97] = movement_pose.animation_limit;
             entity.record[86..88].copy_from_slice(&movement_pose.array_yaw.to_le_bytes());
@@ -1386,6 +1407,39 @@ mod tests {
             CONTROL_MAP_LINKED_BIT | CONTROL_TREE_CALLBACK_BIT
         );
         assert!(!stone.drawing_disabled());
+    }
+
+    #[test]
+    fn skeleton_constructor_uses_typed_defaults_and_source_mana_order() {
+        let properties = crate::level_definition::SKELETON_CLASS_PROPERTIES;
+        let pose = ParticlePose {
+            animation_limit: 9,
+            array_yaw: 101,
+            array_pitch: 102,
+            array_roll: 103,
+            array_fov: 104,
+        };
+        let mut row = construct_skeleton_source(7, 0x1357, Position::default(), 0, 30, pose);
+        assert_eq!(
+            (row.max_life, row.life),
+            (properties.max_life, properties.max_life)
+        );
+        assert_eq!(row.mana, properties.max_life >> 1);
+        assert_eq!(row.actual_speed, properties.minimum_speed);
+        assert_eq!(row.subspell_index, properties.initial_subspell);
+        assert_eq!(row.parameter_relation, Some(MC2_SKELETON_ASSETS.descriptor));
+        assert_eq!(
+            row.particle_parameter_index,
+            Some(MC2_SKELETON_ASSETS.initial_particle)
+        );
+        assert_eq!(row.entity_rng, next_source_rng16(0x1357));
+        // Authored semantic health is bound after the source constructor;
+        // SetEvent144 is not called a second time by that later binding.
+        row.bind_frame_zero_max_life(1234);
+        assert_eq!(
+            (row.max_life, row.life, row.mana),
+            (1234, 1234, properties.max_life >> 1)
+        );
     }
 
     #[test]

@@ -22,7 +22,8 @@ impl crate::campaign::source_arena::SourceArena {
             .find(|row| row.source_entity_index == slot).copied()
             .unwrap_or(Level2AuthoredClass5RuntimeState {
                 source_entity_index: slot, byte_0x38: 1, xtype: 3,
-                descriptor_index: 80, pending_damage: 0, linked_head: 0,
+                descriptor_index: campaign_shared_families::MC2_SKELETON_ASSETS.descriptor,
+                pending_damage: 0, linked_head: 0,
             });
         let handle = self.handle(slot).ok_or_else(|| format!("Skeleton {slot} lost its address"))?;
         let particle = particles.get(usize::from(source.particle_index))
@@ -212,7 +213,7 @@ impl crate::campaign::source_arena::SourceArena {
             return Err("Skeleton descriptor scan period is zero".into());
         }
         let particle = particles
-            .get(220)
+            .get(usize::from(campaign_shared_families::MC2_SKELETON_ASSETS.initial_particle))
             .ok_or_else(|| "Skeleton requires particle 220".to_owned())?;
         let pose = campaign_shared_families::ParticlePose {
             animation_limit: particle
@@ -288,7 +289,8 @@ const MODEL9_YAW_MASK: i32 = 0x07ff;
 const MODEL9_ACTION_COUNTDOWN: u8 = 72;
 const MODEL9_ACTION_MOVEMENT: u8 = 73;
 const MODEL9_MOVEMENT_COUNTDOWN: i32 = 400;
-const MODEL9_MOVEMENT_PARTICLE: u16 = 201;
+const MODEL9_MOVEMENT_PARTICLE: u16 =
+    campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Model9MoveResult {
@@ -486,6 +488,8 @@ mod tests {
         let live = &mut session.session.state.live;
         let owner = live.core.state.entity_index;
         let source = live.economy.economy.allocate_authored_skeleton(feature.index, position, 1234, &live.terrain).unwrap();
+        assert_eq!((source.max_life, source.life, source.mana),
+            (1234, 1234, crate::level_definition::SKELETON_CLASS_PROPERTIES.max_life >> 1));
         let slot = source.source_entity_index;
         let handle = live.economy.handle(slot).unwrap();
         let free = live.economy.economy.free_slots.clone();

@@ -23,6 +23,30 @@ fn put(row: &mut EntitySnapshot, offset: usize, value: u16) {
     row.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct SkeletonArrowLaunch {
+    parent: crate::campaign::source_arena::SourceEntityHandle,
+    child: crate::campaign::source_arena::SourceEntityHandle,
+    source_class: u8,
+    model: u8,
+    particle: u16,
+    payload: u16,
+    attacker: u16,
+    target: u16,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static SKELETON_ARROW_LAUNCHES: std::cell::RefCell<Vec<SkeletonArrowLaunch>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn take_skeleton_arrow_launches() -> Vec<SkeletonArrowLaunch> {
+    SKELETON_ARROW_LAUNCHES.with(|receipts| std::mem::take(&mut *receipts.borrow_mut()))
+}
+
 fn blink(
     arena: &mut SourceArena,
     row: &mut EntitySnapshot,
@@ -137,7 +161,7 @@ fn attack_visual(
         row.set_source_action(73);
     } else {
         row.set_actual_speed(0);
-        bind_particle(row, 202, particles)?;
+        bind_particle(row, campaign_shared_families::MC2_SKELETON_ASSETS.reaction_particle, particles)?;
         row.record[69] = target.1;
         row.record[70] = target.2;
     }
@@ -154,6 +178,8 @@ fn shoot(
     particles: &[ParticleParameter],
 ) -> Result<(bool, Option<u16>), String> {
     use crate::native_world::creatures::archer::ArcherChildRequest;
+    #[cfg(test)]
+    let producer_handle = arena.handle(row.index);
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok((false, None));
     };
@@ -192,7 +218,7 @@ fn shoot(
         .initialize_class9_model13_child(slot, request, false)
         .ok_or_else(|| format!("Skeleton arrow allocation lost source slot {slot}"))?;
     let particle = particles
-        .get(203)
+        .get(usize::from(campaign_shared_families::MC2_SKELETON_ASSETS.arrow_particle))
         .ok_or("Skeleton arrow needs particle203")?;
     let position = crate::Position {
         z: base.z.wrapping_add(if replaced_root {
@@ -214,11 +240,11 @@ fn shoot(
         .find(|child| child.source_entity_index == slot)
         .ok_or("Skeleton arrow lost its owned carrier")?;
     child.position = position;
-    child.particle_index = 203;
+    child.particle_index = campaign_shared_families::MC2_SKELETON_ASSETS.arrow_particle;
     child.subspell_index = if !replaced_root && row.source_player_entity_index() != 0 {
-        600
+        crate::level_definition::SKELETON_CLASS_PROPERTIES.owned_arrow_damage
     } else {
-        400
+        crate::level_definition::SKELETON_CLASS_PROPERTIES.arrow_damage
     };
     // Particle array.fov is a collision axis, not the entity's angular fov.
     child.fov = 0;
@@ -227,7 +253,21 @@ fn shoot(
     child.collision_half_width = (particle.speed / 2).wrapping_mul(2) as i16;
     child.collision_vertical_offset = (particle.rotation_speed / 2) as i16;
     child.collision_half_height = (particle.rotation_speed / 2).wrapping_mul(2) as i16;
+    #[cfg(test)]
+    let birth = (
+        child.source_class, child.model, child.particle_index, child.subspell_index,
+        child.entity_id, child.word_0x96,
+    );
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    #[cfg(test)]
+    if let (Some(producer), Some(child)) = (producer_handle, arena.handle(slot)) {
+        SKELETON_ARROW_LAUNCHES.with(|receipts| {
+            receipts.borrow_mut().push(SkeletonArrowLaunch {
+                parent: producer, child, source_class: birth.0, model: birth.1,
+                particle: birth.2, payload: birth.3, attacker: birth.4, target: birth.5,
+            });
+        });
+    }
     let player_feedback =
         crate::native_world::Level2EconomyState::apply_creature_fireball_target_feedback(
             &mut arena.entities,
@@ -237,7 +277,7 @@ fn shoot(
         // sub_20C50 rereads this address after sub_1CDA0. The replacement
         // is no longer action74, so sub_20F20 applies to the current arrow.
         let particle = particles
-            .get(201)
+            .get(usize::from(campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle))
             .ok_or("Skeleton exit needs particle201")?;
         let child = arena
             .economy
@@ -246,7 +286,7 @@ fn shoot(
             .find(|child| child.source_entity_index == slot)
             .ok_or("replacement arrow lost its carrier")?;
         child.actual_speed = child.minimum_speed;
-        child.particle_index = 201;
+        child.particle_index = campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle;
         child.xtype = 3;
         child.xsubtype = u8::MAX;
         child.dword_0x10 = 50;
@@ -280,7 +320,7 @@ pub(crate) fn step_alliance_source_slot(
         .cloned()
         .ok_or_else(|| format!("Skeleton callback lost source slot {slot}"))?;
     let descriptor = parameters
-        .get(usize::from(row.parameter_relation.unwrap_or(80)))
+        .get(usize::from(row.parameter_relation.unwrap_or(campaign_shared_families::MC2_SKELETON_ASSETS.descriptor)))
         .ok_or("Skeleton descriptor is absent")?;
     let scan_period = u16::from_le_bytes([descriptor[26], descriptor[27]]);
     let range = u16::from_le_bytes([descriptor[28], descriptor[29]]);
@@ -466,7 +506,7 @@ pub(crate) fn step_alliance_source_slot(
         }
         if row.action != 74 {
             row.set_actual_speed(row.minimum_speed());
-            bind_particle(&mut row, 201, particles)?;
+            bind_particle(&mut row, campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle, particles)?;
             row.record[69] = 3;
             row.record[70] = u8::MAX;
             row.set_source_dword_10(50);
@@ -544,7 +584,7 @@ pub(crate) fn allocate_from_controller(
         .handle(birth.controller_slot)
         .ok_or("Skeleton birth lost its field controller")?;
     let particle = particles
-        .get(220)
+        .get(usize::from(campaign_shared_families::MC2_SKELETON_ASSETS.initial_particle))
         .ok_or("Skeleton constructor needs particle220")?;
     let animation_limit = campaign_shared_families::particle_animation_limit(particle.render_mode)
         .ok_or("Skeleton particle220 has no source animation limit")?;
@@ -617,6 +657,170 @@ pub(crate) fn allocate_from_controller(
 #[cfg(test)]
 mod alliance_tests {
     use super::*;
+
+    #[test]
+    fn ordinary_level_seven_skeleton_arrow_damages_player() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+        use std::{collections::BTreeMap, path::PathBuf};
+
+        let package = std::env::var_os("MC_LEVEL7_HOUSE_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/settlement-20261105-integration/owner-collision-closure-v4/level7")
+            },
+            PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
+            .expect("whole Level7 owner package")
+            .simulation()
+            .clone();
+        let player = session.state.entity_index;
+        let player_handle = session.source_arena().handle(player).unwrap();
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        let trigger = session.entities()[279].clone();
+        assert_eq!(
+            (trigger.class, trigger.model, trigger.source_id),
+            (11, 0, 19)
+        );
+        session
+            .set_level2_entity_position(player, trigger.position)
+            .unwrap();
+        let mut roots = BTreeMap::new();
+        let mut selected = None;
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 279, group: 19, authored_indices, .. }
+                    if authored_indices.contains(&454)))
+            {
+                for root in session.creature_runtime_census().roots_of_kind(CreatureKind::Skeleton) {
+                    if root.living && matches!(root.origin, CreatureRootOrigin::AuthoredRecord {
+                        authored_record: 430..=445 | 453..=461
+                    }) {
+                        roots.insert(root.handle.source_slot, root.handle);
+                        if root.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 454 }) {
+                            selected = Some(root.handle);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        let selected = selected.expect("actual switch279 publishes Skeleton454");
+        let source = &session.entities()[usize::from(selected.source_slot)];
+        let mut position = source.position;
+        crate::move_entity(&mut position, source.yaw, 0, 1536);
+        position.z = position.z.max(
+            session
+                .canonical_terrain()
+                .ground_height(position)
+                .wrapping_add(256),
+        );
+        session
+            .set_level2_entity_position(player, position)
+            .unwrap();
+        let life_before = session.canonical_player_life_for_test();
+        let _ = take_skeleton_arrow_launches();
+        let _ = session.take_archer_child_damage_receipts();
+        let mut launches = BTreeMap::new();
+        let mut accepted = None;
+        let mut intercepted = false;
+        for turn in 0..240 {
+            if turn >= 48
+                && !intercepted
+                && accepted.is_none()
+                && let Some(arrow) = session
+                    .economy()
+                    .authored_class5_archer_children()
+                    .iter()
+                    .find(|arrow| {
+                        arrow.active
+                            && arrow.drawing_enabled
+                            && arrow.word_0x96 == player
+                            && launches
+                                .contains_key(&(arrow.source_entity_index, arrow.slot_generation))
+                    })
+                    .copied()
+            {
+                // Player-only interception of an already published arrow.
+                let mut position = arrow.position;
+                crate::move_entity(&mut position, arrow.yaw, arrow.pitch, arrow.actual_speed);
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                intercepted = true;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "turn {turn}: {:?}",
+                session.dispatch_events()
+            );
+            for launch in take_skeleton_arrow_launches() {
+                if roots.get(&launch.parent.source_slot) == Some(&launch.parent) {
+                    assert_eq!(
+                        (
+                            launch.source_class,
+                            launch.model,
+                            launch.particle,
+                            launch.payload
+                        ),
+                        (
+                            9,
+                            13,
+                            campaign_shared_families::MC2_SKELETON_ASSETS.arrow_particle,
+                            crate::level_definition::SKELETON_CLASS_PROPERTIES.arrow_damage
+                        )
+                    );
+                    launches.insert((launch.child.source_slot, launch.child.generation), launch);
+                }
+            }
+            for receipt in session.take_archer_child_damage_receipts() {
+                let key = (receipt.child.source_slot, receipt.child.generation);
+                let payload = crate::level_definition::SKELETON_CLASS_PROPERTIES.arrow_damage;
+                let expected = if receipt.mailbox_before.1 == 0 {
+                    i32::from(payload)
+                } else {
+                    receipt.mailbox_before.0.wrapping_add(i32::from(payload))
+                };
+                if launches.get(&key).is_some_and(|launch| {
+                    receipt.parent == Some(launch.parent)
+                        && launch.target == player
+                        && launch.attacker == receipt.attacker
+                }) && receipt.target == player_handle
+                    && receipt.payload == payload
+                    && receipt.mailbox_after == (expected, receipt.attacker)
+                {
+                    accepted = Some(receipt);
+                }
+            }
+            if accepted.is_some_and(|receipt| session.economy().events().get(receipt.event_cursor..)
+                .is_some_and(|events| events.iter().any(|event| matches!(event,
+                    Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, .. }
+                        if *target_entity_index == player && *attacker_entity_index == receipt.attacker
+                            && *damage == i32::from(crate::level_definition::SKELETON_CLASS_PROPERTIES.arrow_damage)))))
+            {
+                assert!(session.canonical_player_life_for_test() < life_before);
+                return;
+            }
+        }
+        panic!(
+            "ordinary Skeleton arrow did not reach player: roots={roots:?} launches={launches:?} accepted={accepted:?} intercepted={intercepted} life={}->{}",
+            life_before,
+            session.canonical_player_life_for_test()
+        );
+    }
 
     #[test]
     fn ordinary_skeleton_impact_attack_and_expiry_keep_source_lifecycle() {

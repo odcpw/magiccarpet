@@ -27,6 +27,7 @@ use crate::level_definition::{
     SwitchKind, TilePosition,
 };
 use crate::{PLAYER_MIN_SPEED, SpellHolder};
+use crate::native_world::campaign_shared_families::MC2_SKELETON_ASSETS;
 
 #[cfg(test)]
 #[path = "player_lifecycle_tests.rs"]
@@ -1094,7 +1095,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                     for slot in skeletons {
                         live.economy.promote_authored_skeleton(
                             slot, &self.owner.session.definition.presentation.particles,
-                            &self.owner.session.definition.presentation.entity_parameters[80],
+                            &self.owner.session.definition.presentation.entity_parameters
+                                [usize::from(MC2_SKELETON_ASSETS.descriptor)],
                         )?;
                     }
                     self.effect_lists = area_damage::capture_effect_lists(
@@ -12545,7 +12547,8 @@ impl Mc2Simulation {
                         stage_index,
                         &mut live.terrain,
                         &self.session.definition.presentation.particles,
-                        &self.session.definition.presentation.entity_parameters[80],
+                        &self.session.definition.presentation.entity_parameters
+                            [usize::from(MC2_SKELETON_ASSETS.descriptor)],
                     )? {
                         live.level2_class5_activated.insert(feature.index);
                         for stage in live.mission.level2_authored_stage_variable_references_to(
@@ -14508,7 +14511,7 @@ impl Mc2Simulation {
                     .definition
                     .authored_creature_max_life(feature.index)
                     .map(u32::cast_signed)
-                    .unwrap_or(1_000);
+                    .unwrap_or(crate::level_definition::SKELETON_CLASS_PROPERTIES.max_life);
                 self.session.state.live.economy.allocate_authored_skeleton(
                     feature.index,
                     position,
@@ -14554,7 +14557,8 @@ impl Mc2Simulation {
                 if let Err(message) = live.economy.promote_authored_skeleton(
                     source.source_entity_index,
                     &self.session.definition.presentation.particles,
-                    &self.session.definition.presentation.entity_parameters[80],
+                    &self.session.definition.presentation.entity_parameters
+                        [usize::from(MC2_SKELETON_ASSETS.descriptor)],
                 ) {
                     self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot: producer_slot, message });
                     return;
@@ -17809,7 +17813,11 @@ impl Mc2Simulation {
                     properties
                 };
                 let descriptor = self.session.definition.presentation.entity_parameters
-                    .get(80).ok_or("Skeleton constructor needs descriptor80")?;
+                    .get(usize::from(MC2_SKELETON_ASSETS.descriptor))
+                    .ok_or_else(|| format!(
+                        "Skeleton constructor needs descriptor{}",
+                        MC2_SKELETON_ASSETS.descriptor,
+                    ))?;
                 let particles = &self.session.definition.presentation.particles;
                 let live = &mut self.session.state.live;
                 let owner = live.economy.entities[usize::from(source_slot)].source_id;
@@ -20755,7 +20763,7 @@ impl Mc2Simulation {
             }
         }
 
-        let pose = self.model9_particle_pose(201)?;
+        let pose = self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.movement_particle))?;
         let _source = self
             .session
             .state
@@ -20891,7 +20899,8 @@ impl Mc2Simulation {
         &mut self,
         source_slot: u16,
     ) -> std::result::Result<(), String> {
-        let reaction_pose = self.model9_particle_pose(202)?;
+        let reaction_pose =
+            self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.reaction_particle))?;
         let dynamic_targets = self.model9_dynamic_damage_targets();
         let (stage_index, callback_start_entities) = {
             let live = &self.session.state.live;
@@ -20967,9 +20976,12 @@ impl Mc2Simulation {
         pass_start_class5_model_slots: &[Vec<u16>; 29],
         pass_start_class3_slots: &[u16],
     ) -> std::result::Result<(), String> {
-        let movement_pose = self.model9_particle_pose(201)?;
-        let reaction_pose = self.model9_particle_pose(202)?;
-        let parameter = &self.session.definition.presentation.entity_parameters[80];
+        let movement_pose =
+            self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.movement_particle))?;
+        let reaction_pose =
+            self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.reaction_particle))?;
+        let parameter = &self.session.definition.presentation.entity_parameters
+            [usize::from(MC2_SKELETON_ASSETS.descriptor)];
         let scan_period = u16::from_le_bytes([parameter[26], parameter[27]]);
         if scan_period == 0 {
             return Err("Skeleton descriptor scan period is zero".into());
@@ -21102,8 +21114,10 @@ impl Mc2Simulation {
         source_slot: u16,
         pass_start_class5_model_slots: &[Vec<u16>; 29],
     ) -> std::result::Result<(), String> {
-        let movement_pose = self.model9_particle_pose(201)?;
-        let reaction_pose = self.model9_particle_pose(202)?;
+        let movement_pose =
+            self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.movement_particle))?;
+        let reaction_pose =
+            self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.reaction_particle))?;
         let (scan_period, awareness_radius, scanned_model) = {
             let live = &self.session.state.live;
             let source = &live.economy.entities[usize::from(source_slot)];
@@ -21201,8 +21215,9 @@ impl Mc2Simulation {
         scan_period: u16,
         inherit_identity: bool,
     ) -> std::result::Result<(), String> {
-        let pose = self.model9_particle_pose(220)?;
-        let parameter = &self.session.definition.presentation.entity_parameters[80];
+        let pose = self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.initial_particle))?;
+        let parameter = &self.session.definition.presentation.entity_parameters
+            [usize::from(MC2_SKELETON_ASSETS.descriptor)];
         let material_mask =
             u32::from_le_bytes(parameter[20..24].try_into().expect("descriptor dword"));
         let ground_clearance = i16::from_le_bytes([parameter[12], parameter[13]]);

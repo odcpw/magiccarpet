@@ -534,6 +534,221 @@ mod tests {
     }
 
     #[test]
+    fn configured_level_five_skeleton_count_edge_drives_real_absence_switch() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Mc2DispatchEvent, level2_class5::archer::ArcherChildRequest};
+        use crate::world::effects;
+
+        const SWITCH: u16 = 209;
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            std::path::PathBuf::from,
+        );
+        let campaign = CampaignSession::open(&package, CampaignSelection::ordinary(5).unwrap())
+            .expect("unfiltered owner Level5");
+        let mut session = campaign.simulation().clone();
+        let reset_hash = session.state_hash();
+        let feature = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|row| row.index == 82)
+            .expect("actual authored Skeleton watcher");
+        assert_eq!(
+            (feature.kind, feature.subtype, feature.activation_group),
+            (11, 22, 0)
+        );
+        let switch = &session.entities()[usize::from(SWITCH)];
+        assert!(switch.active && !switch.drawing_disabled());
+        assert_eq!(
+            (switch.class, switch.model, switch.action, switch.source_id),
+            (11, 22, 22, u16::try_from(feature.stage_tag).unwrap())
+        );
+        assert_eq!(switch.source_dword_10(), 0);
+        let group = switch.source_id;
+        let expected_rows = session
+            .mission()
+            .authored_features()
+            .iter()
+            .filter(|row| row.activation_group == i16::try_from(group).unwrap())
+            .map(|row| row.index)
+            .collect::<Vec<_>>();
+        assert!(!expected_rows.is_empty());
+        let switch_handle = session.source_arena().handle(SWITCH).unwrap();
+        let roots = session.source_arena().rebuilt_class5_model_slots()[9].clone();
+        assert_eq!(roots.len(), 39, "retain the genuine whole-map baseline");
+        let handles = roots
+            .iter()
+            .map(|&slot| session.source_arena().handle(slot).unwrap())
+            .collect::<Vec<_>>();
+        let survivor = *handles.last().unwrap();
+        let player = session.state.entity_index;
+        let step = |session: &mut crate::native_world::Mc2Simulation| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Level5 count-edge dispatch: {:?}",
+                session.dispatch_events()
+            );
+        };
+        step(&mut session);
+        assert_eq!(session.entities()[usize::from(SWITCH)].source_dword_10(), 0);
+        assert_eq!(
+            session.source_arena().rebuilt_class5_model_slots()[9],
+            roots
+        );
+
+        // Configured downstream boundary only: this does not claim 39 ordinary
+        // kills. Keep one original living generation and the real watcher,
+        // source timers, phases, RNG and group publication unmodified.
+        for &slot in &roots[..roots.len() - 1] {
+            session.source_arena_mut().entities[usize::from(slot)].disable_drawing();
+        }
+        assert_eq!(
+            session.source_arena().rebuilt_class5_model_slots()[9],
+            [survivor.source_slot]
+        );
+        step(&mut session);
+        assert_eq!(
+            session.source_arena().handle(survivor.source_slot),
+            Some(survivor)
+        );
+        assert_eq!(
+            session.entities()[usize::from(SWITCH)].source_dword_10(),
+            0,
+            "one living original root still blocks the actual 11/22 consumer"
+        );
+        assert!(
+            handles[..handles.len() - 1]
+                .iter()
+                .all(|handle| session.source_arena().handle(handle.source_slot) != Some(*handle))
+        );
+
+        // Declared arrived pulse, not a paid-cast claim. The actual Skeleton
+        // callbacks consume the mailbox and own death/hide/following reclaim.
+        let life = session.entities()[usize::from(survivor.source_slot)].life;
+        session
+            .stage_imported_skeleton_fireball_damage_for_test(
+                survivor.source_slot,
+                player,
+                u16::try_from(life + 1).unwrap(),
+            )
+            .unwrap();
+        for _ in 0..32 {
+            step(&mut session);
+            let row = &session.entities()[usize::from(survivor.source_slot)];
+            if row.life < 0 {
+                break;
+            }
+            assert_eq!(session.entities()[usize::from(SWITCH)].source_dword_10(), 0);
+        }
+        let dead = &session.entities()[usize::from(survivor.source_slot)];
+        assert!(
+            dead.active && dead.life < 0 && !dead.drawing_disabled(),
+            "negative life leaves the living census before the later hide callback: {dead:?}"
+        );
+        assert_eq!(
+            session.source_arena().handle(survivor.source_slot),
+            Some(survivor)
+        );
+        assert!(session.source_arena().rebuilt_class5_model_slots()[9].is_empty());
+        assert_eq!(
+            session.entities()[usize::from(SWITCH)].source_dword_10(),
+            0,
+            "the death callback cannot rewrite the pass-start frozen membership"
+        );
+
+        // A configured real class9/13 constructor is a census negative only;
+        // ordinary Skeleton launch/damage is exercised by the separate gate.
+        let parent = dead.clone();
+        let target = session.entities()[usize::from(player)].clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let mut arrow_arena = session.source_arena().clone();
+        let arena = &mut arrow_arena;
+        let arrow_slot = arena
+            .allocate_source_slot_with_terrain(&mut terrain)
+            .unwrap();
+        arena
+            .economy
+            .initialize_class9_model13_child(
+                arrow_slot,
+                ArcherChildRequest {
+                    parent_entity_index: survivor.source_slot,
+                    parent_entity_id: parent.source_id,
+                    parent_word_0x96: 0,
+                    parent_roll: 0,
+                    parent_position: parent.position,
+                    parent_fov: 0,
+                    target_entity_index: player,
+                    target_class: target.class,
+                    target_model: target.model,
+                    target_position: target.position,
+                },
+                false,
+            )
+            .unwrap();
+        effects::sync_position(arena, &mut terrain, arrow_slot, parent.position, true, true)
+            .unwrap();
+        let arrow_handle = arena.handle(arrow_slot).unwrap();
+        assert!(
+            arena
+                .authored_class5_archer_children()
+                .iter()
+                .any(|row| row.active
+                    && row.source_entity_index == arrow_slot
+                    && row.source_class == 9
+                    && row.model == 13)
+        );
+        assert!(
+            arena.rebuilt_class5_model_slots()[9].is_empty(),
+            "current class9/13 projectile must not count as a class5/9 living root"
+        );
+        assert_eq!(arena.handle(arrow_slot), Some(arrow_handle));
+
+        let mut timers = Vec::new();
+        let mut publications = 0;
+        let mut hidden = false;
+        for _ in 0..18 {
+            step(&mut session);
+            publications += session.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: actual, authored_indices, .. }
+                    if *source_slot == SWITCH && *actual == group
+                        && authored_indices.as_ref() == expected_rows.as_slice())).count();
+            if session.source_arena().handle(SWITCH) == Some(switch_handle) {
+                let row = &session.entities()[usize::from(SWITCH)];
+                let timer = row.source_dword_10();
+                if timers.last() != Some(&timer) {
+                    timers.push(timer);
+                }
+                hidden |= row.drawing_disabled();
+            }
+        }
+        assert_eq!(timers, (1..=16).rev().collect::<Vec<_>>());
+        assert_eq!(
+            publications, 1,
+            "the real package group must publish exactly once"
+        );
+        assert!(hidden);
+        assert_ne!(session.source_arena().handle(SWITCH), Some(switch_handle));
+        assert_ne!(
+            session.source_arena().handle(survivor.source_slot),
+            Some(survivor)
+        );
+        session.reset();
+        assert_eq!(session.state_hash(), reset_hash);
+        assert_eq!(
+            session.source_arena().rebuilt_class5_model_slots()[9],
+            roots
+        );
+        assert_eq!(session.entities()[usize::from(SWITCH)].source_dword_10(), 0);
+    }
+
+    #[test]
     fn repeat_preserves_rows_and_rearms_only_after_ten_clear_participant_visits() {
         for rule in [
             ActivationRule::RepeatedAreaEntry,

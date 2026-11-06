@@ -71,6 +71,42 @@ Do not infer a missing enabled75/78 handler from the old bead's static assessmen
 force actors/groups or build a scripted full-group combat playthrough. Workers
 remain responsible through integration; original acceptance/dependencies stay.
 
+Skeleton `.22` current batch is implemented and verified, not yet installed.
+Typed life/speed/subspell and400/600 arrow properties plus the MC2 descriptor/
+particle binding now reach raw construction, legacy promotion, semantic defaults,
+field births, movement/reaction and actual conversion. Source SetEvent144 still
+derives mana from initial maximum life before later authored health overrides.
+The bounded review caught literal selector consumers in the shared orchestrator
+and legacy tuple; those actual joins are fixed, without callback/order changes.
+Real switch279→group19 Skeleton birth→generation-bound9/13/203/400 arrow→accepted
+player mailbox→later damage/life loss PASSES17.091s. Player-only initial placement
+and interception of an already launched arrow are explicit controls; no NPC,
+RNG, phase, lifespan or group was forced. Configured Level5 watcher209/11/22
+count-edge passes3.294s:39 genuine baseline roots,38 declared hides, final
+declared arrived pulse, real death/countdown/publication/reclaim/reset. It does
+not prove natural whole-group combat or absence.
+
+Candidate2 core+CAPI compile passes107.009s/444stable, with independent rig/local
+test-binary hash/extent. Typed constructor, unchanged constructor admission,
+legacy promotion, Alliance/expiry/pressure and actual reset-health controls pass.
+An affected authored-health check failed identically on the preserved installed
+settlement26 binary: it read only the legacy projection after promotion to the
+authoritative raw arena. The corrected observer preserves all seven expected
+authored rows, exact239/current generation, raw health mirrors and1000/2000
+reopen/reset checks. It passes1.825s on candidate3; core compile62.366s and
+workspace/all-target42.396s pass, all444Rust+37extra inputs stable. Only this
+cfg(test) observer differs from passing candidate2 gameplay; other443 inputs and
+the entire production prefix are byte-identical, so that evidence is reused.
+Candidate1's compiler-detected usize conversions and test import repair remain
+recorded; no admission, gameplay or assertion was weakened. Evidence:
+`generated/skeleton-20261106-integration/`. Full `.22` remains in_progress;
+ordinary paid Skeleton death/count loss and matching native delivery are next.
+Package formatting and whole-file scanner debt remain explicit. Known completed
+build artifacts are byte-preserved on rig ext4 before local removal; three closed
+test binaries were hash-verified into ext4 with stable aliases to free426MB in
+tmpfs. Source/data, warm remote caches, current/previous natives and Modern work
+are preserved.
+
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
 

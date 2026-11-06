@@ -269,15 +269,16 @@ impl Level2EconomyState {
             ),
             9 => (
                 72,
-                20,
+                crate::level_definition::SKELETON_CLASS_PROPERTIES.minimum_speed,
                 0,
-                20,
-                max_life_override.unwrap_or(1_000),
-                500,
+                crate::level_definition::SKELETON_CLASS_PROPERTIES.minimum_speed,
+                max_life_override
+                    .unwrap_or(crate::level_definition::SKELETON_CLASS_PROPERTIES.max_life),
+                crate::level_definition::SKELETON_CLASS_PROPERTIES.max_life >> 1,
                 0,
-                500,
+                crate::level_definition::SKELETON_CLASS_PROPERTIES.initial_subspell,
                 16,
-                220,
+                super::campaign_shared_families::MC2_SKELETON_ASSETS.initial_particle,
             ),
             _ => return None,
         };

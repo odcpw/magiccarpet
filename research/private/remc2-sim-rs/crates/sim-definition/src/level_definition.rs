@@ -136,6 +136,25 @@ pub const ARCHER_CLASS_PROPERTIES: ArcherClassProperties = ArcherClassProperties
     collision_half_height: 256,
 };
 
+/// Source-default properties used by Skeleton construction and its arrow.
+/// Particle and descriptor selectors belong to the MC2 adapter.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SkeletonClassProperties {
+    pub max_life: i32,
+    pub minimum_speed: i16,
+    pub initial_subspell: u16,
+    pub arrow_damage: u16,
+    pub owned_arrow_damage: u16,
+}
+
+pub const SKELETON_CLASS_PROPERTIES: SkeletonClassProperties = SkeletonClassProperties {
+    max_life: 1000,
+    minimum_speed: 20,
+    initial_subspell: 500,
+    arrow_damage: 400,
+    owned_arrow_damage: 600,
+};
+
 /// Properties of the Castle's ground defender. Source parameter and asset
 /// identities remain in the MC2 adapter; the behavior owner consumes these.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

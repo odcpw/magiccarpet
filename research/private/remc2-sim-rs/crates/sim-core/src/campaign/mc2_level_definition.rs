@@ -750,7 +750,9 @@ impl Mc2LevelDefinition {
                             i32::from(crate::native_world::level2_class5::BEE_MAX_LIFE)
                         }
                         CreatureKind::Dragon => crate::native_world::level2_class5::DRAGON_LIFE,
-                        CreatureKind::Skeleton => 1_000,
+                        CreatureKind::Skeleton => {
+                            crate::level_definition::SKELETON_CLASS_PROPERTIES.max_life
+                        }
                         CreatureKind::Spider => {
                             crate::level_definition::SPIDER_CLASS_PROPERTIES.max_life
                         }
