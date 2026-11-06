@@ -1,5 +1,68 @@
 use super::*;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PossessionSourceReceipt {
+    ImpactBirth {
+        effect: crate::campaign::source_arena::SourceEntityHandle,
+        projectile: crate::campaign::source_arena::SourceEntityHandle,
+        holder: crate::campaign::source_arena::SourceEntityHandle,
+        owner: crate::campaign::source_arena::SourceEntityHandle,
+        packet: Level2PossessionEffect,
+    },
+    MailboxWrite {
+        effect: crate::campaign::source_arena::SourceEntityHandle,
+        target: crate::campaign::source_arena::SourceEntityHandle,
+        source_id: u16,
+        before_amount: u32,
+        before_possessor: u16,
+        amount: u32,
+        possessor: u16,
+    },
+}
+
+#[cfg(test)]
+thread_local! {
+    static POSSESSION_TRACE: std::cell::RefCell<Option<Vec<PossessionSourceReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_possession_trace() {
+    POSSESSION_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_possession_trace() -> Vec<PossessionSourceReceipt> {
+    POSSESSION_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+fn observe_possession_impact(
+    arena: &crate::campaign::source_arena::SourceArena,
+    child: u16,
+    origin: Option<(
+        crate::campaign::source_arena::SourceEntityHandle,
+        crate::campaign::source_arena::SourceEntityHandle,
+        crate::campaign::source_arena::SourceEntityHandle,
+    )>,
+) {
+    if let Some((projectile, holder, owner)) = origin
+        && let Some(effect) = arena.handle(child)
+        && let Some(packet) = arena.economy.possession_effects.iter()
+            .find(|packet| packet.active && packet.source_entity_index == child)
+            .copied()
+    {
+        POSSESSION_TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                trace.push(PossessionSourceReceipt::ImpactBirth {
+                    effect, projectile, holder, owner, packet,
+                });
+            }
+        });
+    }
+}
+
 /// Current fixed-address payload read by `AddBallon_60AB0`. This is a
 /// callback-local view, not a generation-bound target handle.
 #[derive(Clone, Copy, Debug)]
@@ -210,6 +273,16 @@ impl crate::campaign::source_arena::SourceArena {
         slot: u16,
         frame: Option<&super::source_target::PossessionCollisionFrame>,
     ) -> Level2PossessionStep {
+        // Observe the original generations before NewEvent can replace any
+        // address. This receipt has no gameplay or persistent-state carrier.
+        #[cfg(test)]
+        let observed_origin = self.economy.possession_projectiles.iter()
+            .find(|row| row.active && row.source_entity_index == slot)
+            .and_then(|row| Some((
+                self.handle(slot)?,
+                self.handle(row.holder_entity_index)?,
+                self.handle(row.source_id_entity_index)?,
+            )));
         let mut step = self.economy.advance_possession_projectile_slot(
             slot,
             terrain,
@@ -270,6 +343,8 @@ impl crate::campaign::source_arena::SourceArena {
                     .initialize_possession_effect_model(child, projectile, model)
                     .is_some()
                 {
+                    #[cfg(test)]
+                    observe_possession_impact(self, child, observed_origin);
                     crate::world::effects::sync_position(
                         self,
                         terrain,
@@ -355,6 +430,8 @@ impl crate::campaign::source_arena::SourceArena {
             {
                 return step;
             }
+            #[cfg(test)]
+            observe_possession_impact(self, child, observed_origin);
             let id = |slot: u16| {
                 self.entities
                     .get(usize::from(slot))
@@ -3150,10 +3227,40 @@ impl Level2EconomyState {
                             < i32::from(POSSESSION_IMPACT_COLLISION_HALF_HEIGHT)
                                 + i32::from(axis(92))
                     {
+                        #[cfg(test)]
+                        let before_amount = u32::from_le_bytes(
+                            actor.record[104..108].try_into().expect("Possession amount word"),
+                        );
+                        #[cfg(test)]
+                        let before_possessor = u16::from_le_bytes(
+                            actor.record[108..110].try_into().expect("Possession owner word"),
+                        );
                         actor.record[104..108]
                             .copy_from_slice(&u32::from(effect.source_model == 70).to_le_bytes());
                         actor.record[108..110]
                             .copy_from_slice(&effect.source_id_entity_index.to_le_bytes());
+                        #[cfg(test)]
+                        POSSESSION_TRACE.with(|trace| {
+                            if let Some(trace) = trace.borrow_mut().as_mut() {
+                                trace.push(PossessionSourceReceipt::MailboxWrite {
+                                    effect: crate::campaign::source_arena::SourceEntityHandle {
+                                        source_slot,
+                                        generation: self.slot_generation(source_slot),
+                                    },
+                                    target: crate::campaign::source_arena::SourceEntityHandle {
+                                        source_slot: candidate_slot,
+                                        generation: self.slot_generation(candidate_slot),
+                                    },
+                                    source_id: effect.source_id_entity_index,
+                                    before_amount,
+                                    before_possessor,
+                                    amount: u32::from_le_bytes(actor.record[104..108].try_into()
+                                        .expect("written Possession amount word")),
+                                    possessor: u16::from_le_bytes(actor.record[108..110].try_into()
+                                        .expect("written Possession owner word")),
+                                });
+                            }
+                        });
                     }
                 }
                 if let Some(marker) = self.player_death_markers.iter_mut().find(|marker| {
@@ -6186,6 +6293,8 @@ impl Level2EconomyState {
             source_particle_parameter: 177,
             owner_entity_index,
             position,
+            source_yaw: 0,
+            source_roll: 0,
             anchor_position,
             life: if source_constructor {
                 40_000
@@ -6413,6 +6522,8 @@ impl Level2EconomyState {
             self.source_owner.insert(slot, owner);
             let castle = self.castle_entry_mut(slot).expect("imported Castle installed");
             castle.source_id_entity_index = root.source_id;
+            castle.source_yaw = root.yaw;
+            castle.source_roll = root.source_roll();
             castle.player_entity_index = root.source_player_entity_index();
             castle.source_byte_38 = root.record[60];
             castle.source_particle_parameter = word(&root, 94);

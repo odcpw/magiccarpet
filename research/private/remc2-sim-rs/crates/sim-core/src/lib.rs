@@ -716,6 +716,8 @@ pub enum MissionAudioSite {
     WyvernAttack,
     ManticorePursuit,
     Model21Jump,
+    Creature22Ownership,
+    Creature22Oscillation,
     Count,
 }
 
@@ -1186,6 +1188,8 @@ impl MissionAudioSite {
         Self::WyvernAttack,
         Self::ManticorePursuit,
         Self::Model21Jump,
+        Self::Creature22Ownership,
+        Self::Creature22Oscillation,
     ];
 
     #[must_use]
@@ -1565,6 +1569,22 @@ impl MissionAudioSite {
                 "3",
                 "global RNG % 30 - 15",
                 "EventsFunctions.cpp:17090 sub_265A0 state 9",
+                true,
+            ),
+            Self::Creature22Ownership => (
+                "4",
+                "current player named by the model22 possession mailbox",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp sub_26F10/sub_26D20 ownership transition",
+                true,
+            ),
+            Self::Creature22Oscillation => (
+                "48",
+                "current model22 after movement at its animation call",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp sub_272C0 previous animation frame1..15",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

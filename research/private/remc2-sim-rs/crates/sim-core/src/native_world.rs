@@ -990,6 +990,10 @@ pub struct Level2CastleState {
     pub source_particle_parameter: u16,
     pub owner_entity_index: u16,
     pub position: Position,
+    /// Pose angles from NewEvent/reset, distinct from the mutable BUILD
+    /// collision axes below. Current actor targets read these fields.
+    pub source_yaw: i16,
+    pub source_roll: i16,
     /// Source `axis_0x9A_154x`: the construction/child anchor is distinct
     /// from the root's terrain-synchronised position.
     pub anchor_position: Position,

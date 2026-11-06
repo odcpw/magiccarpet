@@ -8512,6 +8512,8 @@ impl Level2EconomyState {
             hasher.update(castle.position.x.to_le_bytes());
             hasher.update(castle.position.y.to_le_bytes());
             hasher.update(castle.position.z.to_le_bytes());
+            hasher.update(castle.source_yaw.to_le_bytes());
+            hasher.update(castle.source_roll.to_le_bytes());
             hasher.update(castle.anchor_position.x.to_le_bytes());
             hasher.update(castle.anchor_position.y.to_le_bytes());
             hasher.update(castle.anchor_position.z.to_le_bytes());

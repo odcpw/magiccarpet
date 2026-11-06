@@ -596,6 +596,149 @@ pub(crate) fn status_castle_mana(
     Ok(status_castle(arena, shared, parent)?.map(|castle| castle.mana))
 }
 
+#[derive(Clone, Copy)]
+enum CurrentManaOwner {
+    Castle,
+    Raw,
+}
+
+fn current_mana_owner(arena: &SourceArena, slot: u16) -> Result<Option<CurrentManaOwner>, String> {
+    if slot == 0 || usize::from(slot) >= arena.entities.len() {
+        return Ok(None);
+    }
+    match status_kind(arena, slot) {
+        Some(Kind::CastleRoot) => {
+            if arena.economy.castle_entry(slot).is_none() {
+                return Err(format!("current mana slot {slot} lost its Castle owner"));
+            }
+            Ok(Some(CurrentManaOwner::Castle))
+        }
+        // A hidden typed root remains its field owner until the allocator's
+        // release. Epoch matching selects the current carrier; it does not
+        // impose a generation-bound source-pointer validity condition.
+        None if !arena.economy.free_source_slots().contains(&slot)
+            && arena.economy.castle_entry(slot).is_some() =>
+        {
+            Ok(Some(CurrentManaOwner::Castle))
+        }
+        None => Ok(Some(CurrentManaOwner::Raw)),
+        Some(kind) => Err(format!(
+            "current mana slot {slot} has unsupported typed owner {kind:?}"
+        )),
+    }
+}
+
+/// Read the current fields addressed by source26BD0, including a retained raw
+/// record. A typed occupant must never inherit a cold raw mana/capacity copy.
+pub(crate) fn current_mana_capacity(
+    arena: &SourceArena,
+    slot: u16,
+) -> Result<Option<(i32, i32)>, String> {
+    Ok(match current_mana_owner(arena, slot)? {
+        Some(CurrentManaOwner::Castle) => {
+            let castle = arena
+                .economy
+                .castle_entry(slot)
+                .expect("checked current owner");
+            Some((castle.mana, castle.mana_capacity))
+        }
+        Some(CurrentManaOwner::Raw) => {
+            let row = &arena.entities[usize::from(slot)];
+            Some((row.mana, row.max_mana))
+        }
+        None => None,
+    })
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CurrentManaWrite {
+    pub source: Option<crate::campaign::source_arena::SourceEntityHandle>,
+    pub slot: u16,
+    pub before: i32,
+    pub after: i32,
+    pub capacity: i32,
+    pub delta: i32,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CURRENT_MANA_WRITES: std::cell::RefCell<Option<Vec<CurrentManaWrite>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn begin_current_mana_writes() {
+    CURRENT_MANA_WRITES.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_current_mana_writes() -> Vec<CurrentManaWrite> {
+    CURRENT_MANA_WRITES.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn tag_current_mana_write_source(
+    slot: u16,
+    source: crate::campaign::source_arena::SourceEntityHandle,
+) {
+    CURRENT_MANA_WRITES.with(|trace| {
+        if let Some(writes) = trace.borrow_mut().as_mut() {
+            let write = writes
+                .last_mut()
+                .expect("successful current mana write was recorded");
+            assert_eq!(
+                write.slot, slot,
+                "tag the immediately preceding actual write"
+            );
+            write.source = Some(source);
+        }
+    });
+}
+
+/// Apply source26BD0's signed wrapping addition and upper saturation to the
+/// same current field owner. Source has no active/class test at this address.
+pub(crate) fn add_current_mana_saturated(
+    arena: &mut SourceArena,
+    slot: u16,
+    delta: i32,
+) -> Result<bool, String> {
+    let Some(owner) = current_mana_owner(arena, slot)? else {
+        return Ok(false);
+    };
+    #[cfg(test)]
+    let (before, capacity) = current_mana_capacity(arena, slot)?.expect("checked current owner");
+    match owner {
+        CurrentManaOwner::Castle => {
+            let castle = arena
+                .economy
+                .castle_entry_mut(slot)
+                .expect("checked current owner");
+            castle.mana = castle.mana.wrapping_add(delta).min(castle.mana_capacity);
+        }
+        CurrentManaOwner::Raw => {
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_mana(row.mana.wrapping_add(delta).min(row.max_mana));
+        }
+    }
+    #[cfg(test)]
+    CURRENT_MANA_WRITES.with(|trace| {
+        if let Some(writes) = trace.borrow_mut().as_mut() {
+            let (after, _) = current_mana_capacity(arena, slot)
+                .expect("current owner did not change during its mana write")
+                .expect("checked current owner");
+            writes.push(CurrentManaWrite {
+                source: None,
+                slot,
+                before,
+                after,
+                capacity,
+                delta,
+            });
+        }
+    });
+    Ok(true)
+}
+
 /// Commit just the two parent fields written by 6A480/6B1C0/6B310. In
 /// particular a typed replacement must not receive the old player's pose,
 /// life, identity or cache when a holder still points at its numeric slot.
@@ -2674,6 +2817,9 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
         };
     }
     match kind {
+        Kind::CastleRoot => arena.economy.castle_entry(slot)
+            .map(|row| (Some(row.source_yaw), Some(row.source_roll)))
+            .unwrap_or((None, None)),
         Kind::ManaSphere => arena.economy.spheres.iter()
             .find(|row| row.active && row.source_entity_index == slot)
             .map(|row| (Some(row.yaw), Some(row.roll)))
@@ -2701,6 +2847,165 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_castle_pose_is_owned_and_hashes_independently_of_collision_axes() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let slot = arena
+            .economy
+            .build_castle(
+                session.state.position,
+                session.state.entity_index,
+                session.canonical_terrain(),
+            )
+            .unwrap();
+        let initial = read(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!(
+            (initial.yaw, initial.roll),
+            (Some(0), Some(0)),
+            "4AA40 retains NewEvent's zero pose, not BUILD collision axes"
+        );
+        let before = arena.economy.reset_hash();
+        // A configured current-owner pose, as also retained by reset adoption,
+        // must be read independently of the previous raw incarnation.
+        let castle = arena.economy.castle_entry_mut(slot).unwrap();
+        castle.source_yaw = -321;
+        castle.source_roll = 777;
+        let after = arena.economy.reset_hash();
+        assert_ne!(before, after);
+        let castle = arena.economy.castle_entry_mut(slot).unwrap();
+        castle.shift_yaw = 1_024;
+        castle.shift_roll = 1_664;
+        arena.retire_previous_source_projection(slot);
+        arena.entities[usize::from(slot)].set_yaw(99);
+        arena.entities[usize::from(slot)].set_source_roll(-88);
+        let current = read(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((current.yaw, current.roll), (Some(-321), Some(777)));
+    }
+
+    #[test]
+    fn current_mana_uses_each_castle_owner_and_retains_source_signed_arithmetic() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let terrain = session.canonical_terrain();
+        let owner = session.state.entity_index;
+        let first = arena
+            .economy
+            .build_castle(session.state.position, owner, terrain)
+            .unwrap();
+        let second = arena
+            .economy
+            .build_castle(session.state.position, owner.wrapping_add(1), terrain)
+            .unwrap();
+        assert_ne!(first, second);
+        for (slot, mana) in [(first, 77), (second, 990)] {
+            let castle = arena.economy.castle_entry_mut(slot).unwrap();
+            castle.mana = mana;
+            castle.mana_capacity = 1_000;
+            // A plausible retired projection must not replace typed authority.
+            arena.retire_previous_source_projection(slot);
+            let shadow = &mut arena.entities[usize::from(slot)];
+            shadow.set_mana(-700);
+            shadow.max_mana = 5;
+        }
+        assert_eq!(
+            current_mana_capacity(&arena, second).unwrap(),
+            Some((990, 1_000))
+        );
+        assert!(add_current_mana_saturated(&mut arena, second, 20).unwrap());
+        assert_eq!(
+            current_mana_capacity(&arena, second).unwrap(),
+            Some((1_000, 1_000))
+        );
+        assert_eq!(
+            current_mana_capacity(&arena, first).unwrap(),
+            Some((77, 1_000))
+        );
+        assert_eq!(arena.entities[usize::from(second)].mana, -700);
+
+        let castle = arena.economy.castle_entry_mut(second).unwrap();
+        castle.mana = i32::MAX - 2;
+        castle.active = false;
+        assert!(add_current_mana_saturated(&mut arena, second, 7).unwrap());
+        assert_eq!(
+            current_mana_capacity(&arena, second).unwrap(),
+            Some((i32::MIN + 4, 1_000))
+        );
+    }
+
+    #[test]
+    fn current_mana_accepts_retained_raw_fields_and_rejects_a_cold_typed_shadow() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let raw = arena
+            .allocate_source_slot_with_terrain(&mut terrain)
+            .unwrap();
+        let row = &mut arena.entities[usize::from(raw)];
+        row.active = false;
+        row.class = 0;
+        row.set_mana(95);
+        row.max_mana = 100;
+        row.mana_cost = 100;
+        row.record[144..148].copy_from_slice(&100_i32.to_le_bytes());
+        assert_eq!(current_mana_capacity(&arena, raw).unwrap(), Some((95, 100)));
+        assert!(add_current_mana_saturated(&mut arena, raw, 10).unwrap());
+        assert_eq!(
+            current_mana_capacity(&arena, raw).unwrap(),
+            Some((100, 100))
+        );
+        assert_eq!(
+            i32::from_le_bytes(
+                arena.entities[usize::from(raw)].record[148..152]
+                    .try_into()
+                    .unwrap()
+            ),
+            100
+        );
+
+        let sphere = arena
+            .economy
+            .spawn_mana_sphere_from_death(
+                991,
+                session.state.position,
+                0,
+                0x1234,
+                512,
+                session.state.entity_index,
+                &terrain,
+            )
+            .unwrap() as u16;
+        let shadow = &mut arena.entities[usize::from(sphere)];
+        shadow.class = 3;
+        shadow.model = 2;
+        shadow.set_mana(9_999);
+        shadow.max_mana = 10_000;
+        let before = shadow.clone();
+        assert!(
+            current_mana_capacity(&arena, sphere)
+                .unwrap_err()
+                .contains("unsupported typed owner")
+        );
+        assert!(
+            add_current_mana_saturated(&mut arena, sphere, 1)
+                .unwrap_err()
+                .contains("unsupported typed owner")
+        );
+        assert_eq!(arena.entities[usize::from(sphere)], before);
+        assert_eq!(
+            arena
+                .economy
+                .spheres
+                .iter()
+                .find(|row| row.source_entity_index == sphere)
+                .unwrap()
+                .mana,
+            512
+        );
+        assert_eq!(current_mana_capacity(&arena, 0).unwrap(), None);
+        assert!(!add_current_mana_saturated(&mut arena, u16::MAX, 100).unwrap());
+    }
 
     #[test]
     fn current_word32_uses_its_owner_and_never_the_word34_or_typed_shadow() {

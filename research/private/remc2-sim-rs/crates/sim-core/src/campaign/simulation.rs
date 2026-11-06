@@ -17418,6 +17418,7 @@ impl Mc2Simulation {
                 self.append_new_economy_events(pass, source_slot);
             }
             (ExistingHandler::Creature22, SourceRoute::Imported) => {
+                let listener = (self.state.position, self.state.yaw);
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
                 {
@@ -17441,12 +17442,40 @@ impl Mc2Simulation {
                     creatures::creature_22::mc2::step(&mut context, source_slot)?;
                     context.finish()?
                 };
-                for (slot, sound) in outcome.sounds {
-                    self.session
-                        .state
-                        .live
-                        .economy
-                        .prepare_sound(slot, slot, -1, u16::from(sound));
+                for sound in outcome.sounds {
+                    let sound_id = match sound.sample {
+                        4 | 48 => u16::from(sound.sample),
+                        other => return Err(format!("model22 emitted unsupported source sound {other}")),
+                    };
+                    self.session.state.live.economy.prepare_sound(
+                        source_slot, sound.slot, -1, sound_id,
+                    );
+                    // Source26F10/26D20 name the current player for sound4;
+                    // 272C0 names the actor after movement for sound48. Freeze
+                    // their exact call-time packet before a later allocation
+                    // can replace that address. Both sounds have fixed pitch,
+                    // so PrepareEventSound consumes no RNG or action value.
+                    let audio = (sound.control_flags & 0x80 == 0).then(|| {
+                        crate::prepare_event_sound_command(
+                            listener.0, listener.1, sound.position, sound_id,
+                            0, sound.source_id, 0,
+                        )
+                    }).flatten();
+                    let event = FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: if sound.sample == 4 {
+                            crate::MissionAudioSite::Creature22Ownership
+                        } else {
+                            crate::MissionAudioSite::Creature22Oscillation
+                        },
+                        entity_index: sound.slot,
+                        player_index: -1,
+                        sound_id,
+                    };
+                    self.flush_shared_effects();
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, event);
                 }
                 for (owner, family) in outcome.feedback {
                     self.session
@@ -31344,6 +31373,230 @@ mod tests {
             }
         }
         assert!(normal_audio && alias_audio, "both current-parent source sound branches are observed");
+    }
+
+    #[test]
+    fn configured_level7_creature22_global_cleanup_preserves_frozen_absence_and_chain_reclaim() {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::level_definition::LevelObjectiveConditionAccess;
+        use sim_definition::adapter::{build_level_definition, objective_definition, stable_objective_id};
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/settlement-20261105-integration/owner-collision-closure-v4/level7");
+        let campaign = CampaignSession::open(&package, CampaignSelection::ordinary(7).unwrap())
+            .expect("the whole owner Level7 package opens");
+        let definition = campaign.definition().clone();
+        let mut session = campaign.simulation().clone();
+        let original_level = definition.level_definition();
+        let stage = original_level.objectives().len();
+        assert_eq!(usize::from(session.runtime().stage_index), stage);
+        assert!(stage < session.runtime().stages.len());
+        assert_eq!(session.runtime().stages[stage].kind, 0, "append only in an unused source task slot");
+        let mut objectives = original_level.objectives().to_vec();
+        objectives.push(objective_definition(
+            stable_objective_id("objective.configured.creature22_absence").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature22),
+            LevelObjectiveConditionAccess::SessionReset,
+        ));
+        let level = build_level_definition(
+            original_level.entities().to_vec(), objectives, original_level.activation_groups().collect(),
+        ).expect("configured absence admits the package-present implemented Creature22 lifecycle");
+        assert_eq!(level.entities(), original_level.entities());
+        assert_eq!(&level.objectives()[..stage], original_level.objectives(),
+            "the configured task preserves every original objective");
+        let rival_wizard_by_id = definition.rival_wizard_selectors().iter().map(|(id, selector)| {
+            let target = crate::campaign::objectives::rival_wizard::target_from_selector(*selector).unwrap();
+            assert_eq!(target.id(), id);
+            let bound = crate::campaign::objectives::rival_wizard::bind_target(
+                &target, session.players(), session.entities(),
+            ).unwrap();
+            (bound.id, bound.entity_index)
+        }).collect();
+        session.bind_semantic_level_definition(SemanticLevelBindings {
+            level,
+            authored_creature_kinds: definition.creature_bindings().clone(),
+            authored_creature_entities: definition.authored_creature_entity_bindings(),
+            initial_source_creatures: definition.initial_creature_bindings().clone(),
+            creature_models: definition.creature_models().clone(),
+            authored_spells: definition.spell_bindings().clone(),
+            spell_families: definition.spell_families().clone(),
+            authored_buildings: definition.building_bindings().clone(),
+            authored_building_entities: definition.authored_building_entity_bindings(),
+            initial_source_buildings: definition.initial_building_bindings().clone(),
+            authored_scenery: definition.scenery_bindings().clone(),
+            authored_scenery_entities: definition.authored_scenery_entity_bindings(),
+            initial_source_scenery: definition.initial_scenery_bindings().clone(),
+            authored_items: definition.item_bindings().clone(),
+            authored_item_entities: definition.item_entity_bindings(),
+            authored_switches: definition.switch_bindings().clone(),
+            authored_switch_entities: definition.authored_switch_entity_bindings(),
+            initial_source_switches: definition.initial_switch_bindings().clone(),
+            initial_source_switch_entities: definition.initial_switch_entity_bindings().clone(),
+            authored_mechanics: definition.mechanic_bindings().clone(),
+            initial_source_mechanics: definition.initial_mechanic_bindings().clone(),
+            authored_mechanic_entities: definition.mechanic_entity_bindings().clone(),
+            initial_source_mechanic_entities: definition.initial_mechanic_entity_bindings().clone(),
+            standing_building_chains: definition.standing_building_chains().clone(),
+            rival_wizard_by_id,
+        });
+        let player = session.state.entity_index;
+        let owner = usize::from(session.players().iter().find(|row| row.entity_index == player)
+            .unwrap().player_color_index());
+        {
+            let runtime = &mut session.session.state.live.core.runtime;
+            runtime.stage_index = u8::try_from(stage + 1).unwrap();
+            runtime.bytes[65] = runtime.stage_index;
+            runtime.stages[stage] = RuntimeStage {
+                kind: 7, flags: 0, axis_x: 0, axis_y: 0, relation: RuntimeRelation::Scalar(22),
+            };
+            let offset = 192 + stage * 14;
+            assert_eq!(&runtime.bytes[offset..offset + 14], &[0; 14],
+                "the configured append must not erase a retained source task packet");
+            runtime.bytes[offset] = 7;
+            runtime.bytes[offset + 10..offset + 14].copy_from_slice(&22_u32.to_le_bytes());
+        }
+        // The appended task remains inactive until the real group exists;
+        // source absence legitimately succeeds on a prebirth empty head.
+        // Configured task selection and player travel are entry controls.
+        // Switch194/id5 still produces the unchanged real group5 and row218.
+        let switch = session.entities()[194].clone();
+        assert_eq!((switch.class, switch.model, switch.action, switch.source_id), (11, 0, 0, 5));
+        // Source6F850 first tests byte3E&7. The real reset starts at195,
+        // so merely entering its area does not authorize the first visit.
+        // Restore only the declared player entry pose while the ordinary
+        // scheduler advances through the exact first phase-zero admission.
+        assert_eq!(crate::entity_passes_for_speed_index(0), 1);
+        let admission_visit = usize::from((8 - (switch.phase & 7)) & 7) + 1;
+        assert!(admission_visit <= 8);
+        for visit in 0..admission_visit {
+            let entry_phase = session.entities()[194].phase;
+            assert_eq!(entry_phase, switch.phase.wrapping_add(visit as u8));
+            session.set_level2_entity_position(player, switch.position).unwrap();
+            session.state.actual_speed = 0;
+            session.state.target_speed = 0;
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "switch visit{visit} phase{entry_phase}: {:?}", session.dispatch_events());
+            let produced = session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 194, group: 5, authored_indices, .. }
+                    if authored_indices.contains(&218)));
+            assert_eq!(produced, entry_phase & 7 == 0,
+                "real switch194 must reject earlier cadence visits and produce group5 on its first admitted visit");
+            assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 0,
+                "the configured absence task is not admitted before its real producer and body");
+            if !produced {
+                assert!(session.entities().iter().all(|row| session.creature_identity_for_source_slot(row.index)
+                    .is_none_or(|identity| identity.origin != CreatureRootOrigin::AuthoredRecord {
+                        authored_record: 218,
+                    })), "the later authored22 root must not exist before the real producer fires");
+            }
+        }
+        assert!(session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 194, group: 5, authored_indices, .. }
+                if authored_indices.contains(&218))));
+        let root = session.entities().iter().find_map(|row| {
+            let identity = session.creature_identity_for_source_slot(row.index)?;
+            ((row.class, row.model) == (5, 22) && matches!(identity.origin,
+                CreatureRootOrigin::AuthoredRecord { authored_record: 218 }))
+                .then(|| session.source_arena().handle(row.index)).flatten()
+        }).expect("the ordinary switch creates the actual authored22 root");
+        let mut chain = Vec::new();
+        let mut next = Some(root);
+        while let Some(handle) = next {
+            assert!(!chain.contains(&handle), "actual body links are acyclic");
+            let actor = creatures::creature_22::mc2::read_actor(session.source_arena(), handle).unwrap();
+            if handle == root {
+                assert_eq!(actor.length_or_ordinal, 15);
+                assert!(actor.life > 0 && actor.mana > 0);
+            } else {
+                assert_eq!((actor.action, actor.root, actor.mana), (180, Some(root), 0));
+            }
+            chain.push(handle);
+            next = actor.next;
+        }
+        assert_eq!(chain.len(), 15, "source4CB60 creates the root and seven actual pairs");
+        assert_eq!(session.source_arena().rebuilt_class5_model_slots()[22], [root.source_slot],
+            "action180 body parts do not inflate the living-root predicate");
+        {
+            let runtime = &mut session.session.state.live.core.runtime;
+            runtime.set_level2_objective_stage_selector_for(owner, stage, 1);
+            runtime.set_level2_objective_text_selector_for(owner, stage);
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "healthy configured-objective source pass: {:?}", session.dispatch_events());
+        assert_eq!(session.source_arena().handle(root.source_slot), Some(root));
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 1,
+            "the actual living root blocks configured absence");
+        let mut no_cleanup = session.clone();
+
+        // Keep the production pass and objective epilogue as their existing
+        // separate calls. The explicit source-global cleanup control is placed
+        // at that boundary, after the real pass has frozen its model heads.
+        // 1B5F0 genuinely includes22; 57390 terrain burial explicitly spares22.
+        // This is neither public combat lethality nor an earned boss victory.
+        let mut evidence = Vec::new();
+        let (frozen, buildings) = session.step_level2_source_pass_with_player(
+            0, crate::LatchedCommand::default(), crate::FlightTuning::CLASSIC, &mut evidence,
+        ).unwrap();
+        assert!(frozen[22]);
+        {
+            let live = &mut session.session.state.live;
+            let families = live.economy.rebuilt_class5_model_slots();
+            assert_eq!(families[22], [root.source_slot]);
+            let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
+            let lists = area_damage::capture_effect_lists(&mut live.economy, Some(actors.reborrow()));
+            area_damage::apply_encounter_creature_kills(
+                &mut live.economy, Some(actors), &lists, &families, player,
+            ).unwrap();
+        }
+        let killed = creatures::creature_22::mc2::read_actor(session.source_arena(), root).unwrap();
+        assert_eq!(killed.life, -1);
+        assert_eq!(killed.climb_hold as u16, player, "the real global kill writer supplies killer credit");
+        assert!(session.source_arena().rebuilt_class5_model_slots()[22].is_empty());
+        session.advance_level2_objectives(&frozen, &buildings).unwrap();
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 1,
+            "the epilogue must retain the actual nonempty pass-start membership after cleanup writes");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "{:?}", session.dispatch_events());
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 2,
+            "the following source pass freezes empty and completes configured absence");
+        let dying = creatures::creature_22::mc2::read_actor(session.source_arena(), root).unwrap();
+        assert_eq!(dying.action, 181, "ordinary26F10 selects actual whole-chain death");
+        assert!(chain.iter().all(|handle| session.source_arena().resolve(*handle).is_some()),
+            "selecting181 retains all original generations until its actual visit");
+        let prior_events = session.economy().events().len();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "{:?}", session.dispatch_events());
+        assert!(chain.iter().all(|handle| creatures::creature_22::mc2::read_actor(
+            session.source_arena(), *handle).is_some_and(|actor| actor.hidden())),
+            "actual26CC0 hides every original piece but retains its generation in this pass");
+        let sphere = session.economy().events()[prior_events..].iter().find_map(|event| {
+            if let Level2EconomyEvent::ManaSphereSpawned { sphere_id, source_entity_index, mana } = event
+                && *source_entity_index == root.source_slot && *mana == dying.mana {
+                Some(*sphere_id as u16)
+            } else { None }
+        }).expect("the actual root181 visit converts its retained mana through36BA0");
+        assert!(session.economy().spheres().iter().any(|row| row.source_entity_index == sphere
+            && row.active && row.mana == dying.mana && row.owner_entity_index == dying.owner));
+        assert!(session.campaign_entity_presentations(0).unwrap().iter()
+            .all(|view| !chain.iter().any(|handle| handle.source_slot == view.entity_index)),
+            "hidden root and body pieces disappear from the actual original presentation DTO");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "{:?}", session.dispatch_events());
+        assert!(chain.iter().all(|handle| session.source_arena().resolve(*handle).is_none()),
+            "the following source boundary naturally reclaims all original generations");
+        for _ in 0..3 {
+            no_cleanup.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(no_cleanup.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        assert!(creatures::creature_22::mc2::read_actor(no_cleanup.source_arena(), root)
+            .is_some_and(|actor| actor.life >= 0 && !actor.hidden()));
+        assert_eq!(no_cleanup.runtime().objectives[owner].stage_selectors[stage], 1,
+            "ordinary no-cleanup source visits keep the same root alive and absence blocked");
     }
 
     #[test]

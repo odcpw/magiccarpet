@@ -199,8 +199,16 @@ pub(crate) fn write_actor(arena: &mut SourceArena, actor: Actor) -> bool {
 #[derive(Default)]
 pub(crate) struct Outcome {
     pub callback_executed: bool,
-    pub sounds: Vec<(u16, u8)>,
+    pub sounds: Vec<SourceSound>,
     pub feedback: Vec<(u16, u8)>,
+}
+
+pub(crate) struct SourceSound {
+    pub slot: u16,
+    pub sample: u8,
+    pub position: Position,
+    pub source_id: u16,
+    pub control_flags: u32,
 }
 
 pub(crate) struct Context<'a> {
@@ -338,29 +346,57 @@ impl Runtime for Context<'_> {
             stage_mode: row.stage_mode,
         })
     }
-    fn player(&self, slot: u16) -> Option<PlayerView> {
-        let target = self.target(slot).filter(|r| r.class == 3)?;
+    fn player_colour_base(&self, slot: u16) -> Option<u16> {
+        self.target(slot).filter(|r| r.class == 3)?;
         let player = self.players.iter().find(|p| p.entity_index == slot)?;
         let colour = [0_u16, 1, 4, 3, 2, 5, 7, 6]
             .get(usize::from(player.player_color_index()))
             .copied()?;
-        let local = self
-            .arena
-            .castle()
-            .filter(|c| c.active && c.owner_entity_index == slot);
-        let castle_slot = local.map_or_else(
-            || u16::from_le_bytes([player.record[42], player.record[43]]),
-            |c| c.source_entity_index,
-        );
-        let (position, mana, capacity) = if let Some(castle) = local {
-            (castle.position, castle.mana, castle.mana_capacity)
-        } else if let Some(castle) = self
-            .arena
-            .entities
-            .get(usize::from(castle_slot))
-            .filter(|r| castle_slot != 0 && r.active && r.class == 3)
-        {
-            (castle.position, castle.mana, castle.max_mana)
+        Some(105 + 8 * colour)
+    }
+    fn player(&mut self, slot: u16) -> Option<PlayerView> {
+        let target = self.target(slot).filter(|r| r.class == 3)?;
+        let player = self.players.iter().find(|p| p.entity_index == slot)?;
+        // The source follows this player's current A4 Castle address even
+        // when it is not the local player's Castle.
+        let castle_slot = u16::from_le_bytes([player.record[42], player.record[43]]);
+        let (position, mana, capacity) = if castle_slot != 0 {
+            let (mana, capacity) = match crate::native_world::source_target::current_mana_capacity(
+                self.arena,
+                castle_slot,
+            ) {
+                Ok(Some(values)) => values,
+                Ok(None) => {
+                    self.remember_error(format!("model22 Castle slot {castle_slot} is absent"));
+                    return None;
+                }
+                Err(error) => {
+                    self.remember_error(error);
+                    return None;
+                }
+            };
+            let position = if !self.arena.economy.free_source_slots().contains(&castle_slot)
+                && let Some(castle) = self.arena.economy.castle_entry(castle_slot)
+            {
+                castle.position
+            } else {
+                match crate::native_world::source_target::read(
+                    self.arena,
+                    Default::default(),
+                    castle_slot,
+                ) {
+                    Ok(Some(current)) => current.position,
+                    Ok(None) => {
+                        self.remember_error(format!("model22 Castle slot {castle_slot} is absent"));
+                        return None;
+                    }
+                    Err(error) => {
+                        self.remember_error(error);
+                        return None;
+                    }
+                }
+            };
+            (position, mana, capacity)
         } else {
             (Position::default(), 0, 0)
         };
@@ -370,25 +406,23 @@ impl Runtime for Context<'_> {
             castle_position: position,
             castle_mana: mana,
             castle_max_mana: capacity,
-            colour_base: 105 + 8 * colour,
         })
     }
-    fn add_castle_mana(&mut self, slot: u16, mana: i32) {
-        if let Some(castle) = self
-            .arena
-            .economy
-            .castle
-            .as_mut()
-            .filter(|c| c.active && c.source_entity_index == slot)
-        {
-            castle.mana = castle.mana.wrapping_add(mana).min(castle.mana_capacity);
-        } else if let Some(castle) = self
-            .arena
-            .entities
-            .get_mut(usize::from(slot))
-            .filter(|r| r.active && r.class == 3)
-        {
-            castle.set_mana(castle.mana.wrapping_add(mana).min(castle.max_mana));
+    fn add_castle_mana(&mut self, slot: u16, source: Actor) {
+        match crate::native_world::source_target::add_current_mana_saturated(
+            self.arena,
+            slot,
+            source.mana,
+        ) {
+            Ok(true) => {
+                #[cfg(test)]
+                crate::native_world::source_target::tag_current_mana_write_source(
+                    slot,
+                    source.handle,
+                );
+            }
+            Ok(false) => self.remember_error(format!("model22 Castle slot {slot} is absent")),
+            Err(error) => self.remember_error(error),
         }
     }
     fn sprite_rotation(&self, visual: u16) -> i16 {
@@ -430,7 +464,17 @@ impl Runtime for Context<'_> {
         }
     }
     fn sound(&mut self, slot: u16, sample: u8) {
-        self.outcome.sounds.push((slot, sample));
+        match crate::native_world::source_target::read(self.arena, Default::default(), slot) {
+            Ok(Some(current)) => self.outcome.sounds.push(SourceSound {
+                slot,
+                sample,
+                position: current.position,
+                source_id: current.source_id,
+                control_flags: current.control_flags,
+            }),
+            Ok(None) => self.remember_error(format!("model22 sound source {slot} is absent")),
+            Err(error) => self.remember_error(error),
+        }
     }
     fn stage_descriptor(&self, index: u8) -> Option<StageDescriptor> {
         self.runtime.descriptor(index)

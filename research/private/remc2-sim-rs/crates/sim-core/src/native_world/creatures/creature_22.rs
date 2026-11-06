@@ -100,8 +100,6 @@ pub(crate) struct PlayerView {
     pub castle_position: Position,
     pub castle_mana: i32,
     pub castle_max_mana: i32,
-    /// The MC2 adapter resolves the actual player's palette variant.
-    pub colour_base: u16,
 }
 
 /// Narrow live arena operations. No callback may retain a mutable actor copy
@@ -119,8 +117,9 @@ pub(crate) trait Runtime {
     fn frozen_model_slots(&self, model: u8) -> &[u16];
     fn frozen_class3_slots(&self) -> &[u16];
     fn target(&self, slot: u16) -> Option<Target>;
-    fn player(&self, slot: u16) -> Option<PlayerView>;
-    fn add_castle_mana(&mut self, castle_slot: u16, mana: i32);
+    fn player_colour_base(&self, slot: u16) -> Option<u16>;
+    fn player(&mut self, slot: u16) -> Option<PlayerView>;
+    fn add_castle_mana(&mut self, castle_slot: u16, source: Actor);
     fn sprite_rotation(&self, visual_index: u16) -> i16;
     fn mana_sphere(&mut self, actor: Actor);
     fn sound(&mut self, slot: u16, sample: u8);
@@ -143,18 +142,21 @@ impl Actor {
     ) -> Self {
         let entity_rng = level2_next_rng16(allocation.rng);
         let heading = (entity_rng & 2047).wrapping_sub(1) as i16;
+        // 4CA00 places the constructor through the shared source proposal.
+        let position = Position {
+            z: terrain
+                .ground_height(position)
+                .wrapping_add(PROPERTIES.ground_clearance),
+            ..position
+        };
+        terrain.set_source_predicted_position(position);
         Self {
             handle: allocation.handle,
             source_id: allocation.handle.source_slot,
             entity_rng,
             control_flags: 8,
             action: 176,
-            position: Position {
-                z: terrain
-                    .ground_height(position)
-                    .wrapping_add(PROPERTIES.ground_clearance),
-                ..position
-            },
+            position,
             yaw: heading,
             pitch: heading,
             roll: heading,
@@ -279,6 +281,8 @@ fn link_segment(
     child.life = child.max_life;
     predecessor.next = Some(allocation.handle);
     runtime.write_actor(predecessor);
+    // 274C0 places each newly linked segment through predictedAxis.
+    runtime.terrain().set_source_predicted_position(root_actor.position);
     runtime.write_actor(child);
     true
 }
@@ -302,9 +306,7 @@ fn colour_index(base: u16, length: i8, ordinal: i8) -> Option<u16> {
 }
 
 fn colour_base(owner: u16, runtime: &dyn Runtime) -> u16 {
-    runtime
-        .player(owner)
-        .map_or(52, |player| player.colour_base)
+    runtime.player_colour_base(owner).unwrap_or(52)
 }
 
 fn set_visual(actor: &mut Actor, visual: u16, runtime: &dyn Runtime) {
@@ -498,6 +500,9 @@ fn generic_move(actor: &mut Actor, terrain: &SessionTerrain) -> bool {
         let mut candidate = original;
         candidate.z = candidate.z.max(terrain.ground_height(candidate));
         crate::move_entity(&mut candidate, actor.yaw, 0, actor.speed);
+        // sub_1B8C0 leaves even a rejected proposal in the shared source
+        // scratch; 0x800 returns above without touching it.
+        terrain.set_source_predicted_position(candidate);
         let crosses = (candidate.x >> 8, candidate.y >> 8) != (original.x >> 8, original.y >> 8);
         let mut blocked = false;
         if crosses || attempt != 0 {
@@ -810,7 +815,7 @@ fn shrink_into_castle(handle: SourceEntityHandle, runtime: &mut dyn Runtime) {
                     && player.target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
                     && player.castle_slot != 0
             }) {
-                runtime.add_castle_mana(player.castle_slot, root.mana);
+                runtime.add_castle_mana(player.castle_slot, root);
             }
             if let Some(mut root) = runtime.actor(handle) {
                 root.hide();
@@ -882,6 +887,8 @@ fn position_segment(handle: SourceEntityHandle, runtime: &mut dyn Runtime) {
         .half_width
         .wrapping_sub(actor.half_width)
         .wrapping_add(previous.position.z);
+    // 271D0 leaves the newly computed segment position in predictedAxis.
+    runtime.terrain().set_source_predicted_position(actor.position);
     runtime.write_actor(actor);
 }
 
