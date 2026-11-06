@@ -77,7 +77,9 @@ acceptance open; a working control panel alone does not finish the environment.
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
 tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
-Firefly `.23` and Manticore17 `.6` are delivered; Sentinel18 `.7` is next. Root
+Firefly `.23`, Manticore17 `.6` and Sentinel18 `.7` are delivered; model21
+`mc-1pb.8` is next. Name each active creature alongside its source model in
+progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
 Complete one creature through verification and installation before starting the
 next. Parallel workers tackle disjoint parts of that same capability. Use the
@@ -95,7 +97,7 @@ in their canonical owner when a real connected failure exposes them.
 - [x] Skeleton9 — `mc-1pb.22`.
 - [x] Firefly19 — `mc-1pb.23`.
 - [x] Manticore17 — `mc-1pb.6`.
-- [ ] Sentinel18 — `mc-1pb.7`.
+- [x] Sentinel18 — `mc-1pb.7`.
 - [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
@@ -113,13 +115,62 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: Manticore delivered (2026-11-06)
+### Current delivery: Sentinel and death-map correction (2026-11-06)
+
+Sentinel18 `.7` is implemented, verified, committed/pushed at runtime
+`41b828f438ad3f8ed4f10b0e738b2ccc6924021c` and installed as Original native
+`18c459364710458eb3ec1b07af1ddcda63fd37b0df9224a8e9ac8e7fbc57bd91`.
+Actual Level24 group2/record234 produces original220/gen1, naturally selects
+the player and emits all five source-ordered fan births. An exact projectile →
+impact generation → latest mailbox writer → player life check passes6.802s.
+One declared player interception follows an actual shot; no NPC pose, action,
+health, RNG or lifetime is forced. Group progression and player resources are
+controls, not earned mission proof.
+
+Fixed three public Meteor commands reach the original fatal callback, mana,
+owned burst/source ID/original DTO, living-list1→0, hide and following reclaim
+(13.517s). Exact original credit0→1 and real Spell Thief26 collateral205/gen0
+credit1→2 are accounted for; GDB identified the latter's actual internal writer.
+No-cast control retains the original. Two test-only observer blocks are the
+only candidate3 difference from candidate2; production is byte-identical.
+
+Per-NewEvent current actor/target reads, signed birth yaw, StageVar arithmetic,
+literal no-ops, current typed/retained parents and post-expiry tails are fixed.
+Constructor mana derives from default maximum life before authored overrides;
+descriptor86/particle286 live in the MC2 adapter. Source150 remains unsupported;
+no Sentinel entry sound is invented. Configured partial allocation/replacement
+and positive-life typed-parent controls pass; prior15 affected family checks
+remain applicable. The original finite acceptance/dependencies are unchanged.
+
+The old death-map assertion exposed a real source1C930/57F10 regression, also
+present in Manticore17: hide had removed map linkage ahead of57F20 reclaim.
+Both exact fallbacks are corrected; Sentinel and Manticore controls pass1.005s
+and1.009s. Manticore `.6` was reopened for that correction and is requalified
+and closed again with its earlier gameplay evidence retained.
+
+Fresh bounded source and separate gate review found no further concrete gap.
+Source order/current-carrier checks and workspace/all-targets40.274s pass;
+strict rig native79.132s, all444 Rust+162 upstream+37 extra/636 unique inputs
+and exact137035392 artifact bytes match both installed Original plugin copies.
+Root viewed canonical map (`map-ready.png`), loading artwork and NightSpire
+terrain/HUD with the mapped native, one click/no retry, then stopped owned smoke.
+The earlier black startup capture is retained, not presented as the map.
+No Unity/art rebuild. Native Sentinel encounters, human combat/FPS/hardware
+audio/full missions/old saves remain unverified. Allocation pressure and prior
+Level24 absence-objective evidence are labelled configured controls.
+Package formatting drift and the prior Dragon audio-census source-list issue
+remain explicit; UBS has no added critical finding. Full engine/parent stay open.
+Evidence: `generated/sentinel-20261106-integration/candidate-3/`, retained
+candidate1/2 negatives and positives, and `Builds/delivery-sentinel-20261106-batch1/`.
+
+### Previous delivery: Manticore
 
 Manticore17 `.6` and its original finite wind/status prerequisite `mc-bhq.14`
 are delivered and closed without changing acceptance or dependencies. Runtime
 `3834b46c8da97b42aa9786c3118d80408427db4b` is committed/pushed; native
 `c72c82d5649125e2aa42bf00842efbcf13b5e74ca388fd5c350e2ef89cd6a708`
-is installed and qualified in both Original plugin locations. Source helpers
+was installed and qualified in both Original plugin locations; Sentinel now
+carries its gameplay fixes and the map-retention correction. Source helpers
 now preserve Alliance expiry, linked current-address reads, signed arithmetic,
 guard/follow/wander tails and source update order. Constructor mana derives
 from default max life before authored health overrides; current subspell owns
@@ -239,8 +290,8 @@ were stopped. No Unity/art rebuild. Evidence:
 and `Builds/delivery-firefly-20261106-batch1/`. Native Firefly encounters, human
 combat/FPS/hardware audio/full missions/old saves remain unverified.
 
-Next is Sentinel18 `.7`: retain its installed five-shot attack/absence evidence and
-finish its original finite source acceptance before moving to the next creature.
+Next is model21 `.8`; Sentinel18 `.7` is qualified above. Retain all delivered
+source evidence and finish each original finite acceptance before moving on.
 Do not replay unchanged long checks. Parent/shared-engine and other families
 stay open. Root CopperMountain owns serialized integration/delivery; the small
 native team continues one creature at a time.
