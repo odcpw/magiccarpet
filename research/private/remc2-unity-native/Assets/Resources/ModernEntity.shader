@@ -5,6 +5,7 @@ Shader "MagicCarpet/ModernEntity"
         _BaseMap ("Sprite RGBA", 2D) = "white" {}
         _BaseColor ("Tint", Color) = (1,1,1,1)
         _Cutoff ("Alpha cutoff", Range(0,1)) = 0.5
+        _EmissionStrength ("Source fire emission", Float) = 0
     }
     SubShader
     {
@@ -13,11 +14,13 @@ Shader "MagicCarpet/ModernEntity"
         HLSLINCLUDE
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+        #include "ModernLocalLighting.hlsl"
         TEXTURE2D(_BaseMap); SAMPLER(sampler_BaseMap);
         CBUFFER_START(UnityPerMaterial)
             float4 _BaseMap_ST;
             half4 _BaseColor;
             half _Cutoff;
+            half _EmissionStrength;
         CBUFFER_END
         half4 SpriteSample(float2 uv)
         {
@@ -55,7 +58,8 @@ Shader "MagicCarpet/ModernEntity"
                 half3 ambient=max(SampleSH(n),half3(0.3,0.3,0.3));
                 half diffuse=saturate(dot(n,light.direction)*0.5+0.5);
                 half3 illumination=ambient + light.color*diffuse*light.distanceAttenuation*light.shadowAttenuation*0.55;
-                sprite.rgb=MixFog(sprite.rgb*illumination,i.fog); sprite.a=1; return sprite;
+                illumination += ModernLocalLight(i.positionWS,n,GetWorldSpaceNormalizeViewDir(i.positionWS),0);
+                sprite.rgb=MixFog(sprite.rgb*(illumination+_EmissionStrength),i.fog); sprite.a=1; return sprite;
             }
             ENDHLSL
         }

@@ -13,6 +13,8 @@ namespace MagicCarpet.Native
         internal static bool Requested => Environment.GetCommandLineArgs().Contains("-mc-modern");
         private static RenderPipelineGlobalSettings modernGlobalSettings;
         internal bool Ready { get; private set; }
+        internal bool SandboxActive => Ready && sandbox != null;
+        private readonly ModernEnvironmentSandbox sandbox;
         private readonly GameObject root;
         private readonly Camera camera;
         private readonly Light moon;
@@ -20,6 +22,7 @@ namespace MagicCarpet.Native
         private readonly ModernVegetation vegetation;
         private readonly ModernWaterReflection waterReflection;
         private readonly ModernWaterSystem waterSystem;
+        private readonly ModernNightLighting nightLighting;
         private readonly ModernEntityPresenter entities;
         private readonly Material landMaterial, waterMaterial, skyMaterial;
         private readonly Texture3D cloudNoise;
@@ -109,11 +112,14 @@ namespace MagicCarpet.Native
             landMaterial.SetFloat("_UseMaterialEndpoints", ModernCapture.FullTerrainMaterial ? 0f : 1f);
             waterMaterial = Material("ModernWater");
             skyMaterial = Material("ModernSky");
+            Shader.SetGlobalFloat("_ModernDensityDetail",0);
             if (!ModernCapture.ProceduralClouds)
             {
                 cloudNoise = ModernCloudNoise.Create();
                 skyMaterial.SetTexture("_CloudNoise", cloudNoise);
                 skyMaterial.SetFloat("_UseCloudNoise", 1f);
+                Shader.SetGlobalTexture("_ModernDetailNoise",cloudNoise);
+                Shader.SetGlobalFloat("_ModernDensityDetail",Environment.GetCommandLineArgs().Contains("-mc-steam-no-detail")?0:1);
             }
             RenderSettings.skybox = skyMaterial;
             RenderSettings.fog = true;
@@ -168,7 +174,10 @@ namespace MagicCarpet.Native
             vegetation = new ModernVegetation(terrain);
             entities = new ModernEntityPresenter(root.transform, cache);
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
-            waterSystem = new ModernWaterSystem(root.transform, terrain);
+            nightLighting = new ModernNightLighting(root.transform);
+            waterSystem = new ModernWaterSystem(root.transform, terrain, nightLighting, landMaterial);
+            if (ModernEnvironmentSandbox.Requested)
+                sandbox = new ModernEnvironmentSandbox(camera, terrain, waterSystem, nightLighting, moon, skyMaterial);
             camera.gameObject.AddComponent<ModernCapture>();
             Debug.Log($"MC_MODERN_CREATED graphics={SystemInfo.graphicsDeviceName} api={SystemInfo.graphicsDeviceType}");
             }
@@ -245,7 +254,11 @@ namespace MagicCarpet.Native
                 positioned = true;
             }
             var actorsStart = ModernCapture.BeginMeasurement();
-            entities.Present(session, pose.yaw);
+            if (sandbox == null)
+            {
+                entities.Present(session, pose.yaw);
+                nightLighting.Observe(entities.VisibleRows, session.Generation);
+            }
             waterSystem.Observe(session, snapshot);
             ModernCapture.EndMeasurement("modern_actors_present", actorsStart);
             Ready = true;
@@ -266,12 +279,14 @@ namespace MagicCarpet.Native
             if (!Ready || disposed) return;
             var renderStart = ModernCapture.BeginMeasurement();
             var blend = 1f - Mathf.Exp(-Time.unscaledDeltaTime * 22f);
-            camera.transform.SetPositionAndRotation(ModernCapture.ReviewPosition ?? Vector3.Lerp(camera.transform.position, targetPosition, blend),
-                ModernCapture.ReviewPosition.HasValue ? ModernCapture.ReviewRotation : Quaternion.Slerp(camera.transform.rotation, targetRotation, blend));
+            if (sandbox != null) sandbox.Update();
+            else camera.transform.SetPositionAndRotation(ModernCapture.ReviewPosition ?? Vector3.Lerp(camera.transform.position, targetPosition, blend),
+                    ModernCapture.ReviewPosition.HasValue ? ModernCapture.ReviewRotation : Quaternion.Slerp(camera.transform.rotation, targetRotation, blend));
             waterSystem.Update(camera);
+            nightLighting.Render(camera);
             terrain.Present(camera.transform.position);
             vegetation.Render(camera);
-            entities.Render(camera);
+            if (sandbox == null) entities.Render(camera);
             var reflectionStart = ModernCapture.BeginMeasurement();
             waterReflection.Render(camera, vegetation, terrain);
             ModernCapture.EndMeasurement("water_reflection", reflectionStart);
@@ -285,6 +300,7 @@ namespace MagicCarpet.Native
 
         internal void DrawHud(string instruction)
         {
+            if (sandbox != null) { sandbox.Draw(); return; }
             waterSystem?.DrawReviewLabel();
             if (snapshot?.player_vitals == null || ModernCapture.HideHud) return;
             if (mapOpen && worldMap != null)
@@ -312,8 +328,10 @@ namespace MagicCarpet.Native
         {
             if (disposed) return;
             disposed = true;
+            sandbox?.Dispose();
             waterReflection?.Dispose();
             waterSystem?.Dispose();
+            nightLighting?.Dispose();
             vegetation?.Dispose();
             entities?.Dispose();
             terrain?.Dispose();
@@ -321,6 +339,7 @@ namespace MagicCarpet.Native
             foreach (var material in new[] { landMaterial, waterMaterial, skyMaterial }) UnityEngine.Object.Destroy(material);
             UnityEngine.Object.Destroy(volumeProfile);
             UnityEngine.Object.Destroy(cloudNoise);
+            Shader.SetGlobalFloat("_ModernDensityDetail",0);
             UnityEngine.Object.Destroy(worldMap);
             RenderSettings.skybox = previousSky;
             RenderSettings.sun = previousSun;

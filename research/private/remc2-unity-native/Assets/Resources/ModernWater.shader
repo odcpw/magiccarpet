@@ -30,6 +30,7 @@ Shader "MagicCarpet/ModernWater"
             #define _SURFACE_TYPE_TRANSPARENT 1
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "ModernLocalLighting.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
             TEXTURE2D(_ReflectionTexture); SAMPLER(sampler_ReflectionTexture);
             TEXTURE2D(_WaterDisplacement); SAMPLER(sampler_WaterDisplacement);
@@ -86,6 +87,7 @@ Shader "MagicCarpet/ModernWater"
                 clip(0.5-_ModernReflectionPass);
                 float2 p=i.rest;
                 float4 coast=SAMPLE_TEXTURE2D(_WaterCoast,sampler_WaterCoast,p/1024);
+                float shoreline=coast.r+(SAMPLE_TEXTURE2D(_WaterPattern,sampler_WaterPattern,p/8).r-.5)*.6;
                 float envelope=Envelope(coast.r);
                 float2 detail=SAMPLE_TEXTURE2D(_WaterDetailNormal,sampler_WaterDetailNormal,p/32+0.5/256).rg;
                 float footprint=max(length(ddx(p)),length(ddy(p)));
@@ -140,8 +142,17 @@ Shader "MagicCarpet/ModernWater"
                 // patches, with small cellular bubble walls inside those patches.
                 float foam=smoothstep(.12,.7,coverage)*smoothstep(.25,.72,pattern*.65+bubbles*.35);
                 color=lerp(color,_FoamColor.rgb*(0.6+0.4*light.shadowAttenuation),foam);
+                color+=ModernLocalLight(i.positionWS,n,view,.85)*lerp(.35,1,foam);
                 color=MixFog(color,i.fog);
-                return half4(color,lerp(0.94,1,max(fresnel,foam)));
+                // Opaque lake-bed geometry supplies the transmitted ground colour.
+                // Optical path grows at grazing angles; tiny shore intersections
+                // remain transparent instead of exposing a hard green grid cell.
+                float opticalPath=min(intersection,coast.g/max(.12,abs(view.y)));
+                float absorption=1-exp(-max(0,opticalPath)*.48);
+                float alpha=max(foam,saturate(fresnel+(1-fresnel)*absorption));
+                alpha*=smoothstep(0,2,shoreline);
+                alpha=lerp(alpha,1,smoothstep(240,300,length(i.positionWS.xz-_WorldSpaceCameraPos.xz)));
+                return half4(color,alpha);
             }
             ENDHLSL
         }

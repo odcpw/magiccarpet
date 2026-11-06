@@ -1,5 +1,38 @@
 # Shared-engine delivery plan
 
+## Modern environment sandbox — current graphics priority (2026-11-06)
+
+Oliver requested environment first, then replacement 3D assets. The Modern
+owner is delivering a freely explorable sandbox using the existing terrain,
+vegetation, wind, water and steam. Creature/menu replacement and VR follow this
+environment milestone. The separate Original gameplay delivery below continues
+under its existing ownership; do not mix its native changes into visual proofs.
+
+- [x] Free flight, useful viewpoints and a dedicated launcher; sandbox controls
+      must not cast spells, advance missions or overwrite campaign saves.
+- [x] Coherent daylight, dusk and moonlight; adjustable cloud cover and variable
+      wind shared by vegetation, water, clouds and steam.
+- [x] Interactive ripples and hot-water quenches, persistent steam wakes and
+      clear controls for repeatable experiments.
+- [ ] Terrain/shoreline and vegetation polish verified in close and moving views.
+      Submerged geometry, continuous shallow banks and denser shore vegetation
+      are installed and inspected. Angular mountain silhouettes and source-grid
+      coast shape remain; improve those before calling the environment finished.
+- [ ] Believable torch/firelight, restrained settlement glow and sky detail.
+      Day/night sky and restrained local torch lighting are installed. Local
+      volumetric firelight and richer flame motion remain open.
+- [x] Installed sandbox, inspected motion video, focused checks and repeated
+      frame-time measurements. Distinguish frozen-sandbox from gameplay cost.
+      Build `build-cr_6x8g7`: 72 Modern checks pass; reviewed 60-second tour;
+      six quiet private-Wayland runs average 8.38–8.89 ms at 1600×900. Campaign
+      is paused; actual desktop remains locked, so neither proves gameplay cost.
+- [ ] Shoreline breakers/run-up, local volumetric firelight and distant steam
+      handoff. Keep these attached to environment delivery before 3D game assets.
+
+Implementation and evidence live in
+`research/private/remc2-unity-native/MODERN_RENDERER.md`. Keep incomplete visual
+acceptance open; a working control panel alone does not finish the environment.
+
 ## Active request: complete the creature capabilities
 
 Oliver requested working through the remaining creature list on 2026-11-04.

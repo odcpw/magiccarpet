@@ -5,6 +5,137 @@ original presentation. Rust still owns movement, combat, terrain changes,
 input admission, saves and replay. The first supported modern environment is
 NightSpire (Level 1); other destinations retain their existing presentation.
 
+## Environment sandbox — 2026-11-06
+
+The current graphics priority is the environment sandbox, before replacement
+creatures, buildings and menus. Start the installed sandbox from this directory:
+
+```sh
+./run-sandbox.sh
+```
+
+The launcher reads the qualified Modern installation's ignored
+`sandbox-inputs.json`: an owner-local terrain replay, package/cache paths and
+exact native/replay hashes. It refuses mismatches. The snapshot is preserved in
+`Builds/SandboxInputs/environment-replay.json`; each run gets a separate temporary
+save destination. No ordinary campaign save is selected. The first attempt to
+use the current campaign defaults failed because the frozen Modern native cannot
+open their newer package schema; the retained failure is not bypassed. This
+qualified snapshot is an environment input, not earned campaign progression.
+
+After the terrain snapshot arrives, the sandbox owns the camera and controls.
+`MagicCarpetRuntime` skips campaign input, fixed updates and campaign GUI only
+while this opt-in environment is ready. Source actors are not drawn in the
+sandbox. Normal Modern gameplay and the separate Original installation retain
+their existing paths. This is free-camera exploration with ground clearance,
+not new Rust flight physics or collision against decorative rocks and plants.
+
+| Control | Action |
+| --- | --- |
+| Hold right mouse; WASD | Look and fly |
+| Q / E; Shift / Ctrl | Descend / rise; fast / precise flight |
+| 1 / 2 / 3 / 4 | Shoreline / grove / overlook / sky |
+| N / G | Cycle daylight, dusk, moonlight / calm, breeze, gusts |
+| Cloud slider | Adjust cloud coverage independently of wind |
+| Space / R | Aim at water for a 2 MJ quench / cold splash and ripple |
+| T / Backspace | Toggle the three sandbox torches / clear water and steam |
+| F1 / Escape / F10 | Hide controls / release mouse / exit |
+
+Water targeting rejects sky, distant/invalid rays, dry land and intervening
+terrain. Free flight drives the same persistent steam wake and water downwash
+entry points as the existing presentation effects. These experiments are
+cosmetic sandbox inputs; a real gameplay hot-contact ABI remains separate.
+`-mc-sandbox-tour` records the repeatable six-view lighting/water/steam study.
+
+Delivered environment changes:
+
+- A real, tiled submerged surface beneath the source water mask. Two-metre
+  geometry follows the authored visual depth, eases into shallow banks, shares
+  source tint, joins dry boundary vertices exactly, updates with terrain
+  revisions and wraps with the world. Water transmission uses its depth; wet
+  ground and surface opacity blend across the shoreline. Bed tiles stop at
+  320 m, with transmission fading to opaque between 240 and 300 m beforehand.
+  This is visual bathymetry, not recovered source collision. An experimental
+  extra water apron produced a blue outline and was reverted; its source and
+  capture remain in `environment-sandbox-20261106/rejected-apron/` and the
+  preceding review builds. The original 4 cm bed-edge bias was also removed
+  after the close-up exposed a real gap.
+- Fuller fern/shrub cover and small tree groves near water, retaining bounded
+  spatial batches, existing mesh/impostor LOD, stable placement and sparse steep
+  slopes. Cliff materials gain subtle filtered mineral bands without adding
+  texture samples or noise octaves for that variation.
+- Matched key light, ambient light, fog, sky and cloud scattering for daylight,
+  dusk and moonlight. Stars fade with daylight; the smaller moon disk and cloud
+  movement remain world-oriented. Weather continues to vary within each wind
+  setting and drives waves, plants, clouds and steam.
+- Restrained local torch illumination shared by terrain, plants, actors, spray
+  and water, with bounded source selection. The revised moving flame silhouette
+  and greatly reduced, localized atmospheric glow replace the rejected visual
+  draft. The sandbox lamps are explicitly placed study fixtures, not source
+  settlement proof. Local lights are shadowless and do not yet scatter through
+  the persistent steam volume.
+- Wind-advected optical detail on the existing persistent steam volume, reusing
+  the cloud lattice without another allocation or fluid solver. It changes
+  rendered extinction, not the mass-capped simulation. Coarse self-shadowing
+  remains stable. `-mc-steam-no-detail` retains the plain density reference.
+
+The final player is `build-cr_6x8g7`, retaining native `a98a8317e89a`.
+All 72 applicable Modern EditMode checks pass (10.681 s), including GPU steam
+mass/wakes and water fields, targeting rejection, bed geometry/tint/seam/reset,
+terrain mutation and vegetation LOD/placement. Unity compiled and ran the
+shaders. The actual installed launcher was driven with XTest on its own private
+X server: lighting changes, torch toggle, cold and hot impacts, free flight,
+clearing, panel visibility and F10 exit all worked; exit code 0. This check was
+self-verified. The failed initial default-package launch is retained separately.
+The final-build launcher receipt and input captures are in
+`/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/sandbox-controls-04/`;
+`build-player.sh --check-installed` also passes against the same artifact.
+
+The reviewed 60-second video is
+`/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/sandbox-02/water-review.mp4`
+(1800 frames at 1600×900). Full-resolution night/steam frames and the contact
+sheet were inspected. The capture uses a private X display and encoding, so its
+on-screen frame times are not the separate private-Wayland performance result.
+The real desktop remains locked. Commands, tests, hashes, scanner reports and
+performance captures are under `../generated/environment-sandbox-20261106/`.
+
+Two sequential runs per quiet viewpoint on the final installed build, RTX 3090,
+Vulkan at 1600×900, private KWin Wayland, 120 measured frames after 10 s warmup:
+
+| View / run | Mean ms | Median ms | p95 ms |
+| --- | ---: | ---: | ---: |
+| Shore 1 | 8.76 | 8.35 | 11.05 |
+| Shore 2 | 8.67 | 8.36 | 10.76 |
+| Grove 1 | 8.89 | 8.36 | 11.23 |
+| Grove 2 | 8.85 | 8.36 | 11.15 |
+| Overlook 1 | 8.74 | 8.38 | 10.31 |
+| Overlook 2 | 8.38 | 8.34 | 8.44 |
+
+All six runs exited successfully and produced their requested capture. These
+are paused-campaign, quiet-view samples, without active quenches or video
+encoding. Present pacing is approximately 120 Hz despite the player disabling
+v-sync; GPU frame samples were unavailable. They establish this sandbox's cost
+in that display path, not a campaign speedup, sustained flight/steam result or
+unlocked-desktop qualification. Exact commands and per-frame scope summaries
+are retained with `performance-summary.json` and `wayland/delivery-*`.
+
+The full 13-file C# UBS scan is partial: conditional-compilation analysis and
+dataflow limits affect the legacy runtime, terrain and vegetation files. Its
+seven warnings are existing runtime/actor-lookup findings outside the changed
+lines; there are no critical findings. The focused nine-file scan of sandbox,
+water/lighting owners and tests completes with no critical/warning findings.
+`ubs doctor --fix` reports the environment healthy; it does not remove those
+source-analysis limits. Shared runtime guards and shader changes were reviewed
+directly as well as compiled and exercised.
+
+Environment work still open before treating this as finished art: the original
+angular mountain silhouette and source-grid coast shape remain; breaking/run-up
+waves are still approximations; local volumetric firelight and richer flame
+motion need another visual pass. The four-plume, 12 m steam budget has no distant
+handoff. Normal gameplay performance, the actual unlocked desktop, Windows and
+VR remain separate qualifications. Replacement 3D game assets follow the
+environment milestone rather than blocking this usable sandbox.
+
 Build and install the combined player with `./build-player.sh`, then launch
 `./run-modern.sh`. `./run-campaign.sh` retains the original presentation by
 default. Both launchers accept the same campaign package and save options.
@@ -914,7 +1045,7 @@ qualified player's Modern inputs.
 
 ## Thermodynamic context and unfinished night-lighting experiment
 
-**Night lighting remains an uncommitted experiment.** The following records
+**Historical rejected experiment; superseded by the sandbox delivery above.** The following records
 the earlier combined draft; the density-volume delivery above supersedes its
 puff representation. Wind and thermodynamic prerequisites are part of the steam
 candidate, while the separate night-lighting/shader drafts are preserved. The

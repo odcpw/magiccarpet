@@ -26,6 +26,7 @@ Shader "MagicCarpet/ModernVegetation"
         HLSLINCLUDE
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+        #include "ModernLocalLighting.hlsl"
         TEXTURE2D(_BaseMap); SAMPLER(sampler_BaseMap);
         TEXTURE2D(_AlphaMap); SAMPLER(sampler_AlphaMap);
         TEXTURE2D(_NormalMap); SAMPLER(sampler_NormalMap);
@@ -135,7 +136,9 @@ Shader "MagicCarpet/ModernVegetation"
                 if (_UseTextures > 0.5 && _UseRoughnessMap > 0.5)
                     surface.smoothness=1-SAMPLE_TEXTURE2D(_RoughnessMap,sampler_RoughnessMap,i.uv).r;
                 surface.occlusion=1; surface.alpha=1; surface.normalTS=half3(0,0,1);
-                half4 result=UniversalFragmentPBR(input,surface); result.rgb=MixFog(result.rgb,i.fog); return result;
+                half4 result=UniversalFragmentPBR(input,surface);
+                result.rgb+=surface.albedo*ModernLocalLight(input.positionWS,n,input.viewDirectionWS,surface.smoothness);
+                result.rgb=MixFog(result.rgb,i.fog); return result;
             }
             ENDHLSL
         }

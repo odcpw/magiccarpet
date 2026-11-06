@@ -16,7 +16,9 @@ namespace MagicCarpet.Native
         private readonly ModernWaterSpectrum spectrum;
         private readonly ModernWaterInteractions interactions;
         private readonly ModernWaterEffects effects;
+        private readonly ModernWaterBed bed;
         private readonly Texture2D pattern;
+        private readonly ModernNightLighting lighting;
         private readonly NativeSim.NativeEvent[] pendingSplashes = new NativeSim.NativeEvent[16];
         private int splashCount;
         private readonly Dictionary<ushort, Vector3> lastFlyer = new();
@@ -32,13 +34,44 @@ namespace MagicCarpet.Native
         private bool reviewFlying;
         private readonly bool steamReview;
         private bool disposed;
+        private int sandboxWind = -1;
+        internal Vector2 WindVelocity => wind.Velocity;
+        internal Vector3? CloudCenter => effects.LatestCloudCenter;
 
-        internal ModernWaterSystem(Transform parent, ModernTerrainMesh terrain)
+        internal void SetSandboxWind(int mode)
+        {
+            sandboxWind = Mathf.Clamp(mode, 0, 2);
+            if (sandboxWind == 1) wind.ResumeWeather();
+        }
+
+        internal bool SandboxImpact(Vector3 position, bool hot)
+        {
+            if (!terrain.IsWater(position.x, position.z)) return false;
+            position.y = .15f;
+            interactions.AddImpulse(position, hot ? 3 : 2, hot ? 6 : 2);
+            if (hot) effects.Quench(position, wind.Velocity, ModernFireballEnergy.Standard);
+            else effects.Splash(position, wind.Velocity, false, .5f);
+            Debug.Log($"MC_SANDBOX_IMPACT hot={hot} position={position} presentation_only=True");
+            return true;
+        }
+
+        internal void SandboxSweep(Vector3 previous, Vector3 position, float dt)
+        {
+            effects.DisturbClouds(previous, position, dt);
+            if ((position-previous).sqrMagnitude > 32*32 || !terrain.IsWater(position.x,position.z)) return;
+            var influence = Mathf.Exp(-Mathf.Max(0,position.y)*.28f);
+            if (influence > .02f) interactions.AddWake(previous,position,2.2f+position.y*.15f,dt*influence*5);
+        }
+
+        internal void ClearSandboxEffects() { effects.Clear(); interactions.Reset(); }
+
+        internal ModernWaterSystem(Transform parent, ModernTerrainMesh terrain, ModernNightLighting lighting, Material bedMaterial)
         {
             this.terrain = terrain;
+            this.lighting = lighting;
             var args = Environment.GetCommandLineArgs();
             steamReview = args.Contains("-mc-steam-review");
-            review = args.Contains("-mc-water-review");
+            review = args.Contains("-mc-water-review") && !ModernEnvironmentSandbox.Requested;
             var delay = Array.IndexOf(args, "-mc-water-review-start-delay");
             if (delay >= 0 && delay + 1 < args.Length)
                 reviewDelay = Mathf.Clamp(float.Parse(args[delay + 1], CultureInfo.InvariantCulture), 0, 60);
@@ -47,8 +80,10 @@ namespace MagicCarpet.Native
                 coast = new ModernWaterCoast(); wind = new ModernWind();
                 spectrum = new ModernWaterSpectrum(); interactions = new ModernWaterInteractions();
                 pattern = CreatePattern(); effects = new ModernWaterEffects(parent, pattern);
+                bed = new ModernWaterBed(parent, bedMaterial);
                 Shader.SetGlobalTexture("_WaterPattern", pattern);
                 Shader.SetGlobalTexture("_WaterCoast", coast.Texture);
+                Shader.SetGlobalFloat("_ModernCoastReady",1);
             }
             catch { Dispose(); throw; }
         }
@@ -128,10 +163,14 @@ namespace MagicCarpet.Native
             {
                 bornAt = time;
                 reviewCenter = FindReviewWater();
+                if (review && !steamReview) lighting.SetReviewTorches(FindReviewTorches());
                 Debug.Log($"MC_WATER_READY fft=2x256 local=256 coast=256 review={review} center={reviewCenter} presentation_only=True");
             }
             if (review) Review(camera, Mathf.Max(0, time - bornAt - reviewDelay), dt);
             viewPosition = camera.transform.position;
+            bed.Update(terrain,coast,viewPosition);
+            if (sandboxWind == 0) wind.SetTarget(new Vector2(.7f+.3f*Mathf.Sin(time*.2f),.3f+.2f*Mathf.Cos(time*.17f)));
+            else if (sandboxWind == 2) wind.SetTarget(new Vector2(13+4*Mathf.Sin(time*.18f),4+5*Mathf.Cos(time*.13f)));
             wind.Update(dt, time);
             Shader.SetGlobalVector("_ModernWind", new Vector4(wind.Velocity.x, wind.Velocity.y, wind.Velocity.magnitude / 8f, time));
             Shader.SetGlobalVector("_ModernWindOffset", new Vector4(wind.Offset.x, wind.Offset.y, 0, 0));
@@ -188,16 +227,67 @@ namespace MagicCarpet.Native
             return best;
         }
 
+        private Vector3[] FindReviewTorches()
+        {
+            var result=new List<Vector3>();
+            // This replay has no active houses: explicitly staged exterior-light
+            // study on genuine dry terrain, never added to the Rust world.
+            var best=Vector3.zero; var score=float.PositiveInfinity;
+            for (var z=790; z<900; z+=2) for (var x=70; x<190; x+=2)
+            {
+                if (terrain.IsWater(x,z)) continue;
+                var h=terrain.SampleHeight(x,z);
+                var slope=Mathf.Abs(terrain.SampleHeight(x+2,z)-h)+Mathf.Abs(terrain.SampleHeight(x,z+2)-h);
+                var candidate=Vector2.Distance(new Vector2(x,z),new Vector2(reviewCenter.x,reviewCenter.z))+slope*8+h*.5f;
+                if (candidate < score) { score=candidate; best=new Vector3(x,h,z); }
+            }
+            if (float.IsPositiveInfinity(score)) return result.ToArray();
+            foreach (var offset in new[] { Vector3.zero,new Vector3(3,0,2),new Vector3(-3,0,3) })
+            {
+                var p=best+offset;
+                if (!terrain.IsWater(p.x,p.z)) result.Add(new Vector3(p.x,terrain.SampleHeight(p.x,p.z)+1.6f,p.z));
+            }
+            return result.ToArray();
+        }
+
         private void Review(Camera camera, float elapsed, float dt)
         {
             if (steamReview) { ReviewSteam(camera, elapsed, dt); return; }
-            // Ordinary water review retains autonomous weather.
+            // Review uses the same autonomous weather as ordinary play.
             var angle = (-145f + Mathf.Min(elapsed, 28) * 1.3f) * Mathf.Deg2Rad;
             var approach = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(14, 22, elapsed));
             var radius = Mathf.Lerp(25, 15, approach);
             var position = reviewCenter + new Vector3(Mathf.Cos(angle) * radius, Mathf.Lerp(6.5f, 3.6f, approach), Mathf.Sin(angle) * radius);
             position.y = Mathf.Max(position.y, terrain.SampleHeight(position.x, position.z) + 2);
             camera.transform.SetPositionAndRotation(position, Quaternion.LookRotation(reviewCenter + Vector3.up * .3f - position));
+            if (elapsed >= 27 && elapsed < 33 && effects.LatestCloudCenter.HasValue)
+            {
+                var center=effects.LatestCloudCenter.Value;
+                var direction=new Vector3(.8f,0,.6f);
+                var travel=Mathf.SmoothStep(-12,6,Mathf.InverseLerp(27,32,elapsed));
+                var p=center+direction*travel;
+                p.y=Mathf.Max(p.y,terrain.SampleHeight(p.x,p.z)+1.2f);
+                camera.transform.SetPositionAndRotation(p,Quaternion.LookRotation(direction));
+                if (reviewFlying) effects.DisturbClouds(previousReviewFlight,p,dt);
+                previousReviewFlight=p; reviewFlying=true;
+            }
+            else reviewFlying=false;
+            if (elapsed >= 35 && elapsed < 47)
+            {
+                var moon = new Vector3(-.38f,.48f,.79f).normalized;
+                camera.transform.rotation = Quaternion.LookRotation(Quaternion.Euler(0,(elapsed-41)*2,0)*moon);
+            }
+            else if (elapsed >= 47)
+            {
+                var fire = lighting.NearestFire(reviewCenter);
+                if (fire.HasValue)
+                {
+                    var orbit = (elapsed-47)*.09f;
+                    var p = fire.Value + new Vector3(Mathf.Cos(orbit)*12,3.5f,Mathf.Sin(orbit)*12);
+                    p.y = Mathf.Max(p.y,terrain.SampleHeight(p.x,p.z)+2);
+                    camera.transform.SetPositionAndRotation(p,Quaternion.LookRotation(fire.Value+Vector3.up-p));
+                }
+            }
             if (elapsed > 2)
             {
                 var phase = (elapsed - 2) * .45f;
@@ -207,20 +297,23 @@ namespace MagicCarpet.Native
                 lastReviewWake = wake;
             }
             var shot = Mathf.FloorToInt((elapsed - 10) / 7);
-            if (shot >= 0 && shot != lastShot)
+            if (shot >= 0 && shot != lastShot && elapsed < 30)
             {
                 lastShot = shot;
                 var impact = reviewCenter + new Vector3((shot % 3 - 1) * 5, .2f, 0);
                 effects.ReviewFireball(impact + new Vector3(-8, 14, -5), new Vector3(8, -14, 5), 1);
+                lighting.AddTransient(impact + new Vector3(-8,14,-5),new Vector3(8,-14,5),1,8);
             }
-            if (shot >= 0 && elapsed - (10 + shot * 7) >= 1 && lastReviewTime - (10 + shot * 7) < 1)
+            if (shot >= 0 && elapsed < 30 && elapsed - (10 + shot * 7) >= 1 && lastReviewTime - (10 + shot * 7) < 1)
             {
                 var impact = reviewCenter + new Vector3((shot % 3 - 1) * 5, .2f, 0);
                 if (terrain.IsWater(impact.x, impact.z))
                 {
                     interactions.AddImpulse(impact, 3, 6);
-                    effects.Splash(impact, wind.Velocity, true, 1.3f);
-                    Debug.Log($"MC_WATER_REVIEW_IMPACT staged=True time={elapsed:F2} position={impact}");
+                    var energy = ModernFireballEnergy.Standard;
+                    effects.Quench(impact, wind.SampleVelocity(new Vector2(impact.x,impact.z),time), energy);
+                    lighting.AddTransient(impact+Vector3.up*.6f,Vector3.zero,.18f,6,14);
+                    Debug.Log($"MC_WATER_REVIEW_IMPACT staged=True time={elapsed:F2} position={impact} joules={energy.Joules:F0} vapor_kg_max={energy.VaporizedKilograms:F3} ambient_c=12 humidity=.75 equilibrium_plume=True");
                 }
             }
             lastReviewTime = elapsed;
@@ -273,7 +366,8 @@ namespace MagicCarpet.Native
                 GUI.Label(new Rect(25,45,1300,32), $"CONTROLLED VARIABLE BREEZE {wind.Velocity.magnitude:F1} m/s  /  12 C, 75% RH  /  moonlit condensation", style);
                 return;
             }
-            GUI.Label(new Rect(25, 20, 900, 32), "WATER STUDY  /  scripted wind, downwash and quench effects  /  live NightSpire terrain", style);
+            GUI.Label(new Rect(25, 20, 1300, 32), "NIGHTSPIRE STUDY  /  variable wind  /  staged quench, flight pass and torch study", style);
+            GUI.Label(new Rect(25, 45, 1300, 32), $"WIND {wind.Velocity.magnitude:F1} m/s   /   vapor upper bound 0.77 kg   /   cooling and condensation in 12 C, 75% RH air", style);
         }
 
         private static Texture2D CreatePattern()
@@ -318,6 +412,8 @@ namespace MagicCarpet.Native
         {
             if (disposed) return; disposed = true;
             effects?.Dispose(); interactions?.Dispose(); spectrum?.Dispose(); coast?.Dispose();
+            bed?.Dispose();
+            Shader.SetGlobalFloat("_ModernCoastReady",0);
             UnityEngine.Object.Destroy(pattern);
             Shader.SetGlobalVector("_ModernWind", Vector4.zero);
             Shader.SetGlobalVector("_ModernWindOffset", Vector4.zero);

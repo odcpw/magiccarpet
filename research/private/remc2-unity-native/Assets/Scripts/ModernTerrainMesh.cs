@@ -437,7 +437,8 @@ namespace MagicCarpet.Native
                 0.90f + variation, Shore(x, z) ? 1f : 0f);
         }
 
-        private Color DetailColor(int x, int z)
+        // Shared by the submerged extension at the same two-metre lattice vertices.
+        internal Color DetailColor(int x, int z)
         {
             var ix = x >> 1;
             var iz = z >> 1;

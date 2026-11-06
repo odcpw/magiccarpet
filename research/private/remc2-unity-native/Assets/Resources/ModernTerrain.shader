@@ -37,6 +37,9 @@ Shader "MagicCarpet/ModernTerrain"
             #pragma multi_compile_fog
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            #include "ModernLocalLighting.hlsl"
+            TEXTURE2D(_WaterCoast); SAMPLER(sampler_WaterCoast);
+            float _ModernCoastReady;
             TEXTURE2D(_RockAlbedo); SAMPLER(sampler_RockAlbedo);
             TEXTURE2D(_GroundAlbedo); SAMPLER(sampler_GroundAlbedo);
             TEXTURE2D(_RockNormal); SAMPLER(sampler_RockNormal);
@@ -144,8 +147,18 @@ Shader "MagicCarpet/ModernTerrain"
                 // Broad continuous shading varies the repeated rock texture
                 // without introducing per-pixel speckles or moving the terrain.
                 float rockVariation=Noise(p.xz*0.012+p.y*float2(0.006,0.009)+float2(24,17));
+                // Broad mineral beds give the cliff a readable geological scale.
+                // Reuse the macro field; no additional texture or noise octaves.
+                float stratumPhase=i.positionWS.y*.60+rockVariation*9;
+                float stratum=smoothstep(.30,.70,.5+.5*sin(stratumPhase));
+                float stratumWeight=1-smoothstep(.6,2.0,fwidth(stratumPhase));
                 float dampPatch=smoothstep(0.38,0.68,broad+(detail-0.5)*0.08)*saturate((n.y-0.45)*2);
                 float wetShore=saturate(i.color.a)*(1-smoothstep(0.35,3.0,max(i.positionWS.y,0.0)))*(1-rock*0.35);
+                if (_ModernCoastReady > .5)
+                {
+                    float coast=SAMPLE_TEXTURE2D(_WaterCoast,sampler_WaterCoast,i.positionWS.xz/1024).r;
+                    wetShore=(1-smoothstep(-.5,2.0,-coast))*(1-smoothstep(.2,1.2,max(i.positionWS.y,0.0)));
+                }
                 half3 ground = lerp(_SoilColor.rgb, _MossColor.rgb, moss);
                 half3 albedo = lerp(ground, _RockColor.rgb, rock);
                 albedo *= lerp(0.67, 1.28, detail) * lerp(0.80, 1.20, broad);
@@ -170,6 +183,7 @@ Shader "MagicCarpet/ModernTerrain"
                         [branch] if (weights.y > 0) { RockProjection(q.xz,qdx.xz,qdy.xz,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.y; rockR+=axisR*weights.y; rockNY=axisNormal; }
                         [branch] if (weights.z > 0) { RockProjection(q.xy,qdx.xy,qdy.xy,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.z; rockR+=axisR*weights.z; rockNZ=axisNormal; }
                         rockTex *= lerp(half3(0.77,0.82,0.80),half3(1.07,1.02,0.95),rockVariation);
+                        rockTex *= lerp(1.0,lerp(.82,1.08,stratum),stratumWeight*.65);
                     }
                     [branch] if (_UseMaterialEndpoints < 0.5 || rock < 1)
                     {
@@ -250,7 +264,9 @@ Shader "MagicCarpet/ModernTerrain"
                 SurfaceData surface = (SurfaceData)0; surface.albedo = albedo; surface.metallic = 0;
                 surface.specular = half3(0.04,0.04,0.04); surface.smoothness = smoothness;
                 surface.occlusion = 1; surface.alpha = 1; surface.normalTS = half3(0,0,1);
-                half4 result = UniversalFragmentPBR(input, surface); result.rgb = MixFog(result.rgb, i.fog); return result;
+                half4 result = UniversalFragmentPBR(input, surface);
+                result.rgb += albedo*ModernLocalLight(i.positionWS,n,input.viewDirectionWS,smoothness);
+                result.rgb = MixFog(result.rgb, i.fog); return result;
             }
             ENDHLSL
         }

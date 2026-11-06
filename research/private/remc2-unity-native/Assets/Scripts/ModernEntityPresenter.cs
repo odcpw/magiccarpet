@@ -26,6 +26,8 @@ namespace MagicCarpet.Native
         private bool loggedGeometry;
         private ushort? isolatedSmoke;
         private int loggedDebug = -1;
+        internal IEnumerable<NativeSim.CampaignEntityPresentation> VisibleRows => rows.Values;
+        private readonly MaterialPropertyBlock emission = new MaterialPropertyBlock();
 
         internal ModernEntityPresenter(Transform parent, OwnerAssetCache cache)
         {
@@ -68,6 +70,10 @@ namespace MagicCarpet.Native
                 var smoke = (row.baseTmap == 57 || row.baseTmap == 63) && (row.pixelMode == 2 || row.pixelMode == 6);
                 var visual = node.GetComponent<MeshRenderer>();
                 visual.sharedMaterial = GetMaterial(texture, smoke);
+                emission.Clear();
+                var lightKind = ModernNightLighting.SourceKind(row);
+                emission.SetFloat("_EmissionStrength", lightKind >= 1 && lightKind <= 4 ? 2.5f : 0);
+                visual.SetPropertyBlock(emission);
                 visual.shadowCastingMode = smoke ? ShadowCastingMode.Off : ShadowCastingMode.TwoSided;
                 if (smoke && !loggedSmoke)
                 {

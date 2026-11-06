@@ -21,6 +21,7 @@ Shader "MagicCarpet/ModernVegetationImpostor"
         HLSLINCLUDE
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+        #include "ModernLocalLighting.hlsl"
         TEXTURE2D(_BaseMap); SAMPLER(sampler_BaseMap);
         TEXTURE2D(_ImpostorData); SAMPLER(sampler_ImpostorData);
         CBUFFER_START(UnityPerMaterial)
@@ -164,6 +165,7 @@ Shader "MagicCarpet/ModernVegetationImpostor"
                 surface.occlusion=1; surface.alpha=1; surface.normalTS=half3(0,0,1);
                 float4 clipPosition=TransformWorldToHClip(positionWS);
                 Output o; o.color=UniversalFragmentPBR(input,surface);
+                o.color.rgb+=surface.albedo*ModernLocalLight(input.positionWS,input.normalWS,input.viewDirectionWS,surface.smoothness);
                 o.color.rgb=MixFog(o.color.rgb,ComputeFogFactor(clipPosition.z));
                 if (_ModernVegetationDebug > 0.5 && _ModernVegetationDebug < 1.5) o.color=half4(saturate(input.bakedGI),1);
                 if (_ModernVegetationDebug > 1.5 && _ModernVegetationDebug < 2.5) o.color=half4(0.5,0.5,0.5,1);

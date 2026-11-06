@@ -617,12 +617,16 @@ namespace MagicCarpet.Native
                 var ground = terrain.GroundType(x, z);
                 // Terrain selectors affect distribution, not an assumed mapping from IDs to biomes.
                 var density = 0.78f + 0.22f * Random01((uint)ground * 7919u + 31u);
+                // Riparian pockets gather ferns, shrubs and small groves while
+                // keeping exposed slopes sparse. The water mask is periodic;
+                // vertical terrain edits still re-ground the same placements.
+                var moisture = ShoreMoisture(x, z);
                 var yaw = Random01(seed ^ 0xc2b2ae35u) * 360f;
                 if (chunk.HasDetail && slope < 1.15f)
                 {
                     // Several independently grounded tufts form irregular patches.
                     // A broad, wrapped moisture field leaves clearings between them.
-                    var cover = density * Mathf.Lerp(.40f, .96f, PatchDensity(x, z));
+                    var cover = Mathf.Min(1, density * Mathf.Lerp(.40f, .96f, PatchDensity(x, z)) + moisture * .25f);
                     for (var tuft = 0; tuft < 4; tuft++)
                     {
                         var tuftSeed = seed ^ ((uint)(tuft + 1) * 0x27d4eb2fu);
@@ -633,14 +637,14 @@ namespace MagicCarpet.Native
                         var normal = GroundNormal(px, pz);
                         if (normal.y < .65f) continue;
                         var choice = Random01(tuftSeed ^ 0x85ebca6bu);
-                        var kind = choice < .68f ? 0 : choice < .88f ? 1 : 2;
+                        var kind = choice < Mathf.Lerp(.68f,.45f,moisture) ? 0 : choice < Mathf.Lerp(.88f,.82f,moisture) ? 1 : 2;
                         var scale = .85f + .75f * Random01(tuftSeed ^ 0x165667b1u);
                         Add(chunk, kind, px, terrain.SampleHeight(px, pz) - .05f, pz,
                             Random01(tuftSeed ^ 0xc2b2ae35u) * 360f, scale, normal);
                     }
                 }
                 var landmark = Random01(seed ^ 0x165667b1u);
-                if (landmark < .045f * Mathf.Lerp(.5f, 1.3f, PatchDensity(x, z)) && slope < .55f)
+                if (landmark < .045f * Mathf.Lerp(.5f, 1.3f, PatchDensity(x, z)) + moisture * .055f && slope < .55f)
                 {
                     // Scanned trees follow the same terrain as ground cover, independently of actors.
                     var scale = .65f + .95f * Random01(seed ^ 0xd3a2646cu);
@@ -680,6 +684,18 @@ namespace MagicCarpet.Native
             const float offset = .5f;
             return new Vector3(terrain.SampleHeight(x - offset, z) - terrain.SampleHeight(x + offset, z),
                 2 * offset, terrain.SampleHeight(x, z - offset) - terrain.SampleHeight(x, z + offset)).normalized;
+        }
+
+        private float ShoreMoisture(float x, float z)
+        {
+            var wet = 0f;
+            for (var i=0;i<4;i++)
+            {
+                var dx=i==0?1:i==1?-1:0;var dz=i==2?1:i==3?-1:0;
+                if (terrain.IsWater(x+dx*12,z+dz*12)) wet+=.35f;
+                if (terrain.IsWater(x+dx*24,z+dz*24)) wet+=.15f;
+            }
+            return Mathf.Clamp01(wet);
         }
 
         private static float PatchDensity(float x, float z)

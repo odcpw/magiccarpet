@@ -2578,6 +2578,7 @@ namespace MagicCarpet.Native
 
         private void FixedUpdate()
         {
+            if (modernEnvironment?.SandboxActive == true) return;
             if (gameRuntimeMode)
             {
                 if (runtimeExitRequested) return;
@@ -3474,6 +3475,11 @@ namespace MagicCarpet.Native
 
         private void Update()
         {
+            if (modernEnvironment?.SandboxActive == true)
+            {
+                FreezeGameRuntimeInput();
+                return;
+            }
             if (gameRuntimeMode)
             {
                 if (gameRuntimeSecretEntryPending)
@@ -3985,6 +3991,11 @@ namespace MagicCarpet.Native
 
         private void LateUpdate()
         {
+            if (modernEnvironment?.SandboxActive == true)
+            {
+                modernEnvironment.Render();
+                return;
+            }
             if (level2Mode) return;
             if (localAudioQualificationMode)
             {
@@ -14351,6 +14362,11 @@ namespace MagicCarpet.Native
 
         private void DrawRuntimeGui()
         {
+            if (modernEnvironment?.SandboxActive == true)
+            {
+                modernEnvironment.DrawHud(null);
+                return;
+            }
             if (gameRuntimeTransitionPresenter?.HasFailure == true)
             { gameRuntimeTransitionPresenter.DrawFailure(); return; }
             if (gameRuntimeSecretEntryPending) return;

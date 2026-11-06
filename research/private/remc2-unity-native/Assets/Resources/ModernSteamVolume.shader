@@ -18,6 +18,9 @@ Shader "MagicCarpet/ModernSteamVolume"
             TEXTURE3D(_Density); SAMPLER(sampler_Density);
             TEXTURE2D(_WaterCoast); SAMPLER(sampler_WaterCoast);
             TEXTURE2D(_WaterDisplacement); SAMPLER(sampler_WaterDisplacement);
+            TEXTURE3D(_ModernDetailNoise); SAMPLER(sampler_ModernDetailNoise);
+            float _ModernDensityDetail;
+            float4 _ModernWindOffset;
             CBUFFER_START(UnityPerMaterial)
             float4 _Volume;
             float _Clock;
@@ -58,6 +61,17 @@ Shader "MagicCarpet/ModernSteamVolume"
                     float3 p=ro+rd*t;
                     float density=Density(p);
                     if(density<.000005) continue;
+                    // Sub-cell optical variation rides the integrated wind and
+                    // plume rise. Reuse the cloud lattice; no extra simulation or
+                    // texture allocation. Persistent wakes remain in the density
+                    // field; the coarse field also supplies stable self-shadowing.
+                    if(_ModernDensityDetail>.5)
+                    {
+                        float3 q=p-float3(_ModernWindOffset.x,_Clock*.65,_ModernWindOffset.y);
+                        float detail=SAMPLE_TEXTURE3D_LOD(_ModernDetailNoise,sampler_ModernDetailNoise,(q*2+17.5)/128,0).r*.65
+                            +SAMPLE_TEXTURE3D_LOD(_ModernDetailNoise,sampler_ModernDetailNoise,(q*4-11.5)/128,0).r*.35;
+                        density*=lerp(.5,1.5,saturate((detail-.25)*2));
+                    }
                     float coast=SAMPLE_TEXTURE2D_LOD(_WaterCoast,sampler_WaterCoast,p.xz/1024,0).r;
                     float water=SAMPLE_TEXTURE2D_LOD(_WaterDisplacement,sampler_WaterDisplacement,p.xz/256,0).g*smoothstep(0,12,coast);
                     if(coast>0) density*=smoothstep(water-.04,water+.16,p.y);

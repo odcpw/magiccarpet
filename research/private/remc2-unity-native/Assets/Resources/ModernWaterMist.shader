@@ -15,6 +15,7 @@ Shader "MagicCarpet/ModernWaterMist"
             #pragma multi_compile_fog
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+            #include "ModernLocalLighting.hlsl"
             TEXTURE2D(_Pattern); SAMPLER(sampler_Pattern);
             TEXTURE2D(_WaterDisplacement); SAMPLER(sampler_WaterDisplacement);
             TEXTURE2D(_WaterCoast); SAMPLER(sampler_WaterCoast);
@@ -49,8 +50,11 @@ Shader "MagicCarpet/ModernWaterMist"
                 wave+=sin(max(0,coast)*.8+_WaterTime*1.25)*exp(-max(0,coast)*.18)
                     *smoothstep(0,2,coast)*.15*saturate(_ModernWind.z)*(.2+.8*exposure);
                 soft*=lerp(1,smoothstep(-.08,.3,i.world.y-wave),step(0,coast));
-                half3 color=MixFog(i.color.rgb*lerp(1,5,_Glow),i.fog);
-                return half4(color,shape*soft*i.color.a*lerp(1,2,_Glow));
+                half3 view=GetWorldSpaceNormalizeViewDir(i.world);
+                half3 local=ModernLocalLight(i.world,view,view,0);
+                half3 color=MixFog(i.color.rgb*(lerp(.7,5,_Glow)+local*.6),i.fog);
+                float alpha=lerp(shape*i.color.a,1-exp(log(max(1-i.color.a,.001))*shape),_Mist);
+                return half4(color,alpha*soft*lerp(1,2,_Glow));
             }
             ENDHLSL
         }
