@@ -418,7 +418,7 @@ compiled_registry! {
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
         (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
         (ArcherFamily, 5, [32, 33, 34, 35, 36, 37, 39]);
-        (Model9Family, 5, [72, 73, 74, 76, 77]);
+        (Model9Family, 5, [72, 73, 74, 75, 76, 77]);
         (FinalBoss, 5, [80, 81, 82, 83, 84, 85, 86, 87]);
         (BuilderFamily, 5, [96, 97, 98, 99, 100, 101, 102, 103]);
         (VillagerFamily, 5, [104]);
@@ -819,7 +819,7 @@ mod tests {
                 &[16, 17, 18, 19, 20, 21, 22, 23][..],
                 "level2-bee-family",
             ),
-            (5, &[74, 76, 77][..], "level2-model9-family"),
+            (5, &[74, 75, 76, 77][..], "level2-model9-family"),
             (5, &[8][..], "goat-family"),
             (5, &[32][..], "archer-family"),
             (5, &[160, 161, 162, 163, 164, 165, 167][..], "spider-family"),
@@ -1111,9 +1111,10 @@ mod tests {
                 Err(RegistryValidationError::UnknownImplementedKey(_))
             ));
         }
-        // Wyvern134, model17/142, Spider166, model23/190 and model26/214 have table addresses but no pinned source
-        // dispatcher implementation. Neither may become an invented no-op.
-        for action in [134, 142, 150, 166, 174, 190, 206, 214, 222, 230] {
+        // Skeleton78, Wyvern134, model17/142, Spider166, model23/190 and
+        // model26/214 have table addresses but no pinned source dispatcher
+        // implementation. None may become an invented no-op.
+        for action in [78, 134, 142, 150, 166, 174, 190, 206, 214, 222, 230] {
             for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
                 let key = BehaviorKey {
                     dispatch_site: site.id(),

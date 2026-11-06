@@ -15080,7 +15080,7 @@ impl Mc2Simulation {
                             (2, 0 | 1 | 2 | 3 | 9 | 18 | 19 | 20 | 21)
                                 | (
                                     5,
-                                    25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
+                                    25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 75 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
                                 )
                                 | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 30 | 31)
                                 | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96)
@@ -20810,7 +20810,7 @@ impl Mc2Simulation {
             })
             .map(|source| source.action)
             .ok_or_else(|| format!("model-9 callback lost source slot {source_slot}"))?;
-        if action == 74 || action == 79
+        if matches!(action, 74 | 75) || action == 79
             && self.session.state.live.economy.entities[usize::from(source_slot)].record[77] == 14
         {
             let live = &mut self.session.state.live;
@@ -20822,12 +20822,21 @@ impl Mc2Simulation {
                 particles: Some(&self.session.definition.presentation.particles),
                 ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
             };
-            let outcome = creatures::skeleton::step_alliance_source_slot(
-                &mut live.economy, &mut live.terrain,
-                &self.session.definition.presentation.particles,
-                &self.session.definition.presentation.entity_parameters,
-                source_slot, &pass_start_class5_model_slots[9], context,
-            )?;
+            let outcome = if action == 75 {
+                creatures::skeleton::step_linked_source_slot(
+                    &mut live.economy, &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    &self.session.definition.presentation.entity_parameters,
+                    source_slot, &pass_start_class5_model_slots[9], context,
+                )
+            } else {
+                creatures::skeleton::step_alliance_source_slot(
+                    &mut live.economy, &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    &self.session.definition.presentation.entity_parameters,
+                    source_slot, &pass_start_class5_model_slots[9], context,
+                )
+            }?;
             for (owner, family) in outcome.feedback {
                 award_source_spell_experience(live, owner, family);
             }

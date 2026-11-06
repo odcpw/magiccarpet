@@ -300,6 +300,190 @@ fn shoot(
     Ok((replaced_root, player_feedback.then_some(target.slot)))
 }
 
+/// Source action75 (`sub_20E50`/`sub_1C560`), including the same-pass
+/// action74 presentation tail. The linked address is resolved as it exists
+/// during this callback; the frozen model list is membership, not a snapshot.
+pub(crate) fn step_linked_source_slot(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    parameters: &[[u8; 34]],
+    slot: u16,
+    frozen_model9: &[u16],
+    context: source_target::Context<'_>,
+) -> Result<SkeletonStep, String> {
+    let mut row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active && (row.class, row.model, row.action) == (5, 9, 75))
+        .cloned()
+        .ok_or_else(|| format!("Skeleton linked callback lost source slot {slot}"))?;
+    let link = row.word_32();
+    if link == 0 {
+        // This return precedes the mailbox, child chain, movement and pose.
+        row.set_source_action(73);
+        arena.entities[usize::from(slot)] = row;
+        return Ok(SkeletonStep::default());
+    }
+
+    let parent = source_target::read(arena, context, link)?;
+    let parent_valid = parent.is_some_and(|parent| {
+        parent.life >= 0 && !parent.drawing_disabled() && (parent.class, parent.model) == (5, 9)
+    });
+    let hit = consume(arena, &mut row, context)?;
+    arena.entities[usize::from(slot)] = row.clone();
+    if hit == 0 {
+        movement(arena, &mut row, terrain)?;
+        // sub_1B8C0 has already published its movement/population side
+        // effects before the subsequent parent and frozen-list reads.
+        let position = row.position;
+        row.set_map_links(
+            arena.economy.map_chains.old_map_entity(slot),
+            arena.economy.map_chains.next_entity(slot),
+        );
+        arena.entities[usize::from(slot)] = row.clone();
+        crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+        if !parent_valid {
+            put(&mut row, 54, 0);
+            row.set_source_action(73);
+        } else {
+            let descriptor = parameters
+                .get(usize::from(row.parameter_relation.unwrap_or(
+                    campaign_shared_families::MC2_SKELETON_ASSETS.descriptor,
+                )))
+                .ok_or("Skeleton linked descriptor is absent")?;
+            let period = u16::from_le_bytes([descriptor[26], descriptor[27]]);
+            if period == 0 {
+                return Err("Skeleton linked scan period is zero".into());
+            }
+            if u16::from(row.phase) % period == 0 {
+                let parent_row = if link == slot {
+                    row.clone()
+                } else {
+                    arena
+                        .entities
+                        .get(usize::from(link))
+                        .cloned()
+                        .ok_or_else(|| format!("Skeleton linked address {link} is invalid"))?
+                };
+                match parent_row.action {
+                    72 | 73 | 75 => {
+                        if parent_row.action == 75 {
+                            put(&mut row, 54, parent_row.word_32());
+                        }
+                        arena.entities[usize::from(slot)] = row.clone();
+                        let target_slot = row.word_32();
+                        let target_position = if target_slot == 0 {
+                            arena.entities[0].position
+                        } else if target_slot == slot {
+                            row.position
+                        } else {
+                            source_target::read(arena, context, target_slot)?
+                                .ok_or_else(|| {
+                                    format!("Skeleton linked target {target_slot} is invalid")
+                                })?
+                                .position
+                        };
+                        row.set_source_roll(crate::heading_for_positions(
+                            row.position,
+                            target_position,
+                        ) as i16);
+                        arena.entities[usize::from(slot)] = row.clone();
+                        for &peer_slot in frozen_model9 {
+                            let Some(peer) = source_target::read(arena, context, peer_slot)? else {
+                                continue;
+                            };
+                            if peer.source_id != row.source_id
+                                && (i32::from(row.position.x as i16)
+                                    - i32::from(peer.position.x as i16))
+                                .abs()
+                                    < 256
+                                && (i32::from(row.position.y as i16)
+                                    - i32::from(peer.position.y as i16))
+                                .abs()
+                                    < 256
+                            {
+                                row.set_source_roll(crate::heading_for_positions(
+                                    peer.position,
+                                    row.position,
+                                ) as i16);
+                                break;
+                            }
+                        }
+                        let max_speed =
+                            i16::from_le_bytes([parent_row.record[138], parent_row.record[139]]);
+                        row.set_actual_speed(max_speed.wrapping_add(parent_row.actual_speed));
+                    }
+                    74 | 78 => {
+                        row.set_source_word_96(parent_row.source_word_96());
+                        put(&mut row, 54, 0);
+                        row.set_source_action(parent_row.action);
+                    }
+                    _ => {
+                        put(&mut row, 54, 0);
+                        row.set_source_action(73);
+                    }
+                }
+            }
+        }
+    } else {
+        let attacker = row.word_26();
+        if parent_valid {
+            let parent_row = if link == slot {
+                &mut row
+            } else {
+                arena
+                    .entities
+                    .get_mut(usize::from(link))
+                    .ok_or_else(|| format!("Skeleton linked address {link} is invalid"))?
+            };
+            let descriptor = parameters
+                .get(usize::from(parent_row.parameter_relation.unwrap_or(
+                    campaign_shared_families::MC2_SKELETON_ASSETS.descriptor,
+                )))
+                .ok_or("Skeleton linked parent descriptor is absent")?;
+            parent_row.set_source_word_96(attacker);
+            put(parent_row, 54, 0);
+            parent_row.set_source_action(if descriptor[32] & 8 != 0 { 78 } else { 74 });
+        }
+        put(&mut row, 54, 0);
+        if hit == 2 {
+            row.set_source_action(76);
+        } else {
+            let descriptor = parameters
+                .get(usize::from(row.parameter_relation.unwrap_or(
+                    campaign_shared_families::MC2_SKELETON_ASSETS.descriptor,
+                )))
+                .ok_or("Skeleton linked descriptor is absent")?;
+            row.set_source_word_96(attacker);
+            row.set_source_action(if descriptor[32] & 8 != 0 { 78 } else { 74 });
+            let ground = terrain.ground_height(row.position);
+            let clearance = i16::from_le_bytes([descriptor[12], descriptor[13]]);
+            let descent = i16::from_le_bytes([descriptor[14], descriptor[15]]);
+            if row.position.z > ground {
+                row.position.z = row.position.z.wrapping_add(descent);
+            }
+            if i32::from(row.position.z as i16) <= i32::from(ground) + i32::from(clearance) {
+                row.position.z = ground.wrapping_add(clearance);
+            }
+            row.set_position(row.position);
+        }
+    }
+    if row.action == 74 {
+        arena.entities[usize::from(slot)] = row.clone();
+        attack_visual(arena, &mut row, particles, context)?;
+    }
+    let position = row.position;
+    row.set_map_links(
+        arena.economy.map_chains.old_map_entity(slot),
+        arena.economy.map_chains.next_entity(slot),
+    );
+    arena.economy.source_rng.insert(slot, row.entity_rng);
+    arena.entities[usize::from(slot)] = row;
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    Ok(SkeletonStep::default())
+}
+
 /// The source action79 Alliance branch and actual action74 attack. Normal
 /// action73's mimic scan remains in its existing owner; action74 is sub_20C50.
 pub(crate) fn step_alliance_source_slot(
@@ -969,6 +1153,309 @@ pub(crate) fn allocate_from_controller(
 #[cfg(test)]
 mod alliance_tests {
     use super::*;
+
+    #[test]
+    fn configured_linked_action75_keeps_source_short_circuit_follow_and_damage_order() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            std::path::PathBuf::from,
+        );
+        let session = CampaignSession::open(package, CampaignSelection::ordinary(5).unwrap())
+            .unwrap()
+            .simulation()
+            .clone();
+        let roots = &session.source_arena().rebuilt_class5_model_slots()[9];
+        let (slot, parent) = (roots[0], roots[1]);
+        let (actor_handle, parent_handle) = (
+            session.source_arena().handle(slot).unwrap(),
+            session.source_arena().handle(parent).unwrap(),
+        );
+        let player = session.state.entity_index;
+        let particles = &session.session.definition.presentation.particles;
+        let parameters = &session.session.definition.presentation.entity_parameters;
+
+        // Explicit configured callback states on real reset constructors;
+        // they do not claim a natural producer of the linked action.
+        for (link, parent_alive, damage) in [
+            (false, true, 100_u16),
+            (true, false, 0),
+            (true, true, 0),
+            (true, true, 100),
+            (true, true, 1001),
+        ] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let actor = &mut arena.entities[usize::from(slot)];
+            actor.set_source_action(75);
+            actor.set_phase(0);
+            put(actor, 54, if link { parent } else { 0 });
+            if damage != 0 {
+                actor.apply_model76_mailbox(player, damage);
+            }
+            let old_life = actor.life;
+            let old_position = actor.position;
+            let peer = &mut arena.entities[usize::from(parent)];
+            peer.set_source_action(74);
+            peer.set_source_word_96(player);
+            if !parent_alive {
+                peer.set_life(-1);
+            }
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_linked_source_slot(
+                &mut arena,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                Default::default(),
+            )
+            .unwrap();
+            assert_eq!(arena.handle(slot), Some(actor_handle));
+            assert_eq!(arena.handle(parent), Some(parent_handle));
+            let actor = &arena.entities[usize::from(slot)];
+            if !link {
+                assert_eq!(
+                    (actor.action, actor.life, actor.position),
+                    (73, old_life, old_position)
+                );
+                assert_eq!(actor.source_upkeep_word_62(), player);
+            } else if !parent_alive {
+                assert_eq!((actor.action, actor.word_32()), (73, 0));
+                assert_eq!(actor.life, old_life);
+            } else if damage == 0 {
+                assert_eq!(
+                    (actor.action, actor.word_32(), actor.source_word_96()),
+                    (74, 0, player)
+                );
+                assert_eq!(
+                    actor.particle_parameter_index,
+                    Some(campaign_shared_families::MC2_SKELETON_ASSETS.reaction_particle)
+                );
+            } else {
+                assert_eq!(actor.life, old_life - i32::from(damage));
+                assert_eq!(actor.source_upkeep_word_62(), 0);
+                assert_eq!(actor.word_32(), 0);
+                let peer = &arena.entities[usize::from(parent)];
+                assert_eq!(
+                    (peer.action, peer.word_32(), peer.source_word_96()),
+                    (74, 0, player)
+                );
+                if damage == 1001 {
+                    assert_eq!((actor.action, actor.word_24()), (76, player));
+                } else {
+                    assert_eq!(
+                        (actor.action, actor.word_26(), actor.source_word_96()),
+                        (74, player, player)
+                    );
+                }
+            }
+        }
+
+        // The source checks the parent's current action only on its scan
+        // cadence; a linked parent can itself redirect to another peer.
+        let third = roots[2];
+        for (phase, parent_action) in [(1, 74), (0, 73), (0, 75)] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let actor = &mut arena.entities[usize::from(slot)];
+            actor.set_source_action(75);
+            actor.set_phase(phase);
+            put(actor, 54, parent);
+            let prior_roll = actor.source_roll();
+            let peer = &mut arena.entities[usize::from(parent)];
+            peer.set_source_action(parent_action);
+            peer.set_source_word_96(player);
+            put(peer, 54, third);
+            let expected_speed = peer
+                .actual_speed
+                .wrapping_add(i16::from_le_bytes([peer.record[138], peer.record[139]]));
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_linked_source_slot(
+                &mut arena,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                Default::default(),
+            )
+            .unwrap();
+            let actor = &arena.entities[usize::from(slot)];
+            assert_eq!(actor.action, 75);
+            if phase == 1 {
+                assert_eq!((actor.word_32(), actor.source_roll()), (parent, prior_roll));
+            } else {
+                assert_eq!(
+                    actor.word_32(),
+                    if parent_action == 75 { third } else { parent }
+                );
+                assert_eq!(actor.actual_speed, expected_speed);
+            }
+        }
+
+        // If the peer address aliases the actor, the parent-side writes and
+        // actor-side writes address the same current source row.
+        for damage in [100_u16, 1001] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let actor = &mut arena.entities[usize::from(slot)];
+            actor.set_source_action(75);
+            put(actor, 54, slot);
+            actor.apply_model76_mailbox(player, damage);
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_linked_source_slot(
+                &mut arena,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                Default::default(),
+            )
+            .unwrap();
+            let actor = &arena.entities[usize::from(slot)];
+            assert_eq!(
+                (
+                    actor.life,
+                    actor.action,
+                    actor.word_32(),
+                    actor.source_word_96()
+                ),
+                (
+                    1000 - i32::from(damage),
+                    if damage == 1001 { 76 } else { 74 },
+                    0,
+                    player
+                )
+            );
+            if damage == 1001 {
+                assert_eq!(actor.word_24(), player);
+            }
+        }
+    }
+
+    #[test]
+    fn configured_linked_action75_dispatches_lethal_damage_and_natural_reclaim() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(5).unwrap())
+            .unwrap()
+            .simulation()
+            .clone();
+        let roots = session.source_arena().rebuilt_class5_model_slots()[9].clone();
+        assert_eq!(roots.len(), 39);
+        let (slot, parent) = (roots[0], *roots.last().unwrap());
+        let actor = session.source_arena().handle(slot).unwrap();
+        let peer = session.source_arena().handle(parent).unwrap();
+        let player = session.state.entity_index;
+        let credit_before = session.economy().authored_bee_kill_census(player);
+
+        // Configured source-callback boundary on two actual reset Skeletons:
+        // no natural action75 producer or public damage attribution is claimed.
+        let arena = &mut session.session.state.live.economy;
+        let row = &mut arena.entities[usize::from(slot)];
+        assert_eq!((row.action, row.life, row.mana), (72, 1000, 500));
+        row.record[76] = 0;
+        row.record[77] = 0;
+        row.set_source_action(75);
+        row.set_phase(0);
+        put(row, 54, parent);
+        row.apply_model76_mailbox(player, 1001);
+        let row = &mut arena.entities[usize::from(parent)];
+        row.record[76] = 0;
+        row.record[77] = 0;
+        row.set_source_action(73);
+        put(row, 54, slot);
+
+        session.start_model9_callback_trace(actor);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let visits = session.take_model9_callback_trace();
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let visit = visits
+            .iter()
+            .find(|visit| visit.entry.action == 75)
+            .expect("actual scheduled action75 callback");
+        assert_eq!(visit.source, actor);
+        assert_eq!(visit.exit_handle, Some(actor));
+        assert_eq!(
+            (visit.entry.life, visit.entry.mailbox),
+            (1000, (1001, player))
+        );
+        assert_eq!(
+            (
+                visit.exit.action,
+                visit.exit.life,
+                visit.exit.mailbox.1,
+                visit.exit.killer
+            ),
+            (76, -1, 0, player)
+        );
+        assert_eq!(session.source_arena().handle(slot), Some(actor));
+        assert_eq!(session.source_arena().handle(parent), Some(peer));
+        assert_eq!(session.entities()[usize::from(slot)].word_32(), 0);
+        assert_eq!(session.entities()[usize::from(slot)].phase, 1);
+
+        let mut hidden = false;
+        let mut reclaimed = false;
+        let mut burst = false;
+        for turn in 0..64 {
+            let event_start = session.economy().events().len();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "death turn {turn}"
+            );
+            for event in &session.economy().events()[event_start..] {
+                burst |= matches!(event, Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. } if *parent_entity_index == slot);
+            }
+            if session.source_arena().handle(slot) == Some(actor) {
+                let row = &session.entities()[usize::from(slot)];
+                assert_eq!(row.word_24(), player);
+                if row.drawing_disabled() {
+                    hidden = true;
+                    assert!(
+                        !session
+                            .campaign_entity_presentations(0)
+                            .unwrap()
+                            .iter()
+                            .any(|view| view.entity_index == slot)
+                    );
+                }
+            } else if hidden {
+                reclaimed = true;
+                break;
+            } else {
+                panic!("original linked Skeleton replaced before natural hide");
+            }
+        }
+        assert!(
+            hidden && reclaimed && burst,
+            "configured action75 must reach source death and following reclaim"
+        );
+        assert!(!session.source_arena().rebuilt_class5_model_slots()[9].contains(&slot));
+        assert_eq!(
+            session.economy().authored_bee_kill_census(player),
+            credit_before
+        );
+    }
 
     #[test]
     fn level_sixteen_objective_switch_rearms_mode4_follow_of_creature24() {
