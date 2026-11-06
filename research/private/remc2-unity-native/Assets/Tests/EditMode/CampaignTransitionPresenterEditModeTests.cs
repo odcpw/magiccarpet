@@ -1,5 +1,10 @@
 using System;
 using System.IO;
+using System.Linq;
+using System.Runtime.Serialization.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Xml;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -43,6 +48,195 @@ namespace MagicCarpet.Native.Tests
         private sealed class NightMetadataIdentity
         {
             public string night_metadata_sha256;
+        }
+
+        [Test]
+        [Timeout(180000)]
+        public void NightCacheContentVariantBindsActualCampaignAndRejectsRehashedCrossPairs()
+        {
+            var generated = Path.Combine(PrivateRoot, "generated");
+            var closed = Path.Combine(generated, "settlement-20261105-integration/owner-closed-v6");
+            var pairs = new[] {
+                (cache: Environment.GetEnvironmentVariable("MC_NIGHT_RETAINED_CACHE") ??
+                    Path.Combine(generated, "mc2-level1-night-cache-v2"),
+                 package: Environment.GetEnvironmentVariable("MC_NIGHT_RETAINED_PACKAGE") ??
+                    Path.Combine(generated, "mc-bhq8-level1-collision-v5-night"),
+                 owner: Environment.GetEnvironmentVariable("MC_NIGHT_RETAINED_OWNER_CACHE") ??
+                    Path.Combine(generated, "mc-b9s2-cursor-level1-20261029")),
+                (cache: Environment.GetEnvironmentVariable("MC_NIGHT_SOURCE_CLOSED_CACHE") ??
+                    Path.Combine(closed, "night-presentation-v6"),
+                 package: Environment.GetEnvironmentVariable("MC_NIGHT_SOURCE_CLOSED_PACKAGE") ??
+                    Path.Combine(closed, "level1"),
+                 owner: Environment.GetEnvironmentVariable("MC_NIGHT_SOURCE_CLOSED_OWNER_CACHE") ??
+                    Path.Combine(closed, "environment-complete/cache-level1"))
+            };
+            GameRuntimeTransport.InstalledPackageResource[] InstalledPrefix(string package, string cache, string owner)
+            {
+                var first = Package(package, owner);
+                first.presentation_cache_path = cache;
+                var second = Package(Path.Combine(generated, "mc-level2-vault-successor-closure-20261025"),
+                    Path.Combine(generated, "mc-b9s2-cursor-level2-vault-20261029"));
+                second.presentation_cache_path = Path.Combine(generated, "level2-vault-successor-owner-cache-20261025");
+                var third = Package(Path.Combine(closed, "level3"),
+                    Path.Combine(closed, "environment-complete/cache-level3"));
+                third.presentation_cache_path = Path.Combine(closed, "environment-complete/cache-level3");
+                var fourth = Package(Path.Combine(generated, "mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                    Path.Combine(generated, "mc-b9s2-cursor-level4-20261029"));
+                fourth.presentation_cache_path = Path.Combine(generated, "mc-b9s2-cursor-level4-20261029");
+                return new[] { first, second, third, fourth };
+            }
+
+            string Digest(byte[] bytes)
+            {
+                using var hash = SHA256.Create();
+                return BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+            }
+            XmlDocument ReadManifest(string path)
+            {
+                var document = new XmlDocument();
+                using var reader = JsonReaderWriterFactory.CreateJsonReader(
+                    File.ReadAllBytes(path), XmlDictionaryReaderQuotas.Max);
+                document.Load(reader);
+                return document;
+            }
+            string Value(XmlDocument manifest, string path) =>
+                manifest.DocumentElement.SelectSingleNode(path).InnerText;
+            string MetadataHash(XmlDocument manifest)
+            {
+                var text = new StringBuilder(Value(manifest, "schema")).Append('\n');
+                foreach (var binding in manifest.DocumentElement.SelectSingleNode("bindings")
+                             .ChildNodes.Cast<XmlNode>().OrderBy(value => value.LocalName, StringComparer.Ordinal))
+                    text.Append(binding.LocalName).Append('\0').Append(binding.InnerText).Append('\n');
+                text.Append("cache_content_sha256\0").Append(Value(manifest, "cache_content_sha256")).Append('\n');
+                return Digest(Encoding.ASCII.GetBytes(text.ToString()));
+            }
+            byte[] CanonicalBytes(XmlDocument manifest)
+            {
+                using var stream = new MemoryStream();
+                using (var writer = JsonReaderWriterFactory.CreateJsonWriter(
+                           stream, new UTF8Encoding(false), false, true, "  "))
+                    manifest.DocumentElement.WriteTo(writer);
+                // Preserve the producer's sorted ASCII property order and
+                // canonical newline/optional slash-escaping conventions.
+                var text = Encoding.UTF8.GetString(stream.ToArray())
+                    .Replace("\r\n", "\n").Replace("\\/", "/").TrimEnd('\n');
+                // XmlJsonWriter emits [ ] for an empty array; the producer
+                // emits []. Preserve that text when it is inside a string.
+                var canonical = new StringBuilder(text.Length);
+                var quoted = false;
+                var escaped = false;
+                for (var index = 0; index < text.Length; ++index)
+                {
+                    var token = text[index];
+                    if (!quoted && token == '[' && index + 2 < text.Length &&
+                        text[index + 1] == ' ' && text[index + 2] == ']')
+                    {
+                        canonical.Append("[]");
+                        index += 2;
+                        continue;
+                    }
+                    canonical.Append(token);
+                    if (!quoted) { if (token == '"') quoted = true; }
+                    else if (escaped) escaped = false;
+                    else if (token == '\\') escaped = true;
+                    else if (token == '"') quoted = false;
+                }
+                return Encoding.UTF8.GetBytes(canonical.Append('\n').ToString());
+            }
+            string PayloadHash(XmlDocument manifest)
+            {
+                var unsigned = (XmlDocument)manifest.CloneNode(true);
+                unsigned.DocumentElement.RemoveChild(unsigned.DocumentElement.SelectSingleNode("manifest_payload_sha256"));
+                return Digest(CanonicalBytes(unsigned));
+            }
+
+            var manifests = pairs.Select(pair => ReadManifest(Path.Combine(pair.cache, "manifest.json"))).ToArray();
+            for (var index = 0; index < pairs.Length; ++index)
+            {
+                var pair = pairs[index];
+                var manifest = manifests[index];
+                Assert.That(MetadataHash(manifest), Is.EqualTo(Value(manifest, "night_metadata_sha256")));
+                var original = File.ReadAllText(Path.Combine(pair.cache, "manifest.json"));
+                var payloadRow = "  \"manifest_payload_sha256\": \"" + Value(manifest, "manifest_payload_sha256") + "\",\n";
+                var payloadOffset = original.IndexOf(payloadRow, StringComparison.Ordinal);
+                Assert.That(payloadOffset, Is.GreaterThanOrEqualTo(0));
+                Assert.That(original.LastIndexOf(payloadRow, StringComparison.Ordinal), Is.EqualTo(payloadOffset));
+                var producerUnsigned = original.Remove(payloadOffset, payloadRow.Length);
+                Assert.That(Digest(Encoding.UTF8.GetBytes(producerUnsigned)),
+                    Is.EqualTo(Value(manifest, "manifest_payload_sha256")));
+                Assert.That(PayloadHash(manifest), Is.EqualTo(Value(manifest, "manifest_payload_sha256")));
+                var matching = OwnerAssetCache.OpenAndValidate(pair.cache,
+                    MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash,
+                    pair.package);
+                Assert.That(matching.ContentHash, Is.EqualTo(Value(manifest, "cache_content_sha256")));
+                var qualificationOnly = OwnerAssetCache.OpenAndValidate(pair.cache,
+                    MagicCarpetRuntime.ExpectedPackageHash, MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
+                Assert.That(qualificationOnly.ContentHash, Is.EqualTo(matching.ContentHash));
+                using (var runtime = new GameRuntimeTransport())
+                {
+                    var resources = InstalledPrefix(pair.package, pair.cache, pair.owner);
+                    var resource = resources[0];
+                    var loading = runtime.BootstrapPackageSet(resources);
+                    var binding = GameRuntimeTransport.ReadLoadingPresentation(loading);
+                    Assert.That(CampaignTransitionPresenter.PreflightDestination(binding, resources),
+                        Is.SameAs(resource), "the genuine source-bound destination passes before Rust opens a level");
+                    Assert.That(runtime.IdentitySnapshot().mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                    Assert.That(runtime.IdentitySnapshot().session?.session_id, Is.Null.Or.Empty);
+                }
+
+                var other = pairs[1 - index];
+                var rebound = (XmlDocument)manifest.CloneNode(true);
+                foreach (var key in new[] {
+                             "campaign_package_sha256", "level_export_package_sha256",
+                             "qualified_runtime_capture_sha256" })
+                    rebound.DocumentElement.SelectSingleNode("bindings/" + key).InnerText = Value(manifests[1 - index], "bindings/" + key);
+                rebound.DocumentElement.SelectSingleNode("night_metadata_sha256").InnerText = MetadataHash(rebound);
+                rebound.DocumentElement.SelectSingleNode("manifest_payload_sha256").InnerText = PayloadHash(rebound);
+                Assert.That(Value(rebound, "cache_content_sha256"), Is.EqualTo(matching.ContentHash),
+                    "the counterfactual changes only current package bindings, not source products");
+                Assert.That(Value(rebound, "night_metadata_sha256"),
+                    Is.Not.EqualTo(Value(manifest, "night_metadata_sha256")));
+
+                var directory = Path.Combine(Path.GetTempPath(), "mc-night-cross-pair-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(directory);
+                try
+                {
+                    foreach (var file in Directory.GetFiles(pair.cache, "*", SearchOption.AllDirectories))
+                    {
+                        var destination = Path.Combine(directory, Path.GetRelativePath(pair.cache, file));
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                        File.Copy(file, destination);
+                    }
+                    File.WriteAllBytes(Path.Combine(directory, "manifest.json"), CanonicalBytes(rebound));
+                    var error = Assert.Throws<InvalidDataException>(() => OwnerAssetCache.OpenAndValidate(
+                        directory, MagicCarpetRuntime.ExpectedPackageHash,
+                        MagicCarpetRuntime.ExpectedOwnerAssetClosureHash, other.package));
+                    Assert.That(error.Message, Does.Contain("content does not match the selected campaign profile"),
+                        "fully rehashed metadata must not cross-bind retained outputs to the other real package");
+                    using var runtime = new GameRuntimeTransport();
+                    var resources = InstalledPrefix(other.package, other.cache, other.owner);
+                    var loading = runtime.BootstrapPackageSet(resources);
+                    var binding = GameRuntimeTransport.ReadLoadingPresentation(loading);
+                    Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                    Assert.That(loading.session?.session_id, Is.Null.Or.Empty);
+                    // Native admission retains genuine catalog inputs. Change
+                    // only the later frontend cache selection before preflight.
+                    resources[0].presentation_cache_path = directory;
+                    var preflightError = Assert.Throws<InvalidDataException>(() =>
+                        CampaignTransitionPresenter.PreflightDestination(binding, resources));
+                    Assert.That(preflightError.Message,
+                        Does.Contain("content does not match the selected campaign profile"));
+                    var retained = runtime.IdentitySnapshot();
+                    Assert.That(retained.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+                    Assert.That(retained.session?.session_id, Is.Null.Or.Empty,
+                        "the actual preflight rejects the cross-pair before GameRuntimeOpenLevel");
+                }
+                finally
+                {
+                    // Only this test's new copy of the qualified output tree is disposable.
+                    Directory.Delete(directory, true);
+                }
+            }
         }
 
         [Test]

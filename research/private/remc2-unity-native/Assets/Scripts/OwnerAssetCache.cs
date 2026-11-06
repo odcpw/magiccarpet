@@ -20,6 +20,11 @@ namespace MagicCarpet.Native
         // actual v2 capture in the census. Qualified frame/palette bytes stay exact.
         private const string CurrentNightContentHash =
             "d63e748f0fa6550e8c0e451d81163ff71cfb3c8cdad1f516d97ea34644985569";
+        // The source-closed v6 cache retains the same media products. Only
+        // its frame census records updated exporter provenance; this pin
+        // qualifies that complete cache independently of the retained import.
+        private const string SourceClosedNightContentHash =
+            "d4dec7b55d9ac6a68c3bc4ac03ac0b9b2ceded8e6b142cb1086ceffa00cd6b00";
 
         // These are the pinned Day owner-sprite roots consumed by the HUD
         // path. They are membership/root-bound checks only: the carried Rust
@@ -187,6 +192,7 @@ namespace MagicCarpet.Native
         [Serializable]
         private sealed class NightPackageManifest
         {
+            public string schema;
             public string package_sha256;
             public string owner_export_package_sha256;
         }
@@ -881,6 +887,7 @@ namespace MagicCarpet.Native
             if (manifest.bindings.plan29_contract_file_sha256 != ExactContractFileHash ||
                 manifest.bindings.plan29_contract_self_sha256 != ExactContractSelfHash)
                 throw new InvalidDataException("owner asset cache PLAN29 contract binding mismatch");
+            string selectedNightContentHash = null;
             if (campaignPackagePath != null)
             {
                 var packageRoot = Path.GetFullPath(campaignPackagePath);
@@ -891,6 +898,13 @@ namespace MagicCarpet.Native
                         package.owner_export_package_sha256 != manifest.bindings.level_export_package_sha256) ||
                     Sha256File(ConfinedPath(packageRoot, "runtime.bin")) != manifest.bindings.qualified_runtime_capture_sha256)
                     throw new InvalidDataException("Night cache does not bind the selected campaign package");
+                if (currentNight)
+                    selectedNightContentHash = package.schema switch
+                    {
+                        "mc2-owner-campaign-package/v5" => CurrentNightContentHash,
+                        "mc2-owner-campaign-package/v6" => SourceClosedNightContentHash,
+                        _ => throw new InvalidDataException("Night cache selected campaign profile is unsupported")
+                    };
             }
             if (manifest.outputs == null || manifest.outputs.Length == 0)
                 throw new InvalidDataException("owner asset cache has no outputs");
@@ -943,7 +957,16 @@ namespace MagicCarpet.Native
             var identityHash = Sha256Bytes(Encoding.ASCII.GetBytes(identity.ToString()));
             if (!identityHash.Equals(manifest.cache_content_sha256, StringComparison.Ordinal))
                 throw new InvalidDataException("owner asset cache identity mismatch");
-            if (identityHash != (currentNight ? CurrentNightContentHash : ExactContentHash))
+            if (currentNight && selectedNightContentHash != null)
+            {
+                if (identityHash != selectedNightContentHash)
+                    throw new InvalidDataException("Night cache content does not match the selected campaign profile");
+            }
+            // Package-free callers inspect either independently qualified
+            // cache; executing consumers above bind one exact variant.
+            else if (currentNight
+                ? identityHash != CurrentNightContentHash && identityHash != SourceClosedNightContentHash
+                : identityHash != ExactContentHash)
                 throw new InvalidDataException("owner asset cache is not the qualified Level 1 cache");
             var seal = JsonUtility.FromJson<ConformanceSeal>(
                 File.ReadAllText(ConfinedPath(root, "conformance-identity.json")));

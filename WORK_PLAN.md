@@ -341,6 +341,38 @@ partial, not a clean-scan claim. Current/previous native and player stay local;
 older completed proofs were byte-preserved on rig's ext4 before removing local
 copies, with before/after hashes. No owner data/Modern work was cleaned.
 
+Source `ae2e84d1` is committed/pushed and native
+`9d9af55f3c61697c8892fd2b7c63970cc590ad1c675b265d076ce5b8e37facfc`
+is installed/qualified after strict rig52.796s and independent136943424-byte
+artifact/636-input matching. The first normal launch showed the map, but its
+single portal click FAILED Night presentation qualification before mission
+open; `.16` is not delivered yet. All1249 old/new cache products match except
+three truthful exporter-provenance fields in the frame-census JSON. The fix
+retains the old exact content fingerprint and qualifies the new one against
+actual v5/v6 package schemas, with all other hash/tree/seal checks retained.
+Actual preflight must pass the matched package to that validator before Rust
+opens a level. The previous package-free call exposed a rehashed cross-pair
+alias and is also repaired. Root copied only those two production C# files and
+the focused existing-module test into the qualified Original snapshot; Modern
+work is preserved. A matching Unity player rebuild is now required, reusing
+the same9d9 native. Short ext4 TMPDIR is required for Unix socket length and
+tmpfs headroom. Unity compiled the C# changes; the new rehashed-pair control
+first exposed its own XML-JSON writer's `[ ]` versus canonical `[]` mismatch.
+The producer-digest assertion stays intact while that test-only codec is fixed.
+Do not close `.16` or start `.22` implementation before the final positive/
+cross-pair check and actual matching player launch/load succeed.
+The corrected focused Unity control now PASSES133.016s with the actual complete
+four-package prefix and each map's matching ENV owner cache. Both genuine
+v5/v6 Night pairs and package-free qualification reads pass; fully rehashed
+opposite-content pairs reject through actual preflight while still Loading
+with no session, before GameRuntimeOpenLevel. Earlier negatives remain saved:
+the JSON writer's single empty-array space, inadmissible one-map catalog and
+legacy-audio fallback caused by the test's omitted ENV input. No runtime
+admission or digest assertion was weakened. The test's negative changes only
+frontend presentation after a genuine native bootstrap. Production C# remains
+OwnerAssetCache9a413493/Presenter99e6994f; matching Original player rebuild is
+next, reusing9d9 without another Rust build.
+
 The following
 records the Archer integration and its preserved negative results.
 

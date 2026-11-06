@@ -561,7 +561,7 @@ namespace MagicCarpet.Native
                     cache.bindings.qualified_runtime_capture_sha256 != binding.runtime_capture_sha256)
                     throw new InvalidDataException("The Night presentation cache does not bind the selected mission package.");
                 OwnerAssetCache.OpenAndValidate(rootPath, MagicCarpetRuntime.ExpectedPackageHash,
-                    MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
+                    MagicCarpetRuntime.ExpectedOwnerAssetClosureHash, match.package_dir);
                 return match;
             }
             // The qualified cache predates additive owner-export members
