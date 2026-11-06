@@ -52,6 +52,136 @@ point precision. Coordinates are model units; the goat is roughly one unit tall.
 These checks cover the authored flat-ground cycle, not terrain foot placement,
 engine locomotion blending or every possible pose.
 
+## Archer source and rigging
+
+The original Day sprites show a bare torso, orange sash, pale loose trousers,
+striped headwrap, brown shoes, back quiver and a **bow**. The low-resolution
+weapon was initially misread as a crossbow; Oliver corrected that interpretation.
+Do not use the rejected crossbow candidate. Owner-local source references are in
+`../generated/archer-reference-20261106/`. Walk TMAP bases 8/9/10 have four phases;
+11/12/13 and 121/122/123 are static standing and kneeling attack stances.
+Modern draw/release transitions are authored additions. Source walk frame timing
+depends on rendered TMAP demand and has not been established as a fixed FPS.
+
+The body references use built-in image generation with those Day sheets.
+Requests, receipts, images and meshes are owner-local under
+`../generated/archer-modern-20261106/`. The first Tripo H3.1 body looked suitable
+in static views (17,509 vertices / 28,928 triangles), but its low underarm bridge
+and open hands required unsuccessful skin/curl repairs during animation.
+
+The selected body is `meshy-grip/`: Meshy 7.1, 19,770 vertices / 25,307 triangles
+and a 24-joint rig. Its input `archer-grip-reference.png` retains the costume and
+face while providing a front T-pose, clear armpits and already curved grasping
+hands. `grip-image-prompt.txt` preserves the exact built-in imagegen prompt.
+This avoids the torn finger morphs in the earlier candidate. These are modeled
+grips, not an articulated finger rig. The earlier Meshy open-hand T-pose is also
+retained as a comparison. Both Meshy bodies deform more cleanly at the shoulders
+than the Tripo candidate in the same unmodified Archery_Shot clip.
+
+**Normalize and inspect the actual facing direction before auto-rigging.**
+The first Meshy result was unusable: the +X-facing mesh received a skeleton
+whose forward axis was -Y in Blender. Arm joints passed through the torso and
+animated arm motion pulled the trousers upward. Ordered joint names, skin
+weights and inverse-bind buffers were identical across the provider's static,
+walking and archery exports; transferring their actions would not fix it.
+`align_mesh.py --yaw-degrees -90` baked this particular mesh into the matching
+facing direction. The second rig's overlay places arm and leg joints inside
+their corresponding limbs. Keep both trials as evidence; the rotation is
+specific to this observed input, not a universal rule for every generated mesh.
+
+The selected generation uses `meshy/v7.1/image-to-3d`, with rigging and animation
+enabled, action 224 (Archery_Shot), quad topology and the already posed input
+(`pose_mode=""`). `meshy-grip-request.json` records the complete request. Basic
+walk/run clips are returned too. The five-second supplied archery action is a
+motion foundation, not a source-exact one-second shot. The earlier standalone
+`fal-ai/meshy/rigging` trials also worked after facing correction, but were not
+selected. Blender inspection exposes an Icosphere helper after rig import;
+direct inspection of the provider and final GLB node lists confirms it is not
+character geometry in those files.
+
+The quiver needs rigid skinning while its strap follows the torso. The repair
+shares its mask across coincident UV-seam vertices: a pair at the upper
+quiver initially received Spine and RightShoulder weights respectively, creating
+a long spike during aiming despite a satisfactory walking preview. Check both
+poses after reimporting the exported GLB. `archer_props.py` shares the seam-aware
+repair between walking and shooting.
+
+The accepted walk is `animated/root-final-walk/walk.glb` under the archer output
+directory, with editable `walk.blend`. This is root's independent rebuild of the
+accepted `walk-meshy-grip6` source with the final bow. Its three-cycle video is
+`animated/walk-final-review/treadmill-review.mp4`. `verify_archer_walk.py` reimports it and
+checks 97 quarter-frame samples, finite geometry, normalized weights, actual
+motion, the one-second exported interval, ground contact and three rigid-quiver
+probes. Root independently measured a `1.55e-6` maximum vertex loop error and
+`4.97e-7` quiver pair-distance variation. The supporting shoe is approximately
+one millimetre above the review floor. This is sampled flat-ground evidence,
+not a terrain-placement or continuous collision guarantee.
+
+The preserved first walk fails the same checker on quiver rigidity (0.052 model
+units of pair-distance variation) and export duration. The duration check also
+caught the later corrected walk's NLA start adjustment trimming its interval;
+moving both strip endpoints fixes the actual output instead of relaxing the gate.
+
+The standing shot is `animated/final-standing3/standing.glb`, with editable
+`standing.blend` and `motion-front.mp4` (three repetitions at 24 fps). Root
+inspected held, full-draw, release and reset frames from front, profile and rear.
+Independent `archer_contact.py` measurements after GLB reimport put the grip and
+held nock within `1e-5` model units of their selected finger-region centroids; this is an
+attachment check, not proof of finger anatomy. The string remains 1.16 model
+units long at the six checked phases. The release separates string and drawing
+hand deliberately. A STEP arrow-scale track prevents a partial arrow appearing
+during the loop reset. Each shot clip spans one second; the prop deformation is
+authored animation, not a simulated elastic bow.
+
+The kneeling shot is `animated/grip-kneel1/kneel.glb` with editable `kneel.blend`.
+`archer_kneel.py` uses fixed-length leg chains on this same rig to place the
+front foot and rear knee at the floor. The relaxed rear toe remains above it.
+Front, profile and rear aiming/release frames were inspected after GLB export;
+root independently reran the hand/string and per-foot measurements. The original
+sprites contain held attack stances; these loops do not reconstruct a full
+historical draw, reload or stand-to-kneel sequence. No replacement character is
+installed in Unity yet. Engine blending, terrain placement and crowd LODs remain
+outside this asset-animation review.
+
+`animated/archer-final-review.mp4` is the nine-second review: three walk cycles,
+three standing shots and three kneeling shots, encoded from the inspected PNG
+frames at 24 fps. Individual critical frames, numeric reports and rejected
+candidates remain beside the selected assets. Python compilation and focused
+UBS scans cover the twelve new archer source files. UBS's one JSON warning is a
+fail-fast parse of the script's own freshly exported GLB before modifying its
+arrow interpolation; malformed data raises rather than being ignored. No scan
+establishes visual quality: that acceptance comes from the exported-model views.
+
+Rebuild and check the walk from repository root with Blender 4.5.12 (set
+`BLENDER` as in the goat example; use new output directories):
+
+```sh
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/archer_bow.py -- \
+  --output /absolute/new/bow
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/archer_walk.py -- \
+  --model research/private/generated/archer-modern-20261106/meshy-grip/walking.glb \
+  --bow /absolute/new/bow/bow.blend --output /absolute/new/walk
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/verify_archer_walk.py -- \
+  --model /absolute/new/walk/walk.glb --output /absolute/new/walk/check.json
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/archer_preview.py -- \
+  --model /absolute/new/walk/walk.glb --output /absolute/new/walk/review \
+  --frames 1 7 13 19 25 --views 0 90 180 225
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/archer_shot.py -- \
+  --model research/private/generated/archer-modern-20261106/meshy-grip/animation.glb \
+  --bow /absolute/new/bow/bow.blend --rigid-quiver --output /absolute/new/standing
+# Add --kneel and use a separate output directory for the kneeling shot.
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/archer_walk_preview.py -- \
+  --model /absolute/new/walk/walk.glb --output /absolute/new/walk/treadmill
+ffmpeg -n -framerate 24 -i /absolute/new/walk/treadmill/frame-%03d.png \
+  -c:v libx264 -pix_fmt yuv420p /absolute/new/walk/treadmill.mp4
+```
+
 ## Tools
 
 - `run_actionmesh.py`: verify all pinned checkpoint hashes before loading the
