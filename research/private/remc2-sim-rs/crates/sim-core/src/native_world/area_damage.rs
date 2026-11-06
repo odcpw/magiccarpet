@@ -1342,6 +1342,7 @@ pub(crate) fn capture_effect_lists(
 #[derive(Clone, Debug)]
 pub(crate) struct EffectDamageReceipt {
     pub(crate) source_slot: Option<u16>,
+    pub(crate) source_scoped: bool,
     /// Current typed impact and its generation at the actual damage callback,
     /// before later passes can reclaim or replace the fixed source address.
     pub(crate) source_impact: Option<(u32, super::Level2Model17SpawnedChild)>,
@@ -1354,6 +1355,46 @@ pub(crate) struct EffectDamageReceipt {
     pub(crate) mailbox_before: Option<(i32, u16)>,
     pub(crate) mailbox_after: Option<(i32, u16)>,
     pub(crate) hit_count: Option<u16>,
+    /// Absolute append-only economy event boundary after the mailbox write.
+    pub(crate) event_cursor: usize,
+    pub(crate) writer_sequence: Option<u64>,
+    writer_cursor: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PlayerMailboxSource {
+    Contact(crate::campaign::source_arena::SourceEntityHandle),
+    Effect(crate::campaign::source_arena::SourceEntityHandle),
+    Other,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlayerMailboxWrite {
+    pub(crate) sequence: u64,
+    pub(crate) target: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) source: PlayerMailboxSource,
+    pub(crate) mailbox: (i32, u16),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlayerDamageConsumptionReceipt {
+    pub(crate) target: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) mailbox: (i32, u16),
+    pub(crate) writer: Option<PlayerMailboxWrite>,
+    pub(crate) life_before: i32,
+    pub(crate) life_after: i32,
+    pub(crate) event_cursor: usize,
+}
+
+#[cfg(test)]
+struct PlayerDamageTrace {
+    target: crate::campaign::source_arena::SourceEntityHandle,
+    sequence: u64,
+    latest: Option<PlayerMailboxWrite>,
+    consumed: Vec<PlayerDamageConsumptionReceipt>,
 }
 
 #[cfg(test)]
@@ -1365,6 +1406,120 @@ thread_local! {
     static FIREBALL_IMPACT_BIRTH_TRACE: std::cell::RefCell<Option<Vec<(u16, u32, u16, u32, u16)>>> =
         const { std::cell::RefCell::new(None) };
     static CURRENT_EFFECT_SOURCE: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
+    static PLAYER_DAMAGE_TRACE: std::cell::RefCell<Option<PlayerDamageTrace>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_player_damage_trace(target: crate::campaign::source_arena::SourceEntityHandle) {
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        *trace.borrow_mut() = Some(PlayerDamageTrace {
+            target,
+            sequence: 0,
+            latest: None,
+            consumed: Vec::new(),
+        })
+    });
+}
+
+/// Observe every accepted write to the traced raw player mailbox, including
+/// identical-value writes. Unattributed writers invalidate prior attribution.
+#[cfg(test)]
+pub(crate) fn trace_player_mailbox_write(
+    arena: &SourceArena,
+    slot: u16,
+    source: Option<PlayerMailboxSource>,
+) -> Option<u64> {
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        let mut trace = trace.borrow_mut();
+        let trace = trace.as_mut()?;
+        if trace.target.source_slot != slot {
+            return None;
+        }
+        trace.sequence += 1;
+        trace.latest = None;
+        if arena.handle(slot) != Some(trace.target) {
+            return None;
+        }
+        let row = &arena.entities[usize::from(slot)];
+        let source = source.unwrap_or_else(|| {
+            CURRENT_EFFECT_SOURCE.with(|current| {
+                current
+                    .get()
+                    .and_then(|slot| arena.handle(slot))
+                    .map_or(PlayerMailboxSource::Other, PlayerMailboxSource::Effect)
+            })
+        });
+        trace.latest = Some(PlayerMailboxWrite {
+            sequence: trace.sequence,
+            target: trace.target,
+            source,
+            mailbox: (row.source_upkeep_payload(), row.source_upkeep_word_62()),
+        });
+        Some(trace.sequence)
+    })
+}
+
+#[cfg(test)]
+fn player_writer_sequence() -> u64 {
+    PLAYER_DAMAGE_TRACE.with(|trace| trace.borrow().as_ref().map_or(0, |trace| trace.sequence))
+}
+
+#[cfg(test)]
+pub(crate) fn latest_player_mailbox_writer() -> Option<PlayerMailboxWrite> {
+    PLAYER_DAMAGE_TRACE.with(|trace| trace.borrow().as_ref().and_then(|trace| trace.latest))
+}
+
+#[cfg(test)]
+pub(crate) fn take_player_mailbox_writer(
+    target: crate::campaign::source_arena::SourceEntityHandle,
+    mailbox: (i32, u16),
+) -> Option<PlayerMailboxWrite> {
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .as_mut()?
+            .latest
+            .take()
+            .filter(|write| write.target == target && write.mailbox == mailbox)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn trace_player_damage_consumption(receipt: PlayerDamageConsumptionReceipt) {
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        if let Some(trace) = trace.borrow_mut().as_mut()
+            && trace.target == receipt.target
+            && trace.consumed.len() < 64
+        {
+            trace.consumed.push(receipt);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn take_player_damage_consumptions() -> Vec<PlayerDamageConsumptionReceipt> {
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .as_mut()
+            .map_or_else(Vec::new, |trace| std::mem::take(&mut trace.consumed))
+    })
+}
+
+#[cfg(test)]
+fn effect_receipt_writer(arena: &SourceArena, receipt: &EffectDamageReceipt) -> Option<u64> {
+    let source = receipt.source_slot.and_then(|slot| arena.handle(slot))?;
+    latest_player_mailbox_writer()
+        .filter(|writer| {
+            receipt.source_scoped
+                && writer.sequence > receipt.writer_cursor
+                && writer.target.source_slot == receipt.target_slot
+                && writer.target.generation == receipt.target_generation
+                && Some(writer.mailbox) == receipt.mailbox_after
+                && writer.source == PlayerMailboxSource::Effect(source)
+        })
+        .map(|writer| writer.sequence)
 }
 
 #[cfg(test)]
@@ -1483,6 +1638,7 @@ pub(crate) fn begin_model0_damage_trace(
     let radius = (i32::from(request.half_width) + 255) / 256;
     target_slots.into_iter().map(|target_slot| EffectDamageReceipt {
         source_slot: Some(source_slot),
+        source_scoped: true,
         source_impact,
         source_raw_impact: None,
         pulse: request,
@@ -1496,6 +1652,9 @@ pub(crate) fn begin_model0_damage_trace(
         mailbox_before: trace_current_bounty(&targets, target_slot),
         mailbox_after: None,
         hit_count: None,
+        event_cursor: 0,
+        writer_sequence: None,
+        writer_cursor: player_writer_sequence(),
     }).collect()
 }
 
@@ -1503,6 +1662,8 @@ pub(crate) fn begin_model0_damage_trace(
 pub(crate) fn finish_model0_damage_trace(arena: &SourceArena, mut receipts: Vec<EffectDamageReceipt>) {
     for receipt in &mut receipts {
         receipt.mailbox_after = read_arena_bounty(arena, receipt.target_slot).ok();
+        receipt.event_cursor = arena.economy.events().len();
+        receipt.writer_sequence = effect_receipt_writer(arena, receipt);
     }
     EFFECT_DAMAGE_TRACE.with(|trace| {
         if let Some((_, recorded)) = trace.borrow_mut().as_mut() {
@@ -1550,7 +1711,8 @@ pub(crate) fn apply_effect(
         } else {
             None
         };
-        let source_slot = CURRENT_EFFECT_SOURCE.with(|source| source.get()).or(inferred_source);
+        let scoped_source = CURRENT_EFFECT_SOURCE.with(|source| source.get());
+        let source_slot = scoped_source.or(inferred_source);
         let center_x = (i32::from(request.position.x) + 128) / 256;
         let center_y = (i32::from(request.position.y) + 128) / 256;
         let radius = (i32::from(request.half_width) + 255) / 256;
@@ -1564,6 +1726,7 @@ pub(crate) fn apply_effect(
         });
         EffectDamageReceipt {
             source_slot,
+            source_scoped: scoped_source.is_some(),
             source_raw_impact: source_slot.and_then(|slot| world.targets.arena.entities.get(usize::from(slot))
                 .filter(|row| row.active && (row.class, row.model) == (10, 0))
                 .map(|row| (world.targets.arena.economy.slot_generation(slot), row.clone()))),
@@ -1584,6 +1747,9 @@ pub(crate) fn apply_effect(
             mailbox_before: trace_current_bounty(&world.targets, target_slot),
             mailbox_after: None,
             hit_count: None,
+            event_cursor: 0,
+            writer_sequence: None,
+            writer_cursor: player_writer_sequence(),
         }
         }).collect::<Vec<_>>()
     });
@@ -1592,6 +1758,8 @@ pub(crate) fn apply_effect(
     for mut receipt in receipts {
         receipt.mailbox_after = trace_current_bounty(&world.targets, receipt.target_slot);
         receipt.hit_count = result.as_ref().ok().copied();
+        receipt.event_cursor = world.targets.arena.economy.events().len();
+        receipt.writer_sequence = effect_receipt_writer(world.targets.arena, &receipt);
         EFFECT_DAMAGE_TRACE.with(|trace| {
             if let Some((_, receipts)) = trace.borrow_mut().as_mut() {
                 receipts.push(receipt);
@@ -2029,6 +2197,8 @@ impl ArenaTargets<'_, '_> {
         let result = edit(&mut damage, &mut attacker);
         row.record[98..102].copy_from_slice(&damage.to_le_bytes());
         row.record[102..104].copy_from_slice(&attacker.to_le_bytes());
+        #[cfg(test)]
+        trace_player_mailbox_write(self.arena, slot, None);
         Ok(result)
     }
 }
@@ -3129,7 +3299,7 @@ mod tests {
                     stage_var2: 0,
                     target: position,
                 },
-                super::super::level2_class5::firefly::FIREFLY_LIFE as u32,
+                crate::level_definition::FIREFLY_CLASS_PROPERTIES.max_life as u32,
                 &terrain,
             )
             .expect("ordinary Firefly constructor");
@@ -3173,10 +3343,14 @@ mod tests {
             arena.entities[usize::from(player)].source_wind_spell_payload(),
             208
         );
-        let firefly_lifecycle = arena
-            .economy
-            .step_authored_firefly_lifecycle_slot(firefly.source_entity_index, &[], &terrain)
-            .unwrap();
+        let firefly_lifecycle = super::super::level2_class5::firefly::step_lifecycle_in_arena(
+            &mut arena,
+            &mut terrain,
+            &session.session.definition.presentation.particles,
+            firefly.source_entity_index,
+            &[],
+        )
+        .unwrap();
         assert!(firefly_lifecycle.handled);
         let after = arena
             .economy

@@ -703,7 +703,7 @@ impl Mc2LevelDefinition {
                             crate::level_definition::FINAL_BOSS_CLASS_PROPERTIES.max_life
                         }
                         CreatureKind::Firefly => {
-                            crate::native_world::level2_class5::firefly::FIREFLY_LIFE
+                            crate::level_definition::FIREFLY_CLASS_PROPERTIES.max_life
                         }
                         CreatureKind::Goat => crate::goat::GOAT_CONSTRUCTOR_LIFE,
                         CreatureKind::Archer => {

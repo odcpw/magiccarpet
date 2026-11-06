@@ -879,6 +879,52 @@ impl Drop for ArcherChildDamageTrace {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FireflyContactDamageReceipt {
+    pub(crate) producer: SourceEntityHandle,
+    pub(crate) current_producer: Option<SourceEntityHandle>,
+    pub(crate) target: SourceEntityHandle,
+    pub(crate) payload: i32,
+    pub(crate) attacker: u16,
+    pub(crate) mailbox_before: (i32, u16),
+    pub(crate) mailbox_after: (i32, u16),
+    pub(crate) player_life_before: i32,
+    pub(crate) player_life_after: i32,
+    pub(crate) event_cursor: usize,
+    pub(crate) writer_sequence: Option<u64>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FireflyFireballLaunchReceipt {
+    pub(crate) producer: SourceEntityHandle,
+    pub(crate) target: Option<SourceEntityHandle>,
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) owner: u16,
+    pub(crate) payload: i32,
+    pub(crate) selector: (u8, u8),
+    pub(crate) bound_target: u16,
+    pub(crate) origin: FireballProjectileOrigin,
+}
+
+#[cfg(test)]
+#[derive(Default, Debug)]
+pub(crate) struct FireflyAttackTrace {
+    pub(crate) contacts: Vec<FireflyContactDamageReceipt>,
+    pub(crate) launches: Vec<FireflyFireballLaunchReceipt>,
+}
+
+#[cfg(test)]
+struct FireflyContactTrace(Option<SourceEntityHandle>);
+
+#[cfg(test)]
+impl Drop for FireflyContactTrace {
+    fn drop(&mut self) {
+        CURRENT_FIREFLY_CONTACT_SOURCE.with(|source| source.set(self.0));
+    }
+}
+
+#[cfg(test)]
 std::thread_local! {
     static CF10_PRODUCTION_SCHEDULE_RECEIPTS:
         std::cell::RefCell<Vec<ScheduleReceipt<Level2ResolvedSourcePlan>>> =
@@ -894,6 +940,12 @@ std::thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
     static CURRENT_ARCHER_CHILD_DAMAGE_SOURCE:
         std::cell::Cell<Option<ArcherChildDamageSource>> =
+        const { std::cell::Cell::new(None) };
+    static FIREFLY_ATTACK_TRACE:
+        std::cell::RefCell<Option<FireflyAttackTrace>> =
+        const { std::cell::RefCell::new(None) };
+    static CURRENT_FIREFLY_CONTACT_SOURCE:
+        std::cell::Cell<Option<SourceEntityHandle>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -2043,6 +2095,17 @@ impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn take_archer_child_damage_receipts(&self) -> Vec<ArcherChildDamageReceipt> {
         ARCHER_CHILD_DAMAGE_RECEIPTS.with(|receipts| std::mem::take(&mut *receipts.borrow_mut()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_firefly_attack_trace(&self) {
+        FIREFLY_ATTACK_TRACE
+            .with(|trace| *trace.borrow_mut() = Some(FireflyAttackTrace::default()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_firefly_attack_trace(&self) -> FireflyAttackTrace {
+        FIREFLY_ATTACK_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
     }
 
     #[cfg(test)]
@@ -19630,6 +19693,7 @@ impl Mc2Simulation {
                             &live.core.runtime,
                             source_slot,
                             mode,
+                            pass_start_class3_slots,
                             targets,
                         )?;
                     }
@@ -19744,7 +19808,6 @@ impl Mc2Simulation {
                 }
                 let frozen_model19_slots = &pass_start_class5_model_slots
                     [usize::from(level2_class5::firefly::FIREFLY_MODEL)];
-                let terrain = &self.session.state.live.terrain;
                 let live = match action {
                     level2_class5::firefly::FIREFLY_STAGE_ACTION
                         if self.session.state.live.economy.economy.authored_fireflies()
@@ -19776,49 +19839,109 @@ impl Mc2Simulation {
                             targets,
                         )?
                     }
-                    level2_class5::firefly::FIREFLY_IDLE_ACTION => self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .step_authored_firefly_idle_slot(
+                    level2_class5::firefly::FIREFLY_IDLE_ACTION => {
+                        let live = &mut self.session.state.live;
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        level2_class5::firefly::step_idle_in_arena(
+                            &mut live.economy,
+                            &live.terrain,
                             source_slot,
                             frozen_model19_slots,
-                            terrain,
-                        ),
-                    level2_class5::firefly::FIREFLY_STAGE_ACTION => self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .step_authored_firefly_stage_slot(
-                            source_slot,
-                            goat_players,
-                            frozen_model19_slots,
-                            terrain,
-                        ),
-                    level2_class5::firefly::FIREFLY_ROAM_ACTION => self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .step_authored_firefly_roam_slot(
-                            source_slot,
-                            goat_players,
-                            frozen_model19_slots,
-                            terrain,
-                        ),
-                    level2_class5::firefly::FIREFLY_LINKED_ACTION => self
-                        .session
-                        .state
-                        .live
-                        .economy
-                        .step_authored_firefly_linked_slot(
+                            targets,
+                        )?
+                    }
+                    level2_class5::firefly::FIREFLY_STAGE_ACTION => {
+                        let live = &mut self.session.state.live;
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        level2_class5::firefly::step_stage_in_arena(
+                            &mut live.economy,
+                            &mut live.terrain,
                             source_slot,
                             frozen_model19_slots,
-                            terrain,
-                        ),
+                            pass_start_class3_slots,
+                            targets,
+                        )?
+                    }
+                    level2_class5::firefly::FIREFLY_ROAM_ACTION => {
+                        let live = &mut self.session.state.live;
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        level2_class5::firefly::step_roam_in_arena(
+                            &mut live.economy,
+                            &live.terrain,
+                            source_slot,
+                            frozen_model19_slots,
+                            pass_start_class3_slots,
+                            targets,
+                        )?
+                    }
+                    level2_class5::firefly::FIREFLY_LINKED_ACTION => {
+                        let live = &mut self.session.state.live;
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
+                        level2_class5::firefly::step_linked_in_arena(
+                            &mut live.economy,
+                            &mut live.terrain,
+                            source_slot,
+                            frozen_model19_slots,
+                            targets,
+                        )?
+                    }
                     level2_class5::firefly::FIREFLY_ATTACK_ACTION => {
+                        #[cfg(test)]
+                        let trace_producer = FIREFLY_ATTACK_TRACE.with(|trace| {
+                            trace
+                                .borrow()
+                                .as_ref()
+                                .and_then(|_| self.session.state.live.economy.handle(source_slot))
+                        });
                         let step = {
                             let live = &mut self.session.state.live;
                             let targets = source_target::Context {
@@ -19855,6 +19978,14 @@ impl Mc2Simulation {
                             });
                         }
                         if let Some(launch) = step.fireball {
+                            #[cfg(test)]
+                            let trace_target = trace_producer.and_then(|_| {
+                                self.session
+                                    .state
+                                    .live
+                                    .economy
+                                    .handle(launch.target_entity_index)
+                            });
                             let live = &mut self.session.state.live;
                             let targets = source_target::Context {
                                 spells: Some(&live.shared_spells),
@@ -19866,9 +19997,39 @@ impl Mc2Simulation {
                                 &mut live.economy, &mut live.terrain,
                                 &self.session.definition.presentation.particles, targets,
                                 source_slot, launch.target_entity_index, FireballProjectileOrigin::Firefly,
-                                500,
+                                launch.payload,
                             )?;
                             if spawned.is_some() {
+                                #[cfg(test)]
+                                if let (Some(producer), Some(slot)) = (trace_producer, spawned) {
+                                    FIREFLY_ATTACK_TRACE.with(|trace| {
+                                        if let Some(trace) = trace.borrow_mut().as_mut()
+                                            && trace.launches.len() < 64
+                                            && let Some(projectile) = live
+                                                .economy
+                                                .fireball_projectiles
+                                                .iter()
+                                                .find(|row| {
+                                                    row.active && row.source_entity_index == slot
+                                                })
+                                            && let Some(handle) = live.economy.handle(slot)
+                                        {
+                                            trace.launches.push(FireflyFireballLaunchReceipt {
+                                                producer,
+                                                target: trace_target,
+                                                projectile: handle,
+                                                owner: projectile.owner_entity_index,
+                                                payload: projectile.payload,
+                                                selector: (
+                                                    projectile.source_class,
+                                                    projectile.source_model,
+                                                ),
+                                                bound_target: projectile.target_source_entity_index,
+                                                origin: projectile.origin,
+                                            });
+                                        }
+                                    });
+                                }
                                 if source_target::read(&live.economy, targets, launch.target_entity_index)?
                                     .is_some_and(|target| (target.class, target.model) == (3, 0))
                                 {
@@ -19892,7 +20053,15 @@ impl Mc2Simulation {
                                 ));
                             }
                             if contact.target_entity_index == local_player {
-                                self.queue_level2_player_contact_damage(contact.damage, contact.attacker_entity_index);
+                                #[cfg(test)]
+                                let _trace = FireflyContactTrace(
+                                    CURRENT_FIREFLY_CONTACT_SOURCE
+                                        .with(|source| source.replace(trace_producer)),
+                                );
+                                self.queue_level2_player_contact_damage(
+                                    contact.damage,
+                                    contact.attacker_entity_index,
+                                );
                             } else {
                                 let live = &mut self.session.state.live;
                                 area_damage::contact(
@@ -25101,6 +25270,11 @@ impl Mc2Simulation {
                         });
                     });
                 }
+                #[cfg(test)]
+                area_damage::trace_player_mailbox_write(
+                    &self.session.state.live.economy, target_slot,
+                    Some(area_damage::PlayerMailboxSource::Other),
+                );
             }
         }
     }
@@ -25233,6 +25407,11 @@ impl Mc2Simulation {
                         .get_mut(usize::from(target_index))
                     {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
+                        #[cfg(test)]
+                        area_damage::trace_player_mailbox_write(
+                            &self.session.state.live.economy, target_index,
+                            Some(area_damage::PlayerMailboxSource::Other),
+                        );
                         hit_count = hit_count.wrapping_add(1);
                     }
                 }
@@ -25284,6 +25463,11 @@ impl Mc2Simulation {
                         .get_mut(usize::from(target_index))
                     {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
+                        #[cfg(test)]
+                        area_damage::trace_player_mailbox_write(
+                            &self.session.state.live.economy, target_index,
+                            Some(area_damage::PlayerMailboxSource::Other),
+                        );
                         hit_count = hit_count.wrapping_add(1);
                     }
                 }
@@ -25334,6 +25518,11 @@ impl Mc2Simulation {
                         .get_mut(usize::from(target_index))
                     {
                         target.apply_model76_mailbox(child.entity_id, parent.subspell_index);
+                        #[cfg(test)]
+                        area_damage::trace_player_mailbox_write(
+                            &self.session.state.live.economy, target_index,
+                            Some(area_damage::PlayerMailboxSource::Other),
+                        );
                         hit_count = hit_count.wrapping_add(1);
                     }
                 }
@@ -27518,6 +27707,21 @@ impl Mc2Simulation {
             return;
         }
         let player_entity_index = self.session.state.live.core.state.entity_index;
+        #[cfg(test)]
+        let firefly_observation = FIREFLY_ATTACK_TRACE.with(|trace| {
+            let trace = trace.borrow();
+            if trace.as_ref()?.contacts.len() >= 64 {
+                return None;
+            }
+            let producer = CURRENT_FIREFLY_CONTACT_SOURCE.with(|source| source.get())?;
+            let live = &self.session.state.live;
+            Some((
+                producer,
+                live.economy.handle(producer.source_slot),
+                live.economy.handle(player_entity_index)?,
+                live.player_life,
+            ))
+        });
         let entity = self
             .session
             .state
@@ -27551,6 +27755,41 @@ impl Mc2Simulation {
             .live
             .shared_spells
             .set_player_entity_damage_mailbox(next_damage, attacker);
+        #[cfg(test)]
+        let writer_sequence = area_damage::trace_player_mailbox_write(
+            &self.session.state.live.economy,
+            player_entity_index,
+            Some(
+                firefly_observation
+                    .map_or(area_damage::PlayerMailboxSource::Other, |(producer, ..)| {
+                        area_damage::PlayerMailboxSource::Contact(producer)
+                    }),
+            ),
+        );
+        #[cfg(test)]
+        if let Some((producer, current_producer, target, player_life_before)) = firefly_observation
+        {
+            let live = &self.session.state.live;
+            let row = &live.economy.entities[usize::from(player_entity_index)];
+            let receipt = FireflyContactDamageReceipt {
+                producer,
+                current_producer,
+                target,
+                payload: damage,
+                attacker,
+                mailbox_before: (raw_damage, raw_attacker),
+                mailbox_after: (row.source_upkeep_payload(), row.source_upkeep_word_62()),
+                player_life_before,
+                player_life_after: live.player_life,
+                event_cursor: live.economy.events().len(),
+                writer_sequence,
+            };
+            FIREFLY_ATTACK_TRACE.with(|trace| {
+                if let Some(trace) = trace.borrow_mut().as_mut() {
+                    trace.contacts.push(receipt);
+                }
+            });
+        }
     }
 
     /// Consume the local-player mailbox on the player's source-cursor visit.
@@ -27581,6 +27820,20 @@ impl Mc2Simulation {
                 entity.word_24(),
             )
         };
+        #[cfg(test)]
+        let consumed_mailbox = self
+            .session
+            .state
+            .live
+            .economy
+            .handle(player_entity_index)
+            .map(|target| {
+                (
+                    target,
+                    area_damage::take_player_mailbox_writer(target, (damage, attacker)),
+                    self.session.state.live.player_life,
+                )
+            });
         let attacker_is_model67 = self
             .session
             .state
@@ -27766,6 +28019,19 @@ impl Mc2Simulation {
             sound
         };
         self.push_flight_effect(feedback);
+        #[cfg(test)]
+        if let Some((target, writer, life_before)) = consumed_mailbox {
+            area_damage::trace_player_damage_consumption(
+                area_damage::PlayerDamageConsumptionReceipt {
+                    target,
+                    writer,
+                    mailbox: (damage, attacker),
+                    life_before,
+                    life_after: self.session.state.live.player_life,
+                    event_cursor: self.session.state.live.economy.events().len(),
+                },
+            );
+        }
         shield_damage
             .is_none()
             .then_some((damage, attacker, lethal))
@@ -29254,6 +29520,456 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_player_mailbox_identical_overwrite_retires_contact_attribution() {
+        // Explicit mailbox-boundary control, not an ordinary Firefly producer.
+        // Both writers and the life consumer are canonical. Only the real
+        // player's input mailbox and the observer's source tag are configured.
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let player = session.state.entity_index;
+        let target = session.source_arena().handle(player).unwrap();
+        area_damage::start_player_damage_trace(target);
+        area_damage::replace_source_bounty(
+            &mut session.session.state.live.economy,
+            None,
+            player,
+            200,
+            0,
+        )
+        .unwrap();
+        session.start_firefly_attack_trace();
+        {
+            let _source = FireflyContactTrace(
+                CURRENT_FIREFLY_CONTACT_SOURCE.with(|source| source.replace(Some(target))),
+            );
+            session.queue_level2_player_contact_damage(300, player);
+        }
+        let receipt = session.take_firefly_attack_trace().contacts.pop().unwrap();
+        assert_eq!(receipt.mailbox_after, (500, player));
+        let contact_sequence = receipt.writer_sequence.unwrap();
+        // A true accepted replacement stores the IDENTICAL tuple. Comparing
+        // values, owner and old matching events cannot distinguish these writes.
+        area_damage::replace_source_bounty(
+            &mut session.session.state.live.economy,
+            None,
+            player,
+            500,
+            player,
+        )
+        .unwrap();
+        let replacement = area_damage::latest_player_mailbox_writer().unwrap();
+        assert_eq!(replacement.mailbox, receipt.mailbox_after);
+        assert!(replacement.sequence > contact_sequence);
+        assert_eq!(replacement.source, area_damage::PlayerMailboxSource::Other);
+        let before = session.canonical_player_life_for_test();
+        assert_eq!(
+            session.consume_level2_player_damage(),
+            Some((500, player, false))
+        );
+        let consumed = area_damage::take_player_damage_consumptions();
+        assert_eq!(consumed.len(), 1);
+        assert_eq!(consumed[0].writer, Some(replacement));
+        assert_ne!(
+            consumed[0].writer.unwrap().sequence,
+            contact_sequence,
+            "the overwritten contact cannot satisfy the real-consumption join"
+        );
+        assert_eq!(
+            (consumed[0].life_before, consumed[0].life_after),
+            (before, before - 500)
+        );
+        assert!(area_damage::latest_player_mailbox_writer().is_none());
+        assert_eq!(session.consume_level2_player_damage(), None);
+        assert!(
+            area_damage::take_player_damage_consumptions().is_empty(),
+            "one actual consumption cannot qualify a second attack"
+        );
+    }
+
+    #[test]
+    fn ordinary_level_seven_firefly_contact_and_ranged_reach_player_damage() {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::level_definition::FIREFLY_CLASS_PROPERTIES;
+        use crate::native_world::area_damage;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let package = std::env::var_os("MC_LEVEL7_HOUSE_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/settlement-20261105-integration/owner-collision-closure-v4/level7"),
+            PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(7).unwrap())
+            .expect("whole ordinary Level7 owner package")
+            .simulation()
+            .clone();
+        let player = session.state.entity_index;
+        assert_eq!(player, 343);
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let gate = session.entities()[205].clone();
+        assert_eq!(
+            (
+                gate.class,
+                gate.model,
+                gate.action,
+                gate.source_id,
+                gate.phase
+            ),
+            (11, 0, 0, 9, 206)
+        );
+        assert_eq!(
+            gate.position,
+            Position {
+                x: 29568,
+                y: 56704,
+                z: 3872
+            }
+        );
+        let gate_handle = session.source_arena().handle(205).unwrap();
+        let authored = [
+            290, 291, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325,
+            326, 327, 328,
+        ];
+        assert!(session.economy().authored_fireflies().iter().all(|row| {
+            row.authored_index
+                .is_none_or(|index| !authored.contains(&index))
+        }));
+        // Declared initial player life/max-life and placement. Upkeep retains
+        // its real clamp and max-life-derived regeneration; no refill follows.
+        // No actor, group, source phase, timer, RNG or projectile is modified.
+        {
+            let live = &mut session.session.state.live;
+            live.player_life = 200_000;
+            live.shared_spells.set_player_entity_life(200_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_max_life(200_000);
+            parent.set_life(200_000);
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+        }
+        let anchor = Position {
+            z: session
+                .canonical_terrain()
+                .ground_height(gate.position)
+                .wrapping_add(256),
+            ..gate.position
+        };
+        session.set_level2_entity_position(player, anchor).unwrap();
+        let mut roots = BTreeMap::new();
+        let mut publication = false;
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 205, group: 9, authored_indices, .. }
+                    if authored.iter().all(|index| authored_indices.contains(index))))
+            {
+                publication = true;
+                for root in session.creature_runtime_census().roots_of_kind(CreatureKind::Firefly) {
+                    if let CreatureRootOrigin::AuthoredRecord { authored_record } = root.origin
+                        && authored.contains(&authored_record)
+                    {
+                        let row = session.economy().authored_class5().iter().find(|row|
+                            row.source_entity_index == root.handle.source_slot).unwrap();
+                        assert!(root.living && row.active && row.drawing_enabled);
+                        assert_eq!(row.max_life, FIREFLY_CLASS_PROPERTIES.max_life);
+                        assert_eq!(row.mana, FIREFLY_CLASS_PROPERTIES.max_life >> 1);
+                        assert_eq!(row.particle_index, level2_class5::firefly::MC2_FIREFLY_ASSETS.particle);
+                        let identity = session.economy().authored_fireflies().iter().find(|row|
+                            row.source_entity_index == root.handle.source_slot).unwrap();
+                        assert_eq!(identity.descriptor_index, level2_class5::firefly::MC2_FIREFLY_ASSETS.descriptor);
+                        roots.insert(root.handle.source_slot, (root.handle, identity.entity_id));
+                    }
+                }
+                break;
+            }
+            session.set_level2_entity_position(player, anchor).unwrap();
+        }
+        assert!(
+            publication && roots.len() == 20,
+            "ordinary switch205 must publish all20 authored Fireflies: {roots:?}"
+        );
+        assert_eq!(
+            (
+                session.entities()[usize::from(player)].max_life,
+                session.shared_spells().player_entity().max_life,
+            ),
+            (200_000, 200_000),
+        );
+        assert!(
+            session.source_arena().handle(205) != Some(gate_handle)
+                || session.entities()[205].drawing_disabled()
+        );
+
+        let mut launches = BTreeMap::new();
+        let mut births = BTreeMap::new();
+        // Sequences distinguish actual accepted writes even when a later
+        // writer stores the identical tuple. Only the player callback's latest
+        // consumed writer can qualify, exactly once.
+        let mut pending = BTreeMap::new();
+        area_damage::start_player_damage_trace(player_handle);
+        let mut contacts = BTreeSet::new();
+        let mut ranged = BTreeSet::new();
+        let mut observations = Vec::new();
+        let mut interceptions = 0;
+        for turn in 0..960 {
+            assert_eq!(
+                (
+                    session.entities()[usize::from(player)].max_life,
+                    session.shared_spells().player_entity().max_life,
+                ),
+                (200_000, 200_000),
+            );
+            // Player-only interception uses an already emitted, current real
+            // projectile. Its constructor, aim, movement and lifetime are intact.
+            let shot = session
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|shot| {
+                    shot.active
+                        && !shot.drawing_disabled
+                        && shot.origin == FireballProjectileOrigin::Firefly
+                        && shot.target_source_entity_index == player
+                        && session
+                            .source_arena()
+                            .handle(shot.source_entity_index)
+                            .is_some_and(|handle| {
+                                launches.contains_key(&(handle.source_slot, handle.generation))
+                            })
+                })
+                .copied();
+            let position = if let Some(shot) = shot {
+                let mut position = shot.position;
+                crate::move_entity(&mut position, shot.yaw, shot.pitch, shot.actual_speed);
+                interceptions += 1;
+                position
+            } else {
+                anchor
+            };
+            session
+                .set_level2_entity_position(player, position)
+                .unwrap();
+            session.start_firefly_attack_trace();
+            area_damage::start_fireball_launch_trace();
+            area_damage::start_effect_damage_trace(player);
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let attack = session.take_firefly_attack_trace();
+            let effects = area_damage::take_effect_damage_trace();
+            let _ = area_damage::take_fireball_launch_trace();
+            for (impact, generation, parent, parent_generation, owner) in
+                area_damage::take_fireball_impact_birth_trace()
+            {
+                births.insert((impact, generation), (parent, parent_generation, owner));
+            }
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "turn{turn}: {:?}",
+                session.dispatch_events()
+            );
+            assert_eq!(session.source_arena().handle(player), Some(player_handle));
+            for launch in attack.launches {
+                if roots
+                    .get(&launch.producer.source_slot)
+                    .is_none_or(|(handle, _)| *handle != launch.producer)
+                {
+                    continue;
+                }
+                let (_, owner) = roots[&launch.producer.source_slot];
+                assert_eq!(
+                    (
+                        launch.target,
+                        launch.selector,
+                        launch.origin,
+                        launch.owner,
+                        launch.bound_target,
+                        launch.payload
+                    ),
+                    (
+                        Some(player_handle),
+                        (9, 0),
+                        FireballProjectileOrigin::Firefly,
+                        owner,
+                        player,
+                        i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+                    )
+                );
+                launches.insert(
+                    (launch.projectile.source_slot, launch.projectile.generation),
+                    launch,
+                );
+            }
+            for receipt in attack.contacts {
+                if roots
+                    .get(&receipt.producer.source_slot)
+                    .is_none_or(|(handle, _)| *handle != receipt.producer)
+                {
+                    continue;
+                }
+                let (_, owner) = roots[&receipt.producer.source_slot];
+                assert_eq!(
+                    (
+                        receipt.current_producer,
+                        receipt.target,
+                        receipt.payload,
+                        receipt.attacker
+                    ),
+                    (
+                        Some(receipt.producer),
+                        player_handle,
+                        i32::from(FIREFLY_CLASS_PROPERTIES.contact_damage),
+                        owner
+                    )
+                );
+                let expected = if receipt.mailbox_before.1 != 0 {
+                    receipt.payload
+                } else {
+                    receipt.mailbox_before.0.wrapping_add(receipt.payload)
+                };
+                assert_eq!(receipt.mailbox_after, (expected, owner));
+                assert_eq!(
+                    receipt.player_life_after, receipt.player_life_before,
+                    "the contact queue is not the player damage consumer"
+                );
+                let sequence = receipt
+                    .writer_sequence
+                    .expect("accepted contact writer is observed");
+                pending.insert(
+                    sequence,
+                    (
+                        receipt.producer,
+                        receipt.mailbox_after,
+                        receipt.event_cursor,
+                        area_damage::PlayerMailboxSource::Contact(receipt.producer),
+                        false,
+                    ),
+                );
+            }
+            for receipt in effects {
+                let Some(source) = receipt.source_slot else {
+                    continue;
+                };
+                let Some(generation) = receipt
+                    .source_impact
+                    .as_ref()
+                    .map(|row| row.0)
+                    .or_else(|| receipt.source_raw_impact.as_ref().map(|row| row.0))
+                else {
+                    continue;
+                };
+                let Some((projectile, projectile_generation, owner)) =
+                    births.get(&(source, generation))
+                else {
+                    continue;
+                };
+                let Some(launch) = launches.get(&(*projectile, *projectile_generation)) else {
+                    continue;
+                };
+                if receipt.target_slot != player
+                    || receipt.target_generation != player_handle.generation
+                    || !receipt.source_scoped
+                    || receipt.pulse.payload != FIREFLY_CLASS_PROPERTIES.ranged_damage
+                    || receipt.pulse.owner != *owner
+                {
+                    continue;
+                }
+                let Some(sequence) = receipt.writer_sequence else {
+                    continue;
+                };
+                let Some(mailbox) = receipt.mailbox_after else {
+                    continue;
+                };
+                assert_eq!(mailbox.1, launch.owner);
+                assert!(receipt.target_in_scanned_cells && mailbox.0 >= launch.payload);
+                pending.insert(
+                    sequence,
+                    (
+                        launch.producer,
+                        mailbox,
+                        receipt.event_cursor,
+                        area_damage::PlayerMailboxSource::Effect(SourceEntityHandle {
+                            source_slot: source,
+                            generation,
+                        }),
+                        true,
+                    ),
+                );
+            }
+            let life_after = session.canonical_player_life_for_test();
+            for consumed in area_damage::take_player_damage_consumptions() {
+                let Some(writer) = consumed.writer else {
+                    continue;
+                };
+                let Some((producer, mailbox, cursor, source, projectile)) =
+                    pending.remove(&writer.sequence)
+                else {
+                    continue;
+                };
+                assert_eq!(
+                    (
+                        consumed.target,
+                        writer.target,
+                        writer.source,
+                        writer.mailbox,
+                        consumed.mailbox
+                    ),
+                    (player_handle, player_handle, source, mailbox, mailbox)
+                );
+                assert!(
+                    consumed.event_cursor >= cursor,
+                    "absolute append-only event cursor"
+                );
+                if consumed.life_after == consumed.life_before.wrapping_sub(mailbox.0)
+                    && consumed.life_after < consumed.life_before
+                    && matches!(session.economy().events().get(consumed.event_cursor),
+                        Some(Level2EconomyEvent::DamageApplied { target_entity_index,
+                            attacker_entity_index, damage, lethal: false })
+                        if *target_entity_index == player && *attacker_entity_index == mailbox.1 && *damage == mailbox.0)
+                {
+                    if projectile {
+                        ranged.insert((producer.source_slot, producer.generation));
+                    } else {
+                        contacts.insert((producer.source_slot, producer.generation));
+                    }
+                    if observations.len() < 32 {
+                        observations.push((
+                            turn,
+                            producer,
+                            writer.sequence,
+                            mailbox,
+                            consumed.life_before,
+                            consumed.life_after,
+                            projectile,
+                        ));
+                    }
+                }
+            }
+            let latest = area_damage::latest_player_mailbox_writer().map(|write| write.sequence);
+            pending.retain(|sequence, _| Some(*sequence) == latest);
+            assert!(
+                life_after > 0,
+                "declared survival resources exhausted: {observations:?}"
+            );
+            if contacts.intersection(&ranged).next().is_some() {
+                break;
+            }
+        }
+        assert!(
+            contacts.intersection(&ranged).next().is_some(),
+            "one ordinary authored generation must deliver contact300 and ranged500 through accepted mailboxes and actual player life damage: contacts={contacts:?} ranged={ranged:?} launches={launches:?} interceptions={interceptions} observations={observations:?}"
+        );
+    }
 
     #[test]
     fn fireball_auxiliary_clear_preserves_legacy_and_extended_player_contracts() {
@@ -31551,7 +32267,7 @@ mod tests {
                                     assert_eq!(presentation.position, source.position);
                                     assert_eq!(
                                         presentation.render_parameter_index,
-                                        crate::native_world::level2_class5::firefly::FIREFLY_PARTICLE
+                                        crate::native_world::level2_class5::firefly::MC2_FIREFLY_ASSETS.particle
                                     );
                                     let particle = &session.session.definition.presentation.particles
                                         [usize::from(presentation.render_parameter_index)];

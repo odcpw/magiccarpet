@@ -9270,11 +9270,13 @@ pub(crate) mod tests {
                 0,
                 384_i16.saturating_sub(target.actual_speed.max(0)),
             );
+            // Declared player-only incoming geometry: the source Fireball's
+            // first endpoint must enter the low Firefly's vertical AABB.
             player_position.z = crate::FlightWorld::ground_height(
                 session.backend().campaign.simulation().canonical_terrain(),
                 player_position,
             )
-            .wrapping_add(256);
+            .wrapping_add(200);
 
             // Predict the ordinary scheduler's stage/attack callback, rather
             // than moving the pre-callback heading directly. The positioned
@@ -9324,17 +9326,15 @@ pub(crate) mod tests {
             target_slot: u16,
             expected_life: i32,
         ) -> (u16, u16) {
-            let before_slots = session
-                .backend()
-                .campaign
-                .simulation()
-                .economy()
-                .fireball_projectiles()
-                .iter()
-                .map(|projectile| projectile.source_entity_index)
-                .collect::<BTreeSet<_>>();
-            let event_start = session.backend().campaign.events().len();
             aim_player_at_firefly(session, target_slot);
+            let aimed_player = session.backend().campaign.simulation().state;
+            let player_slot = aimed_player.entity_index;
+            let target_handle = session.backend().campaign.simulation().source_arena()
+                .handle(target_slot)
+                .expect("original Firefly generation before cast");
+            let event_start = session.backend().campaign.simulation().economy().events().len();
+            crate::native_world::area_damage::start_fireball_launch_trace();
+            crate::native_world::start_fireball_terminal_trace();
             session
                 .step(
                     guard(session),
@@ -9344,60 +9344,48 @@ pub(crate) mod tests {
                     },
                 )
                 .unwrap();
-            let projectile_slot = session
-                .backend()
-                .campaign
-                .simulation()
-                .economy()
-                .fireball_projectiles()
-                .iter()
-                .find(|projectile| {
-                    projectile.origin == FireballProjectileOrigin::PlayerSpell
-                        && !before_slots.contains(&projectile.source_entity_index)
-                })
-                .map(|projectile| projectile.source_entity_index)
-                .expect("ordinary player cast constructs a new class-9 Fireball");
+            let mut terminals = crate::native_world::take_fireball_terminal_trace();
+            let launches = crate::native_world::area_damage::take_fireball_launch_trace();
+            let player_launches: Vec<_> = launches.iter().copied()
+                .filter(|(_, _, owner)| *owner == player_slot)
+                .collect();
+            assert_eq!(player_launches.len(), 1,
+                "actual player Fireball launches: {launches:?}");
+            let (projectile_slot, projectile_generation, _) = player_launches[0];
+            let mut flight = Vec::new();
 
-            let mut impact_slot = None;
             for _ in 0..12 {
                 if let Some(current) = firefly(session, target_slot)
                     && current.life == expected_life
                 {
                     break;
                 }
+                let simulation = session.backend().campaign.simulation();
+                let projectile = simulation.economy().fireball_projectiles().iter()
+                    .find(|row| row.source_entity_index == projectile_slot).copied();
+                let target = firefly(session, target_slot);
+                flight.push((projectile, target,
+                    projectile.map(|row| simulation.canonical_terrain().ground_height(row.position)),
+                    target.map(|row| simulation.canonical_terrain().ground_height(row.position))));
+                crate::native_world::start_fireball_terminal_trace();
                 session
                     .step(guard(session), GameCommand::default())
                     .unwrap();
-                impact_slot = impact_slot.or_else(|| {
-                    session
-                        .backend()
-                        .campaign
-                        .simulation()
-                        .economy()
-                        .model17_spawned_children()
-                        .iter()
-                        .find(|impact| impact.parent_entity_index == projectile_slot)
-                        .map(|impact| impact.source_entity_index)
-                });
-                impact_slot = impact_slot.or_else(|| {
-                    session.backend().campaign.events()[event_start..]
-                        .iter()
-                        .find_map(|event| match event {
-                            Mc2DispatchEvent::DynamicArena {
-                                source_slot,
-                                kind:
-                                    crate::native_world::Level2DynamicArenaKind::Model17SpawnedChild,
-                                ..
-                            } => Some(*source_slot),
-                            _ => None,
-                        })
-                });
+                terminals.extend(crate::native_world::take_fireball_terminal_trace());
             }
+            let impact_births = crate::native_world::area_damage::take_fireball_impact_birth_trace();
+            let terminal = terminals.iter().find(|row| {
+                row.projectile.source_slot == projectile_slot
+                    && row.projectile.generation == projectile_generation
+                    && row.owner == player_slot
+                    && row.collision_target == Some(target_slot)
+                    && row.target_handle == Some(target_handle)
+            });
             let current = firefly(session, target_slot).expect("damaged Firefly is retained");
             assert_eq!(
                 current.life,
                 expected_life,
-                "projectile={:?} impacts={:?} target={current:?}",
+                "projectile={:?} impacts={:?} target={current:?} launched={:?} player={aimed_player:?} flight={flight:?} terminals={terminals:?} impact_births={impact_births:?}",
                 session
                     .backend()
                     .campaign
@@ -9411,16 +9399,23 @@ pub(crate) mod tests {
                     .campaign
                     .simulation()
                     .economy()
-                    .model17_spawned_children()
+                    .model17_spawned_children(),
+                player_launches[0]
             );
-            let player_slot = session.backend().campaign.simulation().state.entity_index;
+            let impact = terminal.and_then(|row| row.impact).unwrap_or_else(|| {
+                panic!("the actual Fireball must contact the original Firefly generation and produce an impact: launches={launches:?} terminals={terminals:?} impact_births={impact_births:?}")
+            });
+            assert!(impact_births.iter().any(|&(child, child_generation, parent, parent_generation, owner)|
+                (child, child_generation, parent, parent_generation, owner)
+                    == (impact.source_slot, impact.generation, projectile_slot, projectile_generation, player_slot)),
+                "the actual impact must belong to this launch generation: terminals={terminals:?} impact_births={impact_births:?}");
             assert!(
                 session
                     .backend()
                     .campaign
                     .simulation()
                     .economy()
-                    .events()
+                    .events()[event_start..]
                     .iter()
                     .any(|event| matches!(
                         event,
@@ -9434,10 +9429,7 @@ pub(crate) mod tests {
                     )),
                 "the class-10 pulse writes the exact holder subspell payload"
             );
-            (
-                projectile_slot,
-                impact_slot.expect("class-9 contact constructs a scheduled class-10 impact"),
-            )
+            (projectile_slot, impact.source_slot)
         }
 
         let root = level_one_descriptor_fixture_path();
@@ -9467,6 +9459,32 @@ pub(crate) mod tests {
             .expect("real Level 1 objective Firefly record 108 is constructed");
         let target_slot = target.source_entity_index;
         assert_eq!((target.max_life, target.life), (600, 600));
+        let (target_handle, living_before, other_roots) = {
+            let simulation = session.backend().campaign.simulation();
+            let arena = simulation.source_arena();
+            let handle = arena.handle(target_slot).expect("authored Firefly generation");
+            let census = simulation.creature_runtime_census();
+            assert!(census.roots_of_kind(CreatureKind::Firefly).any(|identity|
+                identity.handle == handle && identity.living));
+            let living = arena.rebuilt_class5_model_slots()[19].clone();
+            assert!(living.contains(&target_slot));
+            let others: Vec<_> = census.roots_of_kind(CreatureKind::Firefly).filter_map(|identity| {
+                match identity.origin {
+                    crate::campaign::source_arena::CreatureRootOrigin::AuthoredRecord { authored_record }
+                        if [134, 135, 189, 193].contains(&authored_record) && identity.living =>
+                            Some((authored_record, identity.handle)),
+                    _ => None,
+                }
+            }).collect();
+            assert_eq!(others.len(), 4, "all four other original group6 roots are live");
+            (handle, living, others)
+        };
+        // Declare the preceding objective stages as a prerequisite so the
+        // actual Firefly-absence consumer runs while the five real group-6
+        // roots remain. This does not claim the earlier mission objectives.
+        session.backend_mut().campaign.simulation_mut()
+            .stage_level_one_final_objective_prerequisite_for_test()
+            .expect("qualified final objective prerequisite");
         assert!(
             session
                 .backend()
@@ -9490,6 +9508,10 @@ pub(crate) mod tests {
 
         let player_slot = session.backend().campaign.simulation().state.entity_index;
         let (_first_projectile, _first_impact) = cast_until_damage(&mut session, target_slot, 350);
+        assert_eq!(session.backend().campaign.simulation().source_arena().handle(target_slot),
+            Some(target_handle), "the hit belongs to authored record108's original generation");
+        assert_eq!(session.backend().campaign.simulation().runtime().objectives[0].stage_selectors[4], 1,
+            "the actual absence consumer must not advance while Fireflies are living");
         let after_hit = firefly(&session, target_slot).unwrap();
         assert_eq!(after_hit.word_0x26, player_slot);
         assert_eq!(
@@ -9507,6 +9529,22 @@ pub(crate) mod tests {
             .unwrap();
         let (_third_projectile, _third_impact) = cast_until_damage(&mut session, target_slot, -150);
         let pre_kill = firefly(&session, target_slot).unwrap();
+        let simulation = session.backend().campaign.simulation();
+        let arena = simulation.source_arena();
+        assert_eq!(arena.handle(target_slot), Some(target_handle));
+        let living_after = &arena.rebuilt_class5_model_slots()[19];
+        assert!(!living_after.contains(&target_slot),
+            "negative-life original is excluded from the next model19 source list");
+        assert_eq!(living_after.len() + 1, living_before.len(),
+            "the actual source model count loses exactly the original Firefly");
+        assert!(!living_after.is_empty(), "other ordinary group6 Fireflies still block absence");
+        for (_, handle) in &other_roots {
+            assert_eq!(arena.handle(handle.source_slot), Some(*handle));
+            assert!(living_after.contains(&handle.source_slot),
+                "each other original group6 generation remains in the source list");
+        }
+        assert!(simulation.creature_runtime_census().roots_of_kind(CreatureKind::Firefly)
+            .all(|identity| identity.handle != target_handle || !identity.living));
         assert_eq!(pre_kill.word_0x24, player_slot);
         assert_eq!(
             pre_kill.action,
@@ -9521,9 +9559,19 @@ pub(crate) mod tests {
                 .unwrap();
             match firefly(&session, target_slot) {
                 Some(source) => {
+                    assert_eq!(session.backend().campaign.simulation().source_arena().handle(target_slot),
+                        Some(target_handle), "death callbacks must retain the original generation");
                     saw_kill |= source.action
                         == crate::native_world::level2_class5::firefly::FIREFLY_KILL_ACTION;
-                    saw_hidden |= !source.active && !source.drawing_enabled;
+                    if !source.drawing_enabled {
+                        assert!(source.active,
+                            "the hidden original remains active through its source-pass tail");
+                        saw_hidden = true;
+                        assert!(!session.backend().campaign.simulation()
+                            .campaign_entity_presentations(0).unwrap().iter()
+                            .any(|view| view.entity_index == target_slot),
+                            "the original hidden Firefly is absent from presentation");
+                    }
                 }
                 None => break,
             }
@@ -9537,16 +9585,31 @@ pub(crate) mod tests {
             "the cadence-gated death callback hides the Firefly"
         );
         assert!(firefly(&session, target_slot).is_none());
-        assert!(
-            !session
-                .backend()
-                .campaign
-                .simulation()
-                .economy()
-                .map_chains()
-                .is_linked(target_slot),
-            "the following source boundary unlinks and reclaims the dead Firefly"
-        );
+        let simulation = session.backend().campaign.simulation();
+        assert!(simulation.source_arena().resolve(target_handle).is_none(),
+            "the original authored generation was reclaimed even if its slot is reused");
+        assert_eq!(simulation.runtime().objectives[0].stage_selectors[4], 1,
+            "the real Firefly-absence objective remains pending while other model19 roots live");
+        assert!(!simulation.source_arena().rebuilt_class5_model_slots()[19].is_empty());
+        let arena = simulation.source_arena();
+        let map = simulation.economy().map_chains();
+        match arena.handle(target_slot) {
+            None => assert!(!map.is_linked(target_slot),
+                "the reclaimed empty address is unlinked"),
+            Some(replacement) => {
+                assert_ne!(replacement.generation, target_handle.generation,
+                    "a current occupant must be a different generation");
+                let current = crate::native_world::source_target::read(
+                    arena, crate::native_world::source_target::Context::default(), target_slot,
+                ).expect("read the current replacement").expect("replacement has a current carrier");
+                let x = (current.position.x >> 8) as u8;
+                let y = (current.position.y >> 8) as u8;
+                assert!(map.is_linked(target_slot));
+                assert_eq!(map.tile_of(target_slot), u16::from_le_bytes([x, y]));
+                assert!(map.entity_chain(x, y).contains(&target_slot),
+                    "the current replacement belongs to its actual map tile");
+            }
+        }
 
         // The only staged state is the already-proven group-6 incoming combat
         // boundary plus real player position/aim. Both projectiles are created

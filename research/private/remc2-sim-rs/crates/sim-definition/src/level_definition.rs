@@ -155,6 +155,41 @@ pub const SKELETON_CLASS_PROPERTIES: SkeletonClassProperties = SkeletonClassProp
     owned_arrow_damage: 600,
 };
 
+/// Source-default Firefly construction and attack values. MC2 descriptor,
+/// particle and sound selectors remain in its adapter.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FireflyClassProperties {
+    pub max_life: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub contact_damage: u16,
+    pub ranged_damage: u16,
+    pub scan_period: u8,
+    pub turn_limit: i16,
+    pub ground_clearance: i16,
+    pub descent: i16,
+    pub maximum_slope: i32,
+    pub target_range: u16,
+    pub target_half_angle: i16,
+    pub terrain_mask: u32,
+}
+
+pub const FIREFLY_CLASS_PROPERTIES: FireflyClassProperties = FireflyClassProperties {
+    max_life: 600,
+    minimum_speed: 76,
+    maximum_speed: 8,
+    contact_damage: 300,
+    ranged_damage: 500,
+    scan_period: 35,
+    turn_limit: 113,
+    ground_clearance: 51,
+    descent: -8,
+    maximum_slope: 20,
+    target_range: 5120,
+    target_half_angle: 682,
+    terrain_mask: u32::MAX,
+};
+
 /// Properties of the Castle's ground defender. Source parameter and asset
 /// identities remain in the MC2 adapter; the behavior owner consumes these.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

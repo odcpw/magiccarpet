@@ -1626,6 +1626,64 @@ pub(crate) fn read(
     Ok(view)
 }
 
+/// Current source word0x32 peer relation, distinct from the word0x34 child
+/// chain exposed by `Relations::next`. A typed occupant cannot inherit the
+/// previous incarnation's raw peer field. Only null/out-of-arena is absent;
+/// an unavailable current field owner is an explicit error.
+pub(crate) fn read_word32(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<u16>, String> {
+    let Some(current) = read(arena, context, slot)? else {
+        return Ok(None);
+    };
+    match status_kind(arena, slot) {
+        Some(Kind::AuthoredClass5) if (current.class, current.model) == (5, 19) => arena
+            .economy
+            .authored_fireflies
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .map(|row| Some(row.linked_entity_index))
+            .ok_or_else(|| format!("current Firefly {slot} lost its word32 owner")),
+        Some(Kind::SpellPickup | Kind::SpellReplacement) => context
+            .spells
+            .and_then(|spells| spells.pickup(slot))
+            .filter(|row| (row.class, row.model) == (current.class, current.model))
+            .map(|row| Some(row.word_32()))
+            .ok_or_else(|| format!("current spell {slot} lost its word32 owner")),
+        Some(kind) => Err(format!(
+            "current target {slot} has no word32 binding for {kind:?}"
+        )),
+        None => {
+            // read_current retains hidden Speed trails even after their live
+            // cursor disappears; their packet still owns this address.
+            if !arena.economy.free_source_slots().contains(&slot)
+                && arena.economy.speed_trails.iter().any(|row| {
+                    row.source_entity_index == slot && !row.active && row.control_flags & 0x400 != 0
+                })
+            {
+                return Err(format!(
+                    "current retained target {slot} has no word32 binding"
+                ));
+            }
+            let raw = &arena.entities[usize::from(slot)];
+            if raw.active
+                && context.external(slot).is_some_and(|external| {
+                    (external.class, external.model) == (current.class, current.model)
+                })
+            {
+                return Err(format!(
+                    "current external target {slot} has no word32 binding"
+                ));
+            }
+            // Imported and raw Morph packets own this field at source0x32,
+            // exported at bytes54..56 after the four-byte MCE record header.
+            Ok(Some(raw.word_32()))
+        }
+    }
+}
+
 /// Carriers with no mutable flag field retain these source scalar fields in
 /// their cold NewEvent record. Allocation retires that record before reuse.
 pub(crate) fn status_flags(arena: &SourceArena, slot: u16, flags: u32) -> u32 {
@@ -2625,6 +2683,87 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_word32_uses_its_owner_and_never_the_word34_or_typed_shadow() {
+        // Configured field-read controls over real constructor/current arena
+        // carriers; this does not claim an ordinary alias or Morph producer.
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let player = session.state.entity_index;
+        let raw = &mut arena.entities[usize::from(player)];
+        raw.record[54..56].copy_from_slice(&712_u16.to_le_bytes());
+        raw.record[56..58].copy_from_slice(&913_u16.to_le_bytes());
+        assert_eq!(
+            read_word32(&arena, Context::default(), player).unwrap(),
+            Some(712)
+        );
+        assert_eq!(
+            read(&arena, Context::default(), player)
+                .unwrap()
+                .unwrap()
+                .relations
+                .next,
+            Some(913)
+        );
+        assert_eq!(read_word32(&arena, Context::default(), 0).unwrap(), None);
+        assert_eq!(
+            read_word32(&arena, Context::default(), u16::MAX).unwrap(),
+            None
+        );
+
+        let firefly = super::super::level2_class5::firefly::allocate_source_default(
+            &mut arena,
+            &mut terrain,
+            &session.session.definition.presentation.particles,
+            session.state.position,
+        )
+        .unwrap()
+        .unwrap();
+        arena
+            .economy
+            .authored_fireflies
+            .iter_mut()
+            .find(|row| row.source_entity_index == firefly.source_slot)
+            .unwrap()
+            .linked_entity_index = 42;
+        let raw = &mut arena.entities[usize::from(firefly.source_slot)];
+        raw.record[54..56].copy_from_slice(&998_u16.to_le_bytes());
+        raw.record[56..58].copy_from_slice(&997_u16.to_le_bytes());
+        assert_eq!(
+            read_word32(&arena, Context::default(), firefly.source_slot).unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            read(&arena, Context::default(), firefly.source_slot)
+                .unwrap()
+                .unwrap()
+                .relations
+                .next,
+            Some(0),
+            "word34 retains its separate current child-chain owner"
+        );
+
+        let bee = arena
+            .economy
+            .allocate_authored_bee(1, session.state.position, None, 3000, &terrain)
+            .unwrap();
+        arena.entities[usize::from(bee.source_entity_index)].record[54..56]
+            .copy_from_slice(&996_u16.to_le_bytes());
+        assert!(
+            read_word32(&arena, Context::default(), bee.source_entity_index).is_err(),
+            "a typed owner without a word32 binding cannot borrow old raw bytes"
+        );
+        arena
+            .economy
+            .authored_fireflies
+            .retain(|row| row.source_entity_index != firefly.source_slot);
+        assert!(
+            read_word32(&arena, Context::default(), firefly.source_slot).is_err(),
+            "a missing typed Firefly field owner is an error, not a raw fallback"
+        );
+    }
 
     #[test]
     fn status_publication_does_not_write_an_old_external_actor_at_a_reused_address() {

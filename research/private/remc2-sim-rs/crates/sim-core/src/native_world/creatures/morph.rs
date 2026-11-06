@@ -101,7 +101,7 @@ pub(crate) fn allocate(
 ) -> Result<Option<u16>, String> {
     let particle = match model {
         16 => 207,
-        19 => 287,
+        19 => usize::from(crate::native_world::level2_class5::firefly::MC2_FIREFLY_ASSETS.particle),
         25 => 290,
         _ => return Err(format!("Morph has no source constructor for model{model}")),
     };
@@ -167,6 +167,8 @@ pub(crate) fn allocate(
         19 => {
             // The ordinary Firefly adapter grounds authored creatures. This
             // source constructor instead preserves the Morph parent's Z.
+            let properties = crate::level_definition::FIREFLY_CLASS_PROPERTIES;
+            let assets = crate::native_world::level2_class5::firefly::MC2_FIREFLY_ASSETS;
             let phase = arena.economy.class5_model19_constructor_phase;
             arena.economy.class5_model19_constructor_phase = phase.wrapping_add(1);
             if let Some(mirror) = runtime
@@ -182,30 +184,30 @@ pub(crate) fn allocate(
             row.model = 19;
             row.record[68] = 19;
             row.set_source_action(153);
-            row.set_max_life(600);
-            row.set_life(600);
-            row.set_mana(300);
-            row.set_subspell_index(300);
-            row.set_actual_speed(76);
-            row.record[136..138].copy_from_slice(&76_i16.to_le_bytes());
-            row.record[138..140].copy_from_slice(&8_i16.to_le_bytes());
+            row.set_max_life(properties.max_life);
+            row.set_life(properties.max_life);
+            row.set_mana(properties.max_life >> 1);
+            row.set_subspell_index(properties.contact_damage);
+            row.set_actual_speed(properties.minimum_speed);
+            row.record[136..138].copy_from_slice(&properties.minimum_speed.to_le_bytes());
+            row.record[138..140].copy_from_slice(&properties.maximum_speed.to_le_bytes());
             let rng = initial_rng.wrapping_mul(9_377).wrapping_add(9_439);
             row.set_entity_rng(rng);
             let angle = (rng & 0x7ff).wrapping_sub(1) as i16;
             row.set_yaw(angle);
             row.set_pitch(angle);
             row.set_source_roll(angle);
-            row.parameter_relation = Some(88);
-            row.record[164..168].copy_from_slice(&89_u32.to_le_bytes());
+            row.parameter_relation = Some(assets.descriptor);
+            row.record[164..168].copy_from_slice(&(u32::from(assets.descriptor) + 1).to_le_bytes());
             row.record[60] = 1;
-            row.record[61] = 35 - phase % 35 + 4;
+            row.record[61] = properties.scan_period - phase % properties.scan_period + 4;
             row.record[69] = 3;
             row.record[70] = 0;
             row.set_phase(phase);
             row.set_source_dword_10(i32::from(slot % 100));
-            crate::world::effects::bind_particle(&mut row, 287, particles)?;
-            row.set_source_overlap_half_extents(85, 85);
-            row.record[92..94].copy_from_slice(&51_i16.to_le_bytes());
+            crate::world::effects::bind_particle(&mut row, assets.particle, particles)?;
+            row.set_source_overlap_half_extents(assets.shift_x, assets.shift_x);
+            row.record[92..94].copy_from_slice(&assets.shift_y.to_le_bytes());
             row
         }
         _ => unreachable!("source constructor was checked before allocating"),
@@ -276,6 +278,75 @@ mod tests {
             assert_eq!(product(map, 2), Some(16));
             assert_eq!(product(map, 3), None);
         }
+    }
+
+    #[test]
+    fn firefly_morph_uses_typed_defaults_and_mc2_asset_binding() {
+        let session = super::super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut runtime = session.session.state.live.core.runtime.clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let particles = &session.session.definition.presentation.particles;
+        let mut parent = arena.entities[usize::from(session.state.entity_index)].clone();
+        let mut position = parent.position;
+        position.z = position.z.wrapping_add(123);
+        parent.set_position(position);
+        let slot = allocate(
+            &mut arena,
+            &mut runtime,
+            &mut terrain,
+            particles,
+            19,
+            &parent,
+            position,
+        )
+        .unwrap()
+        .unwrap();
+        assert_ne!(slot, parent.index);
+        let row = &arena.entities[usize::from(slot)];
+        let properties = crate::level_definition::FIREFLY_CLASS_PROPERTIES;
+        let assets = crate::native_world::level2_class5::firefly::MC2_FIREFLY_ASSETS;
+        assert_eq!((row.class, row.model, row.action), (5, 19, 153));
+        assert_eq!(
+            (row.life, row.max_life, row.mana),
+            (
+                properties.max_life,
+                properties.max_life,
+                properties.max_life >> 1
+            )
+        );
+        assert_eq!(
+            (row.minimum_speed(), row.actual_speed, row.subspell_index),
+            (
+                properties.minimum_speed,
+                properties.minimum_speed,
+                properties.contact_damage
+            )
+        );
+        assert_eq!(
+            i16::from_le_bytes([row.record[138], row.record[139]]),
+            properties.maximum_speed
+        );
+        assert_eq!(
+            (row.parameter_relation, row.particle_parameter_index),
+            (Some(assets.descriptor), Some(assets.particle))
+        );
+        assert_eq!(
+            u32::from_le_bytes(row.record[164..168].try_into().unwrap()),
+            u32::from(assets.descriptor) + 1
+        );
+        assert_eq!(
+            row.record[61],
+            properties.scan_period - row.phase % properties.scan_period + 4
+        );
+        assert_eq!(
+            (row.array_pitch(), row.array_roll(), row.array_fov()),
+            (assets.shift_x, assets.shift_x, assets.shift_y)
+        );
+        assert_eq!(
+            row.position, parent.position,
+            "Morph preserves the supplied parent-space Z"
+        );
     }
 
     #[test]

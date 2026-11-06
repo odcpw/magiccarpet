@@ -363,7 +363,7 @@ fn materialize_model25_summon(
 
 fn materialize_firefly_summon(
     arena: &mut SourceArena,
-    runtime: &mut RuntimeSnapshot,
+    _runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     request: super::SummonRequest,
@@ -378,19 +378,13 @@ fn materialize_firefly_summon(
         .handle(parent_slot)
         .ok_or("final encounter Firefly parent lost its source generation")?;
 
-    // Firefly's canonical allocator performs sub_4C6B0's typed root
-    // construction, constructor counter/RNG, and map publication. The boss
-    // replaces the Army StageVar13/lifetime/target fields after that real
-    // constructor returns.
-    let Some(handle) = crate::native_world::level2_class5::firefly::allocate_summoned(
+    // The boss invokes the ordinary Firefly constructor, then applies its
+    // own stage and launch fields without the Army's zero-mana override.
+    let Some(handle) = crate::native_world::level2_class5::firefly::allocate_source_default(
         arena,
-        runtime,
         terrain,
         particles,
         request.position,
-        parent_slot,
-        request.owner,
-        parent_slot,
     )?
     else {
         return Ok(None);
@@ -423,6 +417,7 @@ fn materialize_firefly_summon(
         .ok_or_else(|| format!("final encounter Firefly runtime lost slot{slot}"))?;
     state.parent_entity_index = parent_slot;
     state.parent_generation = parent_handle.generation;
+    state.entity_id = request.owner;
     state.word_0x2e = timer;
     state.stage_var1 = 0;
     state.stage_var2 = stage;
@@ -975,6 +970,129 @@ mod tests {
     use super::*;
     use crate::campaign::source_arena::SourceArena;
 
+    #[test]
+    fn level25_boss_naturally_produces_firefly_then_parent_loss_reclaims_it() {
+        use crate::campaign::source_arena::{CreatureRootOrigin, CreatureRuntimeRole};
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::Mc2DispatchEvent;
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || generated.join("mc-bhq10-owner-v3-level25-20261029"), PathBuf::from,
+        );
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || generated.join("dragon-bee-20261105-integration/current-level25-environment"),
+            PathBuf::from,
+        );
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache)
+            .expect("qualified Level25 environment assets");
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            &package, &cache, CampaignSelection::ordinary(25).unwrap(),
+        ).expect("whole Level25 package and its matching owner cache");
+        campaign.step(crate::PlayerCommand::default(), 0);
+        // Declared upstream progression boundary: this does not claim public
+        // demolition of the preceding BUILD68/69/72/73 chain. The existing
+        // Level25 package has an empty collision-mask bank for that chain.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(29)
+            .expect("actual authored group29 constructs the boss");
+        let simulation = campaign.simulation();
+        let boss = simulation.entities().iter().find(|row|
+            row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
+            .expect("group29 publishes the real final boss").index;
+        let parent = simulation.source_arena().handle(boss).expect("boss generation");
+        let boss_owner = simulation.entities()[usize::from(boss)].source_id;
+        let player = simulation.state.entity_index;
+        let mut approach = simulation.entities()[usize::from(boss)].position;
+        crate::move_entity(&mut approach, simulation.state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        approach.z = simulation.canonical_terrain().ground_height(approach).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        {
+            // Declared player-only survival resource, allowing natural boss
+            // selection and flight to proceed without scripted combat.
+            let live = &mut campaign.simulation_mut().session.state.live;
+            live.player_life = 200_000;
+            live.shared_spells.set_player_entity_life(200_000);
+            live.economy.entities[usize::from(player)].set_life(200_000);
+        }
+
+        let mut child = None;
+        let mut first_position = None;
+        let mut last_boss = None;
+        for turn in 0..4096 {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })),
+                "boss Firefly turn {turn}: {:?}", campaign.simulation().dispatch_events());
+            let generation = campaign.generation();
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation,
+            ).expect("actual Level25 frame");
+            frame.apply_primary_visibility(campaign.simulation_mut(), generation)
+                .expect("actual frame visibility feedback");
+            let simulation = campaign.simulation();
+            let arena = simulation.source_arena();
+            last_boss = load(&simulation.entities()[usize::from(boss)])
+                .map(|actor| (actor.phase, actor.summon_mode, actor.timer, actor.rng, actor.life));
+            if child.is_none() {
+                let census = arena.creature_runtime_census(&BTreeMap::new(), &BTreeMap::new());
+                child = census.entries().iter().find(|entry|
+                    entry.raw_model == Some(19)
+                        && entry.role == CreatureRuntimeRole::Root
+                        && entry.origin == CreatureRootOrigin::CreatureConversion { producer_slot: boss }
+                        && arena.creature_parent_binding(entry.handle) == Some(parent))
+                    .map(|entry| entry.handle);
+                if let Some(handle) = child {
+                    let root = arena.economy.authored_class5().iter().find(|row|
+                        row.source_entity_index == handle.source_slot).unwrap();
+                    let state = arena.economy.authored_fireflies().iter().find(|row|
+                        row.source_entity_index == handle.source_slot).unwrap();
+                    assert_eq!((root.model, root.max_life, root.life, root.mana, root.subspell_index),
+                        (19, 600, 600, 300, 300));
+                    assert_eq!((state.stage_var2, state.parent_entity_index, state.entity_id),
+                        (17, boss, boss_owner));
+                    assert_eq!(arena.creature_parent(handle), Some(parent));
+                    assert!(simulation.campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == handle.source_slot));
+                    first_position = Some(root.position);
+                }
+            }
+            if let Some(handle) = child {
+                assert!(arena.resolve(handle).is_some(), "actual boss child vanished before follow");
+                let root = arena.economy.authored_class5().iter().find(|row|
+                    row.source_entity_index == handle.source_slot).unwrap();
+                let state = arena.economy.authored_fireflies().iter().find(|row|
+                    row.source_entity_index == handle.source_slot).unwrap();
+                if state.stage_var2 == 16 && root.action == 159 {
+                    assert_ne!(Some(root.position), first_position,
+                        "real source flight must move before follow");
+                    // Separate configured failure control: mark only the real
+                    // boss parent dead, leaving the observed child untouched.
+                    let mut loss = campaign.clone();
+                    loss.simulation_mut().session.state.live.economy.entities
+                        [usize::from(boss)].set_life(-1);
+                    loss.step(crate::PlayerCommand::default(), 0);
+                    assert!(!loss.simulation().dispatch_events().iter().any(|event|
+                        matches!(event, Mc2DispatchEvent::Error { .. })));
+                    let lost = loss.simulation().source_arena();
+                    assert!(lost.resolve(handle).is_some(), "hidden child survives its source tail");
+                    let hidden = lost.economy.authored_class5().iter().find(|row|
+                        row.source_entity_index == handle.source_slot).expect("same child row");
+                    assert!(!hidden.drawing_enabled, "parent loss hides the actual mode16 child");
+                    assert!(!loss.simulation().campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == handle.source_slot));
+                    loss.step(crate::PlayerCommand::default(), 0);
+                    assert!(loss.simulation().source_arena().resolve(handle).is_none(),
+                        "the following owning boundary reclaims the original child generation");
+                    eprintln!("Level25 boss Firefly: parent={parent:?} child={handle:?} followed at turn {turn}");
+                    return;
+                }
+            }
+        }
+        panic!("unaltered Level25 boss did not produce and launch Firefly: boss={last_boss:?} child={child:?}");
+    }
+
     // These existing checks isolate boss phase/constructor behavior. The
     // source-time callback/order and actual carrier mutations have separate
     // regressions; they are not inferred from this phase-only observer.
@@ -1486,6 +1604,56 @@ mod tests {
             child.source_id,
             fixture.arena.entities[usize::from(boss_slot)].source_id
         );
+    }
+
+    #[test]
+    fn configured_boss_firefly_and_army_births_keep_distinct_source_mana() {
+        use crate::level_definition::FIREFLY_CLASS_PROPERTIES;
+
+        let (mut fixture, boss_slot) = boss_fixture();
+        fixture.arena.entities[usize::from(boss_slot)].record[71] = 6;
+        let frame = boss_frame(&fixture);
+        let effects = step_row(
+            &mut fixture.arena,
+            &mut fixture.runtime,
+            &mut fixture.terrain,
+            &fixture.particles,
+            boss_slot,
+            frame,
+            &mut ignore_world_action,
+        ).unwrap();
+        assert!(effects.summons.is_empty());
+        assert!(effects.sounds.contains(&44));
+        let child = fixture.arena.economy.authored_class5.iter()
+            .find(|row| row.active && row.model == 19 && row.action == 159)
+            .expect("configured boss mode6 produced its Firefly");
+        let child_slot = child.source_entity_index;
+        assert_eq!((child.max_life, child.life, child.mana, child.max_mana),
+            (FIREFLY_CLASS_PROPERTIES.max_life, FIREFLY_CLASS_PROPERTIES.max_life,
+             FIREFLY_CLASS_PROPERTIES.max_life >> 1, 0));
+        assert_eq!((child.minimum_speed, child.maximum_speed, child.actual_speed),
+            (FIREFLY_CLASS_PROPERTIES.minimum_speed, FIREFLY_CLASS_PROPERTIES.maximum_speed, 320));
+        assert_eq!(child.subspell_index, FIREFLY_CLASS_PROPERTIES.contact_damage);
+        assert_eq!(child.word_0x96_150, fixture.player_slot);
+        let state = fixture.arena.economy.authored_fireflies.iter()
+            .find(|state| state.source_entity_index == child_slot).unwrap();
+        assert_eq!((state.stage_var2, state.word_0x2e, state.parent_entity_index, state.entity_id),
+            (17, 250, boss_slot, fixture.arena.entities[usize::from(boss_slot)].source_id));
+        let child_handle = fixture.arena.handle(child_slot).unwrap();
+        assert_eq!(fixture.arena.creature_parent(child_handle), fixture.arena.handle(boss_slot));
+
+        let army = crate::native_world::level2_class5::firefly::allocate_summoned(
+            &mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles,
+            fixture.player_position, fixture.player_slot, fixture.player_source_id,
+            fixture.player_slot,
+        ).unwrap().expect("Army control has source capacity");
+        let army_row = fixture.arena.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == army.source_slot).unwrap();
+        assert_eq!((army_row.life, army_row.mana, army_row.max_mana),
+            (FIREFLY_CLASS_PROPERTIES.max_life, 0, 0));
+        let army_state = fixture.arena.economy.authored_fireflies.iter()
+            .find(|state| state.source_entity_index == army.source_slot).unwrap();
+        assert_eq!((army_state.stage_var2, army_state.word_0x2e), (13, 250));
     }
 
     #[test]

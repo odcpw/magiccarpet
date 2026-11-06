@@ -441,7 +441,7 @@ mod tests {
             .allocate_authored_firefly_unbound(
                 683,
                 live.core.state.position,
-                crate::native_world::level2_class5::firefly::FIREFLY_LIFE as u32,
+                crate::level_definition::FIREFLY_CLASS_PROPERTIES.max_life as u32,
                 terrain,
             )
             .expect("ordinary Firefly constructor has source capacity")

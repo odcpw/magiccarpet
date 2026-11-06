@@ -9,6 +9,7 @@ use crate::combat::actors::{
     DamageMailboxMut, DamageWriter, awards_creature_kill, consume_damage, inherit_killer,
     inherit_linked_life,
 };
+use crate::level_definition::FIREFLY_CLASS_PROPERTIES;
 use crate::native_world::{
     TerrainPlanes, apply_level1_load_house_edge_smoothing, apply_level1_load_house_sweep,
     apply_level1_load_path_point, level1_feature_ground_height, level1_load_house_base,
@@ -2199,18 +2200,6 @@ pub const FIREFLY_LINKED_ACTION: u8 = 155;
 pub const FIREFLY_PRE_KILL_ACTION: u8 = 156;
 pub const FIREFLY_KILL_ACTION: u8 = 157;
 pub const FIREFLY_STAGE_ACTION: u8 = 159;
-pub const FIREFLY_LIFE: i32 = 600;
-pub const FIREFLY_MANA: i32 = 300;
-pub const FIREFLY_MIN_SPEED: i16 = 76;
-pub const FIREFLY_MAX_SPEED: i16 = 8;
-pub const FIREFLY_TURN_LIMIT: i16 = 113;
-pub const FIREFLY_GROUND_CLEARANCE: i16 = 51;
-pub const FIREFLY_DESCENT: i16 = -8;
-pub const FIREFLY_MAX_TILE_SLOPE: i32 = 20;
-pub const FIREFLY_DECISION_CADENCE: u8 = 35;
-pub const FIREFLY_RANGE: u16 = 5_120;
-pub const FIREFLY_VIEW_HALF_ANGLE: i16 = 682;
-pub const FIREFLY_CONTACT_DAMAGE: i32 = 300;
 pub const FIREFLY_CONTACT_RANGE: u32 = 768;
 pub const FIREFLY_STAGE_TARGET: Position = Position {
     x: 242 << 8,
@@ -2223,7 +2212,6 @@ pub const FIREFLY_RENDER_MODE: u8 = 17;
 pub const FIREFLY_LOGICAL_HEIGHT: u16 = 200;
 pub const FIREFLY_FIREBALL_SPEED: i16 = 384;
 pub const FIREFLY_FIREBALL_LIFETIME_TICKS: i16 = 0x2000 / FIREFLY_FIREBALL_SPEED;
-pub const FIREFLY_FIREBALL_PAYLOAD: i32 = 500;
 pub const FIREFLY_FIREBALL_PITCH_TURN_LIMIT: i16 = 22;
 pub const MULTIPART_MODEL: u8 = 3;
 pub const MULTIPART_ROAM_ACTION: u8 = 25;
@@ -5938,7 +5926,7 @@ impl Level1MissionTemplate {
                     MISSION_ACTOR_CLASS,
                     FIREFLY_MODEL,
                     FIREFLY_STAGE_ACTION,
-                    FIREFLY_LIFE,
+                    FIREFLY_CLASS_PROPERTIES.max_life,
                     world,
                 )),
                 (5, 3, 4 | 34, _) => Some(actor_from_feature(
@@ -15790,7 +15778,7 @@ impl Level1MissionState {
             self.source_slots[usize::from(source_entity_index)].entity_rng = rng;
             let mana = match kind {
                 Level1ActorKind::Archer => ARCHER_LIFE / 2,
-                Level1ActorKind::Firefly => FIREFLY_MANA,
+                Level1ActorKind::Firefly => FIREFLY_CLASS_PROPERTIES.max_life >> 1,
                 Level1ActorKind::MultipartHead => MULTIPART_HEAD_MANA,
                 Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 0,
                 Level1ActorKind::ExitTarget
@@ -20483,7 +20471,7 @@ fn actor_from_feature<W: FlightWorld>(
         desired_heading: 0,
         min_speed: match kind {
             Level1ActorKind::Archer => ARCHER_MIN_SPEED,
-            Level1ActorKind::Firefly => FIREFLY_MIN_SPEED,
+            Level1ActorKind::Firefly => FIREFLY_CLASS_PROPERTIES.minimum_speed,
             Level1ActorKind::MultipartHead => MULTIPART_MIN_SPEED,
             Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 0,
             Level1ActorKind::ExitTarget
@@ -20495,7 +20483,7 @@ fn actor_from_feature<W: FlightWorld>(
         },
         actual_speed: 0,
         max_speed: match kind {
-            Level1ActorKind::Firefly => FIREFLY_MAX_SPEED,
+            Level1ActorKind::Firefly => FIREFLY_CLASS_PROPERTIES.maximum_speed,
             Level1ActorKind::MultipartHead => MULTIPART_MAX_SPEED,
             _ => 0,
         },
@@ -21016,12 +21004,12 @@ fn step_firefly_roam<W: FlightWorld>(
     targeting_lists: &TargetingSourceLists,
 ) {
     move_firefly(actor, world);
-    if actor.phase % FIREFLY_DECISION_CADENCE != 0 {
+    if actor.phase % FIREFLY_CLASS_PROPERTIES.scan_period != 0 {
         return;
     }
     apply_creature_wander(actor);
 
-    let range_squared = u32::from(FIREFLY_RANGE).pow(2);
+    let range_squared = u32::from(FIREFLY_CLASS_PROPERTIES.target_range).pow(2);
     let mut player_target = None;
     let mut player_distance = u32::MAX;
     for source_entity_index in targeting_lists.players() {
@@ -21036,7 +21024,8 @@ fn step_firefly_roam<W: FlightWorld>(
         let distance = squared_wrapping_xy_distance(actor.position, candidate.position);
         let heading = heading_for_positions(actor.position, candidate.position);
         if distance <= range_squared
-            && angle_distance(i32::from(actor.yaw), heading) < FIREFLY_VIEW_HALF_ANGLE
+            && angle_distance(i32::from(actor.yaw), heading)
+                < FIREFLY_CLASS_PROPERTIES.target_half_angle
             && distance < player_distance
         {
             player_target = Some(candidate.source_entity_index);
@@ -21072,7 +21061,8 @@ fn step_firefly_roam<W: FlightWorld>(
         let distance = squared_wrapping_xy_distance(actor.position, candidate.position);
         let heading = heading_for_positions(actor.position, candidate.position);
         if distance <= range_squared
-            && angle_distance(i32::from(actor.yaw), heading) < FIREFLY_VIEW_HALF_ANGLE
+            && angle_distance(i32::from(actor.yaw), heading)
+                < FIREFLY_CLASS_PROPERTIES.target_half_angle
             && distance < linked_distance
         {
             linked = Some(candidate.source_entity_index);
@@ -21091,7 +21081,7 @@ fn step_firefly_linked<W: FlightWorld>(
     actor_views: &[Level1Actor],
 ) {
     move_firefly(actor, world);
-    if actor.phase % FIREFLY_DECISION_CADENCE != 0 {
+    if actor.phase % FIREFLY_CLASS_PROPERTIES.scan_period != 0 {
         return;
     }
     let Some(peer) = actor_views.iter().find(|candidate| {
@@ -21153,7 +21143,7 @@ fn step_firefly_attack<W: FlightWorld>(
     loop {
         match actor.attack_substate {
             0 => {
-                actor.actual_speed = FIREFLY_MIN_SPEED;
+                actor.actual_speed = FIREFLY_CLASS_PROPERTIES.minimum_speed;
                 actor.attack_substate = 1;
             }
             1 => {
@@ -21176,7 +21166,7 @@ fn step_firefly_attack<W: FlightWorld>(
                 break;
             }
             2 => {
-                actor.actual_speed = FIREFLY_MAX_SPEED;
+                actor.actual_speed = FIREFLY_CLASS_PROPERTIES.maximum_speed;
                 actor.entity_rng = next_rng16(actor.entity_rng);
                 actor.state_value =
                     i32::from(player.position.z) + i32::from(actor.entity_rng & 0x03ff);
@@ -21209,7 +21199,7 @@ fn step_firefly_attack<W: FlightWorld>(
                 break;
             }
             4 => {
-                actor.actual_speed = FIREFLY_MIN_SPEED;
+                actor.actual_speed = FIREFLY_CLASS_PROPERTIES.minimum_speed;
                 actor.attack_substate = 5;
             }
             5 => {
@@ -21219,9 +21209,9 @@ fn step_firefly_attack<W: FlightWorld>(
                             .expect("Firefly firing heading is 11-bit");
                     apply_same_model_separation(actor, actor_views, 85);
                 }
-                if actor.phase % FIREFLY_DECISION_CADENCE == 0 {
+                if actor.phase % FIREFLY_CLASS_PROPERTIES.scan_period == 0 {
                     if distance_3d_wrapped(actor.position, player.position)
-                        < u32::from(FIREFLY_RANGE)
+                        < u32::from(FIREFLY_CLASS_PROPERTIES.target_range)
                     {
                         projectile = Some(spawn_firefly_fireball(
                             actor,
@@ -21239,7 +21229,7 @@ fn step_firefly_attack<W: FlightWorld>(
                 break;
             }
             7 => {
-                actor.actual_speed = FIREFLY_MIN_SPEED.saturating_mul(3);
+                actor.actual_speed = FIREFLY_CLASS_PROPERTIES.minimum_speed.saturating_mul(3);
                 actor.entity_rng = next_rng16(actor.entity_rng);
                 charge_sound = Some(43 + (actor.entity_rng & 1));
                 actor.state_value = 24;
@@ -21261,12 +21251,12 @@ fn step_firefly_attack<W: FlightWorld>(
                 if actor.attack_substate == 8
                     && distance_3d_wrapped(actor.position, player.position) < FIREFLY_CONTACT_RANGE
                 {
-                    contact_damage = FIREFLY_CONTACT_DAMAGE;
+                    contact_damage = i32::from(FIREFLY_CLASS_PROPERTIES.contact_damage);
                     actor.attack_substate = 9;
                 }
-                if actor.phase % FIREFLY_DECISION_CADENCE == 0
+                if actor.phase % FIREFLY_CLASS_PROPERTIES.scan_period == 0
                     && distance_3d_wrapped(actor.position, player.position)
-                        >= u32::from(FIREFLY_RANGE)
+                        >= u32::from(FIREFLY_CLASS_PROPERTIES.target_range)
                 {
                     actor.attack_substate = 6;
                 }
@@ -21306,14 +21296,14 @@ fn spawn_firefly_fireball(
         pitch,
         speed: FIREFLY_FIREBALL_SPEED,
         life_ticks: FIREFLY_FIREBALL_LIFETIME_TICKS,
-        payload: FIREFLY_FIREBALL_PAYLOAD,
+        payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
         active: true,
     }
 }
 
 fn leave_firefly_attack(actor: &mut Level1Actor) {
     actor.action = FIREFLY_ROAM_ACTION;
-    actor.actual_speed = FIREFLY_MIN_SPEED;
+    actor.actual_speed = FIREFLY_CLASS_PROPERTIES.minimum_speed;
     actor.target_entity_index = 0;
     actor.linked_entity_index = 0;
     actor.stage_var_2 = 1;
@@ -21435,7 +21425,8 @@ fn spawn_multipart_fireball(
         pitch,
         speed: FIREFLY_FIREBALL_SPEED,
         life_ticks: FIREFLY_FIREBALL_LIFETIME_TICKS,
-        payload: FIREFLY_FIREBALL_PAYLOAD,
+        // This is the separate multipart caller's source1CC20 default.
+        payload: 500,
         active: true,
     }
 }
@@ -21544,11 +21535,11 @@ fn move_firefly<W: FlightWorld>(actor: &mut Level1Actor, world: &W) -> ArcherMov
     move_ground_actor(
         actor,
         world,
-        FIREFLY_GROUND_CLEARANCE,
-        FIREFLY_DESCENT,
-        FIREFLY_TURN_LIMIT,
-        u32::MAX,
-        FIREFLY_MAX_TILE_SLOPE,
+        FIREFLY_CLASS_PROPERTIES.ground_clearance,
+        FIREFLY_CLASS_PROPERTIES.descent,
+        FIREFLY_CLASS_PROPERTIES.turn_limit,
+        FIREFLY_CLASS_PROPERTIES.terrain_mask,
+        FIREFLY_CLASS_PROPERTIES.maximum_slope,
     )
 }
 
@@ -33025,11 +33016,11 @@ mod tests {
             assert_eq!(firefly.action, FIREFLY_STAGE_ACTION);
             assert_eq!(firefly.stage_var_1, 8);
             assert_eq!(firefly.stage_var_2, 1);
-            assert_eq!(firefly.max_life, FIREFLY_LIFE);
-            assert_eq!(firefly.life, FIREFLY_LIFE);
-            assert_eq!(firefly.min_speed, FIREFLY_MIN_SPEED);
-            assert_eq!(firefly.actual_speed, FIREFLY_MIN_SPEED);
-            assert_eq!(firefly.max_speed, FIREFLY_MAX_SPEED);
+            assert_eq!(firefly.max_life, FIREFLY_CLASS_PROPERTIES.max_life);
+            assert_eq!(firefly.life, FIREFLY_CLASS_PROPERTIES.max_life);
+            assert_eq!(firefly.min_speed, FIREFLY_CLASS_PROPERTIES.minimum_speed);
+            assert_eq!(firefly.actual_speed, FIREFLY_CLASS_PROPERTIES.minimum_speed);
+            assert_eq!(firefly.max_speed, FIREFLY_CLASS_PROPERTIES.maximum_speed);
             assert_eq!(firefly.phase, phase as u8);
             assert_eq!(firefly.collision_half_width, 85);
             assert_eq!(firefly.collision_vertical_offset, 100);
@@ -33056,14 +33047,14 @@ mod tests {
         actor.phase = 0;
         actor.yaw = 0;
         actor.desired_heading = 0;
-        actor.actual_speed = FIREFLY_MIN_SPEED;
+        actor.actual_speed = FIREFLY_CLASS_PROPERTIES.minimum_speed;
         actor.entity_rng = next_rng16(1);
         let views = [actor];
         let expected_rng = next_rng16(next_rng16(actor.entity_rng));
 
         step_firefly_stage_patrol(&mut actor, &FlatWorld, &views);
 
-        assert_eq!(actor.position.z, FIREFLY_GROUND_CLEARANCE);
+        assert_eq!(actor.position.z, FIREFLY_CLASS_PROPERTIES.ground_clearance);
         assert_ne!(
             (actor.position.x, actor.position.y),
             (views[0].position.x, views[0].position.y)
@@ -33127,7 +33118,9 @@ mod tests {
         let distant_player = FlightState {
             position: Position {
                 x: seeker_position.x,
-                y: seeker_position.y.wrapping_add(FIREFLY_RANGE + 1),
+                y: seeker_position
+                    .y
+                    .wrapping_add(FIREFLY_CLASS_PROPERTIES.target_range + 1),
                 z: seeker_position.z,
             },
             ..player
@@ -33228,7 +33221,7 @@ mod tests {
         {
             let actor = &mut mission.actors[actor_index];
             actor.position = FIREFLY_STAGE_TARGET;
-            actor.phase = FIREFLY_DECISION_CADENCE;
+            actor.phase = FIREFLY_CLASS_PROPERTIES.scan_period;
             actor.yaw =
                 i16::try_from(heading_for_positions(actor.position, player.position)).unwrap();
             actor.desired_heading = actor.yaw;
@@ -33312,7 +33305,7 @@ mod tests {
             (35, 0, FIREFLY_ATTACK_ACTION),
             "action-155 alerts the valid linked peer before rewriting the struck Firefly"
         );
-        assert_eq!(struck.life, FIREFLY_LIFE - 50);
+        assert_eq!(struck.life, FIREFLY_CLASS_PROPERTIES.max_life - 50);
         assert_eq!(
             (
                 struck.target_entity_index,
@@ -33360,7 +33353,7 @@ mod tests {
         mission.step(&FlatWorld, &player);
 
         let struck = mission.actors[struck_index];
-        assert_eq!(struck.life, FIREFLY_LIFE - 50);
+        assert_eq!(struck.life, FIREFLY_CLASS_PROPERTIES.max_life - 50);
         assert_eq!(
             (
                 struck.target_entity_index,
@@ -33375,7 +33368,7 @@ mod tests {
         configure_firefly_stage_hit(&mut mission.actors[struck_index], player.entity_index);
         mission.step(&FlatWorld, &player);
         let struck = mission.actors[struck_index];
-        assert_eq!(struck.life, FIREFLY_LIFE - 100);
+        assert_eq!(struck.life, FIREFLY_CLASS_PROPERTIES.max_life - 100);
         assert_eq!(
             (
                 struck.target_entity_index,
@@ -33520,7 +33513,7 @@ mod tests {
         actor.target_entity_index = 152;
         actor.action = FIREFLY_ATTACK_ACTION;
         actor.attack_substate = 5;
-        actor.phase = FIREFLY_DECISION_CADENCE;
+        actor.phase = FIREFLY_CLASS_PROPERTIES.scan_period;
         actor.actual_speed = 0;
         let player = FlightState {
             entity_index: 152,
@@ -33540,7 +33533,10 @@ mod tests {
         assert_eq!(projectile.id, 77);
         assert_eq!(projectile.speed, FIREFLY_FIREBALL_SPEED);
         assert_eq!(projectile.life_ticks, FIREFLY_FIREBALL_LIFETIME_TICKS);
-        assert_eq!(projectile.payload, FIREFLY_FIREBALL_PAYLOAD);
+        assert_eq!(
+            projectile.payload,
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+        );
         assert_eq!(projectile.position.z, actor.position.z + 51);
         assert_eq!(projectile.target_entity_index, player.entity_index);
         assert_eq!(
@@ -33563,7 +33559,7 @@ mod tests {
         let rng_before = actor.entity_rng;
         let (_, sound, damage) = step_firefly_attack(&mut actor, &FlatWorld, &player, &views, 78);
         assert_eq!(sound, Some(43 + (next_rng16(rng_before) & 1)));
-        assert_eq!(damage, FIREFLY_CONTACT_DAMAGE);
+        assert_eq!(damage, i32::from(FIREFLY_CLASS_PROPERTIES.contact_damage));
         assert_eq!(actor.attack_substate, 9);
         let (_, _, repeated_damage) =
             step_firefly_attack(&mut actor, &FlatWorld, &player, &views, 79);
@@ -33635,7 +33631,7 @@ mod tests {
                 pitch: 0,
                 speed: 0,
                 life_ticks: FIREFLY_FIREBALL_LIFETIME_TICKS,
-                payload: FIREFLY_FIREBALL_PAYLOAD,
+                payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
                 active: true,
             },
         ));
@@ -33835,7 +33831,7 @@ mod tests {
                 pitch: 0,
                 speed: 0,
                 life_ticks: FIREFLY_FIREBALL_LIFETIME_TICKS,
-                payload: FIREFLY_FIREBALL_PAYLOAD,
+                payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
                 active: true,
             },
         ));
@@ -33898,7 +33894,7 @@ mod tests {
             external_target_entity_index: 0,
             model: FIREBALL_IMPACT_MODEL,
             position: player.position,
-            payload: FIREFLY_FIREBALL_PAYLOAD,
+            payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
             life_ticks: 8,
             entity_rng: 123,
             vertical_velocity: 0,
@@ -33938,9 +33934,9 @@ mod tests {
                 .filter(|event| matches!(
                     event,
                     Level1MissionEvent::PlayerDamaged {
-                        damage: FIREFLY_FIREBALL_PAYLOAD,
+                        damage,
                         life: 9_500,
-                    }
+                    } if *damage == i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
                 ))
                 .count(),
             1
@@ -33994,7 +33990,7 @@ mod tests {
                 y: 20_000,
                 z: 1_000,
             },
-            payload: FIREFLY_FIREBALL_PAYLOAD,
+            payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
             life_ticks: 8,
             entity_rng: seed,
             vertical_velocity: 0,
@@ -34090,7 +34086,7 @@ mod tests {
             external_target_entity_index: 0,
             model: FIREBALL_IMPACT_MODEL,
             position,
-            payload: FIREFLY_FIREBALL_PAYLOAD,
+            payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
             life_ticks: 8,
             entity_rng: 123,
             vertical_velocity: 0,
@@ -34110,13 +34106,16 @@ mod tests {
         assert_eq!(mission.actors[owner_index].pending_damage, 0);
         assert_eq!(
             mission.actors[target_index].pending_damage,
-            FIREFLY_FIREBALL_PAYLOAD
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
         );
         assert_eq!(
             mission.actors[target_index].pending_attacker,
             owner_entity_index
         );
-        assert_eq!(mission.player_pending_damage, FIREFLY_FIREBALL_PAYLOAD);
+        assert_eq!(
+            mission.player_pending_damage,
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+        );
         assert_eq!(mission.player_pending_attacker, owner_entity_index);
 
         mission.step(&FlatWorld, &player);
@@ -34131,10 +34130,11 @@ mod tests {
             Level1MissionEvent::ActorDamaged {
                 authored_index,
                 attacker_entity_index,
-                damage: FIREFLY_FIREBALL_PAYLOAD,
+                damage,
                 ..
             } if *authored_index == target_authored_index
                 && *attacker_entity_index == owner_entity_index
+                && *damage == i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
         )));
     }
 
@@ -34145,9 +34145,13 @@ mod tests {
 
         mission.submit_player_contact_damage(100, 20);
         assert_eq!(mission.player_pending_damage, 100);
-        mission.submit_player_contact_damage(FIREFLY_CONTACT_DAMAGE, 10);
+        mission
+            .submit_player_contact_damage(i32::from(FIREFLY_CLASS_PROPERTIES.contact_damage), 10);
 
-        assert_eq!(mission.player_pending_damage, FIREFLY_CONTACT_DAMAGE);
+        assert_eq!(
+            mission.player_pending_damage,
+            i32::from(FIREFLY_CLASS_PROPERTIES.contact_damage)
+        );
         assert_eq!(mission.player_pending_attacker, 10);
     }
 
@@ -34197,7 +34201,7 @@ mod tests {
                 external_target_entity_index: 0,
                 model: FIREBALL_IMPACT_MODEL,
                 position: player.position,
-                payload: FIREFLY_FIREBALL_PAYLOAD,
+                payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
                 life_ticks: 8,
                 entity_rng: 123,
                 vertical_velocity: 0,
@@ -34236,7 +34240,10 @@ mod tests {
         }
         higher.finish_source_turn(&player);
         assert_eq!(higher.player_life, 10_000);
-        assert_eq!(higher.player_pending_damage, FIREFLY_FIREBALL_PAYLOAD);
+        assert_eq!(
+            higher.player_pending_damage,
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+        );
         assert_eq!(higher.player_pending_attacker, 10);
 
         higher.begin_source_turn();
@@ -34301,7 +34308,7 @@ mod tests {
             external_target_entity_index: 0,
             model: FIREBALL_IMPACT_MODEL,
             position: player.position,
-            payload: FIREFLY_FIREBALL_PAYLOAD,
+            payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
             life_ticks: 8,
             entity_rng: 123,
             vertical_velocity: 0,
@@ -34319,9 +34326,9 @@ mod tests {
         assert!(mission.events.iter().any(|event| matches!(
             event,
             Level1MissionEvent::PlayerDamaged {
-                damage: FIREFLY_FIREBALL_PAYLOAD,
+                damage,
                 life: -1,
-            }
+            } if *damage == i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
         )));
         assert!(mission.events.contains(&Level1MissionEvent::PlayerDied));
 
@@ -34916,7 +34923,7 @@ mod tests {
         }]);
         let seed = 0x1234;
         mission.source_slots[usize::from(player.entity_index)].entity_rng = seed;
-        mission.submit_player_damage(FIREFLY_FIREBALL_PAYLOAD, 10);
+        mission.submit_player_damage(i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage), 10);
 
         mission.begin_source_turn();
         mission.dispatch_source_slot(&FlatWorld, &player, player.entity_index, false, false, None);
@@ -34929,8 +34936,8 @@ mod tests {
             reaction,
             PlayerHitReaction {
                 attacker_entity_index: 10,
-                raw_damage: FIREFLY_FIREBALL_PAYLOAD,
-                applied_damage: FIREFLY_FIREBALL_PAYLOAD,
+                raw_damage: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
+                applied_damage: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
                 recoil_yaw: i16::try_from(heading_for_positions(
                     attacker_position,
                     player.position
@@ -35008,7 +35015,7 @@ mod tests {
             collision_half_height: 51,
             active: true,
         }]);
-        mission.submit_player_damage(FIREFLY_FIREBALL_PAYLOAD, 10);
+        mission.submit_player_damage(i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage), 10);
 
         mission.begin_source_turn();
         let position_before_flight = player.position;
@@ -35052,7 +35059,10 @@ mod tests {
         assert!(reaction.lethal);
         assert_eq!(reaction.killer_entity_index, 10);
         assert_eq!(mission.player_killer_entity_index(), 10);
-        assert_eq!(mission.player_pending_damage, FIREFLY_FIREBALL_PAYLOAD);
+        assert_eq!(
+            mission.player_pending_damage,
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+        );
         assert_eq!(mission.player_pending_attacker, 10);
         assert!(mission.events.iter().any(|event| matches!(
             event,
@@ -40550,7 +40560,7 @@ mod tests {
             collision_half_height: 51,
             active: true,
         }]);
-        mission.submit_player_damage(FIREFLY_FIREBALL_PAYLOAD, 10);
+        mission.submit_player_damage(i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage), 10);
         let postflight_player = FlightState {
             position: Position {
                 x: castle.x.wrapping_add(5_000),
@@ -40573,7 +40583,10 @@ mod tests {
         assert_eq!(mission.player_pending_damage, 0);
         assert_eq!(mission.player_pending_attacker, 0);
         assert_eq!(mission.player_damage_suppression, 1);
-        assert_eq!(mission.castle_pending_damage, FIREFLY_FIREBALL_PAYLOAD);
+        assert_eq!(
+            mission.castle_pending_damage,
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+        );
         assert_eq!(mission.castle_pending_attacker, 10);
 
         mission.dispatch_source_slot(
@@ -40586,7 +40599,7 @@ mod tests {
         );
         assert_eq!(
             mission.castle_life,
-            CASTLE_STAGE_ONE_LIFE - FIREFLY_FIREBALL_PAYLOAD
+            CASTLE_STAGE_ONE_LIFE - i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
         );
         assert_eq!(mission.castle_pending_damage, 0);
         assert_eq!(mission.castle_pending_attacker, 0);
@@ -40628,7 +40641,7 @@ mod tests {
             external_target_entity_index: 0,
             model: FIREBALL_IMPACT_MODEL,
             position: mission.castle_position,
-            payload: FIREFLY_FIREBALL_PAYLOAD,
+            payload: i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage),
             life_ticks: 8,
             entity_rng: 123,
             vertical_velocity: 0,
@@ -40640,7 +40653,10 @@ mod tests {
 
         mission.begin_source_turn_at(player.position);
         mission.dispatch_source_slot(&FlatWorld, &player, impact_slot, false, false, None);
-        assert_eq!(mission.castle_pending_damage, FIREFLY_FIREBALL_PAYLOAD);
+        assert_eq!(
+            mission.castle_pending_damage,
+            i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
+        );
         mission.dispatch_source_slot(
             &FlatWorld,
             &player,
@@ -40651,7 +40667,7 @@ mod tests {
         );
         assert_eq!(
             mission.castle_life,
-            CASTLE_STAGE_ONE_LIFE - FIREFLY_FIREBALL_PAYLOAD
+            CASTLE_STAGE_ONE_LIFE - i32::from(FIREFLY_CLASS_PROPERTIES.ranged_damage)
         );
     }
 
