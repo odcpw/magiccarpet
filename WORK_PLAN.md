@@ -141,8 +141,8 @@ Neither the installed property/arrow batch nor the configured absence control
 closes this missing behavior. No level-specific patch or forced actor/timer is
 allowed, and unsupported/default-unreachable callback classification stays.
 
-That actor-follow fix and the paid-kill path are now verified in candidate6,
-pending matching native delivery. Actual unmodified Level5 reset/emergence→
+That actor-follow fix and the paid-kill path are now implemented, verified,
+committed and installed from candidate6. Actual unmodified Level5 reset/emergence→
 mode3→current Archer cache/following/map/presentation/reset passes2.718s.
 Configured near/hit/lethal/route-continuation/null/direct-pointer and unsupported
 flee controls pass3.470s on production-identical candidate5. The real Level7
@@ -160,6 +160,20 @@ Core6 passes106.600s/444stable; exact worker/local executable hashes match.
 Source order passes0.638s and workspace/all-target36.442s passes444Rust+37extra
 stable. Whole-file formatting/scanner debt remains, no added critical finding.
 
+Runtime `a9d10c5abd7c7a4c30b758d24b16ea0ed07ce643` is pushed. Strict rig native
+build passes49.478s; `12ee86299242d5c079b5532f0e5f182eb063d4ddb8ccf01f7dfad84855c6e04a`
+matches the worker's136983592 bytes, all636 unique source inputs, both installed
+Original plugins and the444-input installed receipt. No Unity/art change.
+Root viewed the canonical map and NightSpire terrain/HUD with that mapped native,
+one portal click and no retry/private-save load/gameplay input. The first30s
+observation expired before load-open; the same process completed naturally.
+Loading-bound/frame/open and night-presentation events pass; owned smoke is
+stopped. Evidence: candidate6 and `Builds/delivery-skeleton-20261106-batch2/`.
+Fresh bounded source/gate review found no further concrete defect in those joins.
+No native Skeleton encounter, human combat/FPS, hardware audio, full-mission or
+old-save claim. Completed returned auxiliary files736MB were byte-verified on
+rig ext4 before local removal; current/previous natives and warm caches remain.
+
 The original-family admission check also matched all22 existing L3–24 authored
 payload hashes against the pinned source-record closure. Besides L3 kind1 and
 L5 kind3, L16 binds97 Skeleton rows to kind4 targeting Creature24; that target
@@ -167,8 +181,12 @@ is absent in its reset, so callback admission depends on actual group timing.
 No other bound kinds were found in those22 inputs. This does not prove all
 other source StageVar modes globally unreachable: remaining fallback modes,
 uninspected L1/2/25/secret routes and custom selectors stay unqualified. Full
-`.22` remains open; finish matching delivery, then resolve the real mode4
-producer/consumer admission without forced NPCs or invented spawning.
+`.22` remains open. The new current whole L16 package passes export6.439s with
+all160 current exporter inputs and marker verified. Its actual flags7 route and
+group23→27 chain exposed a missing canonical source12870 group-end rearm.
+Azure owns that shared join and its active-count boundary; Magenta owns the
+real switch/group/Creature24-follow consumer. No NPC/group/timer forcing or
+mission-specific patch is permitted; preserve full acceptance and dependencies.
 
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
