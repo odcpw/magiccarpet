@@ -18,9 +18,18 @@ from pathlib import Path
 
 def save_outputs(result, output):
     """Resume interrupted downloads without submitting another paid request."""
-    for field, filename in [("video", "video.mp4"), ("model_mesh", "model.glb"),
-                            ("rendered_image", "preview.png")]:
-        url = (result.get(field) or {}).get("url")
+    files = [("video", "video.mp4"), ("model_mesh", "model.glb"),
+             ("model_glb", "textured.glb"), ("rendered_image", "preview.png"),
+             ("rigged_character_glb", "rigged.glb"),
+             ("rigged_character_fbx", "rigged.fbx"),
+             ("animation_glb", "animation.glb"), ("animation_fbx", "animation.fbx"),
+             ("basic_animations.walking_glb", "walking.glb"),
+             ("basic_animations.running_glb", "running.glb")]
+    for field, filename in files:
+        value = result
+        for component in field.split("."):
+            value = (value or {}).get(component)
+        url = (value or {}).get("url")
         destination = output / filename
         if url and not destination.exists():
             if urllib.parse.urlparse(url).scheme != "https":

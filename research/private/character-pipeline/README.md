@@ -4,10 +4,53 @@ Fresh sprite-informed goat experiment: `../generated/goat-animation-20261106/`.
 Original sprites inform identity; no rejected prototype mesh, rig or motion is
 reused. Generated files, original assets and credentials remain owner-local.
 
-The current experiment separates reference art, a fixed textured mesh, motion
+The initial experiment separates reference art, a fixed textured mesh, motion
 video and deformation reconstruction. A video is only a motion reference. The
 deliverable must be independently renderable 3D geometry, inspected from both
 sides and the rear. A morph animation does not establish a reusable skeletal rig.
+
+## Skeletal goat follow-up
+
+Oliver accepted the fresh textured goat as the starting shape and requested
+Blender repairs. `rig_goat.py` now binds that mesh to 14 bones, preserves the
+skull and hoof shapes, solves fixed-length leg chains, and authors a one-second
+four-beat walk with planted stance intervals and restrained body/head motion.
+Two small reconstruction ridges receive localized smoothing; their faint baked
+texture marks remain. This is a manually authored interpretation of the four
+original sprite phases, not recovered original animation timing.
+
+The selected asset is `../generated/goat-rigged-20261106/eighth/goat-rigged.glb`
+with its editable `.blend`. `goat-multiview-review.mp4` shows four directions;
+`goat-treadmill-review.mp4` shows three repetitions with a checker floor moving
+at the authored stance speed. These are actual renders of the exported GLB.
+Individual side, opposite-side, front, rear and three-quarter contact frames
+were inspected. No goat asset has been installed in Unity in this follow-up.
+
+Reproduce from the approved fresh Tripo mesh (not the old rejected prototype):
+
+```sh
+BLENDER=/home/oliver/Projects/fittimer-avatar-toolchain/blender-4.5.12-linux-x64/blender
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/rig_goat.py -- \
+  --model research/private/generated/goat-animation-20261106/mesh/model.glb \
+  --output /absolute/new/goat-output
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/verify_goat_rig.py -- \
+  --model /absolute/new/goat-output/goat-rigged.glb \
+  --output /absolute/new/goat-output/verification.json
+"$BLENDER" -b -t 2 --python-exit-code 1 \
+  -P research/private/character-pipeline/render_goat_treadmill.py -- \
+  --model /absolute/new/goat-output/goat-rigged.glb \
+  --output /absolute/new/goat-output/treadmill
+```
+
+An independent rebuild and GLB reimport passed: 17,070 vertices, 14 bones,
+normalized weights, finite evaluated positions, zero sampled loop seam error,
+and maximum sampled stance drift of `2.60e-7` model units relative to the floor.
+Rigid-region sampled pair distances and bone lengths remain stable to floating
+point precision. Coordinates are model units; the goat is roughly one unit tall.
+These checks cover the authored flat-ground cycle, not terrain foot placement,
+engine locomotion blending or every possible pose.
 
 ## Tools
 
@@ -25,10 +68,12 @@ sides and the rear. A morph animation does not establish a reusable skeletal rig
   Polling defaults to 30 minutes (`--timeout-seconds`). Timeout exits 75 with a
   JSON error and retains the receipt; rerunning resumes that job. Timeout does
   not itself cancel a provider job. HTTP operations also have network timeouts.
+  Meshy rigging results also download the rigged GLB/FBX, optional animation,
+  and nested basic walking/running GLBs. Each output resumes independently.
 - `align_mesh.py`: bake an explicit yaw in world coordinates before motion
   fitting, independent of Blender's Euler/quaternion mode. It verifies every
   transformed vertex. **Do not assume image-view alignment is the model's
-  learned canonical orientation. The utility is mechanically verified; the
+  learned canonical orientation.** The utility is mechanically verified; the
   camera-aligned trial with verified weights still failed the face/limb review.
 - `export_deformation.py`: Blender conversion of ActionMesh's saved positions
   into linear morph targets on the original textured GLB. It checks the bind
@@ -77,8 +122,9 @@ crash in the Pulsar camera source. The shared PyTorch installation is not patche
 
 ActionMesh's FAIR Noncommercial Research License restricts its outputs too.
 This experiment is a private method evaluation, not a commercial asset pipeline.
-Production rigging and motion candidates remain AniGen or an approved fixed rig
-with video fitting (e.g. SkinTokens/TopoCap), subject to real output tests.
+The skeletal goat above uses the approved Tripo mesh and Blender-authored motion;
+it does not use ActionMesh output. AniGen and fixed-rig video fitting remain
+possible future candidates, subject to real output tests.
 
 ## Reconstruct an approved motion reference
 
@@ -121,7 +167,7 @@ Pass its `deformations_vertices.npy` and the **same anchor GLB** to
 `export_deformation.py --fps 8`. The exporter checks the actual starting
 geometry; it must not silently remap a different model or orientation.
 
-## Outcome and next experiment
+## Initial reconstruction outcome
 
 The fresh sprite → reference image → generated walking video → animated 3D
 experiment produced actual GLBs, but **none passes final visual acceptance**.
@@ -147,8 +193,9 @@ verify the exporter, not anatomical quality. The textured static model also has
 a weak far-side eye and small neck/back ridges. No money was spent retexturing
 the rejected native geometry.
 
-Next: test AniGen's joint shape/skeleton/skinning generation and video fitting,
-or a validated quadruped rig fitted to this motion reference. Require rigid skull
+The next candidates were AniGen's joint shape/skeleton/skinning generation and
+video fitting, or a validated quadruped rig. The Blender follow-up above takes
+the fixed-rig route after Oliver approved repairing this mesh. Require rigid skull
 and hoof shape, plausible joint motion, foot contact, a clean loop and Unity
 skeletal playback before processing the roster. Check the same boundaries on a
 humanoid archer with bow/string/arrow contact. More VRAM is not the demonstrated
