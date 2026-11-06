@@ -8,9 +8,11 @@ namespace MagicCarpet.Native
     internal sealed class ModernWaterEffects : IDisposable
     {
         private readonly GameObject root;
-        private readonly ParticleSystem spray, mist, ember;
-        private readonly Material sprayMaterial, mistMaterial, emberMaterial;
+        private readonly ParticleSystem spray, ember;
+        private readonly ModernSteamVolume steam;
+        private readonly Material sprayMaterial, emberMaterial;
         private uint seed = 314159;
+        internal Vector3? LatestCloudCenter => steam.LatestCenter;
 
         internal ModernWaterEffects(Transform parent, Texture pattern)
         {
@@ -19,10 +21,14 @@ namespace MagicCarpet.Native
             var shader = Resources.Load<Shader>("ModernWaterMist");
             if (shader == null) throw new InvalidOperationException("Missing water particle shader");
             sprayMaterial = new Material(shader); sprayMaterial.SetTexture("_Pattern", pattern);
-            mistMaterial = new Material(shader); mistMaterial.SetTexture("_Pattern", pattern); mistMaterial.SetFloat("_Mist", 1);
             emberMaterial = new Material(shader); emberMaterial.SetTexture("_Pattern", pattern); emberMaterial.SetFloat("_Glow", 1);
             spray = Create("Ballistic droplets", sprayMaterial, 1200, .75f, false);
-            mist = Create("Wind advected condensation", mistMaterial, 240, -.025f, true);
+            var args = Environment.GetCommandLineArgs();
+            var grid = 48;
+            for (var i = 0; i + 1 < args.Length; i++)
+                if (args[i] == "-mc-steam-resolution" && !int.TryParse(args[i + 1], out grid))
+                    throw new ArgumentException("Steam resolution must be 32, 48 or 64");
+            steam = new ModernSteamVolume(parent, grid);
             ember = Create("Review projectile light", emberMaterial, 96, 0f, false);
         }
 
@@ -57,10 +63,10 @@ namespace MagicCarpet.Native
             return system;
         }
 
-        internal void Update(Vector2 wind)
+        internal void Update(Vector2 wind, Vector3 viewer)
         {
-            var force = mist.forceOverLifetime; force.enabled = true; force.space = ParticleSystemSimulationSpace.World;
-            force.x = wind.x * .12f; force.z = wind.y * .12f;
+            steam.Update(Mathf.Clamp(Time.unscaledDeltaTime, 0, .25f), wind);
+            steam.PlaceForView(viewer);
             var sprayForce = spray.forceOverLifetime; sprayForce.enabled = true;
             sprayForce.space = ParticleSystemSimulationSpace.World;
             sprayForce.x = wind.x * .05f; sprayForce.z = wind.y * .05f;
@@ -86,19 +92,20 @@ namespace MagicCarpet.Native
                     startColor = new Color(.65f, .78f, .84f, .8f), randomSeed = ++seed
                 }, 1);
             }
-            if (!condensation) return;
-            for (var i = 0; i < 22; i++)
-            {
-                var angle = Random01() * Mathf.PI * 2; var radius = Random01() * 1.2f;
-                mist.Emit(new ParticleSystem.EmitParams {
-                    position = position + new Vector3(Mathf.Cos(angle) * radius, .3f + Random01() * .35f, Mathf.Sin(angle) * radius),
-                    velocity = new Vector3(wind.x * .1f, 1 + Random01() * 1.1f, wind.y * .1f),
-                    startLifetime = 2.2f + Random01() * 1.8f, startSize = 1.2f + Random01() * 1.6f,
-                    rotation = Random01() * 360f,
-                    startColor = new Color(.7f, .78f, .82f, .3f), randomSeed = ++seed
-                }, 1);
-            }
+            if (condensation) Condensation(position, wind, ModernFireballEnergy.Standard);
         }
+
+        internal void Quench(Vector3 position, Vector2 wind, ModernFireballEnergy energy)
+        {
+            var scale = Mathf.Clamp((float)Math.Pow(energy.Joules / ModernFireballEnergy.ReferenceJoules, 1.0 / 3), .2f, 2f);
+            Splash(position, wind, false, scale);
+            Condensation(position, wind, energy);
+        }
+
+        private void Condensation(Vector3 position, Vector2 wind, ModernFireballEnergy energy)
+            => steam.Quench(position, energy);
+
+        internal void DisturbClouds(Vector3 from, Vector3 to, float dt) => steam.Disturb(from, to, dt);
 
         internal void ReviewFireball(Vector3 position, Vector3 velocity, float lifetime)
         {
@@ -106,11 +113,12 @@ namespace MagicCarpet.Native
                 startLifetime = lifetime, startSize = .65f, startColor = new Color(1, .24f, .024f, 1), randomSeed = ++seed }, 1);
         }
 
-        internal void Clear() { spray.Clear(); mist.Clear(); ember.Clear(); }
+        internal void Clear() { spray.Clear(); ember.Clear(); steam.Reset(); }
         public void Dispose()
         {
+            steam?.Dispose();
             UnityEngine.Object.Destroy(root);
-            UnityEngine.Object.Destroy(sprayMaterial); UnityEngine.Object.Destroy(mistMaterial); UnityEngine.Object.Destroy(emberMaterial);
+            UnityEngine.Object.Destroy(sprayMaterial); UnityEngine.Object.Destroy(emberMaterial);
         }
     }
 }

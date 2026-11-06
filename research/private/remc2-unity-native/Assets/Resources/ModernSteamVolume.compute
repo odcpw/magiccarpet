@@ -1,0 +1,126 @@
+#pragma kernel Clear
+#pragma kernel Predict
+#pragma kernel Advance
+#pragma kernel LimitMass
+#pragma kernel Normalize
+Texture3D<float4> _Read;
+SamplerState sampler_Read;
+Texture3D<float4> _Predicted;
+SamplerState sampler_Predicted;
+RWTexture3D<float4> _Write;
+RWStructuredBuffer<float4> _MassParts, _MassScale;
+groupshared float4 Expected[256], Actual[256];
+int _Resolution, _WakeCount, _GroupCount;
+float _Size, _Step;
+float3 _Origin, _OldOrigin;
+float4 _Wind, _Injection, _Retention, _Sources[4], _WakeFrom[16], _WakeTo[16];
+
+// Analytic divergence-free eddies: each component is independent of its own axis.
+float3 Flow(float3 p)
+{
+    float t = _Wind.w;
+    float3 v = _Wind.xyz + .55 * float3(sin(p.y*1.7+t*.7)+cos(p.z*1.3-t*.4),
+        sin(p.z*1.6+t*.5)+cos(p.x*1.4+t*.3), sin(p.x*1.8-t*.6)+cos(p.y*1.5+t*.4));
+    v+=.18*float3(sin(p.y*3.7-t*.8),cos(p.z*3.3+t*.7),sin(p.x*3.6+t*.6));
+    for (int i=0; i<_WakeCount; i++)
+    {
+        float3 a=_WakeFrom[i].xyz, ab=_WakeTo[i].xyz-a;
+        float3 axis=normalize(ab+1e-6);
+        float3 q=p-(a+ab*saturate(dot(p-a,ab)/max(dot(ab,ab),.0001)));
+        float3 side=cross(float3(0,1,0),axis);
+        side=dot(side,side)>.001?normalize(side):float3(1,0,0);
+        float r=_WakeTo[i].w, envelope=pow(saturate(1-dot(q,q)/(r*r)),2);
+        float3 l=q+side*r*.4, h=q-side*r*.4;
+        float3 roll=cross(axis,h)/(dot(h,h)+.12)-cross(axis,l)/(dot(l,l)+.12);
+        v+=_WakeFrom[i].w*.4*envelope*(q/r+roll*.22);
+    }
+    return v;
+}
+[numthreads(4,4,4)]
+void Clear(uint3 id:SV_DispatchThreadID) { _Write[id]=0; }
+float SourceWeight(float3 p, float4 source)
+{
+    float sigma=max(.1,source.w);
+    float3 q=(p-source.xyz)/sigma;
+    return exp(-.5*dot(q,q))/(15.74961*sigma*sigma*sigma);
+}
+float4 ReadOld(float3 uv)
+{
+    return all(uv>=0)&&all(uv<=1)?_Read.SampleLevel(sampler_Read,uv,0):0;
+}
+[numthreads(4,4,4)]
+void Predict(uint3 id:SV_DispatchThreadID)
+{
+    float3 p=_Origin+(id+.5)*(_Size/_Resolution);
+    float3 back=p-_Step*Flow(p-Flow(p)*(_Step*.5));
+    _Write[id]=ReadOld((back-_OldOrigin)/_Size);
+}
+[numthreads(4,4,4)]
+void Advance(uint3 id:SV_DispatchThreadID, uint3 group:SV_GroupID, uint local:SV_GroupIndex)
+{
+    float3 p=_Origin+(id+.5)*(_Size/_Resolution);
+    float3 velocity=Flow(p);
+    float3 back=p-_Step*Flow(p-velocity*(_Step*.5));
+    float3 uv=(back-_OldOrigin)/_Size;
+    // Empty exterior, not clamped edge density or a toroidal local fluid box.
+    float4 density=_Predicted.Load(int4(id,0));
+    float3 forward=p+_Step*Flow(p+velocity*(_Step*.5));
+    float3 forwardUv=(forward-_Origin)/_Size;
+    if(all(uv>=0)&&all(uv<=1)&&all(forwardUv>=0)&&all(forwardUv<=1))
+    {
+        // Limited MacCormack correction preserves wisps without negative density
+        // or new extrema. Sources/evaporation are applied only after transport.
+        float4 corrected=density+.5*(ReadOld((p-_OldOrigin)/_Size)-_Predicted.SampleLevel(sampler_Predicted,forwardUv,0));
+        int3 cell=(int3)floor(uv*_Resolution-.5);
+        float4 lower=1e20, upper=0;
+        [unroll] for(int z=0;z<2;z++) [unroll] for(int y=0;y<2;y++) [unroll] for(int x=0;x<2;x++)
+        {
+            int3 n=cell+int3(x,y,z);
+            float4 sample=all(n>=0)&&all(n<_Resolution)?_Read.Load(int4(n,0)):0;
+            lower=min(lower,sample);upper=max(upper,sample);
+        }
+        density=clamp(corrected,lower,upper);
+    }
+    density*=_Retention;
+    // Normalized 3D Gaussians; escaped/submerged mass is not restored to the box.
+    float4 added = _Injection * float4(SourceWeight(p,_Sources[0]),SourceWeight(p,_Sources[1]),
+        SourceWeight(p,_Sources[2]),SourceWeight(p,_Sources[3]));
+    density+=added;
+    // Smooth absorbing water-plane boundary; render also clips to actual waves.
+    density*=smoothstep(-.1,.15,p.y);
+    float3 edge=min(p-_Origin,_Origin+_Size-p);
+    float boundary=saturate(min(edge.x,min(edge.y,edge.z))/.8);
+    density*=exp(-_Step*6*(1-boundary)*(1-boundary));
+    _Write[id]=max(0,density);
+    // Per-channel budget from the actual previous field, not the whole parcel.
+    // Numerical loss and escaped material are never filled back in.
+    Expected[local]=_Read.Load(int4(id,0))*_Retention+added;
+    Actual[local]=max(0,density);
+    GroupMemoryBarrierWithGroupSync();
+    for(uint stride=32;stride>0;stride>>=1)
+    {
+        if(local<stride) { Expected[local]+=Expected[local+stride]; Actual[local]+=Actual[local+stride]; }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if(local==0)
+    {
+        uint n=_Resolution/4, index=((group.z*n+group.y)*n+group.x)*2;
+        _MassParts[index]=Expected[0]; _MassParts[index+1]=Actual[0];
+    }
+}
+[numthreads(256,1,1)]
+void LimitMass(uint local:SV_GroupIndex)
+{
+    float4 expected=0,actual=0;
+    for(uint i=local;i<(uint)_GroupCount;i+=256) { expected+=_MassParts[i*2]; actual+=_MassParts[i*2+1]; }
+    Expected[local]=expected; Actual[local]=actual;
+    GroupMemoryBarrierWithGroupSync();
+    for(uint stride=128;stride>0;stride>>=1)
+    {
+        if(local<stride) { Expected[local]+=Expected[local+stride]; Actual[local]+=Actual[local+stride]; }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if(local==0) _MassScale[0]=min(1,Expected[0]/max(Actual[0],1e-20));
+}
+[numthreads(4,4,4)]
+void Normalize(uint3 id:SV_DispatchThreadID) { _Write[id]*=_MassScale[0]; }

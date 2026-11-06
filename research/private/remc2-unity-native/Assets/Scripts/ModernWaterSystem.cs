@@ -28,12 +28,16 @@ namespace MagicCarpet.Native
         private float time, bornAt = -1, lastObservationTime, nextShoreSpray, lastReviewTime;
         private Vector3 reviewCenter, lastReviewWake, viewPosition;
         private int lastShot = -1;
+        private Vector3 previousReviewFlight;
+        private bool reviewFlying;
+        private readonly bool steamReview;
         private bool disposed;
 
         internal ModernWaterSystem(Transform parent, ModernTerrainMesh terrain)
         {
             this.terrain = terrain;
             var args = Environment.GetCommandLineArgs();
+            steamReview = args.Contains("-mc-steam-review");
             review = args.Contains("-mc-water-review");
             var delay = Array.IndexOf(args, "-mc-water-review-start-delay");
             if (delay >= 0 && delay + 1 < args.Length)
@@ -75,6 +79,7 @@ namespace MagicCarpet.Native
                 liveFlyers.Add(actor.entityIndex);
                 if (lastFlyer.TryGetValue(actor.entityIndex, out var previous))
                 {
+                    effects.DisturbClouds(previous, position, dt);
                     var altitude = Mathf.Max(0, position.y);
                     var influence = Mathf.Exp(-altitude * .28f);
                     if (influence > .02f && terrain.IsWater(position.x, position.z))
@@ -141,7 +146,7 @@ namespace MagicCarpet.Native
             Shader.SetGlobalTexture("_WaterDetailNormal", spectrum.DetailNormalFoam);
             Shader.SetGlobalTexture("_WaterLocal", interactions.State);
             Shader.SetGlobalVector("_WaterLocalRect", interactions.WorldRect);
-            effects.Update(wind.Velocity);
+            effects.Update(wind.Velocity, camera.transform.position);
             // A bounded near-coast spray sample, masked by exposure and incoming phase.
             if (time >= nextShoreSpray)
             {
@@ -158,6 +163,18 @@ namespace MagicCarpet.Native
 
         private Vector3 FindReviewWater()
         {
+            if (steamReview)
+            {
+                var center = new Vector3(124, 0, 842); var bestPoint = center; var bestScore = float.NegativeInfinity;
+                for (var z = 740; z <= 940; z += 4) for (var x = 20; x <= 220; x += 4)
+                {
+                    if (!terrain.IsWater(x,z)) continue;
+                    var p = new Vector3(x,0,z);
+                    var candidate = Mathf.Min(40,coast.SampleDistance(x,z)) - Vector3.Distance(p,center)*.08f;
+                    if (candidate > bestScore) { bestScore = candidate; bestPoint = p; }
+                }
+                return bestPoint;
+            }
             // Actual source lake near the established NightSpire review camera.
             var best = new Vector3(125, 0, 842); var score = float.NegativeInfinity;
             for (var z = 814; z <= 870; z += 2)
@@ -173,7 +190,8 @@ namespace MagicCarpet.Native
 
         private void Review(Camera camera, float elapsed, float dt)
         {
-            wind.SetTarget(elapsed < 8 ? new Vector2(5, 2) : new Vector2(13, -6));
+            if (steamReview) { ReviewSteam(camera, elapsed, dt); return; }
+            // Ordinary water review retains autonomous weather.
             var angle = (-145f + Mathf.Min(elapsed, 28) * 1.3f) * Mathf.Deg2Rad;
             var approach = Mathf.SmoothStep(0, 1, Mathf.InverseLerp(14, 22, elapsed));
             var radius = Mathf.Lerp(25, 15, approach);
@@ -208,11 +226,53 @@ namespace MagicCarpet.Native
             lastReviewTime = elapsed;
         }
 
+        private void ReviewSteam(Camera camera, float elapsed, float dt)
+        {
+            // Explicit controlled study; ordinary flight retains autonomous weather.
+            wind.SetTarget(new Vector2(.65f + .2f*Mathf.Sin(elapsed*.23f), .25f + .15f*Mathf.Cos(elapsed*.31f)));
+            var shot = elapsed >= 4 ? 1 : elapsed >= 2 ? 0 : -1;
+            if (shot >= 0 && shot != lastShot)
+            {
+                lastShot = shot;
+                var impact = reviewCenter + new Vector3(shot*.8f,.2f,0);
+                interactions.AddImpulse(impact,3,6);
+                effects.Quench(impact,wind.Velocity,ModernFireballEnergy.Standard);
+                Debug.Log($"MC_STEAM_REVIEW_QUENCH staged=True time={elapsed:F2} position={impact} joules=2000000");
+            }
+            var center = effects.LatestCloudCenter ?? (reviewCenter + Vector3.up*1.2f);
+            var direction = new Vector3(.8f,0,.6f);
+            Vector3 position, target;
+            if (elapsed >= 11 && elapsed < 16)
+            {
+                position = center + direction*Mathf.Lerp(-7,7,Mathf.SmoothStep(0,1,(elapsed-11)/5));
+                target = position + direction;
+                if (reviewFlying) effects.DisturbClouds(previousReviewFlight,position,dt);
+                previousReviewFlight=position; reviewFlying=true;
+            }
+            else
+            {
+                reviewFlying=false;
+                var angle=(elapsed < 11 ? -145+elapsed*4 : 37+(elapsed-16)*8)*Mathf.Deg2Rad;
+                var distance=elapsed < 11?8f:6f;
+                position=center+new Vector3(Mathf.Cos(angle)*distance,1.5f,Mathf.Sin(angle)*distance);
+                target=center;
+            }
+            position.y=Mathf.Max(position.y,terrain.SampleHeight(position.x,position.z)+.6f);
+            camera.transform.SetPositionAndRotation(position,Quaternion.LookRotation(target-position));
+            lastReviewTime=elapsed;
+        }
+
         internal void DrawReviewLabel()
         {
             if (!review) return;
             var style = new GUIStyle(GUI.skin.label) { fontSize = 16 };
             style.normal.textColor = new Color(.8f, .9f, 1);
+            if (steamReview)
+            {
+                GUI.Label(new Rect(25,20,1300,32), "STEAM STUDY  /  two staged 2 MJ quenches  /  3D density  /  fly-through and persistent wake", style);
+                GUI.Label(new Rect(25,45,1300,32), $"CONTROLLED VARIABLE BREEZE {wind.Velocity.magnitude:F1} m/s  /  12 C, 75% RH  /  moonlit condensation", style);
+                return;
+            }
             GUI.Label(new Rect(25, 20, 900, 32), "WATER STUDY  /  scripted wind, downwash and quench effects  /  live NightSpire terrain", style);
         }
 

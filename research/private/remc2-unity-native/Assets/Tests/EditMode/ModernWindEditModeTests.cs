@@ -7,6 +7,80 @@ namespace MagicCarpet.Native.Tests
     public sealed class ModernWindEditModeTests
     {
         [Test]
+        public void DefaultWeatherVariesSpeedAndDirectionContinuouslyWithoutAnOverride()
+        {
+            var wind = new ModernWind();
+            Assert.That(wind.WeatherEnabled, Is.True);
+            var previous = wind.Velocity;
+            var minimumSpeed = float.PositiveInfinity; var maximumSpeed = 0f;
+            var minimumAngle = float.PositiveInfinity; var maximumAngle = float.NegativeInfinity;
+            for (var frame = 1; frame <= 3600; frame++)
+            {
+                wind.Update(1f / 60, frame / 60f);
+                Assert.That(Vector2.Distance(previous, wind.Velocity), Is.LessThan(.03f), "no frame-to-frame gust jump");
+                var speed = wind.Velocity.magnitude;
+                var angle = Mathf.Atan2(wind.Velocity.y, wind.Velocity.x) * Mathf.Rad2Deg;
+                minimumSpeed = Mathf.Min(minimumSpeed, speed); maximumSpeed = Mathf.Max(maximumSpeed, speed);
+                minimumAngle = Mathf.Min(minimumAngle, angle); maximumAngle = Mathf.Max(maximumAngle, angle);
+                previous = wind.Velocity;
+            }
+            Assert.That(maximumSpeed - minimumSpeed, Is.GreaterThan(4f), "weather must visibly change speed");
+            Assert.That(maximumAngle - minimumAngle, Is.GreaterThan(35f), "weather must change direction as well as amplitude");
+            Assert.That(minimumSpeed, Is.GreaterThan(1f));
+            Assert.That(maximumSpeed, Is.LessThan(15f));
+        }
+
+        [Test]
+        public void AutonomousWeatherAndAdvectionAgreeAcrossFramePartitionsAndClockOrigins()
+        {
+            var coarse = new ModernWind();
+            var fine = new ModernWind();
+            coarse.Update(64, 64);
+            // Binary-exact dt isolates integration from floating-point sums. The time
+            // argument's origin is metadata; cosmetic elapsed dt owns weather phase.
+            for (var frame = 1; frame <= 4096; frame++) fine.Update(1f / 64, 10000 + frame / 64f);
+            Assert.That(Vector2.Distance(coarse.Velocity, fine.Velocity), Is.LessThan(.00001f));
+            Assert.That(Vector2.Distance(coarse.Offset, fine.Offset), Is.LessThan(.0001f));
+            Assert.That(Vector2.Distance(coarse.CloudOffset, fine.CloudOffset), Is.LessThan(.0001f));
+        }
+
+        [Test]
+        public void ExplicitOverrideAndWeatherResumptionPreserveVelocityAndAdvectionContinuity()
+        {
+            var wind = new ModernWind();
+            wind.Update(7, 7);
+            var velocity = wind.Velocity; var offset = wind.CloudOffset;
+            wind.SetTarget(new Vector2(-4, 7));
+            Assert.That(wind.WeatherEnabled, Is.False);
+            Assert.That(wind.Velocity, Is.EqualTo(velocity));
+            Assert.That(wind.CloudOffset, Is.EqualTo(offset));
+            wind.Update(80, 87);
+            Assert.That(Vector2.Distance(wind.Velocity, new Vector2(-4, 7)), Is.LessThan(.0001f));
+            velocity = wind.Velocity; offset = wind.CloudOffset;
+            wind.ResumeWeather();
+            Assert.That(wind.WeatherEnabled, Is.True);
+            Assert.That(wind.Velocity, Is.EqualTo(velocity));
+            Assert.That(wind.CloudOffset, Is.EqualTo(offset));
+            wind.Update(.001f, 87.001f);
+            Assert.That(Vector2.Distance(wind.Velocity, velocity), Is.LessThan(.01f));
+            Assert.That(Vector2.Distance(wind.CloudOffset, offset), Is.LessThan(.01f));
+        }
+
+        [Test]
+        public void ResumedWeatherIntegralIsIndependentOfFramePartition()
+        {
+            var coarse = new ModernWind(new Vector2(-9, 3));
+            var fine = new ModernWind(new Vector2(-9, 3));
+            Assert.That(coarse.WeatherEnabled, Is.False);
+            coarse.Update(5, 5); fine.Update(5, 5);
+            coarse.ResumeWeather(); fine.ResumeWeather();
+            coarse.Update(16, 21);
+            for (var frame = 1; frame <= 1024; frame++) fine.Update(1f / 64, 5 + frame / 64f);
+            Assert.That(Vector2.Distance(coarse.Velocity, fine.Velocity), Is.LessThan(.00001f));
+            Assert.That(Vector2.Distance(coarse.CloudOffset, fine.CloudOffset), Is.LessThan(.0001f));
+        }
+
+        [Test]
         public void WindChangesContinuouslyAndIntegratedOffsetIsFrameRateIndependent()
         {
             var single = new ModernWind(new Vector2(8, 3));

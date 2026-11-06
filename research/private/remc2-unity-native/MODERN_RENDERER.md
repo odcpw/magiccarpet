@@ -816,10 +816,109 @@ Root self-verified the installed prototype and video; the exact hot-contact
 payload, nonlinear run-up, curling breakers, independent water geometry LOD,
 all-view motion checks and foreground performance remain unfinished.
 
-## Variable weather and night lighting follow-up
+## Density-volume steam prototype (2026-11-06)
 
-**Uncommitted visual experiment; rejected, not delivered.** The following records
-implemented draft behavior. The 65s `night-weather-02` capture of installed
+`ModernSteamVolume` replaces the condensation cards with persistent 3D density.
+Four plume channels share a 12m region, one renderer and an analytically authored
+wind/buoyancy/eddy field. Carpet sweeps create decaying wake primitives that keep
+transporting density after the actor leaves. There is no velocity grid, pressure
+solver or gameplay force. The ordinary player/rival observation path feeds the
+same wake entry point as the explicitly staged review flight.
+
+The default is 48³ cells; `-mc-steam-resolution 32|48|64` selects the comparison
+sizes. Three RGBAFloat volumes consume about 5.06MiB at 48³, plus about 54KiB of
+reduction storage. Fixed 30Hz updates perform limited MacCormack transport,
+source/evaporation updates and a GPU mass ceiling independently per plume.
+The ceiling uses actual remaining density plus new condensate and only scales
+excess down. It never restores escaped mass to the box. The finite region has
+an absorbing margin and matching soft render boundary. Source tracking follows
+the same carrier field; rendering across the 1024m world seam shifts only the
+display copy, preserving density history. Simulation advances once per update,
+not once per camera/reflection.
+
+Rendering integrates extinction and moon/ambient scattering through the volume,
+including a bounded four-sample light attenuation estimate. Steam has no emission.
+Opaque depth bounds the march; the broad water surface separately masks submerged
+density. Rays stop at the volume boundary or sufficiently low transmission.
+There is no temporal reconstruction. Small water-interaction displacement,
+general terrain/actor fluid collision, detailed microphysics and distant-volume
+handoff remain limits. The region holds four plumes; capacity replacement is
+bounded presentation eviction, not conservation of every emitted cloud globally.
+
+The first readback test accidentally measured only one z slice. It was corrected
+to require/read every slice before computing mass. A later 28s test caught real
+MacCormack mass growth (0.565kg at 7s versus a 0.189kg budget); the GPU ceiling
+fixes this without weakening the test. The retained final sequence is 0.189kg,
+0.128kg, 0.070kg and 0.033kg at 7/14/21/28s. Falling below the parcel total reflects
+finite-region/transport losses, not a claim of an exact conservative CFD solver.
+
+The clean steam candidate passes all 68 applicable Modern EditMode tests,
+including real GPU readback of mass, overlapping source channels, persistent
+wake differences, reset and world-seam display placement. The 76-test draft
+run also passed before separating eight tests belonging to the paused night/
+puff experiment; no acceptance test was deleted from canonical source. UBS
+scanned the ten staged C# files with zero critical/warning findings; shader
+validation comes from Unity compilation and execution, not UBS support.
+
+The tested player is built in the existing isolated Modern project, with frozen
+native SHA `a98a8317e89a0cf5cebffb6e05091ecf78970394458b766647aa0234e29f3d09`.
+All 21 changed Unity inputs match the staged candidate. It does not replace
+the separate Original campaign installation. Evidence, test XML, source hashes,
+build commands and diagnostics are `../generated/steam-volume-20261106/`.
+The actual desktop remains locked. Review captures are private-display evidence;
+they do not prove foreground performance, VR or the gameplay Fireball contact ABI.
+
+Use the existing capture tool with a baseline command containing both
+`-mc-water-review` and `-mc-steam-review`. The labelled study stages two 2MJ
+quenches over verified open water, uses a controlled variable breeze, enters the
+cloud, then orbits its wake. Ordinary play retains autonomous variable weather.
+`-mc-steam-off` disables density simulation/drawing while retaining parcel motion
+and the review camera for matched cost comparisons. Frame timing statistics are
+now enabled so the existing metrics consumer can request CPU/GPU frame timings;
+the driver may still return no GPU samples, which must remain an explicit limit.
+
+Final candidate is `build-j8d3tkao`; `final-build.log` records its installation.
+No-encoder private-Wayland measurements use the same scripted fly-through,
+1600×900, v-sync disabled, 13s warmup and 120 samples per run:
+
+| Mode | Mean ms | Median ms | p95 ms |
+| --- | ---: | ---: | ---: |
+| 48³ steam, run 1 | 19.44 | 23.78 | 28.41 |
+| Effects off, run 1 | 18.87 | 23.40 | 26.30 |
+| 48³ steam, run 2 | 18.37 | 23.17 | 26.97 |
+| 64³ steam comparison | 19.15 | 23.31 | 26.79 |
+| Effects off, run 2 | 18.58 | 23.34 | 26.17 |
+
+The two 48³ means correspond to approximately 51–54fps, with materially slower
+p95 frames. This does not establish steady 60fps or a speedup. The observed
+increment is smaller than run variation. Frame timing support reports enabled
+and CPU counters work, but no GPU-frame samples return on this driver/display
+path, so the proposed 2ms isolated GPU budget remains unverified. GPU clock
+telemetry and commands are retained beside the logs. One effects-off attempt
+timed out before scene startup and is excluded; its owned remaining private
+session processes were stopped. Earlier Xvfb timing and pre-fix builds are also
+excluded from this comparison. Summary: `performance-summary.json` in the same
+evidence directory.
+
+Final video: `/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/steam-volume-04/water-review.mp4`
+(24s, 720 frames, 1600×900). Root self-reviewed the contact sheet, full-resolution
+7s frame and 16–21s wake sequence. The result shows connected curls, a continuous
+interior during entry and lingering dispersal after the pass. The obvious
+billboard disks and hard volume edge from earlier candidates are absent in
+these inspected views. Fine-scale wisps remain soft; this is a working bounded
+prototype, not completion of the wider environment/lighting art-quality target.
+The capture receipt confirms all its owned processes stopped. Only the steam,
+wind and thermodynamic prerequisite changes are landed; the rejected night/
+torch work stays uncommitted in canonical source and was excluded from this
+qualified player's Modern inputs.
+
+## Thermodynamic context and unfinished night-lighting experiment
+
+**Night lighting remains an uncommitted experiment.** The following records
+the earlier combined draft; the density-volume delivery above supersedes its
+puff representation. Wind and thermodynamic prerequisites are part of the steam
+candidate, while the separate night-lighting/shader drafts are preserved. The
+65s `night-weather-02` capture of installed
 candidate `build-8wjst540` showed cotton-ball steam, triangular luminous flames
 and excessive horizon glow from two staged torches. Oliver rejected the result
 and requested research. The replacement recommendation is recorded in
