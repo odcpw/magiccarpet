@@ -1035,6 +1035,111 @@ fn scheduled_authored_wind_publishes_old_and_new_map_heads() {
 }
 
 #[test]
+fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
+    use crate::native_world::{Level2DynamicArenaKind, Mc2DispatchEvent};
+
+    let mut session = campaign();
+    let switch = session.level2_imported_switch_roots.iter()
+        .find(|root| root.authored_index == 121 && root.target_group == 15)
+        .copied().expect("real group15 Wind producer");
+    let player = session.state.entity_index;
+    // Declared player-only approach to the actual imported proximity switch.
+    session.set_level2_entity_position(player, switch.position).unwrap();
+    let mut activated = false;
+    for _ in 0..16 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        if session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 15, authored_indices, .. }
+                if *source_slot == switch.source_slot && authored_indices.as_ref() == [122])) {
+            activated = true;
+            break;
+        }
+    }
+    assert!(activated, "ordinary switch121 must publish authored group15");
+    let wind = *session.economy().authored_model22().iter()
+        .find(|wind| wind.authored_index == 122).expect("actual group15 Wind122");
+    assert_eq!((wind.model, wind.action), (22, 22));
+    let root = session.source_arena().handle(wind.source_entity_index).unwrap();
+    let children: Vec<_> = session.economy().model22_spawned_children().iter()
+        .filter(|child| child.active && child.parent_entity_index == root.source_slot)
+        .map(|child| session.source_arena().handle(child.source_entity_index).unwrap()).collect();
+    assert_eq!(children.len(), 11, "ordinary Wind constructor publishes all linked children");
+    assert!(wind.life > 2, "the real authored lifetime must allow the encounter");
+
+    // Approach once at the live Wind axis. All actor and Wind state remains source-owned.
+    let mut approach = wind.position;
+    approach.z = session.canonical_terrain().ground_height(approach).wrapping_add(1_000);
+    session.set_level2_entity_position(player, approach).unwrap();
+    assert!(root.source_slot > player, "the player visit precedes this Wind source visit");
+    let player_steps = session.step_outer_turn(PlayerCommand::default(), 0);
+    assert_eq!(player_steps.len(), 1, "speed index0 runs one actual player source visit");
+    assert!(session.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::DynamicArena { source_slot, kind: Level2DynamicArenaKind::AuthoredModel22, .. }
+            if *source_slot == root.source_slot)), "actual Wind callback runs");
+    let live = &session.session.state.live;
+    let flags = live.economy.entities[usize::from(player)].control_flags;
+    let after_wind = live.economy.authored_model22().iter()
+        .find(|row| row.source_entity_index == root.source_slot).unwrap();
+    assert_ne!((live.core.state.position.x, live.core.state.position.y),
+        (player_steps[0].committed.x, player_steps[0].committed.y),
+        "the later Wind callback changes horizontal player position after ordinary flight");
+    assert_eq!((live.core.state.position.x, live.core.state.position.y),
+        (after_wind.axis_position.x, after_wind.axis_position.y),
+        "the actual player lands at the current Wind axis through sub33340's inner band");
+    assert_ne!(flags & 0x1000_0000, 0, "Wind sets its actual airborne flag");
+    assert_eq!(live.economy.entities[usize::from(player)].position, live.core.state.position);
+    assert_eq!(live.shared_spells.player_entity().position, live.core.state.position);
+
+    // Retreat while the unmodified authored lifetime advances; return once
+    // near its natural end so its real cleanup sees the same player carrier.
+    let mut away = live.core.state.position;
+    away.x = away.x.wrapping_add(0x8000);
+    session.set_level2_entity_position(player, away).unwrap();
+    let budget = usize::try_from(wind.life).unwrap() + 16;
+    let mut returned = false;
+    let mut hidden = false;
+    let mut reclaimed = false;
+    let mut reaffected_before_expiry = false;
+    for _ in 0..budget {
+        let current = session.economy().authored_model22().iter()
+            .find(|row| row.source_entity_index == root.source_slot).copied();
+        if let Some(current) = current && current.life <= 2 && !returned {
+            let mut near = current.position;
+            near.z = session.canonical_terrain().ground_height(near).wrapping_add(1_000);
+            session.set_level2_entity_position(player, near).unwrap();
+            returned = true;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        let arena = session.source_arena();
+        if returned && arena.entities[usize::from(player)].control_flags & 0x1000_0000 != 0 {
+            reaffected_before_expiry = true;
+        }
+        if arena.resolve(root).is_none() {
+            assert!(hidden, "the original Wind must hide before following-boundary reclaim");
+            assert!(children.iter().all(|child| arena.resolve(*child).is_none()),
+                "the original linked generations are reclaimed");
+            reclaimed = true;
+            break;
+        }
+        if let Some(row) = session.economy().authored_model22().iter()
+            .find(|row| row.source_entity_index == root.source_slot)
+            && row.control_flags & 0x400 != 0 {
+            assert!(returned);
+            assert!(reaffected_before_expiry, "the actual player carried a Wind flag before cleanup");
+            assert_eq!(arena.handle(root.source_slot), Some(root));
+            let player_flags = arena.entities[usize::from(player)].control_flags;
+            assert_eq!(player_flags & 0x1000_0800, 0, "Wind expiry clears its actual player flags");
+            assert!(session.field_source_rows().iter().any(|source|
+                source.index == root.source_slot && source.control_flags & 0x400 != 0));
+            hidden = true;
+        }
+    }
+    assert!(returned && hidden && reclaimed, "authored Wind must naturally expire and reclaim");
+}
+
+#[test]
 fn source_field_constructors_keep_horizontal_bounds_separate_from_height() {
     let mut session = campaign();
     let wind = session.allocate_level2_authored_model22(110).unwrap();

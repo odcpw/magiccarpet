@@ -12,14 +12,13 @@ use crate::{FlightWorld, Position, angle_distance, heading_for_positions};
 
 pub(crate) mod mc2;
 mod stage;
+use self::mc2::{ATTACK_SOUND, DESCRIPTOR, PARTICLE, STRIKE_DESCRIPTOR};
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) const SOURCE_CLASS: u8 = 5;
 pub(crate) const SOURCE_MODEL: u8 = 17;
-pub(crate) const DESCRIPTOR: u16 = 85;
-pub(crate) const STRIKE_DESCRIPTOR: u16 = 87;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Creature17State {
@@ -103,7 +102,7 @@ pub(crate) fn construct(
         maximum_speed: RULES.maximum_speed,
         max_life: RULES.max_life,
         life: RULES.max_life,
-        mana: RULES.initial_mana,
+        mana: RULES.max_life >> 1,
         max_mana: 0,
         constructor_subspell: RULES.constructor_subspell,
         pending_damage: 0,
@@ -121,7 +120,7 @@ pub(crate) fn construct(
         attack_phase: 0,
         descriptor: DESCRIPTOR,
         timer: 0,
-        visual: 285,
+        visual: PARTICLE,
         animation_frame: 0,
         animation_limit: 0,
         half_width: RULES.collision_half_width,
@@ -146,6 +145,8 @@ pub(crate) struct Target {
     pub flags: u32,
     pub position: Position,
     pub yaw: i16,
+    pub roll: i16,
+    pub half_width: i16,
     pub speed: i16,
     pub maximum_speed: i16,
     pub previous: u16,
@@ -177,12 +178,17 @@ pub(crate) struct Creature17Context<'a> {
     pub targets: &'a [Target],
     pub class3: &'a [u16],
     pub model17: &'a [u16],
+    pub models: Option<&'a [Vec<u16>; 29]>,
 }
 
 impl Creature17Context<'_> {
+    fn source_address(&self, slot: u16) -> Option<Target> {
+        self.targets.iter().find(|row| row.slot == slot).copied()
+    }
+
     fn target(&self, slot: u16) -> Option<Target> {
         (slot != 0)
-            .then(|| self.targets.iter().find(|row| row.slot == slot).copied())
+            .then(|| self.source_address(slot))
             .flatten()
     }
 }
@@ -437,7 +443,7 @@ fn pursue(
     ctx: &Creature17Context<'_>,
     effects: &mut Creature17Effects,
 ) {
-    effects.sound = Some(58);
+    effects.sound = Some(ATTACK_SOUND as u8);
     let hit = consume(actor, ctx);
     if hit == 2 {
         actor.action = 140;
@@ -557,17 +563,25 @@ fn step_linked(
     let hit = consume(actor, ctx);
     if hit != 0 {
         if let Some(peer) = peer {
-            effects.linked_updates.push(LinkedUpdate {
-                slot: peer.slot,
-                action: 138,
-                target: actor.attacker,
-                linked_peer: 0,
-            });
+            if peer.slot == actor.slot {
+                actor.target = actor.attacker;
+            } else {
+                effects.linked_updates.push(LinkedUpdate {
+                    slot: peer.slot,
+                    action: 138,
+                    target: actor.attacker,
+                    linked_peer: 0,
+                });
+            }
         }
         actor.linked_peer = 0;
-        actor.target = actor.attacker;
-        actor.action = if hit == 2 { 140 } else { 138 };
-        settle(actor, ctx.terrain);
+        if hit == 2 {
+            actor.action = 140;
+        } else {
+            actor.target = actor.attacker;
+            actor.action = 138;
+            settle(actor, ctx.terrain);
+        }
         return;
     }
     move_actor(actor, ctx.terrain, effects);
@@ -580,8 +594,14 @@ fn step_linked(
         return;
     }
     match peer.action {
-        136 | 137 => {
-            follow_heading(actor, peer.position);
+        136 | 137 | 139 => {
+            if peer.action == 139 {
+                actor.linked_peer = peer.linked_peer;
+            }
+            // The linked address is read even when it names the sentinel or
+            // a retained dead/hidden packet; it is not a fresh target check.
+            let Some(next_peer) = ctx.source_address(actor.linked_peer) else { return; };
+            follow_heading(actor, next_peer.position);
             if let Some(close_peer) = ctx
                 .model17
                 .iter()
@@ -589,28 +609,18 @@ fn step_linked(
                 .find(|other| {
                     other.slot != actor.slot
                         && other.source_id != actor.source_id
-                        && actor.position.x.abs_diff(other.position.x) < 256
-                        && actor.position.y.abs_diff(other.position.y) < 256
+                        && (i32::from(actor.position.x as i16) - i32::from(other.position.x as i16)).abs() < 256
+                        && (i32::from(actor.position.y as i16) - i32::from(other.position.y as i16)).abs() < 256
                 })
             {
                 actor.roll = heading_for_positions(close_peer.position, actor.position) as i16;
             }
-            actor.speed = peer.maximum_speed.saturating_add(peer.speed);
+            actor.speed = peer.maximum_speed.wrapping_add(peer.speed);
         }
         138 => {
             actor.target = peer.target;
             actor.linked_peer = 0;
             actor.action = 138;
-        }
-        139 => {
-            actor.linked_peer = peer.linked_peer;
-            if let Some(next_peer) = ctx.target(actor.linked_peer).filter(|next| next.alive()) {
-                follow_heading(actor, next_peer.position);
-                actor.speed = peer.maximum_speed.saturating_add(peer.speed);
-            } else {
-                actor.linked_peer = 0;
-                actor.action = 137;
-            }
         }
         _ => {
             actor.linked_peer = 0;
@@ -694,6 +704,13 @@ pub(crate) fn step(
             .target(actor.target)
             .is_some_and(|target| target.class == 3 && matches!(target.model, 0 | 1))
         {
+            actor.target = 0;
+        }
+        actor.attack_phase = 0;
+    }
+    if callback_action == 139 && actor.action == 138 {
+        // sub_24D40 uses the source condition `(class != 3 && model != 1)`.
+        if !ctx.target(actor.target).is_some_and(|target| target.class == 3 || target.model == 1) {
             actor.target = 0;
         }
         actor.attack_phase = 0;

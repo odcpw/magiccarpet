@@ -80,19 +80,19 @@ fn alliance_impact_drives_model17_follow_selected_attack_and_expiry() {
     assert_eq!(crate::native_world::alliance_spell::step_impact(&mut arena, impact, &[actor]).unwrap().affected_entities, vec![actor]);
     assert_eq!((arena.entities[usize::from(actor)].action, arena.entities[usize::from(actor)].record[77]), (143, 14));
     let families = model_slots(&arena);
-    let outcome = mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families).unwrap();
+    let outcome = mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families, Default::default()).unwrap();
     assert_eq!(outcome.feedback, vec![(parent, 24)]);
     let row = &arena.entities[usize::from(actor)];
     assert_eq!((row.action, u16::from_le_bytes([row.record[154], row.record[155]])), (138, enemy));
     let before = u16::from_le_bytes([row.record[50], row.record[51]]);
-    mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families).unwrap();
+    mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families, Default::default()).unwrap();
     let row = &arena.entities[usize::from(actor)];
     assert_eq!(u16::from_le_bytes([row.record[50], row.record[51]]), before - 1);
     assert_eq!(row.action, 138, "a selected class5 enemy remains a valid target");
 
     let row = &mut arena.entities[usize::from(actor)];
     row.set_source_action(143); put(row, 50, 1);
-    mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families).unwrap();
+    mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles, actor, &[parent], &families, Default::default()).unwrap();
     let row = &arena.entities[usize::from(actor)];
     assert_eq!((row.record[77], row.record[76], u16::from_le_bytes([row.record[44], row.record[45]])), (10, 3, 0));
     assert!(!row.drawing_disabled());
@@ -120,7 +120,7 @@ fn constructor_binds_source17_properties_and_particle285() {
     assert_eq!((row.class, row.model, row.action), (5, SOURCE_MODEL, 137));
     assert_eq!(
         (row.max_life, row.life, row.mana),
-        (RULES.max_life, RULES.max_life, RULES.initial_mana)
+        (RULES.max_life, RULES.max_life, RULES.max_life >> 1)
     );
     assert_eq!(
         (
@@ -163,6 +163,7 @@ fn unsupported_action142_does_not_claim_a_callback() {
         targets: &[],
         class3: &[],
         model17: &[],
+        models: None,
     };
 
     assert!(step(&mut actor, &context).is_none());
@@ -224,6 +225,7 @@ fn ordinary_acquisition_uses_frozen_class3_order_and_ignores_nearer_scenery() {
         targets: &targets,
         class3: &classes,
         model17: &families,
+        models: None,
     };
 
     step(&mut actor, &context).expect("ordinary acquisition callback is supported");
@@ -247,6 +249,7 @@ fn ordinary_acquisition_uses_frozen_class3_order_and_ignores_nearer_scenery() {
         targets: &targets[..1],
         class3: &[],
         model17: &families,
+        models: None,
     };
     step(&mut scenery_only, &scenery_context).expect("scenery-only callback is supported");
     assert_eq!(scenery_only.action, 137);
@@ -300,6 +303,7 @@ fn ordinary_136_and_137_wrappers_reset_attack_phase_and_reject_nonplayer_targets
         targets: &stationary_targets,
         class3: &[],
         model17: &[],
+        models: None,
     };
     step(&mut stationary, &stationary_context).expect("stationary callback is supported");
     assert_eq!(stationary.action, 138);
@@ -322,6 +326,7 @@ fn ordinary_136_and_137_wrappers_reset_attack_phase_and_reject_nonplayer_targets
         targets: &roaming_targets,
         class3: &classes,
         model17: &[],
+        models: None,
     };
     step(&mut roaming, &roaming_context).expect("roaming callback is supported");
     assert_eq!(roaming.action, 138);
@@ -364,6 +369,7 @@ fn peer_cones_differ_for_stationary_and_roaming_and_zero_proximity_skips_both_sc
         targets: &targets,
         class3: &[],
         model17: &peers,
+        models: None,
     };
 
     step(&mut stationary, &context).expect("stationary peer callback is supported");
@@ -466,6 +472,7 @@ fn attack_stance_and_recovery_follow_each_source_visit() {
                 targets: &[target],
                 class3: &[10],
                 model17: &[],
+                models: None,
             },
         )
         .unwrap()
@@ -503,7 +510,7 @@ fn attack_stance_and_recovery_follow_each_source_visit() {
     let strike = visit(&mut actor, target);
     assert_eq!(
         strike.melee,
-        Some((10, i32::from(RULES.melee_damage), actor.source_id))
+        Some((10, i32::from(RULES.constructor_subspell), actor.source_id))
     );
     assert_eq!((actor.attack_phase, actor.timer), (3, 2));
     actor.attack_phase = 4;
@@ -563,6 +570,7 @@ fn configured_stage13_and16_preserve_countdown_target_damage_and_expiry_products
                 targets: &[parent, hostile],
                 class3: &[10, 11],
                 model17: &[],
+                models: None,
             },
         )
         .unwrap();
@@ -578,6 +586,7 @@ fn configured_stage13_and16_preserve_countdown_target_damage_and_expiry_products
                 targets: &[parent],
                 class3: &[10],
                 model17: &[],
+                models: None,
             },
         )
         .unwrap();
@@ -599,6 +608,7 @@ fn configured_stage13_and16_preserve_countdown_target_damage_and_expiry_products
                 targets: &[parent, hostile],
                 class3: &[10, 11],
                 model17: &[],
+                models: None,
             },
         )
         .unwrap();
@@ -633,6 +643,7 @@ fn configured_stage13_and16_preserve_countdown_target_damage_and_expiry_products
             slot,
             &classes,
             &families,
+            Default::default(),
         )
         .unwrap();
         assert!(live.economy.entities[usize::from(slot)].drawing_disabled());
@@ -703,6 +714,7 @@ fn summoned_fixed_addresses_read_retained_parent_target_and_current_reuse() {
         slot,
         &[],
         &families,
+        Default::default(),
     )
     .unwrap();
     let actor = &live.economy.entities[usize::from(slot)];
@@ -745,6 +757,7 @@ fn summoned_fixed_addresses_read_retained_parent_target_and_current_reuse() {
         slot,
         &[],
         &families,
+        Default::default(),
     )
     .unwrap();
     assert!(
@@ -760,6 +773,7 @@ fn summoned_fixed_addresses_read_retained_parent_target_and_current_reuse() {
         slot,
         &[],
         &families,
+        Default::default(),
     )
     .unwrap();
     assert!(
@@ -836,7 +850,7 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     let classes = class3_slots(arena);
     let families = model_slots(arena);
     let effects = mc2::step_row(
-        arena, runtime, terrain, &particles, actor_slot, &classes, &families,
+        arena, runtime, terrain, &particles, actor_slot, &classes, &families, Default::default(),
     )
     .expect("model17 attack callback succeeds");
     assert_eq!(effects.sound, Some(58));
@@ -923,16 +937,19 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
     assert!(!arena.entities[usize::from(projectile_slot)].active);
     assert!(!arena.entities[usize::from(impact)].active);
 
-    // Level 17 contains actual reset-imported model17 actors and their package
+    // Level 9 contains actual reset-imported model17 actors and their package
     // semantic bindings. Position and aim are controlled for this collision
     // check; the actor, attack, scheduler and player state are real carriers.
-    let level17 = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level17");
+    let level9 = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9"),
+        std::path::PathBuf::from,
+    );
     let mut scheduled = crate::campaign::CampaignSession::open(
-        level17,
-        crate::campaign::spec::CampaignSelection::ordinary(17).unwrap(),
+        level9,
+        crate::campaign::spec::CampaignSelection::ordinary(9).unwrap(),
     )
-    .expect("retained Level 17 campaign")
+    .expect("qualified Level 9 campaign")
     .simulation()
     .clone();
     let mut melee = scheduled.clone();
@@ -950,7 +967,7 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
             .entities
             .iter_mut()
             .find(|row| row.active && (row.class, row.model) == (5, SOURCE_MODEL))
-            .expect("retained Level 17 model17 actor");
+            .expect("retained Level 9 model17 actor");
         let position = Position {
             x: actor_x,
             y: target_position.y,
@@ -1206,7 +1223,7 @@ fn attack_creates_guided_model20_slows_target_then_reclaims_projectile_next_pass
         "ordinary source strike phases must remain distinct: {phases:?}"
     );
     assert!(
-        contact_receipts.contains(&(i32::from(RULES.melee_damage), false))
+        contact_receipts.contains(&(i32::from(RULES.constructor_subspell), false))
             && melee.canonical_player_life_for_test() < player_life,
         "the actual actor's350 contact is consumed by the live player: actor={actor}, \
          player={player}, receipts={contact_receipts:?}, life={player_life}->{current_life}",
@@ -1263,7 +1280,7 @@ fn prekill_inherits_owned_child_credit_without_running_death_early() {
     let families = model_slots(arena);
 
     let effects = mc2::step_row(
-        arena, runtime, terrain, &particles, root, &classes, &families,
+        arena, runtime, terrain, &particles, root, &classes, &families, Default::default(),
     )
     .expect("PreKill callback succeeds");
 
@@ -1280,16 +1297,19 @@ fn prekill_inherits_owned_child_credit_without_running_death_early() {
         "PreKill does not run the phase-gated death callback"
     );
 
-    // The retained Level 17 reset contains actual model17 roots. Drive a
+    // The qualified Level 9 reset contains actual model17 roots. Drive a
     // nonlethal and then lethal contact through their normal scheduler and
     // inspect the same class-5 list used by absence objectives.
-    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level17");
+    let package = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9"),
+        std::path::PathBuf::from,
+    );
     let mut scheduled = crate::campaign::CampaignSession::open(
         package,
-        crate::campaign::spec::CampaignSelection::ordinary(17).unwrap(),
+        crate::campaign::spec::CampaignSelection::ordinary(9).unwrap(),
     )
-    .expect("retained Level 17 campaign")
+    .expect("qualified Level 9 campaign")
     .simulation()
     .clone();
     let (victim, generation, player, initial_life) = {
@@ -1387,13 +1407,16 @@ fn prekill_inherits_owned_child_credit_without_running_death_early() {
     // Keep one real package root alive as the absence negative, then remove
     // the last root through the same source contact and scheduled callback.
     // This controls a bounded family lifecycle, not an earned mission result.
-    let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../generated/mc-bhq6-ordinary-20261024-b/level17");
+    let package = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9"),
+        std::path::PathBuf::from,
+    );
     let mut absence = crate::campaign::CampaignSession::open(
         package,
-        crate::campaign::spec::CampaignSelection::ordinary(17).unwrap(),
+        crate::campaign::spec::CampaignSelection::ordinary(9).unwrap(),
     )
-    .expect("retained Level 17 campaign")
+    .expect("qualified Level 9 campaign")
     .simulation()
     .clone();
     let survivor = {
@@ -1495,6 +1518,7 @@ fn action138_emits_sound_before_lethal_damage_redirects_to_prekill() {
         targets: &[],
         class3: &[],
         model17: &[],
+        models: None,
     };
 
     let effects = step(&mut actor, &context).expect("action138 is supported");
@@ -1505,4 +1529,483 @@ fn action138_emits_sound_before_lethal_damage_redirects_to_prekill() {
 
 fn put_word(row: &crate::native_world::EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
+}
+
+#[test]
+fn configured_stage_callbacks_keep_source_hit_tail_and_wander_order() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let mut runtime = simulation.runtime().clone();
+    let mut position = simulation.state.position;
+    position.z = terrain.ground_height(position);
+    let mut counter = 0;
+    let base = construct(41, 1, 1234, position, &mut counter);
+    let friend = Target { slot: 42, class: 5, model: SOURCE_MODEL, life: 1000,
+        position, ..Target::default() };
+    let player_position = Position { x: position.x.wrapping_add(100), ..position };
+    let player = Target { slot: 10, class: 3, model: 0, life: 1000,
+        position: player_position, ..Target::default() };
+    let followed = Target { slot: 43, class: 5, model: 1, life: -1,
+        position, target: player.slot, ..Target::default() };
+    runtime.stage_variables[1].flags = 0;
+    runtime.stage_variables[1].relation = crate::native_world::RuntimeRelation::LiveEntity(followed.slot);
+    let targets = [friend, player, followed];
+    let models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    let context = Creature17Context { terrain, runtime: &runtime, targets: &targets,
+        class3: &[player.slot], model17: &[], models: Some(&models) };
+    let mut point_hit = base;
+    point_hit.action = 143;
+    point_hit.route_mode = 1;
+    point_hit.pending_damage = 1;
+    point_hit.pending_attacker = friend.slot;
+    point_hit.target = 777;
+    step(&mut point_hit, &context).unwrap();
+    assert_eq!((point_hit.action, point_hit.route_mode, point_hit.target), (143, 1, 777),
+        "same-family point damage settles without retaliating");
+    assert_eq!(point_hit.life, RULES.max_life - 1);
+
+    let mut guard_hit = base;
+    guard_hit.action = 143;
+    guard_hit.route_mode = 2;
+    guard_hit.route_index = 1;
+    guard_hit.phase = RULES.source_scan_period;
+    guard_hit.yaw = heading_for_positions(position, player_position) as i16;
+    guard_hit.pending_damage = 1;
+    guard_hit.pending_attacker = friend.slot;
+    step(&mut guard_hit, &context).unwrap();
+    assert_eq!((guard_hit.action, guard_hit.route_mode, guard_hit.target), (138, 10, player.slot),
+        "guard scans the real class3 list after same-family damage");
+
+    for mode in 3..=5 {
+        let mut actor = base;
+        actor.action = 143;
+        actor.route_index = 1;
+        actor.route_mode = mode;
+        actor.phase = 8;
+        actor.life = 10;
+        actor.pending_damage = 20;
+        actor.pending_attacker = player.slot;
+        step(&mut actor, &context).unwrap();
+        assert!(actor.life < 0);
+        match mode {
+            3 => assert_eq!((actor.action, actor.target), (138, followed.slot)),
+            4 => assert_eq!((actor.action, actor.target), (138, player.slot)),
+            5 => assert_eq!(actor.action, 140),
+            _ => unreachable!(),
+        }
+    }
+    for mode in 6..=9 {
+        let mut actor = base;
+        actor.action = 143;
+        actor.route_index = 0;
+        actor.route_mode = mode;
+        actor.phase = 16;
+        actor.speed = 0;
+        actor.rng = 1234;
+        step(&mut actor, &context).unwrap();
+        assert_eq!((actor.action, actor.route_index, actor.route_mode), (143, 0, mode));
+        if actor.control_flags & 0x40000 == 0 {
+            assert_eq!(actor.rng, crate::native_world::level2_next_rng16(1234));
+        }
+    }
+    let mut expired = base;
+    expired.action = 143;
+    expired.route_mode = 10;
+    expired.target = 0;
+    step(&mut expired, &context).unwrap();
+    assert_eq!((expired.action, expired.target), (138, 0));
+
+    let parent = Target { slot: 77, life: 1, flags: 0x400, position: player_position,
+        yaw: 101, roll: 202, ..Target::default() };
+    let sentinel = Target { slot: 0, life: -1, position: Position { z: -7, ..position },
+        yaw: 303, roll: 404, ..Target::default() };
+    let parent_targets = [parent, sentinel];
+    let parent_context = Creature17Context { terrain, runtime: &runtime,
+        targets: &parent_targets, class3: &[], model17: &[], models: Some(&models) };
+    let mut follower = base;
+    follower.action = 143;
+    follower.route_mode = 12;
+    follower.parent = parent.slot;
+    let effects = step(&mut follower, &parent_context).unwrap();
+    assert!(!effects.route_hide, "hidden living parent remains a source12 parent");
+    assert_eq!((follower.position, follower.yaw, follower.roll), (parent.position, 101, 202));
+    follower.parent = 0;
+    let effects = step(&mut follower, &parent_context).unwrap();
+    assert!(effects.route_hide);
+    assert_eq!((follower.position.z, follower.yaw, follower.roll), (0, 303, 404),
+        "source12 still copies the current sentinel after hiding");
+}
+
+#[test]
+fn configured_linked_hit_preserves_source_parent_and_actor_order() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let runtime = simulation.runtime();
+    let mut counter = 0;
+    let base = construct(41, 1, 1234, simulation.state.position, &mut counter);
+    for self_link in [false, true] {
+        let linked = if self_link { base.slot } else { 42 };
+        let peer = Target { slot: linked, class: 5, model: SOURCE_MODEL, life: 1000,
+            position: base.position, ..Target::default() };
+        let attacker = Target { slot: 10, class: 3, model: 0, life: 1000,
+            position: base.position, ..Target::default() };
+        let targets = [peer, attacker];
+        let context = Creature17Context { terrain, runtime, targets: &targets,
+            class3: &[10], model17: &[], models: None };
+        let mut actor = base;
+        actor.action = 139;
+        actor.life = 10;
+        actor.linked_peer = linked;
+        actor.target = 777;
+        actor.pending_damage = 20;
+        actor.pending_attacker = attacker.slot;
+        let effects = step(&mut actor, &context).unwrap();
+        assert_eq!((actor.action, actor.linked_peer, actor.killer), (140, 0, attacker.slot));
+        assert_eq!(actor.target, if self_link { attacker.slot } else { 777 });
+        if !self_link {
+            assert_eq!(effects.linked_updates, vec![LinkedUpdate {
+                slot: linked, action: 138, target: attacker.slot, linked_peer: 0,
+            }]);
+        }
+    }
+}
+
+#[test]
+fn configured_linked_next_reads_sentinel_and_signed_peer_coordinates() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let mut counter = 0;
+    let mut position = simulation.state.position;
+    position.x = 32760;
+    position.z = terrain.ground_height(position);
+    let mut actor = construct(41, 1, 1234, position, &mut counter);
+    actor.action = 139;
+    actor.linked_peer = 42;
+    actor.phase = RULES.source_scan_period;
+    actor.speed = 0;
+    let parent = Target { slot: 42, source_id: 42, class: 5, model: SOURCE_MODEL,
+        life: 1000, action: 139, linked_peer: 0, maximum_speed: 30, speed: 7,
+        position: Position { x: 30000, ..position }, ..Target::default() };
+    let sentinel = Target { slot: 0, life: -1,
+        position: Position { y: position.y.wrapping_add(3000), ..position }, ..Target::default() };
+    // These are close as unsigned coordinates but far apart as signed i16.
+    let other = Target { slot: 43, source_id: 43, class: 5, model: SOURCE_MODEL,
+        life: -1, position: Position { x: 32775, ..position }, ..Target::default() };
+    let rows = [parent, sentinel, other];
+    let context = Creature17Context { terrain, runtime: simulation.runtime(), targets: &rows,
+        class3: &[], model17: &[43], models: None };
+    step(&mut actor, &context).unwrap();
+    assert_eq!((actor.action, actor.linked_peer, actor.speed), (139, 0, 37));
+    assert_eq!(actor.roll, heading_for_positions(actor.position, sentinel.position) as i16,
+        "source follows sentinel and rejects unsigned-only peer proximity");
+}
+
+#[test]
+fn configured_death_and_failed_allocation_keep_source_effect_order() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut base = session.source_arena().clone();
+    let mut terrain = session.canonical_terrain().clone();
+    let mut runtime = session.runtime().clone();
+    let particles = &session.session.definition.presentation.particles;
+    let player = session.state.entity_index;
+    let actor = add_creature(&mut base, &mut terrain, particles, session.state.position, 141);
+    let original = base.handle(actor).unwrap();
+    let source_id = actor.wrapping_add(1000);
+    {
+        let row = &mut base.entities[usize::from(actor)];
+        row.source_id = source_id;
+        put(row, 30, source_id);
+        row.set_mana(700);
+        row.record[152..154].copy_from_slice(&player.to_le_bytes());
+        row.set_phase(0);
+    }
+    let families = model_slots(&base);
+    let classes = class3_slots(&base);
+    let earlier_spheres: Vec<_> = base.economy.spheres().iter().map(|sphere| sphere.source_entity_index).collect();
+    let mut success = base.clone();
+    let mut success_terrain = terrain.clone();
+    mc2::step_row(&mut success, &mut runtime.clone(), &mut success_terrain, particles,
+        actor, &classes, &families, Default::default()).unwrap();
+    let (&burst, &(generation, parent)) = success.effects.death_burst_origins().iter()
+        .find(|(_, (_, parent))| *parent == actor).expect("actual source10/1 burst birth");
+    let burst_row = &success.entities[usize::from(burst)];
+    assert_eq!((parent, burst_row.class, burst_row.model, burst_row.source_id),
+        (actor, 10, 1, source_id));
+    assert_eq!(success.handle(burst).unwrap().generation, generation);
+    assert!(success.economy.spheres().iter().any(|sphere| sphere.active && sphere.mana == 700
+        && sphere.owner_entity_index == player && !earlier_spheres.contains(&sphere.source_entity_index)),
+        "the actual death conversion carries the whole source mana");
+    assert!(success.entities[usize::from(actor)].drawing_disabled());
+    assert_eq!(success.entities[usize::from(actor)].source_player_entity_index(), 0);
+
+    // Explicit capacity-failure control: neither effect can allocate; source
+    // still consumes its positive-mana RNG draw, clears owner and hides.
+    let mut exhausted = base.clone();
+    for row in &mut exhausted.entities {
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    }
+    exhausted.economy.exhaust_new_event_capacity_for_test();
+    exhausted.rebuild_source_free_arena();
+    let rng = exhausted.entities[usize::from(actor)].entity_rng;
+    mc2::step_row(&mut exhausted, &mut runtime, &mut terrain, particles,
+        actor, &classes, &families, Default::default()).unwrap();
+    assert_eq!(exhausted.handle(actor), Some(original));
+    let row = &exhausted.entities[usize::from(actor)];
+    assert!(row.drawing_disabled());
+    assert_eq!(row.entity_rng, crate::native_world::level2_next_rng16(rng));
+    assert_eq!(row.source_player_entity_index(), 0);
+    assert!(!exhausted.effects.death_burst_origins().values().any(|(_, parent)| *parent == actor));
+}
+
+#[test]
+fn configured_constructor_and_ranged_allocation_failure_preserve_source_prelude() {
+    let session = crate::native_world::tests::level_two_campaign_session();
+    let mut arena = session.source_arena().clone();
+    let mut terrain = session.canonical_terrain().clone();
+    let mut runtime = session.runtime().clone();
+    let particles = &session.session.definition.presentation.particles;
+    let player = session.state.entity_index;
+    let target_position = arena.entities[usize::from(player)].position;
+    let mut position = target_position;
+    position.x = position.x.wrapping_add(2048);
+    let actor = add_creature(&mut arena, &mut terrain, particles, position, 138);
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.set_phase(RULES.source_scan_period);
+        row.set_actual_speed(0);
+        row.record[74] = 0;
+        put(row, 154, player);
+    }
+    let mut available = arena.clone();
+    let mut available_terrain = terrain.clone();
+    let mut available_runtime = runtime.clone();
+    let available_families = model_slots(&available);
+    let available_classes = class3_slots(&available);
+    let shot = mc2::step_row(&mut available, &mut available_runtime, &mut available_terrain,
+        particles, actor, &available_classes, &available_families, Default::default()).unwrap();
+    let projectile = shot.projectile_slot.expect("same source callback allocates with capacity");
+    assert_eq!((available.entities[usize::from(projectile)].class,
+        available.entities[usize::from(projectile)].model), (9, 20));
+    // Configured replacement pressure makes NewEvent reuse the caller's own
+    // fixed address. The current projectile, not the old actor packet, owns
+    // the map chain after that allocation.
+    let mut reused = arena.clone();
+    let mut reused_terrain = terrain.clone();
+    let mut reused_runtime = runtime.clone();
+    for row in &mut reused.entities {
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    }
+    let flags = reused.entities[usize::from(actor)].control_flags;
+    reused.entities[usize::from(actor)].set_control_flags(
+        flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    reused.economy.exhaust_new_event_capacity_for_test();
+    reused.rebuild_source_free_arena();
+    let reused_families = model_slots(&reused);
+    let reused_classes = class3_slots(&reused);
+    let original = reused.handle(actor).unwrap();
+    let replacement = mc2::step_row(&mut reused, &mut reused_runtime, &mut reused_terrain,
+        particles, actor, &reused_classes, &reused_families, Default::default()).unwrap();
+    assert_eq!(replacement.projectile_slot, Some(actor));
+    assert!(reused.resolve(original).is_none());
+    let current = &reused.entities[usize::from(actor)];
+    assert_eq!((current.class, current.model, current.position.x, current.position.y), (9, 20, 0, 0));
+    assert_eq!(reused.economy.map_chains.tile_of(actor), 0,
+        "the prior actor's position must not republish over the replacement");
+    for row in &mut arena.entities {
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    }
+    arena.economy.exhaust_new_event_capacity_for_test();
+    arena.rebuild_source_free_arena();
+    let counter_before = runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)];
+    assert!(mc2::allocate_authored(&mut arena, &mut runtime, &mut terrain, particles,
+        position, RULES.max_life, None, 500).unwrap().is_none());
+    assert_eq!(runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)], counter_before,
+        "failed NewEvent leaves the source constructor counter unchanged");
+
+    let families = model_slots(&arena);
+    let classes = class3_slots(&arena);
+    let events_before = arena.economy.events().len();
+    assert_eq!(mc2::prepare_callback_sound(&mut arena, actor), Some(58));
+    let outcome = mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles,
+        actor, &classes, &families, Default::default()).unwrap();
+    assert!(outcome.projectile_slot.is_none(), "exhausted source cannot publish a 9/20");
+    assert!(matches!(arena.economy.events()[events_before],
+        crate::native_world::Level2EconomyEvent::PreparedSound {
+            source_entity_index, sound_id: 58, ..
+        } if source_entity_index == actor), "action138 sound precedes the failed allocation");
+    assert!(arena.entities[usize::from(actor)].active);
+}
+
+
+#[test]
+fn level_nine_public_meteor_reclaims_original_manticores_and_completes_absence() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::{area_damage, Mc2DispatchEvent};
+    use crate::PlayerCommand;
+
+    let package = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9"),
+        std::path::PathBuf::from,
+    );
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(9).unwrap())
+        .expect("whole Level9 owner package").simulation().clone();
+    let player = session.state.entity_index;
+    let owner = usize::from(session.state.player_color_index);
+    let sensor = session.session.definition.semantic_level().unwrap().objectives().iter()
+        .position(|objective| objective.id().as_str() == "objective.campaign.task_5")
+        .expect("actual Level9 Manticore absence objective");
+    assert_eq!(session.session.definition.semantic_level().unwrap().objectives()[sensor].condition(),
+        ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature17));
+    let originals = [67_u16, 68].map(|slot| {
+        let row = &session.entities()[usize::from(slot)];
+        assert_eq!((row.class, row.model, row.life), (5, 17, 10_000));
+        session.source_arena().handle(slot).expect("actual reset root")
+    });
+    // Declared entry controls: carried Meteor, the normal Castle producer and
+    // its mana prerequisite, spell XP/tier, player resources and objective.
+    session.apply_carried_spell_families(&[9], Some(9)).unwrap();
+    for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+        session.economy_mut().set_castle_stage_footprint(stage, footprint);
+    }
+    let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+        x: x * 2048, y: y * 2048, z: 0,
+    })).find(|position| !session.economy().castle_projectile_site_blocked(
+        *position, session.entities(), session.canonical_terrain())).expect("normal Castle site");
+    let castle = session.economy_mut().build_castle(site, player).expect("normal Castle constructor");
+    assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, 200_000));
+    session.shared_spells_mut().award_spell_experience(player, 9, 5_000);
+    {
+        let live = &mut session.session.state.live;
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_max_life(200_000);
+        parent.set_life(200_000);
+        parent.max_mana = 200_000;
+        parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+        parent.set_mana(200_000);
+        parent.set_mana_regen(0);
+        let parent = parent.clone();
+        live.player_life = parent.life;
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.player_mana = parent.mana;
+        live.shared_spells.caster.mana = parent.mana;
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+        let runtime = &mut live.core.runtime;
+        for stage in 0..usize::from(runtime.stage_index) {
+            runtime.set_level2_objective_stage_selector_for(owner, stage, u8::from(stage == sensor));
+        }
+        runtime.set_level2_objective_text_selector_for(owner, sensor);
+    }
+    let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 9).unwrap() as i8;
+    session.step_outer_turn(PlayerCommand { opcode: 31, argument_1: ui, argument_2: 2,
+        ..Default::default() }, 0);
+    let holder = session.shared_spells().local_player().enabled_spell_holders[9];
+    assert_ne!(holder, 0);
+    assert_eq!(session.shared_spells().pickup(holder).unwrap().level_gate, 2);
+    let holder_handle = session.source_arena().handle(holder).expect("current Meteor holder");
+    let caster_handle = session.source_arena().handle(player).expect("current player caster");
+    let credit_before = session.economy().authored_bee_kill_census(player);
+    let slots = originals.map(|handle| handle.source_slot);
+    area_damage::start_effect_damage_trace_for_targets(&slots);
+    area_damage::start_actor_damage_trace(&originals);
+    let mut callbacks = Vec::new();
+    let mut launches = Vec::new();
+    let mut impacts = Vec::new();
+    let mut observed_death = [false; 2];
+    let mut hidden = [false; 2];
+    // Exactly one public cast per surviving original; no repeated aiming,
+    // forecast, target control or NPC state writes. A miss remains a failure.
+    for target in originals {
+        if session.source_arena().resolve(target).is_none() { continue; }
+        let target_position = session.entities()[usize::from(target.source_slot)].position;
+        let mut origin = target_position;
+        crate::move_entity(&mut origin, 1024, 0, 2048);
+        origin.z = session.canonical_terrain().ground_height(target_position).wrapping_add(768);
+        session.set_level2_entity_position(player, origin).unwrap();
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+        let (_, pitch) = crate::level1_mission::projectile_guidance_angles(origin, target_position);
+        session.set_level2_player_aim_for_test(0, pitch);
+        for turn in 0..100 {
+            session.start_creature17_trace();
+            session.step_outer_turn(if turn == 0 { PlayerCommand { flags: 0x10, ..Default::default() } }
+                else { PlayerCommand::default() }, 0);
+            let trace = session.take_creature17_trace();
+            launches.extend(trace.meteor_launches);
+            impacts.extend(trace.meteor_impacts);
+            let turn_callbacks = trace.callbacks;
+            for callback in &turn_callbacks {
+                if let Some(index) = originals.iter().position(|target| *target == callback.source)
+                    && let Some(after) = callback.after
+                {
+                    observed_death[index] |= after.life < 0 && after.killer == player;
+                    hidden[index] |= after.control_flags & 0x400 != 0;
+                }
+            }
+            callbacks.extend(turn_callbacks);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Meteor callback: {:?}", session.dispatch_events());
+            for (i, original) in originals.iter().enumerate() {
+                if session.source_arena().resolve(*original).is_some() {
+                    let row = &session.entities()[usize::from(original.source_slot)];
+                    if row.life < 0 {
+                        observed_death[i] |= put_word(row, 40) == player;
+                        hidden[i] |= row.drawing_disabled();
+                    }
+                }
+            }
+            if session.source_arena().resolve(target).is_none() { break; }
+        }
+    }
+    let receipts = area_damage::take_effect_damage_trace();
+    for (i, target) in originals.iter().enumerate() {
+        assert!(receipts.iter().any(|r| r.target_slot == target.source_slot
+            && r.target_generation == target.generation && r.pulse.owner == player
+            && r.pulse.payload == 1600 && r.hit_count.is_some_and(|n| n > 0)
+            && r.mailbox_after.is_some_and(|(damage, attacker)| damage > 0 && attacker == player)),
+            "actual Meteor impact must write this original mailbox: {target:?} {receipts:?}");
+        assert!(callbacks.iter().any(|callback| {
+            let Some(after) = callback.after else { return false; };
+            let Some(writer) = callback.entry_writer else { return false; };
+            callback.source == *target && writer.target == *target
+                && callback.before.linked_child == 0
+                && callback.before.pending_attacker == player
+                && callback.before.pending_damage > 0
+                && callback.before.life >= 0
+                && after.life == callback.before.life.wrapping_sub(callback.before.pending_damage)
+                && after.life < 0 && after.action == 140 && after.killer == player
+                && after.pending_attacker == 0
+                && writer.mailbox == (callback.before.pending_damage, player)
+                && receipts.iter().any(|receipt| {
+                    receipt.target_slot == target.source_slot
+                        && receipt.target_generation == target.generation
+                        && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                        && receipt.source_scoped
+                        && receipt.writer_sequence == Some(writer.sequence)
+                        && impacts.iter().any(|impact| {
+                            receipt.source_slot == Some(impact.impact.source_slot)
+                                && writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                                && (impact.state.source_class, impact.state.model, impact.state.subspell_index)
+                                    == (10, 17, 16_000)
+                                && launches.iter().any(|launch| {
+                                    launch.holder == holder_handle && launch.caster == caster_handle
+                                        && launch.projectile == impact.projectile
+                                        && (launch.packet.class, launch.packet.model, launch.packet.subspell_index)
+                                            == (9, 3, 16_000)
+                                })
+                        })
+                })
+        }), "the latest actual Meteor writer must be consumed as this original's fatal mailbox: {target:?} callbacks={callbacks:?} receipts={receipts:?}");
+        assert!(observed_death[i] && hidden[i] && session.source_arena().resolve(*target).is_none(),
+            "original must die with player credit, hide and reclaim: {target:?}");
+    }
+    assert!(session.economy().authored_bee_kill_census(player) >= credit_before + 2);
+    for _ in 0..8 {
+        if session.runtime().objectives[owner].stage_selectors[sensor] == 2 { break; }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_eq!(session.runtime().objectives[owner].stage_selectors[sensor], 2,
+        "actual NoLiving17 objective follows both original retirements");
 }

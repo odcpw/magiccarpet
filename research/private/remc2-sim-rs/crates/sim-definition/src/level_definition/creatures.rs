@@ -300,12 +300,13 @@ pub const CREATURE26_CLASS_PROPERTIES: Creature26ClassProperties = Creature26Cla
 /// Stance-changing ground creature construction and combat rules.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Creature17ClassProperties {
+    /// Constructor mana is derived from this value by source SetEvent144.
+    /// A later authored health override does not change that mana.
     pub max_life: i32,
-    pub initial_mana: i32,
     pub minimum_speed: i16,
     pub maximum_speed: i16,
+    /// Initializes the current actor subspell consumed by melee contact.
     pub constructor_subspell: u16,
-    pub melee_damage: u16,
     pub projectile_damage: u16,
     pub source_scan_period: u8,
     pub target_range: u32,
@@ -332,11 +333,9 @@ pub struct Creature17ClassProperties {
 /// Pinned sub_4C460 and descriptors85/87.
 pub const CREATURE17_CLASS_PROPERTIES: Creature17ClassProperties = Creature17ClassProperties {
     max_life: 10_000,
-    initial_mana: 5000,
     minimum_speed: 68,
     maximum_speed: 20,
     constructor_subspell: 350,
-    melee_damage: 350,
     projectile_damage: 780,
     source_scan_period: 20,
     target_range: 3840,

@@ -2,7 +2,7 @@
 
 use super::{
     Creature17Context, Creature17Effects, Creature17State, RULES, Target, consume, jitter,
-    move_actor,
+    move_actor, settle,
 };
 use crate::native_world::RuntimeRelation;
 use crate::{Position, heading_for_positions};
@@ -22,21 +22,26 @@ fn stage_target(actor: &mut Creature17State, ctx: &Creature17Context<'_>) -> Opt
             RuntimeRelation::LiveEntity(slot) | RuntimeRelation::LiveEntityIndex(slot) => slot,
             _ => 0,
         };
-        return live(ctx, slot);
+        return ctx.target(slot);
     }
     if actor.route_relation == 0 {
+        if stage.flags & 1 != 0 {
+            actor.route_relation = ctx.model17.iter().filter_map(|slot| ctx.target(*slot))
+                .find(|peer| peer.route_index == actor.route_index && peer.route_relation != 0)
+                .map_or(0, |peer| peer.route_relation);
+        }
         let model = match stage.relation {
             RuntimeRelation::AxisScalar(value) | RuntimeRelation::Scalar(value) => value as u8,
             _ => 0,
         };
-        actor.route_relation = ctx
-            .targets
-            .iter()
-            .filter(|target| target.class == 5 && target.model == model && target.alive())
-            .min_by_key(|target| super::xy_squared(actor.position, target.position))
-            .map_or(0, |target| target.slot);
+        if actor.route_relation == 0 {
+            actor.route_relation = ctx.models.and_then(|models| models.get(usize::from(model)))
+                .into_iter().flatten().filter_map(|slot| ctx.target(*slot))
+                .min_by_key(|target| super::xy_squared(actor.position, target.position))
+                .map_or(0, |target| target.slot);
+        }
     }
-    live(ctx, actor.route_relation)
+    ctx.target(actor.route_relation)
 }
 
 fn point(actor: &Creature17State, ctx: &Creature17Context<'_>) -> Option<Position> {
@@ -55,19 +60,24 @@ fn point(actor: &Creature17State, ctx: &Creature17Context<'_>) -> Option<Positio
     })
 }
 
-fn damage(actor: &mut Creature17State, ctx: &Creature17Context<'_>) -> bool {
+fn damage(actor: &mut Creature17State, ctx: &Creature17Context<'_>) -> u8 {
     match consume(actor, ctx) {
         2 => {
             actor.action = 140;
-            true
+            2
         }
         1 => {
-            actor.target = actor.attacker;
-            actor.route_mode = 10;
-            actor.action = 138;
-            true
+            if ctx.target(actor.attacker).is_none_or(|attacker| {
+                (attacker.class, attacker.model) != (super::SOURCE_CLASS, super::SOURCE_MODEL)
+            }) {
+                actor.target = actor.attacker;
+                actor.route_mode = 10;
+                actor.action = 138;
+            }
+            settle(actor, ctx.terrain);
+            1
         }
-        _ => false,
+        _ => 0,
     }
 }
 
@@ -76,6 +86,7 @@ fn roam_to(
     ctx: &Creature17Context<'_>,
     effects: &mut Creature17Effects,
     destination: Position,
+    signed_axes: bool,
 ) {
     move_actor(actor, ctx.terrain, effects);
     if actor.phase & 7 == 0 {
@@ -90,15 +101,53 @@ fn roam_to(
             .iter()
             .filter_map(|slot| ctx.target(*slot))
             .find(|peer| {
-                peer.slot != actor.slot
-                    && peer.source_id != actor.source_id
-                    && peer.alive()
-                    && actor.position.x.abs_diff(peer.position.x) < actor.half_width.max(0) as u16
-                    && actor.position.y.abs_diff(peer.position.y) < actor.half_width.max(0) as u16
+                let axis = |value: u16| if signed_axes { i32::from(value as i16) } else { i32::from(value) };
+                peer.source_id != actor.source_id
+                    && (axis(actor.position.x) - axis(peer.position.x)).abs() < i32::from(actor.half_width)
+                    && (axis(actor.position.y) - axis(peer.position.y)).abs() < i32::from(actor.half_width)
             })
         {
             actor.roll = heading_for_positions(peer.position, actor.position) as i16;
         }
+    }
+}
+
+fn nearest_guard(actor: &Creature17State, ctx: &Creature17Context<'_>) -> Option<Target> {
+    if actor.proximity == 0 || actor.phase % RULES.source_scan_period != 0 { return None; }
+    let limit = RULES.target_range.wrapping_mul(RULES.target_range);
+    let mut best = None;
+    let mut distance = u32::MAX;
+    for candidate in ctx.class3.iter().filter_map(|slot| ctx.target(*slot)) {
+        let dx = i32::from(candidate.position.x) - i32::from(actor.position.x);
+        let dy = i32::from(candidate.position.y.wrapping_sub(actor.position.y) as i16);
+        let squared = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+        if candidate.flags & 0x20 == 0 && squared <= limit && squared < distance
+            && crate::angle_distance(i32::from(actor.yaw), heading_for_positions(actor.position, candidate.position))
+                < RULES.target_half_angle
+        {
+            best = Some(candidate);
+            distance = squared;
+        }
+    }
+    best
+}
+
+fn bound_target(actor: &Creature17State, ctx: &Creature17Context<'_>) -> Option<Target> {
+    let stage = ctx.runtime.stage_variables.get(usize::from(actor.route_index))?;
+    let slot = if stage.flags & 2 != 0 { actor.route_relation } else {
+        match stage.relation {
+            RuntimeRelation::LiveEntity(slot) | RuntimeRelation::LiveEntityIndex(slot) => slot,
+            _ => 0,
+        }
+    };
+    ctx.target(slot)
+}
+
+fn wander(actor: &mut Creature17State, ctx: &Creature17Context<'_>, effects: &mut Creature17Effects) {
+    move_actor(actor, ctx.terrain, effects);
+    if actor.phase & 15 == 0 && actor.control_flags & 0x40000 == 0 {
+        actor.rng = crate::native_world::level2_next_rng16(actor.rng);
+        actor.roll = actor.roll.wrapping_add((actor.rng % 113 + 142) as i16) & 2047;
     }
 }
 
@@ -107,12 +156,15 @@ fn follow_parent(
     ctx: &Creature17Context<'_>,
     effects: &mut Creature17Effects,
 ) {
-    if let Some(parent) = live(ctx, actor.parent) {
-        actor.position = parent.position;
-        actor.yaw = parent.yaw;
-        actor.roll = parent.yaw;
-    } else {
+    let parent = ctx.source_address(actor.parent);
+    if actor.parent == 0 || parent.is_none_or(|parent| parent.life < 0) {
         effects.route_hide = true;
+    }
+    if let Some(parent) = parent {
+        actor.position = parent.position;
+        actor.position.z = actor.position.z.max(0);
+        actor.yaw = parent.yaw;
+        actor.roll = parent.roll;
     }
 }
 
@@ -241,58 +293,68 @@ pub(super) fn step(
 ) {
     match actor.route_mode {
         1 => {
-            if damage(actor, ctx) {
+            if damage(actor, ctx) != 0 {
                 return;
             }
             if let Some(destination) = point(actor, ctx) {
-                roam_to(actor, ctx, effects, destination);
+                roam_to(actor, ctx, effects, destination, true);
             }
         }
         2 => {
-            if damage(actor, ctx) {
-                return;
-            }
-            if let Some(destination) = point(actor, ctx) {
-                let dx = actor
-                    .position
-                    .x
-                    .wrapping_sub(destination.x)
-                    .cast_signed()
-                    .unsigned_abs();
-                let dy = actor
-                    .position
-                    .y
-                    .wrapping_sub(destination.y)
-                    .cast_signed()
-                    .unsigned_abs();
+            let hit = damage(actor, ctx);
+            if hit == 0 && let Some(destination) = point(actor, ctx) {
+                let dx = (i32::from(actor.position.x as i16) - i32::from(destination.x as i16)).abs();
+                let dy = (i32::from(actor.position.y as i16) - i32::from(destination.y as i16)).abs();
                 if dx > 3072 || dy > 3072 {
-                    roam_to(actor, ctx, effects, destination);
+                    roam_to(actor, ctx, effects, destination, true);
                 } else {
-                    move_actor(actor, ctx.terrain, effects);
-                    if actor.phase & 15 == 0 {
-                        if let Some(target) = stage_target(actor, ctx) {
-                            actor.target = target.slot;
-                            actor.route_mode = 10;
-                            actor.action = 138;
-                        }
-                    }
+                    wander(actor, ctx, effects);
                 }
+            }
+            if actor.action == 143 && actor.route_mode == 2
+                && let Some(target) = nearest_guard(actor, ctx)
+            {
+                actor.target = target.slot;
+                actor.route_mode = 10;
+                actor.action = 138;
             }
         }
         3..=5 => {
-            if damage(actor, ctx) {
-                return;
+            let mode = actor.route_mode;
+            let hit = damage(actor, ctx);
+            if hit == 0 {
+                move_actor(actor, ctx.terrain, effects);
+                if actor.phase & 7 == 0 {
+                    if let Some(target) = stage_target(actor, ctx) {
+                        if actor.control_flags & 0x40000 == 0 {
+                            actor.roll = heading_for_positions(actor.position, target.position) as i16;
+                            if actor.phase & 63 == 0 { jitter(actor); }
+                        }
+                        if let Some(peer) = ctx.model17.iter().filter_map(|slot| ctx.target(*slot)).find(|peer| {
+                            peer.source_id != actor.source_id
+                                && i32::from(actor.position.x.abs_diff(peer.position.x)) < i32::from(actor.half_width)
+                                && i32::from(actor.position.y.abs_diff(peer.position.y)) < i32::from(actor.half_width)
+                        }) {
+                            actor.roll = heading_for_positions(peer.position, actor.position) as i16;
+                        }
+                        let width = i32::from(actor.half_width) + i32::from(target.half_width);
+                        if i32::from(actor.position.x.abs_diff(target.position.x)) < width
+                            && i32::from(actor.position.y.abs_diff(target.position.y)) < width
+                        {
+                            actor.roll = heading_for_positions(target.position, actor.position) as i16;
+                        }
+                    } else if actor.phase & 15 == 0 && actor.control_flags & 0x40000 == 0 {
+                        actor.rng = crate::native_world::level2_next_rng16(actor.rng);
+                        actor.roll = actor.roll.wrapping_add((actor.rng % 113 + 142) as i16) & 2047;
+                    }
+                }
             }
-            move_actor(actor, ctx.terrain, effects);
-            if actor.phase & 7 == 0
-                && let Some(target) = stage_target(actor, ctx)
+            // sub_1D7C0/1D700 run this tail even after a hit or lethal result.
+            if mode != 5 && actor.phase & 7 == 0
+                && let Some(followed) = bound_target(actor, ctx)
             {
-                actor.roll = heading_for_positions(actor.position, target.position) as i16;
-                if crate::legacy_sqrt(crate::native_world::level2_wrapping_source_distance_3d(
-                    actor.position,
-                    target.position,
-                )) <= RULES.target_range
-                {
+                let target = if mode == 3 { Some(followed) } else { ctx.target(followed.target) };
+                if let Some(target) = target && super::distance(actor.position, target.position) <= RULES.target_range {
                     actor.target = target.slot;
                     actor.route_mode = 10;
                     actor.action = 138;
@@ -300,30 +362,10 @@ pub(super) fn step(
             }
         }
         6..=9 => {
-            if damage(actor, ctx) {
-                return;
-            }
-            move_actor(actor, ctx.terrain, effects);
-            if actor.phase & 15 == 0 {
-                if let Some(target) = stage_target(actor, ctx) {
-                    actor.roll = heading_for_positions(actor.position, target.position) as i16;
-                } else if let Some(destination) = point(actor, ctx) {
-                    actor.roll = heading_for_positions(actor.position, destination) as i16;
-                }
-            }
+            if damage(actor, ctx) == 0 { wander(actor, ctx, effects); }
         }
         10 => {
-            if live(ctx, actor.target).is_none()
-                && let Some(target) = stage_target(actor, ctx)
-            {
-                actor.target = target.slot;
-            }
-            if live(ctx, actor.target).is_some() {
-                actor.action = 138;
-            } else {
-                actor.target = 0;
-                actor.action = 137;
-            }
+            actor.action = 138;
         }
         12 => follow_parent(actor, ctx, effects),
         13 | 16 => follow_summoner(actor, ctx, effects),
@@ -338,7 +380,7 @@ pub(super) fn step(
                     2 => actor.route_remaining = 1,
                     hit => {
                         if hit == 0 {
-                            roam_to(actor, ctx, effects, parent.position);
+                            roam_to(actor, ctx, effects, parent.position, false);
                         } else {
                             move_actor(actor, ctx.terrain, effects);
                             if actor.attacker != actor.parent && ctx.target(actor.attacker)

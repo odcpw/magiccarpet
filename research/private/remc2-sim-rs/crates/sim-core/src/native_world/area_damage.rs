@@ -1391,9 +1391,9 @@ pub(crate) struct PlayerDamageConsumptionReceipt {
 
 #[cfg(test)]
 struct PlayerDamageTrace {
-    target: crate::campaign::source_arena::SourceEntityHandle,
+    targets: Vec<crate::campaign::source_arena::SourceEntityHandle>,
     sequence: u64,
-    latest: Option<PlayerMailboxWrite>,
+    latest: Vec<PlayerMailboxWrite>,
     consumed: Vec<PlayerDamageConsumptionReceipt>,
 }
 
@@ -1412,17 +1412,29 @@ thread_local! {
 
 #[cfg(test)]
 pub(crate) fn start_player_damage_trace(target: crate::campaign::source_arena::SourceEntityHandle) {
+    start_actor_damage_trace(&[target]);
+}
+
+/// Watch the same canonical raw mailboxes for exact actor generations.
+/// Player checks keep using the single-target entry point above.
+#[cfg(test)]
+pub(crate) fn start_actor_damage_trace(
+    targets: &[crate::campaign::source_arena::SourceEntityHandle],
+) {
+    assert!(targets.iter().enumerate().all(|(index, target)| {
+        targets[..index].iter().all(|previous| previous.source_slot != target.source_slot)
+    }), "one watched generation per physical source slot");
     PLAYER_DAMAGE_TRACE.with(|trace| {
         *trace.borrow_mut() = Some(PlayerDamageTrace {
-            target,
+            targets: targets.to_vec(),
             sequence: 0,
-            latest: None,
+            latest: Vec::new(),
             consumed: Vec::new(),
         })
     });
 }
 
-/// Observe every accepted write to the traced raw player mailbox, including
+/// Observe every accepted write to a watched raw mailbox, including
 /// identical-value writes. Unattributed writers invalidate prior attribution.
 #[cfg(test)]
 pub(crate) fn trace_player_mailbox_write(
@@ -1433,12 +1445,10 @@ pub(crate) fn trace_player_mailbox_write(
     PLAYER_DAMAGE_TRACE.with(|trace| {
         let mut trace = trace.borrow_mut();
         let trace = trace.as_mut()?;
-        if trace.target.source_slot != slot {
-            return None;
-        }
+        let target = *trace.targets.iter().find(|target| target.source_slot == slot)?;
         trace.sequence += 1;
-        trace.latest = None;
-        if arena.handle(slot) != Some(trace.target) {
+        trace.latest.retain(|write| write.target.source_slot != slot);
+        if arena.handle(slot) != Some(target) {
             return None;
         }
         let row = &arena.entities[usize::from(slot)];
@@ -1450,9 +1460,9 @@ pub(crate) fn trace_player_mailbox_write(
                     .map_or(PlayerMailboxSource::Other, PlayerMailboxSource::Effect)
             })
         });
-        trace.latest = Some(PlayerMailboxWrite {
+        trace.latest.push(PlayerMailboxWrite {
             sequence: trace.sequence,
-            target: trace.target,
+            target,
             source,
             mailbox: (row.source_upkeep_payload(), row.source_upkeep_word_62()),
         });
@@ -1467,7 +1477,26 @@ fn player_writer_sequence() -> u64 {
 
 #[cfg(test)]
 pub(crate) fn latest_player_mailbox_writer() -> Option<PlayerMailboxWrite> {
-    PLAYER_DAMAGE_TRACE.with(|trace| trace.borrow().as_ref().and_then(|trace| trace.latest))
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        let trace = trace.borrow();
+        let trace = trace.as_ref()?;
+        let target = trace.targets.first()?;
+        trace.latest.iter().find(|write| write.target == *target).copied()
+    })
+}
+
+/// Peek at the latest accepted writer; a callback may legitimately return
+/// without consuming its mailbox, so observing entry must not retire it.
+#[cfg(test)]
+pub(crate) fn current_actor_mailbox_writer(
+    target: crate::campaign::source_arena::SourceEntityHandle,
+    mailbox: (i32, u16),
+) -> Option<PlayerMailboxWrite> {
+    PLAYER_DAMAGE_TRACE.with(|trace| {
+        trace.borrow().as_ref()?.latest.iter()
+            .find(|write| write.target == target && write.mailbox == mailbox)
+            .copied()
+    })
 }
 
 #[cfg(test)]
@@ -1476,11 +1505,10 @@ pub(crate) fn take_player_mailbox_writer(
     mailbox: (i32, u16),
 ) -> Option<PlayerMailboxWrite> {
     PLAYER_DAMAGE_TRACE.with(|trace| {
-        trace
-            .borrow_mut()
-            .as_mut()?
-            .latest
-            .take()
+        let mut trace = trace.borrow_mut();
+        let trace = trace.as_mut()?;
+        let index = trace.latest.iter().position(|write| write.target.source_slot == target.source_slot)?;
+        Some(trace.latest.remove(index))
             .filter(|write| write.target == target && write.mailbox == mailbox)
     })
 }
@@ -1489,7 +1517,7 @@ pub(crate) fn take_player_mailbox_writer(
 pub(crate) fn trace_player_damage_consumption(receipt: PlayerDamageConsumptionReceipt) {
     PLAYER_DAMAGE_TRACE.with(|trace| {
         if let Some(trace) = trace.borrow_mut().as_mut()
-            && trace.target == receipt.target
+            && trace.targets.contains(&receipt.target)
             && trace.consumed.len() < 64
         {
             trace.consumed.push(receipt);
@@ -1510,7 +1538,13 @@ pub(crate) fn take_player_damage_consumptions() -> Vec<PlayerDamageConsumptionRe
 #[cfg(test)]
 fn effect_receipt_writer(arena: &SourceArena, receipt: &EffectDamageReceipt) -> Option<u64> {
     let source = receipt.source_slot.and_then(|slot| arena.handle(slot))?;
-    latest_player_mailbox_writer()
+    current_actor_mailbox_writer(
+        crate::campaign::source_arena::SourceEntityHandle {
+            source_slot: receipt.target_slot,
+            generation: receipt.target_generation,
+        },
+        receipt.mailbox_after?,
+    )
         .filter(|writer| {
             receipt.source_scoped
                 && writer.sequence > receipt.writer_cursor

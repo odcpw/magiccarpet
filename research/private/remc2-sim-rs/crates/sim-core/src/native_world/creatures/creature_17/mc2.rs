@@ -1,7 +1,7 @@
 //! Model-17 bindings to the source arena, StageVar table and assets.
 
 use super::{
-    Creature17Context, Creature17Effects, Creature17State, DESCRIPTOR, SOURCE_CLASS, SOURCE_MODEL,
+    Creature17Context, Creature17Effects, Creature17State, SOURCE_CLASS, SOURCE_MODEL,
     Target,
 };
 use crate::Position;
@@ -10,13 +10,25 @@ use crate::native_world::{
     EntitySnapshot, ParticleParameter, RuntimeSnapshot, SessionTerrain, guided_projectile,
 };
 
-const PARTICLE: u16 = 285;
+pub(super) const DESCRIPTOR: u16 = 85;
+pub(super) const STRIKE_DESCRIPTOR: u16 = 87;
+pub(super) const PARTICLE: u16 = 285;
 const PROJECTILE_PARTICLE: u16 = 196;
 const PROJECTILE_MODEL: u8 = 20;
 const PROJECTILE_ACTION: u8 = 21;
 const PROJECTILE_SPEED: i16 = 394;
 const PROJECTILE_RANGE: i32 = 7680;
 const PROJECTILE_DESCRIPTOR: u16 = 65;
+pub(super) const ATTACK_SOUND: u16 = 58;
+
+/// sub_24930 prepares its source sound before consuming the hit mailbox.
+pub(crate) fn prepare_callback_sound(arena: &mut SourceArena, slot: u16) -> Option<u16> {
+    arena.entities.get(usize::from(slot)).filter(|row| {
+        row.active && (row.class, row.model, row.action) == (SOURCE_CLASS, SOURCE_MODEL, 138)
+    })?;
+    arena.economy.prepare_sound(slot, slot, -1, ATTACK_SOUND);
+    Some(ATTACK_SOUND)
+}
 
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
     u16::from_le_bytes([row.record[at], row.record[at + 1]])
@@ -251,6 +263,7 @@ pub(crate) fn allocate_authored(
 }
 
 fn targets(arena: &SourceArena, pointers: &[u16]) -> Vec<Target> {
+    let pointers: std::collections::BTreeSet<_> = pointers.iter().copied().collect();
     let mut targets = super::super::creature_15::mc2::targets_in_arena(arena)
         .into_iter()
         .map(|row| Target {
@@ -263,6 +276,8 @@ fn targets(arena: &SourceArena, pointers: &[u16]) -> Vec<Target> {
             flags: row.control_flags,
             position: row.position,
             yaw: row.yaw as i16,
+            roll: row.roll as i16,
+            half_width: row.half_width,
             speed: 0,
             maximum_speed: 0,
             previous: row.previous,
@@ -280,8 +295,7 @@ fn targets(arena: &SourceArena, pointers: &[u16]) -> Vec<Target> {
         .collect::<Vec<_>>();
     let typed = arena.economy.live_arena_slots();
     for row in arena.entities.iter().filter(|row| {
-        ((row.active && row.class != 0) || pointers.contains(&row.index))
-            && row.index != 0
+        (row.index == 0 || (row.active && row.class != 0) || pointers.contains(&row.index))
             && !typed.iter().any(|(slot, _)| *slot == row.index)
     }) {
         let view = Target {
@@ -294,6 +308,8 @@ fn targets(arena: &SourceArena, pointers: &[u16]) -> Vec<Target> {
             flags: row.control_flags,
             position: row.position,
             yaw: row.yaw,
+            roll: row.source_roll(),
+            half_width: row.array_pitch(),
             speed: row.actual_speed,
             maximum_speed: word(row, 138) as i16,
             previous: word(row, 58),
@@ -340,6 +356,7 @@ fn launch_projectile(
     particles: &[ParticleParameter],
     actor_slot: u16,
     target_slot: u16,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<Option<u16>, String> {
     let particle = particles
         .get(usize::from(PROJECTILE_PARTICLE))
@@ -392,11 +409,8 @@ fn launch_projectile(
         .get(usize::from(actor_slot))
         .ok_or("model-17 projectile source address is absent")?
         .clone();
-    let target = arena
-        .entities
-        .get(usize::from(target_slot))
-        .ok_or("model-17 projectile target address is absent")?
-        .clone();
+    let target = crate::native_world::source_target::read(arena, context, target_slot)?
+        .ok_or("model-17 projectile target address is absent")?;
     let origin = arena.entities[usize::from(slot)].position;
     let (yaw, pitch) =
         crate::level1_mission::projectile_guidance_angles(source.position, target.position);
@@ -416,7 +430,7 @@ fn launch_projectile(
     projectile.parameter_relation = Some(PROJECTILE_DESCRIPTOR);
     projectile.record[164..168]
         .copy_from_slice(&(u32::from(PROJECTILE_DESCRIPTOR) + 1).to_le_bytes());
-    projectile.set_subspell_index(780);
+    projectile.set_subspell_index(super::RULES.projectile_damage);
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
     if let Some(target) = arena.entities.get_mut(usize::from(target_slot)) {
         target.apply_source_sub_5ef70();
@@ -456,6 +470,7 @@ pub(crate) fn step_row(
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
+    targets_context: crate::native_world::source_target::Context<'_>,
 ) -> Result<Creature17Effects, String> {
     let actor_row = arena
         .entities
@@ -468,7 +483,17 @@ pub(crate) fn step_row(
             .into_iter()
             .collect();
     pointers.extend(crate::native_world::source_target::summoned_direct_references(arena, actor_row)?);
+    if actor.action == 139 && actor.linked_peer != 0
+        && let Some(parent) = arena.entities.get(usize::from(actor.linked_peer))
+        && parent.class == SOURCE_CLASS && parent.model == SOURCE_MODEL
+        && parent.action == 139 && parent.life >= 0 && !parent.drawing_disabled()
+    {
+        // sub_1C560 then dereferences the parent's current word32, including a
+        // retained inactive row; preserve that address in the source view.
+        pointers.push(parent.word_32());
+    }
     pointers.extend_from_slice(class3);
+    for family in families { pointers.extend_from_slice(family); }
     let targets = targets(arena, &pointers);
     let callback_action = actor.action;
     let context = Creature17Context {
@@ -477,6 +502,7 @@ pub(crate) fn step_row(
         targets: &targets,
         class3,
         model17: &families[usize::from(SOURCE_MODEL)],
+        models: Some(families),
     };
     let mut effects = super::step(&mut actor, &context)
         .ok_or_else(|| format!("unsupported model-17 action{}", actor.action))?;
@@ -520,9 +546,14 @@ pub(crate) fn step_row(
     }
     if let Some(intent) = effects.projectile.take() {
         effects.projectile_slot =
-            launch_projectile(arena, terrain, particles, slot, intent.target)?;
+            launch_projectile(arena, terrain, particles, slot, intent.target, targets_context)?;
     }
-    crate::world::effects::sync_position(arena, terrain, slot, actor.position, true, false)?;
+    // NewEvent can replace the callback address itself. In that case the
+    // projectile constructor already published the new occupant's position;
+    // the old actor's local packet must not overwrite it afterwards.
+    if effects.projectile_slot != Some(slot) {
+        crate::world::effects::sync_position(arena, terrain, slot, actor.position, true, false)?;
+    }
     if let Some(summoned) = effects.stage_expiry.take() {
         super::super::creature_24::mc2::expire(arena, terrain, particles, slot, summoned)?;
     }
@@ -542,31 +573,10 @@ fn kill(
     particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<(), String> {
-    let (position, source_id, yaw, mana, owner, _) = if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter()
-        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-    {
-        (
-            sphere.position,
-            slot,
-            sphere.yaw,
-            sphere.mana,
-            sphere.player_entity_index,
-            sphere.control_flags,
-        )
-    } else {
-        let row = &arena.entities[usize::from(slot)];
-        (
-            row.position,
-            row.source_id,
-            row.yaw,
-            row.mana,
-            row.source_player_entity_index(),
-            row.control_flags,
-        )
-    };
+    let original = arena.handle(slot).ok_or("model-17 death lost its original handle")?;
+    let source = arena.entities[usize::from(slot)].clone();
+    let (position, yaw, mana, owner) =
+        (source.position, source.yaw, source.mana, source.source_player_entity_index());
     if mana > 0 {
         if let Some(row) = arena
             .entities
@@ -577,79 +587,28 @@ fn kill(
             row.set_entity_rng(next);
             arena.economy.source_rng.insert(slot, next);
         }
-        crate::native_world::creatures::spider::mc2::spawn_mana(
+        crate::world::effects::spawn_death_mana_sphere(
             arena, terrain, slot, position, yaw, mana, owner,
         )?;
-        if let Some(sphere) = arena
-            .economy
-            .spheres
-            .iter_mut()
-            .find(|sphere| sphere.source_entity_index == slot)
-        {
-            sphere.player_entity_index = 0;
-            sphere.owner_entity_index = 0;
-        } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
-            row.record[152..154].fill(0);
+        if !crate::world::effects::clear_replacement_mana_owner(arena, slot)? {
+            arena.entities[usize::from(slot)].record[152..154].fill(0);
         }
+        arena.economy.source_owner.insert(slot, 0);
     }
-    let (current_position, current_id, current_flags) = if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter()
-        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-    {
-        (sphere.position, slot, sphere.control_flags)
-    } else {
-        let row = &arena.entities[usize::from(slot)];
-        (row.position, row.source_id, row.control_flags)
-    };
-    if current_flags & 0x100000 == 0 {
-        let child = crate::world::effects::allocate(
-            arena,
-            terrain,
-            sim_definition::adapter::mc2_effect_definition(
-                crate::level_definition::EffectKind::RadialExplosion,
-            ),
-            current_position,
-            particles,
-        )?;
-        if let Some(child) = child
-            && child == slot
-        {
-            let zero = Position::default();
-            if let Some(sphere) = arena
-                .economy
-                .spheres
-                .iter_mut()
-                .find(|sphere| sphere.source_entity_index == slot)
-            {
-                sphere.position = zero;
-            } else {
-                arena.entities[usize::from(slot)].set_position(zero);
-            }
-            if let Some(row) = arena.entities.get_mut(usize::from(child)) {
-                row.source_id = current_id;
-                put(row, 30, current_id);
-            }
-            crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
+    let current = crate::native_world::source_target::read(arena, Default::default(), slot)?
+        .ok_or("model-17 death lost its current source address")?;
+    let burst = if current.control_flags & 0x100000 == 0 {
+        crate::world::effects::spawn_death_burst(
+            arena, terrain, particles, slot, current.position, current.source_id,
+        )?
+    } else { None };
+    if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+        if arena.resolve(original).is_none() {
+            return Err(format!("model-17 death cannot hide replacement at {slot}"));
         }
-    }
-    let hide_position = if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter_mut()
-        .find(|sphere| sphere.source_entity_index == slot)
-    {
-        sphere.control_flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT;
-        sphere.pending_delete = true;
-        Some(sphere.position)
-    } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
+        let row = &mut arena.entities[usize::from(slot)];
         row.disable_drawing();
-        Some(row.position)
-    } else {
-        None
-    };
-    if let Some(position) = hide_position {
+        let position = row.position;
         crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
     }
     Ok(())

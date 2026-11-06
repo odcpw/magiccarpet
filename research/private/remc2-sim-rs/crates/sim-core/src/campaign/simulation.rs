@@ -880,7 +880,7 @@ impl Drop for ArcherChildDamageTrace {
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FireflyContactDamageReceipt {
+pub(crate) struct ActorContactDamageReceipt {
     pub(crate) producer: SourceEntityHandle,
     pub(crate) current_producer: Option<SourceEntityHandle>,
     pub(crate) target: SourceEntityHandle,
@@ -910,17 +910,87 @@ pub(crate) struct FireflyFireballLaunchReceipt {
 #[cfg(test)]
 #[derive(Default, Debug)]
 pub(crate) struct FireflyAttackTrace {
-    pub(crate) contacts: Vec<FireflyContactDamageReceipt>,
+    pub(crate) contacts: Vec<ActorContactDamageReceipt>,
     pub(crate) launches: Vec<FireflyFireballLaunchReceipt>,
 }
 
 #[cfg(test)]
-struct FireflyContactTrace(Option<SourceEntityHandle>);
+#[derive(Clone, Debug)]
+pub(crate) struct Creature17CallbackReceipt {
+    pub(crate) source: SourceEntityHandle,
+    pub(crate) before: creatures::creature_17::Creature17State,
+    pub(crate) entry_writer: Option<area_damage::PlayerMailboxWrite>,
+    pub(crate) after: Option<creatures::creature_17::Creature17State>,
+    pub(crate) melee: Option<(SourceEntityHandle, i32, u16)>,
+    pub(crate) projectile: Option<(SourceEntityHandle, EntitySnapshot)>,
+}
 
 #[cfg(test)]
-impl Drop for FireflyContactTrace {
+#[derive(Clone, Debug)]
+pub(crate) struct Creature17ImpactReceipt {
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) impact: SourceEntityHandle,
+    pub(crate) packet: EntitySnapshot,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct MeteorLaunchReceipt {
+    pub(crate) holder: SourceEntityHandle,
+    pub(crate) caster: SourceEntityHandle,
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) packet: EntitySnapshot,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MeteorImpactBirthReceipt {
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) impact: SourceEntityHandle,
+    pub(crate) state: crate::native_world::Level2AuthoredModel17Source,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Creature17SlowingReceipt {
+    pub(crate) source: SourceEntityHandle,
+    pub(crate) target: SourceEntityHandle,
+    pub(crate) before: (u8, i8, i16),
+    pub(crate) after: (u8, i8, i16),
+    pub(crate) palette: Option<crate::world::fields::PaletteRequest>,
+    pub(crate) source_hidden: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct Creature17FlightReceipt {
+    pub(crate) target: SourceEntityHandle,
+    pub(crate) before: crate::FlightState,
+    pub(crate) after: crate::FlightState,
+    pub(crate) evidence: crate::StepEvidence,
+    pub(crate) tether: crate::TetherContext,
+    pub(crate) palette_submode: u8,
+}
+
+#[cfg(test)]
+#[derive(Default, Debug)]
+pub(crate) struct Creature17Trace {
+    pub(crate) contacts: Vec<ActorContactDamageReceipt>,
+    pub(crate) callbacks: Vec<Creature17CallbackReceipt>,
+    pub(crate) impacts: Vec<Creature17ImpactReceipt>,
+    pub(crate) meteor_launches: Vec<MeteorLaunchReceipt>,
+    pub(crate) meteor_impacts: Vec<MeteorImpactBirthReceipt>,
+    pub(crate) slowing: Vec<Creature17SlowingReceipt>,
+    pub(crate) flight: Vec<Creature17FlightReceipt>,
+}
+
+#[cfg(test)]
+struct ActorContactTrace(Option<SourceEntityHandle>);
+
+#[cfg(test)]
+impl Drop for ActorContactTrace {
     fn drop(&mut self) {
-        CURRENT_FIREFLY_CONTACT_SOURCE.with(|source| source.set(self.0));
+        CURRENT_ACTOR_CONTACT_SOURCE.with(|source| source.set(self.0));
     }
 }
 
@@ -944,9 +1014,11 @@ std::thread_local! {
     static FIREFLY_ATTACK_TRACE:
         std::cell::RefCell<Option<FireflyAttackTrace>> =
         const { std::cell::RefCell::new(None) };
-    static CURRENT_FIREFLY_CONTACT_SOURCE:
+    static CURRENT_ACTOR_CONTACT_SOURCE:
         std::cell::Cell<Option<SourceEntityHandle>> =
         const { std::cell::Cell::new(None) };
+    static CREATURE17_TRACE: std::cell::RefCell<Option<Creature17Trace>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 struct Level2SourceSchedulerWorld<'session, 'evidence> {
@@ -2106,6 +2178,16 @@ impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn take_firefly_attack_trace(&self) -> FireflyAttackTrace {
         FIREFLY_ATTACK_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_creature17_trace(&self) {
+        CREATURE17_TRACE.with(|trace| *trace.borrow_mut() = Some(Creature17Trace::default()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_creature17_trace(&self) -> Creature17Trace {
+        CREATURE17_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
     }
 
     #[cfg(test)]
@@ -3796,15 +3878,47 @@ impl Mc2Simulation {
                 Some(13 | 14) => unreachable!("directional holders have their own input"),
                 _ => return Err("source holder has an unsupported family".to_owned()),
             };
-            step_holder(
+            #[cfg(test)]
+            let trace_parent = (family == Some(9))
+                .then(|| {
+                    CREATURE17_TRACE.with(|trace| {
+                        trace.borrow().as_ref().and_then(|_| {
+                            Some((
+                                live.economy.handle(source_slot)?,
+                                live.economy.handle(parent_slot)?,
+                            ))
+                        })
+                    })
+                })
+                .flatten();
+            let outcome = step_holder(
                 &mut live.shared_spells,
                 &mut live.economy,
                 &mut live.terrain,
                 &self.session.definition.presentation.particles,
                 source_slot,
                 input,
-            )?
-            .clear_player_aux
+            )?;
+            #[cfg(test)]
+            if let Some((holder, caster)) = trace_parent
+                && let Some(slot) = outcome.projectile
+                && let Some(projectile) = live.economy.handle(slot)
+            {
+                let packet = live.economy.entities[usize::from(slot)].clone();
+                CREATURE17_TRACE.with(|trace| {
+                    if let Some(trace) = trace.borrow_mut().as_mut()
+                        && trace.meteor_launches.len() < 64
+                    {
+                        trace.meteor_launches.push(MeteorLaunchReceipt {
+                            holder,
+                            caster,
+                            projectile,
+                            packet,
+                        });
+                    }
+                });
+            }
+            outcome.clear_player_aux
         };
         if let Some(parent_slot) = clear_player_aux {
             for player in live
@@ -17300,6 +17414,27 @@ impl Mc2Simulation {
                 | ExistingHandler::Cymmerian,
                 SourceRoute::Imported,
             ) => {
+                #[cfg(test)]
+                let _contact_trace = (visit.handler == ExistingHandler::Creature17).then(|| {
+                    ActorContactTrace(CURRENT_ACTOR_CONTACT_SOURCE.with(|source| {
+                        source.replace(self.session.state.live.economy.handle(source_slot))
+                    }))
+                });
+                if visit.handler == ExistingHandler::Creature17
+                    && let Some(sound_id) = creatures::creature_17::mc2::prepare_callback_sound(
+                        &mut self.session.state.live.economy,
+                        source_slot,
+                    )
+                {
+                    self.push_flight_effect(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::ManticorePursuit,
+                        entity_index: source_slot,
+                        player_index: -1,
+                        sound_id,
+                    });
+                    self.append_new_economy_events(pass, source_slot);
+                }
                 // Source28C60 prepares sound37 before pursuit can move,
                 // change action or allocate. Publish the queued call while
                 // its current source pose still belongs to that boundary.
@@ -17489,6 +17624,36 @@ impl Mc2Simulation {
                             outcome.target_music,
                         )
                     } else if visit.handler == ExistingHandler::Creature17 {
+                        #[cfg(test)]
+                        let trace_before = CREATURE17_TRACE.with(|trace| {
+                            trace.borrow().as_ref().and_then(|_| {
+                                let source = live.economy.handle(source_slot)?;
+                                let before = creatures::creature_17::mc2::load(
+                                    &live.economy.entities[usize::from(source_slot)],
+                                    source.generation,
+                                );
+                                let entry_writer = area_damage::current_actor_mailbox_writer(
+                                    source,
+                                    (before.pending_damage, before.pending_attacker),
+                                );
+                                Some((source, before, entry_writer))
+                            })
+                        });
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
                         let outcome = creatures::creature_17::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
@@ -17497,7 +17662,46 @@ impl Mc2Simulation {
                             source_slot,
                             players,
                             models,
+                            targets,
                         )?;
+                        #[cfg(test)]
+                        if let Some((source, before, entry_writer)) = trace_before {
+                            let after = (live.economy.handle(source_slot) == Some(source)
+                                && (
+                                    live.economy.entities[usize::from(source_slot)].class,
+                                    live.economy.entities[usize::from(source_slot)].model,
+                                ) == (5, 17))
+                                .then(|| {
+                                    creatures::creature_17::mc2::load(
+                                        &live.economy.entities[usize::from(source_slot)],
+                                        source.generation,
+                                    )
+                                });
+                            let melee = outcome.melee.and_then(|(target, damage, attacker)| {
+                                live.economy
+                                    .handle(target)
+                                    .map(|target| (target, damage, attacker))
+                            });
+                            let projectile = outcome.projectile_slot.and_then(|slot| {
+                                live.economy.handle(slot).map(|handle| {
+                                    (handle, live.economy.entities[usize::from(slot)].clone())
+                                })
+                            });
+                            CREATURE17_TRACE.with(|trace| {
+                                if let Some(trace) = trace.borrow_mut().as_mut()
+                                    && trace.callbacks.len() < 64
+                                {
+                                    trace.callbacks.push(Creature17CallbackReceipt {
+                                        source,
+                                        before,
+                                        entry_writer,
+                                        after,
+                                        melee,
+                                        projectile,
+                                    });
+                                }
+                            });
+                        }
                         for (owner, family) in outcome.feedback {
                             award_source_spell_experience(live, owner, family);
                         }
@@ -17601,7 +17805,7 @@ impl Mc2Simulation {
                 if let Some((owner, family)) = feedback {
                     award_source_spell_experience(&mut self.session.state.live, owner, family);
                 }
-                if let Some(sound) = sound {
+                if let Some(sound) = sound.filter(|_| visit.handler != ExistingHandler::Creature17) {
                     self.session.state.live.economy.prepare_sound(
                         source_slot,
                         source_slot,
@@ -17696,22 +17900,81 @@ impl Mc2Simulation {
                         context,
                     )?
                 } else if visit.handler == ExistingHandler::Creature17Projectile {
-                    creatures::creature_17::mc2::step_projectile(
+                    #[cfg(test)]
+                    let trace_projectile = CREATURE17_TRACE.with(|trace| {
+                        trace
+                            .borrow()
+                            .as_ref()
+                            .and_then(|_| live.economy.handle(source_slot))
+                    });
+                    let outcome = creatures::creature_17::mc2::step_projectile(
                         &mut live.economy,
                         &mut live.terrain,
                         &self.session.definition.presentation.particles,
                         source_slot,
                         context,
-                    )?
+                    )?;
+                    #[cfg(test)]
+                    if let Some(projectile) = trace_projectile
+                        && let Some(slot) = outcome.impact_slot
+                        && let Some(impact) = live.economy.handle(slot)
+                    {
+                        let packet = live.economy.entities[usize::from(slot)].clone();
+                        CREATURE17_TRACE.with(|trace| {
+                            if let Some(trace) = trace.borrow_mut().as_mut()
+                                && trace.impacts.len() < 64
+                            {
+                                trace.impacts.push(Creature17ImpactReceipt {
+                                    projectile,
+                                    impact,
+                                    packet,
+                                });
+                            }
+                        });
+                    }
+                    outcome
                 } else if visit.handler == ExistingHandler::MeteorProjectile {
-                    meteor::step_projectile(
+                    #[cfg(test)]
+                    let trace_projectile = CREATURE17_TRACE.with(|trace| {
+                        trace
+                            .borrow()
+                            .as_ref()
+                            .and_then(|_| live.economy.handle(source_slot))
+                    });
+                    let outcome = meteor::step_projectile(
                         &mut live.economy,
                         &mut live.terrain,
                         &self.session.definition.presentation.particles,
                         source_slot,
                         Some(&targets),
                         context,
-                    )?
+                    )?;
+                    #[cfg(test)]
+                    if let Some(projectile) = trace_projectile
+                        && let Some(slot) = outcome.impact_slot
+                        && let Some(impact) = live.economy.handle(slot)
+                        && live.economy.live_arena_kind(slot)
+                            == Some(Level2DynamicArenaKind::AuthoredModel17)
+                        && let Some(state) = live
+                            .economy
+                            .authored_model17()
+                            .iter()
+                            .find(|state| state.active && state.source_entity_index == slot)
+                            .copied()
+                    {
+                        CREATURE17_TRACE.with(|trace| {
+                            if let Some(trace) = trace.borrow_mut().as_mut()
+                                && trace.meteor_impacts.len() < 64
+                            {
+                                trace.meteor_impacts.push(MeteorImpactBirthReceipt {
+                                    projectile,
+                                    impact,
+                                    state,
+                                });
+                            }
+                        });
+                    }
+                    outcome
                 } else if visit.handler == ExistingHandler::FieldSpellProjectile {
                     field_spells::step_projectile(
                         &mut live.economy,
@@ -18222,12 +18485,55 @@ impl Mc2Simulation {
                             TilePosition { x: 0, y: 0 },
                         );
                         let body = &live.economy.entities[usize::from(player_entity_index)];
-                        status::impact(
+                        #[cfg(test)]
+                        let trace_before = (source.model == 65)
+                            .then(|| {
+                                CREATURE17_TRACE.with(|trace| {
+                                    trace.borrow().as_ref().and_then(|_| {
+                                        Some((
+                                            live.economy.handle(source_slot)?,
+                                            live.economy.handle(source.source_word_96())?,
+                                            (
+                                                live.core.state.speed_modifier,
+                                                live.core.state.speed_modifier_counter,
+                                                live.core.state.recoil_speed,
+                                            ),
+                                        ))
+                                    })
+                                })
+                            })
+                            .flatten();
+                        let outcome = status::impact(
                             &mut source,
                             definition,
                             Some((body, &mut live.core.state)),
                             local_color,
-                        )?
+                        )?;
+                        #[cfg(test)]
+                        if let Some((source_handle, target, before)) = trace_before
+                            && live.core.state.speed_modifier > before.0
+                        {
+                            let after = (
+                                live.core.state.speed_modifier,
+                                live.core.state.speed_modifier_counter,
+                                live.core.state.recoil_speed,
+                            );
+                            CREATURE17_TRACE.with(|trace| {
+                                if let Some(trace) = trace.borrow_mut().as_mut()
+                                    && trace.slowing.len() < 64
+                                {
+                                    trace.slowing.push(Creature17SlowingReceipt {
+                                        source: source_handle,
+                                        target,
+                                        before,
+                                        after,
+                                        palette: outcome.palette,
+                                        source_hidden: source.drawing_disabled(),
+                                    });
+                                }
+                            });
+                        }
+                        outcome
                     }
                     _ => {
                         return Err(format!(
@@ -18756,14 +19062,49 @@ impl Mc2Simulation {
                         let flight_evidence = {
                             let live = &mut self.session.state.live;
                             let terrain = &live.terrain;
-                            crate::step_entity_pass_with_context_and_tuning(
+                            #[cfg(test)]
+                            let trace_before = CREATURE17_TRACE.with(|trace| {
+                                trace.borrow().as_ref().and_then(|_| {
+                                    Some((
+                                        live.economy.handle(player_entity_index)?,
+                                        live.core.state.clone(),
+                                        live.core.context.tether,
+                                    ))
+                                })
+                            });
+                            let movement = crate::step_entity_pass_with_context_and_tuning(
                                 &mut live.core.state,
                                 latched_command,
                                 profile,
                                 terrain,
                                 &mut live.core.context,
                                 flight_tuning,
-                            )
+                            );
+                            #[cfg(test)]
+                            if let Some((target, before, tether)) = trace_before {
+                                let after = live.core.state.clone();
+                                let palette_submode = live
+                                    .core
+                                    .context
+                                    .effects
+                                    .as_ref()
+                                    .map_or(0, |effects| effects.palette_submode);
+                                CREATURE17_TRACE.with(|trace| {
+                                    if let Some(trace) = trace.borrow_mut().as_mut()
+                                        && trace.flight.len() < 64
+                                    {
+                                        trace.flight.push(Creature17FlightReceipt {
+                                            target,
+                                            before,
+                                            after,
+                                            evidence: movement,
+                                            tether,
+                                            palette_submode,
+                                        });
+                                    }
+                                });
+                            }
+                            movement
                         };
                         evidence.push(flight_evidence);
                         self.commit_level2_duel_tether_target(tether_before);
@@ -20054,10 +20395,8 @@ impl Mc2Simulation {
                             }
                             if contact.target_entity_index == local_player {
                                 #[cfg(test)]
-                                let _trace = FireflyContactTrace(
-                                    CURRENT_FIREFLY_CONTACT_SOURCE
-                                        .with(|source| source.replace(trace_producer)),
-                                );
+                                let _trace = ActorContactTrace(CURRENT_ACTOR_CONTACT_SOURCE
+                                    .with(|source| source.replace(trace_producer)));
                                 self.queue_level2_player_contact_damage(
                                     contact.damage,
                                     contact.attacker_entity_index,
@@ -27708,12 +28047,24 @@ impl Mc2Simulation {
         }
         let player_entity_index = self.session.state.live.core.state.entity_index;
         #[cfg(test)]
-        let firefly_observation = FIREFLY_ATTACK_TRACE.with(|trace| {
-            let trace = trace.borrow();
-            if trace.as_ref()?.contacts.len() >= 64 {
+        let actor_contact_source = CURRENT_ACTOR_CONTACT_SOURCE.with(|source| source.get());
+        #[cfg(test)]
+        let contact_observation = (|| {
+            let enabled = FIREFLY_ATTACK_TRACE.with(|trace| {
+                trace
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|trace| trace.contacts.len() < 64)
+            }) || CREATURE17_TRACE.with(|trace| {
+                trace
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|trace| trace.contacts.len() < 64)
+            });
+            if !enabled {
                 return None;
             }
-            let producer = CURRENT_FIREFLY_CONTACT_SOURCE.with(|source| source.get())?;
+            let producer = actor_contact_source?;
             let live = &self.session.state.live;
             Some((
                 producer,
@@ -27721,7 +28072,7 @@ impl Mc2Simulation {
                 live.economy.handle(player_entity_index)?,
                 live.player_life,
             ))
-        });
+        })();
         let entity = self
             .session
             .state
@@ -27759,19 +28110,17 @@ impl Mc2Simulation {
         let writer_sequence = area_damage::trace_player_mailbox_write(
             &self.session.state.live.economy,
             player_entity_index,
-            Some(
-                firefly_observation
-                    .map_or(area_damage::PlayerMailboxSource::Other, |(producer, ..)| {
-                        area_damage::PlayerMailboxSource::Contact(producer)
-                    }),
-            ),
+            Some(actor_contact_source.map_or(
+                area_damage::PlayerMailboxSource::Other,
+                area_damage::PlayerMailboxSource::Contact,
+            )),
         );
         #[cfg(test)]
-        if let Some((producer, current_producer, target, player_life_before)) = firefly_observation
+        if let Some((producer, current_producer, target, player_life_before)) = contact_observation
         {
             let live = &self.session.state.live;
             let row = &live.economy.entities[usize::from(player_entity_index)];
-            let receipt = FireflyContactDamageReceipt {
+            let receipt = ActorContactDamageReceipt {
                 producer,
                 current_producer,
                 target,
@@ -27785,7 +28134,16 @@ impl Mc2Simulation {
                 writer_sequence,
             };
             FIREFLY_ATTACK_TRACE.with(|trace| {
-                if let Some(trace) = trace.borrow_mut().as_mut() {
+                if let Some(trace) = trace.borrow_mut().as_mut()
+                    && trace.contacts.len() < 64
+                {
+                    trace.contacts.push(receipt);
+                }
+            });
+            CREATURE17_TRACE.with(|trace| {
+                if let Some(trace) = trace.borrow_mut().as_mut()
+                    && trace.contacts.len() < 64
+                {
                     trace.contacts.push(receipt);
                 }
             });
@@ -29522,6 +29880,593 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configured_actor_writer_trace_preserves_other_target_and_generation() {
+        // Configured mailbox/observer control over two genuine reset actors.
+        // No scheduled attack, natural replacement or pressure producer is claimed.
+        let package = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9"),
+            PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(9).unwrap())
+            .unwrap()
+            .simulation()
+            .clone();
+        let first = session.source_arena().handle(67).unwrap();
+        let second = session.source_arena().handle(68).unwrap();
+        let player = session.state.entity_index;
+        area_damage::start_actor_damage_trace(&[first, second]);
+        {
+            // Source scope is configured metadata in this negative, not a
+            // manufactured Meteor or evidence of an ordinary effect producer.
+            let _source = area_damage::trace_effect_source(player);
+            area_damage::replace_source_bounty(
+                &mut session.session.state.live.economy,
+                None,
+                first.source_slot,
+                1600,
+                player,
+            )
+            .unwrap();
+            area_damage::replace_source_bounty(
+                &mut session.session.state.live.economy,
+                None,
+                second.source_slot,
+                3200,
+                player,
+            )
+            .unwrap();
+        }
+        let original = area_damage::current_actor_mailbox_writer(first, (1600, player)).unwrap();
+        let untouched = area_damage::current_actor_mailbox_writer(second, (3200, player)).unwrap();
+        assert!(untouched.sequence > original.sequence);
+        assert_eq!(original.target, first);
+        assert_eq!(untouched.target, second);
+        area_damage::replace_source_bounty(
+            &mut session.session.state.live.economy,
+            None,
+            first.source_slot,
+            1600,
+            player,
+        )
+        .unwrap();
+        let replacement = area_damage::current_actor_mailbox_writer(first, (1600, player)).unwrap();
+        assert_eq!(replacement.mailbox, original.mailbox);
+        assert!(replacement.sequence > untouched.sequence);
+        assert_eq!(replacement.source, area_damage::PlayerMailboxSource::Other);
+        assert_eq!(
+            area_damage::current_actor_mailbox_writer(second, (3200, player)),
+            Some(untouched),
+            "an identical overwrite retires only the actual target's old attribution"
+        );
+        let different_generation = SourceEntityHandle {
+            source_slot: first.source_slot,
+            generation: first.generation.wrapping_add(1),
+        };
+        assert!(
+            area_damage::current_actor_mailbox_writer(different_generation, (1600, player))
+                .is_none(),
+            "another incarnation cannot qualify using this generation's identical packet"
+        );
+        assert_eq!(
+            session.source_arena().handle(first.source_slot),
+            Some(first)
+        );
+        assert_eq!(
+            session.source_arena().handle(second.source_slot),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn ordinary_level_nine_manticore_attacks_reach_damage_and_live_slowing_recovery() {
+        use crate::level_definition::CREATURE17_CLASS_PROPERTIES as RULES;
+        use std::collections::BTreeMap;
+
+        let package = std::env::var_os("MC_LEVEL9_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level9"),
+            PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(9).unwrap())
+            .expect("whole ordinary Level9 owner package")
+            .simulation()
+            .clone();
+        let player = session.state.entity_index;
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let actor = session.source_arena().handle(67).unwrap();
+        assert_eq!(
+            (
+                session.entities()[67].class,
+                session.entities()[67].model,
+                session.entities()[67].action,
+                session.entities()[67].record[76],
+                session.entities()[67].record[77]
+            ),
+            (5, 17, 143, 2, 1)
+        );
+        // Declared carried Basic Fireball and initial player survival resources.
+        // The original owner actor, phase, RNG, life, target and route are intact.
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        {
+            let live = &mut session.session.state.live;
+            live.player_life = 200_000;
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_max_life(200_000);
+            parent.set_life(200_000);
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+        }
+        let mut quiet = Position {
+            x: 100 * 256,
+            y: 100 * 256,
+            z: 0,
+        };
+        quiet.z = session
+            .canonical_terrain()
+            .ground_height(quiet)
+            .wrapping_add(768);
+        session.set_level2_entity_position(player, quiet).unwrap();
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "{:?}",
+                session.dispatch_events()
+            );
+            session.set_level2_entity_position(player, quiet).unwrap();
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        assert_eq!(session.source_arena().handle(67), Some(actor));
+        let original = session.entities()[67].clone();
+        assert!(original.life > 250);
+        let source_id = original.source_id;
+        let parent = session.shared_spells().player_entity().clone();
+        // Three finite player-only observation boundaries: a public provocation
+        // firing line; one fixed ranged exposure pose; one interception of an
+        // already emitted real projectile. After that one placement the player
+        // retains its real flight trajectory, with forward input for eight
+        // actual flight visits after the genuine slowing hit. No NPC is tracked
+        // or rewritten, and no projectile/effect is injected or relocated.
+        let yaw = 0_i16;
+        let mut launch = original.position;
+        crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 384);
+        let mut anchor = launch;
+        let parent_yaw =
+            yaw.wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity) & 2047;
+        crate::move_entity(&mut anchor, parent_yaw.wrapping_add(512), 0, 256);
+        let centre = original.position.z.wrapping_add(original.array_yaw());
+        anchor.z = centre
+            .wrapping_sub(parent.array_fov())
+            .max(
+                session
+                    .canonical_terrain()
+                    .ground_height(anchor)
+                    .wrapping_add(256),
+            )
+            .max(
+                session
+                    .canonical_terrain()
+                    .ground_height(launch)
+                    .wrapping_add(256),
+            );
+        launch.z = anchor.z.wrapping_add(parent.array_fov());
+        let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+            launch,
+            Position {
+                z: centre,
+                ..original.position
+            },
+        );
+        let mut ranged_pose = original.position;
+        crate::move_entity(&mut ranged_pose, yaw.wrapping_add(1024), 0, 3328);
+        ranged_pose.z = session
+            .canonical_terrain()
+            .ground_height(ranged_pose)
+            .wrapping_add(512);
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        session.set_level2_entity_position(player, anchor).unwrap();
+        session.set_level2_player_aim_for_test(yaw, pitch);
+        area_damage::start_player_damage_trace(player_handle);
+        let mut shots = BTreeMap::<(u16, u32), EntitySnapshot>::new();
+        let mut impacts = BTreeMap::<(u16, u32), SourceEntityHandle>::new();
+        let mut contacts = BTreeMap::<u64, ActorContactDamageReceipt>::new();
+        let mut public_launch = false;
+        let mut public_hit = false;
+        let mut intercepted = false;
+        let mut stance = false;
+        let mut melee_consumed = false;
+        let mut slowed = None;
+        let mut forward_visits = 0;
+        let mut slowing_flight = Vec::new();
+        let mut changed_live_movement = false;
+        let mut recovered = false;
+        let mut cleanup = false;
+        let mut sounds = 0;
+        let mut history = Vec::new();
+        for turn in 0..360 {
+            assert_eq!(
+                session.source_arena().handle(67),
+                Some(actor),
+                "original Manticore generation: {history:?}"
+            );
+            assert_eq!(session.source_arena().handle(player), Some(player_handle));
+            if !intercepted
+                && let Some((key, _)) = shots.iter().find(|(key, _)| {
+                    session
+                        .source_arena()
+                        .handle(key.0)
+                        .is_some_and(|handle| handle.generation == key.1)
+                        && session.entities()[usize::from(key.0)].active
+                        && !session.entities()[usize::from(key.0)].drawing_disabled()
+                        && (
+                            session.entities()[usize::from(key.0)].class,
+                            session.entities()[usize::from(key.0)].model,
+                        ) == (9, 20)
+                })
+            {
+                let packet = &session.entities()[usize::from(key.0)];
+                anchor = packet.position;
+                crate::move_entity(&mut anchor, packet.yaw, packet.pitch, packet.actual_speed);
+                session.set_level2_entity_position(player, anchor).unwrap();
+                intercepted = true;
+            }
+            if !intercepted {
+                session.set_level2_entity_position(player, anchor).unwrap();
+            }
+            let move_after_slowing = slowed.is_some() && forward_visits < 8;
+            let journal_start = session.effect_journal().records().len();
+            session.start_creature17_trace();
+            area_damage::start_fireball_launch_trace();
+            session.step_outer_turn(
+                if turn == 0 {
+                    PlayerCommand {
+                        opcode: 6,
+                        argument_1: fire_ui,
+                        flags: 0x40,
+                        ..PlayerCommand::default()
+                    }
+                } else if move_after_slowing {
+                    PlayerCommand {
+                        flags: 0x01,
+                        ..PlayerCommand::default()
+                    }
+                } else {
+                    PlayerCommand::default()
+                },
+                0,
+            );
+            public_launch |= area_damage::take_fireball_launch_trace()
+                .iter()
+                .any(|shot| shot.2 == player);
+            let _ = area_damage::take_fireball_impact_birth_trace();
+            let trace = session.take_creature17_trace();
+            if move_after_slowing {
+                forward_visits += trace
+                    .flight
+                    .iter()
+                    .filter(|flight| {
+                        flight.target == player_handle
+                            && flight.evidence.movement_resolution != "skipped"
+                    })
+                    .count();
+            }
+            assert!(
+                !session
+                    .dispatch_events()
+                    .iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "turn{turn}: {:?}",
+                session.dispatch_events()
+            );
+            let mut pursuit_callbacks = 0;
+            for callback in trace
+                .callbacks
+                .iter()
+                .filter(|callback| callback.source == actor)
+            {
+                let after = callback
+                    .after
+                    .expect("ordinary actor survives its nonlethal provocation");
+                assert!(
+                    after.life >= 0,
+                    "natural encounter must retain the original actor: {history:?}"
+                );
+                pursuit_callbacks += usize::from(callback.before.action == 138);
+                if callback.before.pending_attacker == player
+                    && callback.before.pending_damage == 250
+                    && after.life == callback.before.life - 250
+                    && after.target == player
+                {
+                    assert!(public_launch);
+                    if !public_hit {
+                        anchor = ranged_pose;
+                    }
+                    public_hit = true;
+                }
+                stance |= after.attack_phase == 2
+                    && after.descriptor == 87; // Pinned sub_24930 strike descriptor.
+                if let Some((target, damage, attacker)) = callback.melee {
+                    assert_eq!(
+                        (target, damage, attacker),
+                        (
+                            player_handle,
+                            i32::from(RULES.constructor_subspell),
+                            source_id
+                        )
+                    );
+                }
+                if let Some((handle, ref packet)) = callback.projectile {
+                    assert_eq!(
+                        (
+                            packet.class,
+                            packet.model,
+                            packet.action,
+                            packet.source_id,
+                            packet.source_word_96(),
+                            packet.subspell_index
+                        ),
+                        (9, 20, 21, source_id, player, RULES.projectile_damage)
+                    );
+                    shots.insert((handle.source_slot, handle.generation), packet.clone());
+                }
+                if history.len() == 32 {
+                    history.remove(0);
+                }
+                history.push((
+                    turn,
+                    callback.before.action,
+                    after.action,
+                    after.attack_phase,
+                    after.position,
+                    after.life,
+                    after.target,
+                ));
+            }
+            let actual_sounds = session.effect_journal().records()[journal_start..]
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(
+                            FlightEvent::PrepareSound {
+                                audio_site: crate::MissionAudioSite::ManticorePursuit,
+                                entity_index: 67,
+                                sound_id: 58,
+                                ..
+                            }
+                        )
+                    )
+                })
+                .count();
+            assert_eq!(
+                actual_sounds, pursuit_callbacks,
+                "one actual native sound at each138 entry"
+            );
+            sounds += actual_sounds;
+            for contact in trace
+                .contacts
+                .iter()
+                .filter(|receipt| receipt.producer == actor)
+            {
+                assert_eq!(
+                    (
+                        contact.current_producer,
+                        contact.target,
+                        contact.payload,
+                        contact.attacker
+                    ),
+                    (
+                        Some(actor),
+                        player_handle,
+                        i32::from(RULES.constructor_subspell),
+                        source_id
+                    )
+                );
+                let expected = if contact.mailbox_before.1 != 0 {
+                    contact.payload
+                } else {
+                    contact.mailbox_before.0.wrapping_add(contact.payload)
+                };
+                assert_eq!(contact.mailbox_after, (expected, source_id));
+                contacts.insert(contact.writer_sequence.unwrap(), *contact);
+            }
+            for consumed in area_damage::take_player_damage_consumptions() {
+                if let Some(writer) = consumed.writer
+                    && let Some(contact) = contacts.remove(&writer.sequence)
+                {
+                    assert_eq!(
+                        (
+                            writer.source,
+                            consumed.target,
+                            writer.mailbox,
+                            consumed.mailbox
+                        ),
+                        (
+                            area_damage::PlayerMailboxSource::Contact(actor),
+                            player_handle,
+                            contact.mailbox_after,
+                            contact.mailbox_after
+                        )
+                    );
+                    assert!(consumed.event_cursor >= contact.event_cursor);
+                    assert_eq!(
+                        consumed.life_after,
+                        consumed.life_before - consumed.mailbox.0
+                    );
+                    assert!(
+                        matches!(session.economy().events().get(consumed.event_cursor),
+                        Some(Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, lethal: false })
+                            if *target_entity_index == player && *attacker_entity_index == source_id && *damage == consumed.mailbox.0)
+                    );
+                    melee_consumed = true;
+                }
+            }
+            let pending = area_damage::latest_player_mailbox_writer().map(|write| write.sequence);
+            contacts.retain(|sequence, _| Some(*sequence) == pending);
+            for impact in &trace.impacts {
+                if shots
+                    .contains_key(&(impact.projectile.source_slot, impact.projectile.generation))
+                {
+                    assert_eq!(
+                        (
+                            impact.packet.class,
+                            impact.packet.model,
+                            impact.packet.action,
+                            impact.packet.source_id,
+                            impact.packet.subspell_index
+                        ),
+                        (10, 65, 70, source_id, RULES.projectile_damage)
+                    );
+                    impacts.insert(
+                        (impact.impact.source_slot, impact.impact.generation),
+                        impact.projectile,
+                    );
+                }
+            }
+            for status in &trace.slowing {
+                if impacts.contains_key(&(status.source.source_slot, status.source.generation)) {
+                    assert_eq!(status.target, player_handle);
+                    assert_eq!(status.after.0, status.before.0 + 1);
+                    assert_eq!(status.after.1, 8);
+                    if status.before.0 == 0 {
+                        assert_eq!(status.after.2, -80);
+                    }
+                    assert_eq!(
+                        status.palette,
+                        Some(crate::world::fields::PaletteRequest {
+                            mode: 3,
+                            count: 171 * i16::from(status.after.0) / 3 + 85,
+                        })
+                    );
+                    assert!(status.source_hidden);
+                    slowed = Some(status.source);
+                }
+            }
+            for movement in &trace.flight {
+                if movement.target != player_handle
+                    || movement.before.speed_modifier == 0
+                    || movement.evidence.movement_resolution == "skipped"
+                {
+                    continue;
+                }
+                let before = &movement.before;
+                let after = &movement.after;
+                if slowing_flight.len() < 32 {
+                    slowing_flight.push((
+                        turn,
+                        before.speed_modifier,
+                        before.speed_modifier_counter,
+                        after.actual_speed,
+                        movement.tether,
+                        movement.evidence,
+                    ));
+                }
+                let next = before.speed_modifier_counter.wrapping_sub(1);
+                let stage = if next == 0 {
+                    before.speed_modifier - 1
+                } else {
+                    before.speed_modifier
+                };
+                let counter = if next == 0 && stage != 0 { 8 } else { next };
+                assert_eq!(
+                    (after.speed_modifier, after.speed_modifier_counter),
+                    (stage, counter)
+                );
+                if stage == 0 {
+                    assert_eq!(movement.palette_submode, 1);
+                    recovered = true;
+                }
+                if slowed.is_none()
+                    || movement.tether.holder.is_some()
+                    || movement.tether.target.is_some()
+                    || movement.evidence.movement_resolution != "accepted"
+                    || before.immobilize_counter != 0
+                {
+                    continue;
+                }
+                // Reconstruct this ACTUAL player callback's proposed point,
+                // including its real heading, pitch, recoil and impulses. The
+                // only comparison removes the source translation multiplier.
+                let proposal = |modifier: u8| {
+                    let scale =
+                        |speed: i16| (i32::from(speed) * (4 - i32::from(modifier)) / 4) as i16;
+                    let mut point = movement.evidence.before;
+                    crate::move_entity(
+                        &mut point,
+                        after.yaw,
+                        after.effective_pitch,
+                        scale(after.actual_speed),
+                    );
+                    crate::move_entity(
+                        &mut point,
+                        after.yaw.wrapping_add(512) & 2047,
+                        0,
+                        scale(after.strafe_speed),
+                    );
+                    crate::move_entity(
+                        &mut point,
+                        before.recoil_yaw,
+                        0,
+                        before.recoil_speed.min(crate::RECOIL_POSITIVE_CAP),
+                    );
+                    point.x = point.x.wrapping_add_signed(before.impulse_x);
+                    point.y = point.y.wrapping_add_signed(before.impulse_y);
+                    point.z = point.z.wrapping_add(before.impulse_z);
+                    point
+                };
+                let expected = proposal(before.speed_modifier);
+                assert_eq!(
+                    movement.evidence.proposed, expected,
+                    "actual slowed displacement includes recoil/collision order"
+                );
+                assert_eq!(
+                    (movement.evidence.committed.x, movement.evidence.committed.y),
+                    (expected.x, expected.y)
+                );
+                changed_live_movement |= expected != proposal(0) && after.actual_speed != 0;
+            }
+            if let Some(impact) = slowed {
+                let parent = impacts[&(impact.source_slot, impact.generation)];
+                cleanup = session.source_arena().handle(impact.source_slot) != Some(impact)
+                    && session.source_arena().handle(parent.source_slot) != Some(parent);
+            }
+            if public_hit
+                && stance
+                && melee_consumed
+                && slowed.is_some()
+                && changed_live_movement
+                && recovered
+                && cleanup
+            {
+                break;
+            }
+        }
+        assert!(
+            public_launch
+                && public_hit
+                && stance
+                && melee_consumed
+                && slowed.is_some()
+                && changed_live_movement
+                && recovered
+                && cleanup
+                && sounds != 0,
+            "original67 must naturally provoke/strike/fire and slow real player movement through recovery/reclaim: public={public_launch}/{public_hit} stance={stance} melee={melee_consumed} shots={shots:?} slowing={slowed:?} movement={changed_live_movement} recovered={recovered} cleanup={cleanup} sounds={sounds} forward_visits={forward_visits} flight={slowing_flight:?} history={history:?}"
+        );
+    }
+
+    #[test]
     fn configured_player_mailbox_identical_overwrite_retires_contact_attribution() {
         // Explicit mailbox-boundary control, not an ordinary Firefly producer.
         // Both writers and the life consumer are canonical. Only the real
@@ -29540,9 +30485,7 @@ mod tests {
         .unwrap();
         session.start_firefly_attack_trace();
         {
-            let _source = FireflyContactTrace(
-                CURRENT_FIREFLY_CONTACT_SOURCE.with(|source| source.replace(Some(target))),
-            );
+            let _source = ActorContactTrace(CURRENT_ACTOR_CONTACT_SOURCE.with(|source| source.replace(Some(target))));
             session.queue_level2_player_contact_damage(300, player);
         }
         let receipt = session.take_firefly_attack_trace().contacts.pop().unwrap();

@@ -713,6 +713,7 @@ pub enum MissionAudioSite {
     FireSphereCollision,
     CymmerianPursuit,
     WyvernAttack,
+    ManticorePursuit,
     Count,
 }
 
@@ -1181,6 +1182,7 @@ impl MissionAudioSite {
         Self::FireSphereCollision,
         Self::CymmerianPursuit,
         Self::WyvernAttack,
+        Self::ManticorePursuit,
     ];
 
     #[must_use]
@@ -1544,6 +1546,14 @@ impl MissionAudioSite {
                 "3",
                 "fixed 0",
                 "EventsFunctions.cpp:15503 sub_24510 before burst rearm",
+                true,
+            ),
+            Self::ManticorePursuit => (
+                "58",
+                "current Manticore before damage and pursuit movement",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:15613 sub_24930 callback entry",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (
