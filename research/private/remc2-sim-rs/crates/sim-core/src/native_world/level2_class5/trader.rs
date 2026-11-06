@@ -186,6 +186,25 @@ impl TraderConstructorPayload {
     }
 }
 
+/// Unlink the current Trader packet before its typed allocation is released.
+/// The raw projection must not remain a second live carrier at the old generation.
+pub(crate) fn prepare_reclaim(
+    arena: &mut crate::campaign::source_arena::SourceArena,
+    terrain: &mut SessionTerrain,
+) -> Result<(), String> {
+    let hidden = arena
+        .authored_class5
+        .iter()
+        .filter(|row| row.active && row.model == TRADER_MODEL && !row.drawing_enabled)
+        .map(|row| (row.source_entity_index, row.position))
+        .collect::<Vec<_>>();
+    for (slot, position) in hidden {
+        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
+        arena.entities[usize::from(slot)].reclaim_source_row();
+    }
+    Ok(())
+}
+
 impl Level2EconomyState {
     /// `sub_57F20` runs at the following source-pass boundary. Hide leaves
     /// the row and map-chain membership intact until this owner is called.
@@ -334,6 +353,8 @@ impl crate::campaign::source_arena::SourceArena {
             return Ok(None);
         };
         let mut source = self.authored_class5[source_index];
+        let source_handle = self.handle(source_slot);
+        let death_requested = source.action == 117 && source.source_byte_3e & 7 == 0;
         let mut context = TraderAction113Context {
             pending_damage,
             linked_head,
@@ -411,20 +432,78 @@ impl crate::campaign::source_arena::SourceArena {
                 }
             }
         }
-        if effects.death_burst {
-            let _ = self.spawn_death_burst_from_death_with_id(
+        let mut replacement_hidden = false;
+        if death_requested {
+            if source.mana > 0 {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                self.authored_class5[source_index].entity_rng = source.entity_rng;
+                self.entities[usize::from(source_slot)].set_entity_rng(source.entity_rng);
+                self.source_rng.insert(source_slot, source.entity_rng);
+                crate::world::effects::spawn_death_mana_sphere(
+                    self,
+                    terrain,
+                    source_slot,
+                    source.position,
+                    source.yaw,
+                    source.mana,
+                    behavior.owner,
+                )?;
+                crate::world::effects::clear_replacement_mana_owner(self, source_slot)?;
+                if self.handle(source_slot) == source_handle {
+                    behavior.owner = 0;
+                    self.house_residents.traders.insert(source_slot, behavior);
+                    self.entities[usize::from(source_slot)].set_source_player_entity_index(0);
+                    self.source_owner.insert(source_slot, 0);
+                }
+            }
+            let current = super::super::source_target::read(
+                self,
+                super::super::source_target::Context::default(),
                 source_slot,
-                source_slot,
-                source.position,
-            );
+            )?
+            .ok_or_else(|| format!("Trader death lost current source address {source_slot}"))?;
+            let burst = if current.control_flags & 0x0010_0000 == 0 {
+                crate::world::effects::spawn_death_burst(
+                    self,
+                    terrain,
+                    particles,
+                    source_slot,
+                    current.position,
+                    current.source_id,
+                )?
+            } else {
+                None
+            };
+            replacement_hidden =
+                crate::world::effects::hide_birth_replacement(self, source_slot, burst)?;
         }
         if effects.population_decrement != 0 {
             self.decrement_source_creature_population();
         }
+        if self.handle(source_slot) != source_handle {
+            if !replacement_hidden {
+                return Err(format!(
+                    "Trader death cannot hide replacement at {source_slot}"
+                ));
+            }
+            let stage_effects = std::mem::take(&mut effects.stage_effects);
+            effects.spell_awards =
+                self::runtime::apply_effects(self, villagers, terrain, particles, stage_effects)?;
+            return Ok(Some(TraderAction113Step {
+                effects,
+                target: context.target,
+                map_synced: true,
+            }));
+        }
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, source.entity_rng);
-        self.authored_class5[source_index] = source;
+        let current_index = self
+            .authored_class5
+            .iter()
+            .position(|row| row.source_entity_index == source_slot)
+            .ok_or_else(|| format!("Trader carrier {source_slot} vanished before publication"))?;
+        self.authored_class5[current_index] = source;
         self.house_residents.traders.insert(source_slot, behavior);
         publish_source(
             &source,
@@ -1097,6 +1176,125 @@ mod tests {
             x: 0x2800,
             y: 0x3100,
             z: 0,
+        }
+    }
+
+    #[test]
+    fn configured_authored_trader_mana_reaches_scheduled_death_and_reclaim() {
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let player = session.state.entity_index;
+        let (handle, rng, owner) = {
+            let live = &mut session.session.state.live;
+            let source = live
+                .economy
+                .allocate_authored_trader(125, trader_position(), TRADER_MAX_LIFE, &live.terrain)
+                .unwrap();
+            assert_eq!(source.mana, 0);
+            let slot = source.source_entity_index;
+            // Configured positive state on the actual authored constructor;
+            // no claim that an ordinary default mission supplies this mana.
+            let row = live
+                .economy
+                .authored_class5
+                .iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .unwrap();
+            row.mana = 731;
+            row.action = 117;
+            row.phase = 0;
+            row.source_byte_3e = 0;
+            let source = *row;
+            let behavior = live.economy.house_residents.traders.get_mut(&slot).unwrap();
+            behavior.owner = player;
+            let state = *behavior;
+            publish_source(
+                &source,
+                state,
+                &mut live.economy.entities[usize::from(slot)],
+            );
+            (
+                live.economy.handle(slot).unwrap(),
+                source.entity_rng,
+                state.owner,
+            )
+        };
+        assert_eq!(owner, player);
+        let event_start = session.economy().events().len();
+        session.step_level2_source_pass(0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+        );
+        let source = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|row| row.source_entity_index == handle.source_slot)
+            .unwrap();
+        assert!(!source.drawing_enabled);
+        assert_eq!(source.entity_rng, level2_next_rng16(rng));
+        assert_eq!(
+            session.source_arena().handle(handle.source_slot),
+            Some(handle)
+        );
+        assert_eq!(
+            session.source_arena().house_residents.traders[&handle.source_slot].owner,
+            0
+        );
+        let events = &session.economy().events()[event_start..];
+        let (sphere_order, sphere_id) = events
+            .iter()
+            .enumerate()
+            .find_map(|(i, event)| match event {
+                crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                    sphere_id,
+                    source_entity_index,
+                    mana: 731,
+                } if *source_entity_index == handle.source_slot => Some((i, *sphere_id)),
+                _ => None,
+            })
+            .expect("actual authored Trader mana birth");
+        let burst_order = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+            crate::native_world::Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. }
+                if *parent_entity_index == handle.source_slot)
+            })
+            .unwrap();
+        assert!(sphere_order < burst_order);
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|row| row.id == sphere_id)
+            .unwrap();
+        assert_eq!(
+            (
+                sphere.mana,
+                sphere.owner_entity_index,
+                sphere.player_entity_index
+            ),
+            (731, player, player)
+        );
+        assert!(sphere.active && !sphere.pending_delete);
+        assert!(
+            session
+                .source_arena()
+                .handle(sphere.source_entity_index)
+                .is_some()
+        );
+        session.step_level2_source_pass(1);
+        assert_ne!(
+            session.source_arena().handle(handle.source_slot),
+            Some(handle)
+        );
+        assert!(session.source_arena().resolve(handle).is_none());
+        if session.source_arena().handle(handle.source_slot).is_none() {
+            assert!(!session.entities()[usize::from(handle.source_slot)].active);
+            assert!(!session.economy().map_chains.is_linked(handle.source_slot));
         }
     }
 

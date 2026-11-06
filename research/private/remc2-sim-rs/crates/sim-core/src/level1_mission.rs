@@ -37,7 +37,7 @@ use crate::{
         source_sprite_dispositions, spell_pickup_spawn_kind, unknown_source_sprite_tuple,
     },
     turn_toward,
-    villager::VillagerStepEffect,
+    villager::{VillagerDeathRequest, VillagerFamily, VillagerStepEffect},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -8068,9 +8068,23 @@ impl Level1MissionState {
 
     /// Apply effects emitted by the reset/imported Villager family. House
     /// admission is consumed atomically by `HouseFamily` before this call.
-    pub fn apply_imported_villager_effects(&mut self, effects: &[VillagerStepEffect]) {
+    pub fn apply_imported_villager_effects<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        villagers: &mut VillagerFamily,
+        effects: &[VillagerStepEffect],
+    ) {
         for effect in effects.iter().copied() {
             match effect {
+                VillagerStepEffect::DeathRequested(request) => {
+                    let villager = villagers
+                        .villagers_mut()
+                        .iter_mut()
+                        .find(|row| row.entity_index == request.source_entity_index)
+                        .expect("Villager death request retains its typed source");
+                    self.finish_settlement_death(world, request, &mut villager.owner_entity_index);
+                    villagers.disable_source_slot(request.source_entity_index);
+                }
                 VillagerStepEffect::TargetPlayer { .. } => {
                     self.player_archer_target_ticks = 200;
                 }
@@ -8094,6 +8108,61 @@ impl Level1MissionState {
                     unreachable!("HouseFamily consumes imported Villager entry effects")
                 }
             }
+        }
+    }
+
+    /// KillEntity_1C930 reads the current fixed address after each NewEvent.
+    fn finish_settlement_death<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        request: VillagerDeathRequest,
+        source_owner: &mut u16,
+    ) {
+        let slot = request.source_entity_index;
+        let original = self.source_pool.occupant(slot);
+        self.spawn_mana_sphere_from_death(
+            world,
+            slot,
+            request.position,
+            request.yaw,
+            request.source_rng_after_death,
+            request.mana,
+            request.owner_entity_index,
+        );
+        if request.mana > 0 {
+            *source_owner = 0;
+        }
+        let position = if self.source_pool.occupant(slot) == original {
+            request.position
+        } else {
+            self.current_source_entity_view(&FlightState::default(), slot, None)
+                .expect("settlement death replacement retains its current carrier")
+                .position
+        };
+        if self.source_slots[usize::from(slot)].control_flags & 0x0010_0000 == 0 {
+            self.spawn_death_burst_from_death(slot, position);
+        }
+        self.source_pool.disable_slot(slot);
+        let record = &mut self.source_slots[usize::from(slot)];
+        record.control_flags |= SOURCE_DISABLED_FLAG;
+        if self.source_pool.occupant(slot) == original {
+            record.active = false;
+        }
+        if let Some(sphere) = self
+            .mana_spheres
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            sphere.control_flags |= SOURCE_DISABLED_FLAG;
+            sphere.pending_delete = true;
+        }
+        if let Some(burst) = self
+            .death_bursts
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+        {
+            burst.control_flags |= SOURCE_DISABLED_FLAG;
+            burst.active = false;
         }
     }
 
@@ -10467,9 +10536,24 @@ impl Level1MissionState {
             .find(|actor| actor.source_entity_index == source_entity_index)
         {
             source_actor.entity_rng = source_rng_after_death;
+        }
+        let allocated = self.allocate_mana_sphere_source();
+        // 36BA0 clears the current source address after NewEvent, even on
+        // failure. A source-address alias reads the new sphere's defaults.
+        if let Some(source_actor) = self
+            .actors
+            .iter_mut()
+            .find(|actor| actor.source_entity_index == source_entity_index)
+        {
             source_actor.owner_id = 0;
         }
-        let sphere_slot = self.allocate_mana_sphere_source()?;
+        let sphere_slot = allocated?;
+        let replaced_source = sphere_slot == source_entity_index;
+        let (position, source_yaw, mana, owner_entity_index) = if replaced_source {
+            (Position::default(), 0, 512, 0)
+        } else {
+            (position, source_yaw, mana, owner_entity_index)
+        };
         let id = u32::from(sphere_slot);
         let sphere_rng = next_rng16(self.source_slots[usize::from(sphere_slot)].entity_rng);
         let phase = sphere_slot as u8;
@@ -10550,6 +10634,13 @@ impl Level1MissionState {
         position: Position,
     ) -> Option<u16> {
         let burst_slot = self.allocate_death_burst_source()?;
+        let position = if burst_slot == source_entity_index {
+            Position::default()
+        } else {
+            position
+        };
+        self.source_ids[usize::from(burst_slot)] =
+            self.source_ids[usize::from(source_entity_index)];
         let record = &mut self.source_slots[usize::from(burst_slot)];
         record.control_flags = (record.control_flags & 0xfffd_fff7) | SOURCE_REPLACEABLE_FLAG;
         self.source_pool.mark_replaceable(burst_slot);
@@ -14183,6 +14274,7 @@ impl Level1MissionState {
         if !resident.active {
             return Vec::new();
         }
+        let original_occupant = self.source_pool.occupant(source_slot);
         let resident_view = source_views
             .binary_search_by_key(&source_slot, |view| view.source_entity_index)
             .ok()
@@ -14224,6 +14316,17 @@ impl Level1MissionState {
                 self.step_dynamic_trader(world, source_views, &mut resident)
             }
         };
+        if self.source_pool.occupant(source_slot) != original_occupant {
+            // A death constructor replaced the fixed address. The old
+            // resident must not overwrite or hide its newborn projection.
+            self.dynamic_residents[usize::from(source_slot)] = None;
+            effects.retain(|effect| {
+                !matches!(effect,
+                Level1SourceEffect::DisableSourceSlot { source_entity_index }
+                    if *source_entity_index == source_slot)
+            });
+            return effects;
+        }
         resident.phase = resident.phase.wrapping_add(1);
         self.dynamic_residents[usize::from(source_slot)] = Some(resident);
 
@@ -14271,6 +14374,17 @@ impl Level1MissionState {
         source_views: &[Level1SourceEntityView],
         resident: &mut DynamicResidentState,
     ) -> Vec<Level1SourceEffect> {
+        let townie_removal = resident.action == crate::villager::VILLAGER_REMOVAL_ACTION;
+        let death_requested = resident.phase & 7 == 0
+            && matches!(
+                (resident.model, resident.action),
+                (BUILDER_MODEL, BUILDER_KILL_ACTION)
+                    | (TRADER_MODEL, TRADER_KILL_ACTION)
+                    | (
+                        BUILDER_MODEL | crate::villager::VILLAGER_MODEL,
+                        crate::villager::VILLAGER_REMOVAL_ACTION
+                    )
+            );
         let building_source_order = self
             .targeting_source_lists
             .class_10_buildings()
@@ -14302,7 +14416,7 @@ impl Level1MissionState {
             DynamicResidentKind::Archer => unreachable!("Archer owns its own scheduled body"),
         };
         let request = context.house_request;
-        let death_bursts = std::mem::take(&mut context.death_bursts);
+        let mut death_bursts = std::mem::take(&mut context.death_bursts);
         #[cfg(test)]
         let rng_draw = context.selection_rng_draw;
         drop(context);
@@ -14317,6 +14431,26 @@ impl Level1MissionState {
                 before,
                 after,
             });
+        }
+        if death_requested {
+            // The 109 callback has already run the Villager kernel's draw,
+            // including when a post-build actor still has model 12.
+            if resident.mana > 0 && !townie_removal {
+                resident.entity_rng = next_rng16(resident.entity_rng);
+            }
+            self.finish_settlement_death(
+                world,
+                VillagerDeathRequest {
+                    source_entity_index: resident.source_entity_index,
+                    position: resident.position,
+                    yaw: resident.yaw,
+                    mana: resident.mana,
+                    owner_entity_index: resident.owner_entity_index,
+                    source_rng_after_death: resident.entity_rng,
+                },
+                &mut resident.owner_entity_index,
+            );
+            death_bursts.clear();
         }
         for (slot, position) in death_bursts {
             self.spawn_death_burst_from_death(slot, position);
@@ -41683,6 +41817,220 @@ mod tests {
         assert_eq!(mission.source_slots[50].entity_rng, 0x4490);
         assert_eq!(mission.next_effect_id, next_effect_id);
         assert!(mission.mana_spheres.is_empty());
+    }
+
+    #[test]
+    fn configured_imported_villager_uses_legacy_request_sink() {
+        let private_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = crate::native_world::NativeWorld::load(
+            private_root.join("generated/level1-export-n"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .unwrap();
+        let mut session = world.session();
+        let slot = session.live_world.villagers()[0].entity_index;
+        let before_rng = {
+            let row = &mut session.live_world.villager_family_mut().villagers_mut()[0];
+            assert_eq!(row.mana, 0);
+            // This explicitly supplied positive removal state exercises the
+            // legacy imported carrier, not a default mission death producer.
+            row.action = crate::villager::VILLAGER_REMOVAL_ACTION;
+            row.mana = 731;
+            row.owner_entity_index = 152;
+            row.rng
+        };
+        for _ in 0..16 {
+            let effects = session
+                .live_world
+                .step_villager_source_slot(slot, &session.terrain, &[]);
+            session.mission.apply_imported_villager_effects(
+                &session.terrain,
+                session.live_world.villager_family_mut(),
+                &effects,
+            );
+            if !session.live_world.villagers()[0].active {
+                break;
+            }
+        }
+        let dead = &session.live_world.villagers()[0];
+        assert!(!dead.active);
+        assert_eq!(
+            (dead.rng, dead.owner_entity_index),
+            (crate::villager::next_rng(before_rng), 0)
+        );
+        let sphere = session.mission.mana_spheres.last().unwrap();
+        assert_eq!(
+            (
+                sphere.mana,
+                sphere.owner_entity_index,
+                sphere.player_entity_index
+            ),
+            (731, 152, 152)
+        );
+        assert_eq!(sphere.position, dead.position);
+        assert!(sphere.active && !sphere.pending_delete);
+        assert_eq!(
+            session
+                .mission
+                .death_bursts
+                .last()
+                .unwrap()
+                .parent_entity_index,
+            slot
+        );
+        assert!(session.mission.source_pool.disabled[usize::from(slot)]);
+        session.mission.begin_source_turn();
+        assert!(!session.mission.imported_source_slot_is_live(slot));
+    }
+
+    #[test]
+    fn configured_settlement_mana_uses_legacy_death_and_castle_consumers() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        for (model, action, kill) in [(12, 97, 101), (12, 97, 109), (13, 105, 109), (14, 113, 117)]
+        {
+            for mana in [-1, 0, 731] {
+                let mut mission = template.session(10_000, 1_000);
+                mission.install_stable_stage_one_fixture(
+                    &FlatWorld,
+                    Position {
+                        x: 20_000,
+                        y: 20_000,
+                        z: 0,
+                    },
+                    152,
+                );
+                let slot = mission
+                    .spawn_house_resident(mission.castle_position, model, action, 0)
+                    .unwrap()
+                    .unwrap();
+                // Explicit configured-state control, not an ordinary
+                // nonzero-mana mission producer: source defaults remain zero.
+                let resident = mission.dynamic_residents[usize::from(slot)]
+                    .as_mut()
+                    .unwrap();
+                assert_eq!(resident.mana, 0);
+                resident.mana = mana;
+                resident.owner_entity_index = 152;
+                resident.action = kill;
+                resident.phase = 0;
+                let rng = resident.entity_rng;
+                let player = FlightState {
+                    entity_index: 152,
+                    ..FlightState::default()
+                };
+                mission.begin_source_turn();
+                mission.dispatch_source_slot(&FlatWorld, &player, slot, false, false, None);
+                let dead = mission.dynamic_residents[usize::from(slot)].unwrap();
+                assert!(!dead.visible && !dead.active);
+                assert_eq!(
+                    dead.entity_rng,
+                    if mana > 0 { next_rng16(rng) } else { rng },
+                    "model {model} removal action {kill} mana {mana} draws exactly once iff positive"
+                );
+                assert_eq!(dead.owner_entity_index, if mana > 0 { 0 } else { 152 });
+                assert_eq!(mission.death_bursts.len(), 1);
+                assert!(mission.source_pool.occupant(slot).is_some());
+                if mana > 0 {
+                    let sphere = *mission.mana_spheres.last().unwrap();
+                    assert_eq!(
+                        (
+                            sphere.mana,
+                            sphere.owner_entity_index,
+                            sphere.player_entity_index
+                        ),
+                        (731, 152, 152)
+                    );
+                    assert_eq!(sphere.position, mission.castle_position);
+                    assert_eq!(
+                        sphere.entity_rng,
+                        next_rng16(next_rng16(
+                            sphere
+                                .source_entity_index
+                                .wrapping_add(mission.global_rng as u16)
+                        ))
+                    );
+                    assert!(!sphere.pending_delete);
+                    mission.source_slots[usize::from(mission.castle_source_entity_index)].phase = 2;
+                    mission.step_castle_root_slot(&FlatWorld, mission.castle_source_entity_index);
+                    assert_eq!(mission.castle_mana, 731);
+                    assert!(
+                        mission
+                            .mana_spheres
+                            .iter()
+                            .find(|row| row.id == sphere.id)
+                            .unwrap()
+                            .pending_delete
+                    );
+                } else {
+                    assert!(mission.mana_spheres.is_empty());
+                }
+                mission.begin_source_turn();
+                assert!(mission.source_pool.occupant(slot).is_none());
+                assert!(mission.dynamic_residents[usize::from(slot)].is_none());
+                assert!(mission.mana_spheres.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_settlement_death_preserves_failure_and_current_address_alias() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let request = VillagerDeathRequest {
+            source_entity_index: 50,
+            position: Position {
+                x: 10_000,
+                y: 20_000,
+                z: 768,
+            },
+            yaw: 1_000,
+            mana: 731,
+            owner_entity_index: 152,
+            source_rng_after_death: next_rng16(0x1111),
+        };
+        let mut failure = template.session(10_000, 1_000);
+        failure.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        failure.source_pool.occupants[50] = Some(SourceOccupant::ImportedLive);
+        let mut owner = request.owner_entity_index;
+        failure.finish_settlement_death(&FlatWorld, request, &mut owner);
+        assert_eq!(owner, 0);
+        assert_eq!(
+            failure.source_slots[50].entity_rng,
+            request.source_rng_after_death
+        );
+        assert!(failure.mana_spheres.is_empty() && failure.death_bursts.is_empty());
+        assert!(failure.source_pool.disabled[50]);
+
+        let mut alias = template.session(10_000, 1_000);
+        alias.source_pool = Level1SourcePool::from_free_stack(&[51, 50]).unwrap();
+        let mut owner = request.owner_entity_index;
+        alias.finish_settlement_death(&FlatWorld, request, &mut owner);
+        assert_eq!(owner, 0);
+        let sphere = alias
+            .mana_spheres
+            .iter()
+            .find(|row| row.source_entity_index == 50)
+            .unwrap();
+        assert_eq!(
+            (
+                sphere.position,
+                sphere.mana,
+                sphere.owner_entity_index,
+                sphere.player_entity_index
+            ),
+            (Position::default(), 512, 0, 0)
+        );
+        assert!(sphere.pending_delete);
+        let burst = alias
+            .death_bursts
+            .iter()
+            .find(|row| row.source_entity_index == 51)
+            .unwrap();
+        assert_eq!(burst.position, Position::default());
+        assert_eq!(alias.source_ids[51], alias.source_ids[50]);
+        assert_eq!(alias.source_slots[50].class, MANA_SPHERE_CLASS);
+        alias.begin_source_turn();
+        assert!(alias.source_pool.occupant(50).is_none());
+        assert!(alias.mana_spheres.is_empty());
     }
 
     #[test]

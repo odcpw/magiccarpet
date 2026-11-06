@@ -1,6 +1,132 @@
 use super::*;
 
 #[cfg(test)]
+mod settlement_death_tests {
+    use super::*;
+
+    #[test]
+    fn configured_imported_villager_mana_reaches_scheduled_death_and_collection() {
+        let mut session = crate::native_world::tests::level_two_campaign_session();
+        let player = session.state.entity_index;
+        let slot = 77;
+        let handle = session.source_arena().handle(slot).unwrap();
+        {
+            let live = &mut session.session.state.live;
+            let row = live
+                .ordinary
+                .villagers
+                .villagers_mut()
+                .iter_mut()
+                .find(|row| row.entity_index == slot)
+                .unwrap();
+            assert_eq!(row.mana, 0);
+            // Explicit configured removal-state control of the imported
+            // Villager carrier. Its ordinary reset/death path is unchanged.
+            row.mana = 731;
+            row.owner_entity_index = player;
+            row.action = crate::villager::VILLAGER_REMOVAL_ACTION;
+            row.publish_source(&mut live.economy.entities[usize::from(slot)]);
+        }
+        let mut death = None;
+        for pass in 0..16 {
+            let before = session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|row| row.entity_index == slot)
+                .unwrap()
+                .clone();
+            let event_start = session.economy().events().len();
+            session.step_level2_source_pass((pass % 3) as u8);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            if before.phase & 7 == 0 {
+                death = Some((before, event_start));
+                break;
+            }
+            assert!(
+                session
+                    .ordinary()
+                    .villagers()
+                    .iter()
+                    .find(|row| row.entity_index == slot)
+                    .unwrap()
+                    .active
+            );
+        }
+        let (before, event_start) = death.expect("actual phase-gated imported Villager death");
+        let after = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|row| row.entity_index == slot)
+            .unwrap();
+        assert!(!after.active);
+        assert_eq!(
+            (after.rng, after.owner_entity_index),
+            (crate::villager::next_rng(before.rng), 0)
+        );
+        assert!(session.entities()[usize::from(slot)].drawing_disabled());
+        assert_eq!(session.source_arena().handle(slot), Some(handle));
+        let events = &session.economy().events()[event_start..];
+        let (sphere_order, sphere_id) = events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| match event {
+                Level2EconomyEvent::ManaSphereSpawned {
+                    sphere_id,
+                    source_entity_index,
+                    mana: 731,
+                } if *source_entity_index == slot => Some((index, *sphere_id)),
+                _ => None,
+            })
+            .expect("imported Villager death allocates configured full mana");
+        let burst_order = events
+            .iter()
+            .position(|event| {
+                matches!(event,
+            Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. }
+                if *parent_entity_index == slot)
+            })
+            .unwrap();
+        assert!(sphere_order < burst_order);
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|row| row.id == sphere_id)
+            .unwrap();
+        assert_eq!(
+            (
+                sphere.mana,
+                sphere.owner_entity_index,
+                sphere.player_entity_index
+            ),
+            (731, player, player)
+        );
+        assert!(sphere.active && !sphere.pending_delete);
+        let (sphere_slot, position) = (sphere.source_entity_index, sphere.position);
+        assert!(session.source_arena().handle(sphere_slot).is_some());
+        // The collector is a focused supplied control at the real output;
+        // absorption and its amount are the production consumer.
+        let arena = &mut session.session.state.live.economy;
+        let carrier = arena
+            .spawn_mana_carrier(position, player, sphere_id)
+            .unwrap();
+        assert!(arena.absorb_sphere_into_carrier(sphere_slot, carrier));
+        assert!(arena.events().iter().any(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereCollected { sphere_id: id, carrier_id, mana: 731 }
+                if *id == sphere_id && *carrier_id == u32::from(carrier))));
+        session.step_level2_source_pass(0);
+        assert_ne!(session.source_arena().handle(slot), Some(handle));
+    }
+}
+
+#[cfg(test)]
 mod castle_revival_tests {
     use super::*;
 
@@ -5205,6 +5331,9 @@ impl Level2OrdinaryResetSession {
         players: &[u16],
         particles: &[ParticleParameter],
     ) -> std::result::Result<creatures::settlements::SettlementVillagerStep, String> {
+        let source_handle = arena
+            .handle(source_slot)
+            .ok_or_else(|| format!("Villager {source_slot} has no current source handle"))?;
         let mut views = arena.settlement_source_views(
             &self.houses,
             self.villagers.villagers(),
@@ -5225,18 +5354,94 @@ impl Level2OrdinaryResetSession {
             players,
             effects: Vec::new(),
         };
-        let effects = self.villagers.step_source_slot_with_entry(
+        let requested_effects = self.villagers.step_source_slot_with_entry(
             source_slot,
             terrain,
             &views,
             Some(&mut stage),
             |target| arena.try_enter_settlement_house(&mut self.houses, target),
         );
-        if let Some(villager) = self
-            .villagers
-            .villagers()
-            .iter()
-            .find(|row| row.entity_index == source_slot)
+        let mut effects = Vec::with_capacity(requested_effects.len() + 1);
+        for effect in requested_effects {
+            let VillagerStepEffect::DeathRequested(request) = effect else {
+                effects.push(effect);
+                continue;
+            };
+            if request.mana > 0 {
+                // 36BA0 writes the dying RNG before NewEvent, even if the
+                // allocation fails or replaces that very source address.
+                arena.entities[usize::from(source_slot)]
+                    .set_entity_rng(request.source_rng_after_death);
+                arena
+                    .economy
+                    .source_rng
+                    .insert(source_slot, request.source_rng_after_death);
+                crate::world::effects::spawn_death_mana_sphere(
+                    arena,
+                    terrain,
+                    source_slot,
+                    request.position,
+                    request.yaw,
+                    request.mana,
+                    request.owner_entity_index,
+                )?;
+                if !crate::world::effects::clear_replacement_mana_owner(arena, source_slot)?
+                    && arena.handle(source_slot) == Some(source_handle)
+                {
+                    arena.entities[usize::from(source_slot)].set_source_player_entity_index(0);
+                }
+                if let Some(villager) = self
+                    .villagers
+                    .villagers_mut()
+                    .iter_mut()
+                    .find(|row| row.entity_index == source_slot)
+                {
+                    villager.owner_entity_index = 0;
+                }
+                arena.economy.source_owner.insert(source_slot, 0);
+            }
+            // KillEntity reads the current address after its mana attempt.
+            // A replacement sphere supplies its own id, flags and position.
+            let current = source_target::read(
+                arena,
+                source_target::Context {
+                    houses: Some(&self.houses),
+                    villagers: Some(&self.villagers),
+                    particles: Some(particles),
+                    ..Default::default()
+                },
+                source_slot,
+            )?
+            .ok_or_else(|| format!("Villager death lost source address {source_slot}"))?;
+            let burst = if current.control_flags & 0x0010_0000 == 0 {
+                let birth = crate::world::effects::spawn_death_burst(
+                    arena,
+                    terrain,
+                    particles,
+                    source_slot,
+                    current.position,
+                    current.source_id,
+                )?;
+                effects.push(VillagerStepEffect::DeathBurst {
+                    source_entity_index: source_slot,
+                    position: current.position,
+                });
+                birth
+            } else {
+                None
+            };
+            crate::world::effects::hide_birth_replacement(arena, source_slot, burst)?;
+            self.villagers.disable_source_slot(source_slot);
+            effects.push(VillagerStepEffect::DisableSourceSlot {
+                source_entity_index: source_slot,
+            });
+        }
+        if arena.handle(source_slot) == Some(source_handle)
+            && let Some(villager) = self
+                .villagers
+                .villagers()
+                .iter()
+                .find(|row| row.entity_index == source_slot)
         {
             let source = arena
                 .entities

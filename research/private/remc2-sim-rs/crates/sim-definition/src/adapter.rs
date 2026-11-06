@@ -32,6 +32,7 @@ pub const BUILDER_SOURCE_BINDING: SettlementSourceBinding = SettlementSourceBind
     descriptor: 101,
     action: 97,
 };
+pub const BUILDER_BUILD_SOUND: u16 = 10;
 pub const VILLAGER_SOURCE_BINDING: SettlementSourceBinding = SettlementSourceBinding {
     model: 13,
     descriptor: 100,

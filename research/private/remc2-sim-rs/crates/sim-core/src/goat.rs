@@ -94,6 +94,11 @@ impl LiveWorldState {
         self.villagers.villagers()
     }
 
+    /// Borrow the Villager domain for the mission-owned death constructors.
+    pub fn villager_family_mut(&mut self) -> &mut VillagerFamily {
+        &mut self.villagers
+    }
+
     /// Commit the host-owned class-5 writes emitted by remc2 `sub_57390`.
     /// The raw source arena remains authoritative for generic rows; this keeps
     /// the Goat/Villager typed authorities isomorphic before their later

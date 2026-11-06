@@ -680,6 +680,58 @@ def test_cf15_level1_campaign_preserves_owner_export_with_collision_and_construc
     ) == 177
 
 
+def test_reset_house_collision_v4_requires_the_actual_model45_closure(tmp_path: Path) -> None:
+    generated = ROOT / "research/private/generated"
+    package = Path(os.environ.get(
+        "MC_LEVEL7_HOUSE_PACKAGE",
+        str(generated / "settlement-20261105-integration/owner-collision-closure-v4/level7"),
+    ))
+    assert verify(package)["schema"] == "mc2-owner-campaign-package/v4"
+    content = (package / "collision-masks.bin").read_bytes()
+    records = {}
+    cursor = 20
+    for _ in range(struct.unpack_from("<I", content, 12)[0]):
+        selector = struct.unpack_from("<H", content, cursor)[0]
+        end = cursor + 12 + struct.unpack_from("<I", content, cursor + 8)[0]
+        records[selector] = content[cursor:end]
+        cursor = end
+    assert cursor == len(content)
+    assert list(records) == [17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 57, 60, 62, 65, 71, 74]
+    assert 1 not in records, "Castle-only BUILD row1 is not a model45 sprite input"
+
+    def collision_case(name: str, rows: dict[int, bytes]) -> None:
+        candidate = tmp_path / name
+        shutil.copytree(package, candidate)
+        header = bytearray(content[:20])
+        struct.pack_into("<I", header, 12, len(rows))
+        rewrite_member(candidate, "collision-masks.bin", bytes(header) + b"".join(rows[key] for key in sorted(rows)))
+        with pytest.raises(AssertionError, match="collision fact selectors differ"):
+            verify(candidate)
+
+    collision_case("missing-reset-house30", {key: value for key, value in records.items() if key != 30})
+    collision_case("extra-castle-row1", {**records, 1: struct.pack("<HHHHIh", 1, 1, 1, 0, 2, 0)})
+
+    wrong_bank = tmp_path / "wrong-map-bank"
+    shutil.copytree(package, wrong_bank)
+    def day_bank(definition: dict) -> None:
+        fact = next(fact for fact in definition["source_facts"] if fact["kind"] == 3)
+        fact["source_artifacts"] = [
+            {"logical_path": "CD_Files/DATA/MSPRD0-0.DAT", "bytes": 49202, "sha256": "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656"},
+            {"logical_path": "CD_Files/DATA/MSPRD0-0.TAB", "bytes": 1572, "sha256": "47fe03bbd99e1975755a8e47401977965b5ef63fe427a755a2f481ed393117ea"},
+        ]
+    rewrite_definition(wrong_bank, day_bank)
+    with pytest.raises(AssertionError, match="source artifacts are not exact"):
+        verify(wrong_bank)
+
+    wrong_profile = tmp_path / "legacy-closed-version"
+    shutil.copytree(package, wrong_profile)
+    def old_closed(definition: dict) -> None:
+        next(fact for fact in definition["source_facts"] if fact["kind"] == 3)["version"] = 3
+    rewrite_definition(wrong_profile, old_closed)
+    with pytest.raises(AssertionError, match="collision fact selectors differ|closed collision profile"):
+        verify(wrong_profile)
+
+
 def test_level1_collision_profile_validates_real_owner_data_and_rejects_substitutions(tmp_path: Path) -> None:
     generated = ROOT / "research/private/generated"
     package = Path(os.environ.get("MC2_LEVEL1_COLLISION_PACKAGE", str(generated / "mc-bhq8-level1-collision-v5-night")))

@@ -5608,7 +5608,11 @@ impl NativeSession<'_> {
                     &source_views,
                 );
                 self.mission
-                    .apply_imported_villager_effects(&villager_effects);
+                    .apply_imported_villager_effects(
+                        &self.terrain,
+                        self.live_world.villager_family_mut(),
+                        &villager_effects,
+                    );
                 self.process_goat_events(&goat_events);
                 if let Some(house) = self
                     .live_world

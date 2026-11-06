@@ -51,7 +51,7 @@ pub const BUILDER_TERRAIN_MASK: u32 = BUILDER_CLASS_PROPERTIES.terrain_mask;
 pub const BUILDER_MAX_TILE_SLOPE: i32 = BUILDER_CLASS_PROPERTIES.maximum_slope;
 pub const BUILDER_HOUSE_APPROACH_RANGE: u32 = 0x0a00;
 pub const BUILDER_HIT_RELEASE_RANGE: u32 = 0x0e00;
-pub const BUILDER_BUILD_SOUND: u16 = 10;
+pub const BUILDER_BUILD_SOUND: u16 = sim_definition::adapter::BUILDER_BUILD_SOUND;
 pub const TRADER_MODEL: u8 = TRADER_SOURCE_BINDING.model;
 pub const TRADER_INITIAL_ACTION: u8 = 112;
 pub const TRADER_FREE_ACTION: u8 = 113;
@@ -189,8 +189,8 @@ impl SettlementContext<'_, '_> {
                 // phase-gated generic kill/reclaim helper.
                 self.set_trader_player_hit_feedback(source_views, resident.kill_credit_entity);
                 if resident.phase.trailing_zeros() >= 3 {
-                    // Level 1 house-created Traders carry zero mana. The
-                    // optional death burst is therefore the only allocation.
+                    // Default Traders carry zero mana. The arena sink handles
+                    // configured positive mana before this optional burst.
                     if !resident.suppress_death_burst {
                         self.spawn_death_burst_from_death(
                             resident.source_entity_index,
@@ -506,10 +506,8 @@ impl SettlementContext<'_, '_> {
             BUILDER_KILL_ACTION => {
                 self.set_builder_player_hit_feedback(source_views, resident.kill_credit_entity);
                 if resident.phase & 7 == 0 {
-                    // Builder mana is zero, so
-                    // `TransformEntityToManaSphere(false)` performs no RNG
-                    // draw and no allocation. The optional death burst is the
-                    // sole allocation before disable/unlink.
+                    // Default Builders carry zero mana. The arena sink handles
+                    // configured positive mana before this optional burst.
                     if !resident.suppress_death_burst {
                         self.spawn_death_burst_from_death(
                             resident.source_entity_index,
@@ -1060,6 +1058,21 @@ impl SettlementContext<'_, '_> {
         let mut effects = Vec::with_capacity(villager_effects.len());
         for effect in villager_effects {
             match effect {
+                VillagerStepEffect::DeathRequested(request) => {
+                    debug_assert_eq!(request.source_entity_index, resident.source_entity_index);
+                    debug_assert_eq!(request.source_rng_after_death, resident.entity_rng);
+                    // Positive mana takes the arena's canonical current-address
+                    // death sequence. Keep the zero-mana source path unchanged.
+                    if request.mana <= 0 && !resident.suppress_death_burst {
+                        self.spawn_death_burst_from_death(
+                            request.source_entity_index,
+                            request.position,
+                        );
+                    }
+                    effects.push(Level1SourceEffect::DisableSourceSlot {
+                        source_entity_index: request.source_entity_index,
+                    });
+                }
                 VillagerStepEffect::TryEnterBuilding {
                     resident_source_entity_index,
                     house_source_entity_index,
@@ -2565,7 +2578,7 @@ impl crate::campaign::source_arena::SourceArena {
         players: &[u16],
         particles: &[crate::native_world::ParticleParameter],
     ) -> Result<Option<SettlementPopulationStep>, String> {
-        let Some(index) = self
+        let Some(mut index) = self
             .house_residents
             .iter()
             .position(|row| row.source_entity_index == slot && row.active && row.drawing_enabled)
@@ -2578,6 +2591,18 @@ impl crate::campaign::source_arena::SourceArena {
                 building_source_order.contains(&view.source_entity_index);
         }
         let mut source = self.house_residents[index];
+        let source_generation = self.slot_generation(slot);
+        let generic_death = source.phase & 7 == 0
+            && matches!(
+                (source.model, source.action),
+                (BUILDER_MODEL, BUILDER_KILL_ACTION)
+                    | (TRADER_MODEL, TRADER_KILL_ACTION)
+                    | (BUILDER_MODEL, crate::villager::VILLAGER_REMOVAL_ACTION)
+                    | (
+                        crate::villager::VILLAGER_MODEL,
+                        crate::villager::VILLAGER_REMOVAL_ACTION
+                    )
+            );
         let mut resident = source.population_state();
         let targets = stage::targets(self, &views, villagers.villagers());
         let mut linked_residents = Vec::new();
@@ -2622,7 +2647,7 @@ impl crate::campaign::source_arena::SourceArena {
             DynamicResidentKind::Archer => unreachable!("Archer has its own source owner"),
         };
         let request = context.house_request;
-        let bursts = std::mem::take(&mut context.death_bursts);
+        let mut bursts = std::mem::take(&mut context.death_bursts);
         let linked_kills = std::mem::take(&mut context.linked_kills);
         let stage_effects = context
             .stage
@@ -2661,6 +2686,84 @@ impl crate::campaign::source_arena::SourceArena {
             {
                 row.action = 117;
             }
+        }
+        if generic_death {
+            // KillEntity_1C930 keeps the source visible until the mana and
+            // burst constructors have both visited its fixed address.
+            if resident.mana > 0 {
+                // VillagerDeathRequest already performed its one source draw.
+                if source.action != crate::villager::VILLAGER_REMOVAL_ACTION {
+                    resident.entity_rng = next_rng16(resident.entity_rng);
+                }
+                self.house_residents[index].entity_rng = resident.entity_rng;
+                self.entities[usize::from(slot)].set_entity_rng(resident.entity_rng);
+                self.source_rng.insert(slot, resident.entity_rng);
+                crate::world::effects::spawn_death_mana_sphere(
+                    self,
+                    terrain,
+                    slot,
+                    resident.position,
+                    resident.yaw,
+                    resident.mana,
+                    resident.owner_entity_index,
+                )?;
+                crate::world::effects::clear_replacement_mana_owner(self, slot)?;
+                if self.slot_generation(slot) == source_generation {
+                    index = self
+                        .house_residents
+                        .iter()
+                        .position(|row| row.active && row.source_entity_index == slot)
+                        .ok_or_else(|| {
+                            format!("settlement death lost original carrier at slot {slot}")
+                        })?;
+                    resident.owner_entity_index = 0;
+                    self.house_residents[index].owner_entity_index = 0;
+                    self.entities[usize::from(slot)].record[152..154].fill(0);
+                    self.source_owner.insert(slot, 0);
+                }
+            }
+            let current = super::super::source_target::read(
+                self,
+                super::super::source_target::Context::default(),
+                slot,
+            )?
+            .ok_or_else(|| format!("settlement death lost current source address {slot}"))?;
+            let burst = if current.control_flags & 0x0010_0000 == 0 {
+                crate::world::effects::spawn_death_burst(
+                    self,
+                    terrain,
+                    particles,
+                    slot,
+                    current.position,
+                    current.source_id,
+                )?
+            } else {
+                None
+            };
+            bursts.clear();
+            if crate::world::effects::hide_birth_replacement(self, slot, burst)? {
+                let spell_awards = self::runtime::apply_effects(
+                    self,
+                    villagers,
+                    terrain,
+                    particles,
+                    stage_effects,
+                )?;
+                return Ok(Some(SettlementPopulationStep {
+                    feedback_entity: (feedback != 0).then_some(resident.kill_credit_entity),
+                    spell_awards,
+                }));
+            }
+            if self.slot_generation(slot) != source_generation {
+                return Err(format!(
+                    "settlement death cannot hide replacement at slot {slot}"
+                ));
+            }
+            index = self
+                .house_residents
+                .iter()
+                .position(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("settlement death lost original carrier at slot {slot}"))?;
         }
         for (dead_slot, position) in bursts {
             let _ =
@@ -4114,6 +4217,1601 @@ mod production_tests {
                 .any(|row| row.entity_index == handle.source_slot)
         );
         assert_ne!(session.entities()[usize::from(handle.source_slot)].class, 5);
+    }
+
+    #[test]
+    fn level_seven_public_house_builder_and_area_skeleton_convert_naturally() {
+        use crate::PlayerCommand;
+        use crate::campaign::schedule::{CurrentOccupant, ScheduleReceipt};
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::house::HouseStepEvent;
+        use crate::level_definition::CreatureKind;
+        use crate::native_world::{Mc2DispatchEvent, area_damage, simulation::Model9ConversionOutcome};
+        use std::collections::BTreeSet;
+
+        let mut session = ordinary_level_seven();
+        let player = session.state.entity_index;
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let house = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| row.entity_index == 85)
+            .expect("the real resident-producing Level7 House85");
+        assert!(
+            house.active
+                && house.occupants == 2
+                && house.parameter.produces_villagers()
+                && house.parameter.destruction_successor == 0
+        );
+        let house_handle = session.source_arena().handle(house.entity_index).unwrap();
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        // Declared player mana and aim only; the House, its Builder, switch,
+        // Skeletons, RNG and source schedule stay under ordinary callbacks.
+        {
+            let live = &mut session.session.state.live;
+            live.economy
+                .economy
+                .owner_base_max_mana
+                .insert(player, 2_000_000);
+            live.economy
+                .economy
+                .rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            live.shared_spells.set_local_player_mana_for_test(2_000_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_mana(2_000_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+            live.shared_spells
+                .sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = 2_000_000;
+            }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        // The reset House is in action51 with a construction countdown, not
+        // 29 combat health. Wait for its actual source transition to action52.
+        let construction_budget = usize::try_from(house.life.max(0))
+            .unwrap()
+            .saturating_mul(2)
+            + 64;
+        for _ in 0..construction_budget {
+            if session.ordinary().houses().iter().any(|row| {
+                row.entity_index == house.entity_index
+                    && row.active
+                    && row.action == crate::house::HOUSE_LIVE_ACTION
+            }) {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+        }
+        assert_eq!(
+            session.source_arena().handle(house.entity_index),
+            Some(house_handle)
+        );
+        let house = *session
+            .ordinary()
+            .houses()
+            .iter()
+            .find(|row| {
+                row.entity_index == house.entity_index
+                    && row.active
+                    && row.action == crate::house::HOUSE_LIVE_ACTION
+            })
+            .expect("House85 must naturally finish its source construction countdown");
+        assert_eq!(
+            house.life,
+            i32::from(house.parameter.life_mana_scalar) * 1_000
+        );
+        let fire = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        let holder = session.shared_spells().pickup(fire).unwrap();
+        let required_hits =
+            usize::try_from(house.life / crate::level1_mission::FIREBALL_PAYLOAD + 1).unwrap();
+        let cast_budget = required_hits + required_hits / 4 + 4;
+        let turn_budget = cast_budget * (usize::from(holder.activation_value).max(1) + 2) + 64;
+        assert!(
+            holder.max_mana > 0
+                && session.shared_spells().player_entity().mana
+                    >= holder
+                        .max_mana
+                        .checked_mul(i32::try_from(cast_budget).unwrap())
+                        .unwrap()
+        );
+        let mut queued_payment: Option<(Vec<(u16, u32, u16)>, i32)> = None;
+        let mut paid = BTreeSet::new();
+        let mut impacts = BTreeSet::new();
+        let mut callbacks = Vec::new();
+        let mut damaged = false;
+        let mut demolished = false;
+        let mut builder = None;
+        let mut house_trace = Vec::new();
+        for turn in 0..turn_budget {
+            let ready = session.shared_spells().pickup(fire).is_some_and(|holder| {
+                holder.active_value == 0
+                    && session.shared_spells().player_entity().mana >= holder.max_mana
+            });
+            let mut command = PlayerCommand::default();
+            let live_house = session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == house.entity_index);
+            if ready
+                && builder.is_none()
+                && let Some(target_house) = live_house
+                    .copied()
+                    .filter(|row| row.active && row.life >= 0)
+            {
+                let yaw = 1024_i16;
+                let mut launch = target_house.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 2304);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw
+                    .wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity)
+                    & 0x07ff;
+                let hand = if parent.control_flags & 0x0100 != 0 {
+                    Some(parent_yaw.wrapping_sub(512))
+                } else if parent.control_flags & 0x0200 != 0 {
+                    Some(parent_yaw.wrapping_add(512))
+                } else {
+                    None
+                };
+                if let Some(hand) = hand {
+                    crate::move_entity(&mut position, hand.wrapping_add(1024), 0, 256);
+                }
+                let centre = target_house
+                    .position
+                    .z
+                    .wrapping_add(target_house.collision_vertical_offset);
+                position.z = centre
+                    .wrapping_sub(parent.array_fov())
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(position)
+                            .wrapping_add(256),
+                    )
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(launch)
+                            .wrapping_add(256),
+                    );
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch,
+                    Position {
+                        z: centre,
+                        ..target_house.position
+                    },
+                );
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                command = PlayerCommand {
+                    opcode: 6,
+                    argument_1: fire_ui,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                };
+            }
+            let cost = session.shared_spells().pickup(fire).unwrap().max_mana;
+            area_damage::start_effect_damage_trace(house.entity_index);
+            area_damage::start_fireball_launch_trace();
+            session.step_outer_turn(command, 0);
+            let launches = area_damage::take_fireball_launch_trace()
+                .into_iter()
+                .filter(|launch| launch.2 == player)
+                .collect::<Vec<_>>();
+            impacts.extend(area_damage::take_fireball_impact_birth_trace());
+            callbacks.extend(area_damage::take_effect_damage_trace());
+            for receipt in session.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current: CurrentOccupant::Known { selector, .. },
+                    ..
+                } = receipt
+                else {
+                    continue;
+                };
+                let (Some(before), Some(after)) = (
+                    original.observed_player_resources(),
+                    selector.observed_player_resources(),
+                ) else {
+                    continue;
+                };
+                if slot == fire && !launches.is_empty() {
+                    assert!(cost > 0 && queued_payment.is_none());
+                    let regen = if before.2 >= 0 {
+                        -cost
+                    } else {
+                        before.2.wrapping_sub(cost)
+                    };
+                    assert_eq!(
+                        (before.0, after.0, after.1, after.2),
+                        (player_handle, player_handle, before.1, regen)
+                    );
+                    queued_payment = Some((launches.clone(), regen));
+                } else if slot == player
+                    && let Some((_, regen)) = queued_payment.as_ref()
+                    && before.0 == player_handle
+                    && before.2 == *regen
+                {
+                    assert_eq!(
+                        (after.0, after.1),
+                        (
+                            player_handle,
+                            before.1.wrapping_add(before.2).clamp(0, before.3)
+                        )
+                    );
+                    paid.extend(queued_payment.take().unwrap().0);
+                }
+            }
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            if session.source_arena().handle(house.entity_index) == Some(house_handle) {
+                for event in session.dispatch_events() {
+                    if let Mc2DispatchEvent::House { events, .. } = event {
+                        damaged |= events.iter().any(|event| matches!(event, HouseStepEvent::Damaged { entity_index, attacker_entity_index, life, .. }
+                            if *entity_index == house.entity_index && *attacker_entity_index == player && *life < house.life));
+                        demolished |= events.iter().any(|event| matches!(event, HouseStepEvent::RemoveFootprint { entity_index, attacker_entity_index, .. }
+                            if *entity_index == house.entity_index && *attacker_entity_index == player));
+                    }
+                }
+            }
+            if builder.is_none() {
+                builder = session
+                    .economy()
+                    .house_residents()
+                    .iter()
+                    .find(|row| {
+                        row.active
+                            && row.model == BUILDER_MODEL
+                            && row.parent_house_entity_index == house.entity_index
+                    })
+                    .and_then(|row| session.source_arena().handle(row.source_entity_index));
+            }
+            let accepted = callbacks
+                .iter()
+                .filter(|row| {
+                    row.target_slot == house.entity_index
+                        && row.target_generation == house_handle.generation
+                        && row.mailbox_before != row.mailbox_after
+                        && row.mailbox_after.is_some_and(|(_, owner)| owner == player)
+                })
+                .count();
+            if turn % 32 == 0 {
+                let state = session
+                    .ordinary()
+                    .houses()
+                    .iter()
+                    .find(|row| row.entity_index == house.entity_index)
+                    .map(|row| {
+                        (
+                            row.action,
+                            row.life,
+                            row.pending_damage,
+                            row.pending_attacker,
+                            row.position,
+                        )
+                    });
+                house_trace.push((
+                    turn,
+                    state,
+                    damaged,
+                    demolished,
+                    builder,
+                    paid.len(),
+                    impacts.len(),
+                    accepted,
+                    session.canonical_player_life_for_test(),
+                ));
+            }
+            if turn == 128 {
+                let samples = callbacks
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .map(|row| {
+                        (
+                            row.source_slot,
+                            row.target_generation,
+                            row.pulse,
+                            row.target,
+                            row.mailbox_before,
+                            row.mailbox_after,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assert!(
+                    accepted > 0 && !paid.is_empty(),
+                    "real paid Fireballs must reach the live House: trace={house_trace:?} paid={paid:?} impacts={impacts:?} recent_callbacks={samples:#?}"
+                );
+            }
+            if builder.is_some() && demolished && !paid.is_empty() {
+                break;
+            }
+            if session.canonical_player_life_for_test() < 0 {
+                break;
+            }
+        }
+        let recent_callbacks = callbacks
+            .iter()
+            .rev()
+            .take(8)
+            .map(|row| {
+                (
+                    row.source_slot,
+                    row.target_generation,
+                    row.pulse,
+                    row.target,
+                    row.mailbox_before,
+                    row.mailbox_after,
+                )
+            })
+            .collect::<Vec<_>>();
+        let builder = builder.expect(&format!(
+            "public House85 must produce its actual Builder: trace={house_trace:?} paid={paid:?} impacts={impacts:?} recent_callbacks={recent_callbacks:#?}"
+        ));
+        let paid_house_hit = callbacks.iter().any(|callback| {
+            let impact = callback
+                .source_impact
+                .map(|(generation, row)| {
+                    (
+                        row.source_entity_index,
+                        generation,
+                        row.parent_entity_index,
+                        row.parent_entity_id,
+                        row.subspell_index,
+                        row.position,
+                    )
+                })
+                .or_else(|| {
+                    callback
+                        .source_raw_impact
+                        .as_ref()
+                        .and_then(|(generation, row)| {
+                            impacts
+                                .iter()
+                                .find(|&&(slot, born, _, _, owner)| {
+                                    slot == row.index && born == *generation && owner == row.source_id
+                                })
+                                .map(|&(_, _, parent, _, _)| {
+                                    (
+                                        row.index,
+                                        *generation,
+                                        parent,
+                                        row.source_id,
+                                        row.subspell_index,
+                                        row.position,
+                                    )
+                                })
+                        })
+                });
+            let Some((slot, generation, parent, owner, payload, position)) = impact else {
+                return false;
+            };
+            let lineage = impacts.iter().any(|&(s, g, p, pg, o)| {
+                (s, g, p, o) == (slot, generation, parent, player) && paid.contains(&(p, pg, o))
+            });
+            let mailbox = callback
+                .mailbox_before
+                .zip(callback.mailbox_after)
+                .is_some_and(|(before, after)| {
+                    let expected = if before.1 == 0 {
+                        crate::level1_mission::FIREBALL_PAYLOAD
+                    } else {
+                        before
+                            .0
+                            .wrapping_add(crate::level1_mission::FIREBALL_PAYLOAD)
+                    };
+                    after == (expected, player)
+                });
+            callback.target_slot == house_handle.source_slot
+                && callback.target_generation == house_handle.generation
+                && callback.source_slot == Some(slot)
+                && owner == player
+                && lineage
+                && payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                && callback.pulse.owner == player
+                && callback.pulse.selector == (u8::MAX, u8::MAX)
+                && callback.pulse.payload == payload
+                && callback.pulse.position == position
+                && mailbox
+                && callback.target.is_some_and(|target| {
+                    crate::level1_mission::source_entities_overlap(
+                        position,
+                        callback.pulse.half_width,
+                        callback.pulse.vertical_offset,
+                        callback.pulse.half_height,
+                        target.position,
+                        target.shape.half_width,
+                        target.shape.vertical_offset,
+                        target.shape.half_height,
+                    )
+                })
+        });
+        assert!(
+            damaged && demolished && paid_house_hit,
+            "House85 paid demolition: {house_trace:?}"
+        );
+        assert_eq!(
+            session.source_arena().handle(builder.source_slot),
+            Some(builder)
+        );
+        // Reset switches are imported raw rows; the typed producer collection
+        // holds dynamically published authored switches.
+        let switch = session.entities()[279].clone();
+        assert_eq!(
+            (
+                switch.active,
+                switch.class,
+                switch.model,
+                switch.action,
+                switch.source_id
+            ),
+            (true, 11, 0, 0, 19)
+        );
+        let switch_handle = session.source_arena().handle(switch.index).unwrap();
+        assert!(
+            session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Builder)
+                .any(|root| root.handle == builder
+                    && root.living
+                    && root.origin
+                        == (CreatureRootOrigin::HouseSpawn {
+                            house_slot: house.entity_index
+                        }))
+        );
+        // Position the declared player at the actual reset switch; the group,
+        // all its actor positions and every later scan remain source-owned.
+        session
+            .set_level2_entity_position(player, switch.position)
+            .unwrap();
+        let _ = session.take_model9_conversion_receipts();
+        let mut published = false;
+        let mut producers = BTreeSet::new();
+        let mut converted = None;
+        let mut diagnostics = Vec::new();
+        for turn in 0..1200 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Level7 ordinary conversion turn {turn}: {:?}",
+                session.dispatch_events()
+            );
+            let triggered = session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 19, authored_indices, .. }
+                    if *source_slot == switch.index && authored_indices.contains(&454)));
+            if triggered && !published {
+                published = true;
+                let census = session.creature_runtime_census();
+                producers.extend(
+                    census
+                        .roots_of_kind(CreatureKind::Skeleton)
+                        .filter(|row| {
+                            row.living
+                                && matches!(row.origin,
+                        CreatureRootOrigin::AuthoredRecord { authored_record: 430..=445 | 453..=461 })
+                        })
+                        .map(|row| (row.handle.source_slot, row.handle.generation)),
+                );
+                let skeleton = census
+                    .roots_of_kind(CreatureKind::Skeleton)
+                    .find(|row| {
+                        row.living
+                            && row.origin
+                                == (CreatureRootOrigin::AuthoredRecord {
+                                    authored_record: 440,
+                                })
+                    })
+                    .expect("the ordinary group19 publication constructs its actual Skeleton440");
+                let mut position =
+                    session.entities()[usize::from(skeleton.handle.source_slot)].position;
+                position.x = position.x.wrapping_add(3_000);
+                position.z = session
+                    .canonical_terrain()
+                    .ground_height(position)
+                    .wrapping_add(3_000);
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+            }
+            for receipt in session.take_model9_conversion_receipts() {
+                if let Model9ConversionOutcome::Published { child } = receipt.outcome
+                    && producers.contains(&(receipt.producer.source_slot, receipt.producer.generation))
+                {
+                    // A real converted Archer may itself produce a Skeleton;
+                    // retain only children of the already proven generation.
+                    producers.insert((child.source_slot, child.generation));
+                    if receipt.prey == builder {
+                        converted =
+                            Some((receipt.producer, receipt.prey, child, CreatureKind::Builder));
+                        break;
+                    }
+                }
+            }
+            if turn % 100 == 0 {
+                let nearest = session
+                    .ordinary()
+                    .villagers()
+                    .iter()
+                    .find(|row| row.entity_index == 336)
+                    .map(|row| (row.position, row.action, row.life, row.active));
+                let skeletons = session
+                    .creature_runtime_census()
+                    .roots_of_kind(CreatureKind::Skeleton)
+                    .filter(|row| {
+                        row.living
+                            && matches!(
+                                row.origin,
+                                CreatureRootOrigin::AuthoredRecord {
+                                    authored_record: 440 | 456
+                                }
+                            )
+                    })
+                    .map(|identity| {
+                        let row = &session.entities()[usize::from(identity.handle.source_slot)];
+                        (
+                            identity.origin,
+                            identity.handle,
+                            row.position,
+                            row.action,
+                            row.life,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                diagnostics.push((
+                    turn,
+                    published,
+                    nearest,
+                    skeletons,
+                    session.canonical_player_life_for_test(),
+                ));
+            }
+            if converted.is_some() || session.canonical_player_life_for_test() < 0 {
+                break;
+            }
+        }
+        assert!(
+            published,
+            "reset switch {switch_handle:?} must actually publish group19: {diagnostics:?}"
+        );
+        let (producer, prey, child, kind) = converted.expect(&format!(
+            "an actual group19 Skeleton lineage must convert the House85 Builder: {diagnostics:?}"
+        ));
+        eprintln!(
+            "actual settlement conversion: kind={kind:?} prey={prey:?} producer={producer:?} child={child:?}"
+        );
+        assert_eq!(
+            session.source_arena().handle(producer.source_slot),
+            Some(producer)
+        );
+        assert_eq!(
+            (
+                session.entities()[usize::from(producer.source_slot)].class,
+                session.entities()[usize::from(producer.source_slot)].model
+            ),
+            (5, 9)
+        );
+        assert_eq!(session.source_arena().handle(prey.source_slot), Some(prey));
+        // HouseSpawn residents use the authoritative resident carrier; the
+        // imported raw entity row is only its shadow after conversion.
+        let resident = session.economy().house_residents().iter()
+            .find(|row| row.active && row.source_entity_index == prey.source_slot)
+            .expect("the original HouseSpawn resident is retained until reclaim");
+        assert!(!resident.drawing_enabled);
+        assert_ne!(resident.control_flags & crate::level1_mission::SOURCE_DISABLED_FLAG, 0);
+        let old = session
+            .creature_identity_for_source_slot(prey.source_slot)
+            .expect("retained converted resident");
+        assert_eq!((old.handle, old.kind, old.living), (prey, kind, false));
+        assert!(
+            !session
+                .creature_runtime_census()
+                .roots_of_kind(kind)
+                .any(|root| root.handle == prey && root.living)
+        );
+        assert!(
+            !session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == prey.source_slot)
+        );
+        let newborn = session
+            .creature_identity_for_source_slot(child.source_slot)
+            .expect("actual converted Skeleton child");
+        assert_eq!(
+            (newborn.handle, newborn.kind, newborn.living),
+            (child, CreatureKind::Skeleton, true)
+        );
+        assert!(
+            session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == child.source_slot)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        assert_ne!(
+            session.source_arena().handle(prey.source_slot),
+            Some(prey),
+            "following source pass reclaims the hidden original generation"
+        );
+        assert!(
+            !session.source_arena().rebuilt_class5_model_slots()[match kind {
+                CreatureKind::Builder => 12,
+                CreatureKind::Villager => 13,
+                _ => unreachable!(),
+            }]
+            .contains(&prey.source_slot)
+        );
+        assert_eq!(
+            session.source_arena().handle(child.source_slot),
+            Some(child)
+        );
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(receipt,
+            ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == child.source_slot)),
+            "the real new Skeleton must receive its following scheduled callback"
+        );
+    }
+
+    #[test]
+    fn level_seven_paid_skeleton_reaction_and_reset_villager_conversion() {
+        use crate::PlayerCommand;
+        use crate::campaign::schedule::{CurrentOccupant, ScheduleReceipt};
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::level_definition::CreatureKind;
+        use crate::native_world::{
+            Mc2DispatchEvent, area_damage, simulation::Model9ConversionOutcome,
+        };
+        use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+        let mut session = ordinary_level_seven();
+        let player = session.state.entity_index;
+        let player_handle = session.source_arena().handle(player).unwrap();
+        let victim = session
+            .source_arena()
+            .handle(336)
+            .expect("reset Villager336");
+        assert!(
+            session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Villager)
+                .any(|row| row.handle == victim && row.living)
+        );
+        let switch = session.entities()[279].clone();
+        assert_eq!(
+            (switch.class, switch.model, switch.action, switch.source_id),
+            (11, 0, 0, 19)
+        );
+        session.apply_carried_spell_families(&[0], Some(0)).unwrap();
+        {
+            // Player-only resources; actor state and source schedule remain ordinary.
+            let live = &mut session.session.state.live;
+            live.economy
+                .economy
+                .owner_base_max_mana
+                .insert(player, 200_000);
+            live.economy
+                .economy
+                .rebuild_source_owner_max_mana_projection();
+            let capacity = live.economy.economy.owner_max_mana_capacity(player);
+            live.player_life = 200_000;
+            live.shared_spells.set_player_entity_life(200_000);
+            live.shared_spells.set_local_player_mana_for_test(200_000);
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_life(200_000);
+            parent.set_mana(200_000);
+            parent.max_mana = capacity;
+            parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+            live.shared_spells
+                .sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = 200_000;
+            }
+        }
+        for _ in 0..256 {
+            if session.session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(session.session.state.live.player_protection_ticks, 0);
+        session
+            .set_level2_entity_position(player, switch.position)
+            .unwrap();
+        let mut skeleton = None;
+        let mut group19 = BTreeMap::new();
+        let mut initial_conversions = Vec::new();
+        let _ = session.take_model9_conversion_receipts();
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            initial_conversions.extend(session.take_model9_conversion_receipts());
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 279, group: 19, authored_indices, .. }
+                    if authored_indices.contains(&454)))
+            {
+                let census = session.creature_runtime_census();
+                for row in census.roots_of_kind(CreatureKind::Skeleton).filter(|row| {
+                    row.living && matches!(row.origin, CreatureRootOrigin::AuthoredRecord {
+                        authored_record: 430..=445 | 453..=461
+                    })
+                }) {
+                    group19.insert((row.handle.source_slot, row.handle.generation), row.origin);
+                }
+                skeleton = census.roots_of_kind(CreatureKind::Skeleton)
+                    .find(|row| row.living && row.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 454 }))
+                    .map(|row| row.handle);
+                break;
+            }
+        }
+        let skeleton = skeleton.expect("actual switch279 must publish authored Skeleton454");
+        let selected_identity = (
+            skeleton,
+            session.entities()[usize::from(skeleton.source_slot)].source_id,
+        );
+        let fire = session.shared_spells().local_player().enabled_spell_holders[0];
+        let fire_ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        let mut launched = false;
+        let mut paid = BTreeSet::new();
+        let mut queued: Option<(Vec<(u16, u32, u16)>, i32)> = None;
+        let mut births = BTreeSet::new();
+        let mut callbacks = Vec::new();
+        let mut reaction = false;
+        let mut reaction_position = None;
+        let mut reacted_motion = false;
+        let mut advanced = false;
+        let mut retreated = false;
+        let mut conversion = None;
+        let mut trace = Vec::new();
+        let mut aimed = None;
+        let mut launch_observation = None;
+        let mut flight = Vec::new();
+        let mut impact_nearby = None;
+        let mut terminals = Vec::new();
+        let mut conversion_evidence = Vec::new();
+        let mut entry_evidence = Vec::new();
+        let mut victim_recent = VecDeque::new();
+        let mut pending_conversions = initial_conversions.clone();
+        for turn in 0..600 {
+            pending_conversions.extend(session.take_model9_conversion_receipts());
+            for receipt in pending_conversions.drain(..) {
+                let producer_origin = session
+                    .creature_identity_for_source_slot(receipt.producer.source_slot)
+                    .filter(|row| row.handle == receipt.producer)
+                    .map(|row| row.origin);
+                let prey_origin = session
+                    .creature_identity_for_source_slot(receipt.prey.source_slot)
+                    .filter(|row| row.handle == receipt.prey)
+                    .map(|row| row.origin);
+                let child_identity = match receipt.outcome {
+                    Model9ConversionOutcome::Published { child } => session
+                        .creature_identity_for_source_slot(child.source_slot)
+                        .filter(|row| row.handle == child)
+                        .map(|row| (row.handle, row.origin)),
+                    _ => None,
+                };
+                let pinned_origin = group19
+                    .get(&(receipt.producer.source_slot, receipt.producer.generation))
+                    .copied();
+                conversion_evidence.push((
+                    turn,
+                    receipt,
+                    producer_origin,
+                    prey_origin,
+                    child_identity,
+                    pinned_origin,
+                ));
+                if receipt.prey == victim
+                    && pinned_origin.is_some()
+                    && producer_origin == pinned_origin
+                    && session.source_arena().handle(receipt.producer.source_slot)
+                        == Some(receipt.producer)
+                    && let Model9ConversionOutcome::Published { child } = receipt.outcome
+                    && session.source_arena().handle(child.source_slot) == Some(child)
+                {
+                    conversion = Some((receipt.producer, child));
+                }
+            }
+            if conversion.is_some() {
+                break;
+            }
+            assert_eq!(
+                session.source_arena().handle(skeleton.source_slot),
+                Some(skeleton)
+            );
+            assert_eq!(
+                session.source_arena().handle(victim.source_slot),
+                Some(victim),
+                "original Villager generation changed: group19={group19:?} initial_conversions={initial_conversions:?} conversions={conversion_evidence:?} entry={entry_evidence:?} trace={trace:?}"
+            );
+            let source = session.entities()[usize::from(skeleton.source_slot)].clone();
+            let villager = session
+                .ordinary()
+                .villagers()
+                .iter()
+                .find(|row| row.entity_index == victim.source_slot)
+                .cloned();
+            let Some(villager) = villager.as_ref().filter(|row| row.active) else {
+                let raw = &session.entities()[usize::from(victim.source_slot)];
+                let present = session
+                    .campaign_entity_presentations(0)
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.entity_index == victim.source_slot);
+                panic!(
+                    "original Villager inactive before pinned-group conversion: victim={victim:?} typed={villager:?} raw=(active:{},class:{},model:{},action:{},life:{},flags:{:#x},position:{:?}) identity={:?} present={present} recent={victim_recent:?} group19={group19:?} initial_conversions={initial_conversions:?} conversions={conversion_evidence:?} entry={entry_evidence:?} reaction={reaction} advanced={advanced} retreated={retreated} paid={paid:?} flight={flight:?} trace={trace:?}",
+                    raw.active,
+                    raw.class,
+                    raw.model,
+                    raw.action,
+                    raw.life,
+                    raw.control_flags,
+                    raw.position,
+                    session.creature_identity_for_source_slot(victim.source_slot)
+                );
+            };
+            let raw = &session.entities()[usize::from(victim.source_slot)];
+            victim_recent.push_back((
+                turn,
+                villager.active,
+                villager.action,
+                villager.life,
+                villager.control_flags,
+                villager.target_entity_index,
+                villager.position,
+                raw.active,
+                raw.control_flags,
+            ));
+            if victim_recent.len() > 8 {
+                victim_recent.pop_front();
+            }
+            let occupancy_before = session
+                .ordinary()
+                .houses()
+                .iter()
+                .map(|house| (house.entity_index, house.occupants))
+                .collect::<BTreeMap<_, _>>();
+            let mut command = PlayerCommand::default();
+            if !launched
+                && source.action == 73
+                && session
+                    .shared_spells()
+                    .pickup(fire)
+                    .is_some_and(|holder| holder.active_value == 0)
+            {
+                // flags 0x40 selects the left hand during this very command.
+                // Account for that post-command 256-unit displacement, even
+                // when the parent had no selected hand before the command.
+                let yaw = 0_i16;
+                let mut launch = source.position;
+                // The source checks the moved endpoint, not the swept segment.
+                // The observed ordinary Fireball speed is 384 per visit.
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 384);
+                let mut position = launch;
+                let parent = session.shared_spells().player_entity();
+                let parent_yaw = yaw
+                    .wrapping_sub(session.shared_spells().beyond_sight_auxiliary().next_entity)
+                    & 0x07ff;
+                crate::move_entity(&mut position, parent_yaw.wrapping_add(512), 0, 256);
+                let centre = source.position.z.wrapping_add(source.array_yaw());
+                position.z = centre
+                    .wrapping_sub(parent.array_fov())
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(position)
+                            .wrapping_add(256),
+                    )
+                    .max(
+                        session
+                            .canonical_terrain()
+                            .ground_height(launch)
+                            .wrapping_add(256),
+                    );
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch,
+                    Position {
+                        z: centre,
+                        ..source.position
+                    },
+                );
+                aimed = Some((
+                    turn,
+                    position,
+                    launch,
+                    yaw,
+                    pitch,
+                    source.position,
+                    source.action,
+                    source.life,
+                ));
+                session
+                    .set_level2_entity_position(player, position)
+                    .unwrap();
+                session.set_level2_player_aim_for_test(yaw, pitch);
+                command = PlayerCommand {
+                    opcode: 6,
+                    argument_1: fire_ui,
+                    flags: 0x40,
+                    ..PlayerCommand::default()
+                };
+            }
+            // A bounded player encounter: after the real hit, approach the
+            // Villager in two player-only placements, then leave attack range.
+            if reaction && !advanced {
+                let mut point = villager.position;
+                point.x = point.x.wrapping_sub(500);
+                point.z = session
+                    .canonical_terrain()
+                    .ground_height(point)
+                    .wrapping_add(256);
+                if crate::distance_3d_wrapped(source.position, point) < 1_900 {
+                    session.set_level2_entity_position(player, point).unwrap();
+                    advanced = true;
+                }
+            }
+            if reaction
+                && advanced
+                && !retreated
+                && crate::distance_3d_wrapped(source.position, villager.position) < 900
+            {
+                let mut point = villager.position;
+                point.x = point.x.wrapping_add(4_000);
+                point.z = session
+                    .canonical_terrain()
+                    .ground_height(point)
+                    .wrapping_add(1_000);
+                session.set_level2_entity_position(player, point).unwrap();
+                retreated = true;
+            }
+            let cost = session.shared_spells().pickup(fire).unwrap().max_mana;
+            area_damage::start_effect_damage_trace(skeleton.source_slot);
+            area_damage::start_fireball_launch_trace();
+            crate::native_world::effects::start_fireball_terminal_trace();
+            session.step_outer_turn(command, 0);
+            terminals.extend(crate::native_world::effects::take_fireball_terminal_trace());
+            let launches = area_damage::take_fireball_launch_trace()
+                .into_iter()
+                .filter(|launch| launch.2 == player)
+                .collect::<Vec<_>>();
+            if !launches.is_empty() {
+                assert_eq!(
+                    session.shared_spells().player_entity().control_flags & 0x0300,
+                    0x0100,
+                    "selected cast must actually install the left-hand launch displacement"
+                );
+                launch_observation = Some(launches.clone());
+            }
+            launched |= !launches.is_empty();
+            births.extend(area_damage::take_fireball_impact_birth_trace());
+            let fresh_callbacks = area_damage::take_effect_damage_trace();
+            if impact_nearby.is_none()
+                && let Some(hit) = fresh_callbacks.iter().find(|row| {
+                    row.pulse.owner == player
+                        && row.pulse.payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                })
+            {
+                let position = hit.pulse.position;
+                impact_nearby = Some((
+                    position,
+                    session.canonical_terrain().ground_height(position),
+                ));
+            }
+            callbacks.extend(fresh_callbacks);
+            if flight.len() < 12
+                && let Some(row) = session.economy().fireball_projectiles().iter().find(|row| {
+                    row.owner_entity_index == player && (row.active || !launches.is_empty())
+                })
+            {
+                flight.push((
+                    turn,
+                    row.source_entity_index,
+                    row.position,
+                    row.yaw,
+                    row.pitch,
+                    row.roll,
+                    row.fov,
+                    row.actual_speed,
+                    row.life,
+                    (
+                        row.target_source_entity_index,
+                        session
+                            .creature_identity_for_source_slot(row.target_source_entity_index)
+                            .map(|target| (target.handle, target.origin)),
+                    ),
+                    row.active,
+                    session.canonical_terrain().ground_height(row.position),
+                ));
+            }
+            for receipt in session.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current: CurrentOccupant::Known { selector, .. },
+                    ..
+                } = receipt
+                else {
+                    continue;
+                };
+                let (Some(before), Some(after)) = (
+                    original.observed_player_resources(),
+                    selector.observed_player_resources(),
+                ) else {
+                    continue;
+                };
+                if slot == fire && !launches.is_empty() {
+                    assert!(cost > 0 && queued.is_none());
+                    let regen = if before.2 >= 0 {
+                        -cost
+                    } else {
+                        before.2.wrapping_sub(cost)
+                    };
+                    assert_eq!(
+                        (before.0, after.0, after.1, after.2),
+                        (player_handle, player_handle, before.1, regen)
+                    );
+                    queued = Some((launches.clone(), regen));
+                } else if slot == player
+                    && let Some((_, regen)) = queued.as_ref()
+                    && before.0 == player_handle
+                    && before.2 == *regen
+                {
+                    assert_eq!(
+                        (after.0, after.1),
+                        (
+                            player_handle,
+                            before.1.wrapping_add(before.2).clamp(0, before.3)
+                        )
+                    );
+                    paid.extend(queued.take().unwrap().0);
+                }
+            }
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+            let occupancy_changes = session
+                .ordinary()
+                .houses()
+                .iter()
+                .filter_map(|house| {
+                    let before = occupancy_before.get(&house.entity_index).copied()?;
+                    (before != house.occupants).then_some((
+                        house.entity_index,
+                        before,
+                        house.occupants,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let resident_events = session
+                .dispatch_events()
+                .iter()
+                .filter_map(|event| match event {
+                    Mc2DispatchEvent::Villager {
+                        source_slot,
+                        effects,
+                        ..
+                    } if *source_slot == victim.source_slot && !effects.is_empty() => {
+                        Some(format!("{event:?}"))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if (!occupancy_changes.is_empty() || !resident_events.is_empty())
+                && entry_evidence.len() < 64
+            {
+                entry_evidence.push((turn, occupancy_changes, resident_events));
+            }
+            if session.source_arena().handle(skeleton.source_slot) == Some(skeleton) {
+                let current = &session.entities()[usize::from(skeleton.source_slot)];
+                if current.action == 74
+                    && current.source_word_96() == player
+                    && (0..1000).contains(&current.life)
+                {
+                    reacted_motion |=
+                        reaction_position.is_some_and(|position| position != current.position);
+                    reaction_position.get_or_insert(current.position);
+                    reaction = true;
+                }
+            }
+            if turn % 25 == 0 {
+                trace.push((
+                    turn,
+                    source.position,
+                    source.action,
+                    source.life,
+                    villager.position,
+                    reaction,
+                    advanced,
+                    retreated,
+                    paid.len(),
+                    callbacks.len(),
+                ));
+            }
+            if turn == 150 && !reaction {
+                let samples = callbacks
+                    .iter()
+                    .filter(|row| {
+                        row.pulse.owner == player
+                            && row.pulse.payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                    })
+                    .take(8)
+                    .map(|row| {
+                        let overlap = row.target.is_some_and(|target| {
+                            crate::level1_mission::source_entities_overlap(
+                                row.pulse.position,
+                                row.pulse.half_width,
+                                row.pulse.vertical_offset,
+                                row.pulse.half_height,
+                                target.position,
+                                target.shape.half_width,
+                                target.shape.vertical_offset,
+                                target.shape.half_height,
+                            )
+                        });
+                        let raw = row.source_raw_impact.as_ref().map(|(generation, raw)| {
+                            (
+                                *generation,
+                                raw.index,
+                                raw.source_id,
+                                raw.class,
+                                raw.model,
+                                raw.action,
+                                raw.position,
+                            )
+                        });
+                        let typed = row.source_impact.map(|(generation, impact)| {
+                            (
+                                generation,
+                                impact.source_entity_index,
+                                impact.parent_entity_index,
+                                impact.parent_entity_id,
+                                impact.position,
+                            )
+                        });
+                        (
+                            row.source_slot,
+                            raw,
+                            typed,
+                            row.target_generation,
+                            row.pulse,
+                            row.target,
+                            row.target_in_scanned_cells,
+                            row.mailbox_before,
+                            row.mailbox_after,
+                            overlap,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let paid_terminals = terminals
+                    .iter()
+                    .filter(|row| {
+                        paid.contains(&(
+                            row.projectile.source_slot,
+                            row.projectile.generation,
+                            row.owner,
+                        ))
+                    })
+                    .take(8)
+                    .collect::<Vec<_>>();
+                panic!(
+                    "paid public reaction did not occur: selected={selected_identity:?} trace={trace:?} aimed={aimed:?} launch={launch_observation:?} flight={flight:?} impact_nearby={impact_nearby:?} paid={paid:?} births={:?} terminal={paid_terminals:#?} samples={samples:#?}",
+                    births.iter().take(8).collect::<Vec<_>>()
+                );
+            }
+        }
+        let paid_hit = callbacks.iter().any(|callback| {
+            let impact = callback
+                .source_impact
+                .map(|(generation, row)| {
+                    (
+                        row.source_entity_index,
+                        generation,
+                        row.parent_entity_index,
+                        row.parent_entity_id,
+                    )
+                })
+                .or_else(|| {
+                    callback
+                        .source_raw_impact
+                        .as_ref()
+                        .and_then(|(generation, row)| {
+                            births
+                                .iter()
+                                .find(|&&(slot, born, _, _, owner)| {
+                                    slot == row.index
+                                        && born == *generation
+                                        && owner == row.source_id
+                                })
+                                .map(|&(_, _, parent, _, owner)| {
+                                    (row.index, *generation, parent, owner)
+                                })
+                        })
+                });
+            let Some((slot, generation, parent, owner)) = impact else {
+                return false;
+            };
+            callback.target_slot == skeleton.source_slot
+                && callback.target_generation == skeleton.generation
+                && callback.source_slot == Some(slot)
+                && owner == player
+                && births.iter().any(|&(s, g, p, pg, o)| {
+                    (s, g, p, o) == (slot, generation, parent, owner) && paid.contains(&(p, pg, o))
+                })
+                && callback.pulse.owner == player
+                && callback.pulse.payload == crate::level1_mission::FIREBALL_PAYLOAD as u16
+                && callback.pulse.selector == (u8::MAX, u8::MAX)
+                && callback.target.is_some_and(|target| {
+                    crate::level1_mission::source_entities_overlap(
+                        callback.pulse.position,
+                        callback.pulse.half_width,
+                        callback.pulse.vertical_offset,
+                        callback.pulse.half_height,
+                        target.position,
+                        target.shape.half_width,
+                        target.shape.vertical_offset,
+                        target.shape.half_height,
+                    )
+                })
+                && callback
+                    .mailbox_before
+                    .zip(callback.mailbox_after)
+                    .is_some_and(|(before, after)| {
+                        let expected = if before.1 == 0 {
+                            crate::level1_mission::FIREBALL_PAYLOAD
+                        } else {
+                            before
+                                .0
+                                .wrapping_add(crate::level1_mission::FIREBALL_PAYLOAD)
+                        };
+                        after == (expected, player)
+                    })
+        });
+        assert!(
+            paid_hit && reaction && reacted_motion && advanced && retreated,
+            "real paid hit and source reaction: {trace:?}"
+        );
+        let (producer, child) = conversion.expect(&format!(
+            "actual pinned group19 Skeleton must convert Villager336: {trace:?}"
+        ));
+        eprintln!(
+            "actual Villager conversion: selected={selected_identity:?} producer={producer:?} origin={:?} flight={flight:?} child={child:?}",
+            group19.get(&(producer.source_slot, producer.generation))
+        );
+        assert_eq!(
+            session.source_arena().handle(producer.source_slot),
+            Some(producer)
+        );
+        let actual_producer = session
+            .creature_identity_for_source_slot(producer.source_slot)
+            .expect("original group19 Skeleton producer remains current");
+        assert_eq!(actual_producer.handle, producer);
+        assert_eq!(
+            Some(&actual_producer.origin),
+            group19.get(&(producer.source_slot, producer.generation))
+        );
+        assert_eq!(
+            session.source_arena().handle(victim.source_slot),
+            Some(victim)
+        );
+        assert!(session.entities()[usize::from(victim.source_slot)].drawing_disabled());
+        assert!(
+            !session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Villager)
+                .any(|row| row.handle == victim && row.living)
+        );
+        assert!(
+            !session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == victim.source_slot)
+        );
+        assert!(
+            session
+                .creature_runtime_census()
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|row| row.handle == child && row.living)
+        );
+        assert!(
+            session
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == child.source_slot)
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_ne!(
+            session.source_arena().handle(victim.source_slot),
+            Some(victim)
+        );
+        assert!(
+            !session.source_arena().rebuilt_class5_model_slots()[13].contains(&victim.source_slot)
+        );
+        assert_eq!(
+            session.source_arena().handle(child.source_slot),
+            Some(child)
+        );
+        assert!(
+            session
+                .cf10_production_schedule_receipts()
+                .iter()
+                .any(|receipt| matches!(receipt,
+            ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == child.source_slot))
+        );
+    }
+
+    #[test]
+    fn configured_builder_mana_reaches_real_death_sphere_and_reclaim() {
+        use crate::native_world::Level2EconomyEvent;
+
+        // The second control starts the actual Builder carrier in its
+        // post-build Villager band with the source's generic-death guard open.
+        for (post_build, configured_mana) in [
+            (false, 0),
+            (false, -5),
+            (false, 700),
+            (true, 0),
+            (true, -5),
+            (true, 700),
+        ] {
+            let mut session = ordinary_level_seven();
+            let player = session.state.entity_index;
+            let slot = 105;
+            let handle = session
+                .source_arena()
+                .handle(slot)
+                .expect("reset Builder105");
+            // A configured-state control for the nondefault typed mana property;
+            // the original package's actual Builder defaults to zero mana.
+            let life = {
+                let live = &mut session.session.state.live;
+                let builder = live
+                    .economy
+                    .house_residents
+                    .iter_mut()
+                    .find(|row| row.source_entity_index == slot && row.model == BUILDER_MODEL)
+                    .expect("actual reset Builder source");
+                builder.mana = configured_mana;
+                builder.owner_entity_index = player;
+                if post_build {
+                    builder.action = BUILDER_POST_BUILD_ACTION;
+                    builder.reset_counter = 0;
+                }
+                let source = *builder;
+                source.publish_source(&mut live.economy.entities[usize::from(slot)]);
+                live.economy.source_owner.insert(slot, player);
+                source.life
+            };
+            assert!(session.session.state.live.economy.submit_settlement_damage(
+                slot,
+                life + 1,
+                player,
+                crate::combat::actors::DamageWriter::Ordinary
+            ));
+            let mut death = None;
+            for pass in 0..128 {
+                let before = session
+                    .economy()
+                    .house_residents()
+                    .iter()
+                    .find(|row| row.source_entity_index == slot)
+                    .copied()
+                    .expect("retained Builder");
+                let event_start = session.economy().events().len();
+                session.step_level2_source_pass((pass % 3) as u8);
+                let kill_action = if post_build {
+                    crate::villager::VILLAGER_REMOVAL_ACTION
+                } else {
+                    BUILDER_KILL_ACTION
+                };
+                if before.action == kill_action && before.phase & 7 == 0 {
+                    death = Some((before, event_start));
+                    break;
+                }
+            }
+            let (before, event_start) = death.expect("actual Builder death callback");
+            let after = session
+                .economy()
+                .house_residents()
+                .iter()
+                .find(|row| row.source_entity_index == slot)
+                .expect("same-pass hidden Builder");
+            assert_eq!(session.source_arena().handle(slot), Some(handle));
+            assert_eq!(
+                (
+                    after.entity_rng,
+                    after.owner_entity_index,
+                    after.drawing_enabled
+                ),
+                (
+                    if configured_mana > 0 {
+                        next_rng16(before.entity_rng)
+                    } else {
+                        before.entity_rng
+                    },
+                    if configured_mana > 0 { 0 } else { player },
+                    false
+                ),
+                "post_build={post_build} mana={configured_mana}"
+            );
+            assert!(session.entities()[usize::from(slot)].drawing_disabled());
+            let events = &session.economy().events()[event_start..];
+            let sphere = events
+                .iter()
+                .enumerate()
+                .find_map(|(index, event)| match event {
+                    Level2EconomyEvent::ManaSphereSpawned {
+                        sphere_id,
+                        source_entity_index,
+                        mana,
+                    } if *source_entity_index == slot => Some((index, *sphere_id, *mana)),
+                    _ => None,
+                });
+            if !before.suppress_death_burst {
+                let burst_order = events.iter().position(|event| matches!(event,
+                Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. } if *parent_entity_index == slot))
+                .expect("source death burst follows mana allocation");
+                if let Some((sphere_order, _, _)) = sphere {
+                    assert!(sphere_order < burst_order);
+                }
+            }
+            let mut consumed_sphere = None;
+            if configured_mana > 0 {
+                let (_, sphere_id, actual_mana) =
+                    sphere.expect("real source death allocates full configured mana");
+                assert_eq!(actual_mana, configured_mana);
+                let sphere = session
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|row| row.id == sphere_id)
+                    .expect("published source mana sphere");
+                assert_eq!(
+                    (
+                        sphere.mana,
+                        sphere.owner_entity_index,
+                        sphere.player_entity_index
+                    ),
+                    (configured_mana, player, player)
+                );
+                assert!(
+                    sphere.active
+                        && !sphere.pending_delete
+                        && session
+                            .economy()
+                            .map_chains
+                            .is_linked(sphere.source_entity_index)
+                );
+                let (sphere_slot, sphere_position) = (sphere.source_entity_index, sphere.position);
+                let sphere_handle = session
+                    .source_arena()
+                    .handle(sphere_slot)
+                    .expect("published sphere generation");
+                // This focused consumer control supplies a same-owner collector at
+                // the actual sphere, then invokes its real source absorption tail.
+                let carrier = session
+                    .session
+                    .state
+                    .live
+                    .economy
+                    .spawn_mana_carrier(sphere_position, player, sphere_id)
+                    .expect("source collector allocation");
+                let before_carried = session
+                    .economy()
+                    .carriers()
+                    .iter()
+                    .find(|row| row.source_entity_index == carrier)
+                    .unwrap()
+                    .carried_mana;
+                assert!(
+                    session
+                        .session
+                        .state
+                        .live
+                        .economy
+                        .absorb_sphere_into_carrier(sphere_slot, carrier)
+                );
+                let collector = session
+                    .economy()
+                    .carriers()
+                    .iter()
+                    .find(|row| row.source_entity_index == carrier)
+                    .unwrap();
+                assert_eq!(
+                    (
+                        collector.carried_mana,
+                        collector.owner_entity_index,
+                        collector.target_sphere_id
+                    ),
+                    (before_carried.wrapping_add(configured_mana), player, 0)
+                );
+                let collected = session
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|row| row.id == sphere_id)
+                    .unwrap();
+                assert!(collected.pending_delete && collected.control_flags & 0x400 != 0);
+                consumed_sphere = Some(sphere_handle);
+                assert!(
+                    session
+                        .economy()
+                        .events()
+                        .iter()
+                        .any(|event| matches!(event,
+            Level2EconomyEvent::ManaSphereCollected { sphere_id: id, carrier_id, mana }
+                if *id == sphere_id && *carrier_id == u32::from(carrier) && *mana == configured_mana))
+                );
+            } else {
+                assert!(
+                    sphere.is_none(),
+                    "nonpositive mana cannot allocate a sphere"
+                );
+            }
+            session.step_level2_source_pass(0);
+            assert_ne!(session.source_arena().handle(slot), Some(handle));
+            if let Some(sphere_handle) = consumed_sphere {
+                assert_ne!(
+                    session.source_arena().handle(sphere_handle.source_slot),
+                    Some(sphere_handle)
+                );
+            }
+        }
     }
 
     #[test]

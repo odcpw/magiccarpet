@@ -39,7 +39,6 @@ pub const VILLAGER_REMOVAL_ACTION: u8 = 109;
 pub const VILLAGER_PARAMETER_INDEX: u16 = VILLAGER_SOURCE_BINDING.descriptor;
 pub const VILLAGER_MAX_LIFE: i32 = PROPERTIES.max_life;
 
-const SOURCE_DEATH_BURST_SUPPRESSED_FLAG: u32 = 0x0010_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VillagerBehaviorConfig {
@@ -248,8 +247,21 @@ impl VillagerState {
     }
 }
 
+/// Phase-gated KillEntity request. The actor remains visible until the
+/// consumer completes mana conversion, the current-address burst and hide.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VillagerDeathRequest {
+    pub source_entity_index: u16,
+    pub position: Position,
+    pub yaw: i16,
+    pub mana: i32,
+    pub owner_entity_index: u16,
+    pub source_rng_after_death: u16,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VillagerStepEffect {
+    DeathRequested(VillagerDeathRequest),
     TryEnterBuilding {
         resident_source_entity_index: u16,
         house_source_entity_index: u16,
@@ -738,17 +750,17 @@ pub(crate) fn step_villager_state_with_stage<W: FlightWorld>(
         }
         VILLAGER_REMOVAL_ACTION => {
             if villager.phase & 7 == 0 {
-                // Level 1 townies carry zero mana, so
-                // `TransformEntityToManaSphere_36BA0(false)` performs no RNG
-                // draw or allocation. The class-10/model-1 burst is attempted
-                // before the dying source slot is disabled.
-                if villager.control_flags & SOURCE_DEATH_BURST_SUPPRESSED_FLAG == 0 {
-                    effects.push(VillagerStepEffect::DeathBurst {
-                        source_entity_index: villager.entity_index,
-                        position: villager.position,
-                    });
+                if villager.mana > 0 {
+                    villager.rng = next_rng(villager.rng);
                 }
-                disable_villager(villager, &mut effects);
+                effects.push(VillagerStepEffect::DeathRequested(VillagerDeathRequest {
+                    source_entity_index: villager.entity_index,
+                    position: villager.position,
+                    yaw: villager.yaw,
+                    mana: villager.mana,
+                    owner_entity_index: villager.owner_entity_index,
+                    source_rng_after_death: villager.rng,
+                }));
             }
         }
         VILLAGER_HIT_ACTION => {
@@ -1653,23 +1665,71 @@ mod tests {
         assert!(family.villagers()[0].active);
 
         let mut removal_effects = Vec::new();
-        while family.villagers()[0].active {
+        while !removal_effects
+            .iter()
+            .any(|effect| matches!(effect, VillagerStepEffect::DeathRequested(_)))
+        {
             removal_effects = family.step_source_slot(51, world.terrain(), &[], &mut houses);
         }
         assert_eq!(family.villagers()[0].phase & 7, 1);
-        assert_ne!(family.villagers()[0].control_flags & 0x0000_0400, 0);
+        assert!(family.villagers()[0].active);
+        assert_eq!(family.villagers()[0].control_flags & 0x0000_0400, 0);
         assert!(matches!(
             removal_effects.as_slice(),
-            [
-                VillagerStepEffect::DeathBurst {
-                    source_entity_index: 51,
-                    ..
-                },
-                VillagerStepEffect::DisableSourceSlot {
-                    source_entity_index: 51
-                }
-            ]
+            [VillagerStepEffect::DeathRequested(VillagerDeathRequest {
+                source_entity_index: 51,
+                mana: 0,
+                ..
+            })]
         ));
+        // The constructor sink owns the hide after its allocation attempts.
+        assert!(family.disable_source_slot(51));
+        assert!(!family.villagers()[0].active);
+        assert_ne!(family.villagers()[0].control_flags & 0x0000_0400, 0);
+    }
+
+    #[test]
+    fn removal_request_keeps_visible_parent_and_draws_only_for_positive_mana() {
+        let world = load_world();
+        let original =
+            VillagerFamily::from_entities(world.entities(), VillagerBehaviorConfig::LEVEL_ONE)
+                .unwrap();
+        for mana in [-100, 0, 731] {
+            let mut family = original.clone();
+            let mut houses = HouseFamily::from_entities(world.entities()).unwrap();
+            let actor = &mut family.villagers[0];
+            actor.action = VILLAGER_REMOVAL_ACTION;
+            actor.phase = 7;
+            actor.mana = mana;
+            actor.owner_entity_index = 152;
+            let rng = actor.rng;
+            assert!(
+                family
+                    .step_source_slot(51, world.terrain(), &[], &mut houses)
+                    .is_empty()
+            );
+            assert_eq!(family.villagers()[0].rng, rng);
+            let position = family.villagers()[0].position;
+            let yaw = family.villagers()[0].yaw;
+            let effects = family.step_source_slot(51, world.terrain(), &[], &mut houses);
+            let expected_rng = if mana > 0 { next_rng(rng) } else { rng };
+            assert_eq!(
+                effects,
+                [VillagerStepEffect::DeathRequested(VillagerDeathRequest {
+                    source_entity_index: 51,
+                    position,
+                    yaw,
+                    mana,
+                    owner_entity_index: 152,
+                    source_rng_after_death: expected_rng,
+                })]
+            );
+            let actor = &family.villagers()[0];
+            assert!(actor.active);
+            assert_eq!(actor.control_flags & SOURCE_DISABLED_FLAG, 0);
+            assert_eq!(actor.owner_entity_index, 152);
+            assert_eq!(actor.rng, expected_rng);
+        }
     }
 
     #[test]

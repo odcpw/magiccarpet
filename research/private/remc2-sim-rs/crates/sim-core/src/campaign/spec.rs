@@ -330,6 +330,36 @@ fn campaign_package_profile(selection: CampaignSelection) -> Option<CampaignPack
     }
 }
 
+fn validate_collision_profile(
+    selection: CampaignSelection,
+    package_schema: &str,
+    source_facts: &[SourceFact],
+) -> Result<()> {
+    let version = source_facts
+        .iter()
+        .find(|fact| fact.kind == super::source_facts::SourceFactKind::CollisionMask)
+        .map(|fact| fact.version);
+    if selection.external_level != 2 && version == Some(3) {
+        return fail(
+            ValidationStage::SourceFacts,
+            "closed house collision profile is only qualified for Level 2",
+        );
+    }
+    if selection.external_level <= 3 && version == Some(4) {
+        return fail(
+            ValidationStage::SourceFacts,
+            "generic model45 collision profile requires an ordinary or secret package beyond Level 3",
+        );
+    }
+    if package_schema == LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA && version != Some(2) {
+        return fail(
+            ValidationStage::SourceFacts,
+            "Level 1 collision profile requires map-specific collision provenance v2",
+        );
+    }
+    Ok(())
+}
+
 fn building_objective_provenance(
     has_building_parameters: bool,
     authored: &[u8],
@@ -1540,26 +1570,7 @@ impl CampaignDefinition {
             stage: ValidationStage::SourceFacts,
             message,
         })?;
-        if caller.external_level != 2
-            && source_facts.iter().any(|fact| {
-                fact.kind == super::source_facts::SourceFactKind::CollisionMask && fact.version == 3
-            })
-        {
-            return fail(
-                ValidationStage::SourceFacts,
-                "closed house collision profile is only qualified for Level 2",
-            );
-        }
-        if profile.package_schema == LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA
-            && !source_facts.iter().any(|fact| {
-                fact.kind == super::source_facts::SourceFactKind::CollisionMask && fact.version == 2
-            })
-        {
-            return fail(
-                ValidationStage::SourceFacts,
-                "Level 1 collision profile requires map-specific collision provenance v2",
-            );
-        }
+        validate_collision_profile(caller, profile.package_schema, &source_facts)?;
 
         // Stage 7: the declared operations must match the authored stage row
         // that supplied the Stage-6 SourceFact provenance.
@@ -5266,6 +5277,232 @@ mod tests {
             Mc2LevelDefinition::creature_for_house_resident(12, 105),
             None
         );
+    }
+
+    #[test]
+    fn generic_model45_collision_v4_qualifies_real_reset_closure_and_rejects_substitutions() {
+        use super::super::source_facts::SourceFactKind;
+        use crate::campaign::CampaignSession;
+        use serde_json::json;
+        use std::collections::BTreeMap;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL7_HOUSE_PACKAGE").map_or_else(
+            || generated.join("settlement-20261105-integration/owner-collision-closure-v4/level7"),
+            PathBuf::from,
+        );
+        let selection = CampaignSelection::ordinary(7).unwrap();
+        let decoded = super::DecodedCampaignPackage::decode(&package, selection)
+            .expect("actual source-qualified whole Level7 collision-closure export");
+        let collision = decoded
+            .source_facts
+            .iter()
+            .find(|fact| fact.kind == SourceFactKind::CollisionMask)
+            .unwrap();
+        assert_eq!(collision.version, 4);
+        assert_eq!(
+            collision
+                .source_artifacts
+                .iter()
+                .map(|row| row.logical_path.as_str())
+                .collect::<Vec<_>>(),
+            ["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"]
+        );
+        let session = CampaignSession::open(&package, selection)
+            .expect("qualified closed bank reaches the ordinary CampaignSession");
+        let bank = session.simulation().collision_mask_bank().unwrap();
+        assert_eq!(
+            bank.masks()
+                .iter()
+                .map(|row| row.selector())
+                .collect::<Vec<_>>(),
+            [
+                17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 57, 60, 62, 65, 71,
+                74
+            ]
+        );
+        assert!(
+            bank.mask(30).is_some(),
+            "actual reset House85's mask is retained"
+        );
+        let construction = crate::house::decode_house_construction_inputs(
+            decoded.member("feature-construction-inputs.bin").unwrap(),
+        )
+        .unwrap();
+        assert!(
+            construction.contains_key(&1),
+            "real MCI3v4 also carries initial Castle BUILD1"
+        );
+        assert!(
+            bank.mask(1).is_none(),
+            "Castle-only BUILD1 is not a model45 mask"
+        );
+
+        let definition: serde_json::Value =
+            serde_json::from_slice(decoded.member("campaign-definition.json").unwrap()).unwrap();
+        let facts = &definition["source_facts"];
+        let building = decoded
+            .source_facts
+            .iter()
+            .find(|fact| fact.kind == SourceFactKind::BuildingParameters)
+            .unwrap();
+        let qualify = |facts: &serde_json::Value,
+                       files: &BTreeMap<String, (u64, String)>,
+                       members: &BTreeMap<String, Vec<u8>>,
+                       map_type_id| {
+            let identity = &files["collision-masks.bin"];
+            super::validate_source_facts(
+                facts,
+                &super::SourceFactContext {
+                    map_type_id,
+                    files,
+                    members,
+                    authored_collision_provenance: &collision.selector_provenance,
+                    building_objective_provenance: &building.selector_provenance,
+                    collision_bank: Some((identity.0 as usize, identity.1.as_str())),
+                    has_building_parameters: true,
+                },
+            )
+        };
+        let replace_bank = |bytes: Vec<u8>| {
+            let mut facts = facts.clone();
+            let mut files = decoded.files.clone();
+            let mut members = decoded.members.clone();
+            let hash = super::sha256_hex(&bytes);
+            facts
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|row| row["kind"] == 3)
+                .unwrap()["member_sha256"] = json!(hash);
+            files.insert("collision-masks.bin".to_owned(), (bytes.len() as u64, hash));
+            members.insert("collision-masks.bin".to_owned(), bytes);
+            (facts, files, members)
+        };
+        // Counterfactual Stage-6 inputs retain consistent fact/census hashes,
+        // so omitted/extra rows must fail the independent selector closure.
+        let bytes = decoded.member("collision-masks.bin").unwrap();
+        let count = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+        let mut cursor = 20;
+        let mut reset_row = None;
+        while cursor < bytes.len() {
+            let selector = u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().unwrap());
+            let extent =
+                u32::from_le_bytes(bytes[cursor + 8..cursor + 12].try_into().unwrap()) as usize;
+            if selector == 30 {
+                reset_row = Some(cursor..cursor + 12 + extent);
+            }
+            cursor += 12 + extent;
+        }
+        let reset_row = reset_row.unwrap();
+        let mut omitted = bytes.to_vec();
+        omitted.drain(reset_row.clone());
+        omitted[12..16].copy_from_slice(&(count - 1).to_le_bytes());
+        let (changed, files, members) = replace_bank(omitted);
+        assert!(
+            qualify(&changed, &files, &members, selection.map_type_id)
+                .unwrap_err()
+                .contains("differs from authored selectors")
+        );
+        // Deliberately invalid selector substitution uses an existing payload;
+        // it is never submitted as a genuine owner mask or a positive fixture.
+        let mut extra_row = bytes[reset_row].to_vec();
+        extra_row[..2].copy_from_slice(&1_u16.to_le_bytes());
+        let mut extra = bytes[..20].to_vec();
+        extra.extend(extra_row);
+        extra.extend_from_slice(&bytes[20..]);
+        extra[12..16].copy_from_slice(&(count + 1).to_le_bytes());
+        let (changed, files, members) = replace_bank(extra);
+        assert!(
+            qualify(&changed, &files, &members, selection.map_type_id)
+                .unwrap_err()
+                .contains("differs from authored selectors")
+        );
+        assert!(
+            qualify(facts, &decoded.files, &decoded.members, 0)
+                .unwrap_err()
+                .contains("owner artifact set/order differs"),
+            "Night bank cannot declare a Day map"
+        );
+        let mut absent = decoded.members.clone();
+        absent.remove("collision-masks.bin");
+        assert!(
+            qualify(facts, &decoded.files, &absent, selection.map_type_id)
+                .unwrap_err()
+                .contains("collision-mask member is absent")
+        );
+        let mut wrong_profile = facts.clone();
+        wrong_profile
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["kind"] == 3)
+            .unwrap()["version"] = json!(2);
+        assert!(
+            qualify(
+                &wrong_profile,
+                &decoded.files,
+                &decoded.members,
+                selection.map_type_id
+            )
+            .is_err()
+        );
+        let mut old_construction = facts.clone();
+        old_construction
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["kind"] == 2)
+            .unwrap()["version"] = json!(3);
+        assert!(
+            qualify(
+                &old_construction,
+                &decoded.files,
+                &decoded.members,
+                selection.map_type_id
+            )
+            .is_err()
+        );
+        let mut absent = decoded.members.clone();
+        absent.remove("building-parameters.bin");
+        assert!(qualify(facts, &decoded.files, &absent, selection.map_type_id).is_err());
+        for selection in [
+            CampaignSelection::LEVEL1,
+            CampaignSelection::LEVEL2,
+            CampaignSelection::LEVEL3,
+        ] {
+            assert!(
+                super::validate_collision_profile(
+                    selection,
+                    super::campaign_package_profile(selection)
+                        .unwrap()
+                        .package_schema,
+                    &decoded.source_facts
+                )
+                .is_err()
+            );
+        }
+        for (path, selection, expected_version) in [
+            (level1_runtime_fixture(), CampaignSelection::LEVEL1, 2),
+            (level3_fixture(), CampaignSelection::LEVEL3, 1),
+            (
+                generated.join("settlement-20261105-integration/owner-current/level2"),
+                CampaignSelection::LEVEL2,
+                3,
+            ),
+        ] {
+            let legacy = super::DecodedCampaignPackage::decode(path, selection)
+                .expect("existing legacy collision profile remains independently accepted");
+            assert_eq!(
+                legacy
+                    .source_facts
+                    .iter()
+                    .find(|fact| fact.kind == SourceFactKind::CollisionMask)
+                    .unwrap()
+                    .version,
+                expected_version
+            );
+        }
     }
 
     #[test]

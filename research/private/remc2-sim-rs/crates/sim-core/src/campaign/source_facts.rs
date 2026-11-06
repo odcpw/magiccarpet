@@ -709,7 +709,7 @@ pub(crate) fn validate_source_facts(
             || !(version == 1
                 || (kind == SourceFactKind::FeatureConstructionInputs
                     && matches!(version, 2 | 3 | 4))
-                || (kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3)))
+                || (kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3 | 4)))
             || string(&object["lifetime"], &format!("{label}.lifetime"))?
                 != "immutable-through-session"
         {
@@ -782,7 +782,7 @@ pub(crate) fn validate_source_facts(
                     "CD_Files/DATA/SPELLS.DAT",
                     "CD_Files/DATA/TABLESN.DAT",
                 ][..]
-            } else if kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3) {
+            } else if kind == SourceFactKind::CollisionMask && matches!(version, 2 | 3 | 4) {
                 match context.map_type_id {
                     0 => &["CD_Files/DATA/MSPRD0-0.DAT", "CD_Files/DATA/MSPRD0-0.TAB"][..],
                     1 => &["CD_Files/DATA/MSPRN0-0.DAT", "CD_Files/DATA/MSPRN0-0.TAB"][..],
@@ -835,9 +835,10 @@ pub(crate) fn validate_source_facts(
         return Err("reset-house SourceFact and construction member versions differ".to_owned());
     }
     let successor_closure = matches!(construction_fact_version, 2 | 3 | 4);
-    let closed_collision = result
+    let collision_version = result
         .iter()
-        .any(|fact| fact.kind == SourceFactKind::CollisionMask && fact.version == 3);
+        .find(|fact| fact.kind == SourceFactKind::CollisionMask)
+        .map_or(0, |fact| fact.version);
     validate_construction_selectors(
         feature_inputs,
         authored_inputs,
@@ -850,7 +851,7 @@ pub(crate) fn validate_source_facts(
             .members
             .get("collision-masks.bin")
             .ok_or_else(|| "collision-mask member is absent".to_owned())?;
-        let collision_selectors = if closed_collision {
+        let collision_selectors = if collision_version == 3 {
             if !successor_closure
                 || context.map_type_id != 0
                 || collision.len() != 12_836
@@ -863,6 +864,27 @@ pub(crate) fn validate_source_facts(
                 );
             }
             decode_feature_construction_inputs(feature_inputs)?
+        } else if collision_version == 4 {
+            if construction_fact_version != 4
+                || construction_version != 4
+                || !context.has_building_parameters
+            {
+                return Err(
+                    "generic model45 collision closure requires owner BLDGPRM and MCI3 v4"
+                        .to_owned(),
+                );
+            }
+            // Castle-only BUILD inputs are terrain constructors, not model45
+            // collision selectors. Derive this set from source records rather
+            // than accepting the complete (larger) MCI3 v4 bank.
+            construction_selectors_from_authored(
+                authored_inputs,
+                true,
+                Some(context.members.get("entities.bin").ok_or_else(|| {
+                    "model45 collision closure requires reset entities".to_owned()
+                })?),
+                false,
+            )?
         } else {
             expected_selectors.clone()
         };

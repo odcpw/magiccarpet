@@ -592,11 +592,13 @@ CollisionMaskCapture capture_collision_masks(
     const fs::path& owner_root,
     const std::vector<std::uint16_t>& selectors,
     std::size_t authored_model_45_row_count,
-    std::uint16_t external_level) {
+    std::uint16_t external_level,
+    bool closed_house_selectors) {
     if (x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("MSPRD collision masks require VGA selector 1");
     }
-    if ((selectors.empty()) != (authored_model_45_row_count == 0)) {
+    if (!closed_house_selectors &&
+        (selectors.empty()) != (authored_model_45_row_count == 0)) {
         throw std::runtime_error(
             "external Level " + std::to_string(external_level) +
             " has an unprovable authored class-10/model-45 collision selector count");
@@ -672,7 +674,7 @@ CollisionMaskCapture capture_collision_masks(
         {"record_header_bytes", kCollisionMaskRecordHeaderBytes},
         {"bank", bank},
         {"vga_resolution_selector", x_WORD_180660_VGA_type_resolution},
-        {"selector_source", external_level == 2
+        {"selector_source", closed_house_selectors
             ? "source-closed house construction selectors"
             : "authored class-10/model-45 par1 selectors"},
         {"pixel_encoding", "signed i16 little-endian"},
@@ -703,6 +705,7 @@ Bytes capture_feature_construction_inputs(
     const Bytes& reset_entities,
     std::uint16_t entity_record_size,
     std::vector<std::uint16_t>& selectors,
+    std::vector<std::uint16_t>& model_45_selectors,
     std::size_t& authored_model_45_row_count,
     bool level_one,
     bool successor_closure,
@@ -751,6 +754,26 @@ Bytes capture_feature_construction_inputs(
         };
         selectors.insert(selectors.end(), std::begin(builder_rows), std::end(builder_rows));
     }
+    // A House's destruction successor can itself produce another House.
+    // Close the actual model-45 inputs separately from the Castle terrain
+    // footprints below: Castle-only BUILD rows are not sprite-mask selectors.
+    const auto close_successors = [successor_closure](std::vector<std::uint16_t>& rows) {
+        for (std::size_t index = 0; successor_closure && index < rows.size(); ++index) {
+            const std::uint16_t selector = rows[index];
+            if (selector >= str_D93C0_bldgprmbuffer.size()) {
+                throw std::runtime_error("house successor BUILD selector is outside the source table");
+            }
+            const std::uint16_t successor = str_D93C0_bldgprmbuffer[selector].byte_3;
+            if (successor != 0 &&
+                std::find(rows.begin(), rows.end(), successor) == rows.end()) {
+                rows.push_back(successor);
+            }
+        }
+        std::sort(rows.begin(), rows.end());
+        rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    };
+    close_successors(selectors);
+    model_45_selectors = selectors;
     // PlayerEvents' first AI spawn (sub_5C950) stamps BUILD[0..count)
     // before the first numeric pass, whose Castle callback can create the
     // next BUILD[count] child. New roots also read BUILD[1] for their anchor.
@@ -772,22 +795,7 @@ Bytes capture_feature_construction_inputs(
             selectors.push_back(1);
         }
     }
-    // SetHouse copies byte_3 into the destruction successor selector. Later
-    // destruction can construct that BUILD footprint, including successors of
-    // successors. Level 2 also needs collision masks for this complete set.
-    for (std::size_t index = 0; successor_closure && index < selectors.size(); ++index) {
-        const std::uint16_t selector = selectors[index];
-        if (selector >= str_D93C0_bldgprmbuffer.size()) {
-            throw std::runtime_error("house successor BUILD selector is outside the source table");
-        }
-        const std::uint16_t successor = str_D93C0_bldgprmbuffer[selector].byte_3;
-        if (successor != 0 &&
-            std::find(selectors.begin(), selectors.end(), successor) == selectors.end()) {
-            selectors.push_back(successor);
-        }
-    }
-    std::sort(selectors.begin(), selectors.end());
-    selectors.erase(std::unique(selectors.begin(), selectors.end()), selectors.end());
+    close_successors(selectors);
     if (level_one && selectors.empty()) {
         throw std::runtime_error("Level 1 has no source house construction selectors");
     }
@@ -2287,7 +2295,7 @@ canonical_json campaign_source_facts(
             {"source_artifacts", campaign_source_artifacts(
                 owner_sources,
                 {dat_logical.c_str(), tab_logical.c_str()})},
-            {"version", construction_collision_closure ? 3 : 2}
+            {"version", reset_house_closure ? 4 : (construction_collision_closure ? 3 : 2)}
         });
     }
     facts.push_back({
@@ -2882,6 +2890,7 @@ int run(const Arguments& arguments) {
         throw std::runtime_error("Level 1 isolated feature seam is not using VGA selector 1");
     }
     std::vector<std::uint16_t> feature_building_selectors;
+    std::vector<std::uint16_t> model_45_collision_selectors;
     std::size_t authored_model_45_row_count = 0;
     Bytes feature_construction_inputs =
         capture_feature_construction_inputs(
@@ -2889,6 +2898,7 @@ int run(const Arguments& arguments) {
             entities,
             entity_record_size,
             feature_building_selectors,
+            model_45_collision_selectors,
             authored_model_45_row_count,
             level_one,
             arguments.level.external == 2 || arguments.level.external > 3,
@@ -2901,14 +2911,17 @@ int run(const Arguments& arguments) {
     if (include_collision_masks) {
         std::size_t collision_authored_count = 0;
         auto collision_selectors = building_selectors(authored, collision_authored_count);
-        if (arguments.level.external == 2) {
-            collision_selectors = feature_building_selectors;
+        const bool closed_house_selectors = arguments.level.external == 2 ||
+            arguments.level.external > 3;
+        if (closed_house_selectors) {
+            collision_selectors = model_45_collision_selectors;
         }
         collision_masks = capture_collision_masks(
             owner_root,
             collision_selectors,
             collision_authored_count,
-            arguments.level.external);
+            arguments.level.external,
+            closed_house_selectors);
     }
     const Type_Level_2FECE feature_expectation = authored;
     const auto feature_allocator_trace = level_one

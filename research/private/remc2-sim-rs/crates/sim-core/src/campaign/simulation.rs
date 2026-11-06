@@ -1067,6 +1067,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 // rebuilding lists or dispatching any callback.
                 economy.reclaim_hidden_castle_rows_at_source_boundary();
                 economy.reclaim_hidden_archer_rows_at_source_boundary();
+                level2_class5::trader::prepare_reclaim(economy, &mut live.terrain)?;
                 economy.reclaim_hidden_trader_rows_at_source_boundary();
                 economy.reclaim_hidden_goat_rows_at_source_boundary();
                 economy.reclaim_hidden_worm_rows_at_source_boundary();
@@ -19054,11 +19055,8 @@ impl Mc2Simulation {
                     .live
                     .ordinary
                     .apply_villager_effects(&effects);
-                // `KillEntity_1C930` allocates the class-10/model-1
-                // death burst before disabling the dying villager's
-                // source row. Keep the typed villager source id for this
-                // relation; imported ordinary villagers have no owner
-                // entry in the Level 2 economy map.
+                // The ordinary family sink has already completed ordered
+                // mana/burst/hide effects; retain only player feedback here.
                 for effect in &effects {
                     if let VillagerStepEffect::TargetPlayer {
                         player_source_entity_index,
@@ -19068,18 +19066,6 @@ impl Mc2Simulation {
                     {
                         let _ =
                             dispatcher.apply_class5_player_feedback(*player_source_entity_index);
-                    }
-                    if let VillagerStepEffect::DeathBurst {
-                        source_entity_index,
-                        ..
-                    } = effect
-                    {
-                        let newborn = self.spawn_level2_source_death_burst(*source_entity_index)?;
-                        crate::world::effects::hide_birth_replacement(
-                            &mut self.session.state.live.economy,
-                            *source_entity_index,
-                            newborn,
-                        )?;
                     }
                 }
                 self.append_new_economy_events(pass, source_slot);
@@ -21276,8 +21262,8 @@ impl Mc2Simulation {
             prey.hide();
         } else {
             live.ordinary.disable_villager_source(prey_slot);
-            live.economy.entities[usize::from(prey_slot)].disable_drawing();
         }
+        live.economy.entities[usize::from(prey_slot)].disable_drawing();
         let Some(slot) = live.economy.economy.allocate_slot() else {
             #[cfg(test)]
             record_conversion(Model9ConversionOutcome::AllocationFailed);
@@ -34065,11 +34051,12 @@ mod tests {
         let predator_slot = 122_u16;
         let predator = &mut session.session.state.live.economy.entities[usize::from(predator_slot)];
         assert_eq!((predator.class, predator.model), (5, 9));
-        // Incoming reaction/cadence boundary, before the ordinary source pass.
-        predator.set_source_action(74);
+        // Incoming sub_203D0 mode-1/cadence boundary: it invokes sub_20940
+        // without changing action73. Normal action74 owns sub_20C50's attack.
+        predator.set_source_action(73);
+        predator.set_source_byte_46(1);
         predator.set_source_dword_10(0);
-        predator.phase = 0;
-        predator.record[66] = 0;
+        predator.set_phase(0);
         predator.record[61] = 0;
         let predator_id = predator.source_id;
         let (prey_slot, prey_position) = session

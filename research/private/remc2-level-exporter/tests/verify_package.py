@@ -1050,6 +1050,7 @@ def validate_collision_mask_contract(
     *,
     external_level: int,
     construction_closure: bool = False,
+    reset_entities: bytes | None = None,
 ) -> list[dict]:
     authored_rows = authored_model_45_rows(authored)
     declared_rows = metadata.get("selectors")
@@ -1099,8 +1100,10 @@ def validate_collision_mask_contract(
 
     expected_selectors = sorted({selector for _index, selector in authored_rows})
     if construction_closure:
-        require(external_level == 2, "closed collision profile is not Level 2")
-        expected_selectors = _campaign_construction_selectors(authored, 2)
+        require(external_level == 2 or external_level > 3, "closed collision profile has no source construction contract")
+        expected_selectors = _campaign_construction_selectors(
+            authored, 2 if external_level == 2 else 3, reset_entities=reset_entities
+        )
     actual_selectors = [row["selector"] for row in parsed_rows]
     require(
         actual_selectors == expected_selectors,
@@ -1132,7 +1135,11 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         f"external Level {external_level} collision-mask metadata is missing",
     )
     construction_closure = metadata.get("selector_source") == "source-closed house construction selectors"
-    require(not construction_closure or external_level == 2, "closed collision profile is not Level 2")
+    require(not construction_closure or external_level == 2 or external_level > 3, "closed collision profile has no source construction contract")
+    if construction_closure and external_level > 3:
+        require(u16((package / "feature-construction-inputs.bin").read_bytes(), 4) == 4, "reset-house collision requires v4 construction")
+        require(hashlib.sha256((package / "building-parameters.bin").read_bytes()).hexdigest() == CAMPAIGN_SOURCE_ARTIFACTS["CD_Files/DATA/BLDGPRM.DAT"][1], "reset-house collision owner BLDGPRM differs")
+        bank = ("MSPRD0-0", "MSPRN0-0", "MSPRC0-0")[manifest["level"]["map_type"]["id"]]
     base_metadata = {
         "file": "collision-masks.bin",
         "magic": "MCM1",
@@ -1192,6 +1199,7 @@ def verify_collision_masks(package: Path, manifest: dict) -> None:
         metadata,
         external_level=external_level,
         construction_closure=construction_closure,
+        reset_entities=(package / "entities.bin").read_bytes() if construction_closure and external_level > 3 else None,
     )
 
 
@@ -2173,10 +2181,10 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
         kind, member_name, provenance, artifact_paths = expected[fact_id]
         fact_kind = _bounded_integer(fact["kind"], 0xFFFF, f"SourceFact {fact_id} kind")
         fact_version = _bounded_integer(fact["version"], 0xFFFF, f"SourceFact {fact_id} version")
-        require(fact_version == 1 or (kind == 2 and fact_version in {2, 3, 4}) or (kind == 3 and fact_version in {2, 3}), f"SourceFact {fact_id} version differs")
+        require(fact_version == 1 or (kind == 2 and fact_version in {2, 3, 4}) or (kind == 3 and fact_version in {2, 3, 4}), f"SourceFact {fact_id} version differs")
         if kind == 2 and fact_version in {2, 3, 4}:
             artifact_paths = artifact_paths | {"CD_Files/DATA/BLDGPRM.DAT"}
-        if kind == 3 and fact_version in {2, 3}:
+        if kind == 3 and fact_version in {2, 3, 4}:
             bank = ("MSPRD0-0", "MSPRN0-0", "MSPRC0-0")[profile["map_type_id"]]
             artifact_paths = {f"CD_Files/DATA/{bank}.DAT", f"CD_Files/DATA/{bank}.TAB"}
         if kind == 3 and profile.get("collision_fact_version") is not None:
@@ -2204,6 +2212,7 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
     feature_selectors = _campaign_decode_feature_inputs(feature_inputs)
     closed_construction = any(fact["kind"] == 2 and fact["version"] in {2, 3, 4} for fact in facts)
     closed_collision = any(fact["kind"] == 3 and fact["version"] == 3 for fact in facts)
+    reset_house_collision = any(fact["kind"] == 3 and fact["version"] == 4 for fact in facts)
     construction_fact_version = next(fact["version"] for fact in facts if fact["kind"] == 2)
     require(not closed_construction or u16(feature_inputs, 4) == construction_fact_version, "source-closed construction version differs from SourceFact")
     require((u16(feature_inputs, 4) in {3, 4}) == (construction_fact_version in {3, 4}), "reset-house construction version differs from SourceFact")
@@ -2219,7 +2228,13 @@ def _campaign_validate_source_facts(package: Path, facts_value: object, files: d
             cursor += 12 + u32(feature_inputs, cursor + 8)
     if "collision-mask-bank" in source_fact_ids:
         collision = (package / "collision-masks.bin").read_bytes()
-        _campaign_decode_collision(collision, feature_selectors if closed_collision else authored_selectors)
+        collision_selectors = feature_selectors if closed_collision else authored_selectors
+        if reset_house_collision:
+            require(profile.get("source_level_v4") and construction_fact_version == 4 and u16(feature_inputs, 4) == 4 and "building-parameters" in source_fact_ids, "reset-house collision requires source-closed v4 construction and owner BLDGPRM")
+            # Version3 derives the model45 set without version4's Castle-only
+            # terrain stamps. The actual v4 BUILD member is validated above.
+            collision_selectors = _campaign_construction_selectors(authored, 3, reset_entities=(package / "entities.bin").read_bytes())
+        _campaign_decode_collision(collision, collision_selectors)
         if closed_collision:
             require(closed_construction and profile["package_schema"] == LEVEL2_CAMPAIGN_PACKAGE_SCHEMA, "closed collision profile is not source-closed Level 2")
         expected_bytes = LEVEL2_CLOSED_COLLISION_MASK_BANK_BYTES if closed_collision else profile["collision_bank_bytes"]

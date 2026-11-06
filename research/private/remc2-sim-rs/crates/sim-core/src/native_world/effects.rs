@@ -6,8 +6,66 @@ use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, S
 use crate::{Position, campaign::source_arena::SourceArena, world::effects as rules};
 
 #[cfg(test)]
+use crate::campaign::source_arena::SourceEntityHandle;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FireballTerminalReason {
+    Collision,
+    Terrain,
+    Lifetime,
+    Ash,
+    Unknown,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FireballTerminalReceipt {
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) owner: u16,
+    pub(crate) position: Position,
+    pub(crate) reason: FireballTerminalReason,
+    pub(crate) collision_target: Option<u16>,
+    pub(crate) target_handle: Option<SourceEntityHandle>,
+    pub(crate) impact: Option<SourceEntityHandle>,
+    pub(crate) live_after: bool,
+}
+
+#[cfg(test)]
 thread_local! {
     static DRAGON_REACTION_TRACE: std::cell::RefCell<Option<Vec<(u16, u32, u16, u16, u32)>>> = const { std::cell::RefCell::new(None) };
+    static FIREBALL_TERMINAL_TRACE: std::cell::RefCell<Option<Vec<FireballTerminalReceipt>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_fireball_terminal_trace() {
+    FIREBALL_TERMINAL_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_fireball_terminal_trace() -> Vec<FireballTerminalReceipt> {
+    FIREBALL_TERMINAL_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+fn trace_fireball_terminal(
+    arena: &SourceArena,
+    receipt: Option<FireballTerminalReceipt>,
+    impact: Option<u16>,
+    live_after: bool,
+) {
+    let Some(mut receipt) = receipt else {
+        return;
+    };
+    receipt.impact = impact.and_then(|slot| arena.handle(slot));
+    receipt.live_after = live_after;
+    FIREBALL_TERMINAL_TRACE.with(|trace| {
+        if let Some(receipts) = trace.borrow_mut().as_mut()
+            && receipts.len() < 64
+        {
+            receipts.push(receipt);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -221,6 +279,41 @@ pub(crate) fn step_projectile(
         .find(|s| s.source_entity_index == slot)
         .copied()
         .ok_or("terminal flyer lost its current carrier")?;
+    #[cfg(test)]
+    let terminal_receipt = FIREBALL_TERMINAL_TRACE.with(|trace| {
+        if !trace.borrow().as_ref().is_some_and(|rows| rows.len() < 64) {
+            return None;
+        }
+        // The core checks actor collision, then terrain, then decrements life
+        // only in its no-contact branch. Reflection returns before any birth.
+        // Observe that actual write, never re-run a geometric collision test.
+        let reason = match (step.collision_target, birth, entry) {
+            (Some(_), _, _) => FireballTerminalReason::Collision,
+            (_, FireballBirth::Ash, _) => FireballTerminalReason::Ash,
+            (None, FireballBirth::Impact, Some(before))
+                if projectile.life == before.life.wrapping_sub(1) && projectile.life < 0 =>
+            {
+                FireballTerminalReason::Lifetime
+            }
+            (None, FireballBirth::Impact, Some(before)) if projectile.life == before.life => {
+                FireballTerminalReason::Terrain
+            }
+            _ => FireballTerminalReason::Unknown,
+        };
+        Some(FireballTerminalReceipt {
+            projectile: SourceEntityHandle {
+                source_slot: slot,
+                generation: arena.economy.slot_generation(slot),
+            },
+            owner: projectile.owner_entity_index,
+            position: projectile.position,
+            reason,
+            collision_target: step.collision_target,
+            target_handle: step.collision_target.and_then(|target| arena.handle(target)),
+            impact: None,
+            live_after: step.live,
+        })
+    });
     // 65C20 asks 68AC0 before its ordinary impact. Magic Mine owns the
     // capture mailbox; the caller commits the current holder's expiry value.
     let capture_target = step.collision_target.filter(|target| {
@@ -279,6 +372,8 @@ pub(crate) fn step_projectile(
         step.direct_hit_owner = None;
         step.direct_hit_family = None;
         step.accuracy = None;
+        #[cfg(test)]
+        trace_fireball_terminal(arena, terminal_receipt, visual, step.live);
         return Ok(step);
     }
     let child = if birth == FireballBirth::Impact
@@ -559,6 +654,8 @@ pub(crate) fn step_projectile(
         step.direct_hit_owner = None;
     }
     step.impact_slot = child;
+    #[cfg(test)]
+    trace_fireball_terminal(arena, terminal_receipt, child, step.live);
     Ok(step)
 }
 

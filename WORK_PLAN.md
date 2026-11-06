@@ -4,8 +4,9 @@
 
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
-tracks delivery, not missing-code counts. Start with Wyvern and Castle defenders
-in independent family owners; root serializes shared joins, Cargo and installation.
+tracks delivery, not missing-code counts. Continue the active settlement `.16`
+prerequisite, then Skeleton `.22`; retain the delivered families below. Root
+serializes shared joins, Cargo and installation with the small native team.
 Each family must connect ordinary production, source scheduling/arithmetic,
 behavior and spell interaction, consequences/rewards, natural cleanup,
 objective consumers and original presentation/assets. Preserve the delivered
@@ -170,7 +171,103 @@ MagentaPuma next owns actual Builder/Villager Skeleton conversion through the
 ordinary Level7 producer, with AzureGate supporting shared joins. Source excludes models12–15
 from the global creature-population census, so an invented global decrement is
 not an acceptance gate. Full `.16` and its original dependencies stay open.
-UBS has zero critical added-line findings; whole-file format/heuristic debt
+The first conversion candidate11 used the dynamic-switch list for imported
+reset279 and failed before stepping. Candidate12 corrects that observer using
+the actual11/0/sourceID19 reset carrier; ordinary group19 publication succeeds,
+but the natural encounter does not converge before the player dies (72.183s).
+No conversion is qualified and no mission/actor/admission patch is justified.
+Inspect another real authored encounter before repeating a long run.
+Fresh bounded `.16` review found a concrete conditional consumer omission:
+typed settlement constructors install mana, but Builder101/Trader117/Villager109
+skip source1C930→36BA0(false) for positive values. Source defaults remain zero;
+do not invent a default-mission positive-mana producer. MagentaPuma owns the
+complete family and dynamic joins; AzureGate implements the plain-Villager/shared
+death-mana join through existing sphere/cleanup consumers. Source RNG before
+allocation, owner clearing even on failure, current-occupant continuation and
+burst/hide order must hold. Builder sound10 also moves to its existing MC2 asset
+adapter without changing the default. Full acceptance stays open.
+Candidate14 core+CAPI compiles70.883s/444stable; independent worker/local
+executable hashes match. All focused mana/collection/reclaim controls pass,
+including post-build Builder12/action109 with one RNG draw. Real Trader raw
+header/terrain retirement is now joined before economy release; its prior
+retained119/gen1 failure is preserved. Legacy control initialization was also
+repaired to begin its actual source turn. Source-order, paid Villager16.018s
+and public House→Builder→paid claim26.418s pass. This source is not installed.
+The real House85 conversion route still fails25.280s: genuine paid impacts at
+its live centre reach no accepted mailbox. Its starting29 was construction,
+not combat life; natural live state is25000. A proven retained-data blocker is
+now identified: reset House85 selects mask30, but the qualified Level7 bank has
+only60/65. The C++ exporter uses complete construction selectors only for
+Level2; Rust qualification also pins that closed profile toLevel2. Root owns
+the shared exporter closure/build; AzureGate owns strict generic qualification
+and compatibility with existing profiles, and MagentaPuma remains responsible
+for the connected gameplay consumer. Retain genuine map-bank bytes and source
+selector provenance, with missing/wrong banks rejected; never manufacture masks
+or weaken the source gate. Fixing this omission alone does not yet qualify the
+entire collision/list/schedule route or either settlement conversion.
+The canonical exporter now closes the actual model45 selector set separately
+from initial-Castle terrain footprints. New generic CollisionFact4 packages
+require real MCI3v4/BLDGPRM and independently derived authored/reset/Builder/
+successor inputs; legacy authoredv1/v2 and Level2v3's exact byte pin remain.
+Fresh wholeLevel7 has22 masks, including30 and excluding Castle-only1, all
+dimensions/payloads independently matched to actual pinned Night TAB/DAT.
+All15 other binary members are unchanged; a newLevel2 export retains all15
+binary members and its v3 pin. Exporter6919a0c0 has160 matching compiled inputs
+and its embedded provenance marker. Python qualification plus rehashed omitted/
+extra/wrong-bank/profile negatives pass0.16s. Generic declared hashes retain
+their existing trust model; no arbitrary rehashed-pixel authentication claim.
+Legacyv2 packages remain authored-only, and canonical launcher content currently
+installsLevels1–4; this newLevel7 package is connected verification input, not
+a newly installed Level7 campaign route. Candidate15 compilation found only
+missing test imports; the exact two-import repair is frozen for candidate16.
+Candidate16 compiles60.354s/444stable and the exact rig/returned executable
+hash matches. Real Rust v4 qualification/ordinary-session bank arrival passes
+0.796s. The unchanged House85 gate now reaches real paid demolition and actual
+House-born Builder373/gen34 conversion by Skeleton381/gen1 into11/gen1, then
+fails79.996s because its hide assertion reads the retained raw shadow. The
+conversion owner actually hides the typed house_resident; census/presentation
+read that carrier. Magenta is correcting this observation while retaining
+same-pass hide, presentation loss, following reclaim and child scheduling.
+Source17 then joins the real missing raw hide flag before NewEvent, so the
+family's existing owning reclaim can retire that same address. Its full
+House85→Builder373/gen34→Skeleton381/gen1→child11/gen1 path passes78.327s,
+including typed hide/census/DTO, following original-generation/target reclaim
+and child callback. Compile63.008s/444stable and independent rig SHA match.
+An affected old Archer control failed identically on16/17: it forced74, which
+correctly routes20C50; nested20940 conversion requires73/mode1. Source18 repairs
+only that configured entry and passes1.538s, retaining all failure/count/
+identity/reset assertions. Compile62.426s/444stable, independently matched.
+Production is identical to17. The separate actual Villager encounter remains
+unverified: one genuinely paid shot lands about750 units short; exact pulse/
+target/scanned-cell/overlap shows a legitimate miss, not a damage-admission
+defect. Owner is correcting only the player's firing line and observing the
+actual terminal reason; no NPC state, RNG, timing or acceptance changes.
+Full `.16` also retains a confirmed all-map asset join: canonical Level1 and3
+legacy banks each omit nine eligible Builder choices. The new generic v4
+producer/qualifier currently applies beyond those legacy profiles; a fresh
+first-map export still cannot supply that complete closure. After installing
+the connected working batch, extend the common owner-data contract to those
+opening maps while preserving their existing qualified profiles/rollback.
+Do not close `.16` from Level7 success or label this a mission behavior patch.
+The connected working batch is now verified through candidate24: actual paid
+selected Skeleton374/gen1/auth454 takes250, reacts/moves/retreats; independently
+pinned same-group Skeleton377/gen1/auth457 converts original Villager336/gen0
+into64/gen18. The full gate passes45.956s including real hidden census/DTO,
+following original-generation/target reclaim and child callback. The incorrect
+selected-converter hypothesis is retired with all negative sources/logs saved.
+The test-only census lacked converted-origin candidates in a formerly unbound
+slot; adding those real keys retains all identity/living/generation filters.
+Its current/hidden/inactive/stale-key/reused-generation control passes1.033s.
+Candidate24 compiles62.864s/444stable with independent rig executable match.
+The integrated workspace/all-target check on22 passes38.875s with444Rust+37extra
+inputs stable. Later changes are confined to core test controls/observation;
+their final core compile covers those deltas. Source-order19 passes0.618s.
+All production since17 is unchanged; its real Builder conversion and14 death/
+mana/collection checks are reused. Fresh bounded source/gate reviews found no
+new concrete defect in those joins. Implemented/verified; commit/install follow.
+The C++ UBS module failed on
+unsupported control flow; it provides no clean-scan claim. Rust/Python UBS has
+zero critical added-line findings; whole-file format/heuristic debt
 remains. Cleanup keeps all proof binaries/current/previous natives intact;
 only disposable dispatcher caches and a closed Nov4 incremental generation
 were removed under Oliver's explicit build-file cleanup authorization, retaining
@@ -185,6 +282,11 @@ verification before and after the move. Receipts retain their exact locations;
 current candidate7, all source/packages and current/previous natives stay local.
 The obsolete candidate6 observer executable is preserved there by the same
 before/after verified move; its negative receipts remain local.
+Further completed settlement executables1/8/9/11/12 are preserved on the same
+rig archive with before/after SHA receipts. Current installed/previous natives
+and latest positive test pins remain local. Measured native returns reached
+about988MB, so native preflight now requires6.2GB free, retaining the5GB floor
+and a concurrent-write margin; no threshold was lowered.
 
 The following
 records the Archer integration and its preserved negative results.

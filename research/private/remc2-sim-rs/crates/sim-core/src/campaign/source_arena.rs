@@ -1509,6 +1509,7 @@ impl SourceArena {
         // Dynamic raw roots need not have a reset binding or a typed row.
         // The identity resolver below checks the current slot generation.
         slots.extend(self.raw_creature_origins.keys().copied());
+        slots.extend(self.economy.converted_skeleton_origins.keys().copied());
         slots.extend(
             self.economy
                 .authored_class5()
@@ -3054,6 +3055,78 @@ mod tests {
                 .is_none()
         );
         assert_eq!(arena.reset_hash_with_terrain(&terrain), unbound_hash);
+    }
+
+    #[test]
+    fn converted_skeleton_census_observes_current_row_and_rejects_retired_reuse() {
+        let session = level_two_session();
+        let mut arena = session.source_arena().clone();
+        let slot = arena.allocate_source_slot().unwrap();
+        // Controlled observer input; the ordinary conversion gate separately
+        // proves that the real writer publishes this raw carrier and origin.
+        let mut source = crate::world::terrain::cave_features::new_event(
+            slot,
+            arena.new_event_rng(slot),
+            Position::default(),
+        );
+        source.class = 5;
+        source.model = 9;
+        source.record[67] = 5;
+        source.record[68] = 9;
+        source.set_source_action(73);
+        source.set_life(1000);
+        arena.entities[usize::from(slot)] = source.clone();
+        arena.economy.converted_skeleton_origins.insert(slot, 377);
+        let empty = BTreeMap::new();
+        let identity = arena
+            .creature_runtime_identity(slot, &empty, &empty)
+            .unwrap();
+        assert_eq!(identity.kind, CreatureKind::Skeleton);
+        assert_eq!(
+            identity.origin,
+            CreatureRootOrigin::CreatureConversion { producer_slot: 377 }
+        );
+        assert!(identity.living);
+        assert!(
+            arena
+                .creature_runtime_census(&empty, &empty)
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|row| row == identity)
+        );
+
+        arena.entities[usize::from(slot)].disable_drawing();
+        assert!(
+            arena
+                .creature_runtime_census(&empty, &empty)
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|row| row.handle == identity.handle && !row.living)
+        );
+        arena.entities[usize::from(slot)].reclaim_source_row();
+        assert!(arena.economy.converted_skeleton_origins.contains_key(&slot));
+        assert!(
+            !arena
+                .creature_runtime_census(&empty, &empty)
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|row| row.handle == identity.handle)
+        );
+
+        arena.economy.release_slot(slot, None);
+        assert!(!arena.economy.converted_skeleton_origins.contains_key(&slot));
+        assert_eq!(arena.allocate_source_slot(), Some(slot));
+        assert_ne!(arena.slot_generation(slot), identity.handle.generation);
+        source.set_entity_rng(arena.new_event_rng(slot));
+        arena.entities[usize::from(slot)] = source;
+        assert!(
+            arena
+                .creature_runtime_identity(slot, &empty, &empty)
+                .is_none()
+        );
+        assert!(
+            !arena
+                .creature_runtime_census(&empty, &empty)
+                .roots_of_kind(CreatureKind::Skeleton)
+                .any(|row| row.handle.source_slot == slot)
+        );
     }
 
     #[test]
