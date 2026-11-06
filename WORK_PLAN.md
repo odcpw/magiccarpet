@@ -71,7 +71,8 @@ Do not infer a missing enabled75/78 handler from the old bead's static assessmen
 force actors/groups or build a scripted full-group combat playthrough. Workers
 remain responsible through integration; original acceptance/dependencies stay.
 
-Skeleton `.22` current batch is implemented and verified, not yet installed.
+Skeleton `.22` current property/arrow batch is implemented, verified, committed
+and installed; full family acceptance remains open.
 Typed life/speed/subspell and400/600 arrow properties plus the MC2 descriptor/
 particle binding now reach raw construction, legacy promotion, semantic defaults,
 field births, movement/reaction and actual conversion. Source SetEvent144 still
@@ -100,12 +101,30 @@ the entire production prefix are byte-identical, so that evidence is reused.
 Candidate1's compiler-detected usize conversions and test import repair remain
 recorded; no admission, gameplay or assertion was weakened. Evidence:
 `generated/skeleton-20261106-integration/`. Full `.22` remains in_progress;
-ordinary paid Skeleton death/count loss and matching native delivery are next.
+ordinary paid Skeleton death/count loss is next; matching delivery follows below.
 Package formatting and whole-file scanner debt remain explicit. Known completed
 build artifacts are byte-preserved on rig ext4 before local removal; three closed
 test binaries were hash-verified into ext4 with stable aliases to free426MB in
 tmpfs. Source/data, warm remote caches, current/previous natives and Modern work
 are preserved.
+
+That batch is committed/pushed as `b3b7da835a34c67823d871f555dd39c3423e6bf1`.
+Strict rig native build passes68.094s; native
+`63311e3a89d2042379369286f9c300573df802bdb0aee38b3ff1a4ae95830656`
+and its136948168-byte extent match the worker. All444Rust+162upstream+37extra
+categories (636unique paths) match canonical/isolated/rig inputs. Native-only
+installation passes2.323s; both Original plugins and the444-input installed
+receipt match, with no Unity rebuild or art change. Root viewed canonical map,
+original loading artwork and NightSpire terrain/HUD with that exact mapped
+native: one portal click, no retry/private-save load/gameplay input. Initial
+startup capture was blank while initialization continued; no startup timing or
+FPS claim. Both owned smoke processes are stopped. Evidence: candidate3 and
+`Builds/delivery-skeleton-20261106-batch1/runtime-proof.json`. No native Skeleton
+encounter visual, human combat, hardware audio, full-mission or old-save proof.
+The immediate previous9d9 native/player is preserved. Next is one ordinary paid
+Skeleton kill through strict negative life, source76/77 death/hide, following
+reclaim and real living-root/target loss; four250 hits leave1000 life at zero,
+so a fifth accepted hit is required. Keep `.22` open through this consumer.
 
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
