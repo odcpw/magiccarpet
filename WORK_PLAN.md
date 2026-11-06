@@ -285,6 +285,27 @@ enabled75 in the canonical Skeleton module; AzureGate implements thin scheduling
 joins. Use clearly declared configured-source exception controls while ordinary75
 admission remains unproven. Firefly remains queued, without edits.
 
+The linked75 batch12 is now implemented, verified, committed/pushed as
+`c6d50265` and installed with native
+`2a0b5762ecf26b015784b0ba9a2cb3cf67b9f31aed2c098378c70599e9bf8d4c`.
+Configured source branches pass0.518s and scheduled lethal damage through natural
+hide/reclaim passes1.388s; these do not demonstrate an ordinary75 producer.
+Real L5 following, registry/source-order, core69.499s and workspace15.737s pass.
+Bounded source/gate review found no further defect in this batch; UBS has zero
+added critical findings, with legacy formatting/scanner debt retained. Native
+rig55.326s, all636 inputs, worker137024344 bytes, installed444-input receipt and
+both plugins match. Root viewed canonical map/loading/NightSpire terrain/HUD
+with that native, one click/no retry/private-save/gameplay; owned smoke stopped.
+Evidence: candidate12 and `Builds/delivery-skeleton-20261106-batch5/`.
+Full `.22` remains open: unimplemented source-distinct alternate79 modes and
+source-default returns must not be called equivalent to the point fallback.
+Magenta owns those canonical helpers, Azure the thin join and scheduled consumer
+check. Keep configured exception coverage explicit; no invented ordinary
+producer or source admission change. Firefly waits. Current2a0b and previous6bd
+remain local; older closed native pins and returned build outputs are hash-
+preserved on rig ext4 before local removal. No native Skeleton encounter,
+human combat/FPS/audio/full-mission/old-save proof is claimed.
+
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
 
