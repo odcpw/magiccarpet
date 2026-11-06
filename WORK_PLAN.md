@@ -206,8 +206,26 @@ Independent bounded gate review found no further concrete defect; its target
 selection oracle does not independently establish candidate-list completeness.
 Root also inspected the actual source/frozen-list loop. UBS has30 legacy
 whole-file critical findings, none on added lines; formatting debt remains.
-Matching native delivery follows. Full `.22` stays open: uninspected source
-inputs and other StageVar fallthroughs are not proven equivalent or unreachable.
+Runtime `340c06acb6dda09ef01e02aba7037be96220515b` is committed/pushed. Strict rig
+native build46.745s yields `7eca80a15ff6a513642a0568169d7ee10c2e239dd3f64be416cf38c4ee8521d2`;
+worker136983720 bytes and all636 unique canonical/isolated/rig inputs match.
+Both installed Original plugins and444-input receipt match; qualification passes.
+Root viewed canonical map, original loading artwork and NightSpire terrain/HUD/
+spawn flash with that mapped native on one portal click, no retry/private-save
+load/gameplay input. Loading-bound/frame/open/night-presentation events pass;
+owned smoke is stopped. Evidence: candidate8 and delivery-skeleton batch3.
+No Unity/art change, native Skeleton/Creature24 encounter, human combat/FPS,
+hardware audio, full-mission or old-save proof. Closed auxiliary736MB and two
+older native proof copies274MB are hash-preserved on rig ext4 before local
+removal; current7eca and immediate previous12ee remain local. Free~6.59GB.
+
+Full `.22` stays open: uninspected source inputs and other StageVar fallthroughs
+are not proven equivalent or unreachable. A review's combined75/78 claim was
+corrected by root/source inspection:75 is an enabled remc2 callback (20E50),
+currently rejected in Rust; no actual producer was demonstrated in the inspected
+Skeleton constructor/custom scans/StageVar paths. Bit8 controls78 selection,
+not75. Keep enabled-orphan reachability distinct from unsupported dispatch and
+do not invent a positive producer or claim full family acceptance from this batch.
 
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
