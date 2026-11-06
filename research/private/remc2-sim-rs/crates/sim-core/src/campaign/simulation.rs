@@ -20880,7 +20880,10 @@ impl Mc2Simulation {
                         context,
                     );
                 }
-                return self.step_imported_model9_action79(source_slot);
+                return self.step_imported_model9_action79(
+                    source_slot,
+                    &pass_start_class5_model_slots[9],
+                );
             }
             74 => {
                 return self
@@ -21031,17 +21034,15 @@ impl Mc2Simulation {
     fn step_imported_model9_action79(
         &mut self,
         source_slot: u16,
+        frozen_model9_slots: &[u16],
     ) -> std::result::Result<(), String> {
         let reaction_pose =
             self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.reaction_particle))?;
         let dynamic_targets = self.model9_dynamic_damage_targets();
-        let (stage_index, callback_start_entities) = {
+        let (stage_index, mut source) = {
             let live = &self.session.state.live;
             let source = &live.economy.entities[usize::from(source_slot)];
-            (
-                usize::from(source.record_bytes()[76]),
-                live.economy.entities.clone(),
-            )
+            (usize::from(source.record_bytes()[76]), source.clone())
         };
         let stage_target = match self
             .session
@@ -21064,43 +21065,80 @@ impl Mc2Simulation {
                 ));
             }
         };
-        let (position, population_decrement) = {
-            let live = &mut self.session.state.live;
-            let source = &mut live.economy.entities[usize::from(source_slot)];
-            let outcome = campaign_shared_families::step_model9_action79(
-                source,
+        let outcome = {
+            let live = &self.session.state.live;
+            let arena = &live.economy;
+            let context = source_target::Context {
+                spells: Some(&live.shared_spells),
+                map_type: Some(live.terrain.map_type()),
+                player: Some((
+                    live.core.state.entity_index,
+                    live.core.state.position,
+                    live.player_life,
+                )),
+                player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                particles: Some(&self.session.definition.presentation.particles),
+                ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+            };
+            campaign_shared_families::step_model9_action79(
+                &mut source,
                 &live.terrain,
                 stage_target,
-                &callback_start_entities,
+                &arena.entities,
+                frozen_model9_slots,
+                |slot| {
+                    source_target::read(arena, context, slot).map(|peer| {
+                        peer.map(|peer| campaign_shared_families::Model9Peer {
+                            source_slot: slot,
+                            source_id: peer.source_id,
+                            position: peer.position,
+                        })
+                    })
+                },
                 &dynamic_targets,
                 reaction_pose,
             )
-            .map_err(|error| error.to_string())?;
-            (source.position, outcome.population_decrement)
         };
-        if population_decrement {
+        let position = source.position;
+        let completed = match &outcome {
+            Ok(completed)
+            | Err(campaign_shared_families::Model9Action79Error::PeerRead { completed, .. }) => {
+                Some(*completed)
+            }
+            Err(_) => None,
+        };
+        // Publish source writes even when the subsequent peer read fails.
+        self.session.state.live.economy.entities[usize::from(source_slot)] = source;
+        if let Some(completed) = completed {
+            if completed.population_decrement {
+                self.session
+                    .state
+                    .live
+                    .economy
+                    .decrement_source_creature_population();
+            }
             self.session
                 .state
                 .live
                 .economy
-                .decrement_source_creature_population();
+                .economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .map_err(|error| {
+                    let map_error =
+                        format!("model-9 source slot {source_slot} map sync failed: {error}");
+                    match &outcome {
+                        Err(primary) => format!("{primary}; {map_error}"),
+                        Ok(_) => map_error,
+                    }
+                })?;
         }
-        self.session
-            .state
-            .live
-            .economy
-            .economy
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: position.x,
-                y: position.y,
-            })
-            .map_err(|error| {
-                format!("model-9 source slot {source_slot} map sync failed: {error}")
-            })?;
-        Ok(())
+        outcome.map(|_| ()).map_err(|error| error.to_string())
     }
 
     fn step_imported_model9_action73(
@@ -33987,6 +34025,173 @@ mod tests {
                 flags == 0
             );
         }
+    }
+
+    #[test]
+    fn configured_model9_point_peer_failures_publish_completed_movement_only() {
+        // These are configured wrapper failure boundaries, not an ordinary
+        // missing-carrier/alias producer. The separate untouched Level3 gate
+        // proves the real reset roots' emergence and point following.
+        let mut seed = CampaignSession::open(
+            level_three_descriptor_fixture_path(),
+            CampaignSelection::LEVEL3,
+        )
+        .unwrap();
+        let session = seed.simulation_mut();
+        let source_slot = session
+            .entities()
+            .iter()
+            .find(|row| row.active && (row.class, row.model) == (5, 9))
+            .unwrap()
+            .index;
+        let position = Position {
+            x: 0x20ff,
+            y: 0x30ff,
+            z: 512,
+        };
+        let (bad_peer, reader_reason) = {
+            let live = &mut session.session.state.live;
+            assert!(matches!(
+                live.core.runtime.stage_variables[2].relation,
+                RuntimeRelation::AxisScalar(_)
+            ));
+            live.terrain.planes.ground_heights.fill(0);
+            live.terrain.planes.secondary_heights.fill(255);
+            live.terrain.planes.terrain_types.fill(13);
+            live.terrain.planes.angles.fill(0);
+            let source = &mut live.economy.entities[usize::from(source_slot)];
+            source.set_source_action(79);
+            source.record[76] = 2;
+            source.record[77] = 1;
+            source.record[56..58].fill(0);
+            source.set_phase(8);
+            source.set_position(position);
+            source.set_yaw(0);
+            source.set_source_roll(0);
+            source.set_actual_speed(512);
+            source.set_life(1000);
+            source.clear_source_upkeep_owner();
+            source.set_damage_result_words(0, 0);
+            source.set_control_flags(source.control_flags & !(0x40000 | 0x800));
+            live.economy
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .unwrap();
+            // Allocate a real typed pickup, intentionally withholding its
+            // shared spell record to make the current reader fail closed.
+            let peer = live
+                .economy
+                .allocate_spell_pickup(u16::MAX, 1, 4, Position::default())
+                .unwrap()
+                .source_entity_index;
+            assert_ne!(peer, source_slot);
+            assert!(live.shared_spells.pickup(peer).is_none());
+            let reason = source_target::read(
+                &live.economy,
+                source_target::Context {
+                    spells: Some(&live.shared_spells),
+                    ..source_target::Context::default()
+                },
+                peer,
+            )
+            .unwrap_err();
+            assert!(reason.contains("lacks its current shared spell record"));
+            (peer, reason)
+        };
+        let population = session.economy().source_creature_population;
+        assert!(population > 0);
+        let initial_map = session.economy().map_chains.clone();
+        let initial_tile = initial_map.tile_of(source_slot);
+
+        let mut moving = seed.clone();
+        let session = moving.simulation_mut();
+        let error = session
+            .step_imported_model9_action79(source_slot, &[bad_peer])
+            .unwrap_err();
+        assert!(error.contains(reader_reason.as_str()), "{error}");
+        let source = &session.entities()[usize::from(source_slot)];
+        let mut expected = position;
+        expected.z -= 128;
+        crate::move_entity(&mut expected, 0, 0, 512);
+        assert_eq!(source.position, expected);
+        assert_eq!(source.life, 1000);
+        let expected_tile = RenderableMapSeed {
+            entity_index: source_slot,
+            active: true,
+            x: expected.x,
+            y: expected.y,
+        }
+        .tile_index();
+        assert_ne!(expected_tile, initial_tile, "movement crosses a map cell");
+        assert_eq!(
+            session.economy().map_chains.tile_of(source_slot),
+            expected_tile
+        );
+        assert!(session.economy().map_chains.is_linked(source_slot));
+        assert_eq!(session.economy().source_creature_population, population);
+
+        let mut blocked = seed.clone();
+        let session = blocked.simulation_mut();
+        // Material0 has bit0, outside Skeleton's descriptor material mask;
+        // all four source movement candidates are rejected.
+        session
+            .session
+            .state
+            .live
+            .terrain
+            .planes
+            .terrain_types
+            .fill(0);
+        let error = session
+            .step_imported_model9_action79(source_slot, &[bad_peer])
+            .unwrap_err();
+        assert!(error.contains(reader_reason.as_str()), "{error}");
+        let source = &session.entities()[usize::from(source_slot)];
+        assert_eq!((source.position, source.life), (position, -1));
+        assert_ne!(source.control_flags & 0x40000, 0);
+        assert_eq!(
+            session.economy().source_creature_population,
+            population - 1,
+            "the authoritative source population write precedes peer failure"
+        );
+        assert_eq!(session.economy().map_chains, initial_map);
+        assert_eq!(
+            session.economy().map_chains.tile_of(source_slot),
+            initial_tile
+        );
+
+        let mut before_movement = seed;
+        let session = before_movement.simulation_mut();
+        session.session.state.live.economy.entities[usize::from(source_slot)].record[56..58]
+            .copy_from_slice(&u16::MAX.to_le_bytes());
+        // An explicitly unlinked map boundary detects accidental map
+        // publication after the invalid child chain's pre-movement return.
+        session
+            .session
+            .state
+            .live
+            .economy
+            .map_chains
+            .set_map_entity_unlink(source_slot);
+        let before_map = session.economy().map_chains.clone();
+        let error = session
+            .step_imported_model9_action79(source_slot, &[bad_peer])
+            .unwrap_err();
+        assert!(error.contains("invalid child-chain"), "{error}");
+        assert!(!error.contains(reader_reason.as_str()));
+        let source = &session.entities()[usize::from(source_slot)];
+        assert_eq!(
+            (source.position, source.life, source.source_roll()),
+            (position, 1000, 0)
+        );
+        assert_eq!(session.economy().source_creature_population, population);
+        assert_eq!(session.economy().map_chains, before_map);
+        assert!(!session.economy().map_chains.is_linked(source_slot));
     }
 
     #[test]

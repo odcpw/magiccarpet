@@ -562,11 +562,24 @@ pub(super) struct Model9ReactionOutcome {
     pub inherit_identity: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Model9Action79Error {
     Selector(CampaignSharedFamilyError),
-    InvalidChildChain { source_slot: u16, child_slot: u16 },
-    InvalidDamageTarget { source_slot: u16, target_slot: u16 },
+    InvalidChildChain {
+        source_slot: u16,
+        child_slot: u16,
+    },
+    InvalidDamageTarget {
+        source_slot: u16,
+        target_slot: u16,
+    },
+    PeerRead {
+        source_slot: u16,
+        peer_slot: u16,
+        reason: String,
+        /// Movement has completed; its map/population writes still apply.
+        completed: Model9Action79Outcome,
+    },
 }
 
 impl fmt::Display for Model9Action79Error {
@@ -586,6 +599,15 @@ impl fmt::Display for Model9Action79Error {
             } => write!(
                 formatter,
                 "model-9 source slot {source_slot} has invalid damage target slot {target_slot}"
+            ),
+            Self::PeerRead {
+                source_slot,
+                peer_slot,
+                reason,
+                ..
+            } => write!(
+                formatter,
+                "model-9 source slot {source_slot} cannot read current peer slot {peer_slot}: {reason}"
             ),
         }
     }
@@ -822,12 +844,80 @@ pub(super) fn step_model9_source_movement<W: FlightWorld>(
     Ok((false, 4, true))
 }
 
+/// Current fields at a frozen model-list address, without reapplying the
+/// eligibility rules that were used when the list was built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Model9Peer {
+    pub source_slot: u16,
+    pub source_id: u16,
+    pub position: Position,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(super) struct Model9PointStageVisit {
+    pub before: EntitySnapshot,
+    pub after: EntitySnapshot,
+    pub stage_target: Position,
+    pub frozen_model9_slots: Vec<u16>,
+    pub visited_model9_slots: Vec<u16>,
+    pub peers: Vec<Model9Peer>,
+    pub outcome: Model9Action79Outcome,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static MODEL9_POINT_STAGE_VISITS:
+        std::cell::RefCell<Option<Vec<Model9PointStageVisit>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn start_model9_point_stage_trace() {
+    MODEL9_POINT_STAGE_VISITS.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(super) fn take_model9_point_stage_trace() -> Vec<Model9PointStageVisit> {
+    MODEL9_POINT_STAGE_VISITS.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+fn record_model9_point_stage_visit(
+    before: Option<EntitySnapshot>,
+    after: &EntitySnapshot,
+    stage_target: Position,
+    frozen_model9_slots: &[u16],
+    visited_model9_slots: &[u16],
+    peers: &[Model9Peer],
+    outcome: Model9Action79Outcome,
+) {
+    let Some(before) = before else { return };
+    MODEL9_POINT_STAGE_VISITS.with(|trace| {
+        if let Some(visits) = trace.borrow_mut().as_mut()
+            && visits.len() < 64
+        {
+            visits.push(Model9PointStageVisit {
+                before,
+                after: after.clone(),
+                stage_target,
+                frozen_model9_slots: frozen_model9_slots.to_vec(),
+                visited_model9_slots: visited_model9_slots.to_vec(),
+                peers: peers.to_vec(),
+                outcome,
+            });
+        }
+    });
+}
+
 /// Port the ordinary StageVar-kind-1 path of remc2
 /// `sub_20FC0 -> sub_1D5D0(a2 = 72) -> sub_1DDA0`.
 ///
-/// `entities` is the immutable callback-start snapshot. It supplies the
-/// source child chain and the ascending model list used by the peer-avoidance
-/// overwrite. The numeric scheduler still owns the phase epilogue. Damage
+/// `entities` is the immutable callback-start snapshot for the source child
+/// chain. After damage-free movement and the phase gate, peer avoidance reads
+/// current occupants lazily in frozen pass-start model order, stopping at the
+/// first overlap. The numeric
+/// scheduler still owns the phase epilogue. Damage
 /// enters the real reaction/pre-kill selector before movement. The caller
 /// applies the population write returned by fatal terrain blockage.
 pub(super) fn step_model9_action79<W: FlightWorld>(
@@ -835,6 +925,8 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
     world: &W,
     stage_target: Position,
     entities: &[EntitySnapshot],
+    frozen_model9_slots: &[u16],
+    mut peer_at: impl FnMut(u16) -> std::result::Result<Option<Model9Peer>, String>,
     dynamic_targets: &[Model9DamageTarget],
     reaction_pose: ParticlePose,
 ) -> std::result::Result<Model9Action79Outcome, Model9Action79Error> {
@@ -842,14 +934,28 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         entity,
         (MODEL9_CLASS, MODEL9_MODEL, MODEL9_ACTION_RAW_MOVEMENT),
     )?;
+    #[cfg(test)]
+    let before =
+        MODEL9_POINT_STAGE_VISITS.with(|trace| trace.borrow().as_ref().map(|_| entity.clone()));
 
     if let Some(damage_transition) =
         consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?
     {
-        return Ok(Model9Action79Outcome {
+        let outcome = Model9Action79Outcome {
             damage_transition: Some(damage_transition),
             ..Model9Action79Outcome::default()
-        });
+        };
+        #[cfg(test)]
+        record_model9_point_stage_visit(
+            before,
+            entity,
+            stage_target,
+            frozen_model9_slots,
+            &[],
+            &[],
+            outcome,
+        );
+        return Ok(outcome);
     }
 
     let (moved, movement_attempts, population_decrement) =
@@ -861,6 +967,16 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         ..Model9Action79Outcome::default()
     };
     if entity.phase & 7 != 0 {
+        #[cfg(test)]
+        record_model9_point_stage_visit(
+            before,
+            entity,
+            stage_target,
+            frozen_model9_slots,
+            &[],
+            &[],
+            outcome,
+        );
         return Ok(outcome);
     }
 
@@ -883,13 +999,27 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
     }
 
     let peer_radius = i32::from(entity.array_pitch());
-    for (peer_slot, peer) in entities.iter().enumerate().skip(1) {
-        if !peer.active
-            || usize::from(peer.index) != peer_slot
-            || peer.class != MODEL9_CLASS
-            || peer.model != MODEL9_MODEL
-        {
+    #[cfg(test)]
+    let mut visited_model9_slots = Vec::new();
+    #[cfg(test)]
+    let mut visited_peers = Vec::new();
+    for &peer_slot in frozen_model9_slots {
+        #[cfg(test)]
+        if before.is_some() {
+            visited_model9_slots.push(peer_slot);
+        }
+        let Some(peer) = peer_at(peer_slot).map_err(|reason| Model9Action79Error::PeerRead {
+            source_slot: entity.index,
+            peer_slot,
+            reason,
+            completed: outcome,
+        })?
+        else {
             continue;
+        };
+        #[cfg(test)]
+        if before.is_some() {
+            visited_peers.push(peer);
         }
         if peer.source_id == entity.source_id {
             continue;
@@ -904,10 +1034,20 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
             let roll = i16::try_from(crate::heading_for_positions(peer.position, entity.position))
                 .expect("11-bit model-9 peer heading");
             entity.set_source_roll(roll);
-            outcome.peer_avoidance_slot = Some(peer.index);
+            outcome.peer_avoidance_slot = Some(peer_slot);
             break;
         }
     }
+    #[cfg(test)]
+    record_model9_point_stage_visit(
+        before,
+        entity,
+        stage_target,
+        frozen_model9_slots,
+        &visited_model9_slots,
+        &visited_peers,
+        outcome,
+    );
     Ok(outcome)
 }
 
@@ -1511,9 +1651,17 @@ mod tests {
         });
         source.set_actual_speed(512);
         let phase = source.phase;
-        let result =
-            step_model9_action79(&mut source, &Blocked, Position::default(), &[], &[], pose)
-                .unwrap();
+        let result = step_model9_action79(
+            &mut source,
+            &Blocked,
+            Position::default(),
+            &[],
+            &[],
+            |_| Ok(None),
+            &[],
+            pose,
+        )
+        .unwrap();
         assert_eq!(
             (
                 result.moved,
@@ -1523,9 +1671,17 @@ mod tests {
             (false, 4, true)
         );
         assert_eq!((source.life, source.action, source.phase), (-1, 79, phase));
-        let result =
-            step_model9_action79(&mut source, &Blocked, Position::default(), &[], &[], pose)
-                .unwrap();
+        let result = step_model9_action79(
+            &mut source,
+            &Blocked,
+            Position::default(),
+            &[],
+            &[],
+            |_| Ok(None),
+            &[],
+            pose,
+        )
+        .unwrap();
         assert_eq!(source.action, 76);
         assert!(!result.population_decrement);
     }
@@ -1674,6 +1830,16 @@ mod tests {
         attacker.source_id = 44;
         entities[44] = attacker;
 
+        let frozen_model9_slots = [source.index, peer_index];
+        let peers = frozen_model9_slots.map(|source_slot| {
+            let peer = &entities[usize::from(source_slot)];
+            Model9Peer {
+                source_slot,
+                source_id: peer.source_id,
+                position: peer.position,
+            }
+        });
+
         let outcome = step_model9_action79(
             &mut source,
             &Model9World,
@@ -1683,6 +1849,8 @@ mod tests {
                 z: moved.z,
             },
             &entities,
+            &frozen_model9_slots,
+            |slot| Ok(peers.iter().copied().find(|peer| peer.source_slot == slot)),
             &[],
             ParticlePose {
                 animation_limit: 1,
@@ -1718,6 +1886,8 @@ mod tests {
             &Model9World,
             Position { x: 0, y: 0, z: 0 },
             &entities,
+            &frozen_model9_slots,
+            |slot| Ok(peers.iter().copied().find(|peer| peer.source_slot == slot)),
             &[],
             ParticlePose {
                 animation_limit: 1,
@@ -1736,6 +1906,281 @@ mod tests {
         assert_eq!(damaged.source_upkeep_word_62(), 0);
         assert_eq!(damaged.word_26(), 44);
         assert_eq!(damaged.action, MODEL9_ACTION_REACTION);
+    }
+
+    #[test]
+    fn configured_model9_point_peers_use_frozen_membership_and_current_fields() {
+        // This configures the pass boundary explicitly. It is not an ordinary
+        // newborn/alias producer: the unmodified Level3 gate covers emergence.
+        let mut source = entity(5, 9, 79);
+        source.set_phase(8);
+        source.record[88..90].copy_from_slice(&74_i16.to_le_bytes());
+        let mut entities = vec![entity(0, 0, 0); 96];
+        entities[usize::from(source.index)] = source.clone();
+        let target = Position {
+            x: source.position.x.wrapping_add(1000),
+            y: source.position.y,
+            z: 0,
+        };
+        let pose = ParticlePose {
+            animation_limit: 1,
+            array_yaw: 0,
+            array_pitch: 0,
+            array_roll: 0,
+            array_fov: 0,
+        };
+        let mut frozen_peer = entity(5, 9, 79);
+        frozen_peer.index = 94;
+        frozen_peer.source_id = 78;
+        frozen_peer.set_position(Position {
+            x: source.position.x.wrapping_add(500),
+            y: source.position.y.wrapping_add(500),
+            z: source.position.z,
+        });
+        entities[94] = frozen_peer;
+        let frozen_model9_slots = [93, 94];
+
+        // A current model9 outside the frozen list is nearby. The old numeric
+        // scan would steer away from this address on this callback.
+        let mut newborn = entity(5, 9, 79);
+        newborn.index = 95;
+        newborn.source_id = 79;
+        newborn.set_position(Position {
+            x: source.position.x.wrapping_sub(1),
+            y: source.position.y.wrapping_add(1),
+            z: source.position.z,
+        });
+        entities[95] = newborn;
+        let observe = |entities: &[EntitySnapshot], source_slot| {
+            let row = &entities[usize::from(source_slot)];
+            Model9Peer {
+                source_slot,
+                source_id: row.source_id,
+                position: row.position,
+            }
+        };
+        let mut without_newborn = source.clone();
+        let result = step_model9_action79(
+            &mut without_newborn,
+            &Model9World,
+            target,
+            &entities,
+            &frozen_model9_slots,
+            |slot| Ok(Some(observe(&entities, slot))),
+            &[],
+            pose,
+        )
+        .unwrap();
+        assert!(result.moved && result.steered);
+        assert_eq!(result.rng_draws, 0);
+        assert_eq!(result.peer_avoidance_slot, None);
+        assert_eq!(
+            i32::from(without_newborn.source_roll()),
+            crate::heading_for_positions(without_newborn.position, target)
+        );
+        assert_ne!(
+            i32::from(without_newborn.source_roll()),
+            crate::heading_for_positions(entities[95].position, without_newborn.position)
+        );
+
+        // A frozen member now has different current ID/pose and no longer
+        // satisfies current active/class/model/life eligibility. Source1DDA0
+        // still reads those fields at the retained address without filtering.
+        entities[94].active = false;
+        entities[94].class = 0;
+        entities[94].model = 0;
+        entities[94].set_life(-1);
+        entities[94].source_id = 80;
+        entities[94].set_position(Position {
+            x: source.position.x.wrapping_add(1),
+            y: source.position.y.wrapping_add(1),
+            z: source.position.z,
+        });
+        let result = step_model9_action79(
+            &mut source,
+            &Model9World,
+            target,
+            &entities,
+            &frozen_model9_slots,
+            |slot| Ok(Some(observe(&entities, slot))),
+            &[],
+            pose,
+        )
+        .unwrap();
+        assert_eq!(result.peer_avoidance_slot, Some(94));
+        assert_eq!(result.rng_draws, 0);
+        assert_eq!(
+            i32::from(source.source_roll()),
+            crate::heading_for_positions(entities[94].position, source.position)
+        );
+        assert_ne!(source.source_roll(), without_newborn.source_roll());
+        assert_eq!(source.position, without_newborn.position);
+        assert_eq!(source.phase, 8);
+        assert_eq!(source.entity_rng, 0x1234);
+
+        let mut same_id = entities[93].clone();
+        entities[94].source_id = same_id.source_id;
+        let result = step_model9_action79(
+            &mut same_id,
+            &Model9World,
+            target,
+            &entities,
+            &frozen_model9_slots,
+            |slot| Ok(Some(observe(&entities, slot))),
+            &[],
+            pose,
+        )
+        .unwrap();
+        assert_eq!(result.peer_avoidance_slot, None);
+        assert_eq!(same_id.source_roll(), without_newborn.source_roll());
+    }
+
+    #[test]
+    fn configured_model9_point_peer_reader_respects_source_gates_and_first_overlap() {
+        let mut base = entity(5, 9, 79);
+        base.set_phase(8);
+        base.record[88..90].copy_from_slice(&74_i16.to_le_bytes());
+        let frozen = [93, 94, 95, 96];
+        let target = Position {
+            x: base.position.x.wrapping_add(1000),
+            ..base.position
+        };
+        let pose = ParticlePose {
+            animation_limit: 1,
+            array_yaw: 0,
+            array_pitch: 0,
+            array_roll: 0,
+            array_fov: 0,
+        };
+        let attacker = Model9DamageTarget {
+            source_slot: 44,
+            source_id: 44,
+            class: 3,
+            model: 0,
+        };
+        for hit in [false, true] {
+            let mut source = base.clone();
+            if hit {
+                source.record[98..102].copy_from_slice(&7_i32.to_le_bytes());
+                source.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+            } else {
+                source.set_phase(9);
+            }
+            let mut reads = Vec::new();
+            start_model9_point_stage_trace();
+            let result = step_model9_action79(
+                &mut source,
+                &Model9World,
+                target,
+                &[],
+                &frozen,
+                |slot| {
+                    reads.push(slot);
+                    Err("reader must stay gated".into())
+                },
+                &[attacker],
+                pose,
+            )
+            .unwrap();
+            assert!(reads.is_empty());
+            assert_eq!(result.damage_transition.is_some(), hit);
+            assert_eq!(result.moved, !hit);
+            let visits = take_model9_point_stage_trace();
+            assert_eq!(visits.len(), 1);
+            assert_eq!(visits[0].frozen_model9_slots, frozen);
+            assert!(visits[0].visited_model9_slots.is_empty());
+            assert!(visits[0].peers.is_empty());
+        }
+
+        let mut source = base.clone();
+        let mut reads = Vec::new();
+        start_model9_point_stage_trace();
+        let result = step_model9_action79(
+            &mut source,
+            &Model9World,
+            target,
+            &[],
+            &frozen,
+            |slot| {
+                reads.push(slot);
+                match slot {
+                    93 => Ok(Some(Model9Peer {
+                        source_slot: slot,
+                        source_id: base.source_id,
+                        position: base.position,
+                    })),
+                    94 => Ok(None),
+                    95 => Ok(Some(Model9Peer {
+                        source_slot: slot,
+                        source_id: 78,
+                        position: Position {
+                            x: base.position.x.wrapping_add(1),
+                            y: base.position.y.wrapping_add(1),
+                            ..base.position
+                        },
+                    })),
+                    _ => Err("unvisited suffix reader error".into()),
+                }
+            },
+            &[],
+            pose,
+        )
+        .unwrap();
+        assert_eq!(result.peer_avoidance_slot, Some(95));
+        assert_eq!(reads, [93, 94, 95]);
+        let visits = take_model9_point_stage_trace();
+        assert_eq!(visits.len(), 1);
+        assert_eq!(visits[0].visited_model9_slots, reads);
+        assert_eq!(
+            visits[0]
+                .peers
+                .iter()
+                .map(|peer| peer.source_slot)
+                .collect::<Vec<_>>(),
+            [93, 95]
+        );
+
+        let mut source = base.clone();
+        let mut reads = Vec::new();
+        let error = step_model9_action79(
+            &mut source,
+            &Model9World,
+            target,
+            &[],
+            &frozen,
+            |slot| {
+                reads.push(slot);
+                if slot == 93 {
+                    Ok(None)
+                } else {
+                    Err("current carrier error".into())
+                }
+            },
+            &[],
+            pose,
+        )
+        .unwrap_err();
+        assert_eq!(reads, [93, 94]);
+        assert_eq!(
+            error,
+            Model9Action79Error::PeerRead {
+                source_slot: 93,
+                peer_slot: 94,
+                reason: "current carrier error".into(),
+                completed: Model9Action79Outcome {
+                    moved: true,
+                    movement_attempts: 1,
+                    steered: true,
+                    ..Model9Action79Outcome::default()
+                },
+            }
+        );
+        assert_ne!(source.position, base.position);
+        assert_eq!(
+            i32::from(source.source_roll()),
+            crate::heading_for_positions(source.position, target)
+        );
+        assert_eq!((source.phase, source.entity_rng), (8, base.entity_rng));
     }
 
     #[test]

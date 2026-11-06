@@ -1242,6 +1242,166 @@ mod alliance_tests {
     }
 
     #[test]
+    fn ordinary_level_three_skeleton_emergence_follows_authored_point() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{Mc2DispatchEvent, RuntimeRelation};
+
+        let package = std::env::var_os("MC_LEVEL3_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level3"),
+            std::path::PathBuf::from,
+        );
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(3).unwrap())
+            .expect("whole current Level3 owner package")
+            .simulation()
+            .clone();
+        let reset_hash = session.state_hash();
+        let roots = session.source_arena().rebuilt_class5_model_slots()[9]
+            .iter()
+            .map(|&slot| session.source_arena().handle(slot).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(roots.len(), 11);
+        assert!(roots.iter().all(|root| {
+            let row = &session.entities()[usize::from(root.source_slot)];
+            row.action == 72 && word(row, 78) == 2
+        }));
+        assert_eq!(
+            (
+                session.runtime().stage_variables[2].kind,
+                session.runtime().stage_variables[2].flags as u8,
+                session.runtime().stage_variables[2].relation,
+            ),
+            (
+                1,
+                1,
+                RuntimeRelation::AxisScalar(108 * 256 | (194 * 256) << 16)
+            )
+        );
+
+        let mut moved = None;
+        for turn in 0..80 {
+            let current_roots = roots
+                .iter()
+                .copied()
+                .filter(|root| session.source_arena().handle(root.source_slot) == Some(*root))
+                .collect::<Vec<_>>();
+            campaign_shared_families::start_model9_point_stage_trace();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let visits = campaign_shared_families::take_model9_point_stage_trace();
+            assert!(
+                session
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Level3 point route turn {turn}: {:?}",
+                session.dispatch_events()
+            );
+            for visit in visits {
+                let Some(root) = current_roots
+                    .iter()
+                    .copied()
+                    .find(|root| root.source_slot == visit.before.index)
+                else {
+                    continue;
+                };
+                if session.source_arena().handle(root.source_slot) != Some(root)
+                    || (visit.before.action, visit.before.record[76], visit.before.record[77])
+                        != (79, 2, 1)
+                    || (visit.after.action, visit.after.record[76], visit.after.record[77])
+                        != (79, 2, 1)
+                    || !visit.outcome.moved
+                    || !visit.outcome.steered
+                {
+                    continue;
+                }
+                assert_eq!(
+                    (visit.stage_target.x, visit.stage_target.y),
+                    (108 * 256, 194 * 256)
+                );
+                assert_eq!(visit.before.phase & 7, 0);
+                assert!(visit.frozen_model9_slots.contains(&root.source_slot));
+                assert!(visit.visited_model9_slots.len() <= visit.frozen_model9_slots.len());
+                assert_eq!(
+                    visit.visited_model9_slots,
+                    visit.frozen_model9_slots[..visit.visited_model9_slots.len()],
+                    "source scans a frozen-list prefix, stopping at its first overlapping peer"
+                );
+                assert!(visit.peers.iter().all(|peer| {
+                    visit.visited_model9_slots.contains(&peer.source_slot)
+                }));
+                assert!(visit.peers.windows(2).all(|pair| {
+                    pair[0].source_slot < pair[1].source_slot
+                }));
+                let mut expected_roll =
+                    crate::heading_for_positions(visit.after.position, visit.stage_target) as i16;
+                if visit.before.phase & 63 == 0 {
+                    let first =
+                        campaign_shared_families::next_source_rng16(visit.before.entity_rng);
+                    let second = campaign_shared_families::next_source_rng16(first);
+                    let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                    expected_roll = ((i32::from(expected_roll)
+                        + sign * (i32::from(second & 255) + 85)) & 2047) as i16;
+                    assert_eq!(visit.after.entity_rng, second);
+                    assert_eq!(visit.outcome.rng_draws, 2);
+                } else {
+                    assert_eq!(visit.after.entity_rng, visit.before.entity_rng);
+                    assert_eq!(visit.outcome.rng_draws, 0);
+                }
+                let width = i32::from(visit.after.array_pitch());
+                let peer = visit.peers.iter().find(|peer| {
+                    peer.source_id != visit.after.source_id
+                        && (i32::from(visit.after.position.x as i16)
+                            - i32::from(peer.position.x as i16)).abs() < width
+                        && (i32::from(visit.after.position.y as i16)
+                            - i32::from(peer.position.y as i16)).abs() < width
+                });
+                if let Some(peer) = peer {
+                    expected_roll = crate::heading_for_positions(
+                        peer.position, visit.after.position,
+                    ) as i16;
+                    assert_eq!(visit.visited_model9_slots.last(), Some(&peer.source_slot));
+                } else {
+                    assert_eq!(visit.visited_model9_slots.len(), visit.frozen_model9_slots.len());
+                }
+                assert_eq!(
+                    visit.outcome.peer_avoidance_slot,
+                    peer.map(|peer| peer.source_slot)
+                );
+                assert_eq!(visit.after.source_roll(), expected_roll);
+                assert_ne!(
+                    (visit.before.position.x, visit.before.position.y),
+                    (visit.after.position.x, visit.after.position.y)
+                );
+                moved = Some(root);
+                break;
+            }
+            if moved.is_some() {
+                break;
+            }
+        }
+        let root = moved
+            .expect("an original Level3 Skeleton naturally emerges and moves on its point route");
+        assert!(session.economy().map_chains().is_linked(root.source_slot));
+        let row = &session.entities()[usize::from(root.source_slot)];
+        let sprite = session
+            .campaign_entity_presentations(0)
+            .unwrap()
+            .into_iter()
+            .find(|view| view.entity_index == root.source_slot)
+            .expect("original moving Skeleton presentation");
+        assert_eq!(
+            (sprite.position, sprite.source_id, sprite.render_parameter_index),
+            (
+                row.position,
+                row.source_id,
+                campaign_shared_families::MC2_SKELETON_ASSETS.movement_particle
+            )
+        );
+        assert_ne!(session.state_hash(), reset_hash);
+    }
+
+    #[test]
     fn ordinary_level_five_skeleton_emergence_follows_current_archer() {
         use crate::PlayerCommand;
         use crate::campaign::{CampaignSession, spec::CampaignSelection};
