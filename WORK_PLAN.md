@@ -1,5 +1,31 @@
 # Shared-engine delivery plan
 
+## Modern buildings — source-shaped sandbox delivery (2026-11-06)
+
+Oliver accepted the environment and chose original-inspired, richly detailed
+architecture. His subsequent correction rejects the invented domes and castle
+façades: retain the original Level 1 BUILD silhouettes, proportions and dark
+slate identity. Generate the four source heightfield profiles from owner-local
+data, place all 32 buildings at their verified Level 1 locations, and add restrained
+surface detail and rectangular lit windows. Preserve shared meshes, three LODs,
+day/night views and individual frame review against source presentation.
+The building set must be installed and checked in the existing environment.
+Original BUILD bodies are terrain data, not house torch sprites. This frozen
+visual delivery does not claim live construction/destruction; that needs the
+runtime source BUILD selector and terrain-footprint feed. Rejected dome candidates
+are preserved under ignored generated/buildings-20261106/rejected-domes-source.
+Implemented and self-verified: all 32 placements, four source mesh profiles,
+shared material/LODs, filtered masonry and roof detail, small rectangular night
+windows and facade light spill. The canonical extractor verifies all 1,220
+positive source samples; Unity Modern checks pass 94/94. Installed player
+`build-32a44fhy` retains the frozen `a98a8317` native. The actual launcher,
+building viewpoint keys, lighting changes and normal exit pass on a private
+display. Individual day/coastal/stepped and moving night frames were inspected;
+Oliver has not yet reviewed this corrected candidate. The physical desktop,
+live construction/destruction and collision are not qualified here.
+Evidence and limits: `research/private/remc2-unity-native/MODERN_RENDERER.md`.
+Keep the separate Original gameplay work below untouched.
+
 ## Modern environment sandbox — verified milestone (2026-11-06)
 
 Oliver requested environment first, then replacement 3D assets. The Modern

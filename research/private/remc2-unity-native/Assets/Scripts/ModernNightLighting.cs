@@ -14,11 +14,16 @@ namespace MagicCarpet.Native
             internal float Range, Strength, Born, Life;
             internal int Seed;
             internal bool Settlement;
+            internal bool Window;
+            internal Vector3 Outward;
         }
         private readonly List<Emitter> sources = new();
         private readonly List<Emitter> reviewSources = new();
+        private readonly List<Emitter> windows = new();
+        private float windowAmount;
         private readonly Emitter[] transient = new Emitter[16];
         private readonly Vector4[] positions = new Vector4[8], colors = new Vector4[8];
+        private readonly Vector4[] directions = new Vector4[8];
         private readonly Vector4[] glowPositions = new Vector4[8], glowColors = new Vector4[8];
         private readonly float[] scores = new float[8];
         private readonly bool[] houseTorches = new bool[8];
@@ -94,6 +99,16 @@ namespace MagicCarpet.Native
             return found;
         }
 
+        internal void SetReviewWindows(Vector3[] centers,Vector3[] normals)
+        {
+            if(centers.Length!=normals.Length) throw new ArgumentException("Window centers and normals must match");
+            windows.Clear();
+            for(var i=0;i<centers.Length;i++)
+                windows.Add(new Emitter { Position=centers[i]+normals[i]*.8f,Outward=normals[i].normalized,
+                    Window=true,Range=5.5f,Strength=1.15f,Seed=2000+i });
+        }
+        internal void SetWindowLighting(float amount) => windowAmount=Mathf.Clamp01(amount);
+
         internal void Render(Camera camera)
         {
             count = 0; glowCount = 0; Array.Clear(scores, 0, scores.Length);
@@ -137,12 +152,15 @@ namespace MagicCarpet.Native
                 var fade = Mathf.Clamp01((source.Life-age)*8);
                 Add(source, source.Position+source.Velocity*age, cameraPosition, now, fade);
             }
+            if(windowAmount>0)
+                foreach(var source in windows) Add(source,Wrapped(source.Position,cameraPosition),cameraPosition,now,windowAmount);
             for (var i=0; i<count; i++)
                 if (houseTorches[i]) torches.Add(new Vector3(positions[i].x,positions[i].y,positions[i].z),seeds[i]);
             Shader.SetGlobalInt("_ModernLightCount", count);
             torches.EndFrame();
             Shader.SetGlobalVectorArray("_ModernLightPosition", positions);
             Shader.SetGlobalVectorArray("_ModernLightColor", colors);
+            Shader.SetGlobalVectorArray("_ModernLightDirection", directions);
             Shader.SetGlobalInt("_ModernGlowCount", glowCount);
             Shader.SetGlobalVectorArray("_ModernGlowPosition", glowPositions);
             Shader.SetGlobalVectorArray("_ModernGlowColor", glowColors);
@@ -163,12 +181,13 @@ namespace MagicCarpet.Native
             }
             scores[slot]=score;
             houseTorches[slot]=source.Settlement; seeds[slot]=source.Seed;
-            var flicker=1 + .08f*Mathf.Sin(time*9.1f+source.Seed) + .045f*Mathf.Sin(time*17.3f+source.Seed*.73f);
+            var flicker=source.Window?1:1 + .08f*Mathf.Sin(time*9.1f+source.Seed) + .045f*Mathf.Sin(time*17.3f+source.Seed*.73f);
             var strength=source.Strength*fade*flicker;
             positions[slot]=new Vector4(p.x,p.y,p.z,source.Range);
+            directions[slot]=source.Window?new Vector4(source.Outward.x,source.Outward.y,source.Outward.z,1):Vector4.zero;
             // Unflickered strength lets volume light selection stay stable even
             // when two nearby lamps have similar instantaneous intensities.
-            colors[slot]=new Vector4(strength,strength*.40f,strength*.10f,source.Strength*fade);
+            colors[slot]=new Vector4(strength,strength*(source.Window?.64f:.40f),strength*(source.Window?.28f:.10f),source.Strength*fade);
         }
 
         private static Vector3 Wrapped(Vector3 p, Vector3 camera) => new Vector3(

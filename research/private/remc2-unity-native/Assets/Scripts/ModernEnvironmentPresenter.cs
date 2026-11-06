@@ -15,6 +15,7 @@ namespace MagicCarpet.Native
         internal bool Ready { get; private set; }
         internal bool SandboxActive => Ready && sandbox != null;
         private readonly ModernEnvironmentSandbox sandbox;
+        private readonly ModernBuildings buildings;
         private readonly GameObject root;
         private readonly Camera camera;
         private readonly Light moon;
@@ -181,7 +182,11 @@ namespace MagicCarpet.Native
             nightLighting = new ModernNightLighting(root.transform);
             waterSystem = new ModernWaterSystem(root.transform, terrain, nightLighting, landMaterial);
             if (ModernEnvironmentSandbox.Requested)
-                sandbox = new ModernEnvironmentSandbox(camera, terrain, waterSystem, nightLighting, moon, skyMaterial);
+            {
+                buildings=new ModernBuildings(root.transform,terrain);
+                vegetation.ExcludedFootprint=buildings.ExcludesVegetation;
+                sandbox = new ModernEnvironmentSandbox(camera, terrain, waterSystem, nightLighting, moon, skyMaterial,buildings);
+            }
             camera.gameObject.AddComponent<ModernCapture>();
             Debug.Log($"MC_MODERN_CREATED graphics={SystemInfo.graphicsDeviceName} api={SystemInfo.graphicsDeviceType}");
             }
@@ -231,7 +236,9 @@ namespace MagicCarpet.Native
             if (generation != state.generation) positioned = false;
             if (generation != state.generation || terrainSequence != state.mutationSequence)
             {
-                terrain.Update(session.TerrainPlane(NativeSim.TerrainHeight),
+                var heights=session.TerrainPlane(NativeSim.TerrainHeight);
+                if(buildings!=null) heights=buildings.PrepareTerrain(heights);
+                terrain.Update(heights,
                     session.TerrainPlane(NativeSim.TerrainTypes), session.TerrainPlane(NativeSim.TerrainAngle),
                     state.generation, state.tick);
                 generation = state.generation;
@@ -287,6 +294,7 @@ namespace MagicCarpet.Native
             else camera.transform.SetPositionAndRotation(ModernCapture.ReviewPosition ?? Vector3.Lerp(camera.transform.position, targetPosition, blend),
                     ModernCapture.ReviewPosition.HasValue ? ModernCapture.ReviewRotation : Quaternion.Slerp(camera.transform.rotation, targetRotation, blend));
             waterSystem.Update(camera);
+            buildings?.Render(camera.transform.position);
             nightLighting.Render(camera);
             terrain.Present(camera.transform.position);
             vegetation.Render(camera);
@@ -333,6 +341,7 @@ namespace MagicCarpet.Native
             if (disposed) return;
             disposed = true;
             sandbox?.Dispose();
+            buildings?.Dispose();
             waterReflection?.Dispose();
             waterSystem?.Dispose();
             nightLighting?.Dispose();

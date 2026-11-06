@@ -54,6 +54,9 @@ namespace MagicCarpet.Native
         private ulong terrainRevision = ulong.MaxValue;
         private bool dirty = true;
         private bool disposed;
+        // Sandbox architecture owns its footprint. Exclusion is evaluated only
+        // when retained chunks are built, never as an extra per-frame draw scan.
+        internal Func<float,float,bool> ExcludedFootprint { get; set; }
 
         internal long SubmittedTriangleCount { get; private set; }
         internal long ShadowOnlyTriangleCount { get; private set; }
@@ -726,6 +729,7 @@ namespace MagicCarpet.Native
 
         private void Add(Chunk chunk, int kind, float x, float y, float z, float yaw, float scale, Vector3 normal)
         {
+            if(ExcludedFootprint?.Invoke(x,z)==true) return;
             var matrix = Matrix4x4.TRS(new Vector3(x, y, z),
                 Quaternion.FromToRotation(Vector3.up, normal) * Quaternion.Euler(0f, yaw, 0f), Vector3.one * scale);
             chunk.Instances[kind].Add(matrix);

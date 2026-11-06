@@ -5,10 +5,80 @@ original presentation. Rust still owns movement, combat, terrain changes,
 input admission, saves and replay. The first supported modern environment is
 NightSpire (Level 1); other destinations retain their existing presentation.
 
+## Level 1 buildings — 2026-11-06
+
+The sandbox now uses the 32 verified Level 1 house placements and four BUILD
+profiles (26, 29, 30, 42). The initial sandstone/dome interpretation was rejected:
+it changed the original architectural identity. Its source and captures remain
+under ignored `../generated/buildings-20261106/rejected-domes-source` and `c2`.
+The replacement uses original sampled envelopes, dark lower masonry, blue-gray
+upper walls, short dark roof caps and small rectangular warm windows.
+
+`Tools/prepare_modern_building_layout.py` reads the owner BUILD bank and Level 1
+entity package, opens the qualified frozen replay with its matching native library,
+and validates all 1,220 positive building-height samples before writing an ignored
+`Builds/SandboxInputs/level1-building-source-layout.json` descriptor. The descriptor
+contains source profiles and positions; no owner geometry bytes are embedded in
+committed source. Its hash is pinned in the installation's `sandbox-inputs.json`.
+The launcher checks that hash before supplying `MC_SANDBOX_BUILDING_LAYOUT`.
+
+`ModernBuildingLayout` validates the entire original height-plane hash, every
+replacement byte, dimensions, complete positive-cell coverage and mesh samples.
+It then flattens those positive cells in a **visual copy only**. Zero-offset skirt
+cells, water, Rust simulation and the source snapshot remain intact.
+`ModernBuildingMeshes` triangulates the source lattice with its diagonal parity;
+all three LODs retain the same body. Meshes are shared per profile, with one material
+and renderer per active LOD. Masonry bevels and roof seams are filtered shader
+detail. Sparse facet-fitted window frames and glazing are newly authored, not an
+exact reconstruction of every original texture aperture. Night windows emit and
+contribute outward-facing spill within the existing eight-light budget.
+
+The retained Classic image
+`../generated/nightspire-modern-20261103/checkpoint27/nightspire-classic27.png`
+and source-indexed `../generated/playtest-frame-20261026/views/night-32.png`
+ground the visual comparison. They are project Original-renderer captures, not
+original-binary captures. The geometry comes from the BUILD samples, not guesses
+from those images. This frozen sandbox binding does **not** implement live house
+construction, destruction, interiors or building collision.
+
+Verification is self-checked against these source references. Unity EditMode
+`MagicCarpet.Native.Tests.Modern` passed 94/94 checks in 26.33 seconds, including
+source-sample preservation across LODs, glazing anchor ray hits, atomic terrain
+replacement rejection, staging rollback, shared meshes and bounded window lights.
+The removed dome/arch-specific tests were replaced with source-heightfield tests;
+the old fallback settlement placer was removed. The canonical descriptor command
+independently verified all 32 buildings and 1,220 samples against the installed
+frozen native `a98a8317` replay. Installed Linux build: `build-32a44fhy`.
+
+Individual final-player day views cover small/long/tall/stepped buildings and the
+zero-base coastal settlement. Five moving night captures retain rectangular
+glazing; the first, middle and last were inspected. That inspection also caught
+and fixed a window-emitter cutoff that previously prevented facade spill.
+The actual sandbox launcher, keys 5–9, day/dusk/moonlight changes, free flight and
+normal exit passed on a private X display. The first control harness sent two N
+presses in one frame; its missing moonlight result is retained, and the recheck
+uses a separate frame between presses. X-display readback times are not used as
+render-performance measurements. The physical desktop remains untested.
+
+Three comparable final-player night runs on RTX 3090 / Vulkan / private Wayland
+at 1600×900 measured 8.36, 8.53 and 8.75 ms mean; p95 was 8.45, 9.29 and
+11.08 ms respectively (120 samples each after 10 seconds of warmup, captures
+after measurement). Medians were 8.33–8.36 ms. These qualify the paused sandbox
+view with all 32 buildings, not ordinary campaign CPU load, Windows or VR.
+
+Evidence: `../generated/buildings-20261106/` contains input hashes, build/test logs,
+source descriptor verification, launcher receipts and rejected candidates;
+individual Wayland frames/logs are in `../generated/environment-finish-20261106/wayland/buildings-c3-*`
+and `buildings-c4-*`. UBS examined 12 changed C#/Python files: no critical findings;
+its five Python JSON-handling warnings are intentional fail-closed exceptions in
+the authoring command. C# analysis is partial because of scanner flow/preprocessor
+limits; `ubs doctor --fix` reported a healthy installation. This is not a claim
+of complete static-analysis coverage.
+
 ## Environment sandbox — 2026-11-06
 
-The current graphics priority is the environment sandbox, before replacement
-creatures, buildings and menus. Start the installed sandbox from this directory:
+The environment milestone is accepted; buildings are the next visual delivery,
+before replacement creatures and menus. Start the installed sandbox from this directory:
 
 ```sh
 ./run-sandbox.sh
@@ -35,6 +105,7 @@ not new Rust flight physics or collision against decorative rocks and plants.
 | Hold right mouse; WASD | Look and fly |
 | Q / E; Shift / Ctrl | Descend / rise; fast / precise flight |
 | 1 / 2 / 3 / 4 | Shoreline / grove / overlook / sky |
+| 5 / 6 / 7 / 8 / 9 | Settlement / small house / long house / coastal houses / stepped house |
 | N / G | Cycle daylight, dusk, moonlight / calm, breeze, gusts |
 | Cloud slider | Adjust cloud coverage independently of wind |
 | Space / R | Aim at water for a 2 MJ quench / cold splash and ripple |
@@ -47,7 +118,8 @@ entry points as the existing presentation effects. These experiments are
 cosmetic sandbox inputs; a real gameplay hot-contact ABI remains separate.
 `-mc-sandbox-tour` records eleven lighting/water/steam stages;
 `-mc-sandbox-study 0..12` holds a view or effect study, including a four-cloud
-stress view and a foreground-flame/background-steam control.
+stress view and a foreground-flame/background-steam control. Studies 13–24 add
+the Level 1 buildings in day, dusk and night, including reverse and coastal views.
 
 The finishing pass reconstructs the quantized landform before adding bounded
 relief. Original water anchors and flat ground remain stable; terrain revisions

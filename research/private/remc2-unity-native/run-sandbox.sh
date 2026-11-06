@@ -28,6 +28,11 @@ try:
     plugin = installed / 'Builds/Linux/MagicCarpetNative_Data/Plugins/x86_64/libsim_capi.so'
     if digest(replay) != data['replay_sha256'] or digest(plugin) != data['native_sha256']:
         raise ValueError('sandbox snapshot or installed native differs from its qualified inputs')
+    if 'building_layout' in data:
+        layout = Path(data['building_layout'])
+        if digest(layout) != data['building_layout_sha256']:
+            raise ValueError('sandbox Level 1 building layout differs from its qualified input')
+        os.environ['MC_SANDBOX_BUILDING_LAYOUT'] = str(layout)
     args = [str(project / 'run-modern.sh'), '--load-save', str(replay)]
     if not data['packages']:
         raise ValueError('sandbox requires an installed terrain package')

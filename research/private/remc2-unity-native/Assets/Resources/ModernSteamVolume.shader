@@ -115,7 +115,7 @@ Shader "MagicCarpet/ModernSteamVolume"
                         float3 delta=_ModernLightPosition[index].xyz-p;
                         float d2=dot(delta,delta), range=_ModernLightPosition[index].w;
                         float edge=saturate(1-d2/max(range*range,.001));
-                        illumination+=_ModernLightColor[index].rgb*(.10*edge*edge/(1+d2*.16));
+                        illumination+=_ModernLightColor[index].rgb*(.10*edge*edge/(1+d2*.16))*ModernEmitterMask(index,p);
                     }
                     light+=trans*alpha*illumination; trans*=1-alpha;
                 }

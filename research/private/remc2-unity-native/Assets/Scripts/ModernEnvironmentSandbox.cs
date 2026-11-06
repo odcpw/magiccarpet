@@ -15,6 +15,7 @@ namespace MagicCarpet.Native
         private readonly ModernNightLighting lighting;
         private readonly Light key;
         private readonly Material sky;
+        private readonly ModernBuildings buildings;
         private readonly CursorLockMode previousLock;
         private readonly bool previousCursor;
         private readonly bool tour = Environment.GetCommandLineArgs().Contains("-mc-sandbox-tour");
@@ -32,10 +33,11 @@ namespace MagicCarpet.Native
         private static readonly string[] WindNames = { "Calm", "Breeze", "Gusts" };
 
         internal ModernEnvironmentSandbox(Camera camera, ModernTerrainMesh terrain, ModernWaterSystem water,
-            ModernNightLighting lighting, Light key, Material sky)
+            ModernNightLighting lighting, Light key, Material sky,ModernBuildings buildings=null)
         {
             this.camera = camera; this.terrain = terrain; this.water = water;
             this.lighting = lighting; this.key = key; this.sky = sky;
+            this.buildings=buildings;
             previousLock = Cursor.lockState; previousCursor = Cursor.visible;
             Cursor.lockState = CursorLockMode.None; Cursor.visible = true;
         }
@@ -44,8 +46,10 @@ namespace MagicCarpet.Native
         {
             if (!initialized)
             {
-                initialized = true; started = Time.unscaledTime;
+                started = Time.unscaledTime;
                 lake = FindLake(); grove = FindGrove();
+                buildings?.Stage(grove+new Vector3(24,0,24));
+                if(buildings!=null) lighting.SetReviewWindows(buildings.WindowCenters,buildings.WindowNormals);
                 lamps = new Vector3[3];
                 lamps[0]=Lamp(grove,0);
                 lamps[1]=Lamp(grove+new Vector3(4,0,3),1);
@@ -54,6 +58,7 @@ namespace MagicCarpet.Native
                 SetLighting(0); SetWind(0); View(0);
                 if (ModernCapture.ReviewPosition.HasValue)
                     SetPose(ModernCapture.ReviewPosition.Value,ModernCapture.ReviewRotation);
+                initialized = true;
                 Debug.Log($"MC_SANDBOX_READY lake={lake} grove={grove} frozen_campaign=True");
             }
             var dt = Mathf.Min(Time.unscaledDeltaTime,.1f);
@@ -67,6 +72,11 @@ namespace MagicCarpet.Native
             if (Input.GetKeyDown(KeyCode.Alpha2)) View(1);
             if (Input.GetKeyDown(KeyCode.Alpha3)) View(2);
             if (Input.GetKeyDown(KeyCode.Alpha4)) View(3);
+            if (Input.GetKeyDown(KeyCode.Alpha5)) View(4);
+            if (Input.GetKeyDown(KeyCode.Alpha6)) View(5);
+            if (Input.GetKeyDown(KeyCode.Alpha7)) View(6);
+            if (Input.GetKeyDown(KeyCode.Alpha8)) View(7);
+            if (Input.GetKeyDown(KeyCode.Alpha9)) View(8);
             if (Input.GetKeyDown(KeyCode.N)) SetLighting((lightMode+1)%3);
             if (Input.GetKeyDown(KeyCode.G)) SetWind((windMode+1)%3);
             if (Input.GetKeyDown(KeyCode.T)) ToggleTorches();
@@ -162,15 +172,22 @@ namespace MagicCarpet.Native
                 case 0: Look(lake+new Vector3(-18,5,-12),lake+Vector3.up*.4f); break;
                 case 1: Look(grove+new Vector3(-7,3,-6),grove+Vector3.up*1.4f); break;
                 case 2: Look(lake+new Vector3(-90,100,-80),grove); break;
+                case 4: if(buildings!=null) Look(buildings.Center+new Vector3(-62,42,-74),buildings.Center+Vector3.up*8);break;
+                case 5: if(buildings!=null) Look(buildings.House+new Vector3(-26,12,-32),buildings.House+Vector3.up*6);break;
+                case 6: if(buildings!=null) Look(buildings.Hall+new Vector3(40,20,-48),buildings.Hall+Vector3.up*9);break;
+                case 7: if(buildings!=null) Look(buildings.Coastal+new Vector3(-55,20,-60),buildings.Coastal+Vector3.up*8);break;
+                case 8: if(buildings!=null) Look(buildings.Tower+new Vector3(-40,22,-44),buildings.Tower+Vector3.up*12);break;
                 default: Look(lake+new Vector3(0,5,0),lake+new Vector3(-38,53,79)); break;
             }
-            notice=new[] { "Shoreline", "Grove and lanterns", "Island overlook", "Clouds and sky" }[Mathf.Clamp(index,0,3)];
+            notice=new[] { "Shoreline", "Grove and lanterns", "Island overlook", "Clouds and sky", "Level 1 settlement", "Small house", "Long house", "Coastal buildings", "Stepped house" }[Mathf.Clamp(index,0,8)];
             Debug.Log($"MC_SANDBOX_VIEW index={index} position={camera.transform.position}");
         }
 
         internal void SetLighting(int mode)
         {
             lightMode=Mathf.Clamp(mode,0,2);
+            buildings?.SetLighting(lightMode);
+            lighting.SetWindowLighting(lightMode==0?0:lightMode==1?.45f:.8f);
             var day=lightMode==0; var dusk=lightMode==1;
             var direction=(day?new Vector3(-.5f,.65f,.55f):dusk?new Vector3(-.65f,.12f,.6f):new Vector3(-.38f,.48f,.79f)).normalized;
             key.transform.rotation=Quaternion.LookRotation(-direction);
@@ -231,6 +248,19 @@ namespace MagicCarpet.Native
             var elapsed=Mathf.Max(0,time-4);
             var stage=study>=0?study:Mathf.Min(10,(int)(elapsed/10));
             var local=study>=0?elapsed:elapsed-stage*10;
+            if(stage>=13 && buildings!=null)
+            {
+                if(stage!=tourStage) { tourStage=stage;SetLighting(stage==14||stage==20||stage==21||stage==24?2:stage==17?1:0);SetWind(1); }
+                if(stage==13||stage==14||stage==17)
+                    Look(buildings.Center+new Vector3(-62+Mathf.Sin(local*.1f)*5,42,-74),buildings.Center+Vector3.up*8);
+                else if(stage==15||stage==20) Look(buildings.House+new Vector3(-26+Mathf.Sin(local*.15f)*5,12,-32),buildings.House+Vector3.up*6);
+                else if(stage==16) Look(buildings.Hall+new Vector3(40,20,-48),buildings.Hall+Vector3.up*9);
+                else if(stage==18) Look(buildings.Tower+new Vector3(-40,22,-44),buildings.Tower+Vector3.up*12);
+                else if(stage==21||stage==22) Look(buildings.Hall+new Vector3(-40,20,48),buildings.Hall+Vector3.up*9);
+                else if(stage==23||stage==24) Look(buildings.Coastal+new Vector3(-55+Mathf.Sin(local*.1f)*10,20,-60),buildings.Coastal+Vector3.up*8);
+                else Look(buildings.Center+new Vector3(-160,85,-185),buildings.Center+Vector3.up*8);
+                return;
+            }
             if(stage!=tourStage)
             {
                 tourStage=stage; SetLighting(stage<2?stage:2); SetWind(stage==1?1:0);
@@ -304,8 +334,8 @@ namespace MagicCarpet.Native
         {
             var args=Environment.GetCommandLineArgs();var i=Array.IndexOf(args,"-mc-sandbox-study");
             if(i<0) return -1;
-            if(i+1>=args.Length || !int.TryParse(args[i+1],out var stage) || stage<0 || stage>12)
-                throw new ArgumentException("Sandbox study must be a view from 0 to 12");
+            if(i+1>=args.Length || !int.TryParse(args[i+1],out var stage) || stage<0 || stage>24)
+                throw new ArgumentException("Sandbox study must be a view from 0 to 24");
             return stage;
         }
 
@@ -332,8 +362,8 @@ namespace MagicCarpet.Native
             button??=new GUIStyle(GUI.skin.button) { fontSize=13,fixedHeight=30 };
             if(panel)
             {
-                GUI.color=new Color(.025f,.045f,.05f,.94f); GUI.DrawTexture(new Rect(20,20,326,530),Texture2D.whiteTexture); GUI.color=Color.white;
-                GUILayout.BeginArea(new Rect(38,34,290,500));
+                GUI.color=new Color(.025f,.045f,.05f,.94f); GUI.DrawTexture(new Rect(20,20,326,570),Texture2D.whiteTexture); GUI.color=Color.white;
+                GUILayout.BeginArea(new Rect(38,34,290,540));
                 GUILayout.Label("MAGIC CARPET",small);
                 GUILayout.Label("Environment sandbox",title);
                 GUILayout.Space(10); GUILayout.Label("LIGHT",small);
@@ -345,7 +375,8 @@ namespace MagicCarpet.Native
                 if(!Mathf.Approximately(next,cover)) { cover=next; sky.SetFloat("_CloudAmount",cover); }
                 GUILayout.Space(8); GUILayout.Label("EXPLORE",small);
                 Row(new[] { "Shore  1", "Grove  2", "Overlook  3" },-1,View);
-                GUILayout.Label("RMB look · WASD fly · Q/E descend/rise\nShift fast · Ctrl precise · 4 sky",body);
+                Row(new[] { "Buildings 5", "Small house 6", "Long house 7" },-1,index=>View(index+4));
+                GUILayout.Label("RMB look · WASD fly · Q/E descend/rise\nShift fast · Ctrl precise · 4 sky\n8 coastal buildings · 9 stepped house",body);
                 GUILayout.Space(8);
                 GUILayout.Label("Space  Steam quench     R  Splash\nT  Torches     N  Light     G  Wind\nBackspace  Clear water and steam",body);
                 GUILayout.Space(8); GUILayout.Label(notice,body);
