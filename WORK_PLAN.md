@@ -73,7 +73,7 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: settlement complete; Skeleton next
+### Current delivery: Skeleton in progress; settlement delivered
 
 Finite settlement `.16` is implemented, verified, committed and installed.
 Runtime/source `ae2e84d1` and client qualification `24df66cc` are pushed;
@@ -103,8 +103,9 @@ required shared joins and root serializes Cargo/push/install. Reuse the existing
 actual Builder/Villager conversion and child-scheduling evidence. Trace current
 constructor/SetEvent144 arithmetic and typed properties, ordinary arrow203 to
 actual damage/ownership, cleanup and actual absence consumers before editing.
-Do not infer a missing enabled75/78 handler from the old bead's static assessment,
-force actors/groups or build a scripted full-group combat playthrough. Workers
+Source75 is enabled but has no demonstrated ordinary producer in the inspected
+paths; source78 has no dispatch implementation. Preserve that distinction rather
+than inventing producers, forcing actors/groups or scripting whole-group combat. Workers
 remain responsible through integration; original acceptance/dependencies stay.
 
 Skeleton `.22` current property/arrow batch is implemented, verified, committed
@@ -259,6 +260,30 @@ currently rejected in Rust; no actual producer was demonstrated in the inspected
 Skeleton constructor/custom scans/StageVar paths. Bit8 controls78 selection,
 not75. Keep enabled-orphan reachability distinct from unsupported dispatch and
 do not invent a positive producer or claim full family acceptance from this batch.
+
+Skeleton point-route batch11 is implemented, verified, committed/pushed as
+`5ec744b026d63452d995fbeb99a030c6b9c5a388` and installed with native
+`6bd0cb61b23f083089b44831425863bbd8e41f1d913de9d69a311aa67181c816`.
+Actual untouched Level3 eleven reset roots naturally emerge and follow their
+authored point, with heading/RNG/movement/map/presentation checks passing0.821s.
+Current peer fields are read lazily over frozen membership after source gates;
+first overlap stops the scan. Completed movement/map/population changes survive
+a later peer-read error; pre-movement errors do not publish movement. Configured
+membership/read-order and actual-wrapper failure controls pass; these are not
+claims of naturally occurring carrier failures. Core67.412s, workspace36.426s,
+source-order and affected focused checks pass. Bounded independent review found
+no further defect; UBS has zero added-line critical findings and legacy debt.
+Strict rig native74.784s, all636 unique inputs and both installed Original plugins
+match. Root viewed canonical map/loading/NightSpire terrain/HUD with that mapped
+native, one portal click/no retry/private-save/gameplay input; owned smoke stopped.
+Evidence: `generated/skeleton-20261106-integration/candidate-11/` and
+`Builds/delivery-skeleton-20261106-batch4/runtime-proof.json`. No Unity/art change,
+native Skeleton encounter, human combat/FPS/audio/full-mission/old-save proof.
+Metadata `cf67631b` preserves full open `.22` acceptance. Current/previous native
+and closed build proofs are preserved. Next same-creature batch: MagentaPuma owns
+enabled75 in the canonical Skeleton module; AzureGate implements thin scheduling
+joins. Use clearly declared configured-source exception controls while ordinary75
+admission remains unproven. Firefly remains queued, without edits.
 
 The following settlement/Archer notes are chronological evidence, including
 preserved intermediate failures and superseded pending-installation statements.
