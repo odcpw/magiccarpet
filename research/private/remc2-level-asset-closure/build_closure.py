@@ -1556,7 +1556,10 @@ def build_environment_closure(
     for name, member in sorted(manifest["files"].items()):
         if name in {"campaign-definition.json", "owner-manifest.json", "fireball-projectile-base.indexed-sprite.json", "fireball-projectile-fade.indexed-sprite.json", "source-record.bin", "source-record.json", "source-record.packed"}:
             continue
-        if name == "building-parameters.bin" and identity["external_level"] <= 3 and recipe["block_bank"] != "BLOCK32":
+        # Legacy first-map envelopes did not bind BLDG as an owner member.
+        # The validated v6 envelope explicitly includes it in that identity.
+        if (name == "building-parameters.bin" and manifest["schema"] != "mc2-owner-campaign-package/v6"
+                and identity["external_level"] <= 3 and recipe["block_bank"] != "BLOCK32"):
             continue
         owner_identity.extend(f"{name}\0{member['sha256']}\0{member['bytes']}\n".encode("ascii"))
     profile = {

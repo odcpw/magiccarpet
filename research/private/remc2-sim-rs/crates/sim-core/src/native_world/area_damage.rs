@@ -2027,6 +2027,179 @@ mod tests {
     use crate::world::terrain::disasters::{RingProfile, mc2};
 
     #[test]
+    fn first_map_v6_configured_builder_house_receives_real_model45_contact() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use std::path::PathBuf;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        for selection in [CampaignSelection::LEVEL1, CampaignSelection::LEVEL3] {
+            let package = std::env::var_os(format!(
+                "MC_LEVEL{}_COLLISION_PACKAGE_V6",
+                selection.external_level,
+            ))
+            .map_or_else(
+                || {
+                    generated.join(format!(
+                        "settlement-20261106-opening-collision-v6/level{}",
+                        selection.external_level,
+                    ))
+                },
+                PathBuf::from,
+            );
+            let mut session = CampaignSession::open(package, selection)
+                .expect("genuine closed first-map package reaches the ordinary session")
+                .simulation()
+                .clone();
+            let owner = session.state.entity_index;
+            let masks = session.collision_mask_bank().unwrap().clone();
+            assert!(
+                masks.mask(19).is_some(),
+                "previously omitted Builder choice"
+            );
+            let candidate = Position {
+                x: session.state.position.x.wrapping_add(8192),
+                y: session.state.position.y.wrapping_add(8192),
+                z: 0,
+            };
+            // Configured constructor control: select a genuine eligible
+            // Builder row and use the exact retained family constructor and
+            // publication sequence. This is not an ordinary Builder birth.
+            let (handle, construction_visits) = {
+                let live = &mut session.session.state.live;
+                let parameter = live.ordinary.house_parameters[&19];
+                let footprint = live.ordinary.house_build_footprints[&19].clone();
+                let slot = live
+                    .economy
+                    .allocate_source_slot_with_terrain(&mut live.terrain)
+                    .unwrap();
+                let rng = live.economy.new_event_rng(slot);
+                let position = super::super::creatures::settlements::builder_house_position(
+                    &live.terrain,
+                    candidate,
+                    super::super::creatures::settlements::BuilderBuildingSpec {
+                        sprite_width: 0,
+                        sprite_height: 0,
+                        footprint_width: footprint.width,
+                        footprint_height: footprint.height,
+                    },
+                );
+                let mut house = crate::house::HouseState::builder_from_source(
+                    slot,
+                    rng,
+                    position,
+                    19,
+                    footprint.width,
+                    footprint.height,
+                    parameter,
+                );
+                live.ordinary.houses.insert_builder_house(house).unwrap();
+                house.action = crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+                live.ordinary
+                    .houses
+                    .initialize_builder_house(house)
+                    .unwrap();
+                live.economy.source_rng.insert(slot, rng);
+                live.economy.source_owner.insert(slot, 0);
+                live.economy.owner_class.insert(slot, 10);
+                let mut raw = crate::world::terrain::cave_features::new_event(slot, rng, position);
+                crate::house::bind_startup_construction(
+                    &mut raw,
+                    19,
+                    parameter,
+                    &footprint,
+                    u16::from(footprint.width) * u16::from(footprint.height) * 4,
+                );
+                house.publish_source(&mut raw);
+                live.economy.entities[usize::from(slot)] = raw;
+                crate::world::effects::sync_position(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    slot,
+                    position,
+                    true,
+                    false,
+                )
+                .unwrap();
+                (live.economy.handle(slot).unwrap(), house.life as usize)
+            };
+            for pass in 0..construction_visits {
+                session.step_level2_source_pass((pass % 2) as u8);
+            }
+            let house = *session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == handle.source_slot)
+                .unwrap();
+            assert_eq!(
+                session.source_arena().handle(handle.source_slot),
+                Some(handle)
+            );
+            assert_eq!(house.action, crate::house::HOUSE_LIVE_ACTION);
+            assert_eq!(
+                house.life,
+                i32::from(house.parameter.life_mana_scalar) * 1000
+            );
+            assert_eq!((house.pending_damage, house.pending_attacker), (0, 0));
+            {
+                let live = &mut session.session.state.live;
+                let lists = capture_effect_lists(
+                    &mut live.economy,
+                    Some(ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                );
+                assert!(
+                    apply_effect(
+                        &mut live.economy,
+                        Some(ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                        None,
+                        Some(&masks),
+                        &lists,
+                        crate::world::effects::DamagePulse {
+                            position: house.position,
+                            owner,
+                            payload: 200,
+                            half_width: 128,
+                            vertical_offset: 0,
+                            half_height: 128,
+                            continuous: false,
+                            selector: (10, 45),
+                        },
+                    )
+                    .unwrap()
+                        > 0
+                );
+            }
+            let pending = session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == handle.source_slot)
+                .unwrap();
+            assert_eq!(
+                (pending.pending_damage, pending.pending_attacker),
+                (200, owner.cast_signed())
+            );
+            assert_eq!(
+                pending.life, house.life,
+                "the actual writer queues the mailbox"
+            );
+            session.step_level2_source_pass(0);
+            let consumed = session
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|row| row.entity_index == handle.source_slot)
+                .unwrap();
+            assert_eq!(consumed.life, house.life - 200);
+            assert_eq!((consumed.pending_damage, consumed.pending_attacker), (0, 0));
+            assert_eq!(
+                session.source_arena().handle(handle.source_slot),
+                Some(handle)
+            );
+        }
+    }
+
+    #[test]
     fn model45_effect_damage_preserves_unsigned_probe_and_strict_axis_admission() {
         let mut session = super::super::tests::level_two_campaign_session();
         let owner = session.state.entity_index;

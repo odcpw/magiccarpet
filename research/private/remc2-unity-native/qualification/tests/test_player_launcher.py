@@ -106,7 +106,7 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertEqual(forwarded[-1], "-force-vulkan")
         self.assertEqual(forwarded[forwarded.index("-mc-runtime-replay-save") + 1], str(save))
         self.assertEqual(forwarded[forwarded.index("-mc-runtime-owner-cache") + 1],
-                         str(generated / "mc-b9s2-cursor-level1-20261029"))
+                         str(generated / "settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1"))
         self.assertEqual(original_payload, self.api["payload"](self.binary.parent))
 
     def test_broken_modern_pointer_fails_without_falling_back_to_original(self):
@@ -133,7 +133,7 @@ class PlayerLauncherTests(unittest.TestCase):
         forwarded = lines[lines.index("QUALIFIED_ORIGINAL") + 1:]
         self.assertNotIn("-mc-modern", forwarded)
         self.assertEqual(forwarded[forwarded.index("-mc-runtime-owner-cache") + 1],
-                         str(generated / "mc-b9s2-cursor-level1-20261029"))
+                         str(generated / "settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1"))
         # The modern selector must win even while an original pointer exists.
         self.test_modern_pointer_selects_qualified_project_and_preserves_arguments()
 
@@ -280,7 +280,9 @@ class PlayerLauncherTests(unittest.TestCase):
     def campaign_resources(self):
         generated = self.root.parent / "generated"
         for name in ("mc-bhq8-level1-collision-v5-night", "mc-level2-vault-successor-closure-20261025",
-                     "level3-day-block32-campaign-recipe-v2", "mc-bhq6-ordinary-20261025-zclu5fjj/level4"):
+                     "level3-day-block32-campaign-recipe-v2", "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+                     "settlement-20261105-integration/owner-closed-v6/level1",
+                     "settlement-20261105-integration/owner-closed-v6/level3"):
             package = generated / name
             package.mkdir(parents=True, exist_ok=True)
             # Only argument routing is under test; Rust owns content validation.
@@ -289,7 +291,10 @@ class PlayerLauncherTests(unittest.TestCase):
                      "mc-b9s2-cursor-level1-20261029", "mc-b9s2-cursor-level2-vault-20261029",
                      "mc-b9s2-cursor-level3-20261029", "mc-b9s2-cursor-level4-20261029",
                      "level2-vault-successor-owner-cache-20261025",
-                     "level3-day-spell-owner-cache-audio-v4", "mc-shared-source-map-motion-20261026"):
+                     "level3-day-spell-owner-cache-audio-v4", "mc-shared-source-map-motion-20261026",
+                     "settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1",
+                     "settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level3",
+                     "settlement-20261105-integration/owner-closed-v6/night-presentation-v6"):
             (generated / name).mkdir(parents=True, exist_ok=True)
         return generated
 
@@ -322,6 +327,8 @@ class PlayerLauncherTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = json.loads(result.stdout.splitlines()[-1])
                 self.assertEqual(arguments.count("-mc-runtime-package"), 4)
+                self.assertIn(str(generated / "settlement-20261105-integration/owner-closed-v6/level1"), arguments)
+                self.assertIn(str(generated / "settlement-20261105-integration/owner-closed-v6/level3"), arguments)
                 self.assertEqual("-mc-runtime-menu" in arguments, menu)
                 self.assertNotIn("-mc-runtime-replay-load", arguments)
                 self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1],
@@ -359,6 +366,7 @@ class PlayerLauncherTests(unittest.TestCase):
         self.assertEqual(arguments.count("-mc-runtime-owner-cache"), 4)
         self.assertEqual(arguments.count("-mc-runtime-presentation-cache"), 4)
         self.assertNotIn(str(generated / "mc-bhq8-level1-collision-v5-night"), arguments)
+        self.assertNotIn(str(generated / "settlement-20261105-integration/owner-closed-v6/level1"), arguments)
         self.assertNotIn("-mc-runtime-menu", arguments)
         self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1], str(save))
         self.assertEqual(arguments[arguments.index("-mc-runtime-media-cache") + 1], str(media))

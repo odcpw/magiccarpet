@@ -2336,6 +2336,10 @@ canonical_json build_campaign_definition(
     const Bytes& entities,
     std::uint16_t entity_record_size,
     std::uint16_t player_record_size) {
+    // Level 1 and 3 v6 use the same source-closed House inputs as later
+    // campaigns, while preserving their own reset and presentation profiles.
+    const bool closed_early_level = profile.external == 1 || profile.external == 3;
+    const bool reset_house_closure = closed_early_level || profile.external > 3;
     const auto behavior_rows = decode_campaign_behavior_rows(authored, entities, profile.external > 3);
     const json& owner_sources = legacy_manifest.at("source").at("owner_files");
 
@@ -2362,7 +2366,7 @@ canonical_json build_campaign_definition(
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "feature-allocator.bin", "mc2-feature-allocator/v1"));
     feature_boundary.push_back(typed_campaign_member(
-        file_manifest, "feature-construction-inputs.bin", profile.external > 3
+        file_manifest, "feature-construction-inputs.bin", reset_house_closure
             ? "mc2-feature-construction-inputs/v4" : "mc2-feature-construction-inputs/v2"));
     feature_boundary.push_back(typed_campaign_member(
         file_manifest, "entities-post-features.bin", "mc2-feature-entity-arena/v1"));
@@ -2415,8 +2419,8 @@ canonical_json build_campaign_definition(
             {"map_type_id", profile.map_type_id}
         }},
         {"required_behaviors", campaign_required_behaviors(behavior_rows)},
-        {"schema", profile.external > 3 ? "mc2-campaign-definition/v4" : profile.external == 1
-            ? "mc2-campaign-definition/v5"
+        {"schema", profile.external > 3 ? "mc2-campaign-definition/v4" : closed_early_level
+            ? "mc2-campaign-definition/v6"
             : (profile.external == 2
                 ? "mc2-campaign-definition/v2"
                 : "mc2-campaign-definition/v1")},
@@ -2428,9 +2432,9 @@ canonical_json build_campaign_definition(
             objective_operations,
             profile.map_type_id,
             profile.includes_collision_masks,
-            profile.external == 2 || profile.external > 3,
+            profile.external == 2 || reset_house_closure,
             profile.external == 2,
-            profile.external > 3)}
+            reset_house_closure)}
     };
     if (profile.external == 1) {
         const auto presentation_asset = [&](
@@ -2706,6 +2710,12 @@ json banishment_state_reference() {
 int run(const Arguments& arguments) {
     const bool level_one = arguments.level.external == 1;
     const bool include_collision_masks = !level_one || arguments.campaign_package;
+    // Standalone first-map owner exports keep their historical profiles.
+    // Campaign envelopes explicitly select the complete v6 House closure.
+    const bool closed_early_level = arguments.campaign_package &&
+        (level_one || arguments.level.external == 3);
+    const bool reset_house_closure = closed_early_level || arguments.level.external > 3;
+    const bool include_building_parameters = arguments.level.external == 2 || reset_house_closure;
     const fs::path owner_root = fs::canonical(arguments.owner_root);
     if (!fs::is_directory(owner_root / "GAME/NETHERW") ||
         !fs::is_directory(owner_root / "CD_Files") ||
@@ -2901,18 +2911,17 @@ int run(const Arguments& arguments) {
             model_45_collision_selectors,
             authored_model_45_row_count,
             level_one,
-            arguments.level.external == 2 || arguments.level.external > 3,
-            arguments.level.external > 3);
+            include_building_parameters,
+            reset_house_closure);
     Bytes building_parameters;
-    if (arguments.level.external == 2 || arguments.level.external > 3) {
+    if (include_building_parameters) {
         building_parameters = capture_building_parameters(owner_root);
     }
     CollisionMaskCapture collision_masks;
     if (include_collision_masks) {
         std::size_t collision_authored_count = 0;
         auto collision_selectors = building_selectors(authored, collision_authored_count);
-        const bool closed_house_selectors = arguments.level.external == 2 ||
-            arguments.level.external > 3;
+        const bool closed_house_selectors = include_building_parameters;
         if (closed_house_selectors) {
             collision_selectors = model_45_collision_selectors;
         }
@@ -2971,7 +2980,7 @@ int run(const Arguments& arguments) {
     std::vector<std::pair<const char*, const Bytes*>> files;
     files.reserve(level_one ? 14 : (arguments.level.external == 2 ? 15 : 14));
     files.emplace_back("authored-level.bin", &authored_bytes);
-    if (arguments.level.external == 2 || arguments.level.external > 3) {
+    if (include_building_parameters) {
         files.emplace_back("building-parameters.bin", &building_parameters);
     }
     if (include_collision_masks) files.emplace_back("collision-masks.bin", &collision_masks.bytes);
@@ -3025,7 +3034,8 @@ int run(const Arguments& arguments) {
                 ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "F0-0" : "N0-0"));
 
     json manifest = {
-        {"schema", level_one ? "mc2-owner-level-export/v3" : "mc2-owner-level-export/v5"},
+        {"schema", closed_early_level ? "mc2-owner-level-export/v6" : level_one
+            ? "mc2-owner-level-export/v3" : "mc2-owner-level-export/v5"},
         {"byte_order", "little-endian"},
         {"level", {
             {"external", arguments.level.external},
@@ -3100,8 +3110,8 @@ int run(const Arguments& arguments) {
             {"construction_inputs", {
                 {"file", "feature-construction-inputs.bin"},
                 {"magic", "MCI3"},
-                {"version", arguments.level.external > 3 ? 4 : 2},
-                {"successor_closure", arguments.level.external == 2 || arguments.level.external > 3},
+                {"version", reset_house_closure ? 4 : 2},
+                {"successor_closure", include_building_parameters},
                 {"record_count", feature_building_selectors.size()},
                 {"selectors", feature_building_selectors},
                 {"source", "live pinned BLDGPRM rows plus BUILD footprint bytes"}
@@ -3442,7 +3452,7 @@ int run(const Arguments& arguments) {
                 owner_root,
                 map_profile,
                 include_collision_masks,
-                arguments.level.external == 2 || arguments.level.external > 3)}
+                include_building_parameters)}
         }},
         {"reference", {
             {"terrain_frame0_sha256", level_one ? kExpectedTerrainSha256 : sha256(terrain.data)},
@@ -3626,7 +3636,7 @@ int run(const Arguments& arguments) {
         };
         if (level_one) {
             manifest = {
-                {"schema", "mc2-owner-campaign-package/v5"},
+                {"schema", "mc2-owner-campaign-package/v6"},
                 {"byte_order", "little-endian"},
                 {"level", {
                     {"external", arguments.level.external},
@@ -3639,7 +3649,8 @@ int run(const Arguments& arguments) {
             };
         } else {
             manifest = {
-                {"schema", arguments.level.external > 3 ? "mc2-owner-campaign-package/v4" : arguments.level.external == 2
+                {"schema", arguments.level.external > 3 ? "mc2-owner-campaign-package/v4" : arguments.level.external == 3
+                    ? "mc2-owner-campaign-package/v6" : arguments.level.external == 2
                     ? "mc2-owner-campaign-package/v2"
                     : "mc2-owner-campaign-package/v1"},
                 {"byte_order", "little-endian"},

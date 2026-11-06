@@ -152,15 +152,15 @@ def main(arguments):
     if not resources:
         # Local installed owner content. A supplied set replaces this entire list.
         resources = [
-            {'package': GENERATED / 'mc-bhq8-level1-collision-v5-night',
-             'owner': GENERATED / 'mc-b9s2-cursor-level1-20261029',
-             'presentation': GENERATED / 'mc2-level1-night-cache-v2'},
+            {'package': GENERATED / 'settlement-20261105-integration/owner-closed-v6/level1',
+             'owner': GENERATED / 'settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1',
+             'presentation': GENERATED / 'settlement-20261105-integration/owner-closed-v6/night-presentation-v6'},
             {'package': GENERATED / 'mc-level2-vault-successor-closure-20261025',
              'owner': GENERATED / 'mc-b9s2-cursor-level2-vault-20261029',
              'presentation': GENERATED / 'level2-vault-successor-owner-cache-20261025'},
-            {'package': GENERATED / 'level3-day-block32-campaign-recipe-v2',
-             'owner': GENERATED / 'mc-b9s2-cursor-level3-20261029',
-             'presentation': GENERATED / 'level3-day-spell-owner-cache-audio-v4'},
+            {'package': GENERATED / 'settlement-20261105-integration/owner-closed-v6/level3',
+             'owner': GENERATED / 'settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level3',
+             'presentation': GENERATED / 'settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level3'},
             {'package': GENERATED / 'mc-bhq6-ordinary-20261025-zclu5fjj/level4',
              'owner': GENERATED / 'mc-b9s2-cursor-level4-20261029',
              'presentation': GENERATED / 'mc-b9s2-cursor-level4-20261029'},

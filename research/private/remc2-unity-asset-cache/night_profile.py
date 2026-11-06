@@ -55,13 +55,15 @@ def metadata_sha256(manifest: dict) -> str:
     return sha(text.encode("ascii"))
 
 
-def _bank(package: Path, owner: dict, definition: dict, owner_root: Path) -> None:
+def _bank(package: Path, owner: dict, definition: dict, owner_root: Path, *,
+          closed_selectors: list[int] | None = None) -> None:
     fact = next((f for f in definition["source_facts"]
                  if f["fact_id"] == "collision-mask-bank"), None)
+    version = 4 if closed_selectors is not None else 2
     if fact is None or (fact["kind"], fact["version"], fact["member"], fact["lifetime"]) != (
-        3, 2, "collision-masks.bin", "immutable-through-session"
+        3, version, "collision-masks.bin", "immutable-through-session"
     ):
-        raise ValueError("Night production requires the declared collision SourceFact v2")
+        raise ValueError(f"Night production requires the declared collision SourceFact v{version}")
     feature = next(f for f in definition["source_facts"]
                    if f["fact_id"] == "feature-construction-inputs")
     if fact["selector_provenance"] != feature["selector_provenance"]:
@@ -82,7 +84,10 @@ def _bank(package: Path, owner: dict, definition: dict, owner_root: Path) -> Non
         sources[key] = data
     if fact["source_artifacts"] != sorted(artifacts, key=lambda a: a["logical_path"]):
         raise ValueError("Night collision fact does not bind the actual owner bytes")
-    selectors = sorted({row["selector_value"] for row in fact["selector_provenance"]})
+    selectors = (closed_selectors if closed_selectors is not None else
+                 sorted({row["selector_value"] for row in fact["selector_provenance"]}))
+    if selectors != sorted(set(selectors)):
+        raise ValueError("Night collision selectors are not unique and ordered")
     result = bytearray(struct.pack("<4sHHHHII", b"MCM1", 1, 20, 1, 0, len(selectors), 12))
     rows = []
     for selector in selectors:
@@ -104,6 +109,22 @@ def _bank(package: Path, owner: dict, definition: dict, owner_root: Path) -> Non
         raise ValueError("Night collision SourceFact member hash mismatch")
 
 
+def _building_parameters(package: Path, definition: dict, owner_root: Path) -> None:
+    """Bind the closed package to the actual complete BLDGPRM owner bytes."""
+    fact = next((f for f in definition["source_facts"]
+                 if f["fact_id"] == "building-parameters"), None)
+    data = (owner_root / "DATA/BLDGPRM.DAT").read_bytes()
+    identity = {"logical_path": "CD_Files/DATA/BLDGPRM.DAT",
+                "bytes": len(data), "sha256": sha(data)}
+    if (fact is None or
+        (fact["kind"], fact["version"], fact["member"], fact["lifetime"]) !=
+            (4, 1, "building-parameters.bin", "immutable-through-session") or
+        fact["source_artifacts"] != [identity] or
+        fact["member_sha256"] != identity["sha256"] or
+        (package / "building-parameters.bin").read_bytes() != data):
+        raise ValueError("Night building parameters differ from the actual owner bytes")
+
+
 def prepare(package: Path, qualified: Path, reference_campaign: Path,
             closure_path: Path, catalog: Path, owner_root: Path, *,
             expected_package: str, expected_runtime: str,
@@ -120,9 +141,11 @@ def prepare(package: Path, qualified: Path, reference_campaign: Path,
     verify_campaign(reference_campaign, legacy, expected_selection=(1, 0, 1))
     if baseline["package_sha256"] != expected_package:
         raise ValueError("Night qualification uses a different source export")
-    if current["schema"] != "mc2-owner-campaign-package/v5" or current["level"] != baseline["level"]:
+    is_closed = current["schema"] == "mc2-owner-campaign-package/v6"
+    if current["schema"] not in {"mc2-owner-campaign-package/v5", "mc2-owner-campaign-package/v6"} or current["level"] != baseline["level"]:
         raise ValueError("Night production requires the actual bank-bearing Level 1 package")
-    if set(current["files"]) != set(legacy["files"]) | {"collision-masks.bin"}:
+    added_members = {"collision-masks.bin", "building-parameters.bin"} if is_closed else {"collision-masks.bin"}
+    if set(current["files"]) != set(legacy["files"]) | added_members:
         raise ValueError("Night production campaign member set differs")
     if {p.name for p in package.iterdir()} != set(current["files"]) | {"manifest.json"}:
         raise ValueError("Night production campaign directory contains undeclared members")
@@ -145,25 +168,45 @@ def prepare(package: Path, qualified: Path, reference_campaign: Path,
         raise ValueError("Night runtime constructor-counter layout differs")
     definition = load(package / "campaign-definition.json")
     reference = load(reference_campaign / "campaign-definition.json")
-    if definition["schema"] != "mc2-campaign-definition/v5":
+    expected_definition_schema = "mc2-campaign-definition/v6" if is_closed else "mc2-campaign-definition/v5"
+    if definition["schema"] != expected_definition_schema:
         raise ValueError("Night campaign definition schema differs")
-    _bank(package, owner, definition, owner_root)
+    if is_closed:
+        # The existing campaign verifier independently derives the complete
+        # model45 closure from authored/reset rows and BLDGPRM successors.
+        # Only after that succeeds may the observed metadata selectors drive
+        # the independent comparison against every actual MSPRN owner byte.
+        verify_campaign(package, current, expected_selection=(1, 0, 1))
+        _building_parameters(package, definition, owner_root)
+        selectors = [row["selector"] for row in owner["collision_masks"]["selectors"]]
+        _bank(package, owner, definition, owner_root, closed_selectors=selectors)
+    else:
+        _bank(package, owner, definition, owner_root)
     # Only declared data-carrier upgrades may differ from the validated v3
     # behavior/asset definition; this does not change or publish either one.
     view = copy.deepcopy(definition)
     view["schema"] = reference["schema"]
     view["campaign_spec"]["reset_sources"]["runtime"] = reference["campaign_spec"]["reset_sources"]["runtime"]
-    view["source_facts"] = [f for f in view["source_facts"] if f["fact_id"] != "collision-mask-bank"]
+    removed_facts = {"collision-mask-bank", "building-parameters"} if is_closed else {"collision-mask-bank"}
+    view["source_facts"] = [f for f in view["source_facts"] if f["fact_id"] not in removed_facts]
     for field, old in zip(view["campaign_spec"]["reset_sources"]["feature_boundary"],
                           reference["campaign_spec"]["reset_sources"]["feature_boundary"], strict=True):
         if field["member"] == "feature-construction-inputs.bin":
-            if field["schema"] != "mc2-feature-construction-inputs/v2":
+            expected_schema = "mc2-feature-construction-inputs/v4" if is_closed else "mc2-feature-construction-inputs/v2"
+            if field["schema"] != expected_schema:
                 raise ValueError("Night feature-construction carrier version differs")
             field.update(old)
     for fact in view["source_facts"]:
         if fact["fact_id"] == "feature-construction-inputs":
-            fact["member_sha256"] = next(f["member_sha256"] for f in reference["source_facts"]
-                                         if f["fact_id"] == fact["fact_id"])
+            old = next(f for f in reference["source_facts"] if f["fact_id"] == fact["fact_id"])
+            fact["member_sha256"] = old["member_sha256"]
+            if is_closed:
+                # MCI4 adds only the source BLDGPRM dependency and its
+                # closure version; all remaining behavior fields still
+                # compare exactly against the retained qualification.
+                fact["source_artifacts"] = [artifact for artifact in fact["source_artifacts"]
+                    if artifact["logical_path"] != "CD_Files/DATA/BLDGPRM.DAT"]
+                fact["version"] = old["version"]
     if view != reference:
         raise ValueError("Night behavior/asset definition differs from its visual qualification")
     closure = load(closure_path)

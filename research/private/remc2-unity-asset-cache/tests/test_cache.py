@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import shutil
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +95,37 @@ class InstalledLanguageTests(unittest.TestCase):
 
 
 class EnvironmentMaterialTests(unittest.TestCase):
+    def test_first_map_v6_environment_binds_actual_building_owner_member(self):
+        spec = importlib.util.spec_from_file_location("first_map_environment_closure", cache.PROVEN_CLOSURE)
+        assert spec and spec.loader
+        closure = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(closure)
+        packages = Path(os.environ.get("MC_FIRST_LEVELS_FULL_COLLISION_PACKAGE_ROOT",
+            str(cache.GENERATED / "settlement-20261105-integration/owner-closed-v6")))
+        for level in (1, 3):
+            with self.subTest(level=level):
+                package = packages / f"level{level}"
+                manifest = json.loads((package / "manifest.json").read_bytes())
+                self.assertEqual(manifest["schema"], "mc2-owner-campaign-package/v6")
+                actual = closure.build_environment_closure(package, cache.DEFAULT_CATALOG, cache.DEFAULT_OWNER)
+                profile = actual["profile"]
+                owner_members = (json.loads((package / "owner-manifest.json").read_bytes())["files"]
+                    if level == 1 else {name: row for name, row in manifest["files"].items()
+                        if name != "campaign-definition.json"})
+                expected = hashlib.sha256("".join(f"{name}\0{row['sha256']}\0{row['bytes']}\n"
+                    for name, row in sorted(owner_members.items())).encode("ascii")).hexdigest()
+                if level == 1:
+                    self.assertEqual(expected, manifest["owner_export_package_sha256"])
+                self.assertEqual(profile["owner_export_package_sha256"], expected)
+                self.assertEqual(profile["campaign_package_sha256"], manifest["package_sha256"])
+                # Independent negative: omitting BLDG is the old identity, even
+                # though all of the visible art is unchanged.
+                members = {name: row for name, row in owner_members.items()
+                    if name != "building-parameters.bin"}
+                without_building = "".join(f"{name}\0{row['sha256']}\0{row['bytes']}\n"
+                    for name, row in sorted(members.items()))
+                self.assertNotEqual(hashlib.sha256(without_building.encode("ascii")).hexdigest(), expected)
+
     def test_real_night_pointer_binding_rejects_wrong_source_selector(self):
         environment = cache.environment_importer()
         source = cache.GENERATED / "mc-b9s2-cursor-level1-20261029"
@@ -337,6 +369,207 @@ class NightProductionCacheTests(unittest.TestCase):
             (root / "collision-masks.bin").write_bytes(bank)
             with self.assertRaisesRegex(ValueError, "owner pixels"):
                 self.night._bank(root, owner, definition, cache.DEFAULT_OWNER)
+
+    def _closed_night_prepare(self, package: Path) -> dict:
+        spec = importlib.util.spec_from_file_location("night_v6_closure", cache.PROVEN_CLOSURE)
+        assert spec and spec.loader
+        closure = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(closure)
+        return self.night.prepare(
+            package, cache.DEFAULT_PACKAGE,
+            cache.GENERATED / "mc-cf15-level1-package-v3-current",
+            cache.GENERATED / "mc2-level1-night-qualification-closure.json",
+            cache.DEFAULT_CATALOG, cache.DEFAULT_OWNER,
+            expected_package=cache.EXPECTED_PACKAGE,
+            expected_runtime=cache.EXPECTED_RUNTIME_SHA256,
+            verify_export=cache.load_proven_export_verifier(),
+            verify_campaign=cache.load_proven_campaign_verifier(),
+            closure_builder=closure.build_closure, private=cache.PRIVATE,
+        )
+
+    @staticmethod
+    def _closed_night_package() -> Path:
+        return Path(os.environ.get("MC_LEVEL1_COLLISION_PACKAGE_V6",
+            str(cache.GENERATED / "settlement-20261105-integration/owner-closed-v6/level1")))
+
+    @staticmethod
+    def _rehash_closed_night(package: Path, changed: str, *, remove: bool = False,
+                             owner_update=None, definition_update=None) -> None:
+        """Rebuild both actual package identities after one local mutation."""
+        owner_path = package / "owner-manifest.json"
+        owner = json.loads(owner_path.read_bytes())
+        outer_path = package / "manifest.json"
+        outer = json.loads(outer_path.read_bytes())
+        if remove:
+            (package / changed).unlink()
+            del owner["files"][changed]
+            del outer["files"][changed]
+        else:
+            payload = (package / changed).read_bytes()
+            metadata = {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+            owner["files"][changed] = metadata
+            outer["files"][changed] = metadata
+        if owner_update is not None:
+            owner_update(owner)
+        if definition_update is not None:
+            path = package / "campaign-definition.json"
+            definition = json.loads(path.read_bytes())
+            definition_update(definition)
+            path.write_bytes(cache.canonical_identity_json(definition))
+            payload = path.read_bytes()
+            outer["files"]["campaign-definition.json"] = {
+                "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+        def identity(files):
+            rows = "".join(f"{name}\0{row['sha256']}\0{row['bytes']}\n"
+                           for name, row in sorted(files.items()))
+            return hashlib.sha256(rows.encode()).hexdigest()
+        owner["package_sha256"] = identity(owner["files"])
+        owner_path.write_text(json.dumps(owner, indent=2) + "\n")
+        outer["owner_export_package_sha256"] = owner["package_sha256"]
+        content = owner_path.read_bytes()
+        outer["files"]["owner-manifest.json"] = {
+            "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        outer["package_sha256"] = identity(outer["files"])
+        outer_path.write_text(json.dumps(outer, indent=2) + "\n")
+
+    def test_closed_night_v6_qualifies_actual_owner_and_visual_contract(self) -> None:
+        package = self._closed_night_package()
+        if not package.is_dir():
+            self.skipTest("private whole Level 1 v6 package unavailable")
+        result = self._closed_night_prepare(package)
+        manifest = json.loads((package / "manifest.json").read_bytes())
+        self.assertEqual(result["campaign_package_sha256"], manifest["package_sha256"])
+        self.assertEqual(result["runtime_visual_projection_sha256"], cache.EXPECTED_RUNTIME_SHA256)
+        self.assertEqual(len(result["owner_manifest"]["collision_masks"]["selectors"]), 22)
+
+    def test_closed_night_v6_rejects_rehashed_missing_building_and_visual_change(self) -> None:
+        package = self._closed_night_package()
+        if not package.is_dir():
+            self.skipTest("private whole Level 1 v6 package unavailable")
+        with tempfile.TemporaryDirectory(prefix="night-v6-invalid-") as temporary:
+            for mutation in ("missing_building", "changed_visual"):
+                with self.subTest(mutation=mutation):
+                    candidate = Path(temporary) / mutation
+                    shutil.copytree(package, candidate)
+                    if mutation == "missing_building":
+                        self._rehash_closed_night(candidate, "building-parameters.bin", remove=True)
+                        expected = "member set differs"
+                    else:
+                        path = candidate / "presentation.bin"
+                        payload = bytearray(path.read_bytes())
+                        payload[-1] ^= 1
+                        path.write_bytes(payload)
+                        self._rehash_closed_night(candidate, "presentation.bin")
+                        expected = "visual qualification differs"
+                    with self.assertRaisesRegex(ValueError, expected):
+                        self._closed_night_prepare(candidate)
+
+    def test_closed_night_v6_rejects_rehashed_owner_pixel_and_building_substitution(self) -> None:
+        package = self._closed_night_package()
+        if not package.is_dir():
+            self.skipTest("private whole Level 1 v6 package unavailable")
+        owner = json.loads((package / "owner-manifest.json").read_bytes())
+        definition = json.loads((package / "campaign-definition.json").read_bytes())
+        cache.load_proven_campaign_verifier()(package,
+            json.loads((package / "manifest.json").read_bytes()), expected_selection=(1, 0, 1))
+        selectors = [row["selector"] for row in owner["collision_masks"]["selectors"]]
+        self.night._building_parameters(package, definition, cache.DEFAULT_OWNER)
+        self.night._bank(package, owner, definition, cache.DEFAULT_OWNER, closed_selectors=selectors)
+        with tempfile.TemporaryDirectory(prefix="night-v6-owner-bytes-") as temporary:
+            root = Path(temporary)
+            bank = bytearray((package / "collision-masks.bin").read_bytes())
+            bank[-1] ^= 1
+            (root / "collision-masks.bin").write_bytes(bank)
+            altered = json.loads(json.dumps(definition))
+            fact = next(f for f in altered["source_facts"] if f["fact_id"] == "collision-mask-bank")
+            fact["member_sha256"] = hashlib.sha256(bank).hexdigest()
+            changed_owner = json.loads(json.dumps(owner))
+            cursor = 20
+            last_pixels = b""
+            for _ in selectors:
+                _, _, _, _, length = struct.unpack_from("<HHHHI", bank, cursor)
+                last_pixels = bank[cursor + 12:cursor + 12 + length]
+                cursor += 12 + length
+            changed_owner["collision_masks"]["selectors"][-1]["sha256"] = hashlib.sha256(last_pixels).hexdigest()
+            with self.assertRaisesRegex(ValueError, "owner pixels"):
+                self.night._bank(root, changed_owner, altered, cache.DEFAULT_OWNER, closed_selectors=selectors)
+            owner_copy = root / "owner"
+            (owner_copy / "DATA").mkdir(parents=True)
+            bldg = bytearray((cache.DEFAULT_OWNER / "DATA/BLDGPRM.DAT").read_bytes())
+            bldg[-1] ^= 1
+            (owner_copy / "DATA/BLDGPRM.DAT").write_bytes(bldg)
+            with self.assertRaisesRegex(ValueError, "actual owner bytes"):
+                self.night._building_parameters(package, definition, owner_copy)
+
+    def test_closed_night_v6_rejects_rehashed_package_pixel(self) -> None:
+        package = self._closed_night_package()
+        if not package.is_dir():
+            self.skipTest("private whole Level 1 v6 package unavailable")
+        with tempfile.TemporaryDirectory(prefix="night-v6-rehashed-pixel-") as temporary:
+            candidate = Path(temporary) / "package"
+            shutil.copytree(package, candidate)
+            path = candidate / "collision-masks.bin"
+            bank = bytearray(path.read_bytes())
+            bank[-1] ^= 1
+            path.write_bytes(bank)
+            count = struct.unpack_from("<I", bank, 12)[0]
+            cursor = 20
+            last_pixels = b""
+            for _ in range(count):
+                _, _, _, _, length = struct.unpack_from("<HHHHI", bank, cursor)
+                last_pixels = bank[cursor + 12:cursor + 12 + length]
+                cursor += 12 + length
+            pixel_hash = hashlib.sha256(last_pixels).hexdigest()
+            bank_hash = hashlib.sha256(bank).hexdigest()
+            def update_owner(owner):
+                owner["collision_masks"]["selectors"][-1]["sha256"] = pixel_hash
+            def update_definition(definition):
+                fact = next(row for row in definition["source_facts"]
+                            if row["fact_id"] == "collision-mask-bank")
+                fact["member_sha256"] = bank_hash
+            self._rehash_closed_night(candidate, "collision-masks.bin",
+                                      owner_update=update_owner,
+                                      definition_update=update_definition)
+            with self.assertRaisesRegex(ValueError, "owner pixels"):
+                self._closed_night_prepare(candidate)
+
+    def test_closed_night_v6_rejects_rehashed_missing_builder_selector(self) -> None:
+        package = self._closed_night_package()
+        if not package.is_dir():
+            self.skipTest("private whole Level 1 v6 package unavailable")
+        with tempfile.TemporaryDirectory(prefix="night-v6-missing-selector-") as temporary:
+            candidate = Path(temporary) / "package"
+            shutil.copytree(package, candidate)
+            path = candidate / "collision-masks.bin"
+            source = path.read_bytes()
+            count = struct.unpack_from("<I", source, 12)[0]
+            output = bytearray(source[:20])
+            struct.pack_into("<I", output, 12, count - 1)
+            cursor = 20
+            found = False
+            for _ in range(count):
+                selector, _, _, _, length = struct.unpack_from("<HHHHI", source, cursor)
+                end = cursor + 12 + length
+                if selector == 19:
+                    found = True
+                else:
+                    output.extend(source[cursor:end])
+                cursor = end
+            self.assertTrue(found)
+            path.write_bytes(output)
+            bank_hash = hashlib.sha256(output).hexdigest()
+            def update_owner(owner):
+                owner["collision_masks"]["selectors"] = [
+                    row for row in owner["collision_masks"]["selectors"] if row["selector"] != 19]
+            def update_definition(definition):
+                fact = next(row for row in definition["source_facts"]
+                            if row["fact_id"] == "collision-mask-bank")
+                fact["member_sha256"] = bank_hash
+            self._rehash_closed_night(candidate, "collision-masks.bin",
+                                      owner_update=update_owner,
+                                      definition_update=update_definition)
+            with self.assertRaisesRegex(AssertionError, "selectors differ"):
+                self._closed_night_prepare(candidate)
 
 
 class OwnerCacheTests(unittest.TestCase):

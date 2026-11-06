@@ -34,6 +34,8 @@ pub const LEVEL1_ASSET_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definiti
 pub const LEVEL1_COLLISION_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v5";
 pub const ORDINARY_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v4";
 pub const ORDINARY_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v4";
+pub const FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA: &str = "mc2-owner-campaign-package/v6";
+pub const FIRST_MAP_CLOSED_CAMPAIGN_DEFINITION_SCHEMA: &str = "mc2-campaign-definition/v6";
 pub const LEVEL2_REMC2_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 const FIREBALL_PROJECTILE_BASE_ASSET_SHA256: &str =
     "331df08c5fa8483d5dd75dc10abd9dd76cc26918d6447403b3f3199bc31f521d";
@@ -99,6 +101,28 @@ const LEVEL1_CAMPAIGN_MEMBERS: [&str; 17] = [
 
 const LEVEL1_COLLISION_CAMPAIGN_MEMBERS: [&str; 18] = [
     "authored-level.bin",
+    "campaign-definition.json",
+    "collision-masks.bin",
+    "entities-post-features.bin",
+    "entities.bin",
+    "feature-allocator.bin",
+    "feature-construction-inputs.bin",
+    "feature-end.bin",
+    "feature-start.bin",
+    "fireball-projectile-base.indexed-sprite.json",
+    "fireball-projectile-fade.indexed-sprite.json",
+    "owner-manifest.json",
+    "players.bin",
+    "presentation.bin",
+    "runtime.bin",
+    "terrain-post-features.bin",
+    "terrain-pre-features.bin",
+    "terrain.bin",
+];
+
+const LEVEL1_CLOSED_CAMPAIGN_MEMBERS: [&str; 19] = [
+    "authored-level.bin",
+    "building-parameters.bin",
     "campaign-definition.json",
     "collision-masks.bin",
     "entities-post-features.bin",
@@ -345,10 +369,23 @@ fn validate_collision_profile(
             "closed house collision profile is only qualified for Level 2",
         );
     }
-    if selection.external_level <= 3 && version == Some(4) {
+    let first_map_closed = package_schema == FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA;
+    if selection.external_level <= 3 && version == Some(4) && !first_map_closed {
         return fail(
             ValidationStage::SourceFacts,
-            "generic model45 collision profile requires an ordinary or secret package beyond Level 3",
+            "generic model45 collision profile requires an ordinary source package or the first-map v6 profile",
+        );
+    }
+    if first_map_closed
+        && (version != Some(4)
+            || !source_facts.iter().any(|fact| {
+                fact.kind == super::source_facts::SourceFactKind::FeatureConstructionInputs
+                    && fact.version == 4
+            }))
+    {
+        return fail(
+            ValidationStage::SourceFacts,
+            "first-map v6 profile requires construction and collision SourceFacts v4",
         );
     }
     if package_schema == LEVEL1_COLLISION_CAMPAIGN_PACKAGE_SCHEMA && version != Some(2) {
@@ -740,6 +777,7 @@ pub struct ResetStatePreflightReceipt {
 pub struct CampaignDefinition {
     pub package_root: PathBuf,
     pub package_sha256: String,
+    package_schema: &'static str,
     pub identity: CampaignSelection,
     pub campaign_spec: CampaignSpec,
     pub wizard_settings: [SourceWizardSettings; 8],
@@ -781,6 +819,7 @@ pub struct CampaignDefinition {
 /// remains in the complete source payload and is never an executable definition.
 #[derive(Debug, Clone)]
 pub struct DecodedCampaignPackage {
+    profile: CampaignPackageProfile,
     pub identity: CampaignSelection,
     pub package_sha256: String,
     pub campaign_spec: CampaignSpec,
@@ -1111,6 +1150,24 @@ impl CampaignDefinition {
             profile.definition_schema = LEVEL1_COLLISION_CAMPAIGN_DEFINITION_SCHEMA;
             profile.has_collision_bank = true;
         }
+        // Version 6 supplies the same closed model45 inputs on the first
+        // maps without changing their player, allocator or mission dialect.
+        // The historical profiles above retain their exact member sets.
+        if matches!(caller, CampaignSelection::LEVEL1 | CampaignSelection::LEVEL3)
+            && manifest["schema"].as_str() == Some(FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA)
+        {
+            profile.members = if caller == CampaignSelection::LEVEL1 {
+                &LEVEL1_CLOSED_CAMPAIGN_MEMBERS
+            } else {
+                // Level 3 gains BLDGPRM; its resulting member set is the
+                // same existing sixteen-carrier set used by Level 2.
+                &LEVEL2_CAMPAIGN_MEMBERS
+            };
+            profile.package_schema = FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA;
+            profile.definition_schema = FIRST_MAP_CLOSED_CAMPAIGN_DEFINITION_SCHEMA;
+            profile.has_collision_bank = true;
+            profile.has_building_parameters = true;
+        }
         require_string_eq(
             &manifest["schema"],
             profile.package_schema,
@@ -1293,6 +1350,11 @@ impl CampaignDefinition {
                 outer,
                 &files,
                 &owner_export_package_sha256,
+                if profile.package_schema == FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA {
+                    "mc2-owner-level-export/v6"
+                } else {
+                    "mc2-owner-level-export/v3"
+                },
             )?;
         }
 
@@ -1541,7 +1603,9 @@ impl CampaignDefinition {
                 selector_value: u32::from(row.model),
             })
             .collect::<Vec<_>>();
-        let provenance_decoder = if caller.external_level > 3 {
+        let provenance_decoder = if caller.external_level > 3
+            || profile.package_schema == FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA
+        {
             decode_building_objective_provenance
         } else {
             building_objective_provenance
@@ -1650,6 +1714,7 @@ impl CampaignDefinition {
             );
         }
         Ok(DecodedCampaignPackage {
+            profile,
             identity: descriptor_selection,
             package_sha256,
             campaign_spec: CampaignSpec {
@@ -1703,6 +1768,7 @@ impl CampaignDefinition {
             );
         }
         let DecodedCampaignPackage {
+            profile,
             identity: descriptor_selection,
             package_sha256,
             campaign_spec,
@@ -1714,7 +1780,6 @@ impl CampaignDefinition {
             wizard_settings,
             ..
         } = decoded;
-        let profile = campaign_package_profile(caller).expect("decoded package has a profile");
         let CampaignSpec {
             authored_records,
             authored_behavior_rows: declared_rows,
@@ -2214,6 +2279,7 @@ impl CampaignDefinition {
         Ok(Self {
             package_root: package_root.to_path_buf(),
             package_sha256,
+            package_schema: profile.package_schema,
             identity: descriptor_selection,
             wizard_settings,
             campaign_spec: CampaignSpec {
@@ -2441,7 +2507,8 @@ impl CampaignDefinition {
         // The validated v2 Day recipe is emitted with the corrected owner
         // export. Its building-parameter member belongs to that export's hash.
         // Historical recipes injected this member only into the campaign and
-        // must retain their original owner identity.
+        // must retain their original owner identity. The explicit first-map
+        // v6 profile retains BLDGPRM in the real owner export on both maps.
         let corrected_day_export = self.campaign_spec.presentation_recipe.block_bank == "BLOCK32";
         for (name, expected_sha256) in &self.member_hashes {
             if matches!(
@@ -2459,6 +2526,7 @@ impl CampaignDefinition {
             if name == "building-parameters.bin"
                 && !corrected_day_export
                 && self.identity.external_level <= 3
+                && self.package_schema != FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA
             {
                 continue;
             }
@@ -2520,6 +2588,7 @@ fn validate_owner_manifest(
     selection: CampaignSelection,
     campaign_files: &BTreeMap<String, (u64, String)>,
     expected_owner_package_sha256: &str,
+    expected_schema: &str,
 ) -> Result<()> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| CampaignPackageError {
         stage: ValidationStage::Definition,
@@ -2531,7 +2600,7 @@ fn validate_owner_manifest(
     })?;
     require_string_eq(
         manifest.get("schema").unwrap_or(&Value::Null),
-        "mc2-owner-level-export/v3",
+        expected_schema,
         "owner manifest.schema",
         ValidationStage::Definition,
     )?;
@@ -5506,6 +5575,205 @@ mod tests {
     }
 
     #[test]
+    fn first_map_v6_retains_closed_model45_inputs_and_rejects_legacy_substitution() {
+        use super::super::source_facts::SourceFactKind;
+        use crate::campaign::CampaignSession;
+        use serde_json::json;
+        use std::collections::BTreeMap;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let cache_root = std::env::var_os("MC_FIRST_LEVELS_FULL_COLLISION_CACHE_ROOT").map_or_else(
+            || generated.join("settlement-20261105-integration/owner-closed-v6"),
+            PathBuf::from,
+        );
+        for selection in [CampaignSelection::LEVEL1, CampaignSelection::LEVEL3] {
+            let package = std::env::var_os(format!(
+                "MC_LEVEL{}_COLLISION_PACKAGE_V6",
+                selection.external_level,
+            ))
+            .map_or_else(
+                || cache_root.join(format!("level{}", selection.external_level)),
+                PathBuf::from,
+            );
+            let decoded = super::DecodedCampaignPackage::decode(&package, selection)
+                .expect("fresh genuine first-map closed model45 package");
+            let definition: serde_json::Value =
+                serde_json::from_slice(decoded.member("campaign-definition.json").unwrap())
+                    .unwrap();
+            assert_eq!(
+                definition["schema"],
+                super::FIRST_MAP_CLOSED_CAMPAIGN_DEFINITION_SCHEMA
+            );
+            let facts = &definition["source_facts"];
+            let collision = decoded
+                .source_facts
+                .iter()
+                .find(|fact| fact.kind == SourceFactKind::CollisionMask)
+                .unwrap();
+            let building = decoded
+                .source_facts
+                .iter()
+                .find(|fact| fact.kind == SourceFactKind::BuildingParameters)
+                .unwrap();
+            assert_eq!(collision.version, 4);
+            assert_eq!(
+                decoded
+                    .source_facts
+                    .iter()
+                    .find(|fact| fact.kind == SourceFactKind::FeatureConstructionInputs)
+                    .unwrap()
+                    .version,
+                4
+            );
+            assert_eq!(
+                u16::from_le_bytes(
+                    decoded.member("feature-construction-inputs.bin").unwrap()[4..6]
+                        .try_into()
+                        .unwrap()
+                ),
+                4
+            );
+            let session = CampaignSession::open_with_owner_cache(
+                &package,
+                cache_root.join(format!("cache-level{}", selection.external_level)),
+                selection,
+            )
+            .expect(
+                "full closed bank and matching real ENV cache reach the ordinary first-map session",
+            );
+            let owner_hash = session.definition().owner_export_package_sha256().unwrap();
+            assert_eq!(owner_hash, session.inspection().package_sha256());
+            if selection == CampaignSelection::LEVEL1 {
+                let owner: serde_json::Value =
+                    serde_json::from_slice(decoded.member("owner-manifest.json").unwrap()).unwrap();
+                assert_eq!(owner_hash, owner["package_sha256"].as_str().unwrap());
+            }
+            let bank = session.simulation().collision_mask_bank().unwrap();
+            let construction = crate::house::decode_house_construction_inputs(
+                &session
+                    .definition()
+                    .read_member("feature-construction-inputs.bin")
+                    .unwrap(),
+            )
+            .unwrap();
+            for selector in [
+                17, 19, 22, 26, 29, 30, 31, 32, 33, 34, 35, 39, 40, 42, 47, 50, 62, 74,
+            ] {
+                assert!(
+                    bank.mask(selector).is_some(),
+                    "eligible Builder selector {selector}"
+                );
+                assert!(construction.contains_key(&(selector as u8)));
+            }
+            let expected_bank = crate::collision_mask::CollisionMaskBank::parse(
+                decoded.member("collision-masks.bin").unwrap(),
+            )
+            .unwrap();
+            assert_eq!(bank, &expected_bank);
+
+            // Counterfactual inputs rehash the fact and member census. The
+            // independent closure must still reject a missing Builder row.
+            let bytes = decoded.member("collision-masks.bin").unwrap();
+            let count = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+            let mut cursor = 20;
+            let mut omitted = bytes.to_vec();
+            while cursor < bytes.len() {
+                let selector = u16::from_le_bytes(bytes[cursor..cursor + 2].try_into().unwrap());
+                let extent =
+                    u32::from_le_bytes(bytes[cursor + 8..cursor + 12].try_into().unwrap()) as usize;
+                if selector == 19 {
+                    omitted.drain(cursor..cursor + 12 + extent);
+                    break;
+                }
+                cursor += 12 + extent;
+            }
+            assert!(cursor < bytes.len());
+            omitted[12..16].copy_from_slice(&(count - 1).to_le_bytes());
+            let mut changed = facts.clone();
+            let mut files = decoded.files.clone();
+            let mut members = decoded.members.clone();
+            let hash = super::sha256_hex(&omitted);
+            changed
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|fact| fact["kind"] == 3)
+                .unwrap()["member_sha256"] = json!(hash);
+            files.insert(
+                "collision-masks.bin".to_owned(),
+                (omitted.len() as u64, hash),
+            );
+            members.insert("collision-masks.bin".to_owned(), omitted);
+            let qualify = |facts: &serde_json::Value,
+                           files: &BTreeMap<String, (u64, String)>,
+                           members: &BTreeMap<String, Vec<u8>>| {
+                let identity = &files["collision-masks.bin"];
+                super::validate_source_facts(
+                    facts,
+                    &super::SourceFactContext {
+                        files,
+                        members,
+                        map_type_id: selection.map_type_id,
+                        authored_collision_provenance: &collision.selector_provenance,
+                        building_objective_provenance: &building.selector_provenance,
+                        collision_bank: Some((identity.0 as usize, identity.1.as_str())),
+                        has_building_parameters: true,
+                    },
+                )
+            };
+            assert!(
+                qualify(&changed, &files, &members)
+                    .unwrap_err()
+                    .contains("differs from authored selectors")
+            );
+            let old_profile = super::campaign_package_profile(selection).unwrap();
+            assert!(
+                super::validate_collision_profile(
+                    selection,
+                    old_profile.package_schema,
+                    &decoded.source_facts
+                )
+                .is_err()
+            );
+            assert!(
+                super::exact_object(
+                    &json!(decoded.files),
+                    old_profile.members,
+                    "legacy first-map member set",
+                    super::ValidationStage::OuterManifest
+                )
+                .is_err()
+            );
+            let mut downgraded = decoded.source_facts.clone();
+            downgraded
+                .iter_mut()
+                .find(|fact| fact.kind == SourceFactKind::CollisionMask)
+                .unwrap()
+                .version = 2;
+            assert!(
+                super::validate_collision_profile(
+                    selection,
+                    super::FIRST_MAP_CLOSED_CAMPAIGN_PACKAGE_SCHEMA,
+                    &downgraded
+                )
+                .is_err()
+            );
+        }
+        for (path, selection) in [
+            (level1_fixture(), CampaignSelection::LEVEL1),
+            (level1_runtime_fixture(), CampaignSelection::LEVEL1),
+            (level3_fixture(), CampaignSelection::LEVEL3),
+            (
+                generated.join("settlement-20261105-integration/owner-current/level2"),
+                CampaignSelection::LEVEL2,
+            ),
+        ] {
+            super::DecodedCampaignPackage::decode(path, selection)
+                .expect("existing independently qualified profile remains accepted");
+        }
+    }
+
+    #[test]
     #[ignore = "requires the real owner-data Level 1 collision-bank export"]
     fn level_one_collision_profile_loads_real_bank_and_keeps_legacy_contract() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5659,6 +5927,7 @@ mod tests {
             outer["owner_export_package_sha256"]
                 .as_str()
                 .expect("owner export identity is a string"),
+            "mc2-owner-level-export/v3",
         )
         .expect_err("tampered owner manifest/package binding rejects");
         assert_eq!(error.stage, ValidationStage::Definition);

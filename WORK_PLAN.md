@@ -305,6 +305,42 @@ and latest positive test pins remain local. Measured native returns reached
 about988MB, so native preflight now requires6.2GB free, retaining the5GB floor
 and a concurrent-write margin; no threshold was lowered.
 
+The first-map settlement input join is implemented and verified in candidate26,
+not yet installed. Fresh whole Level1/3 campaign v6 retains each map's real
+player/reset/allocator dialect and carries MCI4, BLDG and all22 source-closed
+model45 masks. Legacy profiles remain independent; a bounded review caught and
+root repaired standalone Level3 emission so its owner-v5 contract remains.
+The current exporter has160 checked compiled inputs/provenance marker; actual
+standalone3 verification passes5.838s and both changed first-map twin-export
+gates pass33.16s. The earlier campaign export binary's sole source delta is
+the standalone-only condition; its campaign branch is unchanged.
+Real first-map packages plus newly built ENV owner caches open through the
+ordinary Rust consumer, retain masks/footprints and reject rehashed missing
+selectors/old profiles: PASS8.754s. Real configured Builder-row19 House
+construction, model45 mailbox writing and scheduled damage consumption pass
+2.615s on both maps. This is a configured constructor control; ordinary births
+and full lifecycles retain the earlier actual Level2/7 evidence. Strict rig
+core67.434s/444stable and workspace/all-target16.181s/444Rust+37extra pass;
+returned executable hash/extent independently match rig. No scheduler change.
+The profile now survives decode/preflight and binds BLDG into actual semantic
+constructors and owner-cache identity. Both common ENV caches validate with
+the current package and full64-slot original sound banks. L1 still requires
+its actual Night-v2 language/font consumer: new Night presentation build
+passes25.494s, checks real BLDG/MSPRN bytes and retains exact original visual
+qualification. Nine focused old/new Night/rehash gates pass; Python v6/v4/
+legacy gates pass, as do17launcher tests. Default launcher bindings now select
+these actual packages/caches; no Unity/C# or art change. A fresh bounded review
+finds no additional concrete enabled default settlement-family gap, conditional
+on the remaining native installation and normal launcher proof. Full `.16`
+stays open until that delivery; `.22` keeps its original dependency. Human
+combat/FPS/hardware audio, full missions, old saves, native settlement encounter
+visuals and every eligible row's individual contact remain unproved.
+Touched-file formatting still reports legacy/line-wrap debt; source/gate review
+and changed-hunk scanner triage found no added critical defect. C++ UBS remains
+partial, not a clean-scan claim. Current/previous native and player stay local;
+older completed proofs were byte-preserved on rig's ext4 before removing local
+copies, with before/after hashes. No owner data/Modern work was cleaned.
+
 The following
 records the Archer integration and its preserved negative results.
 
