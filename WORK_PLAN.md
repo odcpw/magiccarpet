@@ -77,8 +77,9 @@ acceptance open; a working control panel alone does not finish the environment.
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
 tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
-Firefly `.23`, Manticore17 `.6` and Sentinel18 `.7` are delivered; model21
-`mc-1pb.8` is next. Name each active creature alongside its source model in
+Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7` and leaping creature21 `.8`
+are delivered. Creature22 `mc-1pb.9` is next. The proper original names of models
+21 and 22 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
 Complete one creature through verification and installation before starting the
@@ -92,13 +93,15 @@ in their canonical owner when a real connected failure exposes them.
 
 - [x] Wyvern16 — `mc-1pb.5`.
 - [x] Castle defenders15 — `mc-1pb.4`.
-- [x] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
+- [x] Dragon0 — `mc-1pb.19`, including the current-parent/predecessor corrections below.
+- [x] Bee2 — `mc-1pb.20`.
 - [x] Archer4 — `mc-1pb.21`.
 - [x] Skeleton9 — `mc-1pb.22`.
 - [x] Firefly19 — `mc-1pb.23`.
 - [x] Manticore17 — `mc-1pb.6`.
 - [x] Sentinel18 — `mc-1pb.7`.
-- [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
+- [x] Leaping creature21 — `mc-1pb.8`.
+- [ ] Creatures22/23/24 — `mc-1pb.9`/`.10`/`.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
@@ -115,7 +118,62 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: Sentinel and death-map correction (2026-11-06)
+### Current delivery: leaping creature21 and Dragon correction (2026-11-06)
+
+Leaping21 `.8` and the reopened Dragon0 `.19` corrections are implemented,
+verified, committed/pushed at runtime `35b73120c8aeb2b1724bfdd2d7d86be8d93bb106`
+and installed in the qualified Original player `build-avvn2_bj`. Its native is
+`ba5918a4d17f1e1d48281d8100b14d138de17753b172728ea8f32137a876247b`
+(138,317,464 bytes). Full boss `.3`, the creature parent and full engine stay open.
+
+Actual unfiltered Level 8 authored production reaches jumping,9/0 payload 500,
+same-generation impact, consumed player damage, prepared42 audio and original
+DTO (10.241s). Public carried Meteor reaches original fatal attribution,
+mana/death/hide/reclaim, with no-cast control (5.344s). Configured contacts on
+the real group prove task5's frozen-list absence boundary (2.919s). Water/Cave,
+allocation exhaustion/reuse and parent-loss exceptions remain declared controls.
+
+The actual Level 25 boss117/gen1 naturally produces21 child386/gen12. It reaches
+17->16, jumping/landing, a real payload500 shot, movement and DTO at turn1598;
+the connected check passes in144.322s. Group29 progression and player position/entry resources
+are declared controls, not earned mission proof. The isolated dead-parent branch
+retreats only the player: action170 phases65..96 retain the child, range cadence
+returns169, the next175/1E580 at phase97 hides it, creates10/0 and removes its DTO,
+then the following pass reclaims it. No boss/child RNG/action/timer is forced.
+The prior immediate-hide assertion was wrong for a child still attacking.
+
+Source21850's secondary RNG draw, per-session shared movement proposal, current
+parent/target and splash-carrier joins are corrected. Dragon reads the current
+fixed parent/predecessor while creator provenance remains generation-bound.
+Four-family live-address reuse/dead-current cleanup and the affected real Dragon
+parts control pass. Earlier ordinary Dragon acceptance remains qualified.
+
+The boss timer now consumes actual source animation preload, ordered qualified
+render demand and residency, carried through reset/hash/cold replay. Literal221F0
+adds16 **animation records** and reads the low16 active bits; it is not frame count.
+Checked Rust preserves defined reads and explicitly rejects undefined bounds.
+The qualified 504-entry bank fits source cache budgets; pressure eviction and
+animated pixels are not newly claimed. Replay-save/v7 rejects older gameplay
+histories lacking ordered demand; campaign-map saves are unchanged.
+
+Workspace/all-targets passes in46.072s; strict rig native build in69.441s. All445 Rust,
+162 upstream and37 extra/637 unique inputs and exact artifact bytes match.
+Original was rebuilt for the v7 contract: all196 Unity inputs are qualified,
+with only the transport version literal changed. No art or Modern inputs changed.
+Root viewed canonical map/loading/NightSpire terrain/HUD with the matching mapped
+native, one click/no retry, and stopped owned smoke. Two early blank startup
+captures remain labelled as such. Native21 combat, human play/FPS,
+hardware audio, full missions and old saves remain unverified. Independent bounded source and
+separate gate review found no further concrete family defect. Whole-file format
+debt and C# scanner semantic limits remain; no critical added-line finding.
+
+Evidence: `generated/leaping-creature-20261106-integration/candidate-11`, prior
+candidate2..10 negatives/positives, and `Builds/delivery-leaping-creature-20261106-batch1`.
+Completed build outputs are byte-preserved on rig ext4; current/previous native
+pins, previous player `Linux-before-build-avvn2_bj`, source/data and warm caches
+remain preserved. Next is the original complete creature22 `.9` acceptance.
+
+### Previous delivery: Sentinel and death-map correction (2026-11-06)
 
 Sentinel18 `.7` is implemented, verified, committed/pushed at runtime
 `41b828f438ad3f8ed4f10b0e738b2ccc6924021c` and installed as Original native
@@ -290,7 +348,7 @@ were stopped. No Unity/art rebuild. Evidence:
 and `Builds/delivery-firefly-20261106-batch1/`. Native Firefly encounters, human
 combat/FPS/hardware audio/full missions/old saves remain unverified.
 
-Next is model21 `.8`; Sentinel18 `.7` is qualified above. Retain all delivered
+Next is creature22 `.9`; leaping21 `.8` and Sentinel18 `.7` are qualified above. Retain all delivered
 source evidence and finish each original finite acceptance before moving on.
 Do not replay unchanged long checks. Parent/shared-engine and other families
 stay open. Root CopperMountain owns serialized integration/delivery; the small
