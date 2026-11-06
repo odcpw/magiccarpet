@@ -77,9 +77,10 @@ acceptance open; a working control panel alone does not finish the environment.
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
 tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
-Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7` and leaping creature21 `.8`
-are delivered. Creature22 `mc-1pb.9` is next. The proper original names of models
-21 and 22 remain unverified. Name each active creature alongside its source model in
+Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7`, leaping creature21 `.8`
+and paired-body creature22 `.9` are delivered. Next is mana-hunting creature23
+`mc-1pb.10`; its full shared-system dependencies remain open. The proper original
+names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
 Complete one creature through verification and installation before starting the
@@ -91,6 +92,13 @@ objective consumers and original presentation/assets. Preserve the delivered
 spell checkpoints and already qualified creature paths; repair shared defects
 in their canonical owner when a real connected failure exposes them.
 
+AmberDune owns the next creature23 capability through real authored production,
+sphere claim/lift/consumption, separate Lightning damage and cleanup/consumers.
+CalmLynx implements required shared joins; CopperMountain serializes builds and
+delivery. `mc-1pb.10` is assigned but remains open while its original
+`mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
+without bypassing or rewriting those dependencies.
+
 - [x] Wyvern16 — `mc-1pb.5`.
 - [x] Castle defenders15 — `mc-1pb.4`.
 - [x] Dragon0 — `mc-1pb.19`, including the current-parent/predecessor corrections below.
@@ -101,7 +109,8 @@ in their canonical owner when a real connected failure exposes them.
 - [x] Manticore17 — `mc-1pb.6`.
 - [x] Sentinel18 — `mc-1pb.7`.
 - [x] Leaping creature21 — `mc-1pb.8`.
-- [ ] Creatures22/23/24 — `mc-1pb.9`/`.10`/`.11`.
+- [x] Paired-body creature22 — `mc-1pb.9`.
+- [ ] Creatures23/24 — `mc-1pb.10`/`.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
@@ -118,7 +127,57 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: leaping creature21 and Dragon correction (2026-11-06)
+### Current delivery: paired-body creature22 (2026-11-06)
+
+Finite original `.9` acceptance is implemented, verified, committed/pushed at
+runtime `9cedba178dd4ad80999359be6f6738751f7c3bfc` and installed as Original native
+`79f03d8862b4cbcaf98680e1841e0eb7951ef71267a73b9f916a5856ec85ee0a`
+(138,342,288 bytes). The bead is closed; the creature parent and full engine stay open.
+
+The actual unfiltered Level7 switch194/group5/row218 creates the complete
+length15 body. Public prior-carried Possession reaches actual projectile/impact,
+ownership, colour, motion, prepared audio4/48 and original DTO consumers.
+All14 shipped authored22 records already use length15. A separately declared
+additional length3 constructor in the whole Level7 runtime proves natural
+1024-countdown growth to5, real public Possession, Castle approach and128-visit
+shrink delay, pairwise shrink, deposit, hide and following reclaim. No actor
+pose/action/life/RNG/timer is forced. Original376/gen1 deposits to Castle372/gen1;
+another actual22 writer380/gen1 remains separately visible in the exact receipt.
+The prior spell carry and Castle/player entry resources are declared controls.
+
+Fixed owner A4/nonlocal typed-Castle mana access and source signed saturation,
+current movement-proposal writes, and the missing prepared-audio journal join.
+The longer run exposed Firefly211 selecting Castle372 with no current yaw.
+Castle pose now has its own constructor/reset fields and hash, distinct from
+BUILD collision axes. Constructed/poisoned-shadow/hash checks pass; imported
+pose copying is source-reviewed. An optional old Level23 whole-package check
+still stops before adoption at missing initial BUILD1; full terrain `.8` remains open.
+
+Configured canonical1B5F0 cleanup proves all15 original parts' mana/hide/DTO
+loss/reclaim and actual frozen NoLiving22 timing. This is not terrain57390 burial,
+ordinary damage lethality or an earned boss victory. Source182 remains unsupported;
+unshipped183 fatal-tail behaviour has no invented positive route.
+
+Final family14 checks PASS179.640s, current fields6 PASS6.054s and connected
+cleanup/absence PASS2.706s. Source-order and strict audio census pass on candidate3;
+the census's omitted Dragon/Meteor owner inputs were repaired without changing
+its scanner, strict assertions or negative controls. Workspace/all-targets
+PASS44.150s; strict rig native build PASS92.133s. All445 Rust,162 upstream and37extra
+inputs (637 unique), worker/returned artifact bytes and196 Original Unity inputs
+match. Bounded independent source/gate/acceptance review found no remaining
+concrete finite-family defect. Whole-file formatting/scanner debt remains;
+no added critical finding was identified.
+
+Root viewed canonical Original map/loading/NightSpire scene/HUD with the matching
+mapped native, one click/zero retries, then stopped owned smoke. The early blank
+startup capture is retained with its proper label. No Unity/art change. Native22
+encounters, human combat/FPS, hardware audio, full missions and old saves remain
+unverified. Evidence: `generated/paired-creature-20261106-integration/candidate-4`
+and `Builds/delivery-paired-creature-20261106-batch1`. Completed binaries and redundant
+scanner outputs are SHA-preserved on rig ext4; identical old player payloads were
+consolidated without changing bytes or paths. Current and previous native pins remain regular.
+
+### Previous delivery: leaping creature21 and Dragon correction (2026-11-06)
 
 Leaping21 `.8` and the reopened Dragon0 `.19` corrections are implemented,
 verified, committed/pushed at runtime `35b73120c8aeb2b1724bfdd2d7d86be8d93bb106`
@@ -171,7 +230,12 @@ Evidence: `generated/leaping-creature-20261106-integration/candidate-11`, prior
 candidate2..10 negatives/positives, and `Builds/delivery-leaping-creature-20261106-batch1`.
 Completed build outputs are byte-preserved on rig ext4; current/previous native
 pins, previous player `Linux-before-build-avvn2_bj`, source/data and warm caches
-remain preserved. Next is the original complete creature22 `.9` acceptance.
+remain preserved. The original complete creature22 `.9` acceptance became active at that checkpoint and is qualified above:
+ordinary authored paired-body production, real Possession growth/shrink/motion,
+combat/death, exact partial-pair failure and whole-chain mana/root-count cleanup.
+AmberDune owned that capability through integration; CalmLynx implemented shared
+joins. Root CopperMountain serialized Cargo, push and installation. Existing
+family code was present; its stale absent-code bead assessment was not authority.
 
 ### Previous delivery: Sentinel and death-map correction (2026-11-06)
 
@@ -348,7 +412,7 @@ were stopped. No Unity/art rebuild. Evidence:
 and `Builds/delivery-firefly-20261106-batch1/`. Native Firefly encounters, human
 combat/FPS/hardware audio/full missions/old saves remain unverified.
 
-Next is creature22 `.9`; leaping21 `.8` and Sentinel18 `.7` are qualified above. Retain all delivered
+Next is creature23 `.10`; paired-body22 `.9`, leaping21 `.8` and Sentinel18 `.7` are qualified above. Retain all delivered
 source evidence and finish each original finite acceptance before moving on.
 Do not replay unchanged long checks. Parent/shared-engine and other families
 stay open. Root CopperMountain owns serialized integration/delivery; the small
