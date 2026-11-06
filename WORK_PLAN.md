@@ -4,8 +4,8 @@
 
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
-tracks delivery, not missing-code counts. Continue the active settlement `.16`
-prerequisite, then Skeleton `.22`; retain the delivered families below. Root
+tracks delivery, not missing-code counts. Settlement `.16` is delivered;
+continue Skeleton `.22`, retaining the delivered families below. Root
 serializes shared joins, Cargo and installation with the small native team.
 Each family must connect ordinary production, source scheduling/arithmetic,
 behavior and spell interaction, consequences/rewards, natural cleanup,
@@ -23,7 +23,7 @@ in their canonical owner when a real connected failure exposes them.
 - [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
-- [ ] Builder/Villager/Trader — `mc-1pb.16`.
+- [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
 - [ ] Player death, banishment and revival — `mc-1pb.18`.
 - [ ] Final boss10 — `mc-1pb.3`.
@@ -36,6 +36,43 @@ inputs; the parent still requires their actual enabled-source coverage. Recent
 long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
+
+### Current delivery: settlement complete; Skeleton next
+
+Finite settlement `.16` is implemented, verified, committed and installed.
+Runtime/source `ae2e84d1` and client qualification `24df66cc` are pushed;
+native `9d9af55f3c61697c8892fd2b7c63970cc590ad1c675b265d076ce5b8e37facfc`
+matches both installed Original plugins. The matching Original Unity rebuild
+passes20.006s using that existing native; its444 Rust and196 player-input
+receipt binds the actual production scripts. The focused real preflight check
+passes133.016s and rejects fully rehashed opposite-profile cache pairs before
+level open. Candidate26 retains exact source/rig/native input verification.
+
+Root viewed the canonical Original map and NightSpire terrain/HUD/spawn flash
+with that exact mapped native on the first portal click: no retry, private-save
+load or gameplay input. Loading-bound/frame/open events pass and both owned
+player/display processes are stopped. Evidence:
+`generated/settlement-20261105-integration/candidate-26/` and
+`Builds/delivery-settlement-20261106-batch3/runtime-proof.json`.
+The earlier batch2 cache rejection and all diagnostic negatives remain saved.
+The fresh bounded default-family review plus the connected lifecycle evidence
+below supports original finite acceptance; no unsupported callback or invented
+direct Trader-to-Castle deposit is claimed. This is not native NPC encounter
+visuals, human combat/FPS, hardware audio, full missions or old-save proof.
+Parent/shared-engine and other creature acceptance remain open.
+
+Next is original Skeleton `.22`, with `.21` and `.16` prerequisites now delivered.
+MagentaPuma owns its real production-to-consumer capability; AzureGate implements
+required shared joins and root serializes Cargo/push/install. Reuse the existing
+actual Builder/Villager conversion and child-scheduling evidence. Trace current
+constructor/SetEvent144 arithmetic and typed properties, ordinary arrow203 to
+actual damage/ownership, cleanup and actual absence consumers before editing.
+Do not infer a missing enabled75/78 handler from the old bead's static assessment,
+force actors/groups or build a scripted full-group combat playthrough. Workers
+remain responsible through integration; original acceptance/dependencies stay.
+
+The following settlement/Archer notes are chronological evidence, including
+preserved intermediate failures and superseded pending-installation statements.
 
 The previous Dragon/Bee batch is implemented, verified, committed and installed.
 Runtime `aeba96fc687271fa2cb3b32182f245f4545f8cc4` is pushed; matching native
