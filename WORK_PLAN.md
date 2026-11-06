@@ -265,6 +265,23 @@ their final core compile covers those deltas. Source-order19 passes0.618s.
 All production since17 is unchanged; its real Builder conversion and14 death/
 mana/collection checks are reused. Fresh bounded source/gate reviews found no
 new concrete defect in those joins. Implemented/verified; commit/install follow.
+This batch is committed/pushed as `f27fb6b20515c2e1376bd71bb02bd8350ef26cf4`
+and installed with native
+`b24b6014a6955cb9dca4856d903b56ad7079f5a0a498f66fcdf1c16939425512`.
+Strict rig native build passes64.502s; exact worker/returned artifact hash and
+136940480-byte extent match. Canonical/isolated/rig inputs match444Rust,
+162upstream and37extra compile-input categories (636unique paths). Both
+Original plugins and its444-input installed receipt match; native-only install
+and installed qualification pass. Root viewed canonical Original map and
+NightSpire terrain/HUD with the exact mapped native: one portal click, no
+retry/private-save load; both owned smoke processes stopped. Loading-open
+events passed, but the loading-art screenshot was too early and shows the map,
+so no viewed-loading-art claim. No Unity/art change, native NPC encounter
+visual, human combat/FPS, hardware audio, whole mission or old-save proof.
+Evidence: candidate24 and `Builds/delivery-settlement-20261106-batch1/runtime-proof.json`.
+The previous bb1d native and player are preserved. Full `.16` remains open;
+next implement the complete first-map collision input contract noted above,
+then original Skeleton `.22` acceptance without bypassing its dependency.
 The C++ UBS module failed on
 unsupported control flow; it provides no clean-scan claim. Rust/Python UBS has
 zero critical added-line findings; whole-file format/heuristic debt
