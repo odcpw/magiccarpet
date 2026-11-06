@@ -6359,6 +6359,7 @@ impl Mc2Simulation {
             fireball_launch_sound_id: crate::level1_mission::FIREBALL_LAUNCH_SOUND,
             nyphur_dispatcher,
             player_visibility,
+            source_animations: crate::source_animation::SourceAnimationResidency::default(),
             source_frame_timing_index: 0,
             source_setting_30: crate::campaign::source_setting::SourceSetting30::new(),
             source_model45_building_selectors,
@@ -7107,6 +7108,58 @@ impl Mc2Simulation {
                 row.set_subspell_index(row.subspell_index | 0x40);
                 changed.push((handle.source_slot, handle.generation));
             }
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn bind_source_animation_catalog(
+        &mut self,
+        catalog: crate::source_animation::SourceTmapCatalog,
+    ) -> Result<()> {
+        let mut authored = self.session.state.live.mission.authored_features().iter()
+            .filter(|row| row.index > 0 && row.index < 1200).collect::<Vec<_>>();
+        authored.sort_unstable_by_key(|row| row.index);
+        let authored = authored.iter().map(|row| (row.kind, row.subtype)).collect::<Vec<_>>();
+        let animations = crate::source_animation::SourceAnimationResidency::initialize(
+            catalog, &self.session.definition.presentation, &authored,
+        ).map_err(NativeWorldError::new)?;
+        self.session.state.live.source_animations = animations;
+        self.session.rebase();
+        Ok(())
+    }
+
+    /// Both receipt consumers validate before either authoritative owner is
+    /// mutated. A failed demand or stale handle leaves the whole frame unapplied.
+    pub(crate) fn apply_source_render_feedback(
+        &mut self,
+        tick: u64,
+        handles: &[crate::campaign::source_arena::SourceEntityHandle],
+        demands: &[u16],
+    ) -> std::result::Result<Vec<(u16, u32)>, String> {
+        let mut animations = self.session.state.live.source_animations.clone();
+        for &selector in demands { animations.demand(selector)?; }
+        let changed = self.apply_primary_sprite_visibility(tick, handles)?;
+        self.session.state.live.source_animations = animations;
+        Ok(changed)
+    }
+
+    pub(crate) fn validate_source_animation_catalog(
+        &self,
+        catalog: Option<&crate::source_animation::SourceTmapCatalog>,
+    ) -> std::result::Result<(), String> {
+        let animations = &self.session.state.live.source_animations;
+        if match catalog { Some(catalog) => animations.matches_catalog(catalog), None => !animations.is_bound() } {
+            Ok(())
+        } else {
+            Err("render demand belongs to a different source TMAP catalog".into())
+        }
+    }
+
+    pub(crate) fn changing_source_animation_demands(&self, demands: &[u16]) -> std::result::Result<Vec<u16>, String> {
+        let mut animations = self.session.state.live.source_animations.clone();
+        let mut changed = Vec::new();
+        for &selector in demands {
+            if animations.demand(selector)? { changed.push(selector); }
         }
         Ok(changed)
     }
@@ -17223,6 +17276,7 @@ impl Mc2Simulation {
                         &mut live.terrain,
                         &mut live.shared_spells,
                         &self.session.definition.presentation.particles,
+                        &live.source_animations,
                         source_slot,
                         player_entity_index,
                         families,
@@ -17249,6 +17303,7 @@ impl Mc2Simulation {
                 if let Some(pressure) = outcome.player_pressure {
                     let live = &mut self.session.state.live;
                     let from = live.core.state.position;
+                    live.terrain.set_source_predicted_position(pressure.proposed_position);
                     let movement = crate::resolve_legacy_movement(
                         &mut live.core.state,
                         from,
@@ -17273,6 +17328,7 @@ impl Mc2Simulation {
                         position.z = position
                             .z
                             .max(live.terrain.ground_height(position).wrapping_add(clearance));
+                        live.terrain.set_source_predicted_position(position);
                         live.core.state.position = position;
                         live.shared_spells.player_entity.set_position(position);
                         live.economy.entities[usize::from(player_entity_index)]
@@ -17466,6 +17522,7 @@ impl Mc2Simulation {
                 } else {
                     (&empty_models, &[][..])
                 };
+                let mut model21_audio = None;
                 let (melee, kill_credit, feedback, sound, music_target) = {
                     let local_player_status =
                         Some((player_entity_index, self.state.immobilize_counter));
@@ -17501,6 +17558,21 @@ impl Mc2Simulation {
                         }
                         (None, outcome.kill_credit, outcome.feedback, None, None)
                     } else if visit.handler == ExistingHandler::Creature21 {
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
                         let outcome = creatures::creature_21::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
@@ -17509,7 +17581,9 @@ impl Mc2Simulation {
                             source_slot,
                             players,
                             models,
+                            targets,
                         )?;
+                        model21_audio = outcome.sound_position.zip(outcome.sound_identity);
                         if let Some((owner, family)) = outcome.earlier_feedback {
                             award_source_spell_experience(live, owner, family);
                         }
@@ -17869,7 +17943,29 @@ impl Mc2Simulation {
                         -1,
                         u16::from(sound),
                     );
-                    if visit.handler == ExistingHandler::Wyvern {
+                    if visit.handler == ExistingHandler::Creature21
+                        && let Some((position, (source_id, action, flags))) = model21_audio
+                    {
+                        // Source42 is prepared at jump state9, before the
+                        // vertical/water tail can change the source address.
+                        // The emitter's actual identity and silence flags
+                        // were captured at that same source sound boundary.
+                        let event = FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::Model21Jump,
+                            entity_index: source_slot,
+                            player_index: -1,
+                            sound_id: u16::from(sound),
+                        };
+                        self.flush_shared_effects();
+                        let audio = (flags & 0x80 == 0).then(|| crate::prepare_event_sound_command(
+                            self.state.position, self.state.yaw, position, u16::from(sound),
+                            self.session.state.live.economy.global_rng, source_id, action,
+                        )).flatten();
+                        let turn = self.session.state.live.core.runtime.global_turn;
+                        self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                        Vec::push(&mut self.session.state.live.shared_spells.events, event);
+                    } else if visit.handler == ExistingHandler::Wyvern {
                         // sub24510 prepares sound39 after movement and its
                         // projectile constructor, before the common phase tail.
                         // The economy receipt alone is a dispatch event; freeze
@@ -27417,7 +27513,10 @@ impl Mc2Simulation {
                 .state
                 .live
                 .economy
-                .step_authored_model5_water_splash_slot(source_slot),
+                .step_authored_model5_water_splash_slot(
+                    source_slot,
+                    &self.session.definition.presentation.particles,
+                ),
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .session
                 .state
@@ -27748,6 +27847,11 @@ impl Mc2Simulation {
         hasher.update(b"level2-campaign-state-v1");
         hasher.update(state_hash(&self.session.state.live.core.state).to_le_bytes());
         hasher.update(terrain_hash.to_le_bytes());
+        hasher.update(b"source-motion-v1");
+        let predicted = self.canonical_terrain().source_predicted_position();
+        hasher.update(predicted.x.to_le_bytes());
+        hasher.update(predicted.y.to_le_bytes());
+        hasher.update(predicted.z.to_le_bytes());
         for component in [
             self.session
                 .state
@@ -27874,6 +27978,7 @@ impl Mc2Simulation {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-objective-switch-state-v1");
+        self.session.state.live.source_animations.hash_into(&mut hasher);
         if self.session.state.live.source_setting_30.value() != 0 {
             hasher.update(b"source-setting-30-v1");
             hasher.update([self.session.state.live.source_setting_30.value()]);
@@ -31609,8 +31714,14 @@ mod tests {
                 .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
             std::path::PathBuf::from,
         );
-        let mut campaign = CampaignSession::open(
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/current-level25-environment"),
+            std::path::PathBuf::from,
+        );
+        let mut campaign = CampaignSession::open_with_owner_cache(
             package,
+            cache,
             CampaignSelection::ordinary(25).unwrap(),
         ).expect("actual source24 owner package opens");
 
@@ -31720,8 +31831,14 @@ mod tests {
             },
             std::path::PathBuf::from,
         );
-        let campaign = CampaignSession::open(
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/current-level25-environment"),
+            std::path::PathBuf::from,
+        );
+        let campaign = CampaignSession::open_with_owner_cache(
             package,
+            cache,
             CampaignSelection::ordinary(25).unwrap(),
         )
         .expect("actual source24 owner package opens");
@@ -31916,9 +32033,9 @@ mod tests {
                 }
             }
             assert!(reached_follow, "the produced model{model} must reach its scheduled StageVar16");
-            let mut lost = branch.clone();
+            let mut reused = branch.clone();
             {
-                let live = &mut lost.simulation_mut().session.state.live;
+                let live = &mut reused.simulation_mut().session.state.live;
                 live.economy.economy.release_slot(boss, None);
                 assert_eq!(live.economy.allocate_source_slot_with_terrain(&mut live.terrain), Some(boss));
                 let mut replacement = crate::native_world::cave_features::new_event(boss, 5, live.core.state.position);
@@ -31928,19 +32045,48 @@ mod tests {
                 replacement.set_life(1_000);
                 live.economy.entities[usize::from(boss)] = replacement;
                 assert_ne!(live.economy.handle(boss), Some(parent_handle));
+                assert!(live.economy.resolve(parent_handle).is_none(),
+                    "the original parent generation is invalid");
+                assert_eq!(live.economy.creature_parent(child), None,
+                    "live address reuse does not restore generation-bound provenance");
             }
-            lost.step(PlayerCommand::default(), 0);
-            let arena = &lost.simulation().session.state.live.economy;
-            assert_eq!(arena.creature_parent(child), None, "reused boss address cannot become the parent");
-            assert!(arena.resolve(child).is_some(), "hidden child is retained for the source tail");
-            let hidden = match model {
-                19 | 0 => arena.economy.authored_class5().iter()
-                    .find(|row| row.source_entity_index == child.source_slot).is_some_and(|row| !row.drawing_enabled),
-                _ => arena.entities[usize::from(child.source_slot)].drawing_disabled(),
+            // Source1E580 reads the current fixed record's life/flags. The
+            // stale generation remains invalid provenance, but its live new
+            // occupant must keep this callback's lifetime branch alive.
+            let hidden = |arena: &crate::campaign::source_arena::SourceArena| -> bool {
+                match model {
+                    19 | 0 => arena.economy.authored_class5().iter()
+                        .find(|row| row.source_entity_index == child.source_slot).is_some_and(|row| !row.drawing_enabled),
+                    _ => arena.entities[usize::from(child.source_slot)].drawing_disabled(),
+                }
             };
-            assert!(hidden, "boss model{model} hides when its parent generation is lost");
-            lost.step(PlayerCommand::default(), 0);
-            assert!(lost.simulation().session.state.live.economy.resolve(child).is_none(),
+            let mut current_dead = reused.clone();
+            current_dead.simulation_mut().session.state.live.economy.entities[usize::from(boss)]
+                .set_life(-1);
+            reused.step(PlayerCommand::default(), 0);
+            let arena = &reused.simulation().session.state.live.economy;
+            assert!(!reused.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "boss model{model} live reused-parent callback: {:?}", reused.simulation().dispatch_events());
+            assert!(arena.resolve(parent_handle).is_none());
+            assert_eq!(arena.creature_parent(child), None,
+                "the current occupant does not become generation-bound provenance");
+            assert!(arena.resolve(child).is_some());
+            assert!(!hidden(arena), "boss model{model} accepts the source-current live replacement");
+            assert_eq!(stage(arena), Some(16));
+
+            // Isolate the actual current-parent death from that live-reuse
+            // visit so an intervening attack action cannot postpone1E580.
+            current_dead.step(PlayerCommand::default(), 0);
+            let arena = &current_dead.simulation().session.state.live.economy;
+            assert!(!current_dead.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "boss model{model} current-parent death callback: {:?}", current_dead.simulation().dispatch_events());
+            assert_eq!(arena.creature_parent(child), None);
+            assert!(arena.resolve(child).is_some(), "hidden child is retained for the source tail");
+            assert!(hidden(arena), "boss model{model} hides when the current parent record is dead");
+            current_dead.step(PlayerCommand::default(), 0);
+            assert!(!current_dead.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "boss model{model} following reclaim: {:?}", current_dead.simulation().dispatch_events());
+            assert!(current_dead.simulation().session.state.live.economy.resolve(child).is_none(),
                 "the following boundary reclaims boss model{model}");
         }
     }

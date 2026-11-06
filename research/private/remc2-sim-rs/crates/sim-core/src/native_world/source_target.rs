@@ -179,6 +179,9 @@ pub(crate) fn status_parent(
             mana.ok_or_else(|| format!("status parent {slot} lost its current mana owner"))?,
         );
         let speed = match kind {
+            Kind::AuthoredModel5WaterSplash => economy.authored_model5_water_splashes.iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .map(|row| (0, row.actual_speed)),
             Kind::ManaSphere => economy
                 .spheres
                 .iter()
@@ -510,6 +513,7 @@ pub(crate) fn commit_status_speed(
         };
     }
     match kind {
+        Some(Kind::AuthoredModel5WaterSplash) => set_speed!(economy.authored_model5_water_splashes),
         Some(Kind::ManaSphere) => set_speed!(economy.spheres),
         Some(Kind::FireballProjectile) => set_speed!(economy.fireball_projectiles),
         Some(Kind::CastleProjectile) => set_speed!(economy.castle_projectiles),
@@ -2339,15 +2343,20 @@ fn dynamic(
             row.life,
             row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
         ),
-        Kind::AuthoredModel5WaterSplash => carrier!(
-            economy.authored_model5_water_splashes,
-            row,
-            row.source_class,
-            row.model,
-            row.entity_id,
-            row.life,
-            row.control_flags
-        ),
+        Kind::AuthoredModel5WaterSplash => {
+            let row = economy.authored_model5_water_splashes.iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or("current water splash lost its owner")?;
+            View {
+                slot, source_id: row.entity_id, active: row.active,
+                class: row.source_class, model: row.model, position: row.position,
+                life: i32::from(row.life), control_flags: row.control_flags,
+                yaw: Some(0), roll: Some(0), relations: Relations::default(),
+                collision: row.collision_axes.map(|[vertical_offset, half_width, half_depth, half_height]|
+                    Shape { vertical_offset, half_width, half_depth, half_height })
+                    .or_else(|| context.particle_shape(244)),
+            }
+        },
         _ => {
             return Err(format!(
                 "target slot {slot} has no current projection for {kind:?}"
@@ -2438,7 +2447,8 @@ fn fireball(row: &super::Level2FireballProjectile, context: Context<'_>) -> View
             attacker: Some(row.holder_entity_index),
             ..Relations::default()
         },
-        collision: context.particle_shape(340),
+        collision: row.collision_axes.map(|_| row.collision_shape())
+            .or_else(|| context.particle_shape(340)),
     }
 }
 
@@ -2676,6 +2686,11 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
         Kind::AuthoredModel22 => angles!(arena.economy.fields.authored_model22),
         Kind::Model22SpawnedChild => angles!(arena.economy.fields.model22_spawned_children),
         Kind::Model76Child => angles!(arena.economy.model76_children),
+        // NewAdd0A01/4E3B0 clears the NewEvent row and neither this
+        // death-burst constructor nor its action-1 callback writes pose yaw
+        // or roll. The typed death carrier therefore owns these source zeros;
+        // an imported row left at this address is not its orientation.
+        Kind::DeathBurst => (Some(0), Some(0)),
         // AddTree and actions 0..2 retain NewEvent's pose. The typed Tree
         // yaw/roll fields are array_0x52 collision axes, not pose angles.
         Kind::AuthoredTree => (Some(0), Some(0)),

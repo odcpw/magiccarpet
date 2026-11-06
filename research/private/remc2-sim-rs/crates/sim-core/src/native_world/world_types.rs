@@ -2260,6 +2260,55 @@ pub struct TerrainPlanes {
     pub entity_indices: Box<[i16]>,
 }
 
+/// Coherent source-global coordinates, copied by value when a session clones.
+#[derive(Default)]
+pub(super) struct SourceMovementProposal(std::sync::atomic::AtomicU64);
+
+impl SourceMovementProposal {
+    fn get(&self) -> Position {
+        let value = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        Position {
+            x: value as u16,
+            y: (value >> 16) as u16,
+            z: (value >> 32) as u16 as i16,
+        }
+    }
+
+    fn set(&self, position: Position) {
+        // One word keeps all three source coordinates coherent. The session
+        // scheduler orders accesses; this does not synchronize other state.
+        let value = u64::from(position.x)
+            | (u64::from(position.y) << 16)
+            | (u64::from(position.z as u16) << 32);
+        self.0.store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Clone for SourceMovementProposal {
+    fn clone(&self) -> Self {
+        Self(std::sync::atomic::AtomicU64::new(
+            self.0.load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+}
+
+impl std::fmt::Debug for SourceMovementProposal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("SourceMovementProposal")
+            .field(&self.get())
+            .finish()
+    }
+}
+
+impl PartialEq for SourceMovementProposal {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+impl Eq for SourceMovementProposal {}
+
 /// Mutable terrain owned by exactly one play session.
 ///
 /// `NativeWorld` remains immutable and shareable. Castle construction changes
@@ -2271,6 +2320,10 @@ pub struct SessionTerrain {
     pub(super) planes: TerrainPlanes,
     pub(super) terrain_rng: u16,
     pub(super) mutation_sequence: u64,
+    /// One session's source-global movement proposal. Movement callbacks borrow
+    /// the world immutably, so this ordered runtime scratch uses interior writes.
+    /// It is cloned with the session and hashed separately from terrain content.
+    pub(super) source_predicted_position: SourceMovementProposal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2294,6 +2347,7 @@ impl SessionTerrain {
             planes,
             terrain_rng,
             mutation_sequence: 0,
+            source_predicted_position: SourceMovementProposal::default(),
         }
     }
 
@@ -2320,6 +2374,7 @@ impl SessionTerrain {
             // Level 2 preserves the post-feature terrain RNG boundary.
             terrain_rng: inspection.terrain_rng,
             mutation_sequence: 0,
+            source_predicted_position: SourceMovementProposal::default(),
         }
     }
 
@@ -2333,6 +2388,7 @@ impl SessionTerrain {
             // independent 16-bit terrain stream.
             terrain_rng: 39_663,
             mutation_sequence: 0,
+            source_predicted_position: SourceMovementProposal::default(),
         }
     }
 
@@ -2882,6 +2938,14 @@ pub(crate) fn reduce_house_height(height: u8, reduction: u8, house_rng: &mut u16
 }
 
 impl FlightWorld for SessionTerrain {
+    fn source_predicted_position(&self) -> Position {
+        self.source_predicted_position.get()
+    }
+
+    fn set_source_predicted_position(&self, position: Position) {
+        self.source_predicted_position.set(position);
+    }
+
     fn ground_height(&self, position: Position) -> i16 {
         interpolate_ground(&self.planes.ground_heights, position.x, position.y) as i16
     }

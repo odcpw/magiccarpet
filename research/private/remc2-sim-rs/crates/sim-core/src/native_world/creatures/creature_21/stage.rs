@@ -45,7 +45,7 @@ fn summon_follow(actor: &mut Actor<'_>, ctx: &Context<'_>, target: Target, effec
         let attacker = actor.attacker();
         if attacker != actor.stage_parent()
             && ctx
-                .target(attacker)
+                .source_address(attacker)
                 .is_none_or(|row| row.class != 5 || row.model != SOURCE_MODEL)
         {
             actor.set_target(attacker);
@@ -218,15 +218,19 @@ fn stage17(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
 }
 
 fn follow_parent(actor: &mut Actor<'_>, ctx: &Context<'_>) {
-    if let Some(parent) = ctx.target(actor.stage_parent()) {
-        if parent.life < 0 {
+    if let Some(parent) = ctx.source_address(actor.stage_parent()) {
+        if actor.stage_parent() == 0 || parent.life < 0 {
             actor.row.disable_drawing();
         }
-        actor.row.set_position(parent.position);
+        let mut position = parent.position;
+        position.z = position.z.max(0);
+        ctx.terrain.set_source_predicted_position(position);
+        actor.row.set_position(position);
         actor.row.set_yaw(parent.yaw as i16);
         actor.row.set_source_roll(parent.roll as i16);
     } else {
         actor.row.disable_drawing();
+        ctx.terrain.set_source_predicted_position(crate::Position::default());
         actor.row.set_position(crate::Position::default());
         actor.row.set_yaw(0);
         actor.row.set_source_roll(0);
@@ -244,7 +248,7 @@ fn point_route(
         1 => {
             let attacker = actor.attacker();
             if ctx
-                .target(attacker)
+                .source_address(attacker)
                 .is_none_or(|source| source.class != 5 || source.model != SOURCE_MODEL)
             {
                 actor.set_target(attacker);
@@ -260,12 +264,12 @@ fn point_route(
         }
         _ => {
             move_actor(actor, ctx, effects);
-            steer(actor, ctx, point);
+            steer(actor, ctx, point, true);
         }
     }
 }
 
-fn steer(actor: &mut Actor<'_>, ctx: &Context<'_>, point: crate::Position) {
+fn steer(actor: &mut Actor<'_>, ctx: &Context<'_>, point: crate::Position, point_route: bool) {
     if actor.row.phase & 7 != 0 {
         return;
     }
@@ -289,11 +293,14 @@ fn steer(actor: &mut Actor<'_>, ctx: &Context<'_>, point: crate::Position) {
         .iter()
         .filter_map(|slot| ctx.target(*slot))
         .find(|peer| {
+            let delta = |a: u16, b: u16| if point_route {
+                (i32::from(a as i16) - i32::from(b as i16)).abs()
+            } else {
+                (i32::from(a) - i32::from(b)).abs()
+            };
             peer.source_id != actor.row.source_id
-                && (i32::from(actor.row.position.x) - i32::from(peer.position.x)).abs()
-                    < i32::from(actor.row.array_pitch())
-                && (i32::from(actor.row.position.y) - i32::from(peer.position.y)).abs()
-                    < i32::from(actor.row.array_pitch())
+                && delta(actor.row.position.x, peer.position.x) < i32::from(actor.row.array_pitch())
+                && delta(actor.row.position.y, peer.position.y) < i32::from(actor.row.array_pitch())
         })
     {
         actor
@@ -350,6 +357,45 @@ fn idle_turn(actor: &mut Actor<'_>) {
     }
 }
 
+fn guard_target(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
+    let distance = |target: &Target| {
+        let dx = i32::from(target.position.x) - i32::from(actor.row.position.x);
+        let dy = i32::from(target.position.y.wrapping_sub(actor.row.position.y) as i16);
+        dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+    };
+    ctx.class3.iter().filter_map(|slot| ctx.target(*slot))
+        .filter(|target| target.control_flags & 0x20 == 0)
+        .filter(|target| distance(target) <= RULES.target_range.wrapping_mul(RULES.target_range)
+            && crate::angle_distance(i32::from(actor.row.yaw),
+                heading_for_positions(actor.row.position, target.position)) < RULES.target_half_angle)
+        .min_by_key(distance)
+}
+
+/// The 1E1C0 wander helper used by modes6–9 never reads StageVar1.
+fn wander(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
+    match super::consume(actor, ctx, true) {
+        2 => actor.row.set_source_action(172),
+        1 => {
+            let attacker = actor.attacker();
+            if ctx.source_address(attacker)
+                .is_none_or(|source| source.class != 5 || source.model != SOURCE_MODEL)
+            {
+                actor.set_target(attacker);
+                actor.row.record[77] = 10;
+                actor.row.set_source_action(170);
+            }
+            let mut position = actor.row.position;
+            position.z = ctx.terrain.ground_height(position).wrapping_add(RULES.ground_clearance);
+            actor.row.set_position(position);
+        }
+        _ if RULES.behavior_flags & 2 == 0 => {
+            move_actor(actor, ctx, effects);
+            idle_turn(actor);
+        }
+        _ => {}
+    }
+}
+
 fn routed(
     actor: &mut Actor<'_>,
     ctx: &Context<'_>,
@@ -371,7 +417,7 @@ fn routed(
             1 => {
                 let attacker = actor.attacker();
                 if ctx
-                    .target(attacker)
+                    .source_address(attacker)
                     .is_none_or(|source| source.class != 5 || source.model != SOURCE_MODEL)
                 {
                     actor.set_target(attacker);
@@ -386,11 +432,11 @@ fn routed(
                 actor.row.set_position(position);
             }
             _ => {
-                if mode <= 5 || RULES.behavior_flags & 2 == 0 {
+                if matches!(mode, 3..=5) || RULES.behavior_flags & 2 == 0 {
                     move_actor(actor, ctx, effects);
                     if matches!(mode, 3..=5) && actor.row.phase & 7 == 0 {
                         if let Some(target) = routed_target(actor, ctx, descriptor) {
-                            steer(actor, ctx, target.position);
+                            steer(actor, ctx, target.position, false);
                             let range =
                                 i32::from(actor.row.array_pitch()) + i32::from(target.half_width);
                             if (i32::from(actor.row.position.x) - i32::from(target.position.x))
@@ -441,7 +487,7 @@ fn routed(
         && actor.stage_mode() == 2
         && actor.row.record[61] != 0
         && actor.row.phase % RULES.target_scan_period == 0
-        && let Some(target) = super::nearest(actor, ctx)
+        && let Some(target) = guard_target(actor, ctx)
     {
         actor.set_target(target.slot);
         actor.row.record[77] = 10;
@@ -512,16 +558,22 @@ pub(super) fn step(actor: &mut Actor<'_>, ctx: &mut Context<'_>, effects: &mut E
             jump(actor, ctx, effects);
         }
         12 => follow_parent(actor, ctx),
-        mode if (2..=9).contains(&mode) => {
+        mode if (2..=5).contains(&mode) => {
             if let Some(descriptor) = ctx.runtime.descriptor(actor.stage_index()) {
                 routed(actor, ctx, descriptor, mode, effects);
             }
             jump(actor, ctx, effects);
         }
+        mode if (6..=9).contains(&mode) => {
+            wander(actor, ctx, effects);
+            jump(actor, ctx, effects);
+        }
         _ => {}
     }
     // sub_26470 normalizes the final action only after its jump callback.
-    if actor.row.action != 175 {
+    if let Some((_, continuation)) = &mut effects.water_splash_tail {
+        *continuation = super::WaterContinuation::Stage;
+    } else if actor.row.action != 175 {
         actor.set_action(actor.row.action);
     }
 }

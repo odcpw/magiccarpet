@@ -2383,6 +2383,11 @@ impl Level2EconomyState {
             control_flags: 0x20_000,
             sprite_index: 244,
             animation_frame: 0,
+            animation_limit: None,
+            // NewAdd0A05 keeps NewEvent's speed even though action5 does
+            // not translate the effect itself. Current-address readers do.
+            actual_speed: 16,
+            collision_axes: None,
             last_sound_id: 0,
             position: grounded_position,
             phase: source_entity_index as u8,
@@ -2397,11 +2402,15 @@ impl Level2EconomyState {
     /// Run the bounded action-5 lifecycle from `AddAsh0A_05_318B0`: consume
     /// the eight-life splash window, emit source sound 27 once through the
     /// typed sidecar, then disable drawing and retire the row on the following
-    /// callback. The `sub_585A0` animation increment is a no-op for this
-    /// constructor's zero animation limit and is therefore represented by the
-    /// unchanged sprite. `reclaim_inactive_slots` mirrors the source's same-
-    /// pass `ApplyEvents` cleanup after the draw-disable bit is set.
-    pub fn step_authored_model5_water_splash_slot(&mut self, source_slot: u16) -> bool {
+    /// callback. `sub_585A0` uses the retained particle's animation limit
+    /// unless a current-address visual write supplied an explicit limit.
+    /// Ordinary scheduled visits use `effects::visit` and the following
+    /// owning source boundary; startup `ApplyEvents` runs its own cleanup.
+    pub fn step_authored_model5_water_splash_slot(
+        &mut self,
+        source_slot: u16,
+        particles: &[ParticleParameter],
+    ) -> bool {
         let Some(source) = self
             .authored_model5_water_splashes
             .iter_mut()
@@ -2410,7 +2419,17 @@ impl Level2EconomyState {
             return false;
         };
         if source.life >= 0 {
+            let Some(animation_limit) = source.animation_limit.or_else(|| {
+                particles.get(usize::from(source.sprite_index))?.animation_limit()
+            }) else {
+                return false;
+            };
+            source.animation_limit = Some(animation_limit);
             source.life -= 1;
+            // Source585A0 runs before the action5 first-sound branch.
+            if source.animation_frame < animation_limit {
+                source.animation_frame += 1;
+            }
             if source.control_flags & 0x2 == 0 {
                 source.control_flags |= 0x2;
                 source.last_sound_id = 27;
@@ -7501,6 +7520,19 @@ impl Level2EconomyState {
         }
         hasher.update(b"level2-authored-model5-water-splash-v1");
         for source in &self.authored_model5_water_splashes {
+            if source.animation_limit.is_some() || source.actual_speed != 0 || source.collision_axes.is_some() {
+                hasher.update(b"water-splash-current-callback-fields-v1");
+                hasher.update([
+                    u8::from(source.animation_limit.is_some()),
+                    source.animation_limit.unwrap_or(0),
+                    source.animation_frame,
+                ]);
+                hasher.update(source.actual_speed.to_le_bytes());
+                if let Some(axes) = source.collision_axes {
+                    hasher.update([1]);
+                    for value in axes { hasher.update(value.to_le_bytes()); }
+                } else { hasher.update([0]); }
+            }
             if source.animation_frame != 0 {
                 hasher.update(b"ash-frame-v1");
                 hasher.update([source.animation_frame]);
@@ -8267,6 +8299,10 @@ impl Level2EconomyState {
             if projectile.visual_index != crate::level1_mission::FIREBALL_RENDER_INDEX {
                 hasher.update(b"fireball-source-visual-index-v1");
                 hasher.update(projectile.visual_index.to_le_bytes());
+            }
+            if let Some(axes) = projectile.collision_axes {
+                hasher.update(b"fireball-source-collision-axes-v1");
+                for value in axes { hasher.update(value.to_le_bytes()); }
             }
             if projectile.target_class != 0 || projectile.target_model != 0 {
                 hasher.update(b"fireball-target-selector-v1");

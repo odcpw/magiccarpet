@@ -13,11 +13,13 @@ use crate::{FlightWorld, Position, angle_distance, heading_for_positions};
 
 pub(crate) mod mc2;
 mod stage;
+use mc2::{JUMP_SOUND, SOURCE_VISUALS};
+#[cfg(test)]
+use mc2::DESCRIPTOR;
 #[cfg(test)]
 mod tests;
 
 pub(crate) const SOURCE_MODEL: u8 = 21;
-pub(crate) const DESCRIPTOR: u16 = 96;
 
 /// Source action174 has no callback in the pinned table; descriptor96 has bit8
 /// clear. Keep it rejected rather than turning it into a successful empty step.
@@ -101,43 +103,31 @@ pub(crate) struct Context<'a> {
 }
 
 impl Context<'_> {
+    fn source_address(&self, slot: u16) -> Option<Target> {
+        self.targets.iter().find(|target| target.slot == slot).copied()
+    }
+
     fn target(&self, slot: u16) -> Option<Target> {
         (slot != 0)
-            .then(|| {
-                self.targets
-                    .iter()
-                    .find(|target| target.slot == slot)
-                    .copied()
-            })
+            .then(|| self.source_address(slot))
             .flatten()
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Strike {
-    pub source_slot: u16,
-    pub source_id: u16,
-    pub target_slot: u16,
-    pub target_class: u8,
-    pub target_model: u8,
-    pub initial_position: Position,
-    pub position: Position,
-    pub target_position: Position,
-    pub yaw: i16,
-    pub pitch: i16,
-    pub damage: i32,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Effects {
     /// A successful source sub_1CC20 request. The adapter must allocate its
     /// real source9/0 product before it applies target-side sub_5EF70.
-    pub strike: Option<Strike>,
+    pub strike_target: Option<u16>,
     /// Player feedback published only after the leaf allocates the source
     /// Fireball and applies the target's `sub_5EF70` write.
     pub target_music: Option<u16>,
     pub water_splash: Option<Position>,
+    /// The source resumes this tail against the current address after NewEvent.
+    pub water_splash_tail: Option<(bool, WaterContinuation)>,
     pub sound: Option<u8>,
+    pub sound_position: Option<Position>,
+    pub sound_identity: Option<(u16, u8, u32)>,
     pub kill_credit: Option<u16>,
     pub earlier_feedback: Option<(u16, u8)>,
     pub feedback: Option<(u16, u8)>,
@@ -148,6 +138,9 @@ pub(crate) struct Effects {
     pub expire: bool,
     pub summon_expire: bool,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaterContinuation { None, Roam, AttackReset, Stage }
 
 fn living(target: Target) -> bool {
     target.life >= 0 && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
@@ -229,14 +222,9 @@ fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
             .set_control_flags(actor.row.control_flags & !0x800);
         return;
     }
-    let motion = crate::ground_creature_motion::step_ground_creature_motion(
-        actor.row.position,
-        actor.row.yaw,
-        actor.row.source_roll(),
-        actor.row.actual_speed,
-        ctx.terrain,
+    let (rules, behavior_flags) = mc2::motion_override(actor.row).unwrap_or((
         crate::ground_creature_motion::GroundCreatureMotionConfig {
-            half_width: actor.row.array_pitch(),
+            half_width: actor.row.array_pitch().max(actor.row.array_roll()),
             half_height: actor.row.array_fov(),
             ground_clearance: RULES.ground_clearance,
             descent: RULES.descent,
@@ -244,6 +232,15 @@ fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
             terrain_mask: RULES.terrain_mask,
             maximum_tile_slope: RULES.maximum_slope,
         },
+        RULES.behavior_flags,
+    ));
+    let motion = crate::ground_creature_motion::step_ground_creature_motion(
+        actor.row.position,
+        actor.row.yaw,
+        actor.row.source_roll(),
+        actor.row.actual_speed,
+        ctx.terrain,
+        rules,
     );
     actor.row.set_position(motion.position);
     actor.row.set_yaw(motion.yaw);
@@ -253,9 +250,15 @@ fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         actor.row.control_flags & !0x40000
     };
     actor.row.set_control_flags(flags);
-    if motion.killed && RULES.behavior_flags & 1 != 0 {
-        actor.row.set_life(-1);
-        effects.population_decrements = effects.population_decrements.wrapping_add(1);
+    if motion.killed {
+        if ctx.terrain.material_mask(actor.row.position) == crate::WATER_AMBIENCE_MASK
+            || behavior_flags & 1 != 0
+        {
+            actor.row.set_life(-1);
+        }
+        if actor.row.life == -1 {
+            effects.population_decrements = effects.population_decrements.wrapping_add(1);
+        }
     }
 }
 
@@ -283,15 +286,15 @@ fn nearest(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
 
 fn visuals(actor: &Actor<'_>) -> u16 {
     match actor.jump_state() {
-        0 => 311,
-        1..=3 | 9 => 308,
-        4 => 309,
-        5 => 310,
-        6 => 305,
-        7 => 306,
-        8 => 307,
-        10 => 312,
-        _ => 311,
+        0 => SOURCE_VISUALS[0],
+        1..=3 | 9 => SOURCE_VISUALS[1],
+        4 => SOURCE_VISUALS[2],
+        5 => SOURCE_VISUALS[3],
+        6 => SOURCE_VISUALS[4],
+        7 => SOURCE_VISUALS[5],
+        8 => SOURCE_VISUALS[6],
+        10 => SOURCE_VISUALS[7],
+        _ => SOURCE_VISUALS[0],
     }
 }
 
@@ -353,7 +356,13 @@ fn jump(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
                 .row
                 .set_entity_rng(level2_next_rng16(actor.row.entity_rng));
             if actor.row.entity_rng % 11 == 0 {
-                effects.sound = Some(42);
+                effects.sound = Some(JUMP_SOUND);
+                effects.sound_position = Some(actor.row.position);
+                effects.sound_identity = Some((
+                    actor.row.source_id,
+                    actor.row.action,
+                    actor.row.control_flags,
+                ));
             }
             let count = actor.row.record[71];
             if count != 0 {
@@ -403,7 +412,12 @@ fn jump(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
             }
         } else if actor.row.position.z == ground {
             actor.set_jump_state(10);
-            effects.water_splash = Some(actor.row.position);
+            // sub_265A0 uses the shared predicted-axis scratch, which may
+            // retain a previous writer when sub_1B8C0 was held by bit 0x800.
+            actor.row.set_position(actor.row.position);
+            effects.water_splash = Some(ctx.terrain.source_predicted_position());
+            effects.water_splash_tail = Some((hold_movement, WaterContinuation::None));
+            return;
         }
         actor.row.set_actual_speed(if actor.row.action == 170 {
             RULES.attack_water_speed
@@ -420,6 +434,28 @@ fn jump(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
             RULES.roam_ground_speed
         });
     }
+    finish_jump_tail(actor, hold_movement);
+}
+
+/// Resume the water branch after its source NewEvent, including allocation
+/// failure. The caller supplies the current occupant of the original address.
+pub(super) fn finish_water_splash(actor: &mut Actor<'_>, ctx: &Context<'_>,
+    hold_movement: bool, continuation: WaterContinuation) {
+    actor.row.set_actual_speed(if actor.row.action == 170 {
+        RULES.attack_water_speed
+    } else {
+        RULES.roam_water_speed
+    });
+    finish_jump_tail(actor, hold_movement);
+    match continuation {
+        WaterContinuation::None => {}
+        WaterContinuation::Roam => finish_roam(actor, ctx),
+        WaterContinuation::AttackReset => actor.set_action(169),
+        WaterContinuation::Stage => if actor.row.action != 175 { actor.set_action(actor.row.action); },
+    }
+}
+
+fn finish_jump_tail(actor: &mut Actor<'_>, hold_movement: bool) {
     if hold_movement {
         actor.row.set_control_flags(actor.row.control_flags | 0x800);
     }
@@ -453,6 +489,14 @@ fn roam(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
     }
     move_actor(actor, ctx, effects);
     jump(actor, ctx, effects);
+    if let Some((_, continuation)) = &mut effects.water_splash_tail {
+        *continuation = WaterContinuation::Roam;
+        return;
+    }
+    finish_roam(actor, ctx);
+}
+
+fn finish_roam(actor: &mut Actor<'_>, ctx: &Context<'_>) {
     if can_steer_jump(actor) {
         jitter(actor);
     }
@@ -509,36 +553,30 @@ fn attack(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
         }
         if actor.row.phase & RULES.attack_cadence_mask == 0 {
             if distance(actor.row.position, target.position) < RULES.target_range {
-                let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
-                    actor.row.position,
-                    target.position,
-                );
-                effects.strike = Some(Strike {
-                    source_slot: actor.row.index,
-                    source_id: actor.row.source_id,
-                    target_slot: target.slot,
-                    target_class: target.class,
-                    target_model: target.model,
-                    initial_position: actor.row.position,
-                    position: Position {
-                        z: actor.row.position.z.wrapping_add(actor.row.array_fov()),
-                        ..actor.row.position
-                    },
-                    target_position: target.position,
-                    yaw,
-                    pitch,
-                    damage: RULES.attack_damage,
-                });
+                // sub_1CC20 allocates and reads current addresses before the
+                // remaining movement and jump tail. The adapter resumes that
+                // tail after the real allocation attempt, including failure.
+                effects.strike_target = Some(target.slot);
+                return;
             } else {
                 reset = true;
             }
         }
     }
-    move_actor(actor, ctx, effects);
-    jump(actor, ctx, effects);
+    finish_attack(actor, ctx, effects);
     if reset {
+        if let Some((_, continuation)) = &mut effects.water_splash_tail {
+            *continuation = WaterContinuation::AttackReset;
+            return;
+        }
         actor.set_action(169);
     }
+}
+
+/// Remaining source action170 tail after the actual strike attempt.
+pub(super) fn finish_attack(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
+    move_actor(actor, ctx, effects);
+    jump(actor, ctx, effects);
 }
 
 fn can_steer_jump(actor: &Actor<'_>) -> bool {

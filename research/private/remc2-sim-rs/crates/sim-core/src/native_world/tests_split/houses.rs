@@ -1853,6 +1853,7 @@ fn house_action_53_interleaves_resident_and_height_rng_in_one_cell() {
         },
         terrain_rng: 39_663,
         mutation_sequence: 0,
+        source_predicted_position: Default::default(),
     };
     let outcome = terrain
         .apply_house_removal(Position { x: 0, y: 0, z: 0 }, 2, 5, true, &footprint)

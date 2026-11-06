@@ -878,6 +878,8 @@ pub(crate) fn step(
     row.set_actual_speed(row.actual_speed.wrapping_add((2 * delta.signum()) as i16));
     let mut position = row.position;
     move_entity(&mut position, row.yaw, row.pitch, row.actual_speed);
+    // sub_65820 publishes the moved endpoint before collision or reflection.
+    terrain.set_source_predicted_position(position);
     row.set_position(position);
     arena.entities[usize::from(slot)] = row.clone();
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
@@ -890,12 +892,23 @@ pub(crate) fn step(
         true
     } else {
         let ground = terrain.ground_height(row.position);
-        let limit = if ground > row.position.z {
-            Some(ground)
+        // With no actor hit, the source always stores the ground probe in
+        // scratch Z; Cave's ceiling probe replaces it only when evaluated.
+        let cave_limit = if ground > row.position.z {
+            None
         } else {
             terrain
                 .ceiling_height(row.position)
                 .map(|ceiling| ceiling.wrapping_sub(row.array_fov()))
+        };
+        terrain.set_source_predicted_position(Position {
+            z: cave_limit.unwrap_or(ground),
+            ..position
+        });
+        let limit = if ground > row.position.z {
+            Some(ground)
+        } else {
+            cave_limit
                 .filter(|limit| row.position.z > *limit)
         };
         if let Some(z) = limit {

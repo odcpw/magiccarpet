@@ -72,6 +72,7 @@ pub mod regression_state;
 pub mod render_camera;
 pub mod renderable_map_chain;
 pub mod source_sprite_tmap;
+pub(crate) mod source_animation;
 pub mod spell_activation;
 pub mod spells;
 mod ss2_tmap;
@@ -714,6 +715,7 @@ pub enum MissionAudioSite {
     CymmerianPursuit,
     WyvernAttack,
     ManticorePursuit,
+    Model21Jump,
     Count,
 }
 
@@ -1183,6 +1185,7 @@ impl MissionAudioSite {
         Self::CymmerianPursuit,
         Self::WyvernAttack,
         Self::ManticorePursuit,
+        Self::Model21Jump,
     ];
 
     #[must_use]
@@ -1556,6 +1559,14 @@ impl MissionAudioSite {
                 "EventsFunctions.cpp:15613 sub_24930 callback entry",
                 true,
             ),
+            Self::Model21Jump => (
+                "42",
+                "current model21 before its jump movement tail",
+                "3",
+                "global RNG % 30 - 15",
+                "EventsFunctions.cpp:17090 sub_265A0 state 9",
+                true,
+            ),
             Self::WaterSplashFirstUpdate => (
                 "27",
                 "splash entity",
@@ -1677,6 +1688,11 @@ pub enum MovementResolution {
 }
 
 pub trait FlightWorld {
+    /// Source-global movement scratch, shared by ordered entity callbacks.
+    fn source_predicted_position(&self) -> Position {
+        Position { x: 0, y: 0, z: 0 }
+    }
+    fn set_source_predicted_position(&self, _position: Position) {}
     fn ground_height(&self, position: Position) -> i16;
     fn ceiling_height(&self, position: Position) -> Option<i16>;
     fn material_mask(&self, position: Position) -> u32;
@@ -2133,6 +2149,10 @@ fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
         };
     }
 
+    // sub_5D530 leaves the previous source-global scratch untouched when
+    // movement is held; an admitted visit first copies the player's pose.
+    world.set_source_predicted_position(before);
+
     state.roll_accumulator = state
         .roll_accumulator
         .wrapping_add(modified_control_delta(state, state.roll_delta));
@@ -2175,6 +2195,7 @@ fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
         state.water_counter = state.water_counter.wrapping_sub(1);
     }
     apply_tether(state, before, &mut proposed, &mut context.tether, tether_speed_limit);
+    world.set_source_predicted_position(proposed);
     advance_status_counters(state, context.effects.as_mut());
 
     let (mut committed, movement_resolution) =
@@ -2206,6 +2227,7 @@ fn step_entity_body_with_context_and_tuning<W: FlightWorld>(
         }
     }
 
+    world.set_source_predicted_position(committed);
     state.position = committed;
     finish_flight_body(state, profile, world, context);
     finish_entity_pass(state);
@@ -2258,6 +2280,7 @@ fn reject_step<W: FlightWorld>(
         state.recovery_latch = true;
         let mut recovered = before;
         move_entity(&mut recovered, state.yaw, 0, 128);
+        world.set_source_predicted_position(recovered);
         state.position = recovered;
         (recovered, "recovered-after-reject")
     } else {
@@ -2623,6 +2646,7 @@ pub fn resolve_legacy_movement<W: FlightWorld>(
                 pitch,
                 wrapping_i16(i64::from(weighted)),
             );
+            world.set_source_predicted_position(probe);
             last_probe = probe;
             if world.material_mask(probe) != MOVEMENT_REDIRECT_MASK {
                 found = Some(probe);
@@ -2689,10 +2713,15 @@ pub fn resolve_legacy_movement<W: FlightWorld>(
     }
 
     if !accepted {
+        // The Cave failure tail restores scratch before the separate recovery
+        // callback; outdoor water rejection returns earlier with last_probe.
+        world.set_source_predicted_position(from);
         MovementResolution::RejectAndStop
     } else if redirected {
+        world.set_source_predicted_position(candidate);
         MovementResolution::Redirect(candidate)
     } else {
+        world.set_source_predicted_position(candidate);
         MovementResolution::Accept(candidate)
     }
 }

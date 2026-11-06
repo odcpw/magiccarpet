@@ -519,8 +519,8 @@ pub(crate) fn step_alliance_stage_slot(
     Ok(DragonAllianceStep { retained_for_epilogue: true, spell_feedback: feedback })
 }
 
-/// Action 7 for the boss-launched Dragon. The parent binding is generation
-/// checked before mode 16 can follow it, even when its numeric slot is reused.
+/// Action7 for the boss-launched Dragon. Source1E580 reads the current parent
+/// address; the original generation binding remains separate provenance.
 pub(crate) fn step_boss_stage_slot(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -607,12 +607,11 @@ pub(crate) fn step_boss_stage_slot(
             state.stage_var2 = 16;
         }
     } else {
-        let parent = SourceEntityHandle {
-            source_slot: state.parent_entity_index,
-            generation: state.parent_generation,
-        };
-        let parent_position = if arena.resolve(parent).is_some() {
-            target_position(parent.source_slot, arena, true)?
+        let parent_slot = state.parent_entity_index;
+        let parent_position = if parent_slot != 0 {
+            crate::native_world::source_target::read(arena, target_context, parent_slot)?
+                .filter(|parent| parent.life >= 0 && !parent.drawing_disabled())
+                .map(|parent| parent.position)
         } else {
             None
         };
@@ -656,7 +655,7 @@ pub(crate) fn step_boss_stage_slot(
             if target.is_none() {
                 source.word_0x96_150 = 0;
                 if source.source_byte_3e & 7 == 0 {
-                    let parent_owner = crate::native_world::source_target::read(arena, target_context, parent.source_slot)?
+                    let parent_owner = crate::native_world::source_target::read(arena, target_context, parent_slot)?
                         .ok_or_else(|| format!("boss Dragon {slot} lost its parent during target scan"))?.source_id;
                     let mut best = u32::MAX;
                     for candidate in class3_slots.iter().copied() {
@@ -729,12 +728,12 @@ pub(crate) fn step_boss_stage_slot(
                         && part.source_entity_index == attacker
                         && part.model == DRAGON_MODEL
                 });
-                if attacker == parent.source_slot || same_family {
+                if attacker == parent_slot || same_family {
                     source.action = DRAGON_STAGE_ACTION;
                 } else {
                     source.word_0x96_150 = attacker;
                     source.action = DRAGON_ATTACK_ACTION;
-                    spell_feedback = Some((parent.source_slot, 19));
+                    spell_feedback = Some((parent_slot, 19));
                 }
             } else {
                 if step_dragon_motion(&mut source, &mut state, terrain) {
@@ -1271,7 +1270,7 @@ pub(crate) fn produce_attack_fireball(
 pub(crate) struct DragonPredecessor {
     pub(crate) class: u8,
     pub(crate) position: Position,
-    pub(crate) yaw: i16,
+    pub(crate) yaw: Option<i16>,
 }
 
 fn kill_current_dragon(
@@ -1384,7 +1383,7 @@ pub(crate) fn step_part_in_arena(
         DragonPredecessor {
             class: view.class,
             position: view.position,
-            yaw: view.yaw.ok_or_else(|| format!("Dragon predecessor {previous} has no current yaw"))?,
+            yaw: view.yaw,
         }
     } else {
         let sentinel = arena.entities.get(usize::from(previous))
@@ -1392,9 +1391,17 @@ pub(crate) fn step_part_in_arena(
         DragonPredecessor {
             class: sentinel.class,
             position: sentinel.position,
-            yaw: sentinel.yaw,
+            yaw: Some(sentinel.yaw),
         }
     };
+    // sub_1B6B0 reads predecessor yaw only in the dormant, fourth-phase
+    // branch. A different current carrier need not expose an unused yaw.
+    if part.source_byte_39 == 0 && part.source_byte_3e & 3 == 0 && predecessor.yaw.is_none() {
+        return Err(format!(
+            "Dragon predecessor {previous} class{} has no current yaw on its stationary follow visit",
+            predecessor.class
+        ));
+    }
     Ok(arena.economy.step_authored_dragon_part_slot(source_slot, terrain, predecessor))
 }
 
@@ -2156,6 +2163,9 @@ impl Level2EconomyState {
         if part.action != DRAGON_PART_ACTION {
             return false;
         }
+        if part.source_byte_39 == 0 && part.source_byte_3e & 3 == 0 && predecessor.yaw.is_none() {
+            return false;
+        }
         let part = &mut self.authored_dragon_parts[part_index];
         if predecessor.class != 5 {
             part.drawing_enabled = false;
@@ -2170,6 +2180,9 @@ impl Level2EconomyState {
             part.pitch = pitch;
             let mut position = predecessor.position;
             crate::move_entity(&mut position, yaw, pitch, part.word_0x36.wrapping_neg());
+            // sub_1B6B0 publishes this predecessor-based proposal before
+            // copying it into the body row; later callbacks share the scratch.
+            terrain.set_source_predicted_position(position);
             part.position = position;
             if part.pending_word_0x62 != 0 {
                 part.life = part.life.wrapping_sub(part.pending_damage);
@@ -2181,7 +2194,9 @@ impl Level2EconomyState {
             }
         } else if part.source_byte_3e & 3 == 0 {
             part.position = predecessor.position;
-            part.yaw = predecessor.yaw;
+            if let Some(yaw) = predecessor.yaw {
+                part.yaw = yaw;
+            }
         }
         self.source_rng.insert(source_slot, part.entity_rng);
         self.map_chains
@@ -2824,6 +2839,75 @@ mod lightning_consumer_tests {
     }
 
     #[test]
+    fn dragon_part_reads_current_typed_death_burst_and_only_needed_orientation() {
+        // Configured predecessor relations use actual constructors and the
+        // real part adapter; they do not claim ordinary allocator pressure.
+        let session = crate::native_world::tests::level_two_campaign_session();
+        let particles = &session.session.definition.presentation.particles;
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let position = session.state.position;
+        let root = arena.economy.allocate_authored_dragon(601, position, DRAGON_LIFE, &terrain)
+            .expect("actual Dragon constructor creates its parts");
+        let parts = arena.economy.authored_dragon_parts().iter()
+            .filter(|part| part.entity_id == root.source_entity_index)
+            .map(|part| part.source_entity_index).collect::<Vec<_>>();
+        assert_eq!(parts.len(), DRAGON_PART_COUNT);
+
+        let burst_position = Position { x: position.x.wrapping_add(512),
+            y: position.y.wrapping_add(768), ..position };
+        let burst = arena.economy.spawn_death_burst_from_death_with_id(
+            root.source_entity_index, root.source_entity_index, burst_position,
+        ).expect("actual 10/1 death-burst constructor");
+        arena.entities[usize::from(burst)].set_yaw(913);
+        let view = source_target::read(&arena, Default::default(), burst).unwrap().unwrap();
+        assert_eq!((view.class, view.model, view.position, view.yaw),
+            (10, 1, burst_position, Some(0)),
+            "typed NewEvent orientation must not inherit its stale raw shadow");
+        let prior_scratch = Position { x: 1234, y: 5678, z: 90 };
+        terrain.set_source_predicted_position(prior_scratch);
+        {
+            let part = arena.economy.authored_dragon_parts.iter_mut()
+                .find(|part| part.source_entity_index == parts[0]).unwrap();
+            part.previous_entity_index = burst;
+            part.source_byte_39 = 0;
+            part.source_byte_3e = 0;
+        }
+        assert!(step_part_in_arena(&mut arena, &mut terrain, particles, parts[0], Default::default()).unwrap());
+        let part = arena.economy.authored_dragon_parts().iter()
+            .find(|part| part.source_entity_index == parts[0]).unwrap();
+        assert!(!part.drawing_enabled && part.active);
+        assert_eq!((part.position, part.yaw), (burst_position, 0),
+            "the stationary source branch copies current predecessor pose after hiding");
+        assert_eq!(terrain.source_predicted_position(), prior_scratch,
+            "the stationary branch does not write source movement scratch");
+
+        let marker = arena.economy.allocate_player_death_marker(
+            root.source_entity_index, burst_position,
+        ).expect("actual typed player-death marker").source_entity_index;
+        assert_eq!(source_target::read(&arena, Default::default(), marker).unwrap().unwrap().yaw, None);
+        let (from, distance) = {
+            let part = arena.economy.authored_dragon_parts.iter_mut()
+                .find(|part| part.source_entity_index == parts[1]).unwrap();
+            part.previous_entity_index = marker;
+            part.source_byte_39 = 1;
+            part.source_byte_3e = 0;
+            (part.position, part.word_0x36)
+        };
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(from, burst_position);
+        let mut expected = burst_position;
+        crate::move_entity(&mut expected, yaw, pitch, distance.wrapping_neg());
+        assert!(step_part_in_arena(&mut arena, &mut terrain, particles, parts[1], Default::default()).unwrap());
+        let part = arena.economy.authored_dragon_parts().iter()
+            .find(|part| part.source_entity_index == parts[1]).unwrap();
+        assert!(!part.drawing_enabled && part.active);
+        assert_eq!((part.position, part.yaw, part.pitch), (expected, yaw, pitch),
+            "the moving source branch never reads predecessor yaw");
+        assert_eq!(terrain.source_predicted_position(), expected,
+            "the actual moving Dragon part publishes its source proposal");
+    }
+
+    #[test]
     fn dragon_separation_uses_source_ids_and_each_callback_axis_rules() {
         let session = crate::native_world::tests::level_two_campaign_session();
         let terrain = &session.session.state.live.terrain;
@@ -3453,7 +3537,7 @@ mod lightning_consumer_tests {
             let missing = DragonPredecessor {
                 class: predecessor.class,
                 position: predecessor.position,
-                yaw: predecessor.yaw,
+                yaw: Some(predecessor.yaw),
             };
             assert_ne!(missing.class, 5, "preceding generation has been reclaimed");
             let part = arena
@@ -3512,7 +3596,7 @@ mod lightning_consumer_tests {
                 let hidden_predecessor = DragonPredecessor {
                     class: 5,
                     position: part_position,
-                    yaw: part_yaw,
+                    yaw: Some(part_yaw),
                 };
                 assert!(arena.economy.step_authored_dragon_part_slot(
                     next.source_slot,

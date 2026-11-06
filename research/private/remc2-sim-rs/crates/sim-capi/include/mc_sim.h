@@ -1325,7 +1325,7 @@ uint8_t mc_sim_last_resolution(void);
  * releases the session and publishes a completion receipt. Observational
  * identity/receipt reads never accept completion or start another mission.
  * Replay saves are opaque UTF-8 JSON under
- * `carpet-flight-mc2-campaign-replay-save/v5`; older save contracts fail
+ * `carpet-flight-mc2-campaign-replay-save/v7`; older save contracts fail
  * closed during load.
  */
 int32_t mc_game_runtime_contract_json_v1(

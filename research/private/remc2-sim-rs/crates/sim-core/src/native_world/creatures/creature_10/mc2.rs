@@ -194,7 +194,7 @@ fn materialize_model21_summon(
         request.position,
         parent_slot,
         player_slot,
-        player_slot,
+        request.yaw.ok_or("final encounter model21 request lacks its captured launch yaw")?,
     )?
     else {
         return Ok(None);
@@ -908,6 +908,7 @@ pub(crate) fn scheduled_step(
     terrain: &mut SessionTerrain,
     shared_spells: &mut crate::native_world::Level2SharedSpellResetSession,
     particles: &[ParticleParameter],
+    animations: &crate::source_animation::SourceAnimationResidency,
     slot: u16,
     player_slot: u16,
     families: &[Vec<u16>; 29],
@@ -955,6 +956,35 @@ pub(crate) fn scheduled_step(
         frame.close_creature =
             super::protection::apply(arena, terrain, slot, shared_spells, particles, class9)?;
     }
+    // sub_221F0 reads only the animation reached by this actual callback.
+    // An unrelated resident entry may have an undefined lookahead and must
+    // not make a different phase fail before it could perform the read.
+    let timer_particle = arena
+        .entities
+        .get(usize::from(slot))
+        .and_then(load)
+        .and_then(|actor| {
+            if actor.action != SOURCE_INITIAL_ACTION
+                || actor.flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT != 0
+            {
+                return None;
+            }
+            match actor.phase {
+                6 => Some(343),
+                10 => Some(344),
+                13 if actor.timer.wrapping_sub(1) <= 0 => Some(345),
+                _ => None,
+            }
+        });
+    if let Some(index) = timer_particle {
+        let particle = particles
+            .get(index)
+            .ok_or_else(|| format!("final encounter requires retained particle{index}"))?;
+        particle
+            .animation_limit()
+            .ok_or_else(|| format!("final encounter particle{index} has invalid animation mode"))?;
+        frame.source_animation_timer = animations.boss_timer_read(particle.base_tmap)?;
+    }
     let effects = step_row(arena, runtime, terrain, particles, slot, frame, apply_world)?;
     if let Some(pressure) = effects.player_pressure
         && !runtime.set_final_boss_pressure_speed(pressure.speed)
@@ -969,6 +999,231 @@ mod tests {
     use super::super::FINAL_REWARD_PHASE;
     use super::*;
     use crate::campaign::source_arena::SourceArena;
+
+    #[test]
+    fn level25_boss_naturally_produces_model21_then_parent_loss_reclaims_it() {
+        use crate::campaign::source_arena::{CreatureRootOrigin, CreatureRuntimeRole};
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::Mc2DispatchEvent;
+        use crate::native_world::creatures::creature_21::mc2 as model21;
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || generated.join("mc-bhq10-owner-v3-level25-20261029"), PathBuf::from,
+        );
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || generated.join("dragon-bee-20261105-integration/current-level25-environment"),
+            PathBuf::from,
+        );
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache)
+            .expect("qualified Level25 environment assets");
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            &package, &cache, CampaignSelection::ordinary(25).unwrap(),
+        ).expect("whole Level25 package and its matching owner cache");
+        campaign.step(crate::PlayerCommand::default(), 0);
+        // Declared upstream progression prerequisite, as in the delivered
+        // Firefly producer check. No boss state, RNG, timer or child is forced.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(29)
+            .expect("actual group29 boss producer");
+        let simulation = campaign.simulation();
+        let boss = simulation.entities().iter().find(|row|
+            row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
+            .expect("group29 publishes the real final boss").index;
+        let parent = simulation.source_arena().handle(boss).unwrap();
+        let owner = simulation.entities()[usize::from(boss)].source_id;
+        let player = simulation.state.entity_index;
+        let mut approach = simulation.entities()[usize::from(boss)].position;
+        crate::move_entity(&mut approach, simulation.state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        approach.z = simulation.canonical_terrain().ground_height(approach).wrapping_add(768);
+        campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+        {
+            // Declared player-only survival budget for this bounded encounter.
+            // The retained 200,000-life negative died before the rare source
+            // selection69; it did not exercise the model21 producer. This
+            // larger entry budget changes no boss/child state or later damage.
+            let live = &mut campaign.simulation_mut().session.state.live;
+            let player_row = &mut live.economy.entities[usize::from(player)];
+            player_row.set_max_life(1_000_000);
+            player_row.set_life(1_000_000);
+            let player_row = player_row.clone();
+            live.player_life = player_row.life;
+            live.shared_spells.sync_player_entity_from_authority(&player_row);
+        }
+        let mut child = None;
+        let mut initial_position = None;
+        let mut saw_launch = false;
+        let mut saw_follow = false;
+        let mut airborne = false;
+        let mut landed = false;
+        let mut shot = false;
+        let mut last_boss = None;
+        let mut selections = Vec::new();
+        for turn in 0..4096 {
+            // Declared stable player-position control. Source pressure really
+            // moves the player within a turn; restore the setup between turns
+            // so its range gate can keep admitting ordinary boss selections.
+            // No boss/child field, RNG, phase or timer is changed.
+            campaign.simulation_mut().set_level2_entity_position(player, approach).unwrap();
+            let before_selection = load(&campaign.simulation().entities()[usize::from(boss)])
+                .filter(|actor| actor.phase == 8)
+                .map(|actor| (actor.rng, campaign.simulation().source_arena()
+                    .rebuilt_class5_model_slots()[0].len()));
+            model21::start_callback_trace();
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let callbacks = model21::take_callback_trace();
+            assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })),
+                "boss model21 turn {turn}: {:?}", campaign.simulation().dispatch_events());
+            assert!(campaign.simulation().session.state.live.player_life >= 0,
+                "declared boss-producer survival budget exhausted at turn{turn}; no positive producer result; selections={selections:?}");
+            let generation = campaign.generation();
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation,
+            ).expect("actual Level25 frame");
+            frame.apply_primary_visibility(campaign.simulation_mut(), generation).unwrap();
+            let simulation = campaign.simulation();
+            let arena = simulation.source_arena();
+            last_boss = load(&simulation.entities()[usize::from(boss)])
+                .map(|actor| (actor.phase, actor.summon_mode, actor.timer, actor.rng, actor.life));
+            if let Some(before) = before_selection {
+                if selections.len() == 16 { selections.remove(0); }
+                selections.push((turn, before, last_boss));
+            }
+            if child.is_none() {
+                let census = arena.creature_runtime_census(&BTreeMap::new(), &BTreeMap::new());
+                child = census.entries().iter().find(|entry|
+                    entry.raw_model == Some(21) && entry.role == CreatureRuntimeRole::Root
+                        && entry.origin == CreatureRootOrigin::CreatureConversion { producer_slot: boss }
+                        && arena.creature_parent_binding(entry.handle) == Some(parent))
+                    .map(|entry| entry.handle);
+                if let Some(handle) = child {
+                    let row = &simulation.entities()[usize::from(handle.source_slot)];
+                    assert_eq!((row.class, row.model, row.source_id, row.max_life, row.mana),
+                        (5, 21, owner, 1000, 1000));
+                    assert_eq!(word(row, 152), 0, "source leaves NewEvent player owner untouched");
+                    assert_eq!(word(row, 44), boss);
+                    initial_position = Some(row.position);
+                }
+            }
+            if let Some(handle) = child {
+                assert!(arena.resolve(handle).is_some(),
+                    "actual boss model21 vanished before connected follow/attack: turn{turn}");
+                let row = &simulation.entities()[usize::from(handle.source_slot)];
+                saw_follow |= row.record[77] == 16;
+                for callback in callbacks.iter().filter(|receipt| receipt.actor == handle) {
+                    saw_launch |= callback.before.record[77] == 17;
+                    if let Some(after) = &callback.after {
+                        airborne |= after.position.z > simulation.canonical_terrain().ground_height(after.position)
+                            && (3..=8).contains(&after.record[74]);
+                        landed |= airborne && matches!(after.record[74], 9 | 10);
+                    }
+                    shot |= callback.projectile_packet.is_some_and(|packet|
+                        (packet.source_class, packet.source_model, packet.source_subspell_index,
+                            packet.owner_entity_index, packet.target_source_entity_index)
+                            == (9, 0, 500, owner, player));
+                }
+                if saw_launch && saw_follow && airborne && landed && shot {
+                    assert_ne!(Some(row.position), initial_position);
+                    assert!(simulation.campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == handle.source_slot));
+                    // Configured parent-death branch, isolated from the
+                    // natural producer/combat run. A real shot can leave170
+                    // active:26220 does not read the parent, and12500 leaves
+                    // attack actions alone. Retreat only the player so the
+                    // next32-callback range check permits170→169→175/1E580.
+                    let loss_entry = row.clone();
+                    assert!(loss_entry.life >= 0);
+                    assert_eq!(loss_entry.record[77], 16);
+                    let rules = crate::level_definition::CREATURE21_CLASS_PROPERTIES;
+                    let callback_bound = usize::from(rules.attack_cadence_mask) + 2;
+                    let mut retreat = loss_entry.position;
+                    retreat.x = retreat.x.wrapping_add(u16::try_from(4 * rules.target_range).unwrap());
+                    retreat.z = simulation.canonical_terrain().ground_height(retreat).wrapping_add(768);
+                    let mut loss = campaign.clone();
+                    loss.simulation_mut().session.state.live.economy.entities
+                        [usize::from(boss)].set_life(-1);
+                    let mut loss_visits = Vec::new();
+                    let mut attack_reset = false;
+                    let mut expired = false;
+                    for wait in 0..callback_bound {
+                        loss.simulation_mut().set_level2_entity_position(player, retreat).unwrap();
+                        model21::start_callback_trace();
+                        loss.step(crate::PlayerCommand::default(), 0);
+                        let visits = model21::take_callback_trace();
+                        assert!(!loss.simulation().dispatch_events().iter().any(|event|
+                            matches!(event, Mc2DispatchEvent::Error { .. })),
+                            "parent loss wait{wait}: {:?}", loss.simulation().dispatch_events());
+                        assert!(loss.simulation().session.state.live.player_life >= 0,
+                            "parent-loss control exhausted the existing player budget");
+                        let mut visits = visits.iter().filter(|visit| visit.actor == handle);
+                        let visit = visits.next().unwrap_or_else(|| panic!(
+                            "original model21 missed its scheduled parent-loss visit: entry={loss_entry:?} visits={loss_visits:?}"));
+                        assert!(visits.next().is_none(), "one source callback per ordinary outer turn");
+                        let after = visit.after.as_ref().expect("the original generation survives this callback");
+                        let target_distance = visit.entry_target.map(|target|
+                            crate::legacy_sqrt(crate::native_world::level2_wrapping_source_distance_3d(
+                                visit.before.position, target.position)));
+                        loss_visits.push((wait, visit.before.action, visit.before.phase,
+                            visit.entry_parent.map(|parent| (parent.slot, parent.life, parent.control_flags)),
+                            target_distance, after.action, after.drawing_disabled()));
+                        assert!(visit.before.life >= 0 && after.life >= 0,
+                            "parent expiry must not be a combat death: {loss_visits:?}");
+                        assert_eq!(word(&visit.before, 44), boss);
+                        assert_eq!(visit.before.record[77], 16);
+                        assert!(loss.simulation().source_arena().resolve(handle).is_some(),
+                            "the original child remains for the same-pass tail");
+                        if visit.before.action == 170 {
+                            let target = visit.entry_target.expect("retained actual attack target");
+                            assert_eq!(target.slot, player);
+                            assert!(target.life >= 0 && target.control_flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT == 0);
+                            assert!(target_distance.unwrap() >= rules.target_range,
+                                "declared player retreat must reach the actual callback range read: {loss_visits:?}");
+                            assert!(!after.drawing_disabled() && visit.expiry_effect.is_none(),
+                                "170 must not invent a parent-life read: {loss_visits:?}");
+                            if visit.before.phase & rules.attack_cadence_mask == 0 {
+                                assert_eq!(after.action, 169, "real range cadence resets the attack");
+                                attack_reset = true;
+                            } else {
+                                assert_eq!(after.action, 170, "attack persists until its source cadence");
+                            }
+                            continue;
+                        }
+                        assert_eq!(visit.before.action, 175, "source prepass restores the StageVar callback");
+                        if loss_entry.action == 170 { assert!(attack_reset); }
+                        let parent_read = visit.entry_parent.expect("actual fixed parent record at1E580");
+                        assert_eq!(parent_read.slot, boss);
+                        assert!(parent_read.life < 0 || parent_read.control_flags & crate::native_world::ENTITY_DRAW_DISABLED_BIT != 0,
+                            "actual parent read must cause the expiry: {loss_visits:?}");
+                        assert!((word(&visit.before, 50) as i16) > 0);
+                        assert_eq!(word(after, 50), 0, "1E580 zeroes the remaining lifetime");
+                        assert!(after.drawing_disabled());
+                        let (effect, packet) = visit.expiry_effect.as_ref().expect("actual1E580 Impact allocation");
+                        assert_eq!((packet.class, packet.model, packet.index), (10, 0, effect.source_slot));
+                        assert_eq!(packet.position, visit.before.position, "expiry birth precedes the jump tail");
+                        assert_eq!(loss.simulation().entities()[usize::from(handle.source_slot)].phase,
+                            visit.before.phase.wrapping_add(1), "hidden original receives its same-pass tail");
+                        expired = true;
+                        break;
+                    }
+                    assert!(expired, "source32-attack-callback+1-stage bound: entry={loss_entry:?} visits={loss_visits:?}");
+                    let hidden = loss.simulation().source_arena();
+                    assert!(hidden.resolve(handle).is_some());
+                    assert!(hidden.entities[usize::from(handle.source_slot)].drawing_disabled());
+                    assert!(!loss.simulation().campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == handle.source_slot));
+                    loss.step(crate::PlayerCommand::default(), 0);
+                    assert!(!loss.simulation().dispatch_events().iter().any(|event|
+                        matches!(event, Mc2DispatchEvent::Error { .. })));
+                    assert!(loss.simulation().source_arena().resolve(handle).is_none());
+                    eprintln!("Level25 boss leaping creature: parent={parent:?} child={handle:?} connected at turn{turn}; parent-loss entryaction={} visits={loss_visits:?}", loss_entry.action);
+                    return;
+                }
+            }
+        }
+        panic!("ordinary boss model21 path incomplete: boss={last_boss:?} child={child:?} launch={saw_launch} follow={saw_follow} air={airborne} land={landed} shot={shot} player_life={} selections={selections:?}", campaign.simulation().session.state.live.player_life);
+    }
 
     #[test]
     fn level25_boss_naturally_produces_firefly_then_parent_loss_reclaims_it() {
@@ -1589,7 +1844,7 @@ mod tests {
             .expect("boss mode4 allocated the canonical model21 StageVar child");
         assert_eq!(child.record[77], 17);
         assert_eq!(word(child, 50), 250);
-        assert_eq!(word(child, 152), fixture.player_slot);
+        assert_eq!(word(child, 152), 0, "boss source sets target, not playerEntityIndex");
         assert_eq!(word(child, 154), fixture.player_slot);
         assert_eq!(child.actual_speed, 320);
         assert_eq!(child.yaw, 317);

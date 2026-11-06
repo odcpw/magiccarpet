@@ -47,6 +47,9 @@ pub enum GroundCreatureMoveResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GroundCreatureMotion<P> {
     pub position: P,
+    /// Last source proposal, even when all four headings were rejected.
+    /// `predictedAxis_EB398ar` is not restored to the committed position.
+    pub last_predicted: P,
     pub yaw: i16,
     pub movement_blocked: bool,
     pub killed: bool,
@@ -89,6 +92,7 @@ where
         opposite_heading(yaw),
     ];
 
+    let mut last_predicted = position;
     for (attempt, heading) in headings.into_iter().enumerate() {
         let mut predicted = position;
         relax_to_terrain(
@@ -98,6 +102,7 @@ where
             config.descent,
         );
         world.move_entity(&mut predicted, heading, 0, actual_speed);
+        last_predicted = predicted;
 
         let changed_tile =
             (position.x() >> 8, position.y() >> 8) != (predicted.x() >> 8, predicted.y() >> 8);
@@ -109,6 +114,7 @@ where
 
         return GroundCreatureMotion {
             position: predicted,
+            last_predicted,
             yaw: heading.wrapping_add(world.turn_toward(
                 heading,
                 desired_heading,
@@ -128,6 +134,7 @@ where
 
     GroundCreatureMotion {
         position,
+        last_predicted,
         yaw: opposite_heading(yaw),
         movement_blocked: true,
         killed: true,
@@ -335,6 +342,7 @@ mod tests {
         assert!(!motion.killed);
         assert_eq!(motion.position.x, 0x1100);
         assert_eq!(motion.position.z, 128);
+        assert_eq!(motion.last_predicted, motion.position);
         assert_eq!(motion.yaw, 448);
     }
 
@@ -353,6 +361,14 @@ mod tests {
 
         assert_eq!(world.headings.borrow().len(), 4);
         assert_eq!(motion.position, origin);
+        assert_eq!(
+            motion.last_predicted,
+            TestPosition {
+                x: 0x1100,
+                y: 0x2000,
+                z: 128,
+            }
+        );
         assert_eq!(motion.yaw, opposite_heading(100));
         assert_eq!(motion.result, GroundCreatureMoveResult::Blocked);
         assert!(motion.movement_blocked);

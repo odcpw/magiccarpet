@@ -1166,6 +1166,7 @@ mod tests {
             planes,
             terrain_rng: 123,
             mutation_sequence: 0,
+            source_predicted_position: Default::default(),
         };
         let slot = cave_corridors::construct(
             &mut live.economy,
@@ -1574,6 +1575,7 @@ mod tests {
                 planes: planes.clone(),
                 terrain_rng: 123,
                 mutation_sequence: 0,
+                source_predicted_position: Default::default(),
             };
             let position = source.position;
             let rng = source.entity_rng;
@@ -2037,6 +2039,7 @@ mod tests {
             },
             terrain_rng: 0x5a5a,
             mutation_sequence: 0,
+            source_predicted_position: Default::default(),
         }
     }
 

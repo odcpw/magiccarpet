@@ -57,6 +57,79 @@ fn exhaust(arena: &mut SourceArena) {
     arena.rebuild_source_free_arena();
 }
 
+/// Continue a real publicly cast flyer in a cloned session, then visit the
+/// existing configured held-water callback without seeding source scratch.
+fn public_meteor_feeds_configured_held_water(
+    simulation: &super::super::Mc2Simulation,
+    flyer: crate::campaign::source_arena::SourceEntityHandle,
+) {
+    use crate::native_world::{creatures::creature_21, source_target};
+    let mut probe = simulation.clone();
+    let particles = probe.session.definition.presentation.particles.to_vec();
+    let live = &mut probe.session.state.live;
+    assert_eq!(live.economy.handle(flyer.source_slot), Some(flyer),
+        "the public Meteor generation is still current");
+    let original = live.economy.entities[usize::from(flyer.source_slot)].clone();
+    assert_eq!((original.class, original.model, original.action), (9, 3, 3));
+
+    // This actor state and water tile are explicit exception controls. The
+    // Meteor itself is the actual acquired, publicly produced generation.
+    let mut landing = original.position;
+    landing.x = landing.x.wrapping_add(0x4000);
+    landing.y = landing.y.wrapping_add(0x3000);
+    let tile = crate::native_world::terrain_index(landing.x.to_be_bytes()[0], landing.y.to_be_bytes()[0]);
+    live.terrain.planes.terrain_types[tile] = 0;
+    landing.z = live.terrain.ground_height(landing);
+    let actor = creature_21::mc2::allocate_authored(
+        &mut live.economy, &mut live.core.runtime, &mut live.terrain, &particles,
+        landing, crate::level_definition::CREATURE21_CLASS_PROPERTIES.max_life, None, 65000,
+    ).unwrap().expect("configured held-water actor has source capacity");
+    {
+        let row = &mut live.economy.entities[usize::from(actor)];
+        row.set_source_action(169);
+        row.set_phase(1);
+        row.record[74] = 8;
+        row.set_control_flags(row.control_flags | 0x800);
+    }
+    let prior = live.terrain.source_predicted_position();
+    let context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+    let outcome = super::step_projectile(
+        &mut live.economy, &mut live.terrain, &particles, flyer.source_slot, None, context,
+    ).expect("the actual Meteor generation runs its source callback");
+    assert!(outcome.impact_slot.is_none(), "the sampled public Meteor is still flying");
+    assert_eq!(live.economy.handle(flyer.source_slot), Some(flyer));
+    let flyer_after = &live.economy.entities[usize::from(flyer.source_slot)];
+    assert!(flyer_after.active && !flyer_after.drawing_disabled(),
+        "the sampled source visit must be an actual no-hit flight");
+    let moved = flyer_after.position;
+    assert_ne!((moved.x, moved.y), (original.position.x, original.position.y));
+    let ground = live.terrain.ground_height(moved);
+    let expected = Position { z: ground, ..moved };
+    assert_eq!(live.terrain.ceiling_height(moved), None, "the Level2 owner map is outdoor");
+    assert_eq!(live.terrain.source_predicted_position(), expected,
+        "the real no-hit Meteor writes moved XY and terrain-probe Z");
+    assert_ne!(expected, prior, "the actual Meteor callback changed shared scratch");
+
+    let old_splashes = live.economy.economy.authored_model5_water_splashes.iter()
+        .map(|row| (row.source_entity_index, live.economy.slot_generation(row.source_entity_index)))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut families = std::array::from_fn(|_| Vec::new());
+    families[21].push(actor);
+    creature_21::mc2::step_row(
+        &mut live.economy, &mut live.core.runtime, &mut live.terrain, &particles,
+        actor, &[], &families, context,
+    ).expect("configured held-water actor runs its source callback");
+    assert_eq!(live.terrain.source_predicted_position(), expected,
+        "held ground movement leaves the actual Meteor's scratch untouched");
+    let splash = live.economy.economy.authored_model5_water_splashes.iter().find(|row|
+        row.active && !old_splashes.contains(&(row.source_entity_index,
+            live.economy.slot_generation(row.source_entity_index))))
+        .expect("real 10/5 splash is constructed by the held-water callback");
+    assert_eq!((splash.position.x, splash.position.y), (expected.x, expected.y));
+    assert_eq!(splash.position.z, live.terrain.ground_height(expected));
+    assert_ne!((splash.position.x, splash.position.y), (landing.x, landing.y));
+}
+
 #[test]
 fn authored_meteor_pickup_and_public_hand_reach_scheduled_impact_and_damage() {
     use crate::PlayerCommand;
@@ -172,6 +245,7 @@ fn authored_meteor_pickup_and_public_hand_reach_scheduled_impact_and_damage() {
         let mut presented = false;
         let mut damage = false;
         let mut sound = [false; 2];
+        let mut scratch_consumer = false;
         area_damage::start_effect_damage_trace(target);
         for turn in 0..100 {
             simulation.step_outer_turn(if turn == 0 {
@@ -241,6 +315,16 @@ fn authored_meteor_pickup_and_public_hand_reach_scheduled_impact_and_damage() {
                     presented = true;
                 }
             }
+            if tier == 0 && !scratch_consumer
+                && let Some((slot, generation)) = flyer
+                && simulation.source_arena().handle(slot).is_some_and(|handle|
+                    handle.generation == generation && simulation.entities()[usize::from(slot)].active
+                        && !simulation.entities()[usize::from(slot)].drawing_disabled())
+            {
+                public_meteor_feeds_configured_held_water(simulation,
+                    crate::campaign::source_arena::SourceEntityHandle { source_slot: slot, generation });
+                scratch_consumer = true;
+            }
             if reclaimed.iter().all(|done| *done) { break; }
         }
         let receipts = area_damage::take_effect_damage_trace();
@@ -250,6 +334,7 @@ fn authored_meteor_pickup_and_public_hand_reach_scheduled_impact_and_damage() {
             && receipt.hit_count.is_some_and(|hits| hits > 0));
         assert!(charged && presented && damage && impact_damage,
             "tier{tier}: charge={charged} sprite={presented} target={damage} pulse={impact_damage} flyer={flyer:?} impact={impact:?} receipts={receipts:?}");
+        assert!(tier != 0 || scratch_consumer, "actual public Meteor feeds the held-water consumer");
         assert!(simulation.shared_spells().spell_experience()[9] > xp_before, "Meteor damage awards XP");
         assert_eq!(hidden, [true; 2], "flyer and impact hide before reclaim");
         assert_eq!(reclaimed, [true; 2], "flyer and impact reach following reclaim");

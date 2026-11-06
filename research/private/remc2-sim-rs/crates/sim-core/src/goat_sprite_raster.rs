@@ -531,7 +531,7 @@ pub fn source_sprite_view(
     )
 }
 
-fn source_sprite_view_with_depth_adjustment(
+pub(crate) fn source_sprite_view_with_depth_adjustment(
     render_x: u16,
     render_y: u16,
     camera_yaw: i16,

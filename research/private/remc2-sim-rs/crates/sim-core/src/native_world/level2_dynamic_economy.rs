@@ -1376,6 +1376,7 @@ impl Level2EconomyState {
         let projectile = Level2FireballProjectile {
             origin: payload.origin,
             visual_index: properties.render_index,
+            collision_axes: None,
             source_entity_index,
             entity_rng,
             owner_entity_index: payload.source_id_entity_index,
@@ -1904,9 +1905,13 @@ impl Level2EconomyState {
             projectile.pitch,
             projectile.actual_speed,
         );
+        // Both sub_65C20 and sub_65820 publish the attempted endpoint before
+        // collision handling; a later redirect does not replace its XY.
+        terrain.set_source_predicted_position(projectile.position);
 
+        let projectile_shape = projectile.collision_shape();
         let offsets = if views.is_some() {
-            super::guided_projectile::collision_search_offsets(FIREBALL_COLLISION_HALF_WIDTH)
+            super::guided_projectile::collision_search_offsets(projectile_shape.half_width)
         } else {
             source_search_offsets(1)
         };
@@ -1942,11 +1947,11 @@ impl Level2EconomyState {
                     i32::from(target.position.y.wrapping_sub(projectile.position.y) as i16).abs();
                 let dz = (i32::from(target.position.z) + i32::from(shape.vertical_offset)
                     - i32::from(projectile.position.z)
-                    - i32::from(FIREBALL_COLLISION_VERTICAL_OFFSET))
+                    - i32::from(projectile_shape.vertical_offset))
                 .abs();
-                if dx < i32::from(FIREBALL_COLLISION_HALF_WIDTH) + i32::from(shape.half_width)
-                    && dy < i32::from(FIREBALL_COLLISION_HALF_WIDTH) + i32::from(shape.half_depth)
-                    && dz < i32::from(FIREBALL_COLLISION_HALF_HEIGHT) + i32::from(shape.half_height)
+                if dx < i32::from(projectile_shape.half_width) + i32::from(shape.half_width)
+                    && dy < i32::from(projectile_shape.half_depth) + i32::from(shape.half_depth)
+                    && dz < i32::from(projectile_shape.half_height) + i32::from(shape.half_height)
                 {
                     // sub_65820 temporarily raises the victim by its source
                     // array.yaw (except model2) before copying its position.
@@ -1972,9 +1977,9 @@ impl Level2EconomyState {
                         )
                         && crate::level1_mission::source_entities_overlap(
                             projectile.position,
-                            FIREBALL_COLLISION_HALF_WIDTH,
-                            FIREBALL_COLLISION_VERTICAL_OFFSET,
-                            FIREBALL_COLLISION_HALF_HEIGHT,
+                            projectile_shape.half_width,
+                            projectile_shape.vertical_offset,
+                            projectile_shape.half_height,
                             candidate.position,
                             candidate.half_width,
                             candidate.vertical_offset,
@@ -2077,12 +2082,24 @@ impl Level2EconomyState {
             projectile.position = target.position;
         } else {
             let ground = terrain.ground_height(projectile.position);
-            let contact_height = if ground > projectile.position.z {
-                Some(ground)
+            // The no-target terrain probe always writes scratch Z, even when
+            // the flyer remains airborne. Cave ceiling evaluation replaces it
+            // only when the ground comparison did not already short-circuit.
+            let cave_limit = if ground > projectile.position.z {
+                None
             } else {
                 terrain
                     .ceiling_height(projectile.position)
-                    .map(|ceiling| ceiling.wrapping_sub(FIREBALL_COLLISION_HALF_HEIGHT))
+                    .map(|ceiling| ceiling.wrapping_sub(projectile_shape.half_height))
+            };
+            terrain.set_source_predicted_position(Position {
+                z: cave_limit.unwrap_or(ground),
+                ..projectile.position
+            });
+            let contact_height = if ground > projectile.position.z {
+                Some(ground)
+            } else {
+                cave_limit
                     .filter(|limit| projectile.position.z > *limit)
             };
             if let Some(height) = contact_height {

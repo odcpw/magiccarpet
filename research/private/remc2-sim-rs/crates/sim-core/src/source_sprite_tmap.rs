@@ -722,6 +722,7 @@ pub struct SourceSpriteTmapFrame {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceSpriteTmapBank {
     frames: Vec<SourceSpriteTmapFrame>,
+    catalog: Option<crate::source_animation::SourceTmapCatalog>,
 }
 
 impl SourceSpriteTmapBank {
@@ -745,7 +746,16 @@ impl SourceSpriteTmapBank {
                 ));
             }
         }
-        Ok(Self { frames })
+        Ok(Self { frames, catalog: None })
+    }
+
+    pub(crate) fn with_catalog(mut self, catalog: crate::source_animation::SourceTmapCatalog) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
+    pub(crate) fn catalog(&self) -> Option<&crate::source_animation::SourceTmapCatalog> {
+        self.catalog.as_ref()
     }
 
     #[must_use]

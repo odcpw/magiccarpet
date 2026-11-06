@@ -199,6 +199,59 @@ struct WaterEdgeWorld {
     water_x: u16,
 }
 
+#[test]
+fn flight_source_scratch_retains_hold_and_last_rejected_water_probe() {
+    struct ScratchWater {
+        dry: Position,
+        scratch: std::cell::Cell<Position>,
+    }
+    impl FlightWorld for ScratchWater {
+        fn source_predicted_position(&self) -> Position { self.scratch.get() }
+        fn set_source_predicted_position(&self, position: Position) { self.scratch.set(position); }
+        fn ground_height(&self, _: Position) -> i16 { 0 }
+        fn ceiling_height(&self, _: Position) -> Option<i16> { None }
+        fn material_mask(&self, position: Position) -> u32 {
+            if (position.x, position.y) == (self.dry.x, self.dry.y) {
+                0
+            } else {
+                MOVEMENT_REDIRECT_MASK
+            }
+        }
+        fn angle_flags(&self, _: Tile) -> u8 { 0 }
+    }
+    let before = Position { x: 1_000, y: 1_000, z: 1_000 };
+    let prior = Position { x: 5_000, y: 6_000, z: 700 };
+    let world = ScratchWater { dry: before, scratch: std::cell::Cell::new(prior) };
+    let mut state = FlightState {
+        position: before,
+        yaw: 256,
+        actual_speed: 96,
+        target_speed: 96,
+        skip_flight_once: true,
+        ..FlightState::default()
+    };
+    let held = step_turn(&mut state, PlayerCommand::default(), FlightProfile::OUTDOOR, &world);
+    assert_eq!(held.movement_resolution, "skipped");
+    assert_eq!(world.source_predicted_position(), prior);
+
+    let rejected = step_turn(&mut state, PlayerCommand::default(), FlightProfile::OUTDOOR, &world);
+    assert_eq!(rejected.movement_resolution, "rejected");
+    assert_eq!(rejected.committed, before);
+    let dx = i32::from(rejected.proposed.x.wrapping_sub(before.x).cast_signed());
+    let dy = i32::from(rejected.proposed.y.wrapping_sub(before.y).cast_signed());
+    let dz = i32::from(rejected.proposed.z.wrapping_sub(before.z));
+    let heading = heading_for_delta(dx, dy);
+    let pitch = pitch_for_delta(wrapping_i16(i64::from(legacy_distance_2d(dx, dy))).into(), dz);
+    let distance = i32::from(low_u16(legacy_distance_3d(dx, dy, dz)));
+    let second = ((heading & !0x01ff) + 512) & 0x07ff;
+    let weight = distance * (512 - i32::from(angle_distance(heading, second))) / 512;
+    let mut last_probe = before;
+    move_entity(&mut last_probe, second as i16, pitch, wrapping_i16(i64::from(weight)));
+    assert_ne!(last_probe, rejected.proposed);
+    assert_ne!(last_probe, rejected.committed);
+    assert_eq!(world.source_predicted_position(), last_probe);
+}
+
 impl FlightWorld for WaterEdgeWorld {
     fn ground_height(&self, _position: Position) -> i16 {
         0

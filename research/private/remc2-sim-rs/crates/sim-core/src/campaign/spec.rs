@@ -4879,8 +4879,13 @@ mod tests {
                 .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
             std::path::PathBuf::from,
         );
-        let campaign = crate::campaign::CampaignSession::open(
-            &package, super::CampaignSelection::ordinary(25).unwrap(),
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/current-level25-environment"),
+            std::path::PathBuf::from,
+        );
+        let campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            &package, &cache, super::CampaignSelection::ordinary(25).unwrap(),
         ).expect("actual final owner package reaches the production runtime");
         let flags = campaign.simulation().session.definition.source_terrain_graphics_flags();
         assert_eq!(flags, 2);

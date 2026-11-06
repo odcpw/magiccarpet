@@ -13,6 +13,7 @@ use crate::{
         Mode20SpriteCamera, Mode20SpriteDefinition, Mode20SpriteEntity, Mode20SpritePlacement,
         SourceSpritePass, project_fixed_sprite_with_depth_adjustment, project_sprite_shadow,
         rasterize_indexed_source_sprite, reproject_sprite_altitude,
+        source_sprite_view_with_depth_adjustment, Mode20SpriteProjectionLimits,
     },
     legacy_terrain::interpolate_ground,
     native_world::{CampaignEntityPresentation, MapType, ParticleParameter},
@@ -40,6 +41,9 @@ struct Sprite {
     primary_pixel_mode: u8,
     reflection_pixel_mode: u8,
     shadow: Option<Mode20SpritePlacement>,
+    reflection_demand: bool,
+    primary_demand: bool,
+    shadow_demand: bool,
 }
 
 pub(crate) struct SourceWorldSprites<'a> {
@@ -50,6 +54,8 @@ pub(crate) struct SourceWorldSprites<'a> {
     previous_pixel_mode: u8,
     stats: SourceWorldSpriteStats,
     primary_visibility_completions: Vec<u16>,
+    animation_demands: Vec<(u16, u16)>,
+    animation_sources: Vec<CampaignEntityPresentation>,
 }
 
 impl<'a> SourceWorldSprites<'a> {
@@ -129,7 +135,16 @@ impl<'a> SourceWorldSprites<'a> {
             } else {
                 project(source.primary_depth_adjustment)
             };
-            if placement.is_none() && primary.is_none() {
+            // MainInitTmaps runs after source XY/depth admission, before
+            // extent calculation/DrawSprite can reject a zero-sized pass.
+            let admits = |adjustment| source_sprite_view_with_depth_adjustment(
+                camera.render_x, camera.render_y, camera.yaw,
+                source.position.x, source.position.y,
+                Mode20SpriteProjectionLimits::exact().render_cutoff_squared, adjustment,
+            ).is_ok();
+            let reflection_demand = admits(0);
+            let primary_demand = admits(source.primary_depth_adjustment);
+            if !reflection_demand && !primary_demand {
                 continue;
             }
             let pixel_mode = |placement: Option<Mode20SpritePlacement>| {
@@ -141,10 +156,11 @@ impl<'a> SourceWorldSprites<'a> {
             };
             let primary_pixel_mode = pixel_mode(primary)?;
             let reflection_pixel_mode = pixel_mode(placement)?;
-            let shadow = if shadows
+            let shadow_demand = shadows
                 && particle.byte_10 == 0
                 && (source.control_flags >> 16) & 0x0808 == 0
-            {
+                && reflection_demand;
+            let shadow = if shadow_demand {
                 placement.and_then(|placement| {
                     project_sprite_shadow(
                         placement,
@@ -164,6 +180,9 @@ impl<'a> SourceWorldSprites<'a> {
                 primary_pixel_mode,
                 reflection_pixel_mode,
                 shadow,
+                reflection_demand,
+                primary_demand,
+                shadow_demand,
             });
         }
         for bucket in buckets.values_mut() {
@@ -179,6 +198,8 @@ impl<'a> SourceWorldSprites<'a> {
             previous_pixel_mode,
             stats: SourceWorldSpriteStats::default(),
             primary_visibility_completions: Vec::new(),
+            animation_demands: Vec::new(),
+            animation_sources: Vec::new(),
         })
     }
 
@@ -198,6 +219,14 @@ impl<'a> SourceWorldSprites<'a> {
     /// allocator generations before applying the feedback to live state.
     pub(crate) fn primary_visibility_completions(&self) -> &[u16] {
         &self.primary_visibility_completions
+    }
+
+    pub(crate) fn animation_demands(&self) -> &[(u16, u16)] {
+        &self.animation_demands
+    }
+
+    pub(crate) fn animation_sources(&self) -> &[CampaignEntityPresentation] {
+        &self.animation_sources
     }
 
     pub(crate) fn draw_cell(
@@ -240,6 +269,10 @@ impl<'a> SourceWorldSprites<'a> {
                 if !self.reflections {
                     continue;
                 }
+                if sprite.reflection_demand && self.bank.catalog().is_some() {
+                    self.animation_demands.push((source.entity_index, source.selected_tmap));
+                    self.animation_sources.push(source);
+                }
                 let Some(placement) = sprite.placement else {
                     continue;
                 };
@@ -259,12 +292,20 @@ impl<'a> SourceWorldSprites<'a> {
                 continue;
             }
             if !terrain_material_blocks_shadow(texture) {
+                if sprite.shadow_demand && self.bank.catalog().is_some() {
+                    self.animation_demands.push((source.entity_index, source.selected_tmap));
+                    self.animation_sources.push(source);
+                }
                 if let Some(shadow) = sprite.shadow {
                     self.previous_pixel_mode = 8;
                     let result = draw(shadow, 8, SourceSpritePass::Shadow)?;
                     self.stats.shadow_calls += 1;
                     self.stats.shadow_writes += u64::from(result.framebuffer_writes);
                 }
+            }
+            if sprite.primary_demand && self.bank.catalog().is_some() {
+                self.animation_demands.push((source.entity_index, source.selected_tmap));
+                self.animation_sources.push(source);
             }
             let Some(primary) = sprite.primary else {
                 continue;
@@ -298,6 +339,52 @@ mod tests {
         mode5_raster::Mode5Vertex,
         source_sprite_tmap::SourceSpriteTmapFrame,
     };
+
+    #[test]
+    fn animation_demand_precedes_zero_shadow_extent_but_not_depth_admission() {
+        let camera = Level1TerrainFrameCamera {
+            render_x: 1000, render_y: 1000, eye_z: 0, yaw: 0, pitch: 0,
+            roll: 0, fov: 128, source_turn: 0, reflections: false,
+        };
+        // Configured projection control: source shadow depth512 is admitted,
+        // its quarter-height truncates to0, and biased primary depth32 rejects.
+        let row = CampaignEntityPresentation {
+            entity_index: 1, source_id: 1, render_parameter_index: 0,
+            base_tmap: 1, selected_tmap: 1, logical_height: 1, render_mode: 0,
+            orientation_sector: 0, mirrored: false,
+            position: crate::Position { x: 1000, y: 488, z: 64 },
+            yaw: 0, pixel_mode: 0, owner_color: 0, brightness: 8192,
+            draw_order: 0, control_flags: 0, primary_depth_adjustment: -480,
+        };
+        let rejected = CampaignEntityPresentation {
+            entity_index: 2, source_id: 2, selected_tmap: 2, base_tmap: 2,
+            position: crate::Position { x: 1000, y: 1000, z: 64 },
+            primary_depth_adjustment: 0, ..row
+        };
+        let particle = ParticleParameter {
+            base_tmap: 1, word_2: 0, word_4: 0, speed: 0, rotation_speed: 1,
+            byte_10: 0, byte_11: 0, render_mode: 0, byte_13: 0,
+        };
+        let catalog = crate::source_animation::SourceTmapCatalog::new((0..504_u16)
+            .map(|selector| crate::source_animation::SourceTmapMetadata {
+                selector, group: selector, allocation_bytes: 16, encoded_frame_count: None,
+            }).collect()).unwrap();
+        let bank = SourceSpriteTmapBank::new([1, 2].map(|selector| SourceSpriteTmapFrame {
+            selector, width: 2, height: 2, pixels: vec![2; 4].into_boxed_slice(),
+        }).to_vec()).unwrap().with_catalog(catalog);
+        let mut cells = vec![0; 65536];
+        cells[259] = 1; cells[771] = 1;
+        let ground = vec![0; 65536];
+        let mut world = SourceWorldSprites::new(
+            camera, crate::terrain_frame::level1_projection(camera), MapType::Day,
+            vec![row, rejected], &[particle], &bank, &cells, &ground, 0, true,
+        ).unwrap();
+        world.draw_cell(TerrainPass::Primary, 1, 0, 320, 200,
+            &mut vec![0; 320 * 200], &vec![0; 83456]).unwrap();
+        assert_eq!(world.animation_demands(), &[(1, 1)]);
+        assert_eq!(world.stats(), SourceWorldSpriteStats::default(), "no pixel pass was called");
+        assert!(world.primary_visibility_completions().is_empty());
+    }
 
     #[test]
     fn reflected_sprite_is_consumed_by_water_before_shadow_and_primary_calls() {

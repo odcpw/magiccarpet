@@ -970,7 +970,7 @@ fn header(
                     s.control_flags,
                     s.phase,
                     s.position,
-                    244,
+                    s.sprite_index,
                 )
             }
             Kind::AuthoredModel6 => {
@@ -1139,7 +1139,16 @@ fn header(
                 .find(|s| s.source_entity_index == slot)
                 .unwrap();
             row.set_source_dword_10(s.dword_0x10);
+            row.set_actual_speed(s.actual_speed);
             row.record[96] = s.animation_frame;
+            if let Some(limit) = s.animation_limit {
+                row.record[97] = limit;
+            }
+            if let Some(axes) = s.collision_axes {
+                for (offset, value) in [86, 88, 90, 92].into_iter().zip(axes) {
+                    row.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+                }
+            }
         }
         Kind::AuthoredModel6 => {
             let s = arena
@@ -1293,7 +1302,19 @@ fn store(arena: &mut SourceArena, kind: Kind, row: &EntitySnapshot) {
                 .unwrap();
             common!(s);
             s.drawing_enabled = !row.drawing_disabled();
+            s.dword_0x10 = row.source_dword_10();
+            s.actual_speed = row.actual_speed;
+            s.sprite_index = row.particle_parameter_index.unwrap_or(s.sprite_index);
             s.animation_frame = row.record[96];
+            s.animation_limit = Some(row.record[97]);
+            if s.collision_axes.is_some() {
+                s.collision_axes = Some([
+                    row.array_yaw(),
+                    row.array_pitch(),
+                    row.array_roll(),
+                    row.array_fov(),
+                ]);
+            }
             if row.control_flags & 2 != 0 {
                 s.last_sound_id = 27;
             }
@@ -1694,6 +1715,50 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn default_water_splash_animation_uses_retained_particle_binding() {
+        let session = super::super::tests::level_two_campaign_session();
+        let particles = &session.session.definition.presentation.particles;
+        let expected_limit = particles[244].animation_limit().unwrap();
+        assert_eq!(expected_limit, 11, "actual retained particle244 animation");
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        // This is an explicit shared-constructor control. Both existing
+        // consumers receive the genuine owner particle data; no callback
+        // state or lifetime is shortened to exercise the animation.
+        let slot = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+        let source = arena.economy.initialize_authored_model5_water_splash(
+            slot,
+            session.state.position,
+            &terrain,
+        ).unwrap();
+        assert_eq!(source.animation_limit, None);
+        let mut direct = arena.economy.clone();
+        let mut state = crate::world::effects::State::default();
+        for expected_frame in 1..=2 {
+            assert!(direct.step_authored_model5_water_splash_slot(slot, particles));
+            super::visit(
+                &mut arena,
+                &mut terrain,
+                slot,
+                super::Kind::AuthoredModel5WaterSplash,
+                particles,
+                &mut state,
+                |_, _| Ok(0),
+            ).unwrap();
+            let scheduled = arena.economy.authored_model5_water_splashes().iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            let fallback = direct.authored_model5_water_splashes().iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!(scheduled.sprite_index, 244);
+            assert_eq!(scheduled.animation_limit, Some(expected_limit));
+            assert_eq!(scheduled.animation_frame, expected_frame);
+            assert_eq!(fallback.animation_frame, expected_frame);
+            assert_eq!(scheduled.life, fallback.life);
+            assert_eq!(scheduled.actual_speed, 16);
+        }
+    }
+
     #[test]
     fn fireball_collision_reaches_the_existing_magic_mine_capture_consumer() {
         use crate::Position;

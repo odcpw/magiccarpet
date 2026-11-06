@@ -1230,6 +1230,9 @@ pub struct Level2FireballProjectile {
     pub origin: FireballProjectileOrigin,
     /// SetEntityIndex changes appearance independently of collision axes.
     pub visual_index: u16,
+    /// A later SetEntityIndexAndRot owns these source yaw/pitch/roll/fov
+    /// collision axes. None retains the ordinary particle340 constructor.
+    pub collision_axes: Option<[i16; 4]>,
     /// Descriptor61 target selectors retained in source xtype/xsubtype bytes.
     pub target_class: u8,
     pub target_model: u8,
@@ -1272,6 +1275,19 @@ pub struct Level2FireballProjectile {
     pub phase: u8,
     pub active: bool,
     pub drawing_disabled: bool,
+}
+
+impl Level2FireballProjectile {
+    pub(crate) fn collision_shape(&self) -> crate::combat::area::Shape {
+        let [vertical_offset, half_width, half_depth, half_height] =
+            self.collision_axes.unwrap_or([
+                FIREBALL_COLLISION_VERTICAL_OFFSET,
+                FIREBALL_COLLISION_HALF_WIDTH,
+                FIREBALL_COLLISION_HALF_WIDTH,
+                FIREBALL_COLLISION_HALF_HEIGHT,
+            ]);
+        crate::combat::area::Shape { vertical_offset, half_width, half_depth, half_height }
+    }
 }
 
 /// One source-linked construction/defense child record. The root keeps the
@@ -1958,6 +1974,10 @@ pub struct Level2AuthoredModel5WaterSplashSource {
     pub control_flags: u32,
     pub sprite_index: u16,
     pub animation_frame: u8,
+    /// None uses the current sprite's retained particle animation limit.
+    pub animation_limit: Option<u8>,
+    pub actual_speed: i16,
+    pub collision_axes: Option<[i16; 4]>,
     pub last_sound_id: u16,
     pub position: Position,
     pub phase: u8,
@@ -3039,6 +3059,7 @@ pub struct Mc2LiveState {
     pub(crate) fireball_launch_sound_id: u16,
     pub(crate) nyphur_dispatcher: RivalWizardRoster,
     pub(crate) player_visibility: player_visibility::PlayerVisibility,
+    pub(crate) source_animations: crate::source_animation::SourceAnimationResidency,
     /// Source `FrameTimingIndex_26`, advanced once by PlayerEvents before
     /// UpdateEntities and kept distinct from every player's turn byte.
     pub(crate) source_frame_timing_index: u8,

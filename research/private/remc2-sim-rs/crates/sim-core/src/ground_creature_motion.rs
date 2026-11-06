@@ -68,14 +68,18 @@ pub(crate) fn step_ground_creature_motion<W: FlightWorld>(
     world: &W,
     config: GroundCreatureMotionConfig,
 ) -> GroundCreatureMotion {
-    sim_ground_motion::step_ground_creature_motion(
+    let motion = sim_ground_motion::step_ground_creature_motion(
         position,
         yaw,
         desired_heading,
         actual_speed,
         &GroundWorldAdapter(world),
         config,
-    )
+    );
+    // sub_1B8C0 retains the last proposal on both acceptance and rejection.
+    // Callers implementing its 0x800 hold return before reaching this bridge.
+    world.set_source_predicted_position(motion.last_predicted);
+    motion
 }
 
 pub(crate) fn relax_to_terrain<W: FlightWorld>(
@@ -126,6 +130,62 @@ pub(crate) fn tile_slope_metric<W: FlightWorld>(world: &W, position: Position) -
 mod tests {
     use super::*;
     use sim_ground_motion::GroundMotionWorld;
+
+    #[test]
+    fn blocked_motion_retains_last_proposal_without_changing_geometry_identity() {
+        use crate::native_world::{MapType, SessionTerrain, TerrainPlanes};
+
+        let terrain = SessionTerrain::from_planes(
+            MapType::Day,
+            TerrainPlanes {
+                terrain_types: vec![0; 65_536].into_boxed_slice(),
+                ground_heights: vec![0; 65_536].into_boxed_slice(),
+                shading: vec![0; 65_536].into_boxed_slice(),
+                angles: vec![0; 65_536].into_boxed_slice(),
+                secondary_heights: vec![0; 65_536].into_boxed_slice(),
+                entity_indices: vec![0; 65_536].into_boxed_slice(),
+            },
+            0,
+        );
+        let geometry_hash = terrain.deterministic_hash();
+        let origin = Position {
+            x: 0x1000,
+            y: 0x2000,
+            z: 256,
+        };
+        let motion = step_ground_creature_motion(
+            origin,
+            0,
+            0,
+            256,
+            &terrain,
+            GroundCreatureMotionConfig {
+                half_width: 0,
+                half_height: 0,
+                ground_clearance: 0,
+                descent: -128,
+                turn_limit: 0,
+                terrain_mask: 0,
+                maximum_tile_slope: 1,
+            },
+        );
+        assert_eq!(motion.result, GroundCreatureMoveResult::Blocked);
+        assert_eq!(motion.position, origin);
+        assert_eq!(
+            motion.last_predicted,
+            Position {
+                x: 0x1000,
+                y: 0x2100,
+                z: 128,
+            }
+        );
+        assert_eq!(terrain.source_predicted_position(), motion.last_predicted);
+        assert_eq!(terrain.deterministic_hash(), geometry_hash);
+        let restored = terrain.clone();
+        terrain.set_source_predicted_position(origin);
+        assert_eq!(restored.source_predicted_position(), motion.last_predicted);
+        assert_eq!(terrain.source_predicted_position(), origin);
+    }
 
     struct CaveWorld {
         ceiling: Option<i16>,

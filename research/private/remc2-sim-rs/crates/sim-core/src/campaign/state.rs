@@ -1132,6 +1132,12 @@ fn digest_source_sidecars(state: &ResetState) -> CanonicalDigest {
         );
         append_string(hasher, &state.ordinary.reset_hash());
         append_string(hasher, &state.mission.state_hash());
+        state.source_animations.hash_into(hasher);
+        hasher.update(b"source-motion-v1");
+        append_position(
+            hasher,
+            crate::FlightWorld::source_predicted_position(&state.terrain),
+        );
         append_len(hasher, state.goats.goats().len());
         append_len(hasher, state.bad_stones.len());
         state.nyphur_dispatcher.hash_into(hasher, &state.economy.entities);
@@ -1380,6 +1386,43 @@ fn digest_bytes(bytes: &[u8]) -> CanonicalDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_motion_scratch_is_reset_carried_and_hashed_outside_geometry() {
+        use crate::FlightWorld;
+
+        let mut simulation = level_two_session();
+        let public_hash = simulation.campaign_state_hash();
+        let receipt = ResetReceipt::from_state(&simulation.session.state.live);
+        let original = simulation.session.state.live.clone();
+        let candidate = original.clone();
+        let geometry = digest_terrain(&candidate.terrain);
+        let before = digest_source_sidecars(&candidate);
+        candidate.terrain.set_source_predicted_position(crate::Position {
+            x: 1234,
+            y: 5678,
+            z: -90,
+        });
+        assert_ne!(digest_source_sidecars(&candidate), before);
+        assert_eq!(digest_source_sidecars(&original), before);
+        assert_eq!(digest_terrain(&candidate.terrain), geometry);
+        assert_eq!(
+            candidate.clone().terrain.source_predicted_position(),
+            crate::Position {
+                x: 1234,
+                y: 5678,
+                z: -90,
+            },
+        );
+        simulation.canonical_terrain().set_source_predicted_position(
+            candidate.terrain.source_predicted_position(),
+        );
+        assert_ne!(simulation.campaign_state_hash(), public_hash);
+        assert_ne!(ResetReceipt::from_state(&simulation.session.state.live), receipt);
+        simulation.reset();
+        assert_eq!(simulation.campaign_state_hash(), public_hash);
+        assert_eq!(ResetReceipt::from_state(&simulation.session.state.live), receipt);
+    }
     use crate::{PlayerCommand, Position, level1_mission::CastleTerrainUpdate};
     use std::path::PathBuf;
 

@@ -719,7 +719,10 @@ fn load_mc2_campaign_inputs(
     }
 }
 
-pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v6";
+// Earlier contracts did not retain ordered animation demands. Replaying them
+// cannot reconstruct source animation allocation order; reject instead of
+// inventing historical draw inputs.
+pub const MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v7";
 const LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT: &str = "carpet-flight-mc2-campaign-replay-save/v5";
 pub const MAX_MC2_CAMPAIGN_REPLAY_SAVE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS: usize = 1_000_000;
@@ -745,6 +748,8 @@ struct Mc2PrimaryVisibilityChange {
     before_operation: usize,
     tick: u64,
     identities: Vec<(u16, u32)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    animation_demands: Vec<u16>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -893,10 +898,8 @@ impl Mc2CampaignReplaySave {
     }
 
     fn verify(&self) -> bool {
-        ((self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
+        (self.save_contract == MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
             && self.completed_levels.is_some())
-            || (self.save_contract == LEGACY_MC2_CAMPAIGN_REPLAY_SAVE_CONTRACT
-                && self.completed_levels.is_none()))
             && self.receipt_sha256 == self.compute_receipt_sha256()
     }
 }
@@ -2251,7 +2254,10 @@ impl Mc2RuntimePackageResolver {
         if save.primary_visibility_changes.len() > MAX_MC2_CAMPAIGN_REPLAY_OPERATIONS + 1
             || save.primary_visibility_changes.iter().any(|change| {
                 change.before_operation > save.operations.len()
-                    || change.identities.is_empty() || change.identities.len() > 1000
+                    || (change.identities.is_empty() && change.animation_demands.is_empty())
+                    || change.identities.len() > 1000
+                    || change.animation_demands.len() > 504
+                    || change.animation_demands.iter().any(|&selector| selector >= 504)
                     // Imported reset carriers legitimately have generation0;
                     // the canonical current-handle consumer validates it.
                     || change.identities.iter().any(|&(slot, _)| slot == 0 || slot >= 1000)
@@ -2405,7 +2411,7 @@ impl Mc2RuntimePackageResolver {
                         .is_some_and(|change| change.before_operation == operation_index)
                     {
                         let change = primary_visibility_changes.next().expect("matched source primary boundary");
-                        candidate.backend_mut().apply_primary_visibility_change(change.tick, &change.identities)
+                        candidate.backend_mut().apply_primary_visibility_change(change.tick, &change.identities, &change.animation_demands)
                             .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
                     }
                     while dynamic_lighting_changes
@@ -3009,14 +3015,16 @@ impl Mc2CampaignBackend {
         frame: &crate::day_indexed_frame::DayIndexedFrame,
         generation: u64,
     ) -> std::result::Result<(), String> {
+        let animation_demands = self.campaign.simulation()
+            .changing_source_animation_demands(frame.animation_demands())?;
         let changed = frame.apply_primary_visibility(self.campaign.simulation_mut(), generation)
             .map_err(|error| error.to_string())?;
-        self.retain_primary_visibility_change(frame.tick, changed);
+        self.retain_primary_visibility_change(frame.tick, changed, animation_demands);
         Ok(())
     }
 
-    fn retain_primary_visibility_change(&mut self, tick: u64, changed: Vec<(u16, u32)>) {
-        if changed.is_empty() { return; }
+    fn retain_primary_visibility_change(&mut self, tick: u64, changed: Vec<(u16, u32)>, animation_demands: Vec<u16>) {
+        if changed.is_empty() && animation_demands.is_empty() { return; }
         let boundary = self.replay_operations.len();
         if let Some(previous) = self.primary_visibility_changes.last_mut()
             .filter(|change| change.before_operation == boundary && change.tick == tick)
@@ -3024,18 +3032,20 @@ impl Mc2CampaignBackend {
             previous.identities.extend(changed);
             previous.identities.sort_unstable();
             previous.identities.dedup();
+            previous.animation_demands.extend(animation_demands);
         } else {
             self.primary_visibility_changes.push(Mc2PrimaryVisibilityChange {
-                before_operation: boundary, tick, identities: changed,
+                before_operation: boundary, tick, identities: changed, animation_demands,
             });
         }
     }
 
-    fn apply_primary_visibility_change(&mut self, tick: u64, identities: &[(u16, u32)]) -> std::result::Result<(), String> {
+    fn apply_primary_visibility_change(&mut self, tick: u64, identities: &[(u16, u32)], animation_demands: &[u16]) -> std::result::Result<(), String> {
         let handles = identities.iter().map(|&(source_slot, generation)|
             crate::campaign::source_arena::SourceEntityHandle { source_slot, generation }).collect::<Vec<_>>();
-        let changed = self.campaign.simulation_mut().apply_primary_sprite_visibility(tick, &handles)?;
-        self.retain_primary_visibility_change(tick, changed);
+        let changing_demands = self.campaign.simulation().changing_source_animation_demands(animation_demands)?;
+        let changed = self.campaign.simulation_mut().apply_source_render_feedback(tick, &handles, animation_demands)?;
+        self.retain_primary_visibility_change(tick, changed, changing_demands);
         Ok(())
     }
 
@@ -4697,7 +4707,8 @@ pub(crate) mod tests {
             let before = campaign.clone();
             let history_before = session.backend().primary_visibility_changes.clone();
             session.backend_mut().acknowledge_primary_sprite_frame(&frame, generation).unwrap();
-            if session.backend().primary_visibility_changes == history_before { continue; }
+            if session.backend().primary_visibility_changes == history_before
+                || session.backend().primary_visibility_changes.last().unwrap().identities.is_empty() { continue; }
             let expected = session.backend().campaign.state_hash();
             let mut save = Mc2CampaignReplaySave::new(false, session.definition().as_ref().clone(),
                 session.backend().initial_semantic_spell_carry().unwrap(), Vec::new(),
@@ -4715,9 +4726,9 @@ pub(crate) mod tests {
             let before_hash = backend.campaign.state_hash();
             let mut stale = change.identities.clone();
             stale[0].1 = stale[0].1.wrapping_add(1);
-            assert!(backend.apply_primary_visibility_change(change.tick, &stale).is_err());
+            assert!(backend.apply_primary_visibility_change(change.tick, &stale, &change.animation_demands).is_err());
             assert_eq!(backend.campaign.state_hash(), before_hash);
-            backend.apply_primary_visibility_change(change.tick, &change.identities).unwrap();
+            backend.apply_primary_visibility_change(change.tick, &change.identities, &change.animation_demands).unwrap();
             assert_eq!(backend.campaign.state_hash(), expected,
                 "the replay consumer must reproduce the actual render input without rerendering or RNG");
             assert_eq!(backend.primary_visibility_changes, decoded.primary_visibility_changes);
@@ -4727,6 +4738,61 @@ pub(crate) mod tests {
             return;
         }
         panic!("ordinary boss primary rendering produced no retained replay input");
+    }
+
+    #[test]
+    fn source_animation_demand_history_survives_real_cold_load_and_reset() {
+        use crate::game_runtime::GameRuntime;
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let root = generated.join("level3-day-block32-campaign-recipe-v2");
+        let cache = generated.join("mc-level3-environment-exit-20261025");
+        let inputs = Mc2CampaignInputs::with_owner_cache(&root, &cache);
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::new(generated.join("mc-bhq8-level1-collision-v5-night")),
+            Mc2CampaignInputs::new(descriptor_fixture_path()), inputs.clone(),
+        ]).unwrap();
+        let definition = load_mc2_campaign_with_owner_cache(&root, &cache, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(&Mc2CampaignAdapter, Arc::new(definition), 921, inputs).unwrap();
+        let initial = session.backend().campaign.simulation().source_animations.clone();
+        session.step(guard(&session), GameCommand::default()).unwrap();
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache).unwrap();
+        let generation = session.identity().generation;
+        let campaign = &session.backend().campaign;
+        let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+            campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+        session.backend_mut().acknowledge_primary_sprite_frame(&frame, generation).unwrap();
+        // Configured ordered demand input to the real replay consumer. This
+        // deliberately exercises an available but unresident owner group; it
+        // is not a claim that the current camera naturally requested it.
+        let selector = (0..504_u16).find(|&selector|
+            assets.source_animation_catalog().unwrap().record(selector).unwrap().encoded_frame_count.is_some()
+                && !session.backend().campaign.simulation()
+                    .changing_source_animation_demands(&[selector]).unwrap().is_empty()).unwrap();
+        let tick = session.identity().tick;
+        session.backend_mut().apply_primary_visibility_change(tick, &[], &[selector]).unwrap();
+        assert_ne!(session.backend().campaign.simulation().source_animations, initial);
+        let mut save = Mc2CampaignReplaySave::new(false, session.definition().as_ref().clone(),
+            session.backend().initial_semantic_spell_carry().unwrap(), Vec::new(),
+            session.backend().replay_operations.clone(), &session.backend().snapshot());
+        save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
+        assert!(save.primary_visibility_changes.last().unwrap().animation_demands.contains(&selector));
+        save.receipt_sha256 = save.compute_receipt_sha256();
+        let bytes = serde_json::to_vec(&save).unwrap();
+        let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(922).unwrap();
+        let guard = runtime.identity().guard();
+        resolver.load_replay(&mut runtime, guard, 923, &bytes).unwrap();
+        let restored = runtime.session().unwrap();
+        assert_eq!(restored.backend().snapshot(), session.backend().snapshot());
+        assert_eq!(restored.backend().campaign.simulation().source_animations,
+            session.backend().campaign.simulation().source_animations);
+        assert_eq!(resolver.save_replay(&runtime).unwrap(), bytes);
+        let mut old = save;
+        old.save_contract = "carpet-flight-mc2-campaign-replay-save/v6".into();
+        old.receipt_sha256 = old.compute_receipt_sha256();
+        assert!(!old.verify(), "a valid old receipt cannot invent missing demand history");
+        let backend = runtime.session_mut().unwrap().backend_mut();
+        backend.campaign.simulation_mut().reset();
+        assert_eq!(backend.campaign.simulation().source_animations, initial);
     }
 
     #[test]

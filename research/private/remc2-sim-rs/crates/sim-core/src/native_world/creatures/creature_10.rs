@@ -176,6 +176,9 @@ pub(crate) struct Frame {
     pub model21_count: u16,
     pub model25_count: u16,
     pub source_setting: u16,
+    /// The optional literal source animation-table read for this callback.
+    /// Unloaded assets leave the source's already assigned timer intact.
+    pub source_animation_timer: Option<u16>,
     /// Source global `word_0x36546`, shared by the mode-7 push callback.
     pub pressure_speed: i16,
     pub player_class: u8,
@@ -339,7 +342,13 @@ pub(crate) fn step(
             actor.source_animation = 113;
             actor.summon_variant = 0;
             set_animation(actor, &mut effects, particles, 343)?;
+            if let Some(timer) = frame.source_animation_timer {
+                actor.timer = i32::from(timer);
+            }
             actor.timer = actor.timer.wrapping_sub(1);
+            if actor.timer <= 0 {
+                actor.phase = 8;
+            }
         }
         7 => {
             actor.timer = actor.timer.wrapping_sub(1);
@@ -362,7 +371,13 @@ pub(crate) fn step(
             actor.timer = 16;
             actor.source_animation = 22;
             set_animation(actor, &mut effects, particles, 344)?;
+            if let Some(timer) = frame.source_animation_timer {
+                actor.timer = i32::from(timer);
+            }
             actor.timer = actor.timer.wrapping_sub(1);
+            if actor.timer <= 0 {
+                actor.phase = 2;
+            }
         }
         11 => {
             actor.timer = actor.timer.wrapping_sub(1);
@@ -393,6 +408,9 @@ pub(crate) fn step(
                 actor.phase = 14;
                 actor.timer = 32;
                 set_animation(actor, &mut effects, particles, 345)?;
+                if let Some(timer) = frame.source_animation_timer {
+                    actor.timer = i32::from(timer);
+                }
             }
         }
         14 => {
@@ -487,7 +505,7 @@ fn select_attack(actor: &mut Actor, frame: Frame) {
 
     let mut secondary = false;
     if low_roll < 40 {
-        return;
+        secondary = true;
     } else if low_roll <= 48 {
         actor.timer = 8;
         actor.attack_remaining = 8;
@@ -750,6 +768,7 @@ impl Default for Frame {
             model21_count: 0,
             model25_count: 0,
             source_setting: 0,
+            source_animation_timer: None,
             pressure_speed: 0,
             player_class: 0,
             player_model: 0,
@@ -801,6 +820,165 @@ mod tests {
             pending_attacker: 0,
             source_counter: 0,
         }
+    }
+
+    #[test]
+    fn source_attack_selection_preserves_fallback_draws_and_population_limits() {
+        fn draw(value: u16) -> u16 {
+            value.wrapping_mul(9_377).wrapping_add(9_439)
+        }
+
+        const SETTING: u16 = 17;
+        fn seed_for(low: u16, secondary: Option<u16>) -> u16 {
+            (0..=u16::MAX)
+                .find(|&seed| {
+                    let first = draw(seed);
+                    first % 70 == low
+                        && secondary.is_none_or(|roll| {
+                            draw(first.wrapping_add(SETTING)) % 29 == roll
+                        })
+                })
+                .expect("source rolls have an available seed")
+        }
+        let frame = Frame {
+            source_setting: SETTING,
+            model19_count: 27,
+            model0_count: 3,
+            model25_count: 5,
+            model21_count: 11,
+            ..Frame::default()
+        };
+
+        // Non-special low rolls must take the second RNG draw and preserve
+        // its source-setting update. Exercise each secondary interval.
+        for (low, roll, mode, remaining, timer) in [
+            (0, 0, 1, 10, 10),
+            (2, 8, 2, 8, 8),
+            (7, 18, 9, 1, 5),
+            (39, 26, 8, 1, 5),
+            (39, 28, 7, 24, 32),
+        ] {
+            let mut actor = pressure_actor();
+            actor.rng = seed_for(low, Some(roll));
+            let first = draw(actor.rng).wrapping_add(SETTING);
+            let expected_rng = draw(first).wrapping_add(SETTING);
+            select_attack(&mut actor, frame);
+            assert_eq!(
+                (actor.summon_mode, actor.attack_remaining, actor.timer),
+                (mode, remaining, timer)
+            );
+            assert_eq!(actor.rng, expected_rng);
+            assert_eq!(actor.subspell_index & 2, 2);
+        }
+
+        // Rolls 3 through 6 take the pressure branch without a second draw.
+        for low in 3..=6 {
+            let mut actor = pressure_actor();
+            actor.rng = seed_for(low, None);
+            let expected_rng = draw(actor.rng).wrapping_add(SETTING);
+            select_attack(&mut actor, frame);
+            assert_eq!(
+                (actor.summon_mode, actor.attack_remaining, actor.timer),
+                (7, 24, 32)
+            );
+            assert_eq!(actor.rng, expected_rng);
+        }
+
+        // Each population cap admits its source branch below the cap; at the
+        // cap, the very same first roll proceeds through the second draw.
+        for (low, admitted_mode) in [
+            (40, 6), (48, 6), (49, 3), (58, 3), (59, 5), (68, 5), (69, 4),
+        ] {
+            let seed = seed_for(low, Some(18));
+            let first = draw(seed).wrapping_add(SETTING);
+            let mut admitted = pressure_actor();
+            admitted.rng = seed;
+            select_attack(&mut admitted, frame);
+            assert_eq!(admitted.summon_mode, admitted_mode, "first roll {low}");
+            assert_eq!(admitted.rng, first);
+
+            let capped = Frame {
+                model19_count: 28,
+                model0_count: 4,
+                model25_count: 6,
+                model21_count: 12,
+                ..frame
+            };
+            let mut rejected = pressure_actor();
+            rejected.rng = seed;
+            select_attack(&mut rejected, capped);
+            assert_eq!(
+                (rejected.summon_mode, rejected.attack_remaining, rejected.timer),
+                (9, 1, 5)
+            );
+            assert_eq!(rejected.rng, draw(first).wrapping_add(SETTING));
+        }
+
+        // The source high-bit override forces the non-special low path.
+        let mut overridden = pressure_actor();
+        overridden.rng = seed_for(69, Some(28));
+        overridden.subspell_index = 0x80;
+        let first = draw(overridden.rng).wrapping_add(SETTING);
+        select_attack(&mut overridden, frame);
+        assert_eq!(
+            (overridden.summon_mode, overridden.attack_remaining, overridden.timer),
+            (7, 24, 32)
+        );
+        assert_eq!(overridden.rng, draw(first).wrapping_add(SETTING));
+        assert_eq!(overridden.subspell_index & 0x82, 2);
+    }
+
+    #[test]
+    fn source_animation_timer_controls_phase_tails_only_when_read() {
+        let particle = crate::native_world::ParticleParameter {
+            base_tmap: 0,
+            word_2: 0,
+            word_4: 0,
+            speed: 0,
+            rotation_speed: 0,
+            byte_10: 0,
+            byte_11: 0,
+            render_mode: 17,
+            byte_13: 0,
+        };
+        let particles = vec![particle; 346];
+        // None is the unloaded path; Some is the value read from the
+        // source animation record, not the animation's frame count.
+        for (phase, read, next_phase, timer, visual) in [
+            (6, None, 7, 15, 343),
+            (6, Some(5), 7, 4, 343),
+            (6, Some(1), 8, 0, 343),
+            (6, Some(0), 8, -1, 343),
+            (10, None, 11, 15, 344),
+            (10, Some(5), 11, 4, 344),
+            (10, Some(1), 2, 0, 344),
+            (10, Some(0), 2, -1, 344),
+            (13, None, 14, 32, 345),
+            (13, Some(5), 14, 5, 345),
+            (13, Some(0), 14, 0, 345),
+        ] {
+            let mut actor = pressure_actor();
+            actor.phase = phase;
+            actor.timer = 1;
+            let frame = Frame {
+                source_animation_timer: read,
+                ..Frame::default()
+            };
+            let effects = step(&mut actor, frame, &particles).unwrap();
+            assert_eq!((actor.phase, actor.timer), (next_phase, timer));
+            assert_eq!((actor.visual, effects.animation), (visual, Some(visual)));
+        }
+
+        let mut actor = pressure_actor();
+        actor.phase = 13;
+        actor.timer = 2;
+        let frame = Frame {
+            source_animation_timer: Some(0),
+            ..Frame::default()
+        };
+        let effects = step(&mut actor, frame, &particles).unwrap();
+        assert_eq!((actor.phase, actor.timer), (13, 1));
+        assert_eq!(effects.animation, None);
     }
 
     #[test]

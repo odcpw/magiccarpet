@@ -575,6 +575,10 @@ impl DayIndexedFrameAssets {
         self.materials.palette_rgb8()
     }
 
+    pub(crate) fn source_animation_catalog(&self) -> Option<&crate::source_animation::SourceTmapCatalog> {
+        self.materials.source_tmaps().and_then(|bank| bank.catalog())
+    }
+
     #[must_use]
     pub fn tablesd(&self) -> &[u8] {
         self.materials.tables()
@@ -615,6 +619,10 @@ pub struct DayIndexedFrame {
     // Only actual primary DrawSprite completions enter this private carrier.
     // Bind immutable NewEvent identities before the renderer lends state back.
     primary_visibility: Vec<crate::campaign::source_arena::SourceEntityHandle>,
+    animation_demands: Vec<u16>,
+    animation_catalog: Option<crate::source_animation::SourceTmapCatalog>,
+    animation_sources: Vec<crate::native_world::CampaignEntityPresentation>,
+    render_identities: Vec<crate::campaign::source_arena::SourceEntityHandle>,
     visibility_package: String,
     visibility_camera: sim_session::CameraPose,
     visibility_sources: Vec<crate::native_world::EntitySnapshot>,
@@ -646,6 +654,21 @@ impl DayIndexedFrame {
         {
             return Err(DayIndexedFrameError::new("primary sprite feedback belongs to a different source view"));
         }
+        session.validate_source_animation_catalog(self.animation_catalog.as_ref())
+            .map_err(DayIndexedFrameError::new)?;
+        if self.render_identities.iter().any(|handle|
+            session.source_arena().handle(handle.source_slot) != Some(*handle)) {
+            return Err(DayIndexedFrameError::new("render demand lost its current source identity"));
+        }
+        if !self.animation_sources.is_empty() {
+            let current = session.campaign_entity_presentations(self.visibility_camera.yaw)
+                .map_err(|error| DayIndexedFrameError::new(error.to_string()))?
+                .into_iter().map(|row| (row.entity_index, row))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if self.animation_sources.iter().any(|prior| current.get(&prior.entity_index) != Some(prior)) {
+                return Err(DayIndexedFrameError::new("authoritative render source changed after rendering"));
+            }
+        }
         for prior in &self.visibility_sources {
             let current = &session.entities()[usize::from(prior.index)];
             let mut acknowledged = prior.clone();
@@ -654,9 +677,11 @@ impl DayIndexedFrame {
                 return Err(DayIndexedFrameError::new("primary sprite source changed after rendering"));
             }
         }
-        session.apply_primary_sprite_visibility(self.tick, &self.primary_visibility)
+        session.apply_source_render_feedback(self.tick, &self.primary_visibility, &self.animation_demands)
             .map_err(DayIndexedFrameError::new)
     }
+
+    pub(crate) fn animation_demands(&self) -> &[u16] { &self.animation_demands }
 
 }
 
@@ -1341,11 +1366,21 @@ fn render_environment_indexed_frame(
             sprites.primary_visibility_completions().iter()
                 .filter_map(|&slot| session.source_arena().handle(slot)).collect()
         }),
+        animation_demands: source_sprites.as_ref().map_or_else(Vec::new, |sprites|
+            sprites.animation_demands().iter().map(|&(_, selector)| selector).collect()),
+        animation_catalog: assets.source_animation_catalog().cloned(),
+        animation_sources: source_sprites.as_ref().map_or_else(Vec::new, |sprites|
+            sprites.animation_sources().to_vec()),
+        render_identities: source_sprites.as_ref().map_or_else(Vec::new, |sprites|
+            sprites.animation_demands().iter().map(|&(slot, _)| slot)
+                .chain(sprites.primary_visibility_completions().iter().copied())
+                .filter_map(|slot| session.source_arena().handle(slot)).collect()),
         visibility_package: session.package_sha256().to_owned(),
         visibility_camera: session.source_camera_pose(),
         visibility_sources: source_sprites.as_ref().map_or_else(Vec::new, |sprites| {
-            sprites.primary_visibility_completions().iter()
-                .map(|&slot| session.entities()[usize::from(slot)].clone()).collect()
+            sprites.animation_demands().iter().map(|&(slot, _)| slot)
+                .chain(sprites.primary_visibility_completions().iter().copied())
+                .map(|slot| session.entities()[usize::from(slot)].clone()).collect()
         }),
         palette_rgb8,
         cave_terrain_orders,
@@ -2053,6 +2088,13 @@ mod tests {
             wrong = frame.clone();
             wrong.primary_visibility[0].generation = wrong.primary_visibility[0].generation.wrapping_add(1);
             assert!(wrong.apply_primary_visibility(campaign.simulation_mut(), generation).is_err());
+            assert!(frame.apply_primary_visibility(campaign.simulation_mut(), generation.wrapping_add(1)).is_err());
+            wrong = frame.clone();
+            wrong.animation_catalog = None;
+            assert!(wrong.apply_primary_visibility(campaign.simulation_mut(), generation).is_err());
+            wrong = frame.clone();
+            wrong.animation_demands.extend([0, 504]);
+            assert!(wrong.apply_primary_visibility(campaign.simulation_mut(), generation).is_err());
             assert_eq!(campaign.state_hash(), before, "all invalid receipts reject before any write");
             let mut changed_source = campaign.clone();
             let slot = frame.primary_visibility[0].source_slot;
@@ -2069,6 +2111,49 @@ mod tests {
             return;
         }
         panic!("actual boss primary rendering produced no visibility completion");
+    }
+
+    #[test]
+    fn animation_feedback_rejects_same_tick_typed_splash_change() {
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map(PathBuf::from)
+            .unwrap_or_else(|| generated_path("mc-bhq10-owner-v3-level25-20261029"));
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map(PathBuf::from)
+            .unwrap_or_else(|| generated_path("dragon-bee-20261105-integration/current-level25-environment"));
+        let assets = DayIndexedFrameAssets::load(&cache).unwrap();
+        let mut campaign = crate::campaign::CampaignSession::open_with_owner_cache(
+            package, cache, crate::campaign::spec::CampaignSelection::ordinary(25).unwrap(),
+        ).unwrap();
+        campaign.step(crate::PlayerCommand::default(), 0);
+        let camera = camera_from_session(campaign.simulation()).unwrap();
+        let mut position = crate::Position { x: camera.render_x, y: camera.render_y, z: 0 };
+        crate::move_entity(&mut position, camera.yaw, 0, 1024);
+        // Configured real NewEvent+NewAdd0A05 constructor, followed by its
+        // actual typed owner update without advancing the session tick.
+        let live = &mut campaign.simulation_mut().session.state.live;
+        let slot = live.economy.allocate_source_slot_with_terrain(&mut live.terrain).unwrap();
+        live.economy.economy.initialize_authored_model5_water_splash(slot, position, &live.terrain).unwrap();
+        let generation = campaign.generation();
+        let tick = campaign.simulation().state.tick;
+        let handle = campaign.simulation().source_arena().handle(slot).unwrap();
+        let raw = campaign.simulation().entities()[usize::from(slot)].clone();
+        let frame = render_level2_day_indexed_frame(campaign.inspection(), campaign.simulation(), &assets, generation).unwrap();
+        let prior = *frame.animation_sources.iter().find(|source| source.entity_index == slot)
+            .expect("the real renderer admits the configured typed splash");
+        let particles = campaign.simulation().session.definition.presentation.particles.clone();
+        assert!(campaign.simulation_mut().economy_mut().step_authored_model5_water_splash_slot(slot, &particles));
+        assert_eq!(campaign.simulation().state.tick, tick);
+        assert_eq!(campaign.simulation().source_arena().handle(slot), Some(handle));
+        assert_eq!(campaign.simulation().entities()[usize::from(slot)], raw,
+            "the retained raw placeholder does not observe this typed mutation");
+        let current = campaign.simulation().campaign_entity_presentations(camera.yaw).unwrap()
+            .into_iter().find(|source| source.entity_index == slot).unwrap();
+        assert_ne!(prior, current);
+        let hash = campaign.state_hash();
+        let animations = campaign.simulation().source_animations.clone();
+        let error = frame.apply_primary_visibility(campaign.simulation_mut(), generation).unwrap_err();
+        assert!(error.to_string().contains("authoritative render source changed"));
+        assert_eq!(campaign.state_hash(), hash);
+        assert_eq!(campaign.simulation().source_animations, animations);
     }
 
     #[test]

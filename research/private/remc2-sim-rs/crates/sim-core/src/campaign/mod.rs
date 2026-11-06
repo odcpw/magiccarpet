@@ -121,6 +121,7 @@ impl CampaignSession {
     ) -> Result<Self, CampaignOpenError> {
         let owner_cache = owner_cache.as_ref();
         Self::open_with_materializer(package_root.as_ref(), selection, |definition| {
+            let mut animation_catalog = None;
             let inspection = if selection == CampaignSelection::LEVEL1
                 || owner_cache.join("materials/descriptor.json").is_file()
             {
@@ -154,15 +155,22 @@ impl CampaignSession {
                         "material cache does not match the opened campaign package",
                     ));
                 }
+                animation_catalog = assets.source_animation_catalog().cloned();
                 NativeWorld::inspect_campaign_definition_with_dynamic_lighting(
                     definition, None, enabled,
                 )?
             } else {
+                if requires_source_animation_assets(definition) {
+                    return Err(missing_source_animation_assets());
+                }
                 NativeWorld::inspect_campaign_definition_with_dynamic_lighting(
                     definition, Some(owner_cache), enabled,
                 )?
             };
-            let simulation = inspection.campaign_reset_session_from_definition(definition)?;
+            let mut simulation = inspection.campaign_reset_session_from_definition(definition)?;
+            if let Some(catalog) = animation_catalog {
+                simulation.bind_source_animation_catalog(catalog)?;
+            }
             Ok((inspection, simulation))
         })
     }
@@ -180,6 +188,9 @@ impl CampaignSession {
                 .map_err(CampaignOpenError::Preflight)?;
         let (inspection, simulation) =
             materialize(&definition).map_err(CampaignOpenError::Materialization)?;
+        if requires_source_animation_assets(&definition) && !simulation.source_animations.is_bound() {
+            return Err(CampaignOpenError::Materialization(missing_source_animation_assets()));
+        }
         Ok(Self {
             definition: Arc::new(definition),
             inspection: Arc::new(inspection),
@@ -812,6 +823,18 @@ impl CampaignSession {
     pub fn simulation_mut(&mut self) -> &mut Mc2Simulation {
         &mut self.simulation
     }
+}
+
+fn requires_source_animation_assets(definition: &CampaignDefinition) -> bool {
+    let enabled = definition.campaign_spec.presentation_recipe.terrain_graphics_flags
+        & u32::from(crate::native_world::creatures::creature_10::SOURCE_FEATURE_MASK) != 0;
+    enabled && definition.creature_bindings().values()
+        .chain(definition.initial_creature_bindings().values())
+        .any(|kind| *kind == crate::level_definition::CreatureKind::FinalBoss)
+}
+
+fn missing_source_animation_assets() -> NativeWorldError {
+    NativeWorldError::new("missing gameplay animation assets: enabled final-boss producer requires the complete qualified TMAP catalog; open with its owner material cache")
 }
 
 #[cfg(test)]
@@ -2583,7 +2606,7 @@ mod tests {
             staged_roam.yaw,
             staged_roam.roll,
             staged_roam.actual_speed,
-            &firefly_route.simulation().session.state.live.terrain,
+            &firefly_route.simulation().session.state.live.terrain.clone(),
             motion_config,
         );
         let next_rng16 = |seed: u16| seed.wrapping_mul(9_377).wrapping_add(9_439);
@@ -2677,7 +2700,7 @@ mod tests {
             linked_before.yaw,
             linked_before.roll,
             linked_before.actual_speed,
-            &firefly_route.simulation().session.state.live.terrain,
+            &firefly_route.simulation().session.state.live.terrain.clone(),
             motion_config,
         );
         let mut invalid_link = firefly_route.clone();
@@ -2769,7 +2792,7 @@ mod tests {
             decision_root_before.yaw,
             decision_root_before.roll,
             decision_root_before.actual_speed,
-            &firefly_route.simulation().session.state.live.terrain,
+            &firefly_route.simulation().session.state.live.terrain.clone(),
             motion_config,
         );
         let expected_linked_roll = i16::try_from(crate::heading_for_positions(
@@ -2876,7 +2899,7 @@ mod tests {
                 root.yaw,
                 root.roll,
                 root.actual_speed,
-                &route.simulation().session.state.live.terrain,
+                &route.simulation().session.state.live.terrain.clone(),
                 motion_config,
             )
         };

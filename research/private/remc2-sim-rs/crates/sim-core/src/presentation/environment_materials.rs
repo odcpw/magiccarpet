@@ -508,8 +508,24 @@ impl EnvironmentResources {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let source_tmaps =
-            crate::source_sprite_tmap::SourceSpriteTmapBank::new(frames).map_err(invalid)?;
+        let metadata = descriptor["tmaps"]["textures"].as_array().unwrap().iter().map(|row| {
+            let selector = u16::try_from(row["index"].as_u64().ok_or_else(|| invalid("TMAP selector missing"))?)
+                .map_err(|_| invalid("TMAP selector exceeds u16"))?;
+            let group = u16::try_from(row["group"].as_u64().ok_or_else(|| invalid("TMAP group missing"))?)
+                .map_err(|_| invalid("TMAP group exceeds u16"))?;
+            let decoded = product(&products, field(row, "decoded_payload_path")?, None)?;
+            let metadata = crate::source_animation::SourceTmapMetadata::from_decoded(selector, group, &decoded)
+                .map_err(invalid)?;
+            if row["animated"].as_bool().unwrap_or(false) != metadata.encoded_frame_count.is_some()
+                || (metadata.encoded_frame_count.is_some()
+                    && row["frame_count"].as_u64() != metadata.encoded_frame_count.map(u64::from)) {
+                return Err(invalid("TMAP animation metadata differs from decoded owner header"));
+            }
+            Ok(metadata)
+        }).collect::<Result<Vec<_>>>()?;
+        let catalog = crate::source_animation::SourceTmapCatalog::new(metadata).map_err(invalid)?;
+        let source_tmaps = crate::source_sprite_tmap::SourceSpriteTmapBank::new(frames)
+            .map_err(invalid)?.with_catalog(catalog);
         Ok(Self {
             profile: Some(profile),
             content_sha256: content.to_owned(),
