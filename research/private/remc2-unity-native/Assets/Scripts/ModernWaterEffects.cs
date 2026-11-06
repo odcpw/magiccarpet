@@ -9,7 +9,7 @@ namespace MagicCarpet.Native
     {
         private readonly GameObject root;
         private readonly ParticleSystem spray, ember;
-        private readonly ModernSteamVolume steam;
+        private readonly ModernSteamVolumePool steam;
         private readonly Material sprayMaterial, emberMaterial;
         private uint seed = 314159;
         internal Vector3? LatestCloudCenter => steam.LatestCenter;
@@ -28,7 +28,7 @@ namespace MagicCarpet.Native
             for (var i = 0; i + 1 < args.Length; i++)
                 if (args[i] == "-mc-steam-resolution" && !int.TryParse(args[i + 1], out grid))
                     throw new ArgumentException("Steam resolution must be 32, 48 or 64");
-            steam = new ModernSteamVolume(parent, grid);
+            steam = new ModernSteamVolumePool(parent, grid);
             ember = Create("Review projectile light", emberMaterial, 96, 0f, false);
         }
 

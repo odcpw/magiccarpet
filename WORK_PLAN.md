@@ -1,9 +1,9 @@
 # Shared-engine delivery plan
 
-## Modern environment sandbox — current graphics priority (2026-11-06)
+## Modern environment sandbox — verified milestone (2026-11-06)
 
 Oliver requested environment first, then replacement 3D assets. The Modern
-owner is delivering a freely explorable sandbox using the existing terrain,
+owner has delivered a freely explorable NightSpire sandbox using the existing terrain,
 vegetation, wind, water and steam. Creature/menu replacement and VR follow this
 environment milestone. The separate Original gameplay delivery below continues
 under its existing ownership; do not mix its native changes into visual proofs.
@@ -14,20 +14,33 @@ under its existing ownership; do not mix its native changes into visual proofs.
       wind shared by vegetation, water, clouds and steam.
 - [x] Interactive ripples and hot-water quenches, persistent steam wakes and
       clear controls for repeatable experiments.
-- [ ] Terrain/shoreline and vegetation polish verified in close and moving views.
-      Submerged geometry, continuous shallow banks and denser shore vegetation
-      are installed and inspected. Angular mountain silhouettes and source-grid
-      coast shape remain; improve those before calling the environment finished.
-- [ ] Believable torch/firelight, restrained settlement glow and sky detail.
-      Day/night sky and restrained local torch lighting are installed. Local
-      volumetric firelight and richer flame motion remain open.
-- [x] Installed sandbox, inspected motion video, focused checks and repeated
-      frame-time measurements. Distinguish frozen-sandbox from gameplay cost.
-      Build `build-cr_6x8g7`: 72 Modern checks pass; reviewed 60-second tour;
-      six quiet private-Wayland runs average 8.38–8.89 ms at 1600×900. Campaign
-      is paused; actual desktop remains locked, so neither proves gameplay cost.
-- [ ] Shoreline breakers/run-up, local volumetric firelight and distant steam
-      handoff. Keep these attached to environment delivery before 3D game assets.
+- [x] Reconstructed terrain, continuous submerged banks and grounded vegetation
+      inspected from close, high and moving views. The original exaggerated
+      mountain layout remains; square sea shelves and floating rocks are fixed.
+- [x] Tapered moving torch flames, restrained local glow, shared day/night sky
+      and local volumetric firelight. Steam and flame extinction share optical
+      detail; the former dark wedge and solid plume front were corrected.
+- [x] Shoreline crest breakup, foam, spray and lapping presentation; four
+      independent steam fields with bounded fade/handoff and persistent wakes.
+      These are real-time approximations, not an overturning-wave fluid solver.
+- [x] Installed build `build-p87tf4pa`, 84/84 Modern checks, real launcher controls
+      and normal exit verified. All 33 changed/new Unity inputs match the build.
+      Individually inspected important day/night/shore/steam frames, including
+      adjacent low-bank and complete-frame cloud-crossing samples. The reflection
+      rectangle, hard green contact and coarse foam lattice are fixed.
+- [x] Repeated RTX 3090 / Vulkan / 1600×900 private-Wayland measurements:
+      quiet shore/four clouds 8.45–8.63 ms mean; crossing 12.84–13.25 ms,
+      crossing p95 16.86–17.08 ms. Campaign paused, recording costs excluded.
+      Actual desktop remains locked; gameplay, Windows, VR and audio are not
+      qualified by these runs.
+
+The environment sandbox is ready for replacement 3D asset work. Visual acceptance
+is the inspected NightSpire views, not a claim that every possible camera is
+artifact-free. The final 28.56-second clip uses 360 complete Unity screenshots
+(plus an encoded endpoint repeat), with capture intervals retained. Its capture
+cadence is not engine FPS. A torn external-screen-grab frame is retained as a
+rejected capture, not passed off as clean evidence. Annotated frames and clip:
+`/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/environment-final-frames/`.
 
 Implementation and evidence live in
 `research/private/remc2-unity-native/MODERN_RENDERER.md`. Keep incomplete visual

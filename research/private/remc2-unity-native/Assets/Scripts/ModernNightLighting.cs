@@ -57,8 +57,8 @@ namespace MagicCarpet.Native
                 sources.Add(new Emitter {
                     Position = new Vector3(row.x / 64f + (kind == 5 ? 2 : 0),
                         row.z / 64f + (kind == 5 ? 1.6f : row.logicalHeight / 128f), row.y / 64f),
-                    Range = kind == 1 ? 20 : kind == 2 ? 24 : 14,
-                    Strength = kind == 1 ? 5 : kind == 5 ? 2.5f : 3,
+                    Range = kind == 1 ? 20 : kind == 2 ? 24 : kind == 5 ? 10 : 14,
+                    Strength = kind == 1 ? 5 : kind == 5 ? 1.6f : 3,
                     Seed = row.entityIndex, Settlement = kind == 5
                 });
             }
@@ -76,7 +76,7 @@ namespace MagicCarpet.Native
         {
             reviewSources.Clear();
             for (var i=0; i<Mathf.Min(positions.Length,8); i++)
-                reviewSources.Add(new Emitter { Position=positions[i],Range=18,Strength=4,
+                reviewSources.Add(new Emitter { Position=positions[i],Range=10,Strength=1.6f,
                     Seed=1000+i*31,Settlement=true });
             Debug.Log($"MC_NIGHT_REVIEW_TORCHES count={reviewSources.Count} staged=True");
         }
@@ -166,7 +166,9 @@ namespace MagicCarpet.Native
             var flicker=1 + .08f*Mathf.Sin(time*9.1f+source.Seed) + .045f*Mathf.Sin(time*17.3f+source.Seed*.73f);
             var strength=source.Strength*fade*flicker;
             positions[slot]=new Vector4(p.x,p.y,p.z,source.Range);
-            colors[slot]=new Vector4(strength,strength*.28f,strength*.035f,0);
+            // Unflickered strength lets volume light selection stay stable even
+            // when two nearby lamps have similar instantaneous intensities.
+            colors[slot]=new Vector4(strength,strength*.40f,strength*.10f,source.Strength*fade);
         }
 
         private static Vector3 Wrapped(Vector3 p, Vector3 camera) => new Vector3(

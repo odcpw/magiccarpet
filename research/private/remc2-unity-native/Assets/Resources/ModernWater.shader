@@ -39,12 +39,13 @@ Shader "MagicCarpet/ModernWater"
             TEXTURE2D(_WaterCoast); SAMPLER(sampler_WaterCoast);
             TEXTURE2D(_WaterLocal); SAMPLER(sampler_WaterLocal);
             TEXTURE2D(_WaterPattern); SAMPLER(sampler_WaterPattern);
+            TEXTURE2D(_ModernShoreMask); SAMPLER(sampler_ModernShoreMask);
             CBUFFER_START(UnityPerMaterial)
                 half4 _DeepColor, _ShallowColor, _FoamColor;
                 float _WaveStrength, _UsePlanarReflection, _ReflectionDistortion;
                 float4x4 _ReflectionVP;
             CBUFFER_END
-            float _ModernReflectionPass;
+            float _ModernReflectionPass, _ModernShoreMaskReady;
             float4 _WaterLocalRect, _ModernWind, _ModernWindOffset;
             float _WaterTime;
             struct Attributes { float4 positionOS : POSITION; float3 normalOS : NORMAL; half4 color : COLOR; };
@@ -76,6 +77,10 @@ Shader "MagicCarpet/ModernWater"
                 Varyings o;
                 float3 world=TransformObjectToWorld(v.positionOS.xyz);
                 o.rest=world.xz;
+                // Terrain supplies the water footprint, not its height. Boundary
+                // vertices can share a raised land height, but the water datum
+                // and its reflection plane remain level.
+                world.y=0.02;
                 // Both horizontal and vertical waves vanish at the source shoreline.
                 // The short spectrum is shading-only on the current two-metre mesh.
                 world+=Surface(world.xz)-float3(world.x,0,world.z);
@@ -87,7 +92,11 @@ Shader "MagicCarpet/ModernWater"
                 clip(0.5-_ModernReflectionPass);
                 float2 p=i.rest;
                 float4 coast=SAMPLE_TEXTURE2D(_WaterCoast,sampler_WaterCoast,p/1024);
-                float shoreline=coast.r+(SAMPLE_TEXTURE2D(_WaterPattern,sampler_WaterPattern,p/8).r-.5)*.6;
+                float2 sourceShore=SAMPLE_TEXTURE2D(_ModernShoreMask,sampler_ModernShoreMask,p/1024).rg;
+                // Source transition texels modulate foam, while the continuous
+                // modern water footprint determines the surface boundary.
+                float foamVariation=lerp(1,.75+.25*sourceShore.r,saturate(sourceShore.g*_ModernShoreMaskReady));
+                float shoreDistance=coast.r;
                 float envelope=Envelope(coast.r);
                 float2 detail=SAMPLE_TEXTURE2D(_WaterDetailNormal,sampler_WaterDetailNormal,p/32+0.5/256).rg;
                 float footprint=max(length(ddx(p)),length(ddy(p)));
@@ -112,7 +121,13 @@ Shader "MagicCarpet/ModernWater"
                 half3 reflected=lerp(half3(0.23,0.27,0.31),half3(0.025,0.055,0.11),pow(saturate(reflectionDir.y),0.48));
                 if (_UsePlanarReflection > 0.5)
                 {
-                    float4 reflectionClip=mul(_ReflectionVP,float4(p.x,0,p.y,1));
+                    // Project the reflected displaced surface, not its rest-grid
+                    // coordinate. Near the water, flattening wave vertices to y=0
+                    // sends visible fragments outside the reflection viewport and
+                    // exposes a rectangular fallback patch. Wave normals provide
+                    // the optical distortion below; retain VP for cached frames.
+                    float4 reflectionClip=mul(_ReflectionVP,
+                        float4(i.positionWS.x,-i.positionWS.y,i.positionWS.z,1));
                     #if UNITY_UV_STARTS_AT_TOP
                         reflectionClip.y=-reflectionClip.y;
                     #endif
@@ -132,26 +147,47 @@ Shader "MagicCarpet/ModernWater"
                 color+=light.color*light.shadowAttenuation*spec;
                 float2 drift=_ModernWindOffset.xy*0.015625;
                 float pattern=SAMPLE_TEXTURE2D(_WaterPattern,sampler_WaterPattern,(p-drift)/16).r;
-                float bubbles=SAMPLE_TEXTURE2D(_WaterPattern,sampler_WaterPattern,(p-drift*0.75)/4).g;
+                float bubbles=SAMPLE_TEXTURE2D(_WaterPattern,sampler_WaterPattern,(p-drift*0.75)/.64).g;
+                float broad=SAMPLE_TEXTURE2D(_WaterPattern,sampler_WaterPattern,p/64).b;
                 float exposure=saturate(-dot(normalize(_ModernWind.xy+0.001),coast.ba));
-                float lap=pow(saturate(sin(max(0,coast.r)*0.8+_WaterTime*1.25)),8);
-                float shore=exp(-max(0,coast.r)*0.24)*lap*(0.25+0.75*exposure);
-                float coverage=max(local.b*localMask,shore*0.6*(1-localMask));
-                coverage=max(coverage,exp(-intersection*5)*0.22);
-                // History is coverage, not an opaque decal. Break it into drifting
-                // patches, with small cellular bubble walls inside those patches.
-                float foam=smoothstep(.12,.7,coverage)*smoothstep(.25,.72,pattern*.65+bubbles*.35);
+                float distance=max(0,shoreDistance);
+                float phase=distance*0.8+_WaterTime*1.25;
+                // Break the moving crest into short irregular reaches. The local
+                // field still supplies persistent foam, but must not mask this
+                // front merely because the camera's simulation window covers it.
+                float crest=smoothstep(.72,.98,sin(phase+(broad-.5)*1.2));
+                float shore=crest*(1-smoothstep(2,9,distance))*smoothstep(.25,1.4,distance)
+                    *(0.25+0.75*exposure)*saturate(_ModernWind.z)
+                    *smoothstep(.34,.66,pattern*.6+broad*.4)*.28;
+                float coverage=local.b*localMask;
+                coverage=max(coverage,exp(-intersection*5)*0.22*smoothstep(0,1,shoreDistance));
+                // Broad noise breaks history into ragged patches; fine bubbles
+                // only modulate them, instead of drawing a continuous wire net.
+                float foam=max(shore,smoothstep(.12,.7,coverage)*smoothstep(.32,.75,pattern)
+                    *(.8+.2*bubbles))*foamVariation;
                 color=lerp(color,_FoamColor.rgb*(0.6+0.4*light.shadowAttenuation),foam);
                 color+=ModernLocalLight(i.positionWS,n,view,.85)*lerp(.35,1,foam);
                 color=MixFog(color,i.fog);
                 // Opaque lake-bed geometry supplies the transmitted ground colour.
                 // Optical path grows at grazing angles; tiny shore intersections
                 // remain transparent instead of exposing a hard green grid cell.
-                float opticalPath=min(intersection,coast.g/max(.12,abs(view.y)));
-                float absorption=1-exp(-max(0,opticalPath)*.48);
+                // The overlapping dry-side apron has real terrain underneath,
+                // but no generated bed depth. Give it a thin optical path bounded
+                // by the depth buffer so it can soften the cell boundary.
+                float opticalPath=min(intersection,max(coast.g,.12)/max(.12,abs(view.y)));
+                float absorption=1-exp(-max(0,opticalPath)*.6);
                 float alpha=max(foam,saturate(fresnel+(1-fresnel)*absorption));
-                alpha*=smoothstep(0,2,shoreline);
                 alpha=lerp(alpha,1,smoothstep(240,300,length(i.positionWS.xz-_WorldSpaceCameraPos.xz)));
+                float dryAlpha=min(alpha,.18)*smoothstep(0,.15,intersection);
+                alpha=lerp(dryAlpha,alpha,smoothstep(-1.5,.5,shoreDistance));
+                // The water footprint includes one land-cell ring. Fade it to
+                // zero on that supported ground, even beyond the bed draw range.
+                float shoreline=shoreDistance+(broad-.5)*.5+.12*sin(phase);
+                alpha*=smoothstep(-2,2,shoreline);
+                // Grazing Fresnel otherwise remains visible at a zero-depth
+                // bank intersection as a blue line. Fade only the near-coast
+                // contact; opaque ground supplies the pixels underneath.
+                alpha*=lerp(smoothstep(0,.25,intersection),1,smoothstep(0,4,shoreDistance));
                 return half4(color,alpha);
             }
             ENDHLSL

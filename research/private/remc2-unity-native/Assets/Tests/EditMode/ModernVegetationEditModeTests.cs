@@ -23,6 +23,7 @@ namespace MagicCarpet.Native.Tests
         {
             heights = new byte[256 * 256];
             types = new byte[heights.Length];
+            Array.Fill(types,(byte)1); // Explicit dry material; type 0 is calm water.
             water = new byte[heights.Length];
             root = new GameObject("Vegetation test terrain");
             material = new Material(Shader.Find("Hidden/InternalErrorShader"));

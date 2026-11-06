@@ -639,22 +639,29 @@ namespace MagicCarpet.Native
                         var choice = Random01(tuftSeed ^ 0x85ebca6bu);
                         var kind = choice < Mathf.Lerp(.68f,.45f,moisture) ? 0 : choice < Mathf.Lerp(.88f,.82f,moisture) ? 1 : 2;
                         var scale = .85f + .75f * Random01(tuftSeed ^ 0x165667b1u);
+                        // Large fronds over a submerged bank read as floating
+                        // plants. Their roots need a dry supporting footprint.
+                        var support=(kind==0?.20f:kind==1?.65f:.45f)*scale;
+                        if(!DryFootprint(px,pz,support)) continue;
                         Add(chunk, kind, px, terrain.SampleHeight(px, pz) - .05f, pz,
                             Random01(tuftSeed ^ 0xc2b2ae35u) * 360f, scale, normal);
                     }
                 }
                 var landmark = Random01(seed ^ 0x165667b1u);
-                if (landmark < .045f * Mathf.Lerp(.5f, 1.3f, PatchDensity(x, z)) + moisture * .055f && slope < .55f)
+                if (landmark < .045f * Mathf.Lerp(.5f, 1.3f, PatchDensity(x, z)) + moisture * .055f && slope < .55f && DryFootprint(x,z,.7f))
                 {
                     // Scanned trees follow the same terrain as ground cover, independently of actors.
                     var scale = .65f + .95f * Random01(seed ^ 0xd3a2646cu);
                     Add(chunk, 3, x, height - .08f, z, yaw, scale, Vector3.up);
                 }
-                else if (landmark > .88f && slope < 1.15f)
+                else if (landmark > Mathf.Lerp(.88f,.97f,Mathf.Clamp01((height-15)/35)) && slope < 1.15f)
                 {
                     var scale = .45f + 1.40f * Random01(seed ^ 0xfd7046c5u);
                     var normal = GroundNormal(x, z);
-                    var anchor = new Vector3(x, height, z) - normal * (.24f * scale);
+                    // Scanned boulders have rounded undersides. Half-burial makes
+                    // them supported outcrops rather than rocks perched on one
+                    // point of a curved slope.
+                    var anchor = new Vector3(x, height, z) - normal * (meshes[4].bounds.size.y*.48f*scale);
                     Add(chunk, 4, anchor.x, anchor.y, anchor.z, yaw, scale, normal);
                     // Talus gathers around boulders on supported ground. Sparse
                     // isolated boulders on near-vertical faces looked suspended.
@@ -685,6 +692,10 @@ namespace MagicCarpet.Native
             return new Vector3(terrain.SampleHeight(x - offset, z) - terrain.SampleHeight(x + offset, z),
                 2 * offset, terrain.SampleHeight(x, z - offset) - terrain.SampleHeight(x, z + offset)).normalized;
         }
+
+        private bool DryFootprint(float x,float z,float radius) =>
+            !terrain.IsWater(x-radius,z) && !terrain.IsWater(x+radius,z)
+            && !terrain.IsWater(x,z-radius) && !terrain.IsWater(x,z+radius);
 
         private float ShoreMoisture(float x, float z)
         {

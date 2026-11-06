@@ -20,6 +20,7 @@ namespace MagicCarpet.Native
         private readonly Light moon;
         private readonly ModernTerrainMesh terrain;
         private readonly ModernVegetation vegetation;
+        private readonly ModernShoreMask sourceShore;
         private readonly ModernWaterReflection waterReflection;
         private readonly ModernWaterSystem waterSystem;
         private readonly ModernNightLighting nightLighting;
@@ -170,7 +171,10 @@ namespace MagicCarpet.Native
             var volume = root.AddComponent<Volume>();
             volume.isGlobal = true;
             volume.sharedProfile = volumeProfile;
-            terrain = new ModernTerrainMesh(root.transform, landMaterial, waterMaterial) { ViewDistance = 650f };
+            sourceShore=new ModernShoreMask(cache.ReadOutput(cache.EnvironmentMaterials.blocks.atlas_path));
+            Shader.SetGlobalTexture("_ModernShoreMask",sourceShore.Texture);
+            Shader.SetGlobalFloat("_ModernShoreMaskReady",1);
+            terrain = new ModernTerrainMesh(root.transform, landMaterial, waterMaterial,sourceShore) { ViewDistance = 650f };
             vegetation = new ModernVegetation(terrain);
             entities = new ModernEntityPresenter(root.transform, cache);
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
@@ -335,6 +339,8 @@ namespace MagicCarpet.Native
             vegetation?.Dispose();
             entities?.Dispose();
             terrain?.Dispose();
+            sourceShore?.Dispose();
+            Shader.SetGlobalFloat("_ModernShoreMaskReady",0);
             UnityEngine.Object.Destroy(root);
             foreach (var material in new[] { landMaterial, waterMaterial, skyMaterial }) UnityEngine.Object.Destroy(material);
             UnityEngine.Object.Destroy(volumeProfile);

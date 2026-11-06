@@ -28,6 +28,7 @@ namespace MagicCarpet.Native
             internal Transform Transform;
             internal MeshFilter Filter;
             internal MeshRenderer Renderer;
+            internal MeshRenderer ShoreRenderer;
             internal bool Detail;
         }
 
@@ -35,6 +36,7 @@ namespace MagicCarpet.Native
         {
             internal Mesh Mesh;
             internal Mesh FarMesh;
+            internal Mesh ShoreMesh;
             internal bool HasWater;
             internal Bounds WaterBounds;
             internal int DetailTriangles;
@@ -44,10 +46,13 @@ namespace MagicCarpet.Native
 
         private readonly Transform root;
         private readonly Material[] materials;
+        private readonly ModernShoreMask sourceShore;
         private readonly Section[] sections = new Section[Sections * Sections];
         private readonly byte[] heights = new byte[PlaneSize];
         private readonly byte[] types = new byte[PlaneSize];
         private readonly byte[] angles = new byte[PlaneSize];
+        private readonly float[] landform = new float[PlaneSize];
+        private readonly bool[] landformDirty = new bool[PlaneSize];
         private readonly bool[] dirty = new bool[Sections * Sections];
         private readonly Plane[] frustumPlanes = new Plane[6];
         private static readonly int WaveStrength = Shader.PropertyToID("_WaveStrength");
@@ -61,12 +66,13 @@ namespace MagicCarpet.Native
         // Values up to one world period are supported by the 3x3 copy window.
         internal float ViewDistance { get; set; } = 320f;
 
-        internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial)
+        internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null)
         {
             if (parent == null) throw new ArgumentNullException(nameof(parent));
             if (terrainMaterial == null) throw new ArgumentNullException(nameof(terrainMaterial));
             if (waterMaterial == null) throw new ArgumentNullException(nameof(waterMaterial));
             root = new GameObject("Modern Terrain").transform;
+            this.sourceShore=sourceShore;
             root.SetParent(parent, false);
             materials = new[] { terrainMaterial, waterMaterial };
             for (var i = 0; i < sections.Length; i++)
@@ -75,7 +81,8 @@ namespace MagicCarpet.Native
                 mesh.MarkDynamic();
                 var farMesh = new Mesh { name = $"Modern terrain section {i} far" };
                 farMesh.MarkDynamic();
-                sections[i] = new Section { Mesh = mesh, FarMesh = farMesh };
+                sections[i] = new Section { Mesh = mesh, FarMesh = farMesh,
+                    ShoreMesh = new Mesh { name = $"Modern shore overlap {i}" } };
             }
         }
 
@@ -93,6 +100,7 @@ namespace MagicCarpet.Native
                 Array.Copy(nextHeights, heights, PlaneSize);
                 Array.Copy(nextTypes, types, PlaneSize);
                 Array.Copy(nextAngles, angles, PlaneSize);
+                Array.Fill(landformDirty,true);
                 for (var i = 0; i < dirty.Length; i++) dirty[i] = true;
             }
             else
@@ -101,7 +109,7 @@ namespace MagicCarpet.Native
                 {
                     var heightChanged = heights[i] != nextHeights[i];
                     var typeChanged = types[i] != nextTypes[i];
-                    var waterChanged = ((angles[i] ^ nextAngles[i]) & 8) != 0;
+                    var waterChanged = ((angles[i] ^ nextAngles[i]) & (sourceShore != null ? 0x78 : 8)) != 0;
                     if (!heightChanged && !typeChanged && !waterChanged)
                     {
                         angles[i] = nextAngles[i];
@@ -113,21 +121,26 @@ namespace MagicCarpet.Native
                     heights[i] = nextHeights[i];
                     types[i] = nextTypes[i];
                     angles[i] = nextAngles[i];
-                    // Detail samples smooth adjacent half-cells, and normals use
-                    // another half-cell halo. Two source cells cover both and shore.
-                    for (var dz = -2; dz <= 2; dz++)
-                        for (var dx = -2; dx <= 2; dx++)
+                    if(heightChanged || waterChanged || typeChanged)
+                        for(var dz=-3;dz<=3;dz++) for(var dx=-3;dx<=3;dx++)
+                            landformDirty[Index(x+dx,z+dz)]=true;
+                    // Reconstruction has a two-cell kernel and a three-cell shore
+                    // protection halo; interpolation/normals need one more cell.
+                    for (var dz = -4; dz <= 4; dz++)
+                        for (var dx = -4; dx <= 4; dx++)
                             MarkSection(x + dx, z + dz);
                 }
             }
             lastGeneration = generation;
             initialized = true;
             if (changed) unchecked { Revision++; }
+            if (changed) sourceShore?.Update(heights,types,angles,Revision);
+            if (changed) ReconstructLandform();
             for (var i = 0; i < sections.Length; i++)
             {
                 if (!dirty[i]) continue;
                 var section = sections[i];
-                section.HasWater = RebuildSection(i % Sections, i / Sections, section.Mesh, section.FarMesh,
+                section.HasWater = RebuildSection(i % Sections, i / Sections, section.Mesh, section.FarMesh, section.ShoreMesh,
                     out section.WaterBounds);
                 section.DetailTriangles = (int)((section.Mesh.GetIndexCount(0) + section.Mesh.GetIndexCount(1)) / 3);
                 section.FarTriangles = (int)((section.FarMesh.GetIndexCount(0) + section.FarMesh.GetIndexCount(1)) / 3);
@@ -202,8 +215,12 @@ namespace MagicCarpet.Native
                         filter.sharedMesh = section.Mesh;
                         var renderer = gameObject.AddComponent<MeshRenderer>();
                         renderer.sharedMaterials = materials;
+                        var shoreObject=new GameObject("Shore overlap");shoreObject.transform.SetParent(transform,false);
+                        shoreObject.AddComponent<MeshFilter>().sharedMesh=section.ShoreMesh;
+                        var shoreRenderer=shoreObject.AddComponent<MeshRenderer>();shoreRenderer.sharedMaterial=materials[1];
+                        shoreRenderer.shadowCastingMode=ShadowCastingMode.Off;
                         copy = new Copy { Object = gameObject, Transform = transform, Filter = filter,
-                            Renderer = renderer, Detail = true };
+                            Renderer = renderer, ShoreRenderer=shoreRenderer, Detail = true };
                         section.Copies[slot] = copy;
                     }
                     if (copy == null) continue;
@@ -211,6 +228,7 @@ namespace MagicCarpet.Native
                     if (visible)
                     {
                         copy.Transform.localPosition = new Vector3(x, 0f, z);
+                        copy.ShoreRenderer.enabled=section.ShoreMesh.GetIndexCount(0)>0;
                         var threshold = copy.Detail ? DetailExitDistance : DetailEnterDistance;
                         // Visibility remains a horizontal wrap window; LOD uses
                         // the nearest 3D bounds point, including flight altitude.
@@ -221,6 +239,7 @@ namespace MagicCarpet.Native
                             copy.Detail = detail;
                         }
                         VisibleTriangleCount += detail ? section.DetailTriangles : section.FarTriangles;
+                        VisibleTriangleCount += (int)section.ShoreMesh.GetIndexCount(0)/3;
                         if (detail) VisibleDetailCopies++; else VisibleFarCopies++;
                     }
                 }
@@ -248,7 +267,7 @@ namespace MagicCarpet.Native
             if (!initialized) return false;
             var ix = Mathf.FloorToInt(Mathf.Repeat(x, Period) / CellSize);
             var iz = Mathf.FloorToInt(Mathf.Repeat(z, Period) / CellSize);
-            return Water(ix, iz);
+            return Water(ix,iz);
         }
 
         internal byte GroundType(float x, float z)
@@ -267,7 +286,7 @@ namespace MagicCarpet.Native
                 || (type >= 102 && type <= 119) || type == 126 || type == 127;
         }
 
-        private bool RebuildSection(int sx, int sz, Mesh mesh, Mesh farMesh, out Bounds waterBounds)
+        private bool RebuildSection(int sx, int sz, Mesh mesh, Mesh farMesh, Mesh shoreMesh, out Bounds waterBounds)
         {
             var vertices = new Vector3[Side * Side];
             var normals = new Vector3[vertices.Length];
@@ -277,6 +296,7 @@ namespace MagicCarpet.Native
             var water = new List<int>();
             var farLand = new List<int>();
             var farWater = new List<int>();
+            var shore=new List<int>();
             var baseX = sx * SectionCells;
             var baseZ = sz * SectionCells;
             var fine = new bool[SectionCells * SectionCells];
@@ -308,10 +328,19 @@ namespace MagicCarpet.Native
                 var target = Water(sourceX, sourceZ) ? water : land;
                 var farTarget = target == water ? farWater : farLand;
                 var refined = fine[x / Subdivisions + z / Subdivisions * SectionCells];
+                var shoreCell=false;
+                if(target==land)
+                {
+                    shoreCell=sourceShore!=null && heights[Index(sourceX,sourceZ)]==0
+                        && sourceShore.HasCoverage(types[Index(sourceX,sourceZ)]);
+                    for(var dz=-1;dz<=1;dz++) for(var dx=-1;dx<=1;dx++)
+                        shoreCell |= Water(sourceX+dx,sourceZ+dz);
+                }
                 if (((sourceX + sourceZ) & 1) == 0)
                 {
                     target.Add(a); target.Add(c); target.Add(d);
                     target.Add(a); target.Add(d); target.Add(b);
+                    if(shoreCell) { shore.Add(a);shore.Add(c);shore.Add(d);shore.Add(a);shore.Add(d);shore.Add(b); }
                     if (refined)
                     {
                         farTarget.Add(a); farTarget.Add(c); farTarget.Add(d);
@@ -322,6 +351,7 @@ namespace MagicCarpet.Native
                 {
                     target.Add(a); target.Add(c); target.Add(b);
                     target.Add(c); target.Add(d); target.Add(b);
+                    if(shoreCell) { shore.Add(a);shore.Add(c);shore.Add(b);shore.Add(c);shore.Add(d);shore.Add(b); }
                     if (refined)
                     {
                         farTarget.Add(a); farTarget.Add(c); farTarget.Add(b);
@@ -372,14 +402,23 @@ namespace MagicCarpet.Native
             }
             SetMesh(mesh, vertices, normals, colors, uv, land, water);
             SetMesh(farMesh, vertices, normals, colors, uv, farLand, farWater);
-            waterBounds = water.Count == 0 ? default : new Bounds(vertices[water[0]], Vector3.zero);
-            foreach (var index in water) waterBounds.Encapsulate(vertices[index]);
-            return water.Count != 0;
+            shoreMesh.Clear();shoreMesh.vertices=vertices;shoreMesh.normals=normals;
+            shoreMesh.colors=colors;shoreMesh.uv=uv;shoreMesh.SetTriangles(shore,0);shoreMesh.RecalculateBounds();
+            var shoreBounds=shoreMesh.bounds;var datumCenter=shoreBounds.center;datumCenter.y=.02f;
+            shoreBounds.Encapsulate(datumCenter);shoreBounds.Expand(new Vector3(6,10.3f,6));shoreMesh.bounds=shoreBounds;
+            var hasWater=water.Count!=0 || shore.Count!=0;
+            var first=hasWater?vertices[water.Count>0?water[0]:shore[0]]:Vector3.zero;first.y=.02f;
+            waterBounds=new Bounds(first,Vector3.zero);
+            foreach(var index in water) { var v=vertices[index];v.y=.02f;waterBounds.Encapsulate(v); }
+            foreach(var index in shore) { var v=vertices[index];v.y=.02f;waterBounds.Encapsulate(v); }
+            return hasWater;
         }
 
         private bool FineCell(int x, int z, int baseX, int baseZ)
         {
             if (x == 0 || z == 0 || x == SectionCells - 1 || z == SectionCells - 1) return true;
+            var index=Index(baseX+x,baseZ+z);
+            if(sourceShore!=null && types[index]!=0 && heights[index]==0 && sourceShore.HasCoverage(types[index])) return true;
             var water = Water(baseX + x, baseZ + z);
             // Both sides of a shoreline, including diagonal contacts, retain
             // detailed geometry and the original interpolated shore colors.
@@ -410,6 +449,7 @@ namespace MagicCarpet.Native
             if (water.Count != 0)
             {
                 var bounds = mesh.bounds;
+                var datum=bounds.center;datum.y=.02f;bounds.Encapsulate(datum);
                 bounds.Expand(new Vector3(6, 10.3f, 6));
                 mesh.bounds = bounds;
             }
@@ -428,7 +468,62 @@ namespace MagicCarpet.Native
 
         private static int Index(int x, int z) => (x & 255) + (z & 255) * MapCells;
         private float Height(int x, int z) => heights[Index(x, z)] * 0.5f;
-        private bool Water(int x, int z) => (angles[Index(x, z)] & 8) != 0;
+        private float VisualHeight(int x, int z) => landform[Index(x,z)];
+        // The source wave bit is only set in the eroded interior of a water
+        // region (Terrain.cpp sub_43D50). Calm sea-level type-0 tiles are water
+        // too (sub_104D0), not rectangular sand platforms along the coast.
+        private bool Water(int x, int z)
+        {
+            var i=Index(x,z);
+            // Modern sea-level transition tiles become continuous submerged
+            // banks. Original opaque texture pixels are not raised sand islands.
+            // Elevated land and authoritative Rust water/collision stay intact.
+            return (angles[i]&8)!=0 || (heights[i]==0 && (types[i]==0
+                || (sourceShore!=null && sourceShore.HasCoverage(types[i]))));
+        }
+
+        // Source collision stays in Rust. The Modern surface reconstructs the
+        // quantized four-metre heightfield as a continuous eroded landform rather
+        // than extruding its one-cell ridges. The near-flat bank extends below
+        // the water datum so receding waves cannot expose coplanar grid ledges.
+        private void ReconstructLandform()
+        {
+            for(var z=0;z<MapCells;z++) for(var x=0;x<MapCells;x++)
+            {
+                if(!landformDirty[Index(x,z)]) continue;
+                landformDirty[Index(x,z)]=false;
+                var original=Height(x,z);
+                var nearest=4f;
+                for(var dz=-3;dz<=2;dz++) for(var dx=-3;dx<=2;dx++)
+                    if((angles[Index(x+dx,z+dz)]&8)!=0)
+                    {
+                        var sx=Mathf.Max(0,Mathf.Max(dx,-dx-1));
+                        var sz=Mathf.Max(0,Mathf.Max(dz,-dz-1));
+                        nearest=Mathf.Min(nearest,Mathf.Sqrt(sx*sx+sz*sz));
+                    }
+                var shore=Mathf.SmoothStep(0,1,Mathf.Clamp01(nearest/3));
+                // Only interior-water anchors constrain reconstruction. Mixed
+                // coastal tiles must join the smooth landform rather than pinning
+                // each zero-height texel beside a raised cliff to the sea datum.
+                var bankDistance=nearest;
+                if(sourceShore!=null)
+                    for(var dz=-1;dz<=0;dz++) for(var dx=-1;dx<=0;dx++)
+                        if(heights[Index(x+dx,z+dz)]==0 && sourceShore.HasCoverage(types[Index(x+dx,z+dz)])) bankDistance=0;
+                var bankDrop=.45f*(1-Mathf.SmoothStep(0,1,Mathf.Clamp01(bankDistance)))
+                    *(1-Mathf.SmoothStep(0,1,Mathf.InverseLerp(1,3,original)));
+                if(shore==0) { landform[Index(x,z)]=original-bankDrop; continue; }
+                var average=0f;
+                for(var dz=-2;dz<=2;dz++) for(var dx=-2;dx<=2;dx++)
+                {
+                    var wx=dx==0?6:Math.Abs(dx)==1?4:1;
+                    var wz=dz==0?6:Math.Abs(dz)==1?4:1;
+                    average+=Height(x+dx,z+dz)*wx*wz;
+                }
+                // Convex filtering preserves the broad relief and cannot invent
+                // a higher peak or lower pit. Fade near the actual water mask.
+                landform[Index(x,z)]=Mathf.Lerp(original,average/256,.88f*shore)-bankDrop;
+            }
+        }
 
         private Color SourceColor(int x, int z)
         {
@@ -470,21 +565,31 @@ namespace MagicCarpet.Native
         {
             var ix = x >> 1;
             var iz = z >> 1;
-            return TriangleHeight(Height(ix, iz), Height(ix + 1, iz),
-                Height(ix, iz + 1), Height(ix + 1, iz + 1),
+            return TriangleHeight(VisualHeight(ix, iz), VisualHeight(ix + 1, iz),
+                VisualHeight(ix, iz + 1), VisualHeight(ix + 1, iz + 1),
                 (x & 1) * 0.5f, (z & 1) * 0.5f, ((ix + iz) & 1) == 0);
         }
 
         private float DetailHeight(int x, int z)
         {
             var original = BaseHalfHeight(x, z);
-            if (((x | z) & 1) == 0) return original;
             var ix = x >> 1;
             var iz = z >> 1;
             // A midpoint touching any water cell stays on the original surface,
             // so the water and land meshes meet without raising shorelines.
             if (Water(ix, iz) || ((x & 1) == 0 && Water(ix - 1, iz))
-                || ((z & 1) == 0 && Water(ix, iz - 1))) return original;
+                || ((z & 1) == 0 && Water(ix, iz - 1))
+                || (((x|z)&1)==0 && Water(ix-1,iz-1))) return original;
+            // Coherent metre-scale outcrops break the filtered cones without
+            // adding independent spikes at every vertex. Fade on level ground,
+            // near water, and at local extrema so the broad relief stays legible.
+            var gradient=Mathf.Abs(VisualHeight(ix-1,iz)-VisualHeight(ix+1,iz))
+                +Mathf.Abs(VisualHeight(ix,iz-1)-VisualHeight(ix,iz+1));
+            var strength=Mathf.SmoothStep(0,1,Mathf.Clamp01((original-3)/10))
+                *Mathf.Clamp01(gradient/8);
+            var outcrop=((ReliefNoise(x,z,16)-.5f)*2.4f+(ReliefNoise(x+51,z-29,4)-.5f)*.9f)*strength;
+            original+=outcrop;
+            if (((x | z) & 1) == 0) return original;
             var average = (BaseHalfHeight(x - 1, z) + BaseHalfHeight(x + 1, z)
                 + BaseHalfHeight(x, z - 1) + BaseHalfHeight(x, z + 1)) * 0.25f;
             var smooth = Mathf.Clamp((average - original) * 0.15f, -0.07f, 0.07f);
@@ -495,6 +600,22 @@ namespace MagicCarpet.Native
             hash ^= hash >> 16;
             var relief = ((hash & 1023u) / 1023f * 2f - 1f) * 0.08f;
             return original + smooth + relief;
+        }
+
+        private static float ReliefNoise(int x,int z,int scale)
+        {
+            var fx=x/(float)scale;var fz=z/(float)scale;
+            var ix=Mathf.FloorToInt(fx);var iz=Mathf.FloorToInt(fz);
+            fx-=ix;fz-=iz;fx=fx*fx*(3-2*fx);fz=fz*fz*(3-2*fz);
+            var period=512/scale;
+            float Value(int a,int b)
+            {
+                uint h=(uint)(a&(period-1))*0x8da6b343u^(uint)(b&(period-1))*0xd8163841u;
+                h^=h>>13;h*=0x85ebca6bu;h^=h>>16;
+                return (h&65535)/65535f;
+            }
+            return Mathf.Lerp(Mathf.Lerp(Value(ix,iz),Value(ix+1,iz),fx),
+                Mathf.Lerp(Value(ix,iz+1),Value(ix+1,iz+1),fx),fz);
         }
         private bool Shore(int x, int z)
         {
@@ -511,6 +632,7 @@ namespace MagicCarpet.Native
             {
                 Destroy(section.Mesh);
                 Destroy(section.FarMesh);
+                Destroy(section.ShoreMesh);
             }
             Destroy(root.gameObject);
         }

@@ -45,96 +45,165 @@ Water targeting rejects sky, distant/invalid rays, dry land and intervening
 terrain. Free flight drives the same persistent steam wake and water downwash
 entry points as the existing presentation effects. These experiments are
 cosmetic sandbox inputs; a real gameplay hot-contact ABI remains separate.
-`-mc-sandbox-tour` records the repeatable six-view lighting/water/steam study.
+`-mc-sandbox-tour` records eleven lighting/water/steam stages;
+`-mc-sandbox-study 0..12` holds a view or effect study, including a four-cloud
+stress view and a foreground-flame/background-steam control.
 
-Delivered environment changes:
+The finishing pass reconstructs the quantized landform before adding bounded
+relief. Original water anchors and flat ground remain stable; terrain revisions
+invalidate the reconstruction halo and affected sections. Vegetation uses dry
+supporting footprints, and scanned boulders are buried into slopes. These are
+presentation changes; Rust retains the original terrain, collision and saves.
 
-- A real, tiled submerged surface beneath the source water mask. Two-metre
-  geometry follows the authored visual depth, eases into shallow banks, shares
-  source tint, joins dry boundary vertices exactly, updates with terrain
-  revisions and wraps with the world. Water transmission uses its depth; wet
-  ground and surface opacity blend across the shoreline. Bed tiles stop at
-  320 m, with transmission fading to opaque between 240 and 300 m beforehand.
-  This is visual bathymetry, not recovered source collision. An experimental
-  extra water apron produced a blue outline and was reverted; its source and
-  capture remain in `environment-sandbox-20261106/rejected-apron/` and the
-  preceding review builds. The original 4 cm bed-edge bias was also removed
-  after the close-up exposed a real gap.
-- Fuller fern/shrub cover and small tree groves near water, retaining bounded
-  spatial batches, existing mesh/impostor LOD, stable placement and sparse steep
-  slopes. Cliff materials gain subtle filtered mineral bands without adding
-  texture samples or noise octaves for that variation.
-- Matched key light, ambient light, fog, sky and cloud scattering for daylight,
-  dusk and moonlight. Stars fade with daylight; the smaller moon disk and cloud
-  movement remain world-oriented. Weather continues to vary within each wind
-  setting and drives waves, plants, clouds and steam.
-- Restrained local torch illumination shared by terrain, plants, actors, spray
-  and water, with bounded source selection. The revised moving flame silhouette
-  and greatly reduced, localized atmospheric glow replace the rejected visual
-  draft. The sandbox lamps are explicitly placed study fixtures, not source
-  settlement proof. Local lights are shadowless and do not yet scatter through
-  the persistent steam volume.
-- Wind-advected optical detail on the existing persistent steam volume, reusing
-  the cloud lattice without another allocation or fluid solver. It changes
-  rendered extinction, not the mass-capped simulation. Coarse self-shadowing
-  remains stable. `-mc-steam-no-detail` retains the plain density reference.
+The source shoreline helper reads the indexed owner atlas and all eight source
+orientations. At sea level, reflective transition tiles with water pixels become
+continuous submerged banks in Modern; their opaque source texels are not raised
+sand islands. Raised tiles remain land. One-metre filtered source coverage adds
+small foam variation; the signed coastal distance controls the continuous water
+edge. This deliberately differs from reproducing each original pixel as geometry.
+A supported dry-side overlap joins the water to real bank geometry. No owner
+atlas is committed. The helper, terrain mutation and orientation cases are tested.
 
-The final player is `build-cr_6x8g7`, retaining native `a98a8317e89a`.
-All 72 applicable Modern EditMode checks pass (10.681 s), including GPU steam
-mass/wakes and water fields, targeting rejection, bed geometry/tint/seam/reset,
-terrain mutation and vegetation LOD/placement. Unity compiled and ran the
-shaders. The actual installed launcher was driven with XTest on its own private
-X server: lighting changes, torch toggle, cold and hot impacts, free flight,
-clearing, panel visibility and F10 exit all worked; exit code 0. This check was
-self-verified. The failed initial default-package launch is retained separately.
-The final-build launcher receipt and input captures are in
-`/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/sandbox-controls-04/`;
-`build-player.sh --check-installed` also passes against the same artifact.
+Water keeps the two-band FFT wind sea and bounded local interaction field.
+Shore crests break into irregular patches; the shallow bank, lapping displacement,
+foam and spray provide the shoreline run-up presentation. This is a real-time
+approximation, not an overturning-wave fluid solver. The foam texture now resolves
+its cells at 512², with fine bubbles modulating larger patches. This removes the
+previous square maze and coarse wire-net appearance without per-pixel hash loops.
+Texture generation is startup work, not a frame update.
 
-The reviewed 60-second video is
-`/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/sandbox-02/water-review.mp4`
-(1800 frames at 1600×900). Full-resolution night/steam frames and the contact
-sheet were inspected. The capture uses a private X display and encoding, so its
-on-screen frame times are not the separate private-Wayland performance result.
-The real desktop remains locked. Commands, tests, hashes, scanner reports and
-performance captures are under `../generated/environment-sandbox-20261106/`.
+Daylight, dusk and moonlight share coherent key light, ambient light, fog, cloud
+scattering and water reflection. Stars fade with daylight; the moon and clouds
+remain world-oriented. Variable weather drives water, plants, clouds and steam.
+Torch fixtures search for dry supporting ground. Their moving tapered flames
+start inside the brazier, and the local light range and intensity are restrained.
+The fixture arrangement demonstrates lighting, not an ordinary settlement spawn.
 
-Two sequential runs per quiet viewpoint on the final installed build, RTX 3090,
-Vulkan at 1600×900, private KWin Wayland, 120 measured frames after 10 s warmup:
+Steam now retains up to four independent 12 m fields: the first defaults to 48³,
+additional fields are allocated lazily at 32³. Nearby impacts can share a field;
+separated impacts do not recenter or erase an older cloud. At capacity, the oldest
+field fades for one second before accepting the newest pending impact. Repeated
+overload replaces that pending impact. This bounded handoff preserves distant
+clouds within the four-field budget; it is not unlimited large-scale weather.
+
+Two local lights per field scatter through steam, selected consistently for the
+whole volume. Per-ray light ranking had created a straight dark wedge and was
+removed. A restrained multiple-scattering approximation reduces the black-core /
+white-rim appearance. Advected optical detail and the simulation's transported
+mass are separate: optical detail is not a new mass-conservation claim. A dense
+front still looked like a solid blue-gray plug with density multiplication alone;
+narrowing its noise contrast did not fix that and was reverted. Advected 3D
+sampling distortion now shapes visible lobes and gaps. Both the steam renderer
+and flame extinction use `ModernSteamOptics.hlsl`, with the matching per-field
+clock. Density rejection happens after distortion, and the true volume boundary
+still fades out, avoiding clipped wisps or an exposed simulation box.
+Foreground steam attenuates flame sheets; steam behind a flame does not. Persistent
+wake redistribution, world wrapping, capacity handoff and reset are GPU-tested.
+
+The accepted steam sampling candidate uses `max(.25, rayLength/48)` metre steps,
+retaining four light-attenuation samples. Matched cloud-edge frames showed no new
+obvious banding or opacity discontinuity. The crossing study includes grazing and
+clearing views; it must not be described as an opaque-interior benchmark solely
+because its study number is four. Capture and measurement clocks start at
+different points around initialization, so inspect actual images and camera poses.
+
+The last hard green shoreline edge was a render-order defect. The renderer asset
+copied scene depth after transparents, but water, steam and spray read it during
+those passes. A diagnostic showed saturated intersection distance right up to
+the bank. Changing the alpha fade alone did not help and was reverted. Setting
+`CopyDepthMode.AfterOpaques` in both the authored renderer and its build preparation
+restored shallow contact blending. The setting has a regression test; close and
+high views were rechecked. See the matching installed URP 17.3 renderer source and
+[Unity's depth-copy enum documentation](https://docs.unity.cn/Packages/com.unity.render-pipelines.universal%4017.0/api/UnityEngine.Rendering.Universal.CopyDepthMode.html).
+
+Sandbox flight now requests one asynchronous GPU height reduction over a nearby
+17×17 lattice of actual displaced water vertices. The cached maximum plus camera
+and latency margins replaces the earlier permanent worst-case wave floor. Samples
+must be younger than 150 ms, within the protected central region and from the
+current coast revision. Missing, failed or stale results use the conservative
+bound; resetting effects or terrain invalidates old callbacks. Frame updates
+never wait for a readback. Teardown drains only this probe's outstanding request
+before idempotently releasing its buffer: relying on a later callback leaked at
+application quit, when Unity stopped pumping callbacks. This teardown-only wait
+has no API timeout; it is not a global wait for other GPU clients. The broad-wave
+time margin is empirical, so this is visual
+clearance for the sandbox, not guaranteed Rust physics collision. Real close-bank
+captures now reach roughly 1.6 m instead of the previous 5.5 m safety floor, with
+no water-plane clipping in those sampled views.
+
+The low camera exposed a separate rectangular reflection cutoff. A temporary
+UV/validity shader isolated it to sampling outside the planar texture: flattening
+displaced wave vertices to their rest-grid positions caused the projection to
+diverge near eye height. The final shader projects the mirrored displaced
+surface through the retained reflection VP, then applies normal distortion.
+Three adjacent low-bank frames show the rectangular patch gone. The diagnostic
+build is preserved separately and is not the installed player.
+
+Verification: 84/84 Modern EditMode cases passed in 26.6319 seconds
+(`tests13/tests.xml`), including actual GPU density transport, independent clouds,
+world wrapping, shared optical clocks, height readback and immediate teardown.
+Build `build-p87tf4pa` retains native `a98a8317e89a`; all 33 changed/new Unity input
+hashes match the qualified project. Its real `run-sandbox.sh` input check passed:
+lighting modes, torches, cold/hot impacts, free flight, clear, panel and F10 exit.
+The panel height was increased after a real capture exposed a clipped footer;
+the final captured panel is complete. The final normal exits have no earlier
+ComputeBuffer GC warning. Private-display audio is not qualified.
+
+The 110-second `environment-finish-07` tour contains 3300 recorded frames.
+Eighteen full-resolution daytime, night, cloud, flame, adjacent shore, high
+terrain, two-plume and torch-adjacent steam frames were examined individually.
+The earlier square shelves, hard green shore contact, floating rocks, dark
+steam wedge and central rectangular reflection cutoff are absent in the reviewed
+final views. Close steam studies additionally check soft lobes and flame
+extinction through their gaps. The external X11 movie has a horizontal capture
+tear at 95 seconds; it is retained as a diagnostic recording, not clean final
+video evidence. A separate 28.56-second sequence uses 360 Unity complete-frame
+screenshots (plus one encoded endpoint repeat), with file-completion intervals
+retained. Its roughly 12–13 captures/second are not engine FPS. First, middle and
+last images of each of its shore, steam and crossing studies were also examined
+individually. See the frame review for the
+observations and capture provenance; no claim is made about every possible view.
+
+Final performance, RTX 3090 / Vulkan / 1600×900 / private KWin Wayland,
+120 frames per run, with the campaign paused and no encoding during measurement:
 
 | View / run | Mean ms | Median ms | p95 ms |
 | --- | ---: | ---: | ---: |
-| Shore 1 | 8.76 | 8.35 | 11.05 |
-| Shore 2 | 8.67 | 8.36 | 10.76 |
-| Grove 1 | 8.89 | 8.36 | 11.23 |
-| Grove 2 | 8.85 | 8.36 | 11.15 |
-| Overlook 1 | 8.74 | 8.38 | 10.31 |
-| Overlook 2 | 8.38 | 8.34 | 8.44 |
+| Quiet shore 1 | 8.45 | 8.36 | 8.71 |
+| Quiet shore 2 | 8.63 | 8.35 | 11.40 |
+| Four separated clouds 1 | 8.55 | 8.36 | 9.38 |
+| Four separated clouds 2 | 8.54 | 8.35 | 10.01 |
+| Cloud-crossing path 1 | 13.25 | 14.06 | 16.86 |
+| Cloud-crossing path 2 | 12.84 | 12.62 | 17.08 |
 
-All six runs exited successfully and produced their requested capture. These
-are paused-campaign, quiet-view samples, without active quenches or video
-encoding. Present pacing is approximately 120 Hz despite the player disabling
-v-sync; GPU frame samples were unavailable. They establish this sandbox's cost
-in that display path, not a campaign speedup, sustained flight/steam result or
-unlocked-desktop qualification. Exact commands and per-frame scope summaries
-are retained with `performance-summary.json` and `wayland/delivery-*`.
+Quiet/four-field windows start after 10 seconds; crossing windows after 28.
+The earlier 80-step shader measured 18.30 / 15.55 ms mean on the crossing
+study, with p95 21.69 / 20.15. Subsequent camera clearance and optical shaping
+also changed, so this is historical context rather than an isolated shader
+speedup claim. These are small repeated path samples, not a
+sustained gameplay or locked-desktop performance claim. Present pacing is about
+120 Hz. Five-second-warmup four-cloud runs included initialization and are
+retained separately; they are not steady-state comparisons. Video/readback
+captures are likewise excluded from performance qualification.
 
-The full 13-file C# UBS scan is partial: conditional-compilation analysis and
-dataflow limits affect the legacy runtime, terrain and vegetation files. Its
-seven warnings are existing runtime/actor-lookup findings outside the changed
-lines; there are no critical findings. The focused nine-file scan of sandbox,
-water/lighting owners and tests completes with no critical/warning findings.
-`ubs doctor --fix` reports the environment healthy; it does not remove those
-source-analysis limits. Shared runtime guards and shader changes were reviewed
-directly as well as compiled and exercised.
+Evidence lives under `../generated/environment-finish-20261106/` and
+`/mnt/pinokio-shared/magiccarpet-build-proofs-20261106/environment-finish-07/`.
+The complete-frame clip and final gallery are in the sibling
+`environment-final-frames/` directory. `performance24.json` and
+`candidate24-source-receipt.json` identify the measured build and matching inputs.
+The actual desktop remains locked. Windows, VR, ordinary gameplay performance
+and replacement 3D game assets remain separate qualifications.
 
-Environment work still open before treating this as finished art: the original
-angular mountain silhouette and source-grid coast shape remain; breaking/run-up
-waves are still approximations; local volumetric firelight and richer flame
-motion need another visual pass. The four-plume, 12 m steam budget has no distant
-handoff. Normal gameplay performance, the actual unlocked desktop, Windows and
-VR remain separate qualifications. Replacement 3D game assets follow the
-environment milestone rather than blocking this usable sandbox.
+The changed-source UBS run covers 16 C# files and is partial: terrain/helper
+analysis hits dataflow limits, and vegetation requires a conditional source
+view. There are no critical findings. Its two nullable dictionary warnings are
+in unchanged test helper lines whose values are created non-null; they were
+reviewed rather than suppressed. The later five-file addition scan has 11
+warnings, all unchanged builder lines with the same findings in the baseline
+scan. The final four-file steam/probe scan is complete with zero warnings or
+critical findings. `ubs doctor --fix` reports a healthy scanner installation,
+not complete semantic coverage. Unity compilation, focused tests,
+changed-hunk review and real player captures provide the other checks.
 
 Build and install the combined player with `./build-player.sh`, then launch
 `./run-modern.sh`. `./run-campaign.sh` retains the original presentation by
@@ -1157,9 +1226,10 @@ This is a desktop environment upgrade, not a completed conversion of every game
 asset. Creatures and effects still use the original sprite art. Scattered rocks
 and vegetation are decorative and do not add Rust collision obstacles. Water
 reflection currently assumes NightSpire's verified zero-height water plane.
-The original terrain's large-scale angular silhouette is retained.
-Its square shoreline remains visible, and the clouds need more motion and
-sampling-quality review. These are unfinished visual-quality limits.
+The original terrain layout remains recognizable, with reconstructed slopes and
+continuous Modern banks. Water run-up, cloud illumination and steam optical
+detail are bounded real-time approximations, not a fully resolved fluid solver.
+The four-field steam budget fades an old cloud before admitting an overflow.
 
 VR/OpenXR, Windows runtime validation, complete 3D characters and high-resolution
 replacement menus are not delivered here. Original graphics preferences are

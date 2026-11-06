@@ -94,6 +94,7 @@ namespace MagicCarpet.Native.Tests
         {
             var heights = new byte[256 * 256];
             var types = new byte[heights.Length];
+            Array.Fill(types, (byte)1);
             var angles = new byte[heights.Length];
             angles[255 + 255 * 256] = 8;
             var root = new GameObject("Water coast source test");

@@ -28,13 +28,40 @@ namespace MagicCarpet.Native
         private Vector3 origin;
         private Vector4 resetChannels;
         private int nextParcel, nextWake;
-        private float remainder, clock;
+        private float remainder, clock, opacity = 1;
         private bool initialized, disposed;
         internal RenderTexture State => current;
         internal Vector3 Origin => origin;
         internal Vector3 RenderOrigin => node.transform.position - Vector3.one*(Size*.5f);
+        internal bool Visible => renderer.enabled;
+        internal float Opacity => opacity;
+        internal float Clock => clock;
         internal Vector3? LatestCenter => parcels[(nextParcel + Capacity - 1) % Capacity].Active
             ? parcels[(nextParcel + Capacity - 1) % Capacity].Position : (Vector3?)null;
+        internal bool HasActive
+        {
+            get { foreach (var parcel in parcels) if (parcel.Active) return true; return false; }
+        }
+
+        // Keep the whole source cluster comfortably inside the 12 m field. The
+        // spare margin allows transported density to expand around each source.
+        internal bool CanAccept(Vector3 position)
+        {
+            if (!Finite(position)) return false;
+            var count = 0;
+            foreach (var parcel in parcels)
+            {
+                if (!parcel.Active) continue;
+                count++;
+                var p = Nearest(position + Vector3.up * .45f, parcel.Position);
+                var d = p - parcel.Position;
+                if (Mathf.Abs(d.x) > 5 || Mathf.Abs(d.y) > 5 || Mathf.Abs(d.z) > 5) return false;
+            }
+            return count < Capacity;
+        }
+
+        internal void SetOpacity(float value)
+        { opacity = Mathf.Clamp01(value); material.SetFloat("_VolumeOpacity", opacity); }
 
         internal ModernSteamVolume(Transform parent, int gridResolution = 48)
         {
@@ -49,6 +76,7 @@ namespace MagicCarpet.Native
             if (source == null || shader == null) throw new InvalidOperationException("Missing steam volume resources");
             compute = UnityEngine.Object.Instantiate(source);
             material = new Material(shader);
+            SetOpacity(1);
             try
             {
                 clearKernel = compute.FindKernel("Clear"); predictKernel = compute.FindKernel("Predict"); advanceKernel = compute.FindKernel("Advance");
@@ -91,6 +119,9 @@ namespace MagicCarpet.Native
             if (!Finite(position) || energy.VaporizedKilograms <= 0) return;
             // Keep sources in one unwrapped coordinate frame, including a world seam.
             if (initialized) position = Nearest(position, origin + Vector3.one * (Size * .5f));
+            else
+                foreach (var parcel in parcels)
+                    if (parcel.Active) { position = Nearest(position, parcel.Position); break; }
             parcels[nextParcel] = new Parcel { Position = position + Vector3.up * .45f,
                 Water = (float)energy.VaporizedKilograms, Active = true };
             resetChannels[nextParcel] = 1;
@@ -226,6 +257,114 @@ namespace MagicCarpet.Native
             foreach (var texture in new[] { current, scratch, predicted }) if (texture != null) { texture.Release(); Destroy(texture); }
             massParts?.Dispose(); massScale?.Dispose();
             Destroy(node); Destroy(material); Destroy(compute);
+        }
+    }
+
+    // A small lazy pool keeps distant quenches from dragging the same 12 m
+    // density field away from one another. Nearby quenches still share channels.
+    internal sealed class ModernSteamVolumePool : IDisposable
+    {
+        internal const int Capacity = 4;
+        private const float EvictionSeconds = 1f;
+        private readonly ModernSteamVolume[] volumes = new ModernSteamVolume[Capacity];
+        private readonly Vector4[] torchSteamBounds = new Vector4[Capacity];
+        private Vector4 torchSteamClock;
+        private static readonly int[] TorchSteamTextures = {
+            Shader.PropertyToID("_ModernTorchSteam0"), Shader.PropertyToID("_ModernTorchSteam1"),
+            Shader.PropertyToID("_ModernTorchSteam2"), Shader.PropertyToID("_ModernTorchSteam3") };
+        private readonly ulong[] order = new ulong[Capacity];
+        private readonly Transform parent;
+        private readonly int extraResolution;
+        private int latest = -1, fading = -1;
+        private float fadeAge;
+        private ulong sequence;
+        private bool pending;
+        private Vector3 pendingPosition;
+        private ModernFireballEnergy pendingEnergy;
+
+        internal ModernSteamVolumePool(Transform parent, int resolution = 48)
+        {
+            this.parent = parent;
+            // Additional fields use 32³ by default: three textures cost 1.5 MiB
+            // apiece rather than 5.06 MiB at 48³. The original field is unchanged.
+            extraResolution = 32;
+            volumes[0] = new ModernSteamVolume(parent, resolution);
+        }
+
+        internal ModernSteamVolume VolumeAt(int index) => volumes[index];
+        internal Vector3? LatestCenter => latest >= 0 ? volumes[latest].LatestCenter : (Vector3?)null;
+
+        internal void Quench(Vector3 position, ModernFireballEnergy energy)
+        {
+            if (!float.IsFinite(position.x) || !float.IsFinite(position.y) || !float.IsFinite(position.z)
+                || energy.VaporizedKilograms <= 0) return;
+            for (var i = 0; i < Capacity; i++)
+                if (i != fading && volumes[i] != null && volumes[i].HasActive && volumes[i].CanAccept(position))
+                { Start(i, position, energy); return; }
+            for (var i = 0; i < Capacity; i++)
+                if (i != fading && (volumes[i] == null || !volumes[i].HasActive))
+                { Start(i, position, energy); return; }
+
+            // Never clear a visible cloud in the impact frame. When all four
+            // fields are occupied, fade the oldest for one second and keep the
+            // newest waiting impact; repeated overload replaces only that request.
+            pending = true; pendingPosition = position; pendingEnergy = energy;
+            if (fading >= 0) return;
+            fading = 0;
+            for (var i = 1; i < Capacity; i++) if (order[i] < order[fading]) fading = i;
+            fadeAge = 0;
+        }
+
+        private void Start(int index, Vector3 position, ModernFireballEnergy energy)
+        {
+            if (volumes[index] == null) volumes[index] = new ModernSteamVolume(parent, extraResolution);
+            volumes[index].SetOpacity(1);
+            volumes[index].Quench(position, energy);
+            order[index] = ++sequence;
+            latest = index;
+        }
+
+        internal void Update(float dt, Vector2 wind)
+        {
+            for (var i = 0; i < Capacity; i++) volumes[i]?.Update(dt, wind);
+            if (fading < 0) return;
+            fadeAge += dt;
+            volumes[fading].SetOpacity(1 - Mathf.SmoothStep(0, 1, fadeAge / EvictionSeconds));
+            if (fadeAge < EvictionSeconds) return;
+            var slot = fading; fading = -1;
+            volumes[slot].Reset();
+            if (pending) { pending = false; Start(slot, pendingPosition, pendingEnergy); }
+        }
+
+        internal void PlaceForView(Vector3 viewer)
+        {
+            for (var i = 0; i < Capacity; i++)
+            {
+                var volume = volumes[i];
+                if (volume == null || !volume.Visible) { torchSteamBounds[i] = Vector4.zero; torchSteamClock[i] = 0; continue; }
+                volume.PlaceForView(viewer);
+                var origin = volume.RenderOrigin;
+                torchSteamBounds[i] = new Vector4(origin.x, origin.y, origin.z, volume.Opacity);
+                torchSteamClock[i] = volume.Clock;
+                Shader.SetGlobalTexture(TorchSteamTextures[i], volume.State);
+            }
+            Shader.SetGlobalVectorArray("_ModernTorchSteamBounds", torchSteamBounds);
+            Shader.SetGlobalVector("_ModernTorchSteamClock", torchSteamClock);
+        }
+        internal void Disturb(Vector3 from, Vector3 to, float dt)
+        { foreach (var volume in volumes) volume?.Disturb(from, to, dt); }
+        internal void Reset()
+        {
+            foreach (var volume in volumes) { if (volume == null) continue; volume.Reset(); volume.SetOpacity(1); }
+            latest = fading = -1; fadeAge = 0; pending = false;
+        }
+        public void Dispose()
+        {
+            Array.Clear(torchSteamBounds, 0, torchSteamBounds.Length);
+            torchSteamClock = Vector4.zero;
+            Shader.SetGlobalVector("_ModernTorchSteamClock", torchSteamClock);
+            Shader.SetGlobalVectorArray("_ModernTorchSteamBounds", torchSteamBounds);
+            foreach (var volume in volumes) volume?.Dispose();
         }
     }
 }

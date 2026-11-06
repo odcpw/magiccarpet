@@ -1,10 +1,22 @@
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 
 namespace MagicCarpet.Native.Tests
 {
     public sealed class ModernEnvironmentSandboxEditModeTests
     {
+        [Test]
+        public void TransparentEnvironmentReceivesDepthBeforeRendering()
+        {
+            var renderer=AssetDatabase.LoadAssetAtPath<UniversalRendererData>(
+                "Assets/Resources/ModernPipelineRenderer.asset");
+            Assert.That(renderer,Is.Not.Null);
+            Assert.That(renderer.copyDepthMode,Is.EqualTo(CopyDepthMode.AfterOpaques),
+                "Water/steam/spray need current opaque depth during the transparent pass");
+        }
+
         [Test]
         public void WaterExperimentRejectsLandObstructionSkyAndInvalidAim()
         {

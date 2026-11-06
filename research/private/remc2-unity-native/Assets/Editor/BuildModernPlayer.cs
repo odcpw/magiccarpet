@@ -46,6 +46,13 @@ namespace MagicCarpet.Native.Editor
                 pipeline = UniversalRenderPipelineAsset.Create(renderer);
                 AssetDatabase.CreateAsset(pipeline, path);
             }
+            var modernRenderer = AssetDatabase.LoadAssetAtPath<UniversalRendererData>(
+                "Assets/Resources/ModernPipelineRenderer.asset");
+            if (modernRenderer == null) throw new InvalidOperationException("Modern renderer asset is missing");
+            // Water, soft spray and steam read scene depth in their transparent
+            // passes. URP's default AfterTransparents supplies it too late.
+            modernRenderer.copyDepthMode = CopyDepthMode.AfterOpaques;
+            EditorUtility.SetDirty(modernRenderer);
             pipeline.supportsHDR = true;
             pipeline.supportsCameraDepthTexture = true;
             pipeline.supportsCameraOpaqueTexture = false;

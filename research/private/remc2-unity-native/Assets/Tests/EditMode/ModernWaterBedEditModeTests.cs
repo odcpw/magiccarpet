@@ -11,6 +11,7 @@ namespace MagicCarpet.Native.Tests
             var root=new GameObject("Lake bed test");
             var material=new Material(Shader.Find("Hidden/InternalErrorShader"));
             var heights=new byte[65536];var types=new byte[65536];var flags=new byte[65536];
+            System.Array.Fill(types,(byte)1);
             for(var z=0;z<256;z++) for(var x=0;x<32;x++) flags[x+z*256]=8;
             using(var terrain=new ModernTerrainMesh(root.transform,material,material))
             using(var coast=new ModernWaterCoast())

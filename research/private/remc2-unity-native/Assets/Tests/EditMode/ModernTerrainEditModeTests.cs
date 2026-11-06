@@ -26,7 +26,7 @@ namespace MagicCarpet.Native.Tests
             for (var x = 0; x < MapCells; x++)
             {
                 heights[Index(x, z)] = (byte)((x * 17 + z * 31 + x * z) & 63);
-                types[Index(x, z)] = (byte)((x + 3 * z) % 7);
+                types[Index(x, z)] = (byte)(1+(x + 3 * z) % 6);
             }
             water[Index(31, 31)] = 8;
             water[Index(255, 255)] = 8;
@@ -45,6 +45,42 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void ShoreCoverageTracksOrientationOnlyMutationAndLowersItsBed()
+        {
+            var atlas = new byte[256*608];
+            Array.Fill(atlas,(byte)12);
+            for(var v=0;v<32;v++) for(var u=0;u<16;u++)
+                atlas[(44/8*32+v)*256+44%8*32+u]=0;
+            using var mask=new ModernShoreMask(atlas);
+            terrain.Dispose();
+            terrain=new ModernTerrainMesh(parent.transform,material,material,mask);
+            Array.Clear(heights,0,heights.Length);
+            Array.Clear(water,0,water.Length);
+            Array.Fill(types,(byte)1);
+            types[0]=44;
+            terrain.Update(heights,types,water,1,0);
+            Assert.That(terrain.IsWater(.5f,1.5f),Is.True);
+            Assert.That(terrain.IsWater(3.5f,1.5f),Is.True,"sea-level mixed tiles form a submerged bank");
+            Assert.That(mask.SampleWorld(.5f,1.5f),Is.EqualTo(1));
+            Assert.That(mask.SampleWorld(3.5f,1.5f),Is.Zero);
+            Assert.That(terrain.SampleHeight(.5f,1.5f),Is.LessThan(-.3f));
+            Assert.That(Section(terrain,parent,0,0).GetTriangles(1).Length,Is.EqualTo(24));
+            var revision=terrain.Revision;
+            water[0]=0x10;
+            terrain.Update(heights,types,water,1,1);
+            Assert.That(terrain.Revision,Is.GreaterThan(revision));
+            Assert.That(mask.Revision,Is.EqualTo(terrain.Revision));
+            Assert.That(mask.SampleWorld(.5f,1.5f),Is.Zero);
+            Assert.That(mask.SampleWorld(3.5f,1.5f),Is.EqualTo(1));
+            Assert.That(terrain.IsWater(3.5f,1.5f),Is.True);
+            heights[0]=2;
+            terrain.Update(heights,types,water,1,2);
+            Assert.That(terrain.IsWater(.5f,1.5f),Is.False,"elevated transition material stays land");
+            Assert.That(Section(terrain,parent,0,0).GetTriangles(1),Is.Empty);
+            Assert.That(mask.SampleWorld(3.5f,1.5f),Is.Zero);
+        }
+
+        [Test]
         public void SubdivisionUsesOriginalDiagonalsAndSamplingMatchesMesh()
         {
             var mesh = Section(terrain, parent, 0, 0);
@@ -54,7 +90,7 @@ namespace MagicCarpet.Native.Tests
             // The first two source cells have opposite diagonals; each has four quads.
             CollectionAssert.AreEqual(new[] { 0, 65, 66, 0, 66, 1 }, Slice(indices, 0, 6));
             CollectionAssert.AreEqual(new[] { 2, 67, 3, 67, 68, 3 }, Slice(indices, 12, 6));
-            var hasRelief = false;
+            var hasReconstruction = false;
             for (var z = 0; z < Side; z++)
             for (var x = 0; x < Side; x++)
             {
@@ -62,11 +98,12 @@ namespace MagicCarpet.Native.Tests
                 var sourceZ = z / 2;
                 var baseline = SourceHeight(sourceX, sourceZ, (x & 1) * 0.5f, (z & 1) * 0.5f);
                 var difference = Mathf.Abs(vertices[x + z * Side].y - baseline);
-                Assert.That(difference, Is.LessThanOrEqualTo(0.1501f));
-                if ((x & 1) == 0 && (z & 1) == 0) Assert.That(difference, Is.LessThan(0.00001f));
-                else if (difference > 0.001f) hasRelief = true;
+                // Dry source vertices now undergo visual reconstruction. The
+                // normalized filter stays within the source range plus relief.
+                Assert.That(vertices[x+z*Side].y, Is.InRange(-.60f,31.65f));
+                if (difference > .15f) hasReconstruction = true;
             }
-            Assert.That(hasRelief, Is.True, "the subdivision should add visible geometry");
+            Assert.That(hasReconstruction, Is.True, "dry ridges should be reconstructed");
 
             // Interpolate actual emitted triangles, including both diagonal parities.
             for (var i = 0; i < indices.Length; i += 6 * 137)
@@ -80,7 +117,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void WaterAndShoreStayOnSourceSurfaceAndWrappedNormalsMatch()
+        public void WaterAndShoreShareBedSurfaceAndWrappedNormalsMatch()
         {
             var first = Section(terrain, parent, 0, 0);
             var lastX = Section(terrain, parent, 7, 0);
@@ -111,18 +148,19 @@ namespace MagicCarpet.Native.Tests
         public void MutationsRefreshAffectedSectionsAcrossBothSeams()
         {
             // Instantiate the affected sections before the update, just as presentation does.
-            var coordinates = new[,] { { 0, 0 }, { 7, 0 }, { 0, 7 }, { 7, 7 }, { 1, 1 } };
+            var coordinates = new[,] { { 0, 0 }, { 7, 0 }, { 0, 7 }, { 7, 7 }, { 1, 1 }, { 0, 2 }, { 1, 2 } };
             var before = new Mesh[coordinates.GetLength(0)];
             for (var i = 0; i < before.Length; i++)
                 before[i] = Section(terrain, parent, coordinates[i, 0], coordinates[i, 1]);
             var oldHeight = before[0].vertices[0].y;
             heights[Index(0, 0)] += 10;
             heights[Index(32, 32)] += 5;
+            heights[Index(29, 64)] += 17; // filter/normal halo crosses the next section
             water[Index(255, 255)] = 0;
             water[Index(32, 31)] = 8;
             types[Index(32, 32)] += 1;
             terrain.Update(heights, types, water, 1, 1);
-            Assert.That(before[0].vertices[0].y, Is.EqualTo(oldHeight + 5f).Within(0.00001f));
+            Assert.That(before[0].vertices[0].y, Is.GreaterThan(oldHeight));
             Assert.That(terrain.IsWater(1023f, 1023f), Is.False);
             Assert.That(terrain.IsWater(129f, 125f), Is.True);
 
@@ -207,7 +245,8 @@ namespace MagicCarpet.Native.Tests
             heights[Index(10, 10)] += 10;
             water[Index(12, 12)] = 0;
             terrain.Update(heights, types, water, 1, 2);
-            Assert.That(far.vertices[20 + 20 * Side].y, Is.EqualTo(heights[Index(10, 10)] * 0.5f));
+            Assert.That(far.vertices[20 + 20 * Side].y,
+                Is.EqualTo(terrain.SampleHeight(40,40)).Within(.00001f));
             CollectionAssert.AreEqual(near.vertices, far.vertices);
             AssertMaterialCoverage(near);
             AssertMaterialCoverage(far);
@@ -215,6 +254,59 @@ namespace MagicCarpet.Native.Tests
             AssertClosedInteriorEdges(far);
             terrain.Present(new Vector3(64f, 0f, 64f));
             Assert.That(filter.sharedMesh, Is.SameAs(near));
+        }
+
+        [Test]
+        public void LandformReconstructionRoundsRidgesWithoutMovingWetAnchorsOrFlatGround()
+        {
+            Array.Fill(heights,(byte)16); Array.Clear(water,0,water.Length);
+            heights[Index(16,16)]=144;
+            terrain.Update(heights,types,water,3,0);
+            // A 64 m impulse's central gain is .12 + .88*(6*6/256).
+            Assert.That(terrain.SampleHeight(64,64), Is.EqualTo(23.6f).Within(.0001f));
+            Assert.That(terrain.SampleHeight(48,64), Is.EqualTo(8).Within(.0001f));
+            Assert.That(terrain.SampleHeight(60,64), Is.GreaterThan(8));
+            Assert.That(heights[Index(16,16)], Is.EqualTo(144), "source data stays untouched");
+            water[Index(15,15)]=8;
+            terrain.Update(heights,types,water,3,1);
+            Assert.That(terrain.SampleHeight(64,64), Is.EqualTo(72).Within(.0001f), "wet corner stays exact");
+        }
+
+        [Test]
+        public void WaterOverlapCoversOnlyAdjacentDryCellsAndClearsAfterMutation()
+        {
+            Array.Fill(heights,(byte)40);Array.Clear(water,0,water.Length);
+            water[Index(16,16)]=8;terrain.Update(heights,types,water,4,0);
+            Section(terrain,parent,0,0);
+            var node=parent.transform.Find("Modern Terrain/Terrain 0,0 copy 4/Shore overlap");
+            var mesh=node.GetComponent<MeshFilter>().sharedMesh;
+            var vertices=mesh.vertices;var triangles=mesh.triangles;
+            Assert.That(triangles.Length,Is.EqualTo(8*4*6));
+            Assert.That(mesh.bounds.min.y,Is.LessThanOrEqualTo(.02f));
+            for(var i=0;i<triangles.Length;i+=3)
+            {
+                var center=(vertices[triangles[i]]+vertices[triangles[i+1]]+vertices[triangles[i+2]])/3;
+                Assert.That(terrain.IsWater(center.x,center.z),Is.False,"the apron must not double-render wet cells");
+                Assert.That(Mathf.Abs(Mathf.FloorToInt(center.x/4)-16),Is.LessThanOrEqualTo(1));
+                Assert.That(Mathf.Abs(Mathf.FloorToInt(center.z/4)-16),Is.LessThanOrEqualTo(1));
+            }
+            water[Index(16,16)]=0;terrain.Update(heights,types,water,4,1);Section(terrain,parent,0,0);
+            Assert.That(mesh.triangles,Is.Empty);Assert.That(node.GetComponent<MeshRenderer>().enabled,Is.False);
+        }
+
+        [Test]
+        public void CalmSeaLevelWaterUsesMaterialWithoutInteriorWaveFlag()
+        {
+            Array.Fill(heights,(byte)0);Array.Fill(types,(byte)1);Array.Clear(water,0,water.Length);
+            types[Index(16,16)]=0;terrain.Update(heights,types,water,5,0);
+            Assert.That(terrain.IsWater(65,65),Is.True);
+            Assert.That(terrain.IsWater(61,65),Is.False);
+            Assert.That(Section(terrain,parent,0,0).GetTriangles(1).Length,Is.EqualTo(24));
+            types[Index(16,16)]=1;terrain.Update(heights,types,water,5,1);
+            Assert.That(terrain.IsWater(65,65),Is.False);
+            Assert.That(Section(terrain,parent,0,0).GetTriangles(1),Is.Empty);
+            types[Index(16,16)]=0;heights[Index(16,16)]=10;terrain.Update(heights,types,water,5,2);
+            Assert.That(terrain.IsWater(65,65),Is.False,"raised dry type-0 ground is not flooded by the presentation rule");
         }
 
         [Test]
@@ -345,19 +437,24 @@ namespace MagicCarpet.Native.Tests
             for (var dx = 0; dx <= 2; dx++)
             {
                 var index = (x % 32 * 2 + dx) + (z % 32 * 2 + dz) * Side;
-                Assert.That(vertices[index].y, Is.EqualTo(SourceHeight(x, z, dx * 0.5f, dz * 0.5f)).Within(0.00001f));
+                Assert.That(vertices[index].y, Is.EqualTo(SourceHeight(x, z, dx * 0.5f, dz * 0.5f,true)).Within(0.00001f));
             }
             Assert.That(mesh.GetTriangles(1).Length, Is.GreaterThanOrEqualTo(24));
             Assert.That(terrain.SampleHeight(x * 4f + 1f, z * 4f + 3f),
-                Is.EqualTo(SourceHeight(x, z, 0.25f, 0.75f)).Within(0.0001f));
+                Is.EqualTo(SourceHeight(x, z, 0.25f, 0.75f,true)).Within(0.0001f));
         }
 
-        private float SourceHeight(int x, int z, float fx, float fz)
+        private float SourceHeight(int x, int z, float fx, float fz,bool coastal=false)
         {
             var a = heights[Index(x, z)] * 0.5f;
             var b = heights[Index(x + 1, z)] * 0.5f;
             var c = heights[Index(x, z + 1)] * 0.5f;
             var d = heights[Index(x + 1, z + 1)] * 0.5f;
+            if(coastal)
+            {
+                float Bank(float h) => h-.45f*(1-Mathf.SmoothStep(0,1,Mathf.InverseLerp(1,3,h)));
+                a=Bank(a);b=Bank(b);c=Bank(c);d=Bank(d);
+            }
             if (((x + z) & 1) == 0)
                 return fx <= fz ? a + fz * (c - a) + fx * (d - c) : a + fz * (d - b) + fx * (b - a);
             return fx + fz >= 1f ? c + (1f - fz) * (b - d) + fx * (d - c) : a + fz * (c - a) + fx * (b - a);

@@ -149,7 +149,7 @@ Shader "MagicCarpet/ModernTerrain"
                 float rockVariation=Noise(p.xz*0.012+p.y*float2(0.006,0.009)+float2(24,17));
                 // Broad mineral beds give the cliff a readable geological scale.
                 // Reuse the macro field; no additional texture or noise octaves.
-                float stratumPhase=i.positionWS.y*.60+rockVariation*9;
+                float stratumPhase=i.positionWS.y*.42+rockVariation*18+broad*3;
                 float stratum=smoothstep(.30,.70,.5+.5*sin(stratumPhase));
                 float stratumWeight=1-smoothstep(.6,2.0,fwidth(stratumPhase));
                 float dampPatch=smoothstep(0.38,0.68,broad+(detail-0.5)*0.08)*saturate((n.y-0.45)*2);
@@ -183,7 +183,7 @@ Shader "MagicCarpet/ModernTerrain"
                         [branch] if (weights.y > 0) { RockProjection(q.xz,qdx.xz,qdy.xz,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.y; rockR+=axisR*weights.y; rockNY=axisNormal; }
                         [branch] if (weights.z > 0) { RockProjection(q.xy,qdx.xy,qdy.xy,rockMix,axisColor,axisR,axisNormal); rockTex+=axisColor*weights.z; rockR+=axisR*weights.z; rockNZ=axisNormal; }
                         rockTex *= lerp(half3(0.77,0.82,0.80),half3(1.07,1.02,0.95),rockVariation);
-                        rockTex *= lerp(1.0,lerp(.82,1.08,stratum),stratumWeight*.65);
+                        rockTex *= lerp(1.0,lerp(.90,1.04,stratum),stratumWeight*.40);
                     }
                     [branch] if (_UseMaterialEndpoints < 0.5 || rock < 1)
                     {

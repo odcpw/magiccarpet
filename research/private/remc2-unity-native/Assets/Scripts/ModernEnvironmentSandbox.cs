@@ -18,10 +18,12 @@ namespace MagicCarpet.Native
         private readonly CursorLockMode previousLock;
         private readonly bool previousCursor;
         private readonly bool tour = Environment.GetCommandLineArgs().Contains("-mc-sandbox-tour");
+        private readonly int study = StudyOption();
         private bool initialized, panel = true, torches = true;
         private float yaw, pitch, speed = 18, cover = .46f, started, lastImpact = -10;
         private float frameMilliseconds;
         private int lightMode, windMode, tourStage = -1;
+        private bool secondReviewImpact;
         private Vector3[] lamps;
         private Vector3 lake, grove;
         private string notice = "Explore the island. Aim at water to make a splash or a steam plume.";
@@ -44,7 +46,10 @@ namespace MagicCarpet.Native
             {
                 initialized = true; started = Time.unscaledTime;
                 lake = FindLake(); grove = FindGrove();
-                lamps = new[] { Lamp(grove), Lamp(grove+new Vector3(4,0,3)), Lamp(grove+new Vector3(-3,0,4)) };
+                lamps = new Vector3[3];
+                lamps[0]=Lamp(grove,0);
+                lamps[1]=Lamp(grove+new Vector3(4,0,3),1);
+                lamps[2]=Lamp(grove+new Vector3(-3,0,4),2);
                 lighting.SetReviewTorches(lamps);
                 SetLighting(0); SetWind(0); View(0);
                 if (ModernCapture.ReviewPosition.HasValue)
@@ -57,7 +62,7 @@ namespace MagicCarpet.Native
             if (Input.GetKeyDown(KeyCode.F10)) Application.Quit();
             if (Input.GetKeyDown(KeyCode.Escape) || !Application.isFocused)
             { Cursor.lockState=CursorLockMode.None; Cursor.visible=true; }
-            if (tour) { Tour(Time.unscaledTime-started,dt); return; }
+            if (tour || study>=0) { Tour(Time.unscaledTime-started,dt); return; }
             if (Input.GetKeyDown(KeyCode.Alpha1)) View(0);
             if (Input.GetKeyDown(KeyCode.Alpha2)) View(1);
             if (Input.GetKeyDown(KeyCode.Alpha3)) View(2);
@@ -81,13 +86,30 @@ namespace MagicCarpet.Native
             var velocity=camera.transform.right*move.x+Vector3.up*move.y+camera.transform.forward*move.z;
             var boost=Input.GetKey(KeyCode.LeftShift)?3f:Input.GetKey(KeyCode.LeftControl)?.2f:1f;
             var next=previous+Vector3.ClampMagnitude(velocity,1)*speed*boost*dt;
-            next.y=Mathf.Clamp(Mathf.Max(next.y,terrain.SampleHeight(next.x,next.z)+.65f),.65f,650);
+            next.y=Mathf.Clamp(Mathf.Max(next.y,terrain.SampleHeight(next.x,next.z)+.65f),water.CameraClearance(next.x,next.z),650);
             camera.transform.position=next;
             water.SandboxSweep(previous,next,dt);
         }
 
         private static float Axis(KeyCode positive, KeyCode negative) => (Input.GetKey(positive)?1:0)-(Input.GetKey(negative)?1:0);
-        private Vector3 Lamp(Vector3 p) => new Vector3(p.x,terrain.SampleHeight(p.x,p.z)+1.6f,p.z);
+        private Vector3 Lamp(Vector3 p,int placed)
+        {
+            var best=p;var score=float.PositiveInfinity;
+            for(var z=-10;z<=10;z++) for(var x=-10;x<=10;x++)
+            {
+                var q=p+new Vector3(x,0,z);var h=terrain.SampleHeight(q.x,q.z);
+                if(h<1f || terrain.IsWater(q.x,q.z) || terrain.IsWater(q.x-1,q.z)
+                    ||terrain.IsWater(q.x+1,q.z)||terrain.IsWater(q.x,q.z-1)||terrain.IsWater(q.x,q.z+1)) continue;
+                var occupied=false;
+                for(var i=0;i<placed;i++)
+                    occupied|=new Vector2(q.x-lamps[i].x,q.z-lamps[i].z).sqrMagnitude<2.25f;
+                if(occupied) continue;
+                var value=x*x+z*z+Mathf.Abs(h-1)*.1f;
+                if(value<score) { score=value;best=q; }
+            }
+            if(float.IsPositiveInfinity(score)) throw new InvalidOperationException("No dry ground for sandbox torch");
+            return new Vector3(best.x,terrain.SampleHeight(best.x,best.z)+1.6f,best.z);
+        }
 
         private Vector3 FindLake()
         {
@@ -121,13 +143,17 @@ namespace MagicCarpet.Native
 
         private void SetPose(Vector3 position, Quaternion rotation)
         {
-            position.y=Mathf.Max(position.y,terrain.SampleHeight(position.x,position.z)+.65f);
+            position.y=Mathf.Max(water.CameraClearance(position.x,position.z),Mathf.Max(position.y,terrain.SampleHeight(position.x,position.z)+.65f));
             camera.transform.SetPositionAndRotation(position,rotation);
             pitch=Mathf.DeltaAngle(0,rotation.eulerAngles.x); yaw=rotation.eulerAngles.y;
             camera.fieldOfView=67;
         }
 
-        private void Look(Vector3 position, Vector3 target) => SetPose(position,Quaternion.LookRotation(target-position));
+        private void Look(Vector3 position, Vector3 target)
+        {
+            position.y=Mathf.Max(water.CameraClearance(position.x,position.z),Mathf.Max(position.y,terrain.SampleHeight(position.x,position.z)+.65f));
+            SetPose(position,Quaternion.LookRotation(target-position));
+        }
 
         internal void View(int index)
         {
@@ -159,8 +185,10 @@ namespace MagicCarpet.Native
             RenderSettings.ambientSkyColor=day?new Color(.48f,.62f,.78f):dusk?new Color(.24f,.29f,.42f):new Color(.11f,.16f,.26f);
             RenderSettings.ambientEquatorColor=day?new Color(.32f,.39f,.43f):dusk?new Color(.25f,.21f,.20f):new Color(.075f,.10f,.14f);
             RenderSettings.ambientGroundColor=day?new Color(.16f,.19f,.13f):dusk?new Color(.12f,.10f,.085f):new Color(.035f,.045f,.045f);
-            RenderSettings.fogColor=day?new Color(.48f,.59f,.65f):dusk?new Color(.35f,.25f,.24f):new Color(.085f,.12f,.16f);
-            RenderSettings.fogDensity=day?.0017f:dusk?.0024f:.0022f;
+            // The periodic island has a finite presentation radius. Match its
+            // atmospheric extinction to the sky horizon before that boundary.
+            RenderSettings.fogColor=sky.GetColor("_HorizonColor");
+            RenderSettings.fogDensity=day?.0038f:dusk?.0040f:.0038f;
             Debug.Log($"MC_SANDBOX_LIGHT mode={LightNames[lightMode]}");
         }
 
@@ -200,12 +228,28 @@ namespace MagicCarpet.Native
 
         private void Tour(float time, float dt)
         {
-            var elapsed=Mathf.Max(0,time-4); var stage=Mathf.Min(5,(int)(elapsed/10)); var local=elapsed-stage*10;
+            var elapsed=Mathf.Max(0,time-4);
+            var stage=study>=0?study:Mathf.Min(10,(int)(elapsed/10));
+            var local=study>=0?elapsed:elapsed-stage*10;
             if(stage!=tourStage)
             {
                 tourStage=stage; SetLighting(stage<2?stage:2); SetWind(stage==1?1:0);
                 if(stage==3) water.SandboxImpact(lake,true);
-                if(stage==4) water.SandboxImpact(lake,true);
+                if(stage==4 && study>=0) { water.ClearSandboxEffects();secondReviewImpact=false; }
+                if(stage==6 || stage==7) { SetLighting(0); SetWind(stage==6?2:1); water.ClearSandboxEffects(); }
+                if(stage==8) { water.ClearSandboxEffects();water.SandboxImpact(lake,true);secondReviewImpact=false; }
+                if(stage==9 || stage==12)
+                {
+                    water.ClearSandboxEffects();secondReviewImpact=false;
+                    if(study<0) { water.SandboxImpact(ReviewWaterNear(grove),true);secondReviewImpact=true; }
+                }
+                if(stage==10) { SetLighting(1);SetWind(2);water.ClearSandboxEffects(); }
+                if(stage==11)
+                {
+                    water.ClearSandboxEffects();
+                    foreach(var offset in new[] { new Vector3(-12,0,-8),new Vector3(8,0,-8),new Vector3(-12,0,12),new Vector3(8,0,12) })
+                        water.SandboxImpact(ReviewWaterNear(lake+offset),true);
+                }
             }
             var previous=camera.transform.position;
             if(stage==0) Look(lake+new Vector3(-24+local*.7f,5,-15),grove+Vector3.up*3);
@@ -214,12 +258,69 @@ namespace MagicCarpet.Native
             else if(stage==3) Look(lake+new Vector3(-8,3,-5),water.CloudCenter??lake+Vector3.up);
             else if(stage==4)
             {
+                if(study>=0 && !secondReviewImpact)
+                {
+                    // Let the initial weather settle before this isolated study;
+                    // otherwise its plume is blown into the hill before arrival.
+                    if(local<12) { Look(lake+new Vector3(-8,6,-5),lake+Vector3.up*2);return; }
+                    water.SandboxImpact(lake,true);secondReviewImpact=true;
+                }
                 var center=water.CloudCenter??lake+Vector3.up*2;
                 var direction=new Vector3(.8f,0,.6f);
-                var p=center+direction*Mathf.Lerp(-7,8,local/10);
+                // Reuse the preceding quench in the tour. Standalone studies
+                // allow the cloud to rise above the wave-safe flight floor first.
+                var flightTime=study>=0?Mathf.Max(0,local-20):local;
+                var p=center+direction*Mathf.Lerp(-7,8,flightTime/10);
                 Look(p,p+direction); water.SandboxSweep(previous,camera.transform.position,dt);
             }
-            else Look(lake+Vector3.up*5,lake+new Vector3(-38+local,53,79));
+            else if(stage==5) Look(lake+Vector3.up*5,lake+new Vector3(-38+local,53,79));
+            else if(stage==6) Look(grove+new Vector3(-7,2,-6),grove+new Vector3(-1,0,0));
+            else if(stage==7) Look(lake+new Vector3(-90+local,100,-80),grove);
+            else if(stage==8)
+            {
+                var other=ReviewWaterNear(lake+new Vector3(-22,0,0));
+                if(local>=3 && !secondReviewImpact) { water.SandboxImpact(other,true); secondReviewImpact=true; }
+                Look(lake+new Vector3(-12,9,-27),lake+new Vector3(-10,2,0));
+            }
+            else if(stage==9 || stage==12)
+            {
+                var wet=ReviewWaterNear(grove);
+                if(!secondReviewImpact && local>=12) { water.SandboxImpact(wet,true);secondReviewImpact=true; }
+                if(!secondReviewImpact) { Look(grove+new Vector3(-7,3,-6),lamps[0]);return; }
+                var center=water.CloudCenter??wet+Vector3.up;
+                var lamp=lamps[0]+Vector3.up*.3f;
+                if(stage==9) Look(center+(center-lamp)*2,lamp);
+                else Look(lamp+(lamp-center)*2,center);
+            }
+            else if(stage==10) Look(grove+new Vector3(-7,2,-6),grove+new Vector3(-1,0,0));
+            else
+            {
+                var center=(water.CloudCenter??lake)-new Vector3(8,0,12);
+                Look(center+new Vector3(-12,9,-27),center+Vector3.up*2);
+            }
+        }
+
+        private static int StudyOption()
+        {
+            var args=Environment.GetCommandLineArgs();var i=Array.IndexOf(args,"-mc-sandbox-study");
+            if(i<0) return -1;
+            if(i+1>=args.Length || !int.TryParse(args[i+1],out var stage) || stage<0 || stage>12)
+                throw new ArgumentException("Sandbox study must be a view from 0 to 12");
+            return stage;
+        }
+
+        private Vector3 ReviewWaterNear(Vector3 target)
+        {
+            var best=lake;var distance=float.PositiveInfinity;
+            for(var z=-28;z<=28;z+=2) for(var x=-28;x<=28;x+=2)
+            {
+                var p=target+new Vector3(x,0,z);p.y=.15f;
+                if(!terrain.IsWater(p.x,p.z)||!terrain.IsWater(p.x-1,p.z)||!terrain.IsWater(p.x+1,p.z)
+                    ||!terrain.IsWater(p.x,p.z-1)||!terrain.IsWater(p.x,p.z+1)) continue;
+                var d=x*x+z*z;
+                if(d<distance) { distance=d;best=p; }
+            }
+            return best;
         }
 
         internal void Draw()
@@ -231,8 +332,8 @@ namespace MagicCarpet.Native
             button??=new GUIStyle(GUI.skin.button) { fontSize=13,fixedHeight=30 };
             if(panel)
             {
-                GUI.color=new Color(.025f,.045f,.05f,.94f); GUI.DrawTexture(new Rect(20,20,326,475),Texture2D.whiteTexture); GUI.color=Color.white;
-                GUILayout.BeginArea(new Rect(38,34,290,445));
+                GUI.color=new Color(.025f,.045f,.05f,.94f); GUI.DrawTexture(new Rect(20,20,326,530),Texture2D.whiteTexture); GUI.color=Color.white;
+                GUILayout.BeginArea(new Rect(38,34,290,500));
                 GUILayout.Label("MAGIC CARPET",small);
                 GUILayout.Label("Environment sandbox",title);
                 GUILayout.Space(10); GUILayout.Label("LIGHT",small);

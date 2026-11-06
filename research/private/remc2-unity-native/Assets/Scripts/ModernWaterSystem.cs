@@ -15,6 +15,7 @@ namespace MagicCarpet.Native
         private readonly ModernWind wind;
         private readonly ModernWaterSpectrum spectrum;
         private readonly ModernWaterInteractions interactions;
+        private readonly ModernWaterHeightProbe heightProbe;
         private readonly ModernWaterEffects effects;
         private readonly ModernWaterBed bed;
         private readonly Texture2D pattern;
@@ -37,6 +38,21 @@ namespace MagicCarpet.Native
         private int sandboxWind = -1;
         internal Vector2 WindVelocity => wind.Velocity;
         internal Vector3? CloudCenter => effects.LatestCloudCenter;
+
+        // Sandbox flight stays above the observed neighborhood; unavailable,
+        // stale, distant or revision-mismatched readbacks use the old full bound.
+        // Broad-wave evolution padding is empirical, not a physics collision guarantee.
+        internal float CameraClearance(float x,float z)
+        {
+            var d=Mathf.Max(0,coast.SampleDistance(x,z));
+            var broad=Mathf.SmoothStep(0,1,Mathf.Clamp01(d/12));
+            var local=Mathf.SmoothStep(0,1,Mathf.Clamp01(d/2));
+            var fallback=Mathf.Max(1.2f,.02f+.65f+ModernWaterSpectrum.MaximumDisplacement*broad
+                +2*local+.15f*local*Mathf.Exp(-d*.18f));
+            if (heightProbe != null && heightProbe.TryClearance(new Vector2(x,z),Time.realtimeSinceStartup,terrain.Revision,out var sampled))
+                return Mathf.Min(fallback,sampled);
+            return fallback;
+        }
 
         internal void SetSandboxWind(int mode)
         {
@@ -63,7 +79,7 @@ namespace MagicCarpet.Native
             if (influence > .02f) interactions.AddWake(previous,position,2.2f+position.y*.15f,dt*influence*5);
         }
 
-        internal void ClearSandboxEffects() { effects.Clear(); interactions.Reset(); }
+        internal void ClearSandboxEffects() { heightProbe?.Invalidate(); effects.Clear(); interactions.Reset(); }
 
         internal ModernWaterSystem(Transform parent, ModernTerrainMesh terrain, ModernNightLighting lighting, Material bedMaterial)
         {
@@ -79,6 +95,11 @@ namespace MagicCarpet.Native
             {
                 coast = new ModernWaterCoast(); wind = new ModernWind();
                 spectrum = new ModernWaterSpectrum(); interactions = new ModernWaterInteractions();
+                if (ModernEnvironmentSandbox.Requested)
+                {
+                    try { heightProbe = new ModernWaterHeightProbe(); }
+                    catch (Exception error) { Debug.LogWarning($"MC_WATER_HEIGHT_PROBE fallback=True reason={error.Message}"); }
+                }
                 pattern = CreatePattern(); effects = new ModernWaterEffects(parent, pattern);
                 bed = new ModernWaterBed(parent, bedMaterial);
                 Shader.SetGlobalTexture("_WaterPattern", pattern);
@@ -93,7 +114,7 @@ namespace MagicCarpet.Native
             if (session.Generation != generation)
             {
                 generation = session.Generation; lastTick = session.Tick; splashCount = 0;
-                lastFlyer.Clear(); effects.Clear(); interactions.Reset();
+                heightProbe?.Invalidate(); lastFlyer.Clear(); effects.Clear(); interactions.Reset();
                 lastObservationTime = Time.unscaledTime;
                 return; // Restores begin at the head; historical impacts are not replayed.
             }
@@ -157,7 +178,7 @@ namespace MagicCarpet.Native
             time += dt;
             if (coastRevision != terrain.Revision)
             {
-                coast.Update(terrain); coastRevision = terrain.Revision; interactions.Reset();
+                heightProbe?.Invalidate(); coast.Update(terrain); coastRevision = terrain.Revision; interactions.Reset();
             }
             if (bornAt < 0)
             {
@@ -185,6 +206,9 @@ namespace MagicCarpet.Native
             Shader.SetGlobalTexture("_WaterDetailNormal", spectrum.DetailNormalFoam);
             Shader.SetGlobalTexture("_WaterLocal", interactions.State);
             Shader.SetGlobalVector("_WaterLocalRect", interactions.WorldRect);
+            heightProbe?.Submit(new Vector2(camera.transform.position.x,camera.transform.position.z),
+                Time.realtimeSinceStartup,coast.Revision,spectrum.Displacement,coast.Texture,interactions.State,
+                interactions.WorldRect,new Vector4(wind.Velocity.x,wind.Velocity.y,wind.Velocity.magnitude/8f,time),time);
             effects.Update(wind.Velocity, camera.transform.position);
             // A bounded near-coast spray sample, masked by exposure and incoming phase.
             if (time >= nextShoreSpray)
@@ -372,7 +396,7 @@ namespace MagicCarpet.Native
 
         private static Texture2D CreatePattern()
         {
-            const int n = 128; var pixels = new Color[n * n];
+            const int n = 512, cellPixels = n / 32; var pixels = new Color[n * n];
             // Offline-in-memory periodic filtered texture: no per-fragment hash octaves.
             for (var z = 0; z < n; z++) for (var x = 0; x < n; x++)
             {
@@ -388,15 +412,16 @@ namespace MagicCarpet.Native
                     }
                     return Mathf.Lerp(Mathf.Lerp(Hash(ix, iz), Hash(ix + 1, iz), fx), Mathf.Lerp(Hash(ix, iz + 1), Hash(ix + 1, iz + 1), fx), fz);
                 }
-                // Periodic Voronoi walls for fine bubbles (four texels per cell).
-                var cellX = x / 4; var cellZ = z / 4;
+                // The same 32-cell period, with enough texels to resolve rounded
+                // bubble walls instead of exposing the source grid in highlights.
+                var cellX = x / cellPixels; var cellZ = z / cellPixels;
                 var first = 100f; var second = 100f;
                 for (var dz = -1; dz <= 1; dz++) for (var dx = -1; dx <= 1; dx++)
                 {
                     uint h = (uint)(((cellX + dx + 32) % 32) * 73856093 ^ ((cellZ + dz + 32) % 32) * 19349663);
                     h ^= h >> 13; h *= 0x7feb352d; h ^= h >> 16;
-                    var q = new Vector2(cellX + dx + .2f + (h & 255) / 425f - x / 4f,
-                        cellZ + dz + .2f + ((h >> 8) & 255) / 425f - z / 4f);
+                    var q = new Vector2(cellX + dx + .2f + (h & 255) / 425f - x / (float)cellPixels,
+                        cellZ + dz + .2f + ((h >> 8) & 255) / 425f - z / (float)cellPixels);
                     var distance = q.magnitude;
                     if (distance < first) { second = first; first = distance; }
                     else if (distance < second) second = distance;
@@ -411,7 +436,7 @@ namespace MagicCarpet.Native
         public void Dispose()
         {
             if (disposed) return; disposed = true;
-            effects?.Dispose(); interactions?.Dispose(); spectrum?.Dispose(); coast?.Dispose();
+            heightProbe?.Dispose(); effects?.Dispose(); interactions?.Dispose(); spectrum?.Dispose(); coast?.Dispose();
             bed?.Dispose();
             Shader.SetGlobalFloat("_ModernCoastReady",0);
             UnityEngine.Object.Destroy(pattern);

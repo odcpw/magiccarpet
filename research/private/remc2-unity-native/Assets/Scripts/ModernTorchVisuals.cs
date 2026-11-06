@@ -136,7 +136,9 @@ namespace MagicCarpet.Native
                 for (var side = 0; side < 2; side++)
                 {
                     var y = row / (float)segments;
-                    vertices.Add(across * ((side * 2 - 1) * .22f) + Vector3.up * (y * .75f));
+                    // Start inside the brazier, so the flame emerges from the fuel
+                    // instead of hovering above the opaque cap at close range.
+                    vertices.Add(across * ((side * 2 - 1) * .22f) + Vector3.up * (y * .75f - .025f));
                     normals.Add(normal); uv.Add(new Vector2(side, y)); colors.Add(Color.black);
                 }
                 for (var row = 0; row < segments; row++)

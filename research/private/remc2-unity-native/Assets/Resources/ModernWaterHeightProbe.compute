@@ -1,0 +1,46 @@
+#pragma kernel SampleMaximum
+Texture2D<float4> _Broad;
+SamplerState sampler_Broad;
+Texture2D<float4> _Coast;
+SamplerState sampler_Coast;
+Texture2D<float4> _Local;
+SamplerState sampler_Local;
+RWStructuredBuffer<float> _Maximum;
+float4 _Center, _LocalRect, _Wind;
+float _WaterTime;
+groupshared float maxima[256];
+
+// Match ModernWater.Surface at the terrain mesh's 2 m rest-space vertices.
+// A sampled square includes the horizontal displacement margin; the maximum
+// vertex height also bounds the interpolated height of its water triangles.
+float SurfaceHeight(float2 p)
+{
+    float4 coast=_Coast.SampleLevel(sampler_Coast,p/1024,0);
+    float broad=_Broad.SampleLevel(sampler_Broad,p/256+0.5/256,0).g*smoothstep(0,12,coast.r);
+    float2 uv=(p-_LocalRect.xy)*_LocalRect.w;
+    float edge=min(min(uv.x,uv.y),min(1-uv.x,1-uv.y));
+    float local=_Local.SampleLevel(sampler_Local,saturate(uv),0).r*smoothstep(0,.06,edge)*smoothstep(0,2,coast.r);
+    float exposure=saturate(-dot(normalize(_Wind.xy+.001),coast.ba));
+    float shore=sin(max(0,coast.r)*.8+_WaterTime*1.25)*exp(-max(0,coast.r)*.18)
+        *smoothstep(0,2,coast.r)*.15*saturate(_Wind.z)*(.2+.8*exposure);
+    return .02+broad+local+shore;
+}
+
+[numthreads(256,1,1)]
+void SampleMaximum(uint lane:SV_GroupIndex)
+{
+    float value=-1e10;
+    for(uint i=lane;i<289;i+=256)
+    {
+        float2 p=_Center.xy+float2((int)(i%17)-8,(int)(i/17)-8)*2;
+        value=max(value,SurfaceHeight(p));
+    }
+    maxima[lane]=value;
+    GroupMemoryBarrierWithGroupSync();
+    for(uint stride=128;stride>0;stride>>=1)
+    {
+        if(lane<stride) maxima[lane]=max(maxima[lane],maxima[lane+stride]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if(lane==0) _Maximum[0]=maxima[0];
+}
