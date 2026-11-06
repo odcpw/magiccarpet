@@ -76,8 +76,8 @@ acceptance open; a working control panel alone does not finish the environment.
 
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
-tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22` and
-Firefly `.23` are delivered; Creature17 `.6` is next, retaining the families below. Root
+tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
+Firefly `.23` and Manticore17 `.6` are delivered; Sentinel18 `.7` is next. Root
 serializes shared joins, Cargo and installation with the small native team.
 Complete one creature through verification and installation before starting the
 next. Parallel workers tackle disjoint parts of that same capability. Use the
@@ -94,7 +94,8 @@ in their canonical owner when a real connected failure exposes them.
 - [x] Archer4 — `mc-1pb.21`.
 - [x] Skeleton9 — `mc-1pb.22`.
 - [x] Firefly19 — `mc-1pb.23`.
-- [ ] Creature17 — `mc-1pb.6`; Creature18 — `mc-1pb.7`.
+- [x] Manticore17 — `mc-1pb.6`.
+- [ ] Sentinel18 — `mc-1pb.7`.
 - [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
@@ -106,19 +107,70 @@ in their canonical owner when a real connected failure exposes them.
       integrated as actual family consumers require it.
 
 Goat (`mc-1pb.1`, already closed) and existing Spider20 behavior remain delivered
-inputs; the parent still requires their actual enabled-source coverage. Recent
-17/18/25/26 checkpoints are installed inputs, not reasons to replay unchanged
+inputs; the parent still requires their actual enabled-source coverage. Existing
+18/25/26 checkpoints are installed inputs, not reasons to replay unchanged
 long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: Skeleton and Firefly delivered
+### Current delivery: Manticore delivered (2026-11-06)
+
+Manticore17 `.6` and its original finite wind/status prerequisite `mc-bhq.14`
+are delivered and closed without changing acceptance or dependencies. Runtime
+`3834b46c8da97b42aa9786c3118d80408427db4b` is committed/pushed; native
+`c72c82d5649125e2aa42bf00842efbcf13b5e74ca388fd5c350e2ef89cd6a708`
+is installed and qualified in both Original plugin locations. Source helpers
+now preserve Alliance expiry, linked current-address reads, signed arithmetic,
+guard/follow/wander tails and source update order. Constructor mana derives
+from default max life before authored health overrides; current subspell owns
+melee damage. Source85/87/285/audio58 bindings stay in the MC2 adapter. Attack
+audio reaches the native event at callback entry; death preserves current IDs,
+mana/owner ordering and the owning generation. Unsupported142 stays unsupported.
+
+The actual original Level9 actor67 takes a public Fireball provocation, changes
+stance and delivers source350 melee through the actual player mailbox/life.
+Its real9/20 projectile reaches10/65 and the same live player's slowed accepted
+movement, recoil, palette, eight-visit recovery and generation cleanup (7.63s).
+Fixed public Meteor casts kill the original67/68 at unchanged10,000 health;
+caster/holder→9/3→direct10/17 generation→latest writer→fatal callback, rewards,
+hide/reclaim and task5 absence pass4.92s. The10/0 children are visual, not the
+Meteor damage writer. Carried spells, entry resources/Castle/XP, objective
+selection and finite player positions/input are disclosed controls; no NPC
+state, RNG, lifetime or health is forced. This is not earned progression or
+payment proof. The unrun adaptive Fireball proposal was rejected.
+
+Actual Level2 switch121/group15/Wind122 forces player movement, runs its natural
+lifetime, clears flags and reclaims all11 linked generations (15.56s). Actual
+Level15 transport moves the player (1.75s); scheduled65/66, stacked slowing/web
+recovery and supported orphan37 controls pass. No ordinary37 producer is claimed.
+Sixteen family checks pass on candidate2; two stale-package checks retain their
+assertions and pass on candidate3 with qualified Level9 and the matching Level2
+package/cache. Configured allocation, retained-parent and reuse controls are
+exceptions, not natural pressure proof. Firefly shared-writer42.84s and source
+order0.62s pass. A fresh bounded source and separate gate/acceptance review found
+no further concrete in-scope defect. Workspace/all-targets37.865s and strict rig
+native53.719s pass. All444 Rust+162 upstream+37 extra/636 unique inputs and exact
+worker137051672 bytes match the canonical source and Original installation.
+
+Root viewed canonical Original map/loading/NightSpire terrain/HUD with that
+mapped native, one portal click/no retry/private-save load/gameplay input, then
+stopped owned smoke processes. No Unity/art rebuild. Evidence:
+`generated/manticore-20261106-integration/candidate-3/`, candidate2 positives and
+preserved negatives, and `Builds/delivery-manticore-20261106-batch1/`. Native
+Manticore encounters, human combat/FPS/hardware audio/full missions/old saves
+remain unverified. Package formatting still fails amid drift; UBS has zero
+added critical findings with whole-file limits. The audio census currently
+fails on DragonFireball because its unchanged source list omits the unchanged
+canonical Dragon emitter; source comparison reproduces the same baseline gap.
+No validator was weakened and no all-green whole-workspace test claim is made.
+
+### Previous delivery: Skeleton and Firefly
 
 Skeleton `.22` original finite acceptance is delivered and closed. Runtime
 `d88bd191b45e1145451d27800b43eca4bf0d48dc` is pushed; matching native
 `87fbc53ebcff26511d04ef57c69a12fd7c4fb94df4c10f446217c78ae992ce19`
-was qualified in both Original plugin locations; the current Firefly build below
-carries those fixes forward. All source79
+was qualified in both Original plugin locations; Firefly and Manticore carry
+those fixes forward. All source79
 helper cases and literal default returns now have their distinct behavior;
 enabled75 is integrated and unsupported78 remains explicit. Alternate-mode/75
 controls are configured source exceptions, not invented ordinary producers.
@@ -144,7 +196,8 @@ Parent/shared-engine and other creature acceptance remain open.
 Firefly `.23` original finite acceptance is delivered. Runtime
 `f61d888a8866032c8a8e7e26290f30fe20e431ed` is committed/pushed; native
 `c8982abd4374cc3b6b09f060df54d99c698fe538d6c5d5684e4a53c3720f19d5`
-is installed and qualified in both Original plugin locations. Source4C6B0 is one
+was installed and qualified in both Original plugin locations; Manticore carries
+those fixes forward. Source4C6B0 is one
 ordinary constructor: boss births retain300 mana; Army applies its own zero.
 Typed class properties, semantic/Morph bindings and original descriptor88 assets
 reach their consumers. All enabled152–159 paths are retained;158 remains unsupported.
@@ -186,12 +239,11 @@ were stopped. No Unity/art rebuild. Evidence:
 and `Builds/delivery-firefly-20261106-batch1/`. Native Firefly encounters, human
 combat/FPS/hardware audio/full missions/old saves remain unverified.
 
-Next is Creature17 `.6`: retain the installed stance/Tremor work and complete its
-melee plus9/20→10/65 slow-field/player-movement/expiry consumers. Read the original
-open shared wind/status prerequisite `.14`; do not bypass dependency acceptance.
-Creature18 `.7` follows. Parent/shared-engine and other families stay open.
-Root CopperMountain owns serialized integration/delivery; the small native team
-is stopped after handback and can resume on the next concrete capability.
+Next is Sentinel18 `.7`: retain its installed five-shot attack/absence evidence and
+finish its original finite source acceptance before moving to the next creature.
+Do not replay unchanged long checks. Parent/shared-engine and other families
+stay open. Root CopperMountain owns serialized integration/delivery; the small
+native team continues one creature at a time.
 Preserve the separate Modern task and current/previous native. Older completed
 build proofs were byte-verified and archived to rig ext4; source/data/caches and
 unrelated dirty work were preserved. No heartbeat was recreated.
