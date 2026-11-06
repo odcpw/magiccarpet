@@ -300,6 +300,390 @@ fn shoot(
     Ok((replaced_root, player_feedback.then_some(target.slot)))
 }
 
+fn publish_stage_row(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    row: &mut EntitySnapshot,
+) -> Result<(), String> {
+    let slot = row.index;
+    row.set_map_links(
+        arena.economy.map_chains.old_map_entity(slot),
+        arena.economy.map_chains.next_entity(slot),
+    );
+    arena.economy.source_rng.insert(slot, row.entity_rng);
+    arena.entities[usize::from(slot)] = row.clone();
+    crate::world::effects::sync_position(arena, terrain, slot, row.position, true, false)
+}
+
+fn settle_stage_row(row: &mut EntitySnapshot, terrain: &SessionTerrain, descriptor: &[u8; 34]) {
+    let ground = terrain.ground_height(row.position);
+    let clearance = i16::from_le_bytes([descriptor[12], descriptor[13]]);
+    let descent = i16::from_le_bytes([descriptor[14], descriptor[15]]);
+    if row.position.z > ground {
+        row.position.z = row.position.z.wrapping_add(descent);
+    }
+    if i32::from(row.position.z as i16) <= i32::from(ground) + i32::from(clearance) {
+        row.position.z = ground.wrapping_add(clearance);
+    }
+    row.set_position(row.position);
+}
+
+/// Remaining source `sub_1D5D0(72)` branches. Existing point, actor-follow,
+/// and Alliance routes remain in their established family owners.
+pub(crate) fn step_other_stage_source_slot(
+    arena: &mut SourceArena,
+    runtime: &crate::native_world::RuntimeSnapshot,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    parameters: &[[u8; 34]],
+    slot: u16,
+    frozen_model9: &[u16],
+    frozen_class3: &[u16],
+    context: source_target::Context<'_>,
+) -> Result<SkeletonStep, String> {
+    let mut row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active && (row.class, row.model, row.action) == (5, 9, 79))
+        .cloned()
+        .ok_or_else(|| format!("Skeleton stage callback lost source slot {slot}"))?;
+    let mode = row.record[77];
+    if !matches!(mode, 2 | 6..=10 | 12 | 13 | 16 | 17) {
+        // sub_1D5D0's default is a literal return; the outer dispatcher owns
+        // the still-applicable source phase and callback epilogues.
+        return Ok(SkeletonStep::default());
+    }
+    let descriptor = parameters
+        .get(usize::from(row.parameter_relation.unwrap_or(
+            campaign_shared_families::MC2_SKELETON_ASSETS.descriptor,
+        )))
+        .ok_or("Skeleton stage descriptor is absent")?;
+    let mut outcome = SkeletonStep::default();
+    match mode {
+        2 | 6..=9 => {
+            let point = if mode == 2 {
+                let relation = runtime
+                    .stage_variables
+                    .get(usize::from(row.record[76]))
+                    .ok_or("Skeleton guard stage is absent")?
+                    .relation;
+                let crate::native_world::RuntimeRelation::AxisScalar(packed) = relation else {
+                    return Err("Skeleton guard stage is not a point".into());
+                };
+                Some(crate::Position {
+                    x: packed as u16,
+                    y: (packed >> 16) as u16,
+                    z: 0,
+                })
+            } else {
+                None
+            };
+            let far = point.is_some_and(|point| {
+                (i32::from(row.position.x as i16) - i32::from(point.x as i16)).abs() > 3072
+                    || (i32::from(row.position.y as i16) - i32::from(point.y as i16)).abs() > 3072
+            });
+            let hit = consume(arena, &mut row, context)?;
+            arena.entities[usize::from(slot)] = row.clone();
+            match hit {
+                2 => row.set_source_action(76),
+                1 => {
+                    let attacker = row.word_26();
+                    let same = if attacker == 0 {
+                        let sentinel = &arena.entities[0];
+                        (sentinel.class, sentinel.model) == (5, 9)
+                    } else {
+                        source_target::read(arena, context, attacker)?
+                            .is_some_and(|target| (target.class, target.model) == (5, 9))
+                    };
+                    if !same {
+                        row.set_source_word_96(attacker);
+                        row.record[77] = 10;
+                        row.set_source_action(if descriptor[32] & 8 != 0 { 78 } else { 74 });
+                    }
+                    settle_stage_row(&mut row, terrain, descriptor);
+                }
+                _ if far || descriptor[32] & 2 == 0 => {
+                    movement(arena, &mut row, terrain)?;
+                    publish_stage_row(arena, terrain, &mut row)?;
+                    if far && row.phase & 7 == 0 {
+                        if row.control_flags & 0x40000 == 0 {
+                            row.set_source_roll(crate::heading_for_positions(
+                                row.position,
+                                point.unwrap(),
+                            ) as i16);
+                            if row.phase & 63 == 0 {
+                                let first =
+                                    campaign_shared_families::next_source_rng16(row.entity_rng);
+                                let second = campaign_shared_families::next_source_rng16(first);
+                                row.set_entity_rng(second);
+                                let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                                row.set_source_roll(
+                                    ((i32::from(row.source_roll())
+                                        + sign * (i32::from(second & 255) + 85))
+                                        & 2047) as i16,
+                                );
+                            }
+                        }
+                        for &peer in frozen_model9 {
+                            let Some(peer) = source_target::read(arena, context, peer)? else {
+                                continue;
+                            };
+                            if peer.source_id != row.source_id
+                                && (i32::from(row.position.x as i16)
+                                    - i32::from(peer.position.x as i16))
+                                .abs()
+                                    < i32::from(row.array_pitch())
+                                && (i32::from(row.position.y as i16)
+                                    - i32::from(peer.position.y as i16))
+                                .abs()
+                                    < i32::from(row.array_pitch())
+                            {
+                                row.set_source_roll(crate::heading_for_positions(
+                                    peer.position,
+                                    row.position,
+                                ) as i16);
+                                break;
+                            }
+                        }
+                    } else if !far && row.phase & 15 == 0 && row.control_flags & 0x40000 == 0 {
+                        let rng = campaign_shared_families::next_source_rng16(row.entity_rng);
+                        row.set_entity_rng(rng);
+                        row.set_source_roll(
+                            row.source_roll().wrapping_add((rng % 113 + 142) as i16) & 2047,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            if mode == 2 && row.action == 79 && row.record[77] == 2 && row.record[61] != 0 {
+                let period = u16::from_le_bytes([descriptor[26], descriptor[27]]);
+                if period == 0 {
+                    return Err("Skeleton guard scan period is zero".into());
+                }
+                if u16::from(row.phase) % period == 0 {
+                    let range = i32::from(i16::from_le_bytes([descriptor[28], descriptor[29]]));
+                    let half_angle = u16::from_le_bytes([descriptor[30], descriptor[31]]);
+                    let mut nearest = u32::MAX;
+                    let mut selected = None;
+                    for &candidate in frozen_class3 {
+                        let Some(target) = source_target::read(arena, context, candidate)? else {
+                            continue;
+                        };
+                        if target.control_flags & 0x20 != 0 {
+                            continue;
+                        }
+                        let dx = i32::from(target.position.x) - i32::from(row.position.x);
+                        let dy = i32::from(target.position.y.wrapping_sub(row.position.y) as i16);
+                        let distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+                        let heading = crate::heading_for_positions(row.position, target.position);
+                        if distance <= range.wrapping_mul(range) as u32
+                            && distance < nearest
+                            && (crate::angle_distance(i32::from(row.yaw), i32::from(heading))
+                                as u16)
+                                < half_angle
+                        {
+                            nearest = distance;
+                            selected = Some(candidate);
+                        }
+                    }
+                    if let Some(target) = selected {
+                        row.set_source_word_96(target);
+                        row.record[77] = 10;
+                        row.set_source_action(if descriptor[32] & 8 != 0 { 78 } else { 74 });
+                    }
+                }
+            }
+        }
+        10 => row.set_source_action(if descriptor[32] & 8 != 0 { 78 } else { 74 }),
+        12 => {
+            let parent = source_target::read(arena, context, word(&row, 44))?;
+            if parent.is_none_or(|parent| parent.life < 0) {
+                row.disable_drawing();
+                arena.entities[usize::from(slot)] = row.clone();
+            }
+            // Even the missing parent is source address zero: 1E4D0 hides
+            // first, then still copies that sentinel's current pose.
+            let sentinel = &arena.entities[0];
+            let (mut position, yaw, roll) = if let Some(parent) = parent {
+                (
+                    parent.position,
+                    parent
+                        .yaw
+                        .ok_or("Skeleton Morph parent has no current yaw")?,
+                    parent
+                        .roll
+                        .ok_or("Skeleton Morph parent has no current roll")?,
+                )
+            } else {
+                (sentinel.position, sentinel.yaw, sentinel.source_roll())
+            };
+            position.z = position.z.max(0);
+            row.set_position(position);
+            row.set_yaw(yaw);
+            row.set_source_roll(roll);
+        }
+        13 | 16 => {
+            let parent_slot = word(&row, 44);
+            let parent = source_target::read(arena, context, parent_slot)?
+                .filter(|parent| parent.life >= 0 && !parent.drawing_disabled());
+            if parent.is_none() {
+                put(&mut row, 50, 0);
+            } else if mode == 13 {
+                let remaining = word(&row, 50).wrapping_sub(1);
+                put(&mut row, 50, remaining);
+            }
+            if (word(&row, 50) as i16) <= 0 {
+                publish_stage_row(arena, terrain, &mut row)?;
+                crate::native_world::creatures::creature_24::mc2::expire(
+                    arena,
+                    terrain,
+                    particles,
+                    slot,
+                    mode == 13,
+                )?;
+                return Ok(outcome);
+            }
+            let parent = parent.expect("source parent checked before summoned stage");
+            let mut target = source_target::read(arena, context, row.source_word_96())?
+                .filter(|target| target.life > 0 && !target.drawing_disabled());
+            if target.is_none() {
+                row.set_source_word_96(0);
+                if row.phase & 7 == 0 {
+                    let mut nearest = u32::MAX;
+                    for &candidate in frozen_class3 {
+                        let Some(current) = source_target::read(arena, context, candidate)? else {
+                            continue;
+                        };
+                        if current.source_id == parent.source_id || !matches!(current.model, 0 | 1)
+                        {
+                            continue;
+                        }
+                        let dx =
+                            i32::from(current.position.x.wrapping_sub(parent.position.x) as i16);
+                        let dy =
+                            i32::from(current.position.y.wrapping_sub(parent.position.y) as i16);
+                        let distance = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32;
+                        if distance < nearest {
+                            nearest = distance;
+                            target = Some(current);
+                        }
+                    }
+                    row.set_source_word_96(target.map_or(0, |target| target.slot));
+                }
+            }
+            if target.is_none() {
+                row.set_source_word_96(parent_slot);
+            }
+            let hit = consume(arena, &mut row, context)?;
+            arena.entities[usize::from(slot)] = row.clone();
+            if hit == 2 {
+                put(&mut row, 50, 1);
+            } else {
+                movement(arena, &mut row, terrain)?;
+                publish_stage_row(arena, terrain, &mut row)?;
+                if hit == 1 {
+                    let attacker = row.word_26();
+                    let same = if attacker == 0 {
+                        let sentinel = &arena.entities[0];
+                        (sentinel.class, sentinel.model) == (5, 9)
+                    } else {
+                        source_target::read(arena, context, attacker)?
+                            .is_some_and(|attacker| (attacker.class, attacker.model) == (5, 9))
+                    };
+                    if attacker != parent_slot && !same {
+                        row.set_source_word_96(attacker);
+                        row.set_source_action(if descriptor[32] & 8 != 0 { 78 } else { 74 });
+                        outcome.feedback.push((parent_slot, 19));
+                    }
+                } else if row.phase & 7 == 0 {
+                    if let Some(leader) = source_target::read(arena, context, row.source_word_96())?
+                    {
+                        if row.control_flags & 0x40000 == 0 {
+                            row.set_source_roll(crate::heading_for_positions(
+                                row.position,
+                                leader.position,
+                            ) as i16);
+                            if row.phase & 63 == 0 {
+                                let first =
+                                    campaign_shared_families::next_source_rng16(row.entity_rng);
+                                let second = campaign_shared_families::next_source_rng16(first);
+                                row.set_entity_rng(second);
+                                let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                                row.set_source_roll(
+                                    ((i32::from(row.source_roll())
+                                        + sign * (i32::from(second & 255) + 85))
+                                        & 2047) as i16,
+                                );
+                            }
+                        }
+                        for &peer in frozen_model9 {
+                            let Some(peer) = source_target::read(arena, context, peer)? else {
+                                continue;
+                            };
+                            if peer.source_id != row.source_id
+                                && (i32::from(row.position.x) - i32::from(peer.position.x)).abs()
+                                    < i32::from(row.array_pitch())
+                                && (i32::from(row.position.y) - i32::from(peer.position.y)).abs()
+                                    < i32::from(row.array_pitch())
+                            {
+                                row.set_source_roll(crate::heading_for_positions(
+                                    peer.position,
+                                    row.position,
+                                ) as i16);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(target) = target {
+                let target_position = if target.slot == slot {
+                    row.position
+                } else {
+                    source_target::read(arena, context, target.slot)?
+                        .map_or(target.position, |current| current.position)
+                };
+                if row.phase & 7 == 0
+                    && crate::distance_3d_wrapped(row.position, target_position)
+                        < u32::from(u16::from_le_bytes([descriptor[28], descriptor[29]]))
+                {
+                    row.set_source_action(74);
+                }
+            } else {
+                row.set_source_word_96(0);
+                let remaining = word(&row, 50).wrapping_sub(4);
+                put(&mut row, 50, remaining);
+            }
+        }
+        17 => {
+            movement(arena, &mut row, terrain)?;
+            publish_stage_row(arena, terrain, &mut row)?;
+            if row.life < 0 {
+                row.disable_drawing();
+            } else if let Some(target) = source_target::read(arena, context, row.source_word_96())?
+                .filter(|target| target.life >= 0 && !target.drawing_disabled())
+            {
+                row.set_source_roll(
+                    crate::heading_for_positions(row.position, target.position) as i16
+                );
+                row.set_actual_speed(row.actual_speed.wrapping_sub(8));
+                if row.actual_speed <= 16 {
+                    row.record[77] = 16;
+                }
+            } else {
+                row.record[77] = 16;
+            }
+        }
+        _ => unreachable!(),
+    }
+    if row.action == 74 {
+        arena.entities[usize::from(slot)] = row.clone();
+        attack_visual(arena, &mut row, particles, context)?;
+    }
+    publish_stage_row(arena, terrain, &mut row)?;
+    Ok(outcome)
+}
+
 /// Source action75 (`sub_20E50`/`sub_1C560`), including the same-pass
 /// action74 presentation tail. The linked address is resolved as it exists
 /// during this callback; the frozen model list is membership, not a snapshot.
@@ -1153,6 +1537,420 @@ pub(crate) fn allocate_from_controller(
 #[cfg(test)]
 mod alliance_tests {
     use super::*;
+
+    #[test]
+    fn configured_other_stage_helpers_keep_source_branches_and_default_noop() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            std::path::PathBuf::from,
+        );
+        let session = CampaignSession::open(package, CampaignSelection::ordinary(5).unwrap())
+            .unwrap()
+            .simulation()
+            .clone();
+        let slot = session.source_arena().rebuilt_class5_model_slots()[9][0];
+        let handle = session.source_arena().handle(slot).unwrap();
+        let player = session.state.entity_index;
+        let particles = &session.session.definition.presentation.particles;
+        let parameters = &session.session.definition.presentation.entity_parameters;
+        let runtime = &session.session.state.live.core.runtime;
+
+        // These selectors/links/timers are explicit source-callback controls
+        // on an actual reset constructor, not claimed ordinary producers.
+        for mode in [0, 11, 15, 18, 255] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[77] = mode;
+            row.apply_model76_mailbox(player, 100);
+            let before = row.clone();
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_other_stage_source_slot(
+                &mut arena,
+                runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            assert_eq!(arena.handle(slot), Some(handle));
+            assert_eq!(
+                arena.entities[usize::from(slot)],
+                before,
+                "source default mode{mode} is a no-op"
+            );
+        }
+        for mode in [6, 7, 8, 9] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[77] = mode;
+            row.set_phase(0);
+            let before = row.clone();
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_other_stage_source_slot(
+                &mut arena,
+                runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            assert_eq!(after.action, 79);
+            let rng = campaign_shared_families::next_source_rng16(before.entity_rng);
+            if after.control_flags & 0x40000 == 0 {
+                assert_eq!(after.entity_rng, rng);
+                assert_eq!(
+                    after.source_roll(),
+                    before.source_roll().wrapping_add((rng % 113 + 142) as i16) & 2047
+                );
+            }
+        }
+        for damage in [100_u16, 1001] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[77] = 6;
+            row.apply_model76_mailbox(player, damage);
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_other_stage_source_slot(
+                &mut arena,
+                runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            assert_eq!(after.life, 1000 - i32::from(damage));
+            if damage == 1001 {
+                assert_eq!((after.action, after.word_24()), (76, player));
+            } else {
+                assert_eq!(
+                    (after.action, after.record[77], after.source_word_96()),
+                    (74, 10, player)
+                );
+            }
+        }
+        for far in [false, true] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let mut runtime = runtime.clone();
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[76] = 1;
+            row.record[77] = 2;
+            row.record[61] = 0;
+            row.set_phase(0);
+            let before = row.clone();
+            let point_x = if far {
+                row.position.x.wrapping_add(4096)
+            } else {
+                row.position.x
+            };
+            runtime.stage_variables[1].relation = crate::native_world::RuntimeRelation::AxisScalar(
+                u32::from(point_x) | (u32::from(row.position.y) << 16),
+            );
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_other_stage_source_slot(
+                &mut arena,
+                &runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            assert_eq!((after.action, after.record[77]), (79, 2));
+            if after.control_flags & 0x40000 == 0 {
+                let first = campaign_shared_families::next_source_rng16(before.entity_rng);
+                let expected = if far {
+                    campaign_shared_families::next_source_rng16(first)
+                } else {
+                    first
+                };
+                assert_eq!(
+                    after.entity_rng, expected,
+                    "guard far={far} source draw cadence"
+                );
+            }
+        }
+        // A configured guard observation uses a real class3 carrier and the
+        // source frozen list. It does not claim an authored Skeleton mode2.
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let target = source_target::read(&arena, Default::default(), player)
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.control_flags & 0x20, 0);
+        let mut guard_runtime = runtime.clone();
+        let mut position = target.position;
+        position.x = position.x.wrapping_sub(256);
+        position.z = terrain.ground_height(position);
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_source_action(79);
+        row.record[76] = 1;
+        row.record[77] = 2;
+        row.record[61] = 1;
+        row.set_phase(0);
+        row.set_position(position);
+        let heading = crate::heading_for_positions(position, target.position) as i16;
+        row.set_yaw(heading);
+        row.set_source_roll(heading);
+        guard_runtime.stage_variables[1].relation =
+            crate::native_world::RuntimeRelation::AxisScalar(
+                u32::from(position.x) | (u32::from(position.y) << 16),
+            );
+        crate::world::effects::sync_position(&mut arena, &mut terrain, slot, position, true, false)
+            .unwrap();
+        let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+        step_other_stage_source_slot(
+            &mut arena,
+            &guard_runtime,
+            &mut terrain,
+            particles,
+            parameters,
+            slot,
+            &frozen,
+            &[player],
+            Default::default(),
+        )
+        .unwrap();
+        let after = &arena.entities[usize::from(slot)];
+        assert_eq!(
+            (after.action, after.record[77], after.source_word_96()),
+            (74, 10, player)
+        );
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_source_action(79);
+        row.record[77] = 10;
+        row.set_source_word_96(player);
+        let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+        step_other_stage_source_slot(
+            &mut arena,
+            runtime,
+            &mut terrain,
+            particles,
+            parameters,
+            slot,
+            &frozen,
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+        let after = &arena.entities[usize::from(slot)];
+        assert_eq!(after.action, 74);
+        assert_eq!(
+            after.particle_parameter_index,
+            Some(campaign_shared_families::MC2_SKELETON_ASSETS.reaction_particle)
+        );
+        for mode in [13, 16] {
+            for target in [0, player] {
+                let mut arena = session.source_arena().clone();
+                let mut terrain = session.canonical_terrain().clone();
+                let row = &mut arena.entities[usize::from(slot)];
+                row.set_source_action(79);
+                row.record[77] = mode;
+                row.set_phase(1);
+                put(row, 44, player);
+                put(row, 50, 20);
+                row.set_source_word_96(target);
+                let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+                step_other_stage_source_slot(
+                    &mut arena,
+                    runtime,
+                    &mut terrain,
+                    particles,
+                    parameters,
+                    slot,
+                    &frozen,
+                    &[],
+                    Default::default(),
+                )
+                .unwrap();
+                let after = &arena.entities[usize::from(slot)];
+                let expected =
+                    20 - if mode == 13 { 1 } else { 0 } - if target == 0 { 4 } else { 0 };
+                assert_eq!(word(after, 50), expected);
+                assert_eq!(after.source_word_96(), target);
+                assert!(!after.drawing_disabled());
+            }
+        }
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let attacker = arena.rebuilt_class5_model_slots()[4][0];
+        let row = &mut arena.entities[usize::from(slot)];
+        row.set_source_action(79);
+        row.record[77] = 13;
+        row.set_phase(1);
+        put(row, 44, player);
+        put(row, 50, 20);
+        row.set_source_word_96(player);
+        row.apply_model76_mailbox(attacker, 100);
+        let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+        let result = step_other_stage_source_slot(
+            &mut arena,
+            runtime,
+            &mut terrain,
+            particles,
+            parameters,
+            slot,
+            &frozen,
+            &[],
+            Default::default(),
+        )
+        .unwrap();
+        let after = &arena.entities[usize::from(slot)];
+        assert_eq!(result.feedback, [(player, 19)]);
+        assert_eq!(
+            (
+                after.life,
+                after.action,
+                after.source_word_96(),
+                word(after, 50)
+            ),
+            (900, 74, attacker, 19)
+        );
+        // Configured linked-child attacker0: source 1E700 compares the
+        // current address-zero sentinel, even if its class/model is unusual.
+        for sentinel_model in [0, 9] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let child = arena.rebuilt_class5_model_slots()[9][1];
+            arena.entities[0].class = 5;
+            arena.entities[0].model = sentinel_model;
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[77] = 13;
+            row.set_phase(1);
+            put(row, 44, player);
+            put(row, 50, 20);
+            put(row, 56, child);
+            row.set_source_word_96(player);
+            let child_row = &mut arena.entities[usize::from(child)];
+            child_row.set_life(999);
+            child_row.set_damage_result_words(0, 0);
+            put(child_row, 56, 0);
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            let result = step_other_stage_source_slot(
+                &mut arena,
+                runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            assert_eq!((after.life, after.word_26()), (999, 0));
+            if sentinel_model == 9 {
+                assert_eq!((after.action, after.source_word_96()), (79, player));
+                assert!(result.feedback.is_empty());
+            } else {
+                assert_eq!((after.action, after.source_word_96()), (74, 0));
+                assert_eq!(result.feedback, [(player, 19)]);
+            }
+        }
+        for parent in [0, player] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let pose = if parent == 0 {
+                let sentinel = &arena.entities[0];
+                (sentinel.position, sentinel.yaw, sentinel.source_roll())
+            } else {
+                let current = source_target::read(&arena, Default::default(), parent)
+                    .unwrap()
+                    .unwrap();
+                (
+                    current.position,
+                    current.yaw.unwrap(),
+                    current.roll.unwrap(),
+                )
+            };
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[77] = 12;
+            put(row, 44, parent);
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_other_stage_source_slot(
+                &mut arena,
+                runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            let mut expected = pose.0;
+            expected.z = expected.z.max(0);
+            assert_eq!(
+                (after.position, after.yaw, after.source_roll()),
+                (expected, pose.1, pose.2)
+            );
+            assert_eq!(after.drawing_disabled(), parent == 0);
+        }
+        // Mode17 is a launched-body source callback, configured here without
+        // claiming an ordinary producer for a Skeleton with this selector.
+        for target in [0, player] {
+            let mut arena = session.source_arena().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_source_action(79);
+            row.record[77] = 17;
+            row.set_actual_speed(24);
+            row.set_source_word_96(target);
+            let frozen = arena.rebuilt_class5_model_slots()[9].clone();
+            step_other_stage_source_slot(
+                &mut arena,
+                runtime,
+                &mut terrain,
+                particles,
+                parameters,
+                slot,
+                &frozen,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
+            let after = &arena.entities[usize::from(slot)];
+            assert_eq!(
+                (after.actual_speed, after.record[77]),
+                (if target == 0 { 24 } else { 16 }, 16)
+            );
+            assert_eq!(arena.handle(slot), Some(handle));
+        }
+    }
 
     #[test]
     fn configured_linked_action75_keeps_source_short_circuit_follow_and_damage_order() {

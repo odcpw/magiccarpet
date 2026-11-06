@@ -803,7 +803,7 @@ impl Model9CallbackState {
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Model9CallbackReceipt {
     pub(crate) source: SourceEntityHandle,
     pub(crate) entry: Model9CallbackState,
@@ -811,6 +811,39 @@ pub(crate) struct Model9CallbackReceipt {
     pub(crate) exit_handle: Option<SourceEntityHandle>,
     pub(crate) entry_damage_trace_cursor: usize,
     pub(crate) exit_damage_trace_cursor: usize,
+    pub(crate) new_effects:
+        std::result::Result<Vec<(SourceEntityHandle, source_target::View)>, String>,
+}
+
+#[cfg(test)]
+fn model9_callback_new_effects(
+    arena: &SourceArena,
+    context: source_target::Context<'_>,
+    generations_before: &[u32],
+) -> std::result::Result<Vec<(SourceEntityHandle, source_target::View)>, String> {
+    let mut effects = Vec::new();
+    for (slot, before) in generations_before.iter().enumerate().skip(1) {
+        let slot = u16::try_from(slot).expect("source arena slot fits u16");
+        let generation = arena.slot_generation(slot);
+        if generation == *before || arena.free_source_slots().contains(&slot) {
+            continue;
+        }
+        // Hidden replacements remain current until the owning reclaim; do
+        // not filter active/drawing state or assume the producer survived.
+        if let Some(current) = source_target::read(arena, context, slot)?
+            && current.class == 10
+            && matches!(current.model, 0 | 73)
+        {
+            effects.push((
+                SourceEntityHandle {
+                    source_slot: slot,
+                    generation,
+                },
+                current,
+            ));
+        }
+    }
+    Ok(effects)
 }
 
 #[cfg(test)]
@@ -15074,7 +15107,10 @@ impl Mc2Simulation {
                 .get(usize::from(source_slot))
                 .filter(|entity| {
                     entity.active
-                        && ((entity.class, entity.model, entity.action) == (10, 74, 81)
+                        && (matches!(
+                            (entity.class, entity.model, entity.action),
+                            (10, 73, 80) | (10, 74, 81)
+                        )
                             || matches!(
                             (entity.class, entity.action),
                             (2, 0 | 1 | 2 | 3 | 9 | 18 | 19 | 20 | 21)
@@ -18324,6 +18360,14 @@ impl Mc2Simulation {
                                         &arena.entities[usize::from(source_slot)],
                                     ),
                                     area_damage::effect_damage_trace_len(),
+                                    (0..arena.entities.len())
+                                        .map(|slot| {
+                                            arena.slot_generation(
+                                                u16::try_from(slot)
+                                                    .expect("source arena slot fits u16"),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>(),
                                 )
                             },
                         )
@@ -18333,8 +18377,26 @@ impl Mc2Simulation {
                         pass_start_class5_model_slots,
                         pass_start_class3_slots,
                     );
-                    if let Some((source, entry, entry_damage_trace_cursor)) = entry {
-                        let arena = &self.session.state.live.economy;
+                    if let Some((source, entry, entry_damage_trace_cursor, generations_before)) =
+                        entry
+                    {
+                        let live = &self.session.state.live;
+                        let arena = &live.economy;
+                        let context = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
                         let receipt = Model9CallbackReceipt {
                             source,
                             entry,
@@ -18344,6 +18406,11 @@ impl Mc2Simulation {
                             exit_handle: arena.handle(source_slot),
                             entry_damage_trace_cursor,
                             exit_damage_trace_cursor: area_damage::effect_damage_trace_len(),
+                            new_effects: model9_callback_new_effects(
+                                arena,
+                                context,
+                                &generations_before,
+                            ),
                         };
                         MODEL9_CALLBACK_TRACE.with(|trace| {
                             if let Some((_, receipts)) = trace.borrow_mut().as_mut() {
@@ -20811,7 +20878,10 @@ impl Mc2Simulation {
             .map(|source| source.action)
             .ok_or_else(|| format!("model-9 callback lost source slot {source_slot}"))?;
         if matches!(action, 74 | 75) || action == 79
-            && self.session.state.live.economy.entities[usize::from(source_slot)].record[77] == 14
+            && !matches!(
+                self.session.state.live.economy.entities[usize::from(source_slot)].record[77],
+                1 | 3..=5
+            )
         {
             let live = &mut self.session.state.live;
             let context = source_target::Context {
@@ -20828,6 +20898,20 @@ impl Mc2Simulation {
                     &self.session.definition.presentation.particles,
                     &self.session.definition.presentation.entity_parameters,
                     source_slot, &pass_start_class5_model_slots[9], context,
+                )
+            } else if action == 79
+                && live.economy.entities[usize::from(source_slot)].record[77] != 14
+            {
+                creatures::skeleton::step_other_stage_source_slot(
+                    &mut live.economy,
+                    &live.core.runtime,
+                    &mut live.terrain,
+                    &self.session.definition.presentation.particles,
+                    &self.session.definition.presentation.entity_parameters,
+                    source_slot,
+                    &pass_start_class5_model_slots[9],
+                    pass_start_class3_slots,
+                    context,
                 )
             } else {
                 creatures::skeleton::step_alliance_source_slot(
@@ -34033,6 +34117,263 @@ mod tests {
                 live.economy.economy.possession_projectiles().is_empty(),
                 flags == 0
             );
+        }
+    }
+
+    #[test]
+    fn configured_skeleton_alternate_stages_schedule_expiry_and_reclaim() {
+        let seed = CampaignSession::open(
+            level_three_descriptor_fixture_path(),
+            CampaignSelection::LEVEL3,
+        )
+        .unwrap();
+        let root = seed
+            .simulation()
+            .entities()
+            .iter()
+            .find(|row| row.active && (row.class, row.model, row.action) == (5, 9, 72))
+            .map(|row| seed.simulation().source_arena().handle(row.index).unwrap())
+            .unwrap();
+        for mode in [0_u8, 13, 16] {
+            let mut campaign = seed.clone();
+            let session = campaign.simulation_mut();
+            let player = session.state.entity_index;
+            let before = session.entities()[usize::from(root.source_slot)].clone();
+            assert!(session.canonical_player_life_for_test() > 0);
+            // Explicit alternate-callback exception on a real reset root;
+            // no ordinary alternate-mode producer is claimed. The production
+            // prepass is retained: index0/mode0 returns, while13/16 retain79.
+            let row =
+                &mut session.session.state.live.economy.entities[usize::from(root.source_slot)];
+            row.set_source_action(79);
+            row.record[76] = 0;
+            row.record[77] = mode;
+            row.record[44..46].copy_from_slice(&player.to_le_bytes());
+            row.record[50..52]
+                .copy_from_slice(&(if mode == 13 { 1_u16 } else { 0_u16 }).to_le_bytes());
+            session.start_model9_callback_trace(root);
+            session
+                .step_level2_source_pass_with_player(
+                    0,
+                    crate::LatchedCommand::default(),
+                    crate::FlightTuning::CLASSIC,
+                    &mut Vec::new(),
+                )
+                .unwrap();
+            let visits = session.take_model9_callback_trace();
+            assert_eq!(visits.len(), 1, "mode{mode}");
+            let visit = &visits[0];
+            assert_eq!(
+                (visit.source, visit.entry.action, visit.exit.action),
+                (root, 79, 79)
+            );
+            assert_eq!(visit.exit_handle, Some(root));
+            let after = &session.entities()[usize::from(root.source_slot)];
+            assert_eq!(
+                after.record[77], mode,
+                "the real prepass retained the configured mode"
+            );
+            assert_eq!(after.phase, before.phase.wrapping_add(1));
+            assert_eq!(after.record[66], after.phase);
+            let effects = visit
+                .new_effects
+                .as_ref()
+                .expect("current callback effect projections");
+            let presentations = session.campaign_entity_presentations(0).unwrap();
+            if mode == 0 {
+                // Literal default return, not point-follow/damage fallback.
+                assert!(effects.is_empty());
+                assert_eq!(visit.entry, visit.exit);
+                assert_eq!(
+                    (after.position, after.entity_rng),
+                    (before.position, before.entity_rng)
+                );
+                assert!(!after.drawing_disabled());
+                assert!(
+                    presentations
+                        .iter()
+                        .any(|row| row.entity_index == root.source_slot)
+                );
+                continue;
+            }
+            assert_eq!(after.source_word_2e(), 0);
+            assert!(after.drawing_disabled());
+            assert_eq!(session.source_arena().handle(root.source_slot), Some(root));
+            assert!(
+                !presentations
+                    .iter()
+                    .any(|row| row.entity_index == root.source_slot)
+            );
+            let mut models = effects
+                .iter()
+                .map(|(_, view)| view.model)
+                .collect::<Vec<_>>();
+            models.sort_unstable();
+            assert_eq!(models, if mode == 13 { vec![0, 73] } else { vec![0] });
+            let children = effects
+                .iter()
+                .map(|(handle, view)| {
+                    assert_eq!(view.class, 10);
+                    assert!(!view.drawing_disabled());
+                    assert_eq!(
+                        session.source_arena().handle(handle.source_slot),
+                        Some(*handle)
+                    );
+                    let child = &session.entities()[usize::from(handle.source_slot)];
+                    assert_eq!((child.class, child.model), (view.class, view.model));
+                    let plan = session.resolve_level2_source_plan(handle.source_slot, player);
+                    assert!(
+                        matches!(&plan, Some(Level2ResolvedSourcePlan::Callback(visit))
+                        if visit.route == SourceRoute::Imported
+                            && visit.handler == ExistingHandler::Class10Effects
+                            && visit.phase == Some(child.phase)
+                            && visit.key.selector == (BehaviorSelector::ClassAction {
+                                class: 10, action: child.action,
+                            })),
+                        "mode{mode} child{handle:?} packet={child:?} resolved={plan:?}"
+                    );
+                    assert!(presentations.iter().any(|row| {
+                        row.entity_index == handle.source_slot
+                            && row.render_parameter_index == child.particle_parameter_index.unwrap()
+                    }));
+                    let callbacks = if view.model == 73 {
+                        assert_eq!(view.life, 16, "unshortened source51A00 constructor life");
+                        assert!(
+                            (15..=16).contains(&child.life),
+                            "a higher numeric newborn may already execute in its birth pass"
+                        );
+                        u16::try_from(16 - child.life).unwrap()
+                    } else {
+                        0
+                    };
+                    (*handle, view.model, callbacks)
+                })
+                .collect::<Vec<_>>();
+            let mut pending = children;
+            let mut reclaimed_models = Vec::new();
+            // Natural source lifetimes:73 needs16 callbacks;0 retains its
+            // own age gate and life<-1 hide. No post-birth fields are edited.
+            for ordinal in 1_u8..=32 {
+                let before = pending
+                    .iter()
+                    .map(|(handle, model, callbacks)| {
+                        assert_eq!(
+                            session.source_arena().handle(handle.source_slot),
+                            Some(*handle)
+                        );
+                        (
+                            *handle,
+                            *model,
+                            *callbacks,
+                            session.entities()[usize::from(handle.source_slot)].clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                session
+                    .step_level2_source_pass_with_player(
+                        ordinal % 3,
+                        crate::LatchedCommand::default(),
+                        crate::FlightTuning::CLASSIC,
+                        &mut Vec::new(),
+                    )
+                    .unwrap();
+                if ordinal == 1 {
+                    assert_ne!(
+                        session.source_arena().handle(root.source_slot),
+                        Some(root),
+                        "the following owning prologue reclaims the original generation"
+                    );
+                    assert!(
+                        session
+                            .source_arena()
+                            .free_source_slots()
+                            .contains(&root.source_slot)
+                            || session.source_arena().slot_generation(root.source_slot)
+                                != root.generation,
+                        "the original allocation is free or was reused at a newer generation"
+                    );
+                }
+                let presentations = session.campaign_entity_presentations(0).unwrap();
+                let mut next = Vec::new();
+                for (handle, model, callbacks, before) in before {
+                    if before.drawing_disabled() {
+                        assert_ne!(
+                            session.source_arena().handle(handle.source_slot),
+                            Some(handle)
+                        );
+                        let free = session
+                            .source_arena()
+                            .free_source_slots()
+                            .contains(&handle.source_slot);
+                        assert!(
+                            free || session.source_arena().slot_generation(handle.source_slot)
+                                != handle.generation
+                        );
+                        if free {
+                            assert!(!session.economy().map_chains.is_linked(handle.source_slot));
+                        }
+                        reclaimed_models.push(model);
+                        continue;
+                    }
+                    assert_eq!(
+                        session.source_arena().handle(handle.source_slot),
+                        Some(handle)
+                    );
+                    let child = &session.entities()[usize::from(handle.source_slot)];
+                    assert_eq!((child.class, child.model), (10, model));
+                    assert_eq!(
+                        child.phase,
+                        before.phase.wrapping_add(1),
+                        "mode{mode} child{handle:?} model{model} action{} life{} age{}",
+                        child.action,
+                        child.life,
+                        child.source_dword_10()
+                    );
+                    if model == 73 || before.source_dword_10() & 3 == 0 {
+                        assert_eq!(
+                            child.life,
+                            before.life - 1,
+                            "real expiry/impact callback work"
+                        );
+                    } else {
+                        assert_eq!(child.life, before.life);
+                        assert_eq!(
+                            child.source_dword_10(),
+                            before.source_dword_10().wrapping_sub(1)
+                        );
+                    }
+                    let callbacks = callbacks + 1;
+                    if child.drawing_disabled() {
+                        assert_eq!(child.life, if model == 73 { 0 } else { -2 });
+                        if model == 73 {
+                            assert_eq!(callbacks, 16, "all16 real source3A630 callbacks");
+                        }
+                        assert!(
+                            !presentations
+                                .iter()
+                                .any(|row| row.entity_index == handle.source_slot),
+                            "the naturally hidden incarnation is still current but not presented"
+                        );
+                    } else {
+                        assert!(
+                            presentations
+                                .iter()
+                                .any(|row| row.entity_index == handle.source_slot)
+                        );
+                    }
+                    next.push((handle, model, callbacks));
+                }
+                pending = next;
+                if pending.is_empty() {
+                    break;
+                }
+            }
+            assert!(
+                pending.is_empty(),
+                "mode{mode} natural expiry did not finish: {pending:?}"
+            );
+            reclaimed_models.sort_unstable();
+            assert_eq!(reclaimed_models, models);
         }
     }
 
