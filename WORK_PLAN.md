@@ -37,12 +37,12 @@ acceptance open; a working control panel alone does not finish the environment.
 
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
-tracks delivery, not missing-code counts. Settlement `.16` is delivered;
-continue Skeleton `.22`, retaining the delivered families below. Root
+tracks delivery, not missing-code counts. Settlement `.16` and Skeleton `.22`
+are delivered; continue Firefly `.23`, retaining the delivered families below. Root
 serializes shared joins, Cargo and installation with the small native team.
 Complete one creature through verification and installation before starting the
 next. Parallel workers tackle disjoint parts of that same capability. Firefly
-is queued after Skeleton; its read-only findings are preserved, with no edits.
+is the current capability; its queued source findings guide implementation.
 Each family must connect ordinary production, source scheduling/arithmetic,
 behavior and spell interaction, consequences/rewards, natural cleanup,
 objective consumers and original presentation/assets. Preserve the delivered
@@ -53,8 +53,8 @@ in their canonical owner when a real connected failure exposes them.
 - [x] Castle defenders15 — `mc-1pb.4`.
 - [x] Dragon0 — `mc-1pb.19`; Bee2 — `mc-1pb.20`.
 - [x] Archer4 — `mc-1pb.21`.
-- [ ] Skeleton9 — `mc-1pb.22`;
-      Firefly19 — `mc-1pb.23`.
+- [x] Skeleton9 — `mc-1pb.22`.
+- [ ] Firefly19 — `mc-1pb.23`.
 - [ ] Creature17 — `mc-1pb.6`; Creature18 — `mc-1pb.7`.
 - [ ] Creatures21/22/23/24 — `mc-1pb.8`/`.9`/`.10`/`.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
@@ -73,7 +73,51 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: Skeleton in progress; settlement delivered
+### Current delivery: Firefly in progress; Skeleton delivered
+
+Skeleton `.22` original finite acceptance is delivered and closed. Runtime
+`d88bd191b45e1145451d27800b43eca4bf0d48dc` is pushed; matching native
+`87fbc53ebcff26511d04ef57c69a12fd7c4fb94df4c10f446217c78ae992ce19`
+is installed and qualified in both Original plugin locations. All source79
+helper cases and literal default returns now have their distinct behavior;
+enabled75 is integrated and unsupported78 remains explicit. Alternate-mode/75
+controls are configured source exceptions, not invented ordinary producers.
+The prior real constructor/arrow/conversion/death, L3 point/L5 follow/L16
+conditional follow/Alliance/objective evidence remains applicable.
+
+The actual scheduled expiry check exposed a missing raw10/73/action80 admission.
+Its canonical exact-tuple fix reaches the already implemented source3A630 body;
+no phase/life assertion was weakened. Candidate13's negative and source snapshots
+are preserved. Candidate14 passes full unshortened16-callback73 and Impact0 aging,
+hide/presentation/following reclaim0.964s; owner branches0.499s, order0.629s,
+core69.033s/444stable and workspace35.995s/444+37stable. Independent bounded
+implementation and separate gate review found no further concrete defect.
+UBS has zero added critical findings; legacy formatting/scanner debt remains.
+Strict rig native52.893s, worker137077272 bytes and all636 unique inputs match.
+Root viewed canonical map/loading/NightSpire terrain/HUD/spawn flash with that
+mapped native, one click/no retry/private-save/gameplay input; owned smoke stopped.
+Evidence: `generated/skeleton-20261106-integration/candidate-14/`, preserved13,
+and `Builds/delivery-skeleton-20261106-batch6/`. No native Skeleton encounter,
+human combat/FPS/audio/full-mission/old-save or pressure-alias claim is made.
+Parent/shared-engine and other creature acceptance remain open.
+
+Current is original Firefly `.23`: real authored contact and ranged damage,
+typed source properties/assets, ordinary versus Army versus boss construction,
+boss17→16 flight/expiry and complete cleanup/absence consumers. The confirmed
+boss constructor currently calls Army allocation and wrongly clears mana;
+source4C6B0 gives300 mana before producer-specific fields, whereas Army alone
+clears it. Use one canonical ordinary constructor with each real producer's
+post-fields and typed bindings. Reuse actual Level7 switch205/group9 and the
+existing whole Level25 boss input; demonstrate producer admission before any
+new export or exceptional control. Keep source158 unsupported. Root remains
+sole Cargo/RCH/push/install dispatcher; parallel workers own disjoint portions
+of Firefly and stay through real integration. Preserve separate Modern work.
+Actual owner OrangeForge holds the family/boss joins; Magenta handles typed
+definitions/semantic/Morph bindings and AzureGate shared joins and connected
+runtime gates. Root CopperMountain owns tracker and delivery. Verify current
+grants rather than inferring identity or ownership from historical task names.
+
+### Preserved settlement and Skeleton delivery evidence (chronological)
 
 Finite settlement `.16` is implemented, verified, committed and installed.
 Runtime/source `ae2e84d1` and client qualification `24df66cc` are pushed;
