@@ -1736,6 +1736,8 @@ fn configured_death_and_failed_allocation_keep_source_effect_order() {
         && sphere.owner_entity_index == player && !earlier_spheres.contains(&sphere.source_entity_index)),
         "the actual death conversion carries the whole source mana");
     assert!(success.entities[usize::from(actor)].drawing_disabled());
+    assert!(success.economy.map_chains.is_linked(actor),
+        "source57F10 retains the hidden original's map link until reclaim");
     assert_eq!(success.entities[usize::from(actor)].source_player_entity_index(), 0);
 
     // Explicit capacity-failure control: neither effect can allocate; source
@@ -1752,6 +1754,8 @@ fn configured_death_and_failed_allocation_keep_source_effect_order() {
     assert_eq!(exhausted.handle(actor), Some(original));
     let row = &exhausted.entities[usize::from(actor)];
     assert!(row.drawing_disabled());
+    assert!(exhausted.economy.map_chains.is_linked(actor),
+        "failed child allocations do not remove the hidden original's map link");
     assert_eq!(row.entity_rng, crate::native_world::level2_next_rng16(rng));
     assert_eq!(row.source_player_entity_index(), 0);
     assert!(!exhausted.effects.death_burst_origins().values().any(|(_, parent)| *parent == actor));

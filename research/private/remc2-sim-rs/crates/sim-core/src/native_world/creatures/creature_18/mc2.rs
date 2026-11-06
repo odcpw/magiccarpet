@@ -1,14 +1,106 @@
 //! Model-18 bindings to the shared source arena, StageVar table and assets.
 
 use super::{
-    Creature18Context, Creature18Effects, Creature18State, DESCRIPTOR, SOURCE_CLASS, SOURCE_MODEL,
-    Target,
+    Creature18Context, Creature18Effects, Creature18State, SOURCE_CLASS, SOURCE_MODEL, Target,
 };
 use crate::campaign::source_arena::{CreatureRootOrigin, SourceArena};
 use crate::native_world::{EntitySnapshot, ParticleParameter, RuntimeSnapshot, SessionTerrain};
 use crate::{FlightWorld, Position};
 
-const PARTICLE: u16 = 286;
+pub(super) const DESCRIPTOR: u16 = 86;
+pub(super) const PARTICLE: u16 = 286;
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SentinelFanShotReceipt {
+    pub offset: i16,
+    pub current_actor: crate::campaign::source_arena::SourceEntityHandle,
+    pub current_target: crate::campaign::source_arena::SourceEntityHandle,
+    pub source_packet: crate::native_world::source_target::View,
+    pub target_packet: crate::native_world::source_target::View,
+    pub projectile: crate::campaign::source_arena::SourceEntityHandle,
+    pub packet: crate::native_world::Level2FireballProjectile,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SentinelFanReceipt {
+    pub actor: crate::campaign::source_arena::SourceEntityHandle,
+    pub selected_target: crate::campaign::source_arena::SourceEntityHandle,
+    pub shots: Vec<SentinelFanShotReceipt>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SentinelCallbackReceipt {
+    pub actor: crate::campaign::source_arena::SourceEntityHandle,
+    pub before: Creature18State,
+    pub entry_writer: Option<crate::native_world::area_damage::PlayerMailboxWrite>,
+    pub after: Option<Creature18State>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SentinelKillCreditReceipt {
+    pub source: crate::campaign::source_arena::SourceEntityHandle,
+    pub killer: u16,
+    pub before_count: u32,
+    pub after_count: u32,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAN_BIRTH_TRACE: std::cell::RefCell<Option<Vec<SentinelFanReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+    static CALLBACK_TRACE: std::cell::RefCell<Option<Vec<SentinelCallbackReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+    static KILL_CREDIT_TRACE: std::cell::RefCell<Option<Vec<SentinelKillCreditReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_fan_birth_trace() {
+    FAN_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_fan_birth_trace() -> Vec<SentinelFanReceipt> {
+    FAN_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn start_callback_trace() {
+    CALLBACK_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_callback_trace() -> Vec<SentinelCallbackReceipt> {
+    CALLBACK_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn start_kill_credit_trace() {
+    KILL_CREDIT_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_kill_credit_trace() -> Vec<SentinelKillCreditReceipt> {
+    KILL_CREDIT_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn kill_credit_trace_enabled() -> bool {
+    KILL_CREDIT_TRACE.with(|trace| trace.borrow().as_ref().is_some_and(|rows| rows.len() < 64))
+}
+
+#[cfg(test)]
+pub(crate) fn record_kill_credit_receipt(receipt: SentinelKillCreditReceipt) {
+    KILL_CREDIT_TRACE.with(|trace| {
+        if let Some(rows) = trace.borrow_mut().as_mut().filter(|rows| rows.len() < 64) {
+            rows.push(receipt);
+        }
+    });
+}
 
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
     u16::from_le_bytes([row.record[at], row.record[at + 1]])
@@ -246,7 +338,11 @@ pub(crate) fn allocate_authored(
     Ok(Some(slot))
 }
 
-fn targets(arena: &SourceArena, alliance_pointers: &[u16]) -> Vec<Target> {
+fn targets(
+    arena: &SourceArena,
+    pointers: &[u16],
+    context: crate::native_world::source_target::Context<'_>,
+) -> Result<Vec<Target>, String> {
     let mut targets = super::super::creature_15::mc2::targets_in_arena(arena)
         .into_iter()
         .map(|row| Target {
@@ -276,9 +372,9 @@ fn targets(arena: &SourceArena, alliance_pointers: &[u16]) -> Vec<Target> {
         .collect::<Vec<_>>();
     let typed = arena.economy.live_arena_slots();
     for row in arena.entities.iter().filter(|row| {
-        ((row.active && row.class != 0) || alliance_pointers.contains(&row.index))
-            && row.index != 0
+        ((row.active && row.class != 0) || pointers.contains(&row.index))
             && !typed.iter().any(|(slot, _)| *slot == row.index)
+            && arena.economy.retained_projectile_kind(row.index).is_none()
     }) {
         let view = Target {
             slot: row.index,
@@ -310,8 +406,71 @@ fn targets(arena: &SourceArena, alliance_pointers: &[u16]) -> Vec<Target> {
             targets.push(view);
         }
     }
+    // Frozen and directly referenced addresses can now contain a typed
+    // projectile absent from the defender projection. Read that CURRENT
+    // owner's fields; never revive its old imported packet.
+    let referenced = pointers
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    for slot in referenced {
+        let Some(current) = crate::native_world::source_target::read(arena, context, slot)? else {
+            continue;
+        };
+        let index = if let Some(index) = targets.iter().position(|row| row.slot == slot) {
+            index
+        } else {
+            targets.push(Target {
+                slot,
+                ..Target::default()
+            });
+            targets.len() - 1
+        };
+        let row = &mut targets[index];
+        row.source_id = current.source_id;
+        row.class = current.class;
+        row.model = current.model;
+        row.life = current.life;
+        row.flags = current.control_flags;
+        row.position = current.position;
+        if let Some(kind) = arena.economy.live_arena_kind(slot)
+            && let Some((_, action)) = arena.economy.live_arena_class_action(slot, kind)
+        {
+            row.action = action;
+        }
+        if let Some(yaw) = current.yaw {
+            row.yaw = yaw;
+        }
+        if let Some(roll) = current.roll {
+            row.roll = roll;
+        }
+        if let Some(shape) = current.collision {
+            row.half_width = shape.half_width;
+        }
+        if let Some(target) = current.relations.target {
+            row.target = target;
+        }
+        if let Some(attacker) = current.relations.attacker {
+            row.attacker = attacker;
+        }
+        if let Some(parent) = current.relations.parent {
+            row.parent = parent;
+        }
+        if let Some(next) = current.relations.next {
+            row.linked_child = next;
+        }
+        if let Some(index) = current.relations.stage_index {
+            row.route_index = index;
+        }
+        if let Some(mode) = current.relations.stage_mode {
+            row.route_mode = mode;
+        }
+        if let Some(relation) = current.relations.stage_relation {
+            row.route_relation = relation;
+        }
+    }
     targets.sort_unstable_by_key(|target| target.slot);
-    targets
+    Ok(targets)
 }
 
 pub(crate) fn prepare_source_pass(
@@ -334,28 +493,39 @@ pub(crate) fn prepare_source_pass(
 fn launch_projectile(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
-    launch: super::ProjectileIntent,
+    actor_slot: u16,
+    target_slot: u16,
+    offset: i16,
+    context: crate::native_world::source_target::Context<'_>,
+    #[cfg(test)] receipt: Option<&mut SentinelFanReceipt>,
 ) -> Result<Option<u16>, String> {
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(None);
     };
-    let mut initial_position = launch.position;
-    initial_position.z = initial_position.z.wrapping_sub(super::RULES.fan_lift);
+    // NewEvent clears its fixed row before AddEventToMap reads the source
+    // position by address. Source aliasing therefore inserts at zero.
+    let initial_position = if slot == actor_slot {
+        Position::default()
+    } else {
+        crate::native_world::source_target::read(arena, context, actor_slot)?
+            .ok_or("model-18 fan source address is absent")?
+            .position
+    };
     let payload =
         crate::native_world::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
             origin: crate::native_world::FireballProjectileOrigin::Creature18,
             position: initial_position,
-            yaw: launch.yaw,
-            pitch: launch.pitch,
+            yaw: 0,
+            pitch: 0,
             axis_position: Position::default(),
-            source_id_entity_index: launch.source_id,
+            source_id_entity_index: slot,
             holder_entity_index: 0,
-            source_subspell_index: launch.subspell,
+            source_subspell_index: 0,
             source_mana: 50,
             source_dword_0x10: 0,
-            target_source_entity_index: launch.source_target,
-            target_class: launch.target_class,
-            target_model: launch.target_model,
+            target_source_entity_index: 0,
+            target_class: 0,
+            target_model: 0,
         };
     arena
         .economy
@@ -369,13 +539,61 @@ fn launch_projectile(
         initial_position,
         crate::world::effects::lighting::SourceLight::Fireball,
     );
-    arena
+    // sub_1D460 reads both fixed addresses only after this member's
+    // constructor. Earlier members may also have replaced either address.
+    let source = crate::native_world::source_target::read(arena, context, actor_slot)?
+        .ok_or("model-18 fan lost its current source address")?;
+    let target = crate::native_world::source_target::read(arena, context, target_slot)?
+        .ok_or("model-18 fan lost its current target address")?;
+    let guidance = source
+        .relations
+        .target
+        .ok_or_else(|| format!("model-18 current source {actor_slot} lacks word96"))?;
+    let (yaw, pitch) =
+        crate::level1_mission::projectile_guidance_angles(source.position, target.position);
+    let projectile = arena
         .economy
         .fireball_projectiles
         .iter_mut()
         .find(|projectile| projectile.source_entity_index == slot)
-        .ok_or_else(|| format!("model-18 Fireball lost allocated slot{slot}"))?
-        .position = launch.position;
+        .ok_or_else(|| format!("model-18 Fireball lost allocated slot{slot}"))?;
+    projectile.target_class = target.class;
+    projectile.target_model = target.model;
+    projectile.source_subspell_index = super::RULES.projectile_damage;
+    projectile.payload = i32::from(super::RULES.projectile_damage);
+    projectile.owner_entity_index = source.source_id;
+    // sub_1D460 stores the signed sum; sub_65610 masks it only on flight.
+    projectile.yaw = yaw.wrapping_add(offset);
+    projectile.pitch = pitch;
+    projectile.position.z = projectile.position.z.wrapping_add(super::RULES.fan_lift);
+    projectile.target_source_entity_index = guidance;
+    arena.economy.source_owner.insert(slot, source.source_id);
+    #[cfg(test)]
+    if let Some(receipt) = receipt {
+        let packet = *arena
+            .economy
+            .fireball_projectiles
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .ok_or("model-18 fan receipt lost published projectile")?;
+        receipt.shots.push(SentinelFanShotReceipt {
+            offset,
+            current_actor: crate::campaign::source_arena::SourceEntityHandle {
+                source_slot: actor_slot,
+                generation: arena.slot_generation(actor_slot),
+            },
+            current_target: crate::campaign::source_arena::SourceEntityHandle {
+                source_slot: target_slot,
+                generation: arena.slot_generation(target_slot),
+            },
+            source_packet: source,
+            target_packet: target,
+            projectile: arena
+                .handle(slot)
+                .ok_or("model-18 fan birth lost its handle")?,
+            packet,
+        });
+    }
     Ok(Some(slot))
 }
 
@@ -389,6 +607,7 @@ pub(crate) fn step_row(
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
+    targets_context: crate::native_world::source_target::Context<'_>,
 ) -> Result<Creature18Effects, String> {
     let actor_row = arena
         .entities
@@ -396,15 +615,60 @@ pub(crate) fn step_row(
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("model-18 callback lost slot{slot}"))?;
     let mut actor = load(actor_row, arena.slot_generation(slot));
-    // Alliance and sub_1E580/1E320 follow current fixed records, including
-    // retained class-zero packets and later occupants of those addresses.
-    let mut pointers: Vec<_> =
-        crate::native_world::source_target::alliance_direct_references(arena, actor_row)?
-            .into_iter()
-            .collect();
-    pointers
-        .extend(crate::native_world::source_target::summoned_direct_references(arena, actor_row)?);
-    let targets = targets(arena, &pointers);
+    #[cfg(test)]
+    let callback_receipt = CALLBACK_TRACE.with(|trace| {
+        trace
+            .borrow()
+            .as_ref()
+            .filter(|rows| rows.len() < 64)
+            .map(|_| {
+                let handle = crate::campaign::source_arena::SourceEntityHandle {
+                    source_slot: slot,
+                    generation: actor.generation,
+                };
+                SentinelCallbackReceipt {
+                    actor: handle,
+                    before: actor,
+                    entry_writer: crate::native_world::area_damage::current_actor_mailbox_writer(
+                        handle,
+                        (actor.pending_damage, actor.pending_attacker),
+                    ),
+                    after: None,
+                }
+            })
+    });
+    // These callbacks dereference fixed targets, attackers and child chains
+    // independently of route mode or current frozen-list membership.
+    let stage_target = runtime
+        .stage_variables
+        .get(usize::from(actor.route_index))
+        .filter(|_| matches!(actor.route_mode, 3..=5))
+        .map_or(0, |stage| {
+            if stage.flags as u8 & 2 != 0 {
+                actor.route_relation
+            } else {
+                match stage.relation {
+                    crate::native_world::RuntimeRelation::LiveEntity(slot)
+                    | crate::native_world::RuntimeRelation::LiveEntityIndex(slot) => slot,
+                    _ => 0,
+                }
+            }
+        });
+    let mut pointers: Vec<_> = crate::native_world::source_target::direct_creature_references(
+        arena,
+        targets_context,
+        actor_row,
+        &[stage_target],
+    )?
+    .into_iter()
+    .collect();
+    // Source lists freeze addresses, not the eligibility or fields of their
+    // later occupants. Exact dereferences also retain the real sentinel row;
+    // the core's ordinary target lookup still treats zero as no target.
+    pointers.extend_from_slice(class3);
+    pointers.extend(families.iter().flatten().copied());
+    pointers.push(0);
+    let targets = targets(arena, &pointers, targets_context)?;
     let callback_action = actor.action;
     let context = Creature18Context {
         terrain,
@@ -449,9 +713,46 @@ pub(crate) fn step_row(
         }
     }
     crate::world::effects::sync_position(arena, terrain, slot, actor.position, true, false)?;
-    for launch in effects.projectiles.drain(..) {
-        if let Some(projectile_slot) = launch_projectile(arena, terrain, launch)? {
-            effects.projectile_slots.push(projectile_slot);
+    if let Some(target) = effects.fan_target.take() {
+        #[cfg(test)]
+        let mut receipt = FAN_BIRTH_TRACE.with(|trace| {
+            trace
+                .borrow()
+                .as_ref()
+                .filter(|rows| rows.len() < 64)
+                .map(|_| SentinelFanReceipt {
+                    actor: crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: slot,
+                        generation: arena.slot_generation(slot),
+                    },
+                    selected_target: crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: target,
+                        generation: arena.slot_generation(target),
+                    },
+                    shots: Vec::new(),
+                })
+        });
+        for offset in super::RULES.fan_yaw_offsets {
+            if let Some(projectile_slot) = launch_projectile(
+                arena,
+                terrain,
+                slot,
+                target,
+                offset,
+                targets_context,
+                #[cfg(test)]
+                receipt.as_mut(),
+            )? {
+                effects.projectile_slots.push(projectile_slot);
+            }
+        }
+        #[cfg(test)]
+        if let Some(receipt) = receipt {
+            FAN_BIRTH_TRACE.with(|trace| {
+                if let Some(rows) = trace.borrow_mut().as_mut() {
+                    rows.push(receipt);
+                }
+            });
         }
     }
     if effects.kill {
@@ -463,6 +764,18 @@ pub(crate) fn step_row(
     if effects.route_hide {
         arena.entities[usize::from(slot)].disable_drawing();
     }
+    #[cfg(test)]
+    if let Some(mut receipt) = callback_receipt {
+        receipt.after = (arena.handle(slot) == Some(receipt.actor))
+            .then(|| &arena.entities[usize::from(slot)])
+            .filter(|row| (row.class, row.model) == (SOURCE_CLASS, SOURCE_MODEL))
+            .map(|row| load(row, receipt.actor.generation));
+        CALLBACK_TRACE.with(|trace| {
+            if let Some(rows) = trace.borrow_mut().as_mut() {
+                rows.push(receipt);
+            }
+        });
+    }
     Ok(effects)
 }
 
@@ -473,41 +786,23 @@ fn expire(
     slot: u16,
     summoned: bool,
 ) -> Result<(), String> {
-    let position = arena.entities[usize::from(slot)].position;
+    super::super::creature_24::mc2::expire(arena, terrain, particles, slot, summoned)?;
+    // sub_25550 resumes after sub_1E580, including its allocations and hide.
+    // These writes belong to that CURRENT address, never the old actor copy.
     let generation = arena.slot_generation(slot);
-    if summoned {
-        super::super::goat::runtime::spawn_expiry_visual(arena, terrain, position, particles)?;
-    }
-    if arena.slot_generation(slot) != generation {
-        let mut zero = Position::default();
-        zero.z = terrain.ground_height(zero);
-        arena.entities[usize::from(slot)].set_position(zero);
-        crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
-    }
-    let current_position = arena.entities[usize::from(slot)].position;
-    let child = crate::world::effects::allocate(
-        arena,
-        terrain,
-        sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
-        current_position,
-        particles,
-    )?;
-    if child == Some(slot) {
-        arena.entities[usize::from(slot)].set_position(Position::default());
-        crate::world::effects::sync_position(
-            arena,
-            terrain,
-            slot,
-            Position::default(),
-            true,
-            true,
-        )?;
-    }
     let row = &mut arena.entities[usize::from(slot)];
-    row.disable_drawing();
     let mut position = row.position;
     position.z = terrain.ground_height(position);
     row.set_position(position);
+    if row.action == 146 {
+        let mut current = load(row, generation);
+        super::request_action(&mut current, 2, 0);
+        row.set_entity_rng(current.rng);
+        row.set_source_dword_10(current.timer);
+        row.set_source_action(current.action);
+        row.record[record::ATTACK_PHASE] = current.attack_phase;
+        arena.economy.source_rng.insert(slot, current.rng);
+    }
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
     Ok(())
 }
@@ -518,27 +813,16 @@ fn kill(
     particles: &[ParticleParameter],
     slot: u16,
 ) -> Result<(), String> {
-    let (position, yaw, mana, owner) = if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter()
-        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-    {
-        (
-            sphere.position,
-            sphere.yaw,
-            sphere.mana,
-            sphere.player_entity_index,
-        )
-    } else {
-        let row = &arena.entities[usize::from(slot)];
-        (
-            row.position,
-            row.yaw,
-            row.mana,
-            row.source_player_entity_index(),
-        )
-    };
+    let original = arena
+        .handle(slot)
+        .ok_or("model-18 death lost its original handle")?;
+    let source = arena.entities[usize::from(slot)].clone();
+    let (position, yaw, mana, owner) = (
+        source.position,
+        source.yaw,
+        source.mana,
+        source.source_player_entity_index(),
+    );
     if mana > 0 {
         if let Some(row) = arena
             .entities
@@ -549,71 +833,212 @@ fn kill(
             row.set_entity_rng(next);
             arena.economy.source_rng.insert(slot, next);
         }
-        crate::native_world::creatures::spider::mc2::spawn_mana(
+        crate::world::effects::spawn_death_mana_sphere(
             arena, terrain, slot, position, yaw, mana, owner,
         )?;
-        if let Some(sphere) = arena
-            .economy
-            .spheres
-            .iter_mut()
-            .find(|sphere| sphere.source_entity_index == slot)
-        {
-            sphere.player_entity_index = 0;
-            sphere.owner_entity_index = 0;
-        } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
-            row.record[152..154].fill(0);
+        if !crate::world::effects::clear_replacement_mana_owner(arena, slot)? {
+            arena.entities[usize::from(slot)].record[152..154].fill(0);
         }
+        arena.economy.source_owner.insert(slot, 0);
     }
-    let (current_position, current_flags) = if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter()
-        .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-    {
-        (sphere.position, sphere.control_flags)
-    } else {
-        let row = &arena.entities[usize::from(slot)];
-        (row.position, row.control_flags)
-    };
-    if current_flags & 0x100000 == 0 {
-        let child = crate::world::effects::allocate(
+    let current = crate::native_world::source_target::read(arena, Default::default(), slot)?
+        .ok_or("model-18 death lost its current source address")?;
+    let burst = if current.control_flags & 0x100000 == 0 {
+        crate::world::effects::spawn_death_burst(
             arena,
             terrain,
-            sim_definition::adapter::mc2_effect_definition(
-                crate::level_definition::EffectKind::RadialExplosion,
-            ),
-            current_position,
             particles,
-        )?;
-        if let Some(child) = child {
-            // The source reads the parent address after allocation: the
-            // allocator is allowed to replace that same address.
-            let id = arena
-                .economy
-                .spheres
-                .iter()
-                .find(|sphere| sphere.active && sphere.source_entity_index == slot)
-                .map_or_else(|| arena.entities[usize::from(slot)].source_id, |_| slot);
-            let row = &mut arena.entities[usize::from(child)];
-            row.source_id = id;
-            put(row, 30, id);
-            if child == slot {
-                let zero = Position::default();
-                row.set_position(zero);
-                crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
-            }
+            slot,
+            current.position,
+            current.source_id,
+        )?
+    } else {
+        None
+    };
+    if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+        if arena.resolve(original).is_none() {
+            return Err(format!("model-18 death cannot hide replacement at {slot}"));
         }
-    }
-    if let Some(sphere) = arena
-        .economy
-        .spheres
-        .iter_mut()
-        .find(|sphere| sphere.source_entity_index == slot)
-    {
-        sphere.control_flags |= crate::native_world::ENTITY_DRAW_DISABLED_BIT;
-        sphere.pending_delete = true;
-    } else if let Some(row) = arena.entities.get_mut(usize::from(slot)) {
+        let row = &mut arena.entities[usize::from(slot)];
+        // DisableEntityDrawing04_57F10 marks drawing only. Its map links
+        // remain current until the following source reclaim prologue.
         row.disable_drawing();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_fan_replacement_reads_current_actor_and_target_after_new_event() {
+        // Explicit allocator-pressure and callback-state controls over the
+        // actual constructors. No ordinary mission pressure is claimed.
+        let package = std::env::var_os("MC_LEVEL24_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                    "../../../generated/ribbon-20261104-integration/current-owner-package/level24",
+                )
+            },
+            std::path::PathBuf::from,
+        );
+        let session = crate::campaign::CampaignSession::open(
+            package,
+            crate::campaign::spec::CampaignSelection::ordinary(24).unwrap(),
+        )
+        .expect("whole campaign runtime retains the source constructor counters")
+        .simulation()
+        .clone();
+        for replace_actor in [true, false] {
+            let mut arena = session.source_arena().clone();
+            let mut runtime = session.runtime().clone();
+            let mut terrain = session.canonical_terrain().clone();
+            let particles = &session.session.definition.presentation.particles;
+            let player = session.state.entity_index;
+            let original_target = arena.handle(player).unwrap();
+            let mut position = arena.entities[usize::from(player)].position;
+            position.x = position.x.wrapping_add(1024);
+            let actor = allocate_authored(
+                &mut arena,
+                &mut runtime,
+                &mut terrain,
+                particles,
+                position,
+                super::super::RULES.max_life,
+                None,
+                601,
+            )
+            .unwrap()
+            .unwrap();
+            position.x = position.x.wrapping_add(1024);
+            let follower = allocate_authored(
+                &mut arena,
+                &mut runtime,
+                &mut terrain,
+                particles,
+                position,
+                super::super::RULES.max_life,
+                None,
+                602,
+            )
+            .unwrap()
+            .unwrap();
+            let original_actor = arena.handle(actor).unwrap();
+            {
+                let row = &mut arena.entities[usize::from(actor)];
+                row.set_source_action(146);
+                row.set_phase(0);
+                row.set_source_dword_10(10);
+                row.record[record::ATTACK_PHASE] = 1;
+                put(row, 154, player);
+                // A different owner makes the post-NewEvent ID copy visible.
+                row.source_id = player;
+                put(row, 30, player);
+            }
+            {
+                let row = &mut arena.entities[usize::from(follower)];
+                row.set_source_action(151);
+                row.set_phase(1);
+                row.record[77] = 16;
+                put(row, 44, actor);
+                put(row, 50, 32);
+            }
+            for row in &mut arena.entities {
+                row.set_control_flags(
+                    row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+                );
+            }
+            let replaced = if replace_actor { actor } else { player };
+            let row = &mut arena.entities[usize::from(replaced)];
+            row.set_control_flags(
+                row.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG,
+            );
+            arena.economy.exhaust_new_event_capacity_for_test();
+            arena.rebuild_source_free_arena();
+            let mut families = std::array::from_fn(|_| Vec::new());
+            families[usize::from(SOURCE_MODEL)] = vec![actor, follower];
+            start_fan_birth_trace();
+            let outcome = step_row(
+                &mut arena,
+                &mut runtime,
+                &mut terrain,
+                particles,
+                actor,
+                &[player],
+                &families,
+                Default::default(),
+            )
+            .unwrap();
+            let receipts = take_fan_birth_trace();
+            let receipt = &receipts[0];
+            assert_eq!(
+                (receipt.actor, receipt.selected_target),
+                (original_actor, original_target)
+            );
+            assert_eq!(outcome.projectile_slots, [replaced]);
+            assert_eq!(
+                receipt.shots.len(),
+                1,
+                "the other four attempts lack capacity"
+            );
+            let shot = &receipt.shots[0];
+            assert_eq!((shot.offset, shot.projectile.source_slot), (-226, replaced));
+            assert_eq!(arena.handle(replaced), Some(shot.projectile));
+            assert_eq!(shot.current_actor, arena.handle(actor).unwrap());
+            assert_eq!(shot.current_target, arena.handle(player).unwrap());
+            let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+                shot.source_packet.position,
+                shot.target_packet.position,
+            );
+            assert_eq!(
+                (shot.packet.yaw, shot.packet.pitch),
+                (yaw.wrapping_sub(226), pitch)
+            );
+            assert_eq!((shot.packet.roll, shot.packet.fov), (0, 0));
+            if replace_actor {
+                assert!(arena.resolve(original_actor).is_none());
+                assert_eq!(shot.source_packet.position, Position::default());
+                assert_eq!(shot.packet.owner_entity_index, actor);
+                assert_eq!(shot.packet.target_source_entity_index, 0);
+                assert_eq!(
+                    shot.packet.position,
+                    Position {
+                        z: super::super::RULES.fan_lift,
+                        ..Position::default()
+                    }
+                );
+                assert_eq!(
+                    arena.economy.map_chains.tile_of(actor),
+                    0,
+                    "the old actor packet must not republish over its newborn"
+                );
+                // A valid current projectile parent is absent from the old
+                // defender projection. Source1E580 still follows that address.
+                let followed = step_row(
+                    &mut arena,
+                    &mut runtime,
+                    &mut terrain,
+                    particles,
+                    follower,
+                    &[],
+                    &families,
+                    Default::default(),
+                )
+                .unwrap();
+                assert!(!followed.expire && !followed.route_hide);
+                assert_eq!(arena.entities[usize::from(follower)].record[77], 16);
+                assert!(!arena.entities[usize::from(follower)].drawing_disabled());
+                assert_eq!(arena.handle(actor), Some(shot.projectile));
+            } else {
+                assert!(arena.resolve(original_target).is_none());
+                assert_eq!((shot.target_packet.class, shot.target_packet.model), (9, 0));
+                assert_eq!((shot.packet.target_class, shot.packet.target_model), (9, 0));
+                assert_eq!(shot.source_packet.position, shot.target_packet.position);
+                assert_eq!(shot.packet.owner_entity_index, player);
+                assert_eq!(shot.packet.target_source_entity_index, player);
+                assert_eq!(arena.handle(actor), Some(original_actor));
+            }
+        }
+    }
 }

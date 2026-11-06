@@ -608,8 +608,8 @@ fn kill(
         }
         let row = &mut arena.entities[usize::from(slot)];
         row.disable_drawing();
-        let position = row.position;
-        crate::world::effects::sync_position(arena, terrain, slot, position, false, false)?;
+        // 1C930 -> 57F10 only marks the current row hidden. The following
+        // source reclaim owns removal from its map chain.
     }
     Ok(())
 }

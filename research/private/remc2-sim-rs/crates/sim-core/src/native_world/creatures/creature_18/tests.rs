@@ -441,7 +441,7 @@ fn constructor_binds_source18_properties_and_first_callback_enters_patrol() {
     assert_eq!((row.class, row.model, row.action), (5, SOURCE_MODEL, 147));
     assert_eq!(
         (row.max_life, row.life, row.mana),
-        (RULES.max_life, RULES.max_life, RULES.initial_mana)
+        (RULES.max_life, RULES.max_life, RULES.max_life >> 1)
     );
     assert_eq!(row.parameter_relation, Some(DESCRIPTOR));
     assert_eq!(row.particle_parameter_index, Some(286));
@@ -593,7 +593,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
     let mut unlit_terrain = terrain.clone();
     let before = arena.economy.fireball_projectiles().len();
     let effects = mc2::step_row(
-        arena, runtime, terrain, &particles, actor_slot, &classes, &families,
+        arena, runtime, terrain, &particles, actor_slot, &classes, &families, Default::default(),
     )
     .expect("model18 attack callback succeeds");
 
@@ -617,6 +617,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
         actor_slot,
         &classes,
         &families,
+        Default::default(),
     )
     .expect("disabled lighting does not reject the five source projectiles");
     assert_eq!(unlit.projectile_slots.len(), 5);
@@ -627,7 +628,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
             .any(|(_, light)| light.linked && light.source_entity_index == *slot)
     }));
     assert!(
-        effects.projectiles.is_empty(),
+        effects.fan_target.is_none(),
         "raw spawn intents stay in the leaf"
     );
     let fresh = &arena.economy.fireball_projectiles()[before..];
@@ -657,7 +658,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
             RULES.projectile_damage as u16
         );
         assert_eq!(projectile.source_mana, 50);
-        assert_eq!(projectile.yaw, base_yaw.wrapping_add(offset) & 2047);
+        assert_eq!(projectile.yaw, base_yaw.wrapping_add(offset));
         assert_eq!(projectile.pitch, base_pitch);
         assert_eq!(
             projectile.position.z,
@@ -711,6 +712,7 @@ fn attack_materializes_five_sourceordered_typed_fireballs_and_lost_target_emits_
         second,
         &classes,
         &families,
+        Default::default(),
     )
     .expect("lost-target callback returns to behavior");
     assert!(outcome.projectile_slots.is_empty());
@@ -893,7 +895,7 @@ fn prekill_inherits_owned_child_credit_without_running_death_early() {
     let families = model_slots(arena);
 
     let effects = mc2::step_row(
-        arena, runtime, terrain, &particles, root, &classes, &families,
+        arena, runtime, terrain, &particles, root, &classes, &families, Default::default(),
     )
     .expect("PreKill callback succeeds");
 
@@ -935,7 +937,7 @@ fn death_transfers_mana_and_explosion_identity_unless_explosion_is_suppressed() 
     let families = model_slots(arena);
     let old_spheres = arena.economy.spheres.len();
     mc2::step_row(
-        arena, runtime, terrain, &particles, actor, &classes, &families,
+        arena, runtime, terrain, &particles, actor, &classes, &families, Default::default(),
     )
     .expect("death callback creates source descendants");
     assert!(arena.entities[usize::from(actor)].drawing_disabled());
@@ -943,7 +945,7 @@ fn death_transfers_mana_and_explosion_identity_unless_explosion_is_suppressed() 
         arena.economy.map_chains.is_linked(actor),
         "hide retains the map link until following-pass reclaim"
     );
-    assert_eq!(arena.economy.spheres[old_spheres].mana, RULES.initial_mana);
+    assert_eq!(arena.economy.spheres[old_spheres].mana, RULES.max_life >> 1);
     let explosion = arena
         .entities
         .iter()
@@ -961,10 +963,10 @@ fn death_transfers_mana_and_explosion_identity_unless_explosion_is_suppressed() 
     let families = model_slots(arena);
     let old_spheres = arena.economy.spheres.len();
     mc2::step_row(
-        arena, runtime, terrain, &particles, quiet, &classes, &families,
+        arena, runtime, terrain, &particles, quiet, &classes, &families, Default::default(),
     )
     .expect("suppressed explosion still transfers mana");
-    assert_eq!(arena.economy.spheres[old_spheres].mana, RULES.initial_mana);
+    assert_eq!(arena.economy.spheres[old_spheres].mana, RULES.max_life >> 1);
     assert!(
         !arena
             .entities
@@ -1005,7 +1007,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
         let classes = class3_slots(arena);
         let families = model_slots(arena);
         let effects = mc2::step_row(
-            arena, runtime, terrain, &particles, following, &classes, &families,
+            arena, runtime, terrain, &particles, following, &classes, &families, Default::default(),
         )
         .expect("live parent follow callback");
         assert!(!effects.expire);
@@ -1029,7 +1031,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
         let classes = class3_slots(arena);
         let families = model_slots(arena);
         let effects = mc2::step_row(
-            arena, runtime, terrain, &particles, actor, &classes, &families,
+            arena, runtime, terrain, &particles, actor, &classes, &families, Default::default(),
         )
         .expect("missing parent expiry callback");
         assert!(effects.expire);
@@ -1074,6 +1076,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
         bound,
         &classes,
         &families,
+        Default::default(),
     )
     .expect("bound live parent callback");
     assert!(!living.expire);
@@ -1106,7 +1109,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
         arena.economy.release_slot(address, None);
     }
     let families = model_slots(arena);
-    let retained = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families)
+    let retained = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families, Default::default())
         .expect("fixed parent and target remain readable after source release");
     assert!(!retained.expire);
     assert_eq!(put_word(&arena.entities[usize::from(bound)], 154), target);
@@ -1142,7 +1145,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
     let flags = arena.entities[usize::from(bound)].control_flags;
     arena.entities[usize::from(bound)].set_control_flags(flags | 0x800);
     let families = model_slots(arena);
-    let reused = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families)
+    let reused = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families, Default::default())
         .expect("the current positive-life replacement remains a valid fixed parent");
     assert!(!reused.expire);
     assert_eq!(put_word(&arena.entities[usize::from(bound)], 154), target);
@@ -1150,7 +1153,7 @@ fn summon_parent_loss_produces_source_expiry_children_and_hides_next_pass() {
     assert!(!arena.entities[usize::from(bound)].drawing_disabled());
 
     arena.entities[usize::from(parent)].set_life(-1);
-    let expired = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families)
+    let expired = mc2::step_row(arena, runtime, terrain, &particles, bound, &[], &families, Default::default())
         .expect("negative current parent life expires the configured summon");
     assert!(expired.expire);
     assert!(!expired.summon_expire);
@@ -3018,13 +3021,7 @@ fn attack_turns_toward_non_player_attacker_with_source_phase_caps() {
     actor.timer = 10;
     let effects = step(&mut actor, &context).expect("attack firing callback");
     assert_eq!(actor.yaw, heading);
-    assert_eq!(effects.projectiles.len(), 5);
-    assert!(
-        effects
-            .projectiles
-            .iter()
-            .all(|shot| shot.target_class == 5 && shot.source_target == target.slot)
-    );
+    assert_eq!(effects.fan_target, Some(target.slot));
 
     let mut hidden = target;
     hidden.flags = ENTITY_DRAW_DISABLED_BIT;
@@ -3044,7 +3041,7 @@ fn attack_turns_toward_non_player_attacker_with_source_phase_caps() {
     actor.attack_phase = 1;
     actor.timer = 10;
     let effects = step(&mut actor, &hidden_context).expect("hidden target callback");
-    assert!(effects.projectiles.is_empty());
+    assert!(effects.fan_target.is_none());
 }
 
 #[test]
@@ -3120,11 +3117,11 @@ fn alliance_follows_parent_and_only_fires_at_its_selected_target() {
     };
     let rejected_effects =
         step(&mut rejected, &rejected_context).expect("Alliance rejects other target");
-    assert!(rejected_effects.projectiles.is_empty());
+    assert!(rejected_effects.fan_target.is_none());
     assert_eq!(rejected.attack_phase, 2);
 
     let effects = step(&mut actor, &context).expect("Alliance firing callback");
-    assert_eq!(effects.projectiles.len(), 5);
+    assert_eq!(effects.fan_target, Some(target.slot));
     assert_eq!(actor.route_remaining, 38);
     assert_eq!(actor.control_flags & 0x0600_0000, 0x0400_0000);
     assert_eq!(effects.linked_blink_flags, [(child.slot, 0x0400_0000)]);
@@ -3189,7 +3186,7 @@ fn alliance_firing_materializes_projectiles_and_updates_linked_source_flags() {
     let families = model_slots(arena);
     let before = arena.economy.fireball_projectiles().len();
     let outcome = mc2::step_row(
-        arena, runtime, terrain, &particles, actor, &classes, &families,
+        arena, runtime, terrain, &particles, actor, &classes, &families, Default::default(),
     )
     .expect("Alliance source firing");
     assert_eq!(outcome.projectile_slots.len(), 5);
@@ -3207,9 +3204,472 @@ fn alliance_firing_materializes_projectiles_and_updates_linked_source_flags() {
         row.record[74] = 1;
     }
     let outcome = mc2::step_row(
-        arena, runtime, terrain, &particles, actor, &classes, &families,
+        arena, runtime, terrain, &particles, actor, &classes, &families, Default::default(),
     )
     .expect("Alliance rejected-target callback");
     assert!(outcome.projectile_slots.is_empty());
     assert_eq!(arena.economy.fireball_projectiles().len(), before + 5);
+}
+
+#[test]
+fn configured_stage_point_guard_and_descriptorless_wander_match_source_arithmetic() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let mut runtime = simulation.runtime().clone();
+    let position = Position { x: 32760, y: 20_000, z: 0 };
+    let waypoint = Position { x: 30_000, y: 22_000, z: 0 };
+    runtime.stage_variables[1] = crate::native_world::RuntimeStageVariable {
+        kind: 1, flags: 0, word_2: 0,
+        relation: RuntimeRelation::AxisScalar((u32::from(waypoint.y) << 16) | u32::from(waypoint.x)),
+    };
+    let peer = Target { slot: 42, source_id: 42, class: 5, model: SOURCE_MODEL,
+        position: Position { x: 32775, ..position }, ..Target::default() };
+    let targets = [peer];
+    let context = Creature18Context { terrain, runtime: &runtime, targets: &targets,
+        class3: &[], model18: &[42], families: &[] };
+    let mut counter = 0;
+    let mut actor = construct(41, 1, 123, position, &mut counter);
+    actor.action = 151;
+    actor.route_index = 1;
+    actor.route_mode = 1;
+    actor.phase = 8;
+    actor.control_flags |= 0x800;
+    step(&mut actor, &context).unwrap();
+    assert_eq!(actor.roll, heading_for_positions(position, waypoint) as i16,
+        "1DDA0 compares the two positions as signed source coordinates");
+
+    let guard_position = Position { x: 100, y: 20_000, z: 0 };
+    runtime.stage_variables[1].relation = RuntimeRelation::AxisScalar(
+        (u32::from(guard_position.y) << 16) | u32::from(guard_position.x));
+    let enemy = Target { slot: 10, source_id: 10, class: 3, model: 0, life: 100,
+        position: Position { x: 65_400, ..guard_position }, ..Target::default() };
+    let guard_targets = [enemy];
+    let guard_context = Creature18Context { terrain, runtime: &runtime, targets: &guard_targets,
+        class3: &[10], model18: &[], families: &[] };
+    let mut guard = construct(41, 1, 123, guard_position, &mut counter);
+    guard.action = 151;
+    guard.route_index = 1;
+    guard.route_mode = 2;
+    guard.phase = RULES.source_scan_period;
+    guard.yaw = heading_for_positions(guard_position, enemy.position) as i16;
+    guard.control_flags &= !0x800;
+    guard.speed = 10;
+    step(&mut guard, &guard_context).unwrap();
+    assert_eq!((guard.action, guard.route_mode, guard.target), (151, 2, 0),
+        "1DBF0 promotes X before subtraction instead of wrapping the axis");
+    assert_eq!((guard.position.x, guard.position.y), (guard_position.x, guard_position.y),
+        "the near guard's 1E1C0 obeys Sentinel descriptor bit2 and does not move");
+
+    runtime.stage_variables = Vec::new().into_boxed_slice();
+    let wander_context = Creature18Context { terrain, runtime: &runtime, targets: &guard_targets,
+        class3: &[], model18: &[], families: &[] };
+    for mode in 6..=9 {
+        let mut wander = construct(41, 1, 123, guard_position, &mut counter);
+        wander.action = 151;
+        wander.route_index = 0;
+        wander.route_mode = mode;
+        wander.pending_damage = 1;
+        wander.pending_attacker = enemy.slot;
+        step(&mut wander, &wander_context).unwrap();
+        assert_eq!((wander.life, wander.action, wander.route_mode, wander.target),
+            (RULES.max_life - 1, 146, 10, enemy.slot),
+            "1E1C0 consumes damage without reading StageVar1, mode {mode}");
+    }
+    let sentinel = Target { slot: 0, life: 1, yaw: 71, roll: 93,
+        position: Position { x: 1234, y: 4321, z: -3 }, ..Target::default() };
+    let sentinel_rows = [sentinel];
+    let sentinel_context = Creature18Context { terrain, runtime: &runtime,
+        targets: &sentinel_rows, class3: &[], model18: &[], families: &[] };
+    let mut follower = construct(41, 1, 123, guard_position, &mut counter);
+    follower.action = 151;
+    follower.route_mode = 12;
+    follower.parent = 0;
+    let effects = step(&mut follower, &sentinel_context).unwrap();
+    assert!(effects.route_hide);
+    assert_eq!((follower.position.x, follower.position.y, follower.yaw, follower.roll),
+        (sentinel.position.x, sentinel.position.y, sentinel.yaw, sentinel.roll),
+        "1E4D0 hides for sentinel parent but copies the current sentinel packet");
+}
+
+#[test]
+fn configured_unrecognized_tracking_and_attack_subphases_preserve_source_noop() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let context = Creature18Context { terrain, runtime: simulation.runtime(), targets: &[],
+        class3: &[], model18: &[], families: &[] };
+    let mut counter = 0;
+    for (action, phase) in [(144, 2), (146, 4)] {
+        let mut actor = construct(41, 1, 123, simulation.state.position, &mut counter);
+        actor.action = action;
+        actor.attack_phase = phase;
+        actor.timer = 1;
+        actor.rng = 123;
+        actor.proximity = 1;
+        step(&mut actor, &context).unwrap();
+        assert_eq!((actor.action, actor.attack_phase, actor.timer, actor.rng),
+            (action, phase, 1, 123), "unrecognized subphase must not select patrol");
+    }
+}
+
+#[test]
+fn ordinary_level24_sentinel_fan_reaches_real_player_damage() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::native_world::{area_damage, Mc2DispatchEvent};
+    use crate::PlayerCommand;
+
+    let package = std::env::var_os("MC_LEVEL24_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level24"),
+        std::path::PathBuf::from,
+    );
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(24).unwrap())
+        .expect("whole Level24 campaign").simulation().clone();
+    // The real authored group is the producer; objective prerequisite and
+    // player resources/positions are declared encounter controls.
+    session.activate_authored_group_prerequisite_for_test(2).unwrap();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let actor = session.entities().iter().find_map(|row| {
+        let identity = session.creature_identity_for_source_slot(row.index)?;
+        ((row.class, row.model) == (5, 18)
+            && matches!(identity.origin, CreatureRootOrigin::AuthoredRecord { authored_record: 234 }))
+            .then(|| session.source_arena().handle(row.index)).flatten()
+    }).expect("group2 constructs the original authored Sentinel234");
+    let player = session.state.entity_index;
+    let player_handle = session.source_arena().handle(player).unwrap();
+    {
+        let live = &mut session.session.state.live;
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_max_life(200_000);
+        parent.set_life(200_000);
+        let parent = parent.clone();
+        live.player_life = parent.life;
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+    }
+    let mut distant = session.entities()[usize::from(actor.source_slot)].position;
+    distant.x = distant.x.wrapping_add(0x6000);
+    session.set_level2_entity_position(player, distant).unwrap();
+    for _ in 0..128 {
+        if session.session.state.live.player_protection_ticks == 0 { break; }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0);
+    assert_eq!(session.source_arena().handle(actor.source_slot), Some(actor));
+    let row = session.entities()[usize::from(actor.source_slot)].clone();
+    let source_id = row.source_id;
+    let mut nearby = row.position;
+    crate::move_entity(&mut nearby, row.yaw, 0, 1024);
+    nearby.z = session.canonical_terrain().ground_height(nearby).wrapping_add(512);
+    session.set_level2_entity_position(player, nearby).unwrap();
+    area_damage::start_player_damage_trace(player_handle);
+    area_damage::start_effect_damage_trace(player);
+    area_damage::start_fireball_launch_trace();
+    let mut fans = Vec::new();
+    let mut terminals = Vec::new();
+    let mut consumptions = Vec::new();
+    let mut entered_attack = false;
+    let mut selected_player = false;
+    let mut intercepted = false;
+    let mut post_interception = 0;
+    for _ in 0..300 {
+        mc2::start_fan_birth_trace();
+        crate::native_world::start_fireball_terminal_trace();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        fans.extend(mc2::take_fan_birth_trace());
+        terminals.extend(crate::native_world::take_fireball_terminal_trace());
+        consumptions.extend(area_damage::take_player_damage_consumptions());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+            "actual Sentinel callback failed: {:?}", session.dispatch_events());
+        let current = &session.entities()[usize::from(actor.source_slot)];
+        selected_player |= session.source_arena().handle(actor.source_slot) == Some(actor)
+            && put_word(current, 154) == player;
+        entered_attack |= current.action == 146;
+        // One disclosed player-only interception after a genuine shot exists.
+        // The projectile and its source trajectory are untouched.
+        if !intercepted && let Some(fan) = fans.iter().find(|fan| fan.actor == actor && fan.selected_target == player_handle)
+            && let Some(shot) = fan.shots.iter().find(|shot| session.source_arena().resolve(shot.projectile).is_some())
+            && let Some(current_shot) = session.economy().fireball_projectiles().iter()
+                .find(|row| row.active && row.source_entity_index == shot.projectile.source_slot)
+        {
+            let mut contact = current_shot.position;
+            crate::move_entity(&mut contact, current_shot.yaw, current_shot.pitch, current_shot.actual_speed);
+            session.set_level2_entity_position(player, contact).unwrap();
+            intercepted = true;
+        }
+        if intercepted {
+            post_interception += 1;
+            if post_interception >= 24 { break; }
+        }
+    }
+    let births = area_damage::take_fireball_impact_birth_trace();
+    let _ = area_damage::take_fireball_launch_trace();
+    let damage = area_damage::take_effect_damage_trace();
+    assert!(selected_player && entered_attack && intercepted, "real actor must acquire and enter attack");
+    let fan = fans.iter().find(|fan| fan.actor == actor && fan.selected_target == player_handle
+        && fan.shots.len() == 5).expect("one actual authored fan publishes five generations");
+    for (shot, expected_offset) in fan.shots.iter().zip(RULES.fan_yaw_offsets) {
+        assert_eq!(shot.offset, expected_offset);
+        assert_eq!((shot.current_actor, shot.current_target), (actor, player_handle));
+        assert_eq!((shot.packet.source_class, shot.packet.source_model, shot.packet.target_class,
+            shot.packet.target_model, shot.packet.owner_entity_index, shot.packet.target_source_entity_index,
+            shot.packet.source_subspell_index), (9, 0, 3, 0, shot.source_packet.source_id, player, RULES.projectile_damage));
+        let (yaw, pitch) = crate::level1_mission::projectile_guidance_angles(
+            shot.source_packet.position, shot.target_packet.position);
+        assert_eq!((shot.packet.yaw, shot.packet.pitch), (yaw.wrapping_add(expected_offset), pitch));
+    }
+    assert!(fan.shots.iter().enumerate().all(|(i, shot)|
+        fan.shots[..i].iter().all(|prior| prior.projectile != shot.projectile)));
+    assert!(terminals.iter().any(|terminal| fan.shots.iter().any(|shot| shot.projectile == terminal.projectile)
+        && terminal.owner == source_id && terminal.target_handle == Some(player_handle)
+        && terminal.impact.is_some_and(|impact| births.iter().any(|&(slot, generation, parent, parent_generation, owner)|
+            (slot, generation, parent, parent_generation, owner) == (impact.source_slot, impact.generation,
+                terminal.projectile.source_slot, terminal.projectile.generation, source_id))
+            && damage.iter().any(|receipt| receipt.source_slot == Some(impact.source_slot)
+                && receipt.target_generation == player_handle.generation && receipt.source_scoped
+                && receipt.pulse.owner == source_id && receipt.pulse.payload == RULES.projectile_damage
+                && receipt.writer_sequence.is_some_and(|sequence|
+                    consumptions.iter().any(|consumed| consumed.target == player_handle
+                        && consumed.writer.is_some_and(|writer| writer.sequence == sequence
+                            && writer.source == area_damage::PlayerMailboxSource::Effect(impact))
+                        && Some(consumed.mailbox) == receipt.mailbox_after
+                        && consumed.life_after < consumed.life_before))))),
+        "one exact fan projectile must produce actual impact, current mailbox writer and player life loss");
+}
+
+#[test]
+fn ordinary_level24_public_meteors_retire_original_sentinel() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::native_world::{area_damage, Mc2DispatchEvent};
+    use crate::PlayerCommand;
+    let package = std::env::var_os("MC_LEVEL24_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level24"),
+        std::path::PathBuf::from,
+    );
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(24).unwrap())
+        .expect("whole Level24 campaign").simulation().clone();
+    let player = session.state.entity_index;
+    // The real group2 constructor remains unchanged. Carried Meteor, Castle,
+    // mana, experience, tier and one player firing pose are declared entry controls.
+    session.apply_carried_spell_families(&[9], Some(9)).unwrap();
+    for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+        session.economy_mut().set_castle_stage_footprint(stage, footprint);
+    }
+    let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x| Position {
+        x: x * 2048, y: y * 2048, z: 0,
+    })).find(|position| !session.economy().castle_projectile_site_blocked(
+        *position, session.entities(), session.canonical_terrain())).expect("normal Castle site");
+    let castle = session.economy_mut().build_castle(site, player).expect("normal Castle constructor");
+    assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, 200_000));
+    session.shared_spells_mut().award_spell_experience(player, 9, 5_000);
+    {
+        let live = &mut session.session.state.live;
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_max_life(200_000);
+        parent.set_life(200_000);
+        parent.max_mana = 200_000;
+        parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+        parent.set_mana(200_000);
+        parent.set_mana_regen(0);
+        let parent = parent.clone();
+        live.player_life = parent.life;
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.player_mana = parent.mana;
+        live.shared_spells.caster.mana = parent.mana;
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+    }
+    session.activate_authored_group_prerequisite_for_test(2).unwrap();
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    let actor = session.entities().iter().find_map(|row| {
+        let identity = session.creature_identity_for_source_slot(row.index)?;
+        ((row.class, row.model) == (5, 18)
+            && matches!(identity.origin, CreatureRootOrigin::AuthoredRecord { authored_record: 234 }))
+            .then(|| session.source_arena().handle(row.index)).flatten()
+    }).expect("real group2 constructs authored Sentinel234");
+    let source = session.entities()[usize::from(actor.source_slot)].clone();
+    assert!(source.life > 0 && source.mana > 0);
+    let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 9).unwrap() as i8;
+    session.step_outer_turn(PlayerCommand { opcode: 31, argument_1: ui, argument_2: 2,
+        ..Default::default() }, 0);
+    let holder = session.shared_spells().local_player().enabled_spell_holders[9];
+    assert_ne!(holder, 0);
+    assert_eq!(session.shared_spells().pickup(holder).unwrap().level_gate, 2);
+    let holder_handle = session.source_arena().handle(holder).unwrap();
+    let caster_handle = session.source_arena().handle(player).unwrap();
+    assert_eq!(session.source_arena().handle(actor.source_slot), Some(actor));
+    let current = session.entities()[usize::from(actor.source_slot)].clone();
+    let mut origin = current.position;
+    crate::move_entity(&mut origin, 1024, 0, 2048);
+    origin.z = session.canonical_terrain().ground_height(current.position).wrapping_add(768);
+    session.set_level2_entity_position(player, origin).unwrap();
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    let (_, pitch) = crate::level1_mission::projectile_guidance_angles(origin, current.position);
+    session.set_level2_player_aim_for_test(0, pitch);
+    let mut no_cast = session.clone();
+    let credit_before = session.economy().authored_bee_kill_census(player);
+    area_damage::start_actor_damage_trace(&[actor]);
+    area_damage::start_effect_damage_trace(actor.source_slot);
+    mc2::start_kill_credit_trace();
+    let mut callbacks = Vec::new();
+    let mut launches = Vec::new();
+    let mut impacts = Vec::new();
+    let mut saw_mana = false;
+    let mut saw_hide = false;
+    let mut saw_burst = false;
+    let mut saw_burst_dto = false;
+    let mut saw_census_removal = false;
+    let mut death_source = None;
+    let mut turns_run = 0;
+    for turn in 0..160 {
+        let original_before = session.source_arena().rebuilt_class5_model_slots()[usize::from(SOURCE_MODEL)]
+            .iter().filter(|&&slot| slot == actor.source_slot
+                && session.source_arena().handle(slot) == Some(actor)).count();
+        session.start_creature17_trace();
+        mc2::start_callback_trace();
+        session.step_outer_turn(PlayerCommand {
+            flags: if matches!(turn, 0 | 48 | 96) { 0x10 } else { 0 }, ..Default::default()
+        }, 0);
+        let traces = session.take_creature17_trace();
+        launches.extend(traces.meteor_launches);
+        impacts.extend(traces.meteor_impacts);
+        let turn_callbacks = mc2::take_callback_trace();
+        for callback in &turn_callbacks {
+            if callback.actor == actor && callback.before.action == 149 {
+                death_source = Some((callback.before.source_id, callback.before.mana));
+            }
+        }
+        saw_hide |= turn_callbacks.iter().any(|receipt| receipt.actor == actor
+            && receipt.after.is_some_and(|row| row.control_flags & 0x400 != 0));
+        callbacks.extend(turn_callbacks);
+        if original_before == 1 && session.source_arena().handle(actor.source_slot) == Some(actor)
+            && session.entities()[usize::from(actor.source_slot)].life < 0
+        {
+            let original_after = session.source_arena().rebuilt_class5_model_slots()
+                [usize::from(SOURCE_MODEL)].iter().filter(|&&slot| slot == actor.source_slot
+                    && session.source_arena().handle(slot) == Some(actor)).count();
+            saw_census_removal |= original_after == 0;
+        }
+        turns_run += 1;
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        saw_mana |= session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Economy { event: crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index, mana, .. }, .. } if *source_entity_index == actor.source_slot
+                    && death_source.is_some_and(|(_, expected)| expected > 0 && *mana == expected)));
+        for (&slot, &(generation, parent)) in session.source_arena().effects.death_burst_origins() {
+            if parent == actor.source_slot && session.source_arena().slot_generation(slot) == generation {
+                let burst = &session.entities()[usize::from(slot)];
+                if burst.active && (burst.class, burst.model) == (10, 1)
+                    && death_source.is_some_and(|(id, _)| burst.source_id == id) {
+                    saw_burst = true;
+                    saw_burst_dto |= session.campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == slot && view.source_id == burst.source_id);
+                }
+            }
+        }
+        if session.source_arena().resolve(actor).is_none() && saw_hide && saw_mana && saw_burst_dto { break; }
+    }
+    let receipts = area_damage::take_effect_damage_trace();
+    let credits = mc2::take_kill_credit_trace();
+    // The watched-writer trace is thread-local. Run the paired no-cast world
+    // after capturing the cast world's receipts so identical cloned handles
+    // cannot overwrite the actual writer identity.
+    for _ in 0..turns_run {
+        no_cast.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(no_cast.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert!(callbacks.iter().any(|callback| {
+        let Some(after) = callback.after else { return false; };
+        let Some(writer) = callback.entry_writer else { return false; };
+        callback.actor == actor && writer.target == actor && callback.before.linked_child == 0
+            && callback.before.life >= 0 && callback.before.pending_attacker == player
+            && callback.before.pending_damage > 0
+            && after.life == callback.before.life.wrapping_sub(callback.before.pending_damage)
+            && after.life < 0 && after.action == 148 && after.killer == player && after.pending_attacker == 0
+            && writer.mailbox == (callback.before.pending_damage, player)
+            && receipts.iter().any(|receipt| receipt.target_slot == actor.source_slot
+                && receipt.target_generation == actor.generation && receipt.source_scoped
+                && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                && receipt.writer_sequence == Some(writer.sequence)
+                && impacts.iter().any(|impact| receipt.source_slot == Some(impact.impact.source_slot)
+                    && writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                    && (impact.state.source_class, impact.state.model, impact.state.subspell_index) == (10, 17, 16_000)
+                    && launches.iter().any(|launch| launch.holder == holder_handle && launch.caster == caster_handle
+                        && launch.projectile == impact.projectile && (launch.packet.class, launch.packet.model,
+                            launch.packet.subspell_index) == (9, 3, 16_000))))
+    }), "actual fixed public Meteor lineage must be the original Sentinel's latest fatal writer: actor={actor:?} callbacks={callbacks:?} receipts={receipts:?}");
+    assert!(saw_census_removal && saw_mana && saw_burst && saw_burst_dto && saw_hide
+        && session.source_arena().resolve(actor).is_none(),
+        "original must leave the living list, publish mana and owned burst/DTO, hide and reclaim");
+    let player_credits = credits.iter().filter(|credit| credit.killer == player).collect::<Vec<_>>();
+    assert_eq!(player_credits.iter().filter(|credit| credit.source == actor).count(), 1,
+        "the original Sentinel generation must receive exactly one actual PreKill credit: {credits:?}");
+    let mut expected_credit = credit_before;
+    for credit in &player_credits {
+        assert_eq!(credit.before_count, expected_credit,
+            "every actual player credit must have a contiguous writer receipt: {credits:?}");
+        expected_credit = expected_credit.wrapping_add(1);
+        assert_eq!(credit.after_count, expected_credit,
+            "each actual PreKill writer increments exactly once: {credit:?}");
+    }
+    assert_eq!(session.economy().authored_bee_kill_census(player), expected_credit,
+        "all aggregate player credit, including real collateral, must be accounted for: {credits:?}");
+    eprintln!("Level24 Sentinel original={actor:?} player credit writers={player_credits:?}");
+    assert!(!session.creature_identity_for_source_slot(actor.source_slot)
+        .is_some_and(|identity| identity.handle == actor && identity.living));
+    assert!(no_cast.creature_identity_for_source_slot(actor.source_slot)
+        .is_some_and(|identity| identity.handle == actor && identity.living),
+        "same-turn no-cast control retains the actual original Sentinel");
+}
+
+#[test]
+fn configured_fan_partial_allocation_keeps_first_source_shot_and_failed_constructor() {
+    let package = std::env::var_os("MC_LEVEL24_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level24"),
+        std::path::PathBuf::from,
+    );
+    let session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(24).unwrap(),
+    ).expect("whole Level24 runtime retains source constructor counters").simulation().clone();
+    let mut arena = session.source_arena().clone();
+    let mut terrain = session.canonical_terrain().clone();
+    let mut runtime = session.runtime().clone();
+    let particles = &session.session.definition.presentation.particles;
+    let player = session.state.entity_index;
+    let mut position = arena.entities[usize::from(player)].position;
+    position.x = position.x.wrapping_add(1000);
+    let actor = add_creature(&mut arena, &mut terrain, particles, position, 146);
+    {
+        let row = &mut arena.entities[usize::from(actor)];
+        row.set_phase(RULES.source_scan_period);
+        row.set_source_dword_10(10);
+        row.record[74] = 1;
+        put(row, 154, player);
+    }
+    for row in &mut arena.entities {
+        row.set_control_flags(row.control_flags & !crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
+    }
+    let only_free = arena.economy.exhaust_new_event_capacity_for_test().expect("fixture has a free slot");
+    arena.rebuild_source_free_arena();
+    let before = runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)];
+    assert!(mc2::allocate_authored(&mut arena, &mut runtime, &mut terrain, particles,
+        position, RULES.max_life, None, 501).unwrap().is_none());
+    assert_eq!(runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)], before,
+        "failed source constructor does not advance its family counter");
+    assert!(arena.economy.restore_new_event_slot_for_test(only_free));
+    let families = model_slots(&arena);
+    let classes = class3_slots(&arena);
+    mc2::start_fan_birth_trace();
+    let result = mc2::step_row(&mut arena, &mut runtime, &mut terrain, particles,
+        actor, &classes, &families, Default::default()).unwrap();
+    let receipts = mc2::take_fan_birth_trace();
+    let receipt = receipts.iter().find(|receipt| receipt.actor.source_slot == actor).unwrap();
+    assert_eq!(result.projectile_slots, vec![only_free]);
+    assert_eq!(receipt.shots.len(), 1);
+    assert_eq!((receipt.shots[0].offset, receipt.shots[0].projectile.source_slot), (-226, only_free),
+        "later failed NewEvent attempts do not discard the first source-ordered shot");
 }

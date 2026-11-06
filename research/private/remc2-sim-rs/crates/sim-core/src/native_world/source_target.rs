@@ -1527,7 +1527,7 @@ pub(crate) fn alliance_direct_references(
     if source.record[77] != 14 {
         return Ok(std::collections::BTreeSet::new());
     }
-    direct_creature_references(arena, source)
+    direct_creature_references(arena, Context::default(), source, &[])
 }
 
 /// sub_1E580 and sub_1E320 read fixed parent/selected-target records in the
@@ -1539,12 +1539,14 @@ pub(crate) fn summoned_direct_references(
     if !matches!(source.record[77], 13 | 16 | 17) {
         return Ok(std::collections::BTreeSet::new());
     }
-    direct_creature_references(arena, source)
+    direct_creature_references(arena, Context::default(), source, &[])
 }
 
-fn direct_creature_references(
+pub(crate) fn direct_creature_references(
     arena: &SourceArena,
+    context: Context<'_>,
     source: &EntitySnapshot,
+    additional_slots: &[u16],
 ) -> Result<std::collections::BTreeSet<u16>, String> {
     let mut referenced = std::collections::BTreeSet::new();
     let mut pending = vec![
@@ -1554,11 +1556,12 @@ fn direct_creature_references(
         u16::from_le_bytes([source.record[102], source.record[103]]),
         u16::from_le_bytes([source.record[56], source.record[57]]),
     ];
+    pending.extend_from_slice(additional_slots);
     while let Some(slot) = pending.pop() {
         if slot == 0 || referenced.contains(&slot) {
             continue;
         }
-        let Some(target) = read(arena, Context::default(), slot)? else {
+        let Some(target) = read(arena, context, slot)? else {
             continue;
         };
         referenced.insert(slot);

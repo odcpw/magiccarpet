@@ -363,7 +363,6 @@ pub const CREATURE17_CLASS_PROPERTIES: Creature17ClassProperties = Creature17Cla
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Creature18ClassProperties {
     pub max_life: i32,
-    pub initial_mana: i32,
     pub minimum_speed: i16,
     pub maximum_speed: i16,
     pub constructor_subspell: u16,
@@ -387,7 +386,6 @@ pub struct Creature18ClassProperties {
 /// Pinned sub_4C590, descriptor86 and sub_1D460.
 pub const CREATURE18_CLASS_PROPERTIES: Creature18ClassProperties = Creature18ClassProperties {
     max_life: 36_000,
-    initial_mana: 18_000,
     minimum_speed: 10,
     maximum_speed: 6,
     constructor_subspell: 500,

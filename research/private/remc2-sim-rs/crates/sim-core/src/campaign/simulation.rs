@@ -17415,6 +17415,12 @@ impl Mc2Simulation {
                 SourceRoute::Imported,
             ) => {
                 #[cfg(test)]
+                let credit_source = creatures::creature_18::mc2::kill_credit_trace_enabled()
+                    .then(|| SourceEntityHandle {
+                        source_slot,
+                        generation: self.session.state.live.economy.slot_generation(source_slot),
+                    });
+                #[cfg(test)]
                 let _contact_trace = (visit.handler == ExistingHandler::Creature17).then(|| {
                     ActorContactTrace(CURRENT_ACTOR_CONTACT_SOURCE.with(|source| {
                         source.replace(self.session.state.live.economy.handle(source_slot))
@@ -17465,6 +17471,21 @@ impl Mc2Simulation {
                         Some((player_entity_index, self.state.immobilize_counter));
                     let live = &mut self.session.state.live;
                     if visit.handler == ExistingHandler::Creature18 {
+                        let targets = source_target::Context {
+                            spells: Some(&live.shared_spells),
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
                         let outcome = creatures::creature_18::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
@@ -17473,6 +17494,7 @@ impl Mc2Simulation {
                             source_slot,
                             players,
                             models,
+                            targets,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
                             award_source_spell_experience(live, owner, family);
@@ -17549,6 +17571,13 @@ impl Mc2Simulation {
                         }
                         (None, outcome.kill_credit, outcome.feedback, None, None)
                     } else if visit.handler == ExistingHandler::Creature26 {
+                        #[cfg(test)]
+                        let internal_credit_before = credit_source.map(|source| {
+                            (
+                                source,
+                                live.economy.authored_bee_kill_census(player_entity_index),
+                            )
+                        });
                         let outcome = creatures::creature_26::mc2::step_row(
                             &mut live.economy,
                             &mut live.shared_spells,
@@ -17559,6 +17588,21 @@ impl Mc2Simulation {
                             players,
                             models,
                         )?;
+                        #[cfg(test)]
+                        if let Some((source, before_count)) = internal_credit_before {
+                            let after_count =
+                                live.economy.authored_bee_kill_census(player_entity_index);
+                            if after_count != before_count {
+                                creatures::creature_18::mc2::record_kill_credit_receipt(
+                                    creatures::creature_18::mc2::SentinelKillCreditReceipt {
+                                        source,
+                                        killer: player_entity_index,
+                                        before_count,
+                                        after_count,
+                                    },
+                                );
+                            }
+                        }
                         if let Some(victim) = outcome.committed_theft_victim
                             && live.economy.handle(victim.source_slot) == Some(victim)
                             && let Some(victim_row) = live
@@ -17796,11 +17840,24 @@ impl Mc2Simulation {
                     }
                 }
                 if let Some(killer) = kill_credit {
+                    #[cfg(test)]
+                    let credit_before = credit_source.map(|source| (
+                        source, self.session.state.live.economy.authored_bee_kill_census(killer),
+                    ));
                     self.session
                         .state
                         .live
                         .economy
                         .record_authored_creature_kill(killer);
+                    #[cfg(test)]
+                    if let Some((source, before_count)) = credit_before {
+                        creatures::creature_18::mc2::record_kill_credit_receipt(
+                            creatures::creature_18::mc2::SentinelKillCreditReceipt {
+                                source, killer, before_count,
+                                after_count: self.session.state.live.economy.authored_bee_kill_census(killer),
+                            },
+                        );
+                    }
                 }
                 if let Some((owner, family)) = feedback {
                     award_source_spell_experience(&mut self.session.state.live, owner, family);

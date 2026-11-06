@@ -5,7 +5,6 @@
 
 use crate::combat::actors::{consume_damage, inherit_killer, inherit_linked_life};
 use crate::level_definition::CREATURE18_CLASS_PROPERTIES as RULES;
-use crate::level1_mission::projectile_guidance_angles;
 use crate::native_world::{
     ENTITY_DRAW_DISABLED_BIT, RuntimeSnapshot, SessionTerrain, level2_next_rng16,
 };
@@ -13,13 +12,13 @@ use crate::{FlightWorld, Position, angle_distance, heading_for_positions};
 
 pub(crate) mod mc2;
 mod stage;
+use mc2::{DESCRIPTOR, PARTICLE};
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) const SOURCE_CLASS: u8 = 5;
 pub(crate) const SOURCE_MODEL: u8 = 18;
-pub(crate) const DESCRIPTOR: u16 = 86;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Creature18State {
@@ -103,7 +102,9 @@ pub(crate) fn construct(
         maximum_speed: RULES.maximum_speed,
         max_life: RULES.max_life,
         life: RULES.max_life,
-        mana: RULES.initial_mana,
+        // SetEvent144 derives mana from the constructor maximum before any
+        // later authored health override.
+        mana: RULES.max_life >> 1,
         max_mana: 0,
         constructor_subspell: RULES.constructor_subspell,
         pending_damage: 0,
@@ -121,7 +122,7 @@ pub(crate) fn construct(
         attack_phase: 0,
         descriptor: DESCRIPTOR,
         timer: 100,
-        visual: 286,
+        visual: PARTICLE,
         animation_frame: 0,
         animation_limit: 0,
         half_width: RULES.collision_half_width,
@@ -181,30 +182,22 @@ pub(crate) struct Creature18Context<'a> {
 }
 
 impl Creature18Context<'_> {
+    fn source_address(&self, slot: u16) -> Option<Target> {
+        self.targets.iter().find(|row| row.slot == slot).copied()
+    }
+
     fn target(&self, slot: u16) -> Option<Target> {
         (slot != 0)
-            .then(|| self.targets.iter().find(|row| row.slot == slot).copied())
+            .then(|| self.source_address(slot))
             .flatten()
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProjectileIntent {
-    pub target_class: u8,
-    pub target_model: u8,
-    pub position: Position,
-    pub yaw: i16,
-    pub pitch: i16,
-    pub source_id: u16,
-    pub source_target: u16,
-    pub subspell: u16,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Creature18Effects {
     // Producer intents stay inside the family leaf. The shared scheduler sees
     // only successfully initialized fixed slots in the typed Fireball arena.
-    projectiles: Vec<ProjectileIntent>,
+    fan_target: Option<u16>,
     pub projectile_slots: Vec<u16>,
     pub linked_actions: Vec<(u16, u8)>,
     pub linked_blink_flags: Vec<(u16, u32)>,
@@ -376,24 +369,6 @@ fn source_damage(actor: &mut Creature18State, ctx: &Creature18Context<'_>) -> u8
     result
 }
 
-fn fan(actor: &Creature18State, target: Target, effects: &mut Creature18Effects) {
-    let (base_yaw, pitch) = projectile_guidance_angles(actor.position, target.position);
-    for offset in RULES.fan_yaw_offsets {
-        let mut position = actor.position;
-        position.z = position.z.wrapping_add(RULES.fan_lift);
-        effects.projectiles.push(ProjectileIntent {
-            target_class: target.class,
-            target_model: target.model,
-            position,
-            yaw: base_yaw.wrapping_add(offset) & 2047,
-            pitch,
-            source_id: actor.source_id,
-            source_target: actor.target,
-            subspell: RULES.projectile_damage,
-        });
-    }
-}
-
 fn prekill(
     actor: &mut Creature18State,
     ctx: &Creature18Context<'_>,
@@ -425,7 +400,7 @@ fn step_attack(
         0 => {
             // sub_250B0 turns toward the source slot even before its later
             // phase-one lifetime check; slot zero is the source sentinel.
-            let target = ctx.target(actor.target).unwrap_or_default();
+            let target = ctx.source_address(actor.target).unwrap_or_default();
             turn_toward(actor, target.position, RULES.turn_limit);
             if hit == 1 {
                 actor.timer = actor.timer.wrapping_sub(47);
@@ -459,7 +434,7 @@ fn step_attack(
                 // sub_250B0 uses sub_58350(..., 5, 0x400) while firing;
                 // its third argument is ignored and the fourth is the cap.
                 turn_toward(actor, target.position, 1024);
-                fan(actor, target, effects);
+                effects.fan_target = Some(target.slot);
             }
         }
         2 => {
@@ -477,7 +452,8 @@ fn step_attack(
                 actor.roll = actor.yaw;
             }
         }
-        _ => request_action(actor, 0, 0),
+        // sub_250B0 returns for unknown attack subphases.
+        _ => {}
     }
 }
 
@@ -532,7 +508,7 @@ pub(crate) fn step(
                     request_action(actor, 0, 0);
                 }
             }
-            _ => {
+            _ if actor.attack_phase == 0 => {
                 actor.timer = actor.timer.wrapping_sub(1);
                 if actor.timer != 0 {
                     if actor.proximity != 0
@@ -546,6 +522,8 @@ pub(crate) fn step(
                     request_action(actor, 1, 0);
                 }
             }
+            // sub_24E20 does not run patrol for nonzero phases other than 1.
+            _ => {}
         },
         145 => step_cooldown(actor, ctx, &mut effects),
         146 => step_attack(actor, ctx, &mut effects),
@@ -556,9 +534,9 @@ pub(crate) fn step(
             stage::step(actor, ctx, &mut effects);
             if !effects.expire {
                 settle(actor, ctx.terrain);
-            }
-            if actor.action == 146 {
-                request_action(actor, 2, 0);
+                if actor.action == 146 {
+                    request_action(actor, 2, 0);
+                }
             }
         }
         _ => return None,

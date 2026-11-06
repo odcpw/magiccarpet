@@ -54,7 +54,7 @@ fn route_target(actor: &mut Creature18State, ctx: &Creature18Context<'_>) -> Opt
     ctx.target(actor.route_relation)
 }
 
-fn steer(actor: &mut Creature18State, ctx: &Creature18Context<'_>, point: Position) {
+fn steer(actor: &mut Creature18State, ctx: &Creature18Context<'_>, point: Position, point_route: bool) {
     if actor.phase & 7 != 0 {
         return;
     }
@@ -73,11 +73,14 @@ fn steer(actor: &mut Creature18State, ctx: &Creature18Context<'_>, point: Positi
         .iter()
         .filter_map(|slot| ctx.target(*slot))
         .find(|peer| {
+            let delta = |a: u16, b: u16| if point_route {
+                (i32::from(a as i16) - i32::from(b as i16)).abs()
+            } else {
+                (i32::from(a) - i32::from(b)).abs()
+            };
             peer.source_id != actor.source_id
-                && (i32::from(actor.position.x) - i32::from(peer.position.x)).abs()
-                    < i32::from(actor.half_width)
-                && (i32::from(actor.position.y) - i32::from(peer.position.y)).abs()
-                    < i32::from(actor.half_width)
+                && delta(actor.position.x, peer.position.x) < i32::from(actor.half_width)
+                && delta(actor.position.y, peer.position.y) < i32::from(actor.half_width)
         })
     {
         actor.roll = heading_for_positions(peer.position, actor.position) as i16;
@@ -90,7 +93,7 @@ fn route_hit(actor: &mut Creature18State, ctx: &Creature18Context<'_>) -> u8 {
         actor.action = 148;
     } else if hit == 1 {
         if ctx
-            .target(actor.attacker)
+            .source_address(actor.attacker)
             .is_none_or(|source| source.class != SOURCE_CLASS || source.model != SOURCE_MODEL)
         {
             actor.target = actor.attacker;
@@ -111,18 +114,23 @@ fn idle_turn(actor: &mut Creature18State) {
 
 fn guard_target(actor: &Creature18State, ctx: &Creature18Context<'_>) -> Option<Target> {
     let range_squared = RULES.target_range.wrapping_mul(RULES.target_range);
+    let distance = |target: &Target| {
+        let dx = i32::from(target.position.x) - i32::from(actor.position.x);
+        let dy = i32::from(target.position.y.wrapping_sub(actor.position.y) as i16);
+        dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as u32
+    };
     ctx.class3
         .iter()
         .filter_map(|slot| ctx.target(*slot))
         .filter(|target| target.flags & 0x20 == 0)
         .filter(|target| {
-            super::xy_squared(actor.position, target.position) <= range_squared
+            distance(target) <= range_squared
                 && crate::angle_distance(
                     i32::from(actor.yaw),
                     heading_for_positions(actor.position, target.position),
                 ) < RULES.target_half_angle
         })
-        .min_by_key(|target| super::xy_squared(actor.position, target.position))
+        .min_by_key(distance)
 }
 
 fn route_behavior(
@@ -131,6 +139,14 @@ fn route_behavior(
     mode: u8,
     effects: &mut Creature18Effects,
 ) {
+    if matches!(mode, 6..=9) {
+        // sub_1E1C0 never dereferences StageVar1 for these wander modes.
+        if route_hit(actor, ctx) == 0 && RULES.behavior_flags & 2 == 0 {
+            super::move_ground(actor, ctx.terrain, effects);
+            idle_turn(actor);
+        }
+        return;
+    }
     let Some(descriptor) = ctx
         .runtime
         .stage_variables
@@ -153,12 +169,12 @@ fn route_behavior(
     if route_hit(actor, ctx) == 0 {
         if point_helper {
             super::move_ground(actor, ctx.terrain, effects);
-            steer(actor, ctx, point);
-        } else if mode <= 5 || RULES.behavior_flags & 2 == 0 {
+            steer(actor, ctx, point, true);
+        } else if matches!(mode, 3..=5) || RULES.behavior_flags & 2 == 0 {
             super::move_ground(actor, ctx.terrain, effects);
             if matches!(mode, 3..=5) && actor.phase & 7 == 0 {
                 if let Some(target) = route_target(actor, ctx) {
-                    steer(actor, ctx, target.position);
+                    steer(actor, ctx, target.position, false);
                     let range = i32::from(actor.half_width) + i32::from(target.half_width);
                     if (i32::from(actor.position.x) - i32::from(target.position.x)).abs() < range
                         && (i32::from(actor.position.y) - i32::from(target.position.y)).abs()
@@ -284,11 +300,12 @@ pub(super) fn step(
     match mode {
         10 => actor.action = 146,
         12 => {
-            if let Some(parent) = ctx.target(actor.parent) {
-                if parent.life < 0 {
+            if let Some(parent) = ctx.source_address(actor.parent) {
+                if actor.parent == 0 || parent.life < 0 {
                     effects.route_hide = true;
                 }
                 actor.position = parent.position;
+                actor.position.z = actor.position.z.max(0);
                 actor.yaw = parent.yaw;
                 actor.roll = parent.roll;
             } else {
@@ -337,7 +354,7 @@ pub(super) fn step(
                 super::move_ground(actor, ctx.terrain, effects);
                 if hit == 1
                     && actor.attacker != actor.parent
-                    && ctx.target(actor.attacker).is_none_or(|attacker| {
+                    && ctx.source_address(actor.attacker).is_none_or(|attacker| {
                         attacker.class != SOURCE_CLASS || attacker.model != SOURCE_MODEL
                     })
                 {
@@ -410,7 +427,7 @@ pub(super) fn step(
                 super::move_ground(actor, ctx.terrain, effects);
                 if hit == 1 {
                     if actor.attacker != actor.parent
-                        && ctx.target(actor.attacker).is_none_or(|attacker| {
+                        && ctx.source_address(actor.attacker).is_none_or(|attacker| {
                             attacker.class != SOURCE_CLASS || attacker.model != SOURCE_MODEL
                         })
                     {
