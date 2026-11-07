@@ -39,6 +39,81 @@ pub struct McCampaignCharacterStateV1 {
     pub reserved_1: u16,
 }
 
+/// A retained native death, tied to the world/session and slot incarnation.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct McCampaignVoxelDeathV1 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub sequence: u64,
+    pub slot_generation: u32,
+    pub entity_index: u16,
+    pub source_id: u16,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_voxel_deaths_copy(
+    handle: u64,
+    generation: u64,
+    tick: u64,
+    after_sequence: u64,
+    buffer: *mut McCampaignVoxelDeathV1,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        require_element_size::<McCampaignVoxelDeathV1>(element_size, "voxel death")?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Campaign { reset, .. } = &session.kind else {
+                return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "voxel deaths require a descriptor campaign"));
+            };
+            let terrain = reset.canonical_terrain();
+            let world = terrain.voxel_world().ok_or_else(||
+                AbiError::new(MC_STATUS_INVALID_ARGUMENT, "voxel geometry is disabled"))?;
+            // The command/session generation can advance on pause and resume
+            // while the same world and its death journal remain alive. Guard
+            // the query with current session identity; label rows with the
+            // stable world epoch so that rebinds do not replay old deaths.
+            if generation != session.generation || tick != reset.campaign_tick() {
+                return Err(AbiError::new(MC_STATUS_GENERATION_MISMATCH, format!(
+                    "stale voxel death query: requested generation {generation} tick {tick}, session generation {} tick {}",
+                    session.generation, reset.campaign_tick())));
+            }
+            let journal = terrain.voxel_deaths().expect("voxel world has a death journal");
+            let rows = journal.rows();
+            if after_sequence != 0 && rows.front().is_some_and(|first| after_sequence < first.sequence - 1) {
+                return Err(AbiError::new(MC_STATUS_BOUNDS, "voxel death cursor fell behind retained history"));
+            }
+            if after_sequence > rows.back().map_or(0, |last| last.sequence) {
+                return Err(AbiError::new(MC_STATUS_INVALID_ARGUMENT, "voxel death cursor is ahead of history"));
+            }
+            let count = rows.iter().filter(|row| row.sequence > after_sequence).count();
+            if count > capacity as usize {
+                return Err(AbiError::new(MC_STATUS_BOUNDS, "voxel death buffer is too small"));
+            }
+            if count != 0 && buffer.is_null() {
+                return Err(AbiError::new(MC_STATUS_NULL_POINTER, "voxel death buffer is null"));
+            }
+            // SAFETY: the caller supplies writable space for capacity elements;
+            // element size, produced count and non-null output were checked.
+            unsafe {
+                for (index, row) in rows.iter().filter(|row| row.sequence > after_sequence).enumerate() {
+                    buffer.add(index).write(McCampaignVoxelDeathV1 {
+                        abi_version: MC_NATIVE_ABI_VERSION, struct_size: struct_size::<McCampaignVoxelDeathV1>(),
+                        generation: world.generation(), sequence: row.sequence, slot_generation: row.slot_generation,
+                        entity_index: row.slot, source_id: row.source_id,
+                    });
+                }
+                out_written.write(count as u32);
+            }
+            Ok(())
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_character_states_copy(
     handle: u64,
@@ -153,11 +228,41 @@ pub extern "C" fn mc_native_campaign_character_states_copy(
                     ..base
                 });
             }
+            // The live arena is authoritative when a source address has been
+            // reused; retained projectile carriers must not claim the new row.
+            let live_slots = reset.economy().live_arena_slots().into_iter().collect::<BTreeMap<_, _>>();
+            for projectile in reset.economy().fireball_projectiles().iter().filter(|p|
+                p.active && !p.drawing_disabled && p.source_class == 9 && matches!(p.source_model, 0 | 28) &&
+                live_slots.get(&p.source_entity_index) == Some(&sim_core::native_world::Level2DynamicArenaKind::FireballProjectile))
+            {
+                rows.push(McCampaignCharacterStateV1 {
+                    slot_generation: reset.economy().slot_generation(projectile.source_entity_index),
+                    entity_index: projectile.source_entity_index,
+                    source_id: projectile.owner_entity_index,
+                    class_id: projectile.source_class,
+                    model: projectile.source_model,
+                    action: projectile.action,
+                    phase: projectile.phase,
+                    active: 1,
+                    x: projectile.position.x,
+                    y: projectile.position.y,
+                    z: projectile.position.z,
+                    yaw: projectile.yaw,
+                    pitch: projectile.pitch,
+                    speed: projectile.actual_speed,
+                    life: i32::from(projectile.life),
+                    control_flags: projectile.control_flags,
+                    age_ticks: u16::try_from((i32::from(projectile.max_life) - i32::from(projectile.life)).max(0))
+                        .unwrap_or(u16::MAX),
+                    ..base
+                });
+            }
             for child in reset
                 .economy()
                 .authored_class5_archer_children()
                 .iter()
-                .filter(|s| s.active)
+                .filter(|s| s.active && s.slot_generation == reset.economy().slot_generation(s.source_entity_index) &&
+                    live_slots.get(&s.source_entity_index) == Some(&sim_core::native_world::Level2DynamicArenaKind::AuthoredClass5ArcherChild))
             {
                 let parent = reset.economy().authored_class5_archer().iter().find(|p| {
                     p.source_entity_index == child.parent_entity_index
@@ -232,6 +337,8 @@ mod tests {
     use super::*;
     #[test]
     fn character_layout_and_invalid_queries() {
+        assert_eq!(size_of::<McCampaignVoxelDeathV1>(), 32);
+        assert_eq!(std::mem::offset_of!(McCampaignVoxelDeathV1, sequence), 16);
         assert_eq!(size_of::<McCampaignCharacterStateV1>(), 80);
         assert_eq!(std::mem::offset_of!(McCampaignCharacterStateV1, x), 48);
         assert_eq!(std::mem::offset_of!(McCampaignCharacterStateV1, life), 60);

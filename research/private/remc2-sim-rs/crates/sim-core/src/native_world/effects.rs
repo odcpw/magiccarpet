@@ -376,6 +376,23 @@ pub(crate) fn step_projectile(
         trace_fireball_terminal(arena, terminal_receipt, visual, step.live);
         return Ok(step);
     }
+    let impact_sequence=if let Some(before)=entry.filter(|before|
+        step.collision_target.is_some()||matches!(birth,FireballBirth::Ash)||projectile.life==before.life) {
+        use crate::voxel_world::Point;
+        let at=step.voxel_contact.map_or(Point{x:i32::from(projectile.position.x),y:i32::from(projectile.position.y),z:i32::from(projectile.position.z)},|contact|contact.surface);
+        let normal=step.voxel_contact.map_or_else(||{
+            // Local terrain is a stack of horizontal voxel tops. Source actor
+            // collisions expose no surface normal, so leave those unknown.
+            if step.collision_target.is_none() && terrain.voxel_world().is_some_and(|world|
+                world.terrain_height(at.x,at.y)==Some(at.z)) {
+                Point{x:0,y:0,z:1}
+            } else { Point{x:0,y:0,z:0} }
+        },|contact|contact.normal);
+        if let Some(velocity)=step.incoming_velocity {
+            terrain.voxel_impact(before.position,at,velocity,normal,slot,
+                arena.economy.slot_generation(slot),projectile.source_model,step.collision_target)
+        } else {None}
+    } else {None};
     let child = if birth == FireballBirth::Impact
         && projectile.origin == super::FireballProjectileOrigin::Eruption
     {
@@ -551,6 +568,10 @@ pub(crate) fn step_projectile(
         }
         child
     };
+    if let (Some(sequence),Some(id))=(impact_sequence,child)
+        && (arena.entities[usize::from(id)].class,arena.entities[usize::from(id)].model)==(10,0) {
+        terrain.bind_voxel_impact_child(sequence,id,arena.economy.slot_generation(id));
+    }
     #[cfg(test)]
     if let Some(child) = child
         && (arena.entities[usize::from(child)].class, arena.entities[usize::from(child)].model) == (10, 0)
@@ -1715,6 +1736,94 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn voxel_fireball_wall_breach_actor_and_reflection_controls() {
+        use crate::Position;
+        use crate::native_world::{FireballProjectileOrigin,level2_dynamic_economy::Level2FireballProjectileLaunchPayload};
+        use crate::voxel_world::{Grid,Point,Volume,VoxelWorld};
+
+        let session=super::super::tests::level_two_campaign_session();
+        let particles=&session.session.definition.presentation.particles;
+        let masks=session.collision_mask_bank().expect("qualified owner-package collision-mask bank");
+        let owner=session.state.entity_index;
+        let mut terrain=session.canonical_terrain().clone();
+        let mut arena=session.source_arena().clone();
+        // Explicit staging: choose an unused original raw address for the
+        // BUILD owner, and allocate an ordinary current actor in open sky.
+        let house=arena.entities.iter().find(|row| row.index!=0 && !row.active
+            && arena.economy.slot_generation(row.index)==0
+            && arena.economy.live_arena_cursor_row(row.index).is_none()).unwrap().index;
+        arena.economy.free_slots.retain(|slot|*slot!=house);
+        let actor=arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+        let wall=Position{x:62056,y:62048,z:8000};
+        let behind=Position{x:62180,..wall};
+        let mut legacy=crate::world::terrain::cave_features::new_event(house,0,wall);
+        legacy.class=10;legacy.model=45;legacy.record[67]=10;legacy.record[68]=45;
+        legacy.level_gate=26;legacy.record[74]=26;
+        legacy.set_life(1000);legacy.set_control_flags(8);
+        legacy.set_source_overlap_half_extents(256,256);
+        legacy.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
+        arena.entities[usize::from(house)]=legacy;
+        crate::world::effects::sync_position(&mut arena,&mut terrain,house,wall,true,true).unwrap();
+        let mut target=crate::world::terrain::cave_features::new_event(actor,0,behind);
+        target.class=5;target.model=1;target.record[67]=5;target.record[68]=1;
+        target.record[60]=1;target.set_life(1000);target.set_control_flags(8);
+        target.set_source_overlap_half_extents(16,16);
+        target.record[92..94].copy_from_slice(&16_i16.to_le_bytes());
+        arena.entities[usize::from(actor)]=target;
+        crate::world::effects::sync_position(&mut arena,&mut terrain,actor,behind,true,true).unwrap();
+        let pristine_arena=arena.clone();let pristine_terrain=terrain.clone();
+        let grid=Grid{origin:Point{x:62048,y:62040,z:7992},cell_size:16,dimensions:[1,1,1]};
+        terrain.install_voxel_world(VoxelWorld::new(1,vec![Volume::building(house,grid,[[0,0,0]]).unwrap()]).unwrap());
+
+        fn fire(arena:&mut crate::campaign::source_arena::SourceArena,
+                terrain:&mut crate::native_world::SessionTerrain,
+                particles:&[crate::native_world::ParticleParameter],owner:u16,speed:i16)
+            -> crate::native_world::level2_dynamic_economy::Level2FireballStep {
+            let start=Position{x:61950,y:62048,z:8000};
+            let flyer=arena.allocate_source_slot_with_terrain(terrain).unwrap();
+            arena.economy.initialize_fireball_projectile(flyer,Level2FireballProjectileLaunchPayload{
+                origin:FireballProjectileOrigin::PlayerSpell,position:start,yaw:512,pitch:0,axis_position:start,
+                source_id_entity_index:owner,holder_entity_index:0,source_subspell_index:250,source_mana:20,
+                source_dword_0x10:0,target_source_entity_index:0,target_class:0,target_model:0,
+            },0).unwrap();
+            let row=arena.economy.fireball_projectiles.iter_mut().find(|row|row.source_entity_index==flyer).unwrap();
+            row.actual_speed=speed;row.collision_axes=Some([0,8,8,8]);row.acquisition_attempted=true;
+            super::step_projectile(arena,terrain,particles,flyer,Default::default(),&[],0,None).unwrap()
+        }
+
+        let blocked=fire(&mut arena,&mut terrain,particles,owner,230);
+        assert_eq!(blocked.collision_target,None);
+        assert!(blocked.voxel_contact.is_some());
+        assert!(terrain.voxel_impacts().last().unwrap().geometry_changed);
+        assert_eq!(arena.entities[usize::from(actor)].source_wind_spell_payload(),0);
+        let through=fire(&mut arena,&mut terrain,particles,owner,230);
+        assert_eq!(through.collision_target,Some(actor),"breach must not retain the legacy BUILD collider");
+        let impact=through.impact_slot.expect("actual impact constructor");
+        let source=arena.entities[usize::from(impact)].clone();
+        let lists=crate::native_world::area_damage::capture_effect_lists(&mut arena,None);
+        let mut state=crate::world::effects::State::default();
+        crate::world::effects::visit_entity(&mut arena,&mut terrain,source,particles,&mut state,|arena,pulse|
+            crate::native_world::area_damage::apply_effect(arena,None,None,Some(masks),&lists,pulse)).unwrap();
+        assert!(arena.entities[usize::from(actor)].source_wind_spell_payload()>0,
+            "the actual impact callback must write the actor damage mailbox");
+
+        let mut original=pristine_arena.clone();let mut old_terrain=pristine_terrain.clone();
+        let original_hit=fire(&mut original,&mut old_terrain,particles,owner,230);
+        assert!(original_hit.voxel_contact.is_none(),"disabled mode keeps source behavior");
+        assert!(matches!(original_hit.collision_target,Some(slot) if slot==house || slot==actor));
+        let mut front=pristine_arena;let mut front_terrain=pristine_terrain;
+        front_terrain.install_voxel_world(VoxelWorld::new(1,vec![Volume::building(house,grid,[[0,0,0]]).unwrap()]).unwrap());
+        let front_position=Position{x:62020,..wall};
+        front.entities[usize::from(actor)].set_position(front_position);
+        front.entities[usize::from(actor)].set_control_flags(0x18);
+        front.entities[usize::from(actor)].set_mana(1000);
+        crate::world::effects::sync_position(&mut front,&mut front_terrain,actor,front_position,true,true).unwrap();
+        let reflected=fire(&mut front,&mut front_terrain,particles,owner,70);
+        assert!(reflected.reflection.is_some(),"a reflector in front of the wall keeps source precedence");
+        assert!(reflected.voxel_contact.is_none());
+    }
+
     #[test]
     fn default_water_splash_animation_uses_retained_particle_binding() {
         let session = super::super::tests::level_two_campaign_session();

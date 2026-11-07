@@ -26,6 +26,20 @@ typedef struct McCampaignCharacterStateV1 {
 int32_t mc_native_campaign_character_states_copy(uint64_t handle,
     uint64_t generation, uint64_t tick, McCampaignCharacterStateV1 *buffer,
     uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+/* Retained once-per-incarnation deaths. Row generation is the stable voxel
+ * world epoch; the request generation is the current outer session identity.
+ * Cursor zero starts at the oldest retained row; an expired nonzero cursor
+ * returns bounds. */
+typedef struct McCampaignVoxelDeathV1 {
+    uint32_t abi_version, struct_size;
+    uint64_t generation, sequence;
+    uint32_t slot_generation;
+    uint16_t entity_index, source_id;
+} McCampaignVoxelDeathV1;
+int32_t mc_native_campaign_voxel_deaths_copy(uint64_t handle,
+    uint64_t generation, uint64_t tick, uint64_t after_sequence,
+    McCampaignVoxelDeathV1 *buffer, uint32_t capacity,
+    uint32_t element_size, uint32_t *out_written);
 #ifdef __cplusplus
 }
 #endif

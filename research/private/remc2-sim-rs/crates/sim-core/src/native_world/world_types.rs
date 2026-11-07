@@ -1,4 +1,52 @@
 use super::*;
+use std::sync::Arc;
+
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct VoxelImpact {
+    pub sequence:u64,pub projectile_slot:u16,pub slot_generation:u32,pub model:u8,
+    pub from:crate::voxel_world::Point,pub at:crate::voxel_world::Point,
+    pub velocity:crate::voxel_world::Point,pub normal:crate::voxel_world::Point,
+    pub impact_child:Option<(u16,u32)>,
+    pub revision:u64,pub target:Option<u16>,pub geometry_changed:bool,
+}
+
+#[derive(Clone,Copy,Debug,Eq,PartialEq)]
+pub(super) struct VoxelBuildingContact {
+    pub projectile_position:Position,
+    pub surface:crate::voxel_world::Point,
+    pub normal:crate::voxel_world::Point,
+}
+
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub(super) struct SessionVoxels {
+    pub(super) world:crate::voxel_world::VoxelWorld,
+    pub(super) deaths:super::voxel_deaths::DeathJournal,
+    pub(super) impacts:Arc<Vec<VoxelImpact>>,
+    next_impact:u64,
+}
+
+impl NativeWorldInspection {
+    #[must_use]
+    pub fn house_build_footprint(&self,selector:u8)->Option<&CastleBuildFootprint>{
+        self.level2_house_build_footprints.get(&selector)
+    }
+}
+
+impl Mc2Simulation {
+    /// Install an explicitly authored voxel view on the one live terrain owner.
+    /// Configuration is replayed by the owning backend at its operation boundary.
+    pub fn install_voxel_seed(&mut self,seed:&crate::voxel_world::VoxelWorldSeed,generation:u64)->std::result::Result<(),String>{
+        if seed.height_plane.as_slice()!=self.canonical_terrain().ground_heights(){
+            return Err("voxel seed does not match current native terrain".to_owned());
+        }
+        if self.canonical_terrain().voxel_world().is_some(){
+            return Err("voxel geometry is already enabled for this session".to_owned());
+        }
+        let world=seed.build_world(generation).map_err(str::to_owned)?;
+        self.session.state.terrain_mut().install_voxel_world(world);
+        Ok(())
+    }
+}
 
 /// Resolve House properties from the full owner table when the package
 /// declares it. Earlier qualified package schemas retain only the BUILD
@@ -2332,6 +2380,9 @@ pub struct SessionTerrain {
     /// the world immutably, so this ordered runtime scratch uses interior writes.
     /// It is cloned with the session and hashed separately from terrain content.
     pub(super) source_predicted_position: SourceMovementProposal,
+    /// Explicitly enabled local voxel geometry. Immutable base data is shared
+    /// by read adapters; only real impacts copy the sparse edit set.
+    pub(super) voxel: Option<SessionVoxels>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2349,6 +2400,94 @@ pub struct HouseRemovalOutcome {
 }
 
 impl SessionTerrain {
+    #[must_use]
+    pub fn voxel_world(&self)->Option<&crate::voxel_world::VoxelWorld>{self.voxel.as_ref().map(|v|&v.world)}
+
+    pub fn voxel_deaths(&self)->Option<&super::voxel_deaths::DeathJournal>{self.voxel.as_ref().map(|v|&v.deaths)}
+    pub(crate) fn voxel_deaths_mut(&mut self)->Option<&mut super::voxel_deaths::DeathJournal>{self.voxel.as_mut().map(|v|&mut v.deaths)}
+    pub fn voxel_impacts(&self)->&[VoxelImpact]{self.voxel.as_ref().map_or(&[],|v|v.impacts.as_slice())}
+    pub fn voxel_impact_head(&self)->u64{self.voxel.as_ref().map_or(0,|v|v.next_impact)}
+
+    pub(crate) fn voxelized_building(&self,slot:u16,generation:u32,class:u8,model:u8)->bool {
+        generation==0 && (class,model)==(10,45) && self.voxel_world().is_some_and(|world|
+            world.volumes().iter().any(|volume|volume.id==crate::voxel_world::VolumeId::Building(slot)))
+    }
+
+    pub(crate) fn install_voxel_world(&mut self,world:crate::voxel_world::VoxelWorld) {
+        self.voxel=Some(SessionVoxels{world,deaths:Default::default(),impacts:Arc::new(Vec::new()),next_impact:0});
+        self.mutation_sequence=self.mutation_sequence.wrapping_add(1);
+    }
+
+    pub(crate) fn voxel_contact(&self,from:Position,to:Position)->Result<Option<Position>> {
+        use crate::voxel_world::Point;
+        let Some(session)=&self.voxel else{return Ok(None)};
+        let world=&session.world;
+        let start=Point{x:i32::from(from.x),y:i32::from(from.y),z:i32::from(from.z)};
+        let end=Point{x:start.x+i32::from(to.x.wrapping_sub(from.x) as i16),y:start.y+i32::from(to.y.wrapping_sub(from.y) as i16),z:i32::from(to.z)};
+        world.segment_contact(start,end).map(|hit|hit.map(|(at,_)|Position{x:at.x as u16,y:at.y as u16,z:at.z as i16}))
+            .map_err(|error|NativeWorldError::new(error))
+    }
+
+    pub(crate) fn voxel_building_contact(&self,from:Position,to:Position,half_width:i32,half_height:i32,vertical_offset:i32)->Result<Option<VoxelBuildingContact>>{
+        use crate::voxel_world::Point;
+        let Some(world)=self.voxel_world() else{return Ok(None)};
+        let start=Point{x:i32::from(from.x),y:i32::from(from.y),z:i32::from(from.z)+vertical_offset};
+        let end=Point{x:start.x+i32::from(to.x.wrapping_sub(from.x) as i16),y:start.y+i32::from(to.y.wrapping_sub(from.y) as i16),z:i32::from(to.z)+vertical_offset};
+        world.building_sweep_contact(start,end,half_width,half_height)
+            .map(|hit|hit.map(|(at,cell)|{
+                let grid=world.volumes().iter().find(|volume|volume.id==cell.volume).expect("sweep cell belongs to a world volume").grid;
+                let size=i64::from(grid.cell_size);
+                let low=[i64::from(grid.origin.x)+i64::from(cell.x)*size,
+                    i64::from(grid.origin.y)+i64::from(cell.y)*size,
+                    i64::from(grid.origin.z)+i64::from(cell.z)*size];
+                let p=[i64::from(at.x),i64::from(at.y),i64::from(at.z)];
+                let a=[i64::from(start.x),i64::from(start.y),i64::from(start.z)];
+                let b=[i64::from(end.x),i64::from(end.y),i64::from(end.z)];
+                let ext=[i64::from(half_width),i64::from(half_width),i64::from(half_height)];
+                let mut normal=[0_i32;3]; let mut entry=(0_i64,1_i64);
+                for axis in 0..3 {
+                    let delta=b[axis]-a[axis];
+                    if delta==0 {continue;}
+                    let numerator=if delta>0 {low[axis]-ext[axis]-a[axis]} else {a[axis]-(low[axis]+size+ext[axis])};
+                    let denominator=delta.abs();
+                    let left=i128::from(numerator)*i128::from(entry.1);
+                    let right=i128::from(entry.0)*i128::from(denominator);
+                    if left>right || (left==right && numerator==0 && normal==[0;3]) {
+                        entry=(numerator,denominator);normal=[0;3];normal[axis]=-delta.signum() as i32;
+                    }
+                }
+                VoxelBuildingContact{
+                    projectile_position:Position{x:at.x as u16,y:at.y as u16,z:(at.z-vertical_offset).clamp(i32::from(i16::MIN),i32::from(i16::MAX)) as i16},
+                    surface:Point{x:p[0].clamp(low[0],low[0]+size) as i32,y:p[1].clamp(low[1],low[1]+size) as i32,z:p[2].clamp(low[2],low[2]+size) as i32},
+                    normal:Point{x:normal[0],y:normal[1],z:normal[2]},
+                }
+            }))
+            .map_err(NativeWorldError::new)
+    }
+
+    pub(crate) fn voxel_impact(&mut self,from:Position,at:crate::voxel_world::Point,velocity:crate::voxel_world::Point,normal:crate::voxel_world::Point,projectile_slot:u16,slot_generation:u32,model:u8,target:Option<u16>)->Option<u64> {
+        use crate::voxel_world::Point;
+        let session=self.voxel.as_mut()?;
+        // Exhausting the bounded edit store leaves a valid source impact and
+        // unchanged geometry; it never errors after combat has committed.
+        let changed=session.world.remove_sphere(at,106).is_ok_and(|edit|!edit.removed.is_empty());
+        if changed{self.mutation_sequence=self.mutation_sequence.wrapping_add(1);}
+        session.next_impact=session.next_impact.wrapping_add(1);
+        let impacts=Arc::make_mut(&mut session.impacts);
+        if impacts.len()==1024{impacts.remove(0);}
+        impacts.push(VoxelImpact{sequence:session.next_impact,projectile_slot,slot_generation,model,
+            from:Point{x:i32::from(from.x),y:i32::from(from.y),z:i32::from(from.z)},at,
+            velocity,normal,impact_child:None,revision:session.world.revision(),target,geometry_changed:changed});
+        Some(session.next_impact)
+    }
+
+    pub(crate) fn bind_voxel_impact_child(&mut self,sequence:u64,slot:u16,generation:u32) {
+        let Some(session)=self.voxel.as_mut() else{return};
+        if let Some(impact)=Arc::make_mut(&mut session.impacts).iter_mut().find(|entry|entry.sequence==sequence) {
+            impact.impact_child=Some((slot,generation));
+        }
+    }
+
     pub(crate) fn from_planes(map_type: MapType, planes: TerrainPlanes, terrain_rng: u16) -> Self {
         Self {
             map_type,
@@ -2356,6 +2495,7 @@ impl SessionTerrain {
             terrain_rng,
             mutation_sequence: 0,
             source_predicted_position: SourceMovementProposal::default(),
+            voxel: None,
         }
     }
 
@@ -2383,6 +2523,7 @@ impl SessionTerrain {
             terrain_rng: inspection.terrain_rng,
             mutation_sequence: 0,
             source_predicted_position: SourceMovementProposal::default(),
+            voxel: None,
         }
     }
 
@@ -2397,6 +2538,7 @@ impl SessionTerrain {
             terrain_rng: 39_663,
             mutation_sequence: 0,
             source_predicted_position: SourceMovementProposal::default(),
+            voxel: None,
         }
     }
 
@@ -2453,6 +2595,10 @@ impl SessionTerrain {
         append(&self.planes.secondary_heights);
         for entity_index in &self.planes.entity_indices {
             append(&entity_index.to_le_bytes());
+        }
+        if let Some(session)=&self.voxel {
+            append(b"mc2-voxel-world-v1\0");
+            append(&session.world.deterministic_hash().to_le_bytes());
         }
         hash
     }
@@ -2955,6 +3101,9 @@ impl FlightWorld for SessionTerrain {
     }
 
     fn ground_height(&self, position: Position) -> i16 {
+        if let Some(height)=self.voxel_world().and_then(|world|world.terrain_height(i32::from(position.x),i32::from(position.y))) {
+            return height.clamp(i32::from(i16::MIN),i32::from(i16::MAX)) as i16;
+        }
         interpolate_ground(&self.planes.ground_heights, position.x, position.y) as i16
     }
 
@@ -5459,3 +5608,40 @@ pub(super) const LEVEL2_NYPHUR_FIREBALL_SHA256: &str =
     "9312c195108896b32d553bdce73a43484bf80e010fcf762fc7c01d7f7ecca954";
 pub(super) const LEVEL2_NYPHUR_POSSESSION_SHA256: &str =
     "fedeb2b2fbe40c6ec72614bc4a971e2e826d52a8348156040e872c14a7c0a80e";
+
+#[cfg(test)]
+mod voxel_contact_tests {
+    use super::*;
+    use crate::voxel_world::{Grid,Point,Volume,VoxelWorld};
+
+    #[test]
+    fn voxelized_house_yields_wall_contact_then_open_path_and_keeps_other_actors() {
+        let planes=TerrainPlanes{
+            terrain_types:vec![0;65536].into_boxed_slice(),ground_heights:vec![0;65536].into_boxed_slice(),
+            shading:vec![0;65536].into_boxed_slice(),angles:vec![0;65536].into_boxed_slice(),
+            secondary_heights:vec![0;65536].into_boxed_slice(),entity_indices:vec![0;65536].into_boxed_slice(),
+        };
+        let mut terrain=SessionTerrain::from_planes(MapType::Day,planes,0);
+        let grid=Grid{origin:Point{x:100,y:100,z:100},cell_size:16,dimensions:[1,1,1]};
+        terrain.install_voxel_world(VoxelWorld::new(7,vec![Volume::building(38,grid,[[0,0,0]]).unwrap()]).unwrap());
+        assert!(terrain.voxelized_building(38,0,10,45));
+        assert!(!terrain.voxelized_building(38,1,10,45));
+        assert!(!terrain.voxelized_building(39,0,10,45));
+        assert!(!terrain.voxelized_building(38,0,5,2));
+        let from=Position{x:50,y:108,z:108};let to=Position{x:150,y:108,z:108};
+        let contact=terrain.voxel_building_contact(from,to,8,8,0).unwrap().unwrap();
+        assert_eq!(contact.projectile_position.x,92);
+        assert_eq!(contact.surface,Point{x:100,y:108,z:108});
+        assert_eq!(contact.normal,Point{x:-1,y:0,z:0});
+        let sequence=terrain.voxel_impact(from,contact.surface,Point{x:100,y:0,z:0},contact.normal,12,4,0,None).unwrap();
+        terrain.bind_voxel_impact_child(sequence,55,9);
+        let impact=&terrain.voxel_impacts()[0];
+        assert!(impact.geometry_changed);
+        assert_eq!(impact.velocity,Point{x:100,y:0,z:0});
+        assert_eq!(impact.normal,Point{x:-1,y:0,z:0});
+        assert_eq!(impact.impact_child,Some((55,9)));
+        assert!(terrain.voxel_building_contact(from,to,8,8,0).unwrap().is_none());
+        // Source actor selection can now retain a different actor in that path.
+        assert!(!terrain.voxelized_building(39,0,5,2));
+    }
+}

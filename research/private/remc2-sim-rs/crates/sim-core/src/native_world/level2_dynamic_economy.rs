@@ -1225,6 +1225,8 @@ pub(super) struct Level2FireballStep {
     pub direct_hit_owner: Option<u16>,
     pub direct_hit_family: Option<u8>,
     pub collision_target: Option<u16>,
+    pub incoming_velocity: Option<crate::voxel_world::Point>,
+    pub voxel_contact: Option<super::VoxelBuildingContact>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1721,6 +1723,8 @@ impl Level2EconomyState {
                 direct_hit_owner: None,
                 direct_hit_family: None,
                 collision_target: None,
+                incoming_velocity: None,
+                voxel_contact: None,
             });
         };
         let mut projectile = self.fireball_projectiles[projectile_index];
@@ -2027,6 +2031,11 @@ impl Level2EconomyState {
             projectile.pitch,
             projectile.actual_speed,
         );
+        let incoming_velocity = crate::voxel_world::Point {
+            x: i32::from(projectile.position.x.wrapping_sub(previous_position.x) as i16),
+            y: i32::from(projectile.position.y.wrapping_sub(previous_position.y) as i16),
+            z: i32::from(projectile.position.z.wrapping_sub(previous_position.z)),
+        };
         // Both sub_65C20 and sub_65820 publish the attempted endpoint before
         // collision handling; a later redirect does not replace its XY.
         terrain.set_source_predicted_position(projectile.position);
@@ -2043,7 +2052,7 @@ impl Level2EconomyState {
             &offsets,
         );
         let mut current_hit_position = None;
-        let collision_slot = if let Some(views) = views {
+        let mut collision_slot = if let Some(views) = views {
             let mut hit = None;
             for candidate_slot in candidates {
                 let Some(target) = views
@@ -2056,6 +2065,7 @@ impl Level2EconomyState {
                 };
                 if target.control_flags & 8 == 0
                     || target.source_id == projectile.owner_entity_index
+                    || terrain.voxelized_building(candidate_slot, self.slot_generation(candidate_slot), target.class, target.model)
                     || !fireball_target_selector_matches(&projectile, target.class, target.model)
                 {
                     continue;
@@ -2092,6 +2102,7 @@ impl Level2EconomyState {
                 collision_targets.iter().any(|candidate| {
                     candidate.source_slot == *candidate_slot
                         && candidate.source_id != projectile.owner_entity_index
+                        && !terrain.voxelized_building(candidate.source_slot, self.slot_generation(candidate.source_slot), candidate.class, candidate.model)
                         && fireball_target_selector_matches(
                             &projectile,
                             candidate.class,
@@ -2111,7 +2122,18 @@ impl Level2EconomyState {
             })
         };
 
-        let mut terminal = collision_slot.is_some();
+        // Preserve source actor selection/reflection. A voxel wall can only
+        // obstruct the prefix up to that selected semantic hit, never a wall
+        // behind the victim. Outside voxel mode this returns None verbatim.
+        let semantic_hit=current_hit_position.or_else(||collision_slot.and_then(|slot|
+            collision_targets.iter().find(|target|target.source_slot==slot).map(|target|target.position)))
+            .unwrap_or(projectile.position);
+        let voxel_contact=terrain.voxel_building_contact(previous_position,semantic_hit,
+            i32::from(projectile_shape.half_width.max(projectile_shape.half_depth)),
+            i32::from(projectile_shape.half_height),i32::from(projectile_shape.vertical_offset))
+            .map_err(|error|error.to_string())?;
+        if let Some(contact)=voxel_contact{collision_slot=None;current_hit_position=Some(contact.projectile_position);}
+        let mut terminal = collision_slot.is_some()||voxel_contact.is_some();
         if let Some(target) = collision_slot
             .and_then(|slot| imported_entities.get(usize::from(slot)))
             .filter(|target| target.active && target.control_flags & 0x8010 != 0
@@ -2187,6 +2209,8 @@ impl Level2EconomyState {
                     direct_hit_owner: None,
                     direct_hit_family: None,
                     collision_target: None,
+                    incoming_velocity: Some(incoming_velocity),
+                    voxel_contact: None,
                     reflection: Some(super::support_spells::ReboundReflection {
                         target_slot: target.index,
                         mana_after,
@@ -2243,6 +2267,8 @@ impl Level2EconomyState {
                             direct_hit_owner: None,
                             direct_hit_family: None,
                             collision_target: None,
+                            incoming_velocity: Some(incoming_velocity),
+                            voxel_contact: None,
                         });
                     }
                     if let Some(splash) =
@@ -2271,6 +2297,8 @@ impl Level2EconomyState {
                         direct_hit_owner: None,
                         direct_hit_family: None,
                         collision_target: None,
+                        incoming_velocity: Some(incoming_velocity),
+                        voxel_contact: None,
                     });
                 }
                 terminal = true;
@@ -2300,6 +2328,8 @@ impl Level2EconomyState {
                 direct_hit_owner: None,
                 direct_hit_family: None,
                 collision_target: None,
+                incoming_velocity: Some(incoming_velocity),
+                voxel_contact: None,
             });
         }
 
@@ -2314,6 +2344,8 @@ impl Level2EconomyState {
                 direct_hit_owner: collision_slot.map(|_| projectile.owner_entity_index),
                 direct_hit_family: None,
                 collision_target: collision_slot,
+                incoming_velocity: Some(incoming_velocity),
+                voxel_contact,
             });
         }
         let impact_slot = if projectile.origin == FireballProjectileOrigin::Eruption {
@@ -2362,6 +2394,8 @@ impl Level2EconomyState {
                 .map(|_| projectile.owner_entity_index),
             direct_hit_family: None,
             collision_target: impact_slot.and(collision_slot),
+            incoming_velocity: Some(incoming_velocity),
+            voxel_contact,
         })
     }
 

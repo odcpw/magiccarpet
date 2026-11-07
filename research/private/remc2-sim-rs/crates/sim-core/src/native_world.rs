@@ -543,6 +543,8 @@ const LEVEL2_V5_PACKAGE_MEMBERS: [(&str, usize); 14] = [
 
 mod source_kill_score;
 mod world_types;
+mod voxel_deaths;
+pub use world_types::VoxelImpact;
 use world_types::Result;
 pub use world_types::*;
 

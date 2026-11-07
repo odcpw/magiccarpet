@@ -7,6 +7,8 @@
 
 use super::secret_transition_abi::BoundaryTransitionReceipt;
 use super::*;
+#[path = "voxel_abi.rs"]
+mod voxel_abi;
 use serde::Deserialize;
 use sim_core::{
     campaign::backend::{

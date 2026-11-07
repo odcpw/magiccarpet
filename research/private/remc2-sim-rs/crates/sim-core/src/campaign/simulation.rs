@@ -1182,6 +1182,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 self.owner.session.state.live.economy.advance_global_rng();
             }
             PassPhase::FollowingPassCleanup => {
+                self.owner.capture_voxel_deaths()?;
                 {
                     let live = &mut self.owner.session.state.live;
                     live.ordinary
@@ -1798,6 +1799,7 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                         class9,
                     )?;
                 }
+                self.owner.capture_voxel_deaths()?;
             }
         }
         Ok(())
@@ -1976,7 +1978,9 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             &self.pass_start_castle_auxiliary_membership,
             &self.pass_start_castle_root_slots,
             &mut self.goat_begin_events,
-        )
+        )?;
+        self.owner.capture_voxel_deaths()?;
+        Ok(())
     }
 
     fn epilogue(
@@ -9895,6 +9899,15 @@ impl Mc2Simulation {
     #[must_use]
     pub fn economy(&self) -> &Level2EconomyState {
         &self.session.state.live.economy
+    }
+
+    /// A presentation substitution must stop when this effect address is
+    /// reclaimed or reused, even if its old impact remains in the journal.
+    pub fn is_current_voxel_impact_child(&self, slot: u16, generation: u32) -> bool {
+        let arena = &self.session.state.live.economy;
+        arena.economy.slot_generation(slot) == generation
+            && arena.entities.get(usize::from(slot)).is_some_and(|row|
+                row.active && (row.class, row.model) == (10, 0))
     }
 
     #[cfg(test)]

@@ -16,6 +16,8 @@ mod marked_spells;
 mod runtime_catalog;
 mod source_scoreboard;
 mod spells;
+#[path = "backend_voxels.rs"]
+mod voxels;
 use crate::native_world::GlobalSpecialState;
 use spells::{mc2_spell_family, mc2_spell_kind_for_family, semantic_spell_kind};
 
@@ -772,6 +774,8 @@ struct Mc2CampaignReplaySave {
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    voxel_mode_changes: Vec<voxels::VoxelModeChange>,
     // v5 did not retain the campaign frontier. Omission must remain omission
     // when checking its original receipt; it cannot imply earned completions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -811,6 +815,8 @@ struct Mc2CampaignReplaySavePayload<'a> {
     dynamic_lighting_changes: &'a [Mc2DynamicLightingChange],
     #[serde(skip_serializing_if = "<[Mc2PrimaryVisibilityChange]>::is_empty")]
     primary_visibility_changes: &'a [Mc2PrimaryVisibilityChange],
+    #[serde(skip_serializing_if = "<[voxels::VoxelModeChange]>::is_empty")]
+    voxel_mode_changes: &'a [voxels::VoxelModeChange],
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_levels: Option<&'a [SemanticLevelId]>,
     #[serde(skip_serializing_if = "<[crate::game_runtime::CompletedLevelStatistics]>::is_empty")]
@@ -850,6 +856,7 @@ impl Mc2CampaignReplaySave {
             initial_dynamic_lighting: true,
             dynamic_lighting_changes: Vec::new(),
             primary_visibility_changes: Vec::new(),
+            voxel_mode_changes: Vec::new(),
             completed_levels: Some(completed_levels),
             level_statistics: Vec::new(),
             secret_flow: None,
@@ -879,6 +886,7 @@ impl Mc2CampaignReplaySave {
             initial_dynamic_lighting: self.initial_dynamic_lighting,
             dynamic_lighting_changes: &self.dynamic_lighting_changes,
             primary_visibility_changes: &self.primary_visibility_changes,
+            voxel_mode_changes: &self.voxel_mode_changes,
             completed_levels: self.completed_levels.as_deref(),
             level_statistics: &self.level_statistics,
             secret_flow: self.secret_flow.as_ref(),
@@ -2016,6 +2024,7 @@ impl Mc2RuntimePackageResolver {
             .dynamic_lighting_enabled;
         save.dynamic_lighting_changes = session.backend().dynamic_lighting_changes.clone();
         save.primary_visibility_changes = session.backend().primary_visibility_changes.clone();
+        save.voxel_mode_changes = session.backend().voxel_mode_changes.clone();
         save.receipt_sha256 = save.compute_receipt_sha256();
         let bytes =
             serde_json::to_vec(&save).map_err(|error| Mc2CampaignReplaySaveError::InvalidSave {
@@ -2269,6 +2278,13 @@ impl Mc2RuntimePackageResolver {
                 message: "primary sprite changes have an invalid replay boundary or identity".to_owned(),
             });
         }
+        if save.voxel_mode_changes.len() > 1
+            || save.voxel_mode_changes.iter().any(|change| change.before_operation > save.operations.len())
+        {
+            return Err(Mc2CampaignReplaySaveError::InvalidSave {
+                message: "voxel configuration has an invalid replay boundary".to_owned(),
+            });
+        }
         save.definition
             .verify_identity()
             .map_err(Mc2CampaignReplaySaveError::Definition)?;
@@ -2355,6 +2371,7 @@ impl Mc2RuntimePackageResolver {
         let initial_dynamic_lighting = save.initial_dynamic_lighting;
         let mut dynamic_lighting_changes = save.dynamic_lighting_changes.into_iter().peekable();
         let mut primary_visibility_changes = save.primary_visibility_changes.into_iter().peekable();
+        let mut voxel_mode_changes = save.voxel_mode_changes.into_iter().peekable();
         let completed_levels = save.completed_levels.unwrap_or_default();
         let level_statistics = save.level_statistics;
         let operations = save.operations;
@@ -2407,6 +2424,12 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_mission_rewards(initial_rewards)
                 },
                 move |candidate, operation_index| {
+                    if voxel_mode_changes.peek().is_some_and(|change| change.before_operation == operation_index) {
+                        let change = voxel_mode_changes.next().expect("matched voxel replay boundary");
+                        let generation = candidate.identity().generation;
+                        candidate.backend_mut().apply_voxel_mode_change(change, generation)
+                            .map_err(|message| crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow { message })?;
+                    }
                     if primary_visibility_changes.peek()
                         .is_some_and(|change| change.before_operation == operation_index)
                     {
@@ -2991,6 +3014,7 @@ pub struct Mc2CampaignBackend {
     global_context_changes: Vec<Mc2GlobalContextChange>,
     dynamic_lighting_changes: Vec<Mc2DynamicLightingChange>,
     primary_visibility_changes: Vec<Mc2PrimaryVisibilityChange>,
+    voxel_mode_changes: Vec<voxels::VoxelModeChange>,
 }
 
 impl crate::game_runtime::GameRuntime<Mc2CampaignBackend> {
@@ -3342,6 +3366,7 @@ impl GameAdapter for Mc2CampaignAdapter {
             global_context_changes: Vec::new(),
             dynamic_lighting_changes: Vec::new(),
             primary_visibility_changes: Vec::new(),
+            voxel_mode_changes: Vec::new(),
             package_base,
         })
     }
@@ -3857,6 +3882,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.global_context_changes.clear();
         self.dynamic_lighting_changes.clear();
         self.primary_visibility_changes.clear();
+        self.voxel_mode_changes.clear();
         // Reset restores the constructor baseline. The persistent source-global
         // option then takes effect at the new replay's operation-zero boundary.
         self.set_dynamic_lighting_enabled(dynamic_lighting_enabled);
