@@ -13,7 +13,9 @@ pub struct SpiderClassProperties {
     pub scan_period: u8,
     pub target_range: u32,
     pub target_half_angle: i16,
+    /// Nominal descriptor word; source58350 uses the movement subtype instead.
     pub turn_limit: i16,
+    pub turn_response: i16,
     pub ground_clearance: i16,
     pub descent: i16,
     pub maximum_slope: i32,
@@ -44,6 +46,7 @@ pub const SPIDER_CLASS_PROPERTIES: SpiderClassProperties = SpiderClassProperties
     target_range: 5120,
     target_half_angle: 682,
     turn_limit: 227,
+    turn_response: 5,
     ground_clearance: 0,
     descent: -128,
     maximum_slope: 20,

@@ -32,7 +32,7 @@ fn mission_four_web_constructor_preserves_source_seed_pose_and_retained_particle
     let parent = arena.entities[usize::from(spider)].clone();
     let target = arena.entities[usize::from(player)].clone();
     let global_rng = arena.economy.global_rng;
-    let slot = launch(&mut arena, &mut terrain, &particles, spider, player)
+    let slot = launch(&mut arena, &mut terrain, &particles, spider, player, Default::default())
         .unwrap()
         .unwrap();
     let row = &arena.entities[usize::from(slot)];
@@ -103,7 +103,7 @@ fn aim_at_player(arena: &mut SourceArena, terrain: &mut SessionTerrain, slot: u1
 #[test]
 fn mission_four_projectile_collision_produces_existing_web_status_and_contact() {
     let (mut arena, mut terrain, particles, spider, player) = spawn();
-    let slot = launch(&mut arena, &mut terrain, &particles, spider, player)
+    let slot = launch(&mut arena, &mut terrain, &particles, spider, player, Default::default())
         .unwrap()
         .unwrap();
     aim_at_player(&mut arena, &mut terrain, slot, player);
@@ -173,7 +173,7 @@ fn mission_four_projectile_collision_produces_existing_web_status_and_contact() 
 #[test]
 fn exhausted_impact_allocation_retains_projectile_for_next_visit() {
     let (mut arena, mut terrain, particles, spider, player) = spawn();
-    let slot = launch(&mut arena, &mut terrain, &particles, spider, player)
+    let slot = launch(&mut arena, &mut terrain, &particles, spider, player, Default::default())
         .unwrap()
         .unwrap();
     aim_at_player(&mut arena, &mut terrain, slot, player);
@@ -215,7 +215,7 @@ fn full_arena_launch_reads_the_replaced_parent_position_after_new_event() {
     row.set_control_flags(row.control_flags | crate::level1_mission::SOURCE_REPLACEABLE_FLAG);
     arena.economy.exhaust_new_event_capacity_for_test();
     arena.rebuild_source_free_arena();
-    let slot = launch(&mut arena, &mut terrain, &particles, spider, player)
+    let slot = launch(&mut arena, &mut terrain, &particles, spider, player, Default::default())
         .unwrap()
         .unwrap();
     assert_eq!(slot, spider);
@@ -234,7 +234,7 @@ fn full_arena_launch_reads_the_replaced_parent_position_after_new_event() {
 fn source_water_contact_hides_even_when_splash_allocation_fails() {
     for exhausted in [false, true] {
         let (mut arena, mut terrain, particles, spider, player) = spawn();
-        let slot = launch(&mut arena, &mut terrain, &particles, spider, player)
+        let slot = launch(&mut arena, &mut terrain, &particles, spider, player, Default::default())
             .unwrap()
             .unwrap();
         let position = arena.entities[usize::from(slot)].position;
@@ -344,6 +344,21 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
         )
         .unwrap();
         let families = live.economy.rebuilt_class5_model_slots();
+        let source_context = crate::native_world::source_target::Context {
+            player: Some((player, live.core.state.position, live.player_life)),
+            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+            particles: Some(&particles),
+            map_type: Some(live.terrain.map_type()),
+            ..Default::default()
+        };
+        let mut feedback = crate::native_world::source_target::Creature23PlayerFeedback {
+            shared: &mut live.shared_spells,
+            core_players: &mut live.core.players,
+            local_state: &mut live.core.state,
+            domains: Some(crate::native_world::area_damage::ActorDomains::new(
+                &mut live.goats, &mut live.ordinary,
+            ).with_particles(&particles)),
+        };
         let effect = super::super::mc2::step_row(
             &mut live.economy,
             &mut live.core.runtime,
@@ -352,7 +367,8 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
             spider,
             &[player],
             &families,
-            Some((player, 0)),
+            source_context,
+            &mut feedback,
         )
         .unwrap();
         assert_eq!(effect.web_launched_target, Some(player));

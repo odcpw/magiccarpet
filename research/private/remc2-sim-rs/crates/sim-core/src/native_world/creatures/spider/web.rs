@@ -23,6 +23,46 @@ mod tests;
 
 pub(crate) type WebOutcome = guided_projectile::StepOutcome;
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct WebLaunchReceipt {
+    pub spider: crate::campaign::source_arena::SourceEntityHandle,
+    pub projectile: crate::campaign::source_arena::SourceEntityHandle,
+    pub target: u16,
+    pub packet: EntitySnapshot,
+}
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct WebImpactReceipt {
+    pub projectile: crate::campaign::source_arena::SourceEntityHandle,
+    pub impact: crate::campaign::source_arena::SourceEntityHandle,
+    pub packet: EntitySnapshot,
+}
+#[cfg(test)]
+thread_local! {
+    static WEB_TRACE: std::cell::RefCell<Option<(
+        crate::campaign::source_arena::SourceEntityHandle, Vec<WebLaunchReceipt>, Vec<WebImpactReceipt>,
+    )>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn start_trace(spider: crate::campaign::source_arena::SourceEntityHandle) {
+    WEB_TRACE.with(|trace| *trace.borrow_mut() = Some((spider, Vec::new(), Vec::new())));
+}
+#[cfg(test)]
+pub(crate) fn trace_snapshot() -> (Vec<WebLaunchReceipt>, Vec<WebImpactReceipt>) {
+    // Keep the owner and launch history enabled while a real flyer is still
+    // travelling; take_trace deliberately finishes that observation scope.
+    WEB_TRACE.with(|trace| trace.borrow().as_ref().map_or_else(
+        || (Vec::new(), Vec::new()), |(_, launches, impacts)| (launches.clone(), impacts.clone()),
+    ))
+}
+#[cfg(test)]
+pub(crate) fn take_trace() -> (Vec<WebLaunchReceipt>, Vec<WebImpactReceipt>) {
+    WEB_TRACE.with(|trace| trace.borrow_mut().take().map_or_else(
+        || (Vec::new(), Vec::new()), |(_, launches, impacts)| (launches, impacts),
+    ))
+}
+
 fn word(source: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([source.record[offset], source.record[offset + 1]])
 }
@@ -92,7 +132,10 @@ pub(crate) fn launch(
     particles: &[ParticleParameter],
     parent_slot: u16,
     target_slot: u16,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<Option<u16>, String> {
+    #[cfg(test)]
+    let shooter = arena.handle(parent_slot);
     if arena.entities.get(usize::from(parent_slot)).is_none() {
         return Err("Spider web parent address is outside arena".to_owned());
     }
@@ -102,8 +145,10 @@ pub(crate) fn launch(
     let Some(slot) = construct(arena, terrain, particles, parent_slot)? else {
         return Ok(None);
     };
-    let parent = arena.entities[usize::from(parent_slot)].clone();
-    let target = arena.entities[usize::from(target_slot)].clone();
+    let parent = crate::native_world::source_target::status_parent(arena, context, parent_slot)?
+        .ok_or_else(|| format!("Spider web lost current parent address {parent_slot}"))?;
+    let target = crate::native_world::source_target::read(arena, context, target_slot)?
+        .ok_or_else(|| format!("Spider web lost current target address {target_slot}"))?;
     let (yaw, pitch) = projectile_guidance_angles(parent.position, target.position);
     let row = &mut arena.entities[usize::from(slot)];
     row.record[71] = 10;
@@ -123,6 +168,17 @@ pub(crate) fn launch(
     row.record[69] = target.class;
     row.record[70] = target.model;
     row.set_subspell_index(RULES.web_damage);
+    #[cfg(test)]
+    if let (Some(spider), Some(projectile)) = (shooter, arena.handle(slot)) {
+        WEB_TRACE.with(|trace| {
+            if let Some((wanted, launches, _)) = trace.borrow_mut().as_mut()
+                && *wanted == spider && launches.len() < 64
+            {
+                launches.push(WebLaunchReceipt { spider, projectile, target: target_slot,
+                    packet: arena.entities[usize::from(slot)].clone() });
+            }
+        });
+    }
     Ok(Some(slot))
 }
 
@@ -135,7 +191,9 @@ pub(crate) fn step(
     slot: u16,
     context: crate::native_world::source_target::Context<'_>,
 ) -> Result<WebOutcome, String> {
-    guided_projectile::step(
+    #[cfg(test)]
+    let projectile = arena.handle(slot);
+    let outcome = guided_projectile::step(
         arena,
         terrain,
         particles,
@@ -146,5 +204,20 @@ pub(crate) fn step(
         },
         None,
         context,
-    )
+    )?;
+    #[cfg(test)]
+    if let (Some(projectile), Some(impact_slot)) = (projectile, outcome.impact_slot)
+        && let Some(impact) = arena.handle(impact_slot)
+    {
+        WEB_TRACE.with(|trace| {
+            if let Some((_, launches, impacts)) = trace.borrow_mut().as_mut()
+                && launches.iter().any(|launch| launch.projectile == projectile)
+                && impacts.len() < 64
+            {
+                impacts.push(WebImpactReceipt { projectile, impact,
+                    packet: arena.entities[usize::from(impact_slot)].clone() });
+            }
+        });
+    }
+    Ok(outcome)
 }

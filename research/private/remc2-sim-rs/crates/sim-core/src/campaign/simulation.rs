@@ -997,6 +997,8 @@ pub(crate) struct Creature17Trace {
     pub(crate) meteor_acquisitions: Vec<MeteorAcquisitionReceipt>,
     pub(crate) slowing: Vec<Creature17SlowingReceipt>,
     pub(crate) flight: Vec<Creature17FlightReceipt>,
+    /// Actual web impact, player and prepared sound journal sequence.
+    pub(crate) web_first_hit_sounds: Vec<(SourceEntityHandle, SourceEntityHandle, u64)>,
 }
 
 #[cfg(test)]
@@ -17638,7 +17640,8 @@ impl Mc2Simulation {
                 #[cfg(test)]
                 let _contact_trace = matches!(
                     visit.handler,
-                    ExistingHandler::Creature17 | ExistingHandler::Creature24 | ExistingHandler::Creature28
+                    ExistingHandler::Creature17 | ExistingHandler::Spider
+                        | ExistingHandler::Creature24 | ExistingHandler::Creature28
                 ).then(|| {
                     ActorContactTrace(CURRENT_ACTOR_CONTACT_SOURCE.with(|source| {
                         source.replace(self.session.state.live.economy.handle(source_slot))
@@ -17657,6 +17660,38 @@ impl Mc2Simulation {
                         player_index: -1,
                         sound_id,
                     });
+                    self.append_new_economy_events(pass, source_slot);
+                }
+                // Source25E40 prepares sound32 after its non-null target
+                // check, before attack movement, damage or NewEvent can
+                // change the emitter's current pose or fixed-address occupant.
+                if visit.handler == ExistingHandler::Spider
+                    && let Some(sound) = creatures::spider::mc2::prepare_callback_sound(
+                        &self.session.state.live.economy, source_slot,
+                    )?
+                {
+                    let sound_id = creatures::spider::mc2::CALLBACK_SOUND;
+                    let live = &self.session.state.live;
+                    let audio = (sound.control_flags & 0x80 == 0).then(|| {
+                        crate::prepare_event_sound_command(
+                            live.core.state.position, live.core.state.yaw,
+                            sound.position, sound_id, 0, sound.source_id, 0,
+                        )
+                    }).flatten();
+                    let event = FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::SpiderAttack,
+                        entity_index: sound.slot,
+                        player_index: -1,
+                        sound_id,
+                    };
+                    self.session.state.live.economy.prepare_sound(
+                        source_slot, sound.slot, -1, sound_id,
+                    );
+                    self.flush_shared_effects();
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, event);
                     self.append_new_economy_events(pass, source_slot);
                 }
                 // Source28C60 prepares sound37 before pursuit can move,
@@ -17792,8 +17827,6 @@ impl Mc2Simulation {
                 let mut model28_audio = None;
                 let model28_listener = (self.state.position, self.state.yaw);
                 let (melee, kill_credit, feedback, sound, music_target) = {
-                    let local_player_status =
-                        Some((player_entity_index, self.state.immobilize_counter));
                     let live = &mut self.session.state.live;
                     if visit.handler == ExistingHandler::Creature18 {
                         let targets = source_target::Context {
@@ -18177,6 +18210,27 @@ impl Mc2Simulation {
                             outcome.target_music,
                         )
                     } else if visit.handler == ExistingHandler::Spider {
+                        let targets = source_target::Context {
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::default()
+                        };
+                        let mut player_feedback = source_target::Creature23PlayerFeedback {
+                            shared: &mut live.shared_spells,
+                            core_players: &mut live.core.players,
+                            local_state: &mut live.core.state,
+                            domains: Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                                .with_particles(&self.session.definition.presentation.particles)),
+                        };
                         let outcome = creatures::spider::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
@@ -18185,7 +18239,8 @@ impl Mc2Simulation {
                             source_slot,
                             players,
                             models,
-                            local_player_status,
+                            targets,
+                            &mut player_feedback,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
                             award_source_spell_experience(live, owner, family);
@@ -18195,7 +18250,9 @@ impl Mc2Simulation {
                             outcome.kill_credit,
                             outcome.feedback,
                             outcome.sound,
-                            outcome.web_launched_target,
+                            // The current target's A4 music write already
+                            // happened synchronously after web NewEvent.
+                            None,
                         )
                     } else {
                         let outcome = creatures::creature_24::mc2::step_row(
@@ -18290,7 +18347,8 @@ impl Mc2Simulation {
                     award_source_spell_experience(&mut self.session.state.live, owner, family);
                 }
                 if let Some(sound) = sound.filter(|_| !matches!(
-                    visit.handler, ExistingHandler::Creature17 | ExistingHandler::Creature26 | ExistingHandler::Creature28
+                    visit.handler, ExistingHandler::Creature17 | ExistingHandler::Spider
+                        | ExistingHandler::Creature26 | ExistingHandler::Creature28
                 )) {
                     self.session.state.live.economy.prepare_sound(
                         source_slot,
@@ -18935,6 +18993,8 @@ impl Mc2Simulation {
                 self.append_new_economy_events(pass, source_slot);
             }
             (ExistingHandler::Fields, SourceRoute::Imported) => {
+                #[cfg(test)]
+                let _source_trace = area_damage::trace_effect_source(source_slot);
                 use crate::level_definition::{FieldKind, TilePosition};
                 use crate::world::fields::{status, transport};
                 let live = &mut self.session.state.live;
@@ -19093,9 +19153,47 @@ impl Mc2Simulation {
                         effects.palette_submode = palette.mode;
                     }
                 }
-                for (entity_index, sound_id) in outcome.sounds {
+                for &(entity_index, sound_id) in &outcome.sounds {
                     live.economy
                         .prepare_sound(entity_index, entity_index, -1, sound_id);
+                }
+                // Source38E70/38F70 prepare the current player's first-hit
+                // sound before contact damage. Economy receipts alone do not
+                // produce the positional commands consumed by the client.
+                if matches!(self.session.state.live.economy.entities
+                    [usize::from(source_slot)].model, 65 | 66)
+                {
+                    for (entity_index, sound_id) in outcome.sounds {
+                        self.push_flight_effect(FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: match self.session.state.live.economy.entities
+                                [usize::from(source_slot)].model
+                            {
+                                65 => crate::MissionAudioSite::SlowingFirstHit,
+                                66 => crate::MissionAudioSite::WebFirstHit,
+                                _ => unreachable!("status sound selector was checked"),
+                            },
+                            entity_index,
+                            player_index: -1,
+                            sound_id,
+                        });
+                        #[cfg(test)]
+                        if self.session.state.live.economy.entities
+                            [usize::from(source_slot)].model == 66
+                            && let Some(source) = self.session.state.live.economy.handle(source_slot)
+                            && let Some(target) = self.session.state.live.economy.handle(entity_index)
+                        {
+                            let sequence = self.effect_journal().records().last()
+                                .expect("the prepared first-hit sound was just appended").sequence;
+                            CREATURE17_TRACE.with(|trace| {
+                                if let Some(trace) = trace.borrow_mut().as_mut()
+                                    && trace.web_first_hit_sounds.len() < 64
+                                {
+                                    trace.web_first_hit_sounds.push((source, target, sequence));
+                                }
+                            });
+                        }
+                    }
                 }
                 for contact in outcome.contacts {
                     if contact.target == player_entity_index {
@@ -28461,10 +28559,7 @@ impl Mc2Simulation {
         let writer_sequence = area_damage::trace_player_mailbox_write(
             &self.session.state.live.economy,
             player_entity_index,
-            Some(actor_contact_source.map_or(
-                area_damage::PlayerMailboxSource::Other,
-                area_damage::PlayerMailboxSource::Contact,
-            )),
+            actor_contact_source.map(area_damage::PlayerMailboxSource::Contact),
         );
         #[cfg(test)]
         if let Some((producer, current_producer, target, player_life_before)) = contact_observation

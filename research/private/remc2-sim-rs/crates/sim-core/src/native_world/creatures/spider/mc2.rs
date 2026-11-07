@@ -11,11 +11,47 @@ use crate::native_world::{
 };
 use crate::{FlightWorld, Position};
 
+pub(crate) const CALLBACK_SOUND: u16 = 32;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceSound {
+    pub slot: u16,
+    pub position: Position,
+    pub source_id: u16,
+    pub control_flags: u32,
+}
+
+/// sub_25E40 prepares sound32 after its non-null target check and before
+/// damage, movement, or a possible projectile allocation.
+pub(crate) fn prepare_callback_sound(
+    arena: &SourceArena,
+    slot: u16,
+) -> Result<Option<SourceSound>, String> {
+    let row = arena.entities.get(usize::from(slot))
+        .filter(|row| row.active && (row.class, row.model) == (5, SOURCE_MODEL))
+        .ok_or_else(|| format!("Spider sound lost current slot {slot}"))?;
+    if row.action != 162 { return Ok(None); }
+    let target = word(row, 154);
+    if target == 0 { return Ok(None); }
+    if usize::from(target) >= arena.entities.len() {
+        return Err(format!("Spider sound target address {target} is outside the arena"));
+    }
+    Ok(Some(SourceSound { slot, position: row.position, source_id: row.source_id,
+        control_flags: row.control_flags }))
+}
+
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
     u16::from_le_bytes([row.record[at], row.record[at + 1]])
 }
 fn put(row: &mut EntitySnapshot, at: usize, value: u16) {
     row.record[at..at + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn sentinel(arena: &SourceArena) -> Option<Target> {
+    let row = arena.entities.first()?;
+    Some(Target { slot: 0, source_id: row.source_id, class: row.class, model: row.model,
+        life: row.life, flags: row.control_flags, position: row.position,
+        yaw: row.yaw, roll: row.source_roll(), ..Default::default() })
 }
 
 pub(crate) fn load(row: &EntitySnapshot, generation: u32) -> SpiderState {
@@ -348,11 +384,13 @@ pub(crate) fn prepare_source_pass(
         let mut context = SpiderContext {
             terrain,
             targets: &targets,
+            sentinel: sentinel(arena),
             class3: &[],
             model20: &families[usize::from(SOURCE_MODEL)],
             class5: &[],
             stage_runtime: Some(runtime),
-            local_player_status: None,
+            #[cfg(test)]
+            damage_trace: None,
         };
         stage_prepass(&mut actor, &mut context);
         store(&mut arena.entities[usize::from(*slot)], actor, particles)?;
@@ -375,99 +413,125 @@ pub(crate) fn step_row(
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
-    local_player_status: Option<(u16, i8)>,
+    source_context: crate::native_world::source_target::Context<'_>,
+    player_feedback: &mut crate::native_world::source_target::Creature23PlayerFeedback<'_>,
 ) -> Result<SpiderEffects, String> {
     let class5 = families.iter().flatten().copied().collect::<Vec<_>>();
     let generation = arena.slot_generation(slot);
+    #[cfg(test)]
+    let damage_trace = arena.handle(slot).map(|handle| (handle, arena.economy.events().len()));
     let row = arena
         .entities
         .get(usize::from(slot))
         .filter(|r| r.active && r.class == 5 && r.model == SOURCE_MODEL)
         .ok_or_else(|| format!("Spider callback lost slot{slot}"))?;
+    let initial_action = row.action;
     let mut actor = load(row, generation);
-    let direct = crate::native_world::source_target::alliance_direct_references(arena, row)?;
-    let targets = targets(arena, &direct);
+    let mut direct = crate::native_world::source_target::alliance_direct_references(arena, row)?;
+    // Source action162 retains a fixed target address even if that record is
+    // no longer an active member of the frozen search lists.
+    if actor.target != 0 { direct.insert(actor.target); }
+    if actor.previous != 0 { direct.insert(actor.previous); }
+    if actor.next != 0 { direct.insert(actor.next); }
+    if actor.stage.parent != 0 { direct.insert(actor.stage.parent); }
+    if actor.attacker != 0 { direct.insert(actor.attacker); }
+    if actor.killer != 0 { direct.insert(actor.killer); }
+    let mut targets = targets(arena, &direct);
+    if actor.action == 162 && actor.target != 0 {
+        let current = crate::native_world::source_target::read(arena, player_feedback.context(source_context), actor.target)?
+            .ok_or_else(|| format!("Spider target address {} is unavailable", actor.target))?;
+        let mut target = targets.iter().find(|row| row.slot == actor.target).copied()
+            .unwrap_or(Target { slot: actor.target, ..Default::default() });
+        target.source_id = current.source_id;
+        target.class = current.class;
+        target.model = current.model;
+        target.life = current.life;
+        target.flags = current.control_flags;
+        target.position = current.position;
+        if let Some(row) = targets.iter_mut().find(|row| row.slot == actor.target) { *row = target; }
+        else { targets.push(target); }
+    }
     let mut context = SpiderContext {
         terrain,
         targets: &targets,
+        sentinel: sentinel(arena),
         class3,
         model20: &families[usize::from(SOURCE_MODEL)],
         class5: &class5,
         stage_runtime: Some(runtime),
-        local_player_status,
+        #[cfg(test)]
+        damage_trace,
     };
     let mut effects = super::step(&mut actor, &mut context)
         .ok_or_else(|| format!("unsupported Spider action{}", actor.action))?;
     store(&mut arena.entities[usize::from(slot)], actor, particles)?;
     arena.economy.source_rng.insert(slot, actor.rng);
-    if let Some(target) = effects.web_target {
-        let launched = super::web::launch(arena, terrain, particles, slot, target)?.is_some();
-        if launched {
-            effects.web_launched_target = Some(target);
-        }
-        // sub_25E40 retains the fixed source address across NewEvent. A
-        // replacement receives these post-callback byte/speed writes too.
-        let current = &mut arena.entities[usize::from(slot)];
-        if launched && effects.web_charge_on_launch {
-            current.record[74] = 1;
-        }
-        if current.action != 162 {
-            current.set_actual_speed(word(current, 136) as i16);
-        }
+    // 1B8C0's blocked-death population write precedes any ranged NewEvent.
+    for _ in 0..effects.population_decrements {
+        arena.economy.decrement_source_creature_population();
     }
+    crate::world::effects::sync_position(arena, terrain, slot, actor.position, true, false)?;
+    // Linked writes from source1C560/1ED30 happen before any ranged NewEvent.
     for update in &effects.linked_updates {
-        if let Some(row) = arena
-            .entities
-            .get_mut(usize::from(update.slot))
-            .filter(|r| r.active && r.class == 5 && r.model == SOURCE_MODEL)
-        {
+        if matches!(initial_action, 162 | 167) {
+            // Alliance blink follows fixed current addresses, including a
+            // linked address now owned by another typed carrier.
+            let before = crate::native_world::source_target::status_parent(
+                arena, player_feedback.context(source_context), update.slot,
+            )?.ok_or_else(|| format!("Spider linked address {} is unavailable", update.slot))?;
+            let mut after = before.clone();
+            after.set_control_flags(update.flags);
+            player_feedback.commit_flags(arena, &before, &after)?;
+        } else if arena.economy.live_arena_kind(update.slot).is_none() {
+            let row = arena.entities.get_mut(usize::from(update.slot))
+                .ok_or_else(|| format!("Spider linked address {} is outside the arena", update.slot))?;
             row.set_source_action(update.action);
             row.set_control_flags(update.flags);
             put(row, 154, update.target);
             put(row, 54, update.previous);
+        } else {
+            return Err(format!("Spider linked action address {} has an unsupported typed owner", update.slot));
         }
     }
-    for _ in 0..effects.population_decrements {
-        arena.economy.decrement_source_creature_population();
+    let mut launched = false;
+    if let Some(target) = effects.web_target {
+        launched = super::web::launch(arena, terrain, particles, slot, target, player_feedback.context(source_context))?.is_some();
+        if launched {
+            effects.web_launched_target = Some(target);
+            player_feedback.apply(arena, source_context, target)?;
+        }
     }
-    let current_position = arena.entities[usize::from(slot)].position;
-    crate::world::effects::sync_position(arena, terrain, slot, current_position, true, false)?;
+    if let Some(target) = effects.phase0_target {
+        // 25E40 retains both fixed addresses through the actual NewEvent:
+        // evaluate the current target after the call even when no shot was
+        // allocated, then write the current actor address.
+        let current_target = crate::native_world::source_target::read(arena, player_feedback.context(source_context), target)?
+            .ok_or_else(|| format!("Spider attack lost current target address {target}"))?;
+        let charge = if (current_target.class, current_target.model) == (3, 0) {
+            player_feedback.spider_immobilize_counter(arena, source_context, target)? != 0
+        } else { launched };
+        let current = &mut arena.entities[usize::from(slot)];
+        if charge { current.record[74] = 1; }
+    }
+    if effects.phase0_target.is_some() {
+        let current = &mut arena.entities[usize::from(slot)];
+        if current.action != 162 { current.set_actual_speed(word(current, 136) as i16); }
+    }
     if effects.kill {
-        kill(arena, terrain, particles, slot)?;
+        kill(arena, terrain, particles, slot, player_feedback.context(source_context))?;
     }
     if effects.expire {
-        expire(arena, terrain, particles, slot, effects.summon_expire)?;
+        expire(arena, terrain, particles, slot, effects.summon_expire, player_feedback.context(source_context))?;
     }
     Ok(effects)
 }
 
-fn current(arena: &SourceArena, slot: u16) -> (Position, u16, i16, i32, u16, u32) {
-    if let Some(s) = arena.spheres.iter().find(|s| s.source_entity_index == slot) {
-        return (
-            s.position,
-            slot,
-            s.yaw,
-            s.mana,
-            s.player_entity_index,
-            s.control_flags,
-        );
-    }
-    let row = &arena.entities[usize::from(slot)];
-    (
-        row.position,
-        row.source_id,
-        row.yaw,
-        row.mana,
-        row.source_player_entity_index(),
-        row.control_flags,
-    )
-}
 fn hide_current(arena: &mut SourceArena, slot: u16) {
     if let Some(s) = arena
         .economy
         .spheres
         .iter_mut()
-        .find(|s| s.source_entity_index == slot)
+        .find(|s| s.active && s.source_entity_index == slot)
     {
         s.control_flags |= super::ENTITY_DRAW_DISABLED_BIT;
         s.pending_delete = true;
@@ -481,95 +545,35 @@ fn kill(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<(), String> {
-    let (position, _, yaw, mana, owner, _) = current(arena, slot);
+    let actor = crate::native_world::source_target::status_parent(arena, context, slot)?
+        .ok_or_else(|| format!("Spider death lost current actor {slot}"))?;
+    let (position, yaw, mana, owner) =
+        (actor.position, actor.yaw, actor.mana, actor.source_player_entity_index());
     if mana > 0 {
         let row = &mut arena.entities[usize::from(slot)];
         row.set_entity_rng(super::level2_next_rng16(row.entity_rng));
         arena.economy.source_rng.insert(slot, row.entity_rng);
-        spawn_mana(arena, terrain, slot, position, yaw, mana, owner)?;
+        let _ = crate::world::effects::spawn_death_mana_sphere(
+            arena, terrain, slot, position, yaw, mana, owner,
+        )?;
         // The source dereferences the same fixed address AFTER allocation.
-        if let Some(s) = arena
-            .economy
-            .spheres
-            .iter_mut()
-            .find(|s| s.source_entity_index == slot)
-        {
-            s.player_entity_index = 0;
-            s.owner_entity_index = 0;
-        } else {
+        if !crate::world::effects::clear_replacement_mana_owner(arena, slot)? {
             arena.entities[usize::from(slot)].set_source_player_entity_index(0);
         }
     }
-    let (position, _, _, _, _, flags) = current(arena, slot);
-    if flags & 0x100000 == 0 {
-        let child = crate::world::effects::allocate(
-            arena,
-            terrain,
-            sim_definition::adapter::mc2_effect_definition(
-                crate::level_definition::EffectKind::RadialExplosion,
-            ),
-            position,
-            particles,
-        )?;
-        if let Some(child) = child {
-            let id = current(arena, slot).1;
-            let row = &mut arena.entities[usize::from(child)];
-            row.source_id = id;
-            put(row, 30, id);
-            if child == slot {
-                row.set_position(Position::default());
-                crate::world::effects::sync_position(
-                    arena,
-                    terrain,
-                    slot,
-                    Position::default(),
-                    true,
-                    true,
-                )?;
-            }
-        }
+    let current = crate::native_world::source_target::read(arena, context, slot)?
+        .ok_or_else(|| format!("Spider death lost current address {slot}"))?;
+    let burst = if current.control_flags & 0x100000 == 0 {
+        crate::world::effects::spawn_death_burst(
+            arena, terrain, particles, slot, current.position, current.source_id,
+        )?
+    } else { None };
+    if !crate::world::effects::hide_birth_replacement(arena, slot, burst)? {
+        hide_current(arena, slot);
     }
-    hide_current(arena, slot);
     Ok(())
-}
-
-pub(crate) fn spawn_mana(
-    arena: &mut SourceArena,
-    terrain: &mut SessionTerrain,
-    parent: u16,
-    position: Position,
-    yaw: i16,
-    mana: i32,
-    owner: u16,
-) -> Result<(), String> {
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
-        return Ok(());
-    };
-    let self_replaced = slot == parent;
-    let position = if self_replaced {
-        Position::default()
-    } else {
-        position
-    };
-    arena.economy.initialize_death_mana_sphere_at_slot(
-        slot,
-        parent,
-        position,
-        if self_replaced { 0 } else { yaw },
-        if self_replaced { 512 } else { mana },
-        if self_replaced { 0 } else { owner },
-        terrain,
-    );
-    let child_rng = arena
-        .economy
-        .spheres
-        .last()
-        .filter(|sphere| sphere.source_entity_index == slot)
-        .map(|sphere| sphere.entity_rng)
-        .ok_or_else(|| format!("mana sphere constructor lost allocated slot{slot}"))?;
-    arena.economy.source_rng.insert(slot, child_rng);
-    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)
 }
 
 fn expire(
@@ -578,41 +582,32 @@ fn expire(
     particles: &[ParticleParameter],
     slot: u16,
     summoned: bool,
+    context: crate::native_world::source_target::Context<'_>,
 ) -> Result<(), String> {
-    let position = current(arena, slot).0;
-    let generation = arena.slot_generation(slot);
+    let position = crate::native_world::source_target::read(arena, context, slot)?
+        .ok_or_else(|| format!("Spider expiry lost current address {slot}"))?.position;
     if summoned {
-        super::super::goat::runtime::spawn_expiry_visual(arena, terrain, position, particles)?;
+        let visual = super::super::goat::runtime::spawn_expiry_visual(arena, terrain, position, particles)?;
+        if visual == Some(slot) {
+            let mut zero = Position::default();
+            zero.z = terrain.ground_height(zero);
+            arena.entities[usize::from(slot)].set_position(zero);
+            terrain.set_source_predicted_position(zero);
+            crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
+        }
     }
-    if summoned && arena.slot_generation(slot) != generation {
-        let mut zero = Position::default();
-        zero.z = terrain.ground_height(zero);
-        arena.entities[usize::from(slot)].set_position(zero);
-        crate::world::effects::sync_position(arena, terrain, slot, zero, true, true)?;
-    }
-    let position = if arena.slot_generation(slot) != generation {
-        current(arena, slot).0
-    } else {
-        position
-    };
-    let child = crate::world::effects::allocate(
+    let position = crate::native_world::source_target::read(arena, context, slot)?
+        .ok_or_else(|| format!("Spider expiry lost current address {slot}"))?.position;
+    let child = crate::world::effects::allocate_from_source_position(
         arena,
         terrain,
         sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+        slot,
         position,
         particles,
     )?;
-    if child == Some(slot) {
-        arena.entities[usize::from(slot)].set_position(Position::default());
-        crate::world::effects::sync_position(
-            arena,
-            terrain,
-            slot,
-            Position::default(),
-            true,
-            true,
-        )?;
+    if !crate::world::effects::hide_birth_replacement(arena, slot, child)? {
+        hide_current(arena, slot);
     }
-    hide_current(arena, slot);
     Ok(())
 }

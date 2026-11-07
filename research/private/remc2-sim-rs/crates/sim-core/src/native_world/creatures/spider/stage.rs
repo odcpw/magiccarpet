@@ -5,7 +5,118 @@ use super::{
     Target, consume, distance, heading_for_positions, jitter, level2_next_rng16, move_actor,
     settle, xy,
 };
-use crate::Position;
+use crate::{FlightWorld, Position};
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    struct PointRoute;
+    impl StageRuntime for PointRoute {
+        fn descriptor(&self, _: u8) -> Option<StageDescriptor> {
+            Some(StageDescriptor { kind: 1, flags: 0, next: 0,
+                point: Position { x: 20000, y: 20000, z: 0 }, actor: 0, model: 0, scalar: 0 })
+        }
+        fn bind(&mut self, _: u8) -> Option<StageDescriptor> { None }
+        fn rearm_model_relations(&mut self) {}
+    }
+
+    #[test]
+    fn point_linked_hit_retaliates_and_follow_checks_leader_after_peer() {
+        let (_, _, terrain, _, player, _) = super::super::tests::mission_four();
+        let mut counter = 0;
+        let position = Position { x: 20000, y: 20000, z: 1000 };
+        let mut actor = super::super::construct(700, 1, 7, position,
+            crate::native_world::MapType::Cave, &mut counter).unwrap();
+        actor.action = 167;
+        actor.stage.mode = 1;
+        actor.phase = 1;
+        actor.next = 701;
+        actor.control_flags |= 0x800;
+        let targets = [
+            Target { slot: 701, life: actor.life - 1, attacker: player, ..Default::default() },
+            Target { slot: player, class: 3, life: 100, ..Default::default() },
+        ];
+        let mut route = PointRoute;
+        let mut ctx = SpiderContext { terrain: &terrain, targets: &targets, sentinel: None, class3: &[],
+            model20: &[], class5: &[], stage_runtime: Some(&mut route), damage_trace: None };
+        step(&mut actor, &mut ctx, &mut SpiderEffects::default());
+        assert_eq!((actor.action, actor.target), (162, player));
+        assert_ne!(actor.control_flags & 0x800, 0, "hit settles without a movement visit");
+
+        let leader = Position { x: 19936, ..position };
+        let peer = Target { slot: 702, source_id: 702,
+            position: Position { x: 20064, ..position }, ..Default::default() };
+        actor.phase = 8;
+        actor.position = position;
+        actor.half_width = 256;
+        let targets = [peer];
+        let ctx = SpiderContext { terrain: &terrain, targets: &targets, sentinel: None, class3: &[],
+            model20: &[702], class5: &[], stage_runtime: None, damage_trace: None };
+        assert_ne!(heading_for_positions(peer.position, position), heading_for_positions(leader, position));
+        follow(&mut actor, &ctx, leader, false, Some(128));
+        assert_eq!(i32::from(actor.roll), heading_for_positions(leader, position));
+    }
+
+    #[test]
+    fn wander_mode_does_not_need_a_stage_descriptor() {
+        let (_, _, terrain, _, _, _) = super::super::tests::mission_four();
+        let mut counter = 0;
+        let mut actor = super::super::construct(700, 1, 7,
+            Position { x: 20000, y: 20000, z: 1000 },
+            crate::native_world::MapType::Cave, &mut counter).unwrap();
+        actor.action = 167;
+        actor.stage.mode = 6;
+        actor.stage.index = 255;
+        actor.phase = 16;
+        actor.control_flags |= 0x800;
+        let initial_rng = actor.rng;
+        let mut ctx = SpiderContext { terrain: &terrain, targets: &[], sentinel: None, class3: &[],
+            model20: &[], class5: &[], stage_runtime: None, damage_trace: None };
+        step(&mut actor, &mut ctx, &mut SpiderEffects::default());
+        assert_eq!(actor.rng, level2_next_rng16(initial_rng));
+        assert_eq!(actor.action, 167);
+    }
+
+    #[test]
+    fn null_parent_hides_then_copies_current_sentinel_and_scratch() {
+        let (_, _, terrain, _, _, _) = super::super::tests::mission_four();
+        let mut counter = 0;
+        let mut actor = super::super::construct(700, 1, 7, Position::default(),
+            crate::native_world::MapType::Cave, &mut counter).unwrap();
+        actor.action = 167;
+        actor.stage.mode = 12;
+        actor.stage.parent = 0;
+        let sentinel = Target { position: Position { x: 1234, y: 5678, z: 99 },
+            yaw: 123, roll: 456, ..Default::default() };
+        let mut ctx = SpiderContext { terrain: &terrain, targets: &[], sentinel: Some(sentinel),
+            class3: &[], model20: &[], class5: &[], stage_runtime: None, damage_trace: None };
+        step(&mut actor, &mut ctx, &mut SpiderEffects::default());
+        assert_ne!(actor.control_flags & super::super::ENTITY_DRAW_DISABLED_BIT, 0);
+        assert_eq!((actor.position, actor.yaw, actor.roll), (sentinel.position, 123, 456));
+        assert_eq!(terrain.source_predicted_position(), sentinel.position);
+    }
+
+    #[test]
+    fn alliance_blink_promotes_unsigned_duration_before_subtraction() {
+        let (_, _, terrain, _, _, _) = super::super::tests::mission_four();
+        let mut counter = 0;
+        let actor = super::super::construct(700, 1, 7, Position::default(),
+            crate::native_world::MapType::Cave, &mut counter).unwrap();
+        let ctx = SpiderContext { terrain: &terrain, targets: &[], sentinel: None,
+            class3: &[], model20: &[], class5: &[], stage_runtime: None, damage_trace: None };
+        // Source1E9C0 promotes the full word30 before subtracting16.
+        // Phase16 makes the middle window clear blink bits and the edge set4.
+        for (duration, expected) in [(0xffff_u16, 0), (0x8010, 0), (36, 0), (35, 0x0400_0000), (15, 0x0400_0000)] {
+            let mut actor = actor;
+            actor.stage.remaining = 20;
+            actor.stage.duration = duration as i16;
+            actor.phase = 16;
+            blink(&mut actor, &ctx, &mut SpiderEffects::default(), false);
+            assert_eq!(actor.control_flags & 0x0600_0000, expected, "source duration {duration:#06x}");
+        }
+    }
+}
 
 pub(crate) fn bind_stage(actor: &mut SpiderState, index: u8, runtime: &mut dyn StageRuntime) {
     if index != 0
@@ -127,7 +238,6 @@ fn follow(
             }
     }) {
         actor.roll = heading_for_positions(peer.position, actor.position) as i16;
-        return;
     }
     if let Some(width) = width {
         let separation = i32::from(actor.half_width) + i32::from(width);
@@ -189,7 +299,7 @@ fn blink(
 ) {
     let phase = if clear {
         0
-    } else if actor.stage.remaining <= actor.stage.duration.wrapping_sub(16)
+    } else if i32::from(actor.stage.remaining) <= i32::from(actor.stage.duration as u16) - 16
         && actor.stage.remaining >= 16
     {
         if actor.phase & 0x1c == 16 {
@@ -368,8 +478,9 @@ pub(super) fn step(
     match mode {
         10 => actor.action = 162,
         12 => {
-            if let Some(parent) = ctx.target(actor.stage.parent) {
-                if parent.life < 0 {
+            let parent = if actor.stage.parent == 0 { ctx.sentinel } else { ctx.target(actor.stage.parent) };
+            if let Some(parent) = parent {
+                if actor.stage.parent == 0 || parent.life < 0 {
                     actor.control_flags |= super::ENTITY_DRAW_DISABLED_BIT;
                 }
                 actor.position = parent.position;
@@ -382,6 +493,7 @@ pub(super) fn step(
                 actor.yaw = 0;
                 actor.roll = 0;
             }
+            ctx.terrain.set_source_predicted_position(actor.position);
         }
         17 => {
             effects.population_decrements += u32::from(move_actor(actor, ctx));
@@ -399,14 +511,15 @@ pub(super) fn step(
         }
         13 | 14 | 16 => summoned(actor, ctx, effects),
         1..=9 => {
-            let route = ctx
-                .stage_runtime
-                .as_ref()
-                .and_then(|r| r.descriptor(actor.stage.index));
+            // 1E1C0 (modes6..9) never reads a StageVar descriptor.
+            let route = (mode <= 5).then(|| ctx.stage_runtime.as_ref()
+                .and_then(|r| r.descriptor(actor.stage.index))).flatten();
             let point = route.is_some_and(|r| {
                 mode == 1 || (mode == 2 && !signed_near(actor.position, r.point, 3072))
             });
-            match consume(actor, ctx, !point) {
+            // 1DDA0 treats a lower-life linked child as a hit for both
+            // point1 and the outside guard2 route, just as the other helpers do.
+            match consume(actor, ctx, true) {
                 2 => actor.action = 164,
                 1 => {
                     if ctx
@@ -425,7 +538,9 @@ pub(super) fn step(
                     // Spider's source descriptor leaves it clear.
                     if !wander || RULES.behavior_flags & 2 == 0 {
                         effects.population_decrements += u32::from(move_actor(actor, ctx));
-                        if let Some(route) = route {
+                        if wander {
+                            idle(actor);
+                        } else if let Some(route) = route {
                             if point {
                                 follow(actor, ctx, route.point, true, None);
                             } else if matches!(mode, 3..=5) && actor.phase & 7 == 0 {

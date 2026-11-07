@@ -654,6 +654,38 @@ pub(crate) fn creature25_castle_slot(
     current_a4_castle_slot(shared, &player)
 }
 
+/// Source25E40 reads mobilizeCounter through the target's current A4 after
+/// pursuit and any web NewEvent. Compact players.bin bytes do not contain
+/// this field; the local FlightState is its live authority.
+pub(crate) fn spider_immobilize_counter(
+    arena: &SourceArena,
+    context: Context<'_>,
+    target_slot: u16,
+) -> Result<i8, String> {
+    let target = status_parent(arena, context, target_slot)?
+        .ok_or_else(|| format!("Spider status target address {target_slot} is unavailable"))?;
+    if (target.class, target.model) != (3, 0) {
+        return Err(format!("Spider status target {target_slot} is not current class3/model0"));
+    }
+    match target.special_relation {
+        super::EntitySpecialRelation::PlayerState(index) => {
+            let shared = context.spells
+                .ok_or("Spider status requires the current player A4 bindings")?;
+            if index != shared.local_player.slot {
+                return Err(format!("Spider target {target_slot} nonlocal A4 {index} has no immobilization carrier"));
+            }
+            context.local_player_state.map(|state| state.immobilize_counter)
+                .ok_or_else(|| "Spider status requires the current local FlightState".to_owned())
+        }
+        super::EntitySpecialRelation::GlobalSpecialState => Err(format!(
+            "Spider target {target_slot} shared A4 has no immobilization carrier"
+        )),
+        super::EntitySpecialRelation::None => Err(format!(
+            "Spider target {target_slot} has no current A4 owner"
+        )),
+    }
+}
+
 /// Source282D0 reads the current occupant at each frozen class3 address.
 /// Balloons use their current source-ID owner, then that owner's A4 Castle;
 /// player models use their own A4. The resulting fixed Castle address is
@@ -708,7 +740,17 @@ impl Creature23PlayerFeedback<'_> {
             base.house_parameters = current.house_parameters;
         }
         base.spells = Some(self.shared);
+        base.local_player_state = Some(self.local_state);
         base
+    }
+
+    pub(crate) fn spider_immobilize_counter(
+        &self,
+        arena: &SourceArena,
+        base: Context<'_>,
+        target_slot: u16,
+    ) -> Result<i8, String> {
+        spider_immobilize_counter(arena, self.context(base), target_slot)
     }
 
     pub(crate) fn commit_flags(
@@ -1372,6 +1414,7 @@ pub(crate) struct Context<'a> {
     pub(crate) spells: Option<&'a super::Level2SharedSpellResetSession>,
     pub(crate) player: Option<(u16, Position, i32)>,
     pub(crate) player_orientation: Option<(i16, i16)>,
+    pub(crate) local_player_state: Option<&'a crate::FlightState>,
     pub(crate) particles: Option<&'a [ParticleParameter]>,
     pub(crate) map_type: Option<super::MapType>,
     pub(crate) house_parameters:
@@ -3197,6 +3240,50 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 mod tests {
     use super::*;
     use sha2::Digest;
+
+    #[test]
+    fn spider_status_reads_current_a4_and_local_flight_authority() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let shared = &session.session.state.live.shared_spells;
+        let player = session.state.entity_index;
+        let mut state = session.session.state.live.core.state.clone();
+        let local_index = shared.local_player.slot;
+        assert_eq!(arena.entities[usize::from(player)].special_relation,
+            super::super::EntitySpecialRelation::PlayerState(local_index));
+        assert_eq!(state.immobilize_counter, 0);
+        assert_eq!(spider_immobilize_counter(&arena, Context {
+            spells: Some(shared), local_player_state: Some(&state), ..Default::default()
+        }, player).unwrap(), 0);
+        // Configured current status, not a cached (physical slot,counter)
+        // tuple. The ordinary Spider encounter supplies the actual Web writer.
+        state.immobilize_counter = 1;
+        assert_eq!(spider_immobilize_counter(&arena, Context {
+            spells: Some(shared), local_player_state: Some(&state), ..Default::default()
+        }, player).unwrap(), 1);
+        let nonlocal = shared.players.iter().find(|row| row.slot != local_index).unwrap().slot;
+        arena.entities[usize::from(player)].special_relation =
+            super::super::EntitySpecialRelation::PlayerState(nonlocal);
+        assert!(spider_immobilize_counter(&arena, Context {
+            spells: Some(shared), local_player_state: Some(&state), ..Default::default()
+        }, player).unwrap_err().contains("nonlocal A4"));
+        arena.entities[usize::from(player)].special_relation =
+            super::super::EntitySpecialRelation::None;
+        assert!(spider_immobilize_counter(&arena, Context {
+            spells: Some(shared), local_player_state: Some(&state), ..Default::default()
+        }, player).unwrap_err().contains("no current A4"));
+
+        let castle = arena.economy.build_castle(session.state.position, player,
+            session.canonical_terrain()).unwrap();
+        // A current typed Castle is model2. A stale raw human/A4 projection
+        // cannot admit Spider's human-only status read at that address.
+        let raw = &mut arena.entities[usize::from(castle)];
+        raw.class = 3; raw.model = 0;
+        raw.special_relation = super::super::EntitySpecialRelation::PlayerState(local_index);
+        assert!(spider_immobilize_counter(&arena, Context {
+            spells: Some(shared), local_player_state: Some(&state), ..Default::default()
+        }, castle).unwrap_err().contains("not current class3/model0"));
+    }
 
     #[test]
     fn model53_current_yaw_uses_typed_owner_and_reaches_its_real_children() {

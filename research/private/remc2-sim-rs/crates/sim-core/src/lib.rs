@@ -724,6 +724,9 @@ pub enum MissionAudioSite {
     Creature24Attack,
     Creature26Drain,
     Creature28Attack,
+    SpiderAttack,
+    SlowingFirstHit,
+    WebFirstHit,
     Count,
 }
 
@@ -1202,6 +1205,9 @@ impl MissionAudioSite {
         Self::Creature24Attack,
         Self::Creature26Drain,
         Self::Creature28Attack,
+        Self::SpiderAttack,
+        Self::SlowingFirstHit,
+        Self::WebFirstHit,
     ];
 
     #[must_use]
@@ -1645,6 +1651,30 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp sub_2B260 state3",
+                true,
+            ),
+            Self::SpiderAttack => (
+                "32",
+                "current Spider after the non-null target check and before attack movement or damage",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_25E40 callback entry",
+                true,
+            ),
+            Self::SlowingFirstHit => (
+                "54..57",
+                "current player before the first slowing impact",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_38E70 first-hit branch",
+                true,
+            ),
+            Self::WebFirstHit => (
+                "54..57",
+                "current player before first web contact damage",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_38F70 first-hit branch",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

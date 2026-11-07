@@ -18,6 +18,89 @@ pub(crate) use super::archer::{
 };
 pub(crate) use stage::{bind_stage, stage_prepass};
 
+#[cfg(test)]
+mod motion_source_tests {
+    use super::*;
+
+    #[test]
+    fn source_motion_turns_by_subtype_and_publishes_only_reached_proposals() {
+        let (_, _, mut terrain, _, _, feature) = super::tests::mission_four();
+        let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+        let mut counter = 0;
+        let mut actor = construct(700, 1, 7, position, MapType::Cave, &mut counter).unwrap();
+        actor.yaw = 0;
+        actor.roll = 200;
+        let sentinel = Position { x: 11, y: 22, z: 33 };
+        terrain.set_source_predicted_position(sentinel);
+        let ctx = SpiderContext {
+            terrain: &terrain, targets: &[], sentinel: None, class3: &[], model20: &[], class5: &[],
+            stage_runtime: None,
+            damage_trace: None,
+        };
+        assert!(!move_actor(&mut actor, &ctx));
+        assert_eq!(actor.yaw, 5, "descriptor89 subtype controls source58350");
+        assert_eq!(ctx.terrain.source_predicted_position(), actor.position);
+
+        actor.control_flags |= 0x800;
+        ctx.terrain.set_source_predicted_position(sentinel);
+        let held = actor.position;
+        assert!(!move_actor(&mut actor, &ctx));
+        assert_eq!(actor.position, held);
+        assert_eq!(ctx.terrain.source_predicted_position(), sentinel);
+        assert_eq!(actor.control_flags & 0x800, 0);
+
+        // A configured Cave obstruction makes all four actual proposals fail.
+        // The final source scratch still holds the fourth proposal, not held.
+        drop(ctx);
+        terrain.disaster_parts().0.angles.fill(8);
+        actor.position = position;
+        actor.yaw = 0;
+        actor.speed = 256;
+        let ctx = SpiderContext {
+            terrain: &terrain, targets: &[], sentinel: None, class3: &[], model20: &[], class5: &[],
+            stage_runtime: None,
+            damage_trace: None,
+        };
+        let _ = move_actor(&mut actor, &ctx);
+        assert_eq!(actor.position, position);
+        assert_ne!(actor.control_flags & 0x40000, 0);
+        assert_ne!(ctx.terrain.source_predicted_position(), position);
+        assert_ne!(ctx.terrain.source_predicted_position(), sentinel);
+    }
+
+    #[test]
+    fn moving_and_stationary_peer_scans_use_opposite_source_cones() {
+        let (_, _, terrain, _, _, feature) = super::tests::mission_four();
+        let position = feature.world_position(terrain.ground_height(feature.world_position(0)));
+        let mut counter = 0;
+        let mut moving = construct(700, 1, 7, position, MapType::Cave, &mut counter).unwrap();
+        moving.yaw = 0;
+        moving.roll = 0;
+        moving.phase = 0;
+        moving.proximity = 1;
+        let mut ahead = position;
+        let mut behind = position;
+        crate::move_entity(&mut ahead, 0, 0, 1024);
+        crate::move_entity(&mut behind, 1024, 0, 1024);
+        let ahead = construct(701, 1, 8, ahead, MapType::Cave, &mut counter).unwrap();
+        let behind = construct(702, 1, 9, behind, MapType::Cave, &mut counter).unwrap();
+        let targets = [behind, ahead].map(|peer| Target {
+            slot: peer.slot, source_id: peer.source_id, class: 5, model: SOURCE_MODEL,
+            life: peer.life, position: peer.position, ..Default::default()
+        });
+        let ctx = SpiderContext { terrain: &terrain, targets: &targets, sentinel: None,
+            class3: &[], model20: &[702, 701], class5: &[], stage_runtime: None,
+            damage_trace: None };
+        let mut stationary = moving;
+        stationary.action = 160;
+        patrol(&mut moving, &ctx, &mut SpiderEffects::default(), true);
+        assert_ne!(moving.position, position, "moving path uses the real source proposal");
+        assert_eq!((moving.action, moving.previous), (163, 701), "moving scan selects ahead");
+        patrol(&mut stationary, &ctx, &mut SpiderEffects::default(), false);
+        assert_eq!((stationary.action, stationary.previous), (163, 702), "stationary scan keeps the reverse cone");
+    }
+}
+
 pub(crate) const SOURCE_MODEL: u8 = 20;
 pub(crate) const DESCRIPTOR: u16 = 89;
 
@@ -152,11 +235,13 @@ impl Target {
 pub(crate) struct SpiderContext<'a> {
     pub terrain: &'a SessionTerrain,
     pub targets: &'a [Target],
+    pub sentinel: Option<Target>,
     pub class3: &'a [u16],
     pub model20: &'a [u16],
     pub class5: &'a [u16],
     pub stage_runtime: Option<&'a mut dyn StageRuntime>,
-    pub local_player_status: Option<(u16, i8)>,
+    #[cfg(test)]
+    pub damage_trace: Option<(crate::campaign::source_arena::SourceEntityHandle, usize)>,
 }
 
 impl SpiderContext<'_> {
@@ -172,7 +257,8 @@ pub(crate) struct SpiderEffects {
     /// sub_11900 contact mailbox, with the actor's source ID as attacker.
     pub melee: Option<(u16, i32, u16)>,
     pub web_target: Option<u16>,
-    pub web_charge_on_launch: bool,
+    /// The fixed target address retained by sub_25E40 through sub_1C310.
+    pub phase0_target: Option<u16>,
     pub web_launched_target: Option<u16>,
     pub linked_updates: Vec<Target>,
     pub kill: bool,
@@ -198,6 +284,10 @@ fn distance(a: Position, b: Position) -> u32 {
 }
 
 fn consume(actor: &mut SpiderState, ctx: &SpiderContext<'_>, linked_hit: bool) -> u8 {
+    #[cfg(test)]
+    let before = actor.life;
+    #[cfg(test)]
+    let mailbox = (actor.pending_damage, actor.pending_attacker);
     let mut hit = u8::from(
         consume_damage(
             &mut actor.life,
@@ -207,6 +297,15 @@ fn consume(actor: &mut SpiderState, ctx: &SpiderContext<'_>, linked_hit: bool) -
         )
         .is_some(),
     );
+    #[cfg(test)]
+    if hit != 0 && let Some((target, event_cursor)) = ctx.damage_trace {
+        let writer = crate::native_world::area_damage::take_player_mailbox_writer(target, mailbox);
+        crate::native_world::area_damage::trace_player_damage_consumption(
+            crate::native_world::area_damage::PlayerDamageConsumptionReceipt {
+                target, mailbox, writer, life_before: before, life_after: actor.life, event_cursor,
+            },
+        );
+    }
     let mut next = actor.next;
     for _ in 0..=ctx.targets.len() {
         let Some(child) = ctx.target(next) else { break };
@@ -279,6 +378,9 @@ fn move_actor(actor: &mut SpiderState, ctx: &SpiderContext<'_>) -> bool {
         let mut predicted = actor.position;
         actor.position = original;
         crate::move_entity(&mut predicted, actor.yaw, 0, actor.speed);
+        // sub_1B8C0 publishes every proposal, including a rejected final
+        // probe. The 0x800 hold above returns without touching this scratch.
+        ctx.terrain.set_source_predicted_position(predicted);
         let crosses = (predicted.x >> 8, predicted.y >> 8) != (original.x >> 8, original.y >> 8);
         let mut blocked = false;
         if crosses || attempt != 0 {
@@ -311,7 +413,7 @@ fn move_actor(actor: &mut SpiderState, ctx: &SpiderContext<'_>) -> bool {
             actor.yaw =
                 actor
                     .yaw
-                    .wrapping_add(crate::turn_toward(actor.yaw, actor.roll, RULES.turn_limit))
+                    .wrapping_add(crate::turn_toward(actor.yaw, actor.roll, RULES.turn_response))
                     & 2047;
             if attempt == 0 {
                 actor.control_flags &= !0x40000;
@@ -413,7 +515,7 @@ fn patrol(
             }
             if (!moving || (actor.proximity != 0 && actor.action == 161))
                 && actor.phase % RULES.scan_period == 0
-                && let Some(peer) = nearest(actor, ctx, ctx.model20, true, |t| {
+                && let Some(peer) = nearest(actor, ctx, ctx.model20, !moving, |t| {
                     t.slot != actor.slot && t.previous == 0
                 })
             {
@@ -567,21 +669,9 @@ pub(crate) fn step(actor: &mut SpiderState, ctx: &mut SpiderContext<'_>) -> Opti
                 effects.sound = Some(32);
                 match actor.attack_phase {
                     0 => {
+                        effects.phase0_target = Some(actor.target);
                         if let Some(target) = pursue(actor, ctx, &mut effects) {
                             effects.web_target = Some(target.slot);
-                            effects.web_charge_on_launch =
-                                original_target.is_some_and(|t| t.class != 3 || t.model != 0);
-                        }
-                        // Human phase0 tests the authoritative immobilization
-                        // counter even when no projectile was allocated.
-                        if let Some(target) = original_target
-                            && target.class == 3
-                            && target.model == 0
-                            && ctx
-                                .local_player_status
-                                .is_some_and(|(slot, value)| slot == target.slot && value != 0)
-                        {
-                            actor.attack_phase = 1;
                         }
                     }
                     1 | 2 => {
