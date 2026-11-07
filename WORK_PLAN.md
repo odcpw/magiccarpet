@@ -1,5 +1,36 @@
 # Shared-engine delivery plan
 
+## Delivered voxel sandbox experiment (2026-11-07)
+
+Oliver accepted the Modern goat/archer delivery and requested a separate small
+Level 1 voxel sandbox. Preserve the accepted Modern and Original installations.
+Compare coarse/medium/fine voxel sizes on the same scene; reuse the approved
+image-derived goat model and its animation. Implement destructible terrain and
+building volumes, goat death as fragmentation with bouncing/settling rubble and
+fade, and a cohesive voxel fireball whose impact scatters fragments with incoming
+momentum and physical contacts. Deliver an interactive sandbox plus a short
+actual-player video with important frames inspected, and separate unthrottled
+performance measurements covering quiet/impact/settling. This is an isolated
+physics experiment over Level 1 source geometry, not full campaign destruction
+or proof that the existing campaign CPU bottleneck is fixed.
+
+Implemented and installed separately through `run-voxels.sh` / `Builds/Voxels`:
+three terrain sizes, three animated goat resolutions, destructible source house
+and terrain, impact-driven fireball fragmentation, bounded physical rubble and
+rest/fade. Root integrated the three Terra-owned components. The 24 focused Unity
+tests pass, and actual keyboard checks pass against the installed launcher on a
+private display. The 34-second actual-player recording was inspected at gait,
+impact, fragmentation, roof damage, crater, settling and fading frames.
+
+Evidence: `/mnt/pinokio-shared/magiccarpet-voxel-sandbox-20261107/`; qualified
+`player-7`, `tests-compact.xml`, `capture-compact`, `installed-controls` and
+`final-benchmark-*`. Fine preset median 4.19 ms / p95 5.82 ms at 1280×960 on the
+3090; normal destruction worst frame 37.71 ms, 64-cell goat stress 68.04 ms.
+Synchronous fracture work remains a hitch limitation. Measurements use an
+isolated GPU compositor; the locked desktop and full campaign are not qualified
+by them. See `research/private/remc2-unity-native/VOXEL_SANDBOX.md` for scope,
+commands, physics approximations and the phone video. Accepted Modern remains.
+
 ## Active Modern characters — finish the live Level 1 cycle (2026-11-07)
 
 Oliver rejected treating isolated animation previews as finished assets. Finish
