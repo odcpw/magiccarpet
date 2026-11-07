@@ -48,6 +48,9 @@ pub(crate) struct Target {
     pub position: Position,
     pub yaw: i16,
     pub roll: i16,
+    pub source_yaw: Option<i16>,
+    pub source_roll: Option<i16>,
+    pub relations: crate::native_world::source_target::Relations,
     pub player_entity: u16,
     pub mana: i32,
     pub mana_regen: i32,
@@ -57,7 +60,10 @@ pub(crate) struct Target {
     pub target: u16,
     pub next: u16,
     pub parent: u16,
+    pub stage_index: Option<u8>,
+    pub stage_relation: Option<u16>,
     pub stage_mode: u8,
+    pub pitch_extent: Option<i16>,
     pub link: u16,
     pub attacker: u16,
     pub killer: u16,
@@ -170,10 +176,18 @@ pub(crate) struct Context<'a> {
     pub terrain: &'a SessionTerrain,
     /// Current active arena rows; links resolve through this live view.
     pub targets: &'a [Target],
+    /// Runtime fixed-address lookups resolve the current owner lazily.
+    /// Standalone configured controls use the supplied static targets.
+    pub current_target: Option<&'a dyn Fn(u16) -> Option<Target>>,
+    /// Current fixed row0 for the source mode12 copy after its null-parent
+    /// hide decision; ordinary pointer lookups still treat zero as null.
+    pub sentinel: Option<Target>,
     /// Frozen source membership for the class3 scan.
     pub class3: &'a [u16],
     /// Frozen source membership for model26 peer scans.
     pub model26: &'a [u16],
+    /// Pass-start per-model membership, used only by source StageVar scans.
+    pub families: Option<&'a [Vec<u16>; 29]>,
     /// StageVar table consumed by action215 (`sub_1D5D0` in remc2).
     pub runtime: Option<&'a RuntimeSnapshot>,
     /// The shared source D41A0 random stream used by action210 theft.
@@ -182,26 +196,44 @@ pub(crate) struct Context<'a> {
 
 impl Context<'_> {
     fn any_target(&self, slot: u16) -> Option<Target> {
-        (slot != 0)
-            .then(|| {
-                self.targets
-                    .iter()
-                    .find(|target| target.slot == slot)
-                    .copied()
-            })
-            .flatten()
+        if slot == 0 { return None; }
+        if let Some(current_target) = self.current_target {
+            return current_target(slot);
+        }
+        self.targets.iter().find(|target| target.slot == slot).copied()
+    }
+
+    /// A fixed source pointer may refer to the executing actor itself. Its
+    /// callback-local row is newer than the arena row until publication.
+    fn actor_target(&self, actor: &Actor<'_>, slot: u16) -> Option<Target> {
+        if slot != actor.row.index { return self.any_target(slot); }
+        let row = &*actor.row;
+        Some(Target {
+            handle: actor.handle, slot, source_id: row.source_id,
+            class: row.class, model: row.model, action: row.action, life: row.life,
+            flags: row.control_flags, position: row.position, yaw: row.yaw,
+            roll: row.source_roll(), source_yaw: Some(row.yaw), source_roll: Some(row.source_roll()),
+            relations: crate::native_world::source_target::Relations {
+                target: Some(word(row, 154)), attacker: Some(word(row, 42)), parent: Some(word(row, 44)),
+                stage_mode: Some(row.record[77]), stage_index: Some(row.record[76]),
+                stage_relation: Some(word(row, 78)), next: Some(word(row, 56)),
+            },
+            player_entity: row.source_player_entity_index(),
+            mana: row.mana, mana_regen: row.mana_regen, left_spell: None, right_spell: None,
+            target: word(row, 154), next: word(row, 56), parent: word(row, 44),
+            stage_index: Some(row.record[76]), stage_relation: Some(word(row, 78)),
+            stage_mode: row.record[77], pitch_extent: Some(row.array_pitch()),
+            link: word(row, 54), attacker: word(row, 42), killer: word(row, 40),
+            actual_speed: row.actual_speed, maximum_speed: i16::from_le_bytes([row.record[138], row.record[139]]),
+        })
     }
 
     fn player_target(&self, slot: u16) -> Option<Target> {
-        (slot != 0 && self.class3.contains(&slot))
-            .then(|| self.any_target(slot))
-            .flatten()
+        self.any_target(slot)
     }
 
     fn model26_target(&self, slot: u16) -> Option<Target> {
-        (slot != 0 && self.model26.contains(&slot))
-            .then(|| self.any_target(slot))
-            .flatten()
+        self.any_target(slot)
     }
 }
 
@@ -257,7 +289,9 @@ fn move_source(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
             half_height: ctx.rules.collision_half_height,
             ground_clearance: ctx.rules.ground_clearance,
             descent: ctx.rules.descent,
-            turn_limit: ctx.rules.turn_limit,
+            // sub_58350 ignores descriptor word4; subtype is the effective
+            // maximum turn, including ordinary model26 movement.
+            turn_limit: ctx.rules.turn_response,
             terrain_mask: ctx.rules.terrain_mask,
             maximum_tile_slope: ctx.rules.maximum_slope,
         },
@@ -279,7 +313,7 @@ fn move_source(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
     motion.killed && actor.row.life < 0
 }
 
-fn consume_damage(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
+fn consume_damage(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<bool, String> {
     let mut life = actor.row.life;
     let mut damage = i32::from_le_bytes(
         actor.row.record[98..102]
@@ -295,23 +329,31 @@ fn consume_damage(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
         &mut attacker,
     )
     .is_some();
+    // Source writes the direct mailbox result before following word34. This
+    // also makes a self-addressed linked read see the current callback row.
+    actor.row.set_life(life);
+    actor.row.record[98..102].copy_from_slice(&damage.to_le_bytes());
+    put(actor.row, 102, pending_attacker);
+    put(actor.row, 42, attacker);
 
     let mut hit = direct;
     let mut next = word(actor.row, 56);
-    for _ in 0..=ctx.targets.len() {
-        let Some(linked) = ctx.any_target(next) else {
+    for _ in 0..1_000 {
+        let Some(linked) = ctx.actor_target(actor, next) else {
             break;
         };
-        if crate::combat::actors::inherit_linked_life(
+        if linked.life < life && crate::combat::actors::inherit_linked_life(
             &mut life,
             &mut attacker,
             linked.life,
-            linked.attacker,
+            linked.relations.attacker.ok_or_else(|| format!("model26 linked target {} has no current attacker", linked.slot))?,
         ) {
             hit = true;
+            actor.row.set_life(life);
+            put(actor.row, 42, attacker);
             break;
         }
-        next = linked.next;
+        next = linked.relations.next.ok_or_else(|| format!("model26 linked target {} has no current next relation", linked.slot))?;
     }
 
     actor.row.set_life(life);
@@ -326,7 +368,7 @@ fn consume_damage(actor: &mut Actor<'_>, ctx: &Context<'_>) -> bool {
     } else {
         put(actor.row, 42, 0);
     }
-    hit
+    Ok(hit)
 }
 
 fn random_roam_heading(actor: &mut Actor<'_>) {
@@ -371,7 +413,7 @@ fn scan_target(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
     best
 }
 
-fn scan_peer(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
+fn scan_peer(actor: &Actor<'_>, ctx: &Context<'_>, stationary: bool) -> Option<Target> {
     let range_squared = ctx.rules.target_range.wrapping_mul(ctx.rules.target_range);
     let mut best = None;
     let mut best_distance = u32::MAX;
@@ -386,7 +428,11 @@ fn scan_peer(actor: &Actor<'_>, ctx: &Context<'_>) -> Option<Target> {
             && distance_squared < best_distance
             && angle_distance(
                 i32::from(actor.row.yaw),
-                heading_for_positions(actor.row.position, candidate.position),
+                if stationary {
+                    heading_for_positions(candidate.position, actor.row.position)
+                } else {
+                    heading_for_positions(actor.row.position, candidate.position)
+                },
             )
             .cast_unsigned()
                 < ctx.rules.target_half_angle.cast_unsigned()
@@ -423,8 +469,8 @@ fn drain_tail(actor: &mut Actor<'_>) {
     }
 }
 
-fn stationary_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
-    let hit = consume_damage(actor, ctx);
+fn stationary_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, String> {
+    let hit = consume_damage(actor, ctx)?;
     if hit && actor.row.life >= 0 {
         actor.row.set_source_action(DRAIN_ACTION);
     } else if !hit
@@ -432,7 +478,7 @@ fn stationary_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
         && ctx.rules.scan_period != 0
         && actor.row.phase % ctx.rules.scan_period == 0
         && ctx.rules.behavior_flags & 4 == 0
-        && let Some(peer) = scan_peer(actor, ctx)
+        && let Some(peer) = scan_peer(actor, ctx, true)
     {
         actor.set_link(peer.slot);
         actor.row.set_source_action(LINK_ACTION);
@@ -441,13 +487,13 @@ fn stationary_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
     settle(&mut position, ctx.rules, ctx.terrain);
     actor.row.set_position(position);
     generic_tail(actor);
-    Effects::default()
+    Ok(Effects::default())
 }
 
-fn roam_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
-    let hit = consume_damage(actor, ctx);
+fn roam_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, String> {
+    let hit = consume_damage(actor, ctx)?;
     if actor.row.life < 0 {
-        return Effects::default();
+        return Ok(Effects::default());
     }
     if hit {
         actor.row.set_source_action(DRAIN_ACTION);
@@ -455,7 +501,7 @@ fn roam_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
         settle(&mut position, ctx.rules, ctx.terrain);
         actor.row.set_position(position);
         generic_tail(actor);
-        return Effects::default();
+        return Ok(Effects::default());
     }
 
     let obstructed = move_source(actor, ctx);
@@ -471,8 +517,8 @@ fn roam_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
                 DRAIN_ACTION
             };
             actor.row.set_source_action(action);
-        } else if ctx.rules.behavior_flags & 4 == 0
-            && let Some(peer) = scan_peer(actor, ctx)
+        } else if actor.row.record[61] != 0 && ctx.rules.behavior_flags & 4 == 0
+            && let Some(peer) = scan_peer(actor, ctx, false)
         {
             actor.set_link(peer.slot);
             actor.row.set_source_action(LINK_ACTION);
@@ -481,7 +527,7 @@ fn roam_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Effects {
     generic_tail(actor);
     let mut effects = Effects::default();
     effects.population_decrements = u32::from(obstructed && actor.row.life < 0);
-    effects
+    Ok(effects)
 }
 
 fn steal(actor: &Actor<'_>, ctx: &mut Context<'_>, target: Target) -> Option<SpellTheft> {
@@ -518,7 +564,7 @@ fn drain_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, S
     if actor.row.phase & 0x1f == 0 {
         effects.sound = Some(62);
     }
-    consume_damage(actor, ctx);
+    consume_damage(actor, ctx)?;
     if actor.row.life < 0 {
         drain_tail(actor);
         return Ok(effects);
@@ -527,7 +573,7 @@ fn drain_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, S
     let obstructed = move_source(actor, ctx);
     effects.population_decrements = u32::from(obstructed && actor.row.life < 0);
     if let Some(target) = ctx
-        .player_target(actor.target())
+        .actor_target(actor, actor.target())
         .filter(|target| target.drainable())
     {
         if actor.row.phase & ctx.rules.theft_cadence_mask == 0 {
@@ -538,10 +584,10 @@ fn drain_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, S
                     .filter_map(|slot| ctx.model26_target(*slot))
                     .filter(|peer| {
                         peer.source_id != actor.row.source_id
-                            && (i32::from(actor.row.position.x.wrapping_sub(peer.position.x) as i16)
-                                .abs() < i32::from(actor.row.pitch))
-                            && (i32::from(actor.row.position.y.wrapping_sub(peer.position.y) as i16)
-                                .abs() < i32::from(actor.row.pitch))
+                            && (i32::from(actor.row.position.x) - i32::from(peer.position.x))
+                                .abs() < i32::from(actor.row.array_pitch())
+                            && (i32::from(actor.row.position.y) - i32::from(peer.position.y))
+                                .abs() < i32::from(actor.row.array_pitch())
                     })
             {
                 actor.set_roll(heading_for_positions(peer.position, actor.row.position) as i16);
@@ -572,15 +618,20 @@ fn drain_step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, S
     Ok(effects)
 }
 
-fn link_step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
+fn link_step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<Effects, String> {
     let mut effects = Effects::default();
-    let mut peer = ctx.model26_target(actor.link()).filter(|peer| {
+    // sub_1C560 returns before reading its own mailbox when word32 is zero.
+    if actor.link() == 0 {
+        actor.row.set_source_action(ROAM_ACTION);
+        return Ok(effects);
+    }
+    let mut peer = ctx.actor_target(actor, actor.link()).filter(|peer| {
         peer.life >= 0
             && peer.flags & ENTITY_DRAW_DISABLED_BIT == 0
             && peer.class == 5
             && peer.model == SOURCE_MODEL
     });
-    let hit = consume_damage(actor, ctx);
+    let hit = consume_damage(actor, ctx)?;
     if actor.row.life < 0 {
         if let Some(peer) = peer {
             effects.peer_updates.push(PeerUpdate {
@@ -592,7 +643,7 @@ fn link_step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
         }
         actor.set_link(0);
         actor.row.set_source_action(PREKILL_ACTION);
-        return effects;
+        return Ok(effects);
     }
     if hit {
         if let Some(peer) = peer {
@@ -609,56 +660,41 @@ fn link_step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
         let mut position = actor.row.position;
         settle(&mut position, ctx.rules, ctx.terrain);
         actor.row.set_position(position);
-        return effects;
+        return Ok(effects);
     }
+    let obstructed = move_source(actor, ctx);
+    effects.population_decrements = u32::from(obstructed && actor.row.life < 0);
     let Some(current_peer) = peer.take() else {
         actor.set_link(0);
         actor.row.set_source_action(ROAM_ACTION);
-        return effects;
+        return Ok(effects);
     };
-
-    let obstructed = move_source(actor, ctx);
-    effects.population_decrements = u32::from(obstructed && actor.row.life < 0);
     if ctx.rules.scan_period != 0 && actor.row.phase % ctx.rules.scan_period == 0 {
         match current_peer.action.wrapping_sub(STATIONARY_ACTION) {
             0 | 1 => {
                 actor.set_roll(
                     heading_for_positions(actor.row.position, current_peer.position) as i16,
                 );
-                if let Some(other) = ctx
-                    .model26
-                    .iter()
-                    .filter_map(|slot| ctx.model26_target(*slot))
-                    .find(|other| {
-                        other.source_id != actor.row.source_id
-                            && i32::from(actor.row.position.x.wrapping_sub(other.position.x) as i16)
-                                .abs()
-                                < i32::from(actor.row.pitch)
-                            && i32::from(actor.row.position.y.wrapping_sub(other.position.y) as i16)
-                                .abs()
-                                < i32::from(actor.row.pitch)
-                    })
-                {
-                    actor
-                        .set_roll(heading_for_positions(other.position, actor.row.position) as i16);
-                }
             }
             2 => {
                 actor.set_target(current_peer.target);
                 actor.set_link(0);
                 actor.row.set_source_action(DRAIN_ACTION);
-                return effects;
+                return Ok(effects);
             }
             6 => {
                 actor.set_target(current_peer.target);
                 actor.set_link(0);
                 actor.row.set_source_action(214);
-                return effects;
+                return Ok(effects);
             }
             3 => {
                 actor.set_link(current_peer.link);
-                if let Some(next) = ctx.model26_target(current_peer.link) {
+                if let Some(next) = ctx.actor_target(actor, current_peer.link) {
                     actor.set_roll(heading_for_positions(actor.row.position, next.position) as i16);
+                } else if current_peer.link == 0 {
+                    let sentinel = ctx.sentinel.map_or(Position::default(), |target| target.position);
+                    actor.set_roll(heading_for_positions(actor.row.position, sentinel) as i16);
                 }
             }
             _ => {
@@ -670,14 +706,22 @@ fn link_step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
             current_peer.action.wrapping_sub(STATIONARY_ACTION),
             0 | 1 | 3
         ) {
+            if let Some(other) = ctx.model26.iter()
+                .filter_map(|slot| ctx.actor_target(actor, *slot))
+                .find(|other| other.source_id != actor.row.source_id
+                    && (i32::from(actor.row.position.x as i16) - i32::from(other.position.x as i16)).abs() < 256
+                    && (i32::from(actor.row.position.y as i16) - i32::from(other.position.y as i16)).abs() < 256)
+            {
+                actor.set_roll(heading_for_positions(other.position, actor.row.position) as i16);
+            }
             actor.row.set_actual_speed(
                 current_peer
                     .maximum_speed
-                    .wrapping_add(actor.row.actual_speed),
+                    .wrapping_add(current_peer.actual_speed),
             );
         }
     }
-    effects
+    Ok(effects)
 }
 
 fn prekill(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
@@ -686,8 +730,8 @@ fn prekill(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
         ..Effects::default()
     };
     let mut child = word(actor.row, 56);
-    for _ in 0..ctx.targets.len() {
-        let Some(linked) = ctx.any_target(child) else {
+    for _ in 0..1_000 {
+        let Some(linked) = ctx.actor_target(actor, child) else {
             break;
         };
         effects.peer_updates.push(PeerUpdate {
@@ -702,8 +746,8 @@ fn prekill(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
         child = linked.next;
     }
     let killer = word(actor.row, 40);
-    if let Some(target) = ctx.player_target(killer)
-        && target.model == 0
+    if let Some(target) = ctx.actor_target(actor, killer)
+        && target.class == 3 && target.model == 0
         && target.source_id != actor.row.source_id
     {
         effects.kill_credit = Some(target.slot);
@@ -720,11 +764,11 @@ fn prekill(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Effects {
 /// action error below.
 pub(crate) fn step(actor: &mut Actor<'_>, ctx: &mut Context<'_>) -> Result<Effects, String> {
     match actor.row.action {
-        STATIONARY_ACTION => Ok(stationary_step(actor, ctx)),
-        ROAM_ACTION => Ok(roam_step(actor, ctx)),
+        STATIONARY_ACTION => stationary_step(actor, ctx),
+        ROAM_ACTION => roam_step(actor, ctx),
         DRAIN_ACTION => drain_step(actor, ctx),
         LINK_ACTION => {
-            let effects = link_step(actor, ctx);
+            let effects = link_step(actor, ctx)?;
             generic_tail(actor);
             Ok(effects)
         }

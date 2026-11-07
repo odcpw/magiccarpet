@@ -888,6 +888,33 @@ pub(crate) fn add_current_mana_saturated(
     Ok(true)
 }
 
+/// Source28FF0 debits the current class3 field owner with signed wrapping
+/// subtraction and a lower bound only. Its caller owns target eligibility;
+/// neither a cold Castle projection nor an upper-capacity clamp belongs here.
+pub(crate) fn subtract_current_mana_lower_clamped(
+    arena: &mut SourceArena,
+    slot: u16,
+    amount: i32,
+) -> Result<bool, String> {
+    let Some(owner) = current_mana_owner(arena, slot)? else {
+        return Ok(false);
+    };
+    match owner {
+        CurrentManaOwner::Castle => {
+            let castle = arena
+                .economy
+                .castle_entry_mut(slot)
+                .expect("checked current owner");
+            castle.mana = castle.mana.wrapping_sub(amount).max(0);
+        }
+        CurrentManaOwner::Raw => {
+            let row = &mut arena.entities[usize::from(slot)];
+            row.set_mana(row.mana.wrapping_sub(amount).max(0));
+        }
+    }
+    Ok(true)
+}
+
 /// Commit just the two parent fields written by 6A480/6B1C0/6B310. In
 /// particular a typed replacement must not receive the old player's pose,
 /// life, identity or cache when a holder still points at its numeric slot.

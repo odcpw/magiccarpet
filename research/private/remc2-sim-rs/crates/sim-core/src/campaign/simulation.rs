@@ -17675,6 +17675,39 @@ impl Mc2Simulation {
                     Vec::push(&mut self.session.state.live.shared_spells.events, event);
                     self.append_new_economy_events(pass, source_slot);
                 }
+                // Source28FF0 prepares62 at entry, including a visit that
+                // consumes fatal damage before it can move or drain mana.
+                if visit.handler == ExistingHandler::Creature26
+                    && let Some(sound) = creatures::creature_26::mc2::prepare_callback_sound(
+                        &self.session.state.live.economy, source_slot,
+                    )?
+                {
+                    let sound_id = creatures::creature_26::mc2::CALLBACK_SOUND;
+                    let live = &self.session.state.live;
+                    // Sound62 has fixed pitch and flags0. Freeze its physical
+                    // source pose and silence bit without spending source RNG.
+                    let audio = (sound.control_flags & 0x80 == 0).then(|| {
+                        crate::prepare_event_sound_command(
+                            live.core.state.position, live.core.state.yaw,
+                            sound.position, sound_id, 0, sound.source_id, 0,
+                        )
+                    }).flatten();
+                    let event = FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::Creature26Drain,
+                        entity_index: sound.slot,
+                        player_index: -1,
+                        sound_id,
+                    };
+                    self.session.state.live.economy.prepare_sound(
+                        source_slot, sound.slot, -1, sound_id,
+                    );
+                    self.flush_shared_effects();
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, event);
+                    self.append_new_economy_events(pass, source_slot);
+                }
                 // Source27E00/27C10 prepare sound59 before movement, target
                 // reads or NewEvent. Publish that call-time packet here so
                 // later work cannot replace its source pose or identity.
@@ -17844,6 +17877,20 @@ impl Mc2Simulation {
                         }
                         (None, outcome.kill_credit, outcome.feedback, None, None)
                     } else if visit.handler == ExistingHandler::Creature26 {
+                        let targets = source_target::Context {
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                        };
                         #[cfg(test)]
                         let internal_credit_before = credit_source.map(|source| {
                             (
@@ -17857,6 +17904,7 @@ impl Mc2Simulation {
                             &live.core.runtime,
                             &mut live.terrain,
                             &self.session.definition.presentation.particles,
+                            targets,
                             source_slot,
                             players,
                             models,
@@ -18158,7 +18206,9 @@ impl Mc2Simulation {
                 if let Some((owner, family)) = feedback {
                     award_source_spell_experience(&mut self.session.state.live, owner, family);
                 }
-                if let Some(sound) = sound.filter(|_| visit.handler != ExistingHandler::Creature17) {
+                if let Some(sound) = sound.filter(|_| !matches!(
+                    visit.handler, ExistingHandler::Creature17 | ExistingHandler::Creature26
+                )) {
                     self.session.state.live.economy.prepare_sound(
                         source_slot,
                         source_slot,
@@ -30262,6 +30312,342 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_creature26_audio_freezes_entry_before_fatal_damage() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level6");
+        let base = CampaignSession::open(package, CampaignSelection::ordinary(6).unwrap())
+            .expect("qualified owner Level6")
+            .simulation()
+            .clone();
+        let actor = base.source_arena().handle(73).expect("authored model26 root");
+        assert_eq!((base.entities()[73].class, base.entities()[73].model), (5, 26));
+        let mut fatal_rng = None;
+        // Configured callback states isolate entry timing, cadence and silence.
+        // The separate real acquisition/theft encounter owns ordinary proof.
+        for (phase, fatal, muted) in [(31_u8, true, false), (32, false, false),
+            (32, true, false), (32, true, true)]
+        {
+            let mut session = base.clone();
+            let player = session.state.entity_index;
+            let entry = session.entities()[usize::from(actor.source_slot)].position;
+            session.set_level2_entity_position(player, Position {
+                x: entry.x.wrapping_add(128), ..entry
+            }).unwrap();
+            session.state.actual_speed = 0;
+            session.state.target_speed = 0;
+            let listener = (session.state.position, session.state.yaw);
+            let source_id = session.entities()[usize::from(actor.source_slot)].source_id;
+            {
+                let row = &mut session.session.state.live.economy.entities[usize::from(actor.source_slot)];
+                row.set_source_action(210);
+                row.set_phase(phase);
+                row.set_life(1000);
+                row.set_control_flags((row.control_flags & !0x80) | if muted { 0x80 } else { 0 });
+                row.record[154..156].fill(0);
+                row.record[98..102].copy_from_slice(&(if fatal { 1600_i32 } else { 0 }).to_le_bytes());
+                row.record[102..104].copy_from_slice(&(if fatal { player } else { 0 }).to_le_bytes());
+            }
+            let cursor = session.effect_journal().cursor(0).next_sequence;
+            session.step_level2_source_pass(0);
+            assert!(session.dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+            assert_eq!(session.source_arena().handle(actor.source_slot), Some(actor));
+            let row = &session.entities()[usize::from(actor.source_slot)];
+            assert_eq!(row.phase, phase.wrapping_add(1));
+            assert_eq!(row.action, if fatal { 212 } else { 209 });
+            if fatal {
+                assert_eq!(row.life, -600);
+                let rng = (session.economy().global_rng, row.entity_rng);
+                if phase == 32 && !muted { fatal_rng = Some(rng); }
+                if muted { assert_eq!(Some(rng), fatal_rng, "audio does not spend either RNG stream"); }
+            }
+            let sounds = session.effect_journal().records().iter().filter(|record|
+                record.sequence >= cursor && matches!(record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::Creature26Drain,
+                        entity_index, player_index: -1, sound_id: 62,
+                    }) if entity_index == actor.source_slot)
+            ).collect::<Vec<_>>();
+            let receipts = session.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::Economy { source_slot, event: Level2EconomyEvent::PreparedSound {
+                    entity_index, sound_id: 62, ..
+                }, .. } if *source_slot == actor.source_slot && *entity_index == actor.source_slot
+            )).count();
+            assert_eq!((sounds.len(), receipts), if phase == 32 { (1, 1) } else { (0, 0) },
+                "one source entry call, including fatal and muted visits, without a duplicate tail receipt");
+            if phase == 32 {
+                let expected = (!muted).then(|| crate::prepare_event_sound_command(
+                    listener.0, listener.1, entry, 62, 0, source_id, 0,
+                )).flatten();
+                assert_eq!(sounds[0].audio, expected, "prepared audio retains the source entry pose");
+                assert_eq!(sounds[0].audio.is_some_and(|audio| audio.command.audible), !muted);
+            }
+        }
+    }
+
+    #[test]
+    fn level6_public_meteor_retires_original_authored_creature26() {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::native_world::creatures::creature_26::mc2::{
+            start_callback_damage_trace, take_callback_damage_trace,
+        };
+
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261024-b/level6");
+        let mut session = CampaignSession::open(package, CampaignSelection::ordinary(6).unwrap())
+            .expect("whole qualified owner Level6")
+            .simulation()
+            .clone();
+        let player = session.state.entity_index;
+
+        // Declared prior-campaign MeteorIII carry/XP, player resources and
+        // Castle construction. Every authored creature field remains live.
+        session.apply_carried_spell_families(&[9], Some(9)).unwrap();
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            session.economy_mut().set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x|
+            Position { x: x * 2048, y: y * 2048, z: 0 }))
+            .find(|position| !session.economy().castle_projectile_site_blocked(
+                *position, session.entities(), session.canonical_terrain(),
+            )).expect("ordinary Castle site");
+        let castle = session.economy_mut().build_castle(site, player).unwrap();
+        assert!(session.economy_mut().set_castle_mana_prerequisite_for_test(castle, 200_000));
+        session.shared_spells_mut().award_spell_experience(player, 9, 5_000);
+        {
+            let live = &mut session.session.state.live;
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.set_max_life(200_000);
+            parent.set_life(200_000);
+            parent.max_mana = 200_000;
+            parent.record[144..148].copy_from_slice(&200_000_i32.to_le_bytes());
+            parent.set_mana(200_000);
+            parent.set_mana_regen(0);
+            let parent = parent.clone();
+            live.player_life = parent.life;
+            live.shared_spells.sync_player_entity_from_authority(&parent);
+            live.shared_spells.player_mana = parent.mana;
+            live.shared_spells.caster.mana = parent.mana;
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+        }
+        // Prepare the real holder/tier before admitting the encounter, so
+        // UI selection does not spend a post-birth creature movement visit.
+        let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 9).unwrap() as i8;
+        session.step_outer_turn(PlayerCommand {
+            opcode: 31, argument_1: ui, argument_2: 2, ..Default::default()
+        }, 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let holder = session.shared_spells().local_player().enabled_spell_holders[9];
+        assert_ne!(holder, 0);
+        assert_eq!(session.shared_spells().pickup(holder).unwrap().level_gate, 2);
+        assert!(!session.shared_spells().free_spell_usage);
+        let holder_handle = session.source_arena().handle(holder).unwrap();
+        let caster_handle = session.source_arena().handle(player).unwrap();
+        let authored_roots = [304_u16, 305, 306, 310, 378, 379];
+        for authored_record in authored_roots {
+            assert!(session.mission().authored_features().iter().any(|feature|
+                feature.index == authored_record && (feature.kind, feature.subtype, feature.activation_group) == (5, 26, 13)));
+            assert!(!session.creature_runtime_census()
+                .roots_of_kind(crate::level_definition::CreatureKind::Creature26)
+                .any(|identity| identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record }),
+                "group13's authored root must be produced during this run");
+        }
+        let switch = session.source_arena().handle(63).expect("real reset proximity switch63");
+        let trigger = &session.entities()[63];
+        assert_eq!((trigger.class, trigger.model, trigger.action, trigger.source_id), (11, 0, 0, 13));
+        assert_eq!(switch.generation, 0);
+        assert!(session.mission().authored_features().iter().any(|feature|
+            feature.index == 318 && (feature.kind, feature.subtype) == (11, 0)));
+        let proximity = trigger.position;
+        // One declared player-only approach satisfies the real proximity
+        // switch. Its cadence and full group13 constructors remain scheduled.
+        session.set_level2_entity_position(player, proximity).unwrap();
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+        let mut produced = false;
+        for turn in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "producer turn{turn}: {:?}", session.dispatch_events());
+            if session.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 63, group: 13, authored_indices, .. }
+                    if authored_roots.iter().all(|record| authored_indices.contains(record))))
+            {
+                produced = true;
+                break;
+            }
+        }
+        assert!(produced, "real switch63 must publish the complete authored model26 group13");
+        let published304 = session.creature_runtime_census()
+            .roots_of_kind(crate::level_definition::CreatureKind::Creature26)
+            .find(|identity| identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record: 304 })
+            .expect("original authored304 remains part of the full published wave").handle;
+        let row304 = &session.entities()[usize::from(published304.source_slot)];
+        eprintln!("full group13 original304={published304:?} life={} action={} phase={} pose={:?} yaw={}",
+            row304.life, row304.action, row304.phase, row304.position, row304.yaw);
+        // Candidate2 retained authored304's real no-writer movement death.
+        // Pin authored378 before any shot: its source tile(198,248) lies in
+        // the open, flat part of the same unfiltered ordinary wave.
+        let identity = session.creature_runtime_census()
+            .roots_of_kind(crate::level_definition::CreatureKind::Creature26)
+            .find(|identity| identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record: 378 })
+            .expect("predetermined newly published authored378 source generation");
+        let root = identity.handle;
+        let CreatureRootOrigin::AuthoredRecord { authored_record } = identity.origin else {
+            panic!("the original root must come from actual authored production");
+        };
+        let original = session.entities()[usize::from(root.source_slot)].clone();
+        assert_eq!((original.class, original.model, original.max_life, original.life),
+            (5, 26, 4400, 4400));
+        assert!(identity.living);
+        assert!(session.mission().authored_features().iter().any(|feature|
+            feature.index == authored_record && (feature.kind, feature.subtype, feature.activation_group,
+                feature.tile_x, feature.tile_y) == (5, 26, 13, 198, 248)));
+        assert!(session.campaign_entity_presentations(0).unwrap().iter()
+            .any(|view| view.entity_index == root.source_slot));
+        // One fixed, close player firing pose in that open room. Source
+        // motion, holder protection and projectile guidance stay unchanged.
+        let mut origin = Position {
+            x: original.position.x.wrapping_add(512), ..original.position
+        };
+        origin.z = session.canonical_terrain().ground_height(origin).wrapping_add(768);
+        session.set_level2_entity_position(player, origin).unwrap();
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+        assert_eq!(session.source_arena().handle(root.source_slot), Some(root));
+        assert!(session.entities()[usize::from(root.source_slot)].life >= 0);
+        assert_eq!(session.source_arena().handle(holder), Some(holder_handle));
+        assert_eq!(session.shared_spells().local_player().enabled_spell_holders[9], holder);
+        let settled = session.entities()[usize::from(player)].clone();
+        assert!(i32::from(settled.position.z) + i32::from(settled.array_fov())
+            < i32::from(session.canonical_terrain().ceiling_height(settled.position)
+                .expect("actual Cave firing room has a source ceiling")));
+        let target = &session.entities()[usize::from(root.source_slot)];
+        let aim = crate::level1_mission::projectile_guidance_angles(
+            Position { z: settled.position.z.wrapping_add(settled.array_fov()), ..settled.position },
+            Position { z: target.position.z.wrapping_add(target.array_yaw()), ..target.position },
+        );
+        let mut no_cast = session.clone();
+        let credit_before = session.economy().authored_bee_kill_census(player);
+        let meteor = crate::level_definition::METEOR_PROPERTIES.tiers[2];
+        let attack_turns = 2 * (usize::from(meteor.cooldown) + 1) + usize::from(meteor.impact_duration);
+        let mut aims = Vec::new();
+        let mut callbacks = Vec::new();
+        let mut launches = Vec::new();
+        let mut impacts = Vec::new();
+        let mut mana_spent = 0_i32;
+        let mut root_lost = false;
+        let mut mana_dto = false;
+        let mut burst_dto = false;
+        let mut hidden_turn = None;
+        let mut reclaimed = false;
+        area_damage::start_actor_damage_trace(&[root]);
+        area_damage::start_effect_damage_trace(root.source_slot);
+        for turn in 0..160 {
+            let firing = turn < attack_turns
+                && session.source_arena().handle(root.source_slot) == Some(root)
+                && session.entities()[usize::from(root.source_slot)].life >= 0;
+            aims.push(firing.then_some(aim));
+            if firing { session.set_level2_player_aim_for_test(aim.0, aim.1); }
+            let mana_before = session.shared_spells().player_entity().mana;
+            let event_start = session.economy().events().len();
+            session.start_creature17_trace();
+            start_callback_damage_trace(root);
+            session.step_outer_turn(PlayerCommand {
+                flags: if firing { 0x10 } else { 0 }, ..Default::default()
+            }, 0);
+            let trace = session.take_creature17_trace();
+            launches.extend(trace.meteor_launches);
+            impacts.extend(trace.meteor_impacts);
+            mana_spent = mana_spent.saturating_add(mana_before
+                .saturating_sub(session.shared_spells().player_entity().mana).max(0));
+            let visits = take_callback_damage_trace();
+            assert!(session.dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })), "turn{turn}: {:?}", session.dispatch_events());
+            let views = session.campaign_entity_presentations(0).unwrap();
+            if visits.iter().any(|visit| visit.actor == root && visit.before.action == 213
+                && visit.after.as_ref().is_some_and(|row| row.drawing_disabled()))
+            {
+                assert_eq!(session.source_arena().handle(root.source_slot), Some(root));
+                assert!(!views.iter().any(|view| view.entity_index == root.source_slot));
+                hidden_turn = Some(turn);
+                for event in &session.economy().events()[event_start..] {
+                    if let Level2EconomyEvent::ManaSphereSpawned { sphere_id, source_entity_index, mana } = event
+                        && *source_entity_index == root.source_slot && *mana > 0
+                    {
+                        mana_dto |= session.economy().spheres().iter().any(|sphere|
+                            sphere.id == *sphere_id && sphere.active && sphere.mana >= *mana
+                                && session.source_arena().handle(sphere.source_entity_index).is_some()
+                                && views.iter().any(|view| view.entity_index == sphere.source_entity_index));
+                    }
+                }
+            }
+            for (&slot, &(generation, parent)) in session.source_arena().effects.death_burst_origins() {
+                if parent == root.source_slot && session.source_arena().slot_generation(slot) == generation {
+                    let row = &session.entities()[usize::from(slot)];
+                    burst_dto |= row.active && !row.drawing_disabled() && (row.class, row.model) == (10, 1)
+                        && views.iter().any(|view| view.entity_index == slot && view.source_id == row.source_id);
+                }
+            }
+            if session.source_arena().handle(root.source_slot) == Some(root)
+                && session.entities()[usize::from(root.source_slot)].life < 0
+            {
+                root_lost |= !session.source_arena().rebuilt_class5_model_slots()[26].contains(&root.source_slot);
+            }
+            callbacks.extend(visits);
+            if hidden_turn.is_some_and(|hidden| turn > hidden) {
+                assert!(session.source_arena().resolve(root).is_none(), "following source boundary reclaims original26");
+                reclaimed = true;
+            }
+            if reclaimed && mana_dto && burst_dto { break; }
+        }
+        let receipts = area_damage::take_effect_damage_trace();
+        for (turn, recorded_aim) in aims.iter().enumerate() {
+            if let Some((yaw, pitch)) = recorded_aim { no_cast.set_level2_player_aim_for_test(*yaw, *pitch); }
+            no_cast.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(no_cast.dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })), "no-cast turn{turn}: {:?}", no_cast.dispatch_events());
+        }
+        let fatal = callbacks.iter().any(|visit| {
+            let (Some(after), Some(writer)) = (&visit.after, visit.entry_writer) else { return false; };
+            let damage = i32::from_le_bytes(visit.before.record[98..102].try_into().unwrap());
+            let owner = u16::from_le_bytes([visit.before.record[102], visit.before.record[103]]);
+            visit.actor == root && writer.target == root && visit.before.life >= 0 && damage > 0
+                && u16::from_le_bytes([visit.before.record[56], visit.before.record[57]]) == 0
+                && owner == player && writer.mailbox == (damage, player)
+                && after.life == visit.before.life.wrapping_sub(damage) && after.life < 0
+                && after.action == 212
+                && u16::from_le_bytes([after.record[40], after.record[41]]) == player
+                && u16::from_le_bytes([after.record[102], after.record[103]]) == 0
+                && receipts.iter().any(|receipt| receipt.target_slot == root.source_slot
+                    && receipt.target_generation == root.generation && receipt.source_scoped
+                    && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                    && receipt.writer_sequence == Some(writer.sequence)
+                    && impacts.iter().any(|impact| receipt.source_slot == Some(impact.impact.source_slot)
+                        && writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                        && (impact.state.source_class, impact.state.model, impact.state.subspell_index) == (10, 17, 16_000)
+                        && launches.iter().any(|launch| launch.holder == holder_handle && launch.caster == caster_handle
+                            && launch.projectile == impact.projectile
+                            && (launch.packet.class, launch.packet.model, launch.packet.subspell_index) == (9, 3, 16_000))))
+        });
+        let credited = callbacks.iter().any(|visit| visit.actor == root && visit.before.action == 212
+            && visit.kill_credit == Some(player) && visit.after.as_ref().is_some_and(|row|
+                row.action == 213 && u16::from_le_bytes([row.record[40], row.record[41]]) == player));
+        assert!(fatal && credited,
+            "public Meteor must own original26 fatal mailbox/credit: record={authored_record} root={root:?} fatal={fatal} credited={credited} pose={origin:?} aim={aim:?} callbacks={callbacks:?} launches={launches:?} impacts={impacts:?} receipts={receipts:?}");
+        assert!(!launches.is_empty() && mana_spent >= i32::try_from(launches.len()).unwrap() * meteor.mana_cost,
+            "actual public launch consumes the admitted Meteor price: launches={} mana_spent={mana_spent}", launches.len());
+        assert!(root_lost && mana_dto && burst_dto && hidden_turn.is_some() && reclaimed
+            && session.economy().authored_bee_kill_census(player) > credit_before,
+            "death consumers: root_loss={root_lost} manaDTO={mana_dto} burstDTO={burst_dto} hidden={hidden_turn:?} reclaimed={reclaimed}");
+        assert!(no_cast.creature_identity_for_source_slot(root.source_slot)
+            .is_some_and(|identity| identity.handle == root && identity.living),
+            "same-elapsed error-free no-cast retains original authored26");
+    }
 
     #[test]
     fn configured_actor_writer_trace_preserves_other_target_and_generation() {

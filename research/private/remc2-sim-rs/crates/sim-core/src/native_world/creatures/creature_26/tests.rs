@@ -59,6 +59,12 @@ fn player_target(slot: u16, position: Position) -> Target {
         position,
         yaw: 0,
         roll: 0,
+        source_yaw: Some(0),
+        source_roll: Some(0),
+        relations: crate::native_world::source_target::Relations {
+            target: Some(0), attacker: Some(0), parent: Some(0),
+            stage_mode: Some(0), stage_index: Some(0), stage_relation: Some(0), next: Some(0),
+        },
         player_entity: slot,
         mana: 500,
         mana_regen: 9,
@@ -67,7 +73,10 @@ fn player_target(slot: u16, position: Position) -> Target {
         target: 0,
         next: 0,
         parent: 0,
+        stage_index: Some(0),
+        stage_relation: Some(0),
         stage_mode: 0,
+        pitch_extent: Some(0),
         link: 0,
         attacker: 0,
         killer: 0,
@@ -103,8 +112,11 @@ fn run_model26_action(
         rules: &RULES,
         terrain,
         targets,
+        current_target: None,
+        sentinel: None,
         class3,
         model26,
+        families: None,
         runtime: Some(runtime),
         global_rng: &mut global_rng,
     };
@@ -548,6 +560,19 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
     let mut drain_visits = 0;
     let mut in_range_cadence_visits = 0;
     let mut minimum_distance = u32::MAX;
+    let mut heard_drain = false;
+    let heard_since = |session: &crate::native_world::Mc2Simulation, cursor: u64| {
+        session.source_arena().handle(actor_slot) == Some(thief)
+            && session.effect_journal().records().iter().any(|record| {
+                record.sequence >= cursor
+                    && matches!(record.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                            audio_site: crate::MissionAudioSite::Creature26Drain,
+                            entity_index, player_index: -1, sound_id: 62,
+                        }) if entity_index == actor_slot)
+                    && record.audio.is_some_and(|audio| audio.command.audible && audio.play_type == 3)
+            })
+    };
     for _ in 0..256 {
         let actor_before = &session.entities()[usize::from(actor_slot)];
         let player_before = &session.entities()[usize::from(player_slot)];
@@ -559,6 +584,7 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
                 in_range_cadence_visits += 1;
             }
         }
+        let sound_cursor = session.effect_journal().cursor(0).next_sequence;
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             session
@@ -568,6 +594,7 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
             "{:?}",
             session.dispatch_events()
         );
+        heard_drain |= heard_since(&session, sound_cursor);
         if session.entities()[usize::from(holder_slot)].action == 78 {
             stolen = true;
             break;
@@ -614,7 +641,9 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
         session.entities()[usize::from(holder_slot)].source_dword_10(),
         0
     );
+    let sound_cursor = session.effect_journal().cursor(0).next_sequence;
     session.step_outer_turn(PlayerCommand::default(), 0);
+    heard_drain |= heard_since(&session, sound_cursor);
     assert!(
         session
             .dispatch_events()
@@ -630,7 +659,9 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
     );
     let mut returned = false;
     for _ in 0..128 {
+        let sound_cursor = session.effect_journal().cursor(0).next_sequence;
         session.step_outer_turn(PlayerCommand::default(), 0);
+        heard_drain |= heard_since(&session, sound_cursor);
         assert!(
             session
                 .dispatch_events()
@@ -648,6 +679,7 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
         returned,
         "the detached holder must return through its scheduled pickup action"
     );
+    assert!(heard_drain, "the same original thief must publish audible prepared source62 during the real theft/holder-return lifecycle");
     assert_eq!(
         session.source_arena().handle(holder_slot),
         Some(holder_handle)
@@ -657,8 +689,28 @@ fn owner_level6_acquired_spell_runs_theft_detachment_and_pickup() {
     // this makes the source word_0x4A consumer distinguish the two paths.
     let shield = session.entities()[2].clone();
     assert_eq!((shield.class, shield.model, shield.action), (15, 6, 19));
+    // Approach from the west: Shield's center also overlaps the real Beyond
+    // Sight pickup. Check all current eligible pickups before placing the player.
+    let mut shield_approach = shield.position;
+    shield_approach.x = shield_approach.x.wrapping_sub(512);
+    let mut player_at_shield = session.entities()[usize::from(player_slot)].clone();
+    player_at_shield.set_position(shield_approach);
+    for ground in session.entities().iter().filter(|row| {
+        row.active && row.class == 15 && !row.drawing_disabled()
+            && [crate::spell_activation::PhysicalSpellActionRole::OrdinaryPickup,
+                crate::spell_activation::PhysicalSpellActionRole::PersistentPickup]
+                .into_iter().any(|role|
+                    crate::spell_activation::physical_spell_action(row.model, role) == Some(row.action))
+            && session.shared_spells().local_player().enabled_spell_holders
+                .get(usize::from(row.model)) == Some(&0)
+    }) {
+        assert_eq!(crate::native_world::level2_source_intersects(ground, &player_at_shield),
+            ground.index == 2,
+            "the declared Shield approach overlaps only Shield among eligible pickups: slot {} family {} position {:?}",
+            ground.index, ground.model, ground.position);
+    }
     session
-        .set_level2_entity_position(player_slot, shield.position)
+        .set_level2_entity_position(player_slot, shield_approach)
         .unwrap();
     for _ in 0..8 {
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -787,6 +839,7 @@ fn ordinary_damage_advances_prekill_mana_death_and_generation_reclaim() {
         runtime,
         &mut nonfatal_terrain,
         &particles,
+        Default::default(),
         actor,
         &[player_slot],
         &families,
@@ -810,6 +863,7 @@ fn ordinary_damage_advances_prekill_mana_death_and_generation_reclaim() {
         runtime,
         terrain,
         &particles,
+        Default::default(),
         actor,
         &[player_slot],
         &families,
@@ -824,6 +878,7 @@ fn ordinary_damage_advances_prekill_mana_death_and_generation_reclaim() {
         runtime,
         terrain,
         &particles,
+        Default::default(),
         actor,
         &[player_slot],
         &families,
@@ -839,6 +894,7 @@ fn ordinary_damage_advances_prekill_mana_death_and_generation_reclaim() {
         runtime,
         terrain,
         &particles,
+        Default::default(),
         actor,
         &[player_slot],
         &families,
@@ -863,6 +919,8 @@ fn stage_follow_copies_hidden_and_dead_parent_pose_before_hiding() {
     parent.flags |= ENTITY_DRAW_DISABLED_BIT;
     parent.yaw = 123;
     parent.roll = 456;
+    parent.source_yaw = Some(123);
+    parent.source_roll = Some(456);
     let mut follower = actor_row(1, STAGE_ACTION, position(20_000));
     follower.set_life(RULES.max_life);
     follower.record[77] = 12;
@@ -970,6 +1028,7 @@ fn alliance_blink_is_committed_to_live_linked_actor_and_cleared_on_expiry() {
         runtime,
         terrain,
         &particles,
+        Default::default(),
         actor,
         &[parent_slot],
         &families,
@@ -985,6 +1044,7 @@ fn alliance_blink_is_committed_to_live_linked_actor_and_cleared_on_expiry() {
         runtime,
         &mut expired_terrain,
         &particles,
+        Default::default(),
         actor,
         &[parent_slot],
         &families,
@@ -1003,6 +1063,7 @@ fn alliance_follows_parent_target_and_updates_linked_blink_flags() {
     let runtime = &simulation.session.state.live.core.runtime;
     let mut parent = player_target(2, position(20_000));
     parent.target = 3;
+    parent.relations.target = Some(3);
     let enemy = player_target(3, position(21_000));
     let mut child = player_target(4, position(20_000));
     child.class = 5;
@@ -1021,6 +1082,8 @@ fn alliance_follows_parent_target_and_updates_linked_blink_flags() {
     let mut allied_target = enemy;
     allied_target.parent = parent.slot;
     allied_target.stage_mode = 14;
+    allied_target.relations.parent = Some(parent.slot);
+    allied_target.relations.stage_mode = Some(14);
     let mut rejected = summon.clone();
     rejected.record[98..104].fill(0);
     let effects = run_model26_action(
@@ -1203,6 +1266,7 @@ fn summon_expiry_publishes_source_products_then_reclaims_on_next_pass() {
             runtime,
             &mut following_terrain,
             &particles,
+            Default::default(),
             slot,
             &[],
             &families,
@@ -1222,6 +1286,7 @@ fn summon_expiry_publishes_source_products_then_reclaims_on_next_pass() {
             runtime,
             terrain,
             &particles,
+            Default::default(),
             slot,
             &[],
             &families,
@@ -1313,6 +1378,7 @@ fn summon_expiry_reclaims_a_replacement_at_the_same_source_address() {
         runtime,
         terrain,
         &particles,
+        Default::default(),
         slot,
         &[],
         &families,
@@ -1369,8 +1435,11 @@ fn drain_applies_source_mana_amount_and_steals_the_selected_unheld_spell() {
             rules: &RULES,
             terrain: &terrain,
             targets: &targets,
+            current_target: None,
+            sentinel: None,
             class3: &class3,
             model26: &[],
+            families: None,
             runtime: None,
             global_rng: &mut global_rng,
         };
@@ -1579,8 +1648,11 @@ fn drain_does_not_steal_a_spell_holder_already_linked_to_another_thief() {
         rules: &RULES,
         terrain: &terrain,
         targets: &targets,
+        current_target: None,
+        sentinel: None,
         class3: &class3,
         model26: &[],
+        families: None,
         runtime: None,
         global_rng: &mut global_rng,
     };
@@ -1623,8 +1695,11 @@ fn prekill_propagates_child_action_and_returns_source_kill_credit_slot() {
         rules: &RULES,
         terrain: &terrain,
         targets: &targets,
+        current_target: None,
+        sentinel: None,
         class3: &class3,
         model26: &[1, 3],
+        families: None,
         runtime: None,
         global_rng: &mut global_rng,
     };
@@ -1653,8 +1728,11 @@ fn action214_is_rejected_as_unsupported_source_dispatch() {
         rules: &RULES,
         terrain: &terrain,
         targets: &[],
+        current_target: None,
+        sentinel: None,
         class3: &[],
         model26: &[],
+        families: None,
         runtime: None,
         global_rng: &mut global_rng,
     };
@@ -1662,6 +1740,357 @@ fn action214_is_rejected_as_unsupported_source_dispatch() {
     let error = step(&mut actor, &mut context).unwrap_err();
 
     assert!(error.contains("unsupported model26 action214"));
+}
+
+#[test]
+fn configured_movement_uses_descriptor_subtype_for_source_turn() {
+    let terrain = terrain();
+    let mut row = actor_row(1, ROAM_ACTION, position(20_000));
+    row.set_control_flags(row.control_flags & !0x800);
+    row.set_life(RULES.max_life);
+    row.set_yaw(0);
+    row.set_source_roll(200);
+    row.set_actual_speed(0);
+    let mut rng = 0;
+    let ctx = Context { rules: &RULES, terrain: &terrain, targets: &[], current_target: None, sentinel: None, class3: &[],
+        model26: &[], families: None, runtime: None, global_rng: &mut rng };
+    let handle = SourceEntityHandle { source_slot: row.index, generation: 1 };
+    assert!(!move_source(&mut Actor { row: &mut row, handle }, &ctx));
+    assert_eq!(row.yaw, 5, "source58350 clamps by descriptor subtype, not word4=91");
+}
+
+#[test]
+fn configured_drain_reads_current_target_and_source_peer_width() {
+    let terrain = terrain();
+    let runtime = crate::native_world::tests::level_two_campaign_session().session.state.live.core.runtime.clone();
+    let at = Position { x: 65_520, y: 20_000, z: 5_000 };
+    let player = player_target(2, Position { x: 65_420, ..at });
+    let mut distant_peer = player_target(3, Position { x: 8, ..at });
+    distant_peer.class = 5;
+    distant_peer.model = SOURCE_MODEL;
+    let mut row = actor_row(1, DRAIN_ACTION, at);
+    row.set_life(RULES.max_life);
+    row.set_phase(4);
+    row.set_source_overlap_half_extents(256, 256);
+    row.set_pitch(30_000);
+    put(&mut row, 154, player.slot);
+    let effects = run_model26_action(&mut row, &terrain, &runtime,
+        &[player, distant_peer], &[], &[1, 3]);
+    assert_eq!(effects.mana_drain.unwrap().target, player.handle,
+        "word96 reads the current player even outside the frozen class3 head");
+    assert_eq!(row.source_roll(), heading_for_positions(at, player.position) as i16,
+        "unsigned source coordinate distance does not wrap around the map");
+
+    let mut near_peer = distant_peer;
+    near_peer.position.x = 65_500;
+    let mut row = actor_row(1, DRAIN_ACTION, at);
+    row.set_life(RULES.max_life);
+    row.set_phase(4);
+    row.set_source_overlap_half_extents(256, 256);
+    row.set_pitch(0);
+    put(&mut row, 154, player.slot);
+    run_model26_action(&mut row, &terrain, &runtime, &[player, near_peer], &[], &[1, 3]);
+    assert_eq!(row.source_roll(), heading_for_positions(near_peer.position, at) as i16,
+        "peer avoidance uses current collision-array pitch, not actor pitch");
+}
+
+#[test]
+fn configured_scheduled_drain_uses_current_typed_castle_mana_not_raw_shadow() {
+    let base = full_level_two_session();
+    for configured_model in [None, Some(0), Some(1)] {
+    let mut session = base.clone();
+    let particles = session.session.definition.presentation.particles.to_vec();
+    let live = &mut session.session.state.live;
+    let player = live.core.state.entity_index;
+    let position = live.core.state.position;
+    let castle = live.economy.economy.build_castle(position, player, &live.terrain)
+        .expect("real allocated Castle carrier");
+    let castle_handle = live.economy.handle(castle).unwrap();
+    {
+        let current = live.economy.economy.castle_entry_mut(castle).unwrap();
+        assert_eq!((current.source_class, current.source_model), (3, 2));
+        // Model2 is the real Castle packet and must be rejected. Models0/1
+        // are separately configured current-address controls, not players.
+        if let Some(model) = configured_model { current.source_model = model; }
+        current.life = 1_000;
+        current.mana = 300;
+        current.mana_capacity = 100;
+    }
+    let raw = &mut live.economy.entities[usize::from(castle)];
+    raw.set_mana(-999);
+    raw.set_mana_regen(-19);
+    let actor = mc2::allocate_authored(&mut live.economy, &mut live.core.runtime,
+        &mut live.terrain, &particles, position, RULES.max_life, None, 500)
+        .unwrap().unwrap();
+    let row = &mut live.economy.entities[usize::from(actor)];
+    row.set_source_action(DRAIN_ACTION);
+    row.set_phase(1); // no theft roll; exercise the real action210 callback
+    row.set_control_flags(row.control_flags | 0x800);
+    put(row, 154, castle);
+    let families: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+    mc2::step_row(&mut live.economy, &mut live.shared_spells, &live.core.runtime,
+        &mut live.terrain, &particles, Default::default(), actor, &[], &families).unwrap();
+    assert_eq!(live.economy.handle(castle), Some(castle_handle));
+    assert_eq!(live.economy.economy.castle_entry(castle).unwrap().mana,
+        if configured_model.is_some() { 305 } else { 300 },
+        "source accepts only0/1, subtracts signed regen+14, and has no capacity clamp");
+    assert_eq!(live.economy.entities[usize::from(castle)].mana, -999,
+        "the cold raw shadow is never the mana owner");
+    }
+}
+
+#[test]
+fn configured_stationary_and_roaming_peer_scans_use_source_heading_order() {
+    let terrain = terrain();
+    let at = position(20_000);
+    let mut row = actor_row(1, STATIONARY_ACTION, at);
+    row.set_life(RULES.max_life);
+    let mut peer = player_target(3, position(21_000));
+    peer.class = 5;
+    peer.model = SOURCE_MODEL;
+    row.set_yaw(heading_for_positions(peer.position, at) as i16);
+    let mut rules = RULES;
+    rules.target_half_angle = 128;
+    let mut rng = 0;
+    let ctx = Context { rules: &rules, terrain: &terrain, targets: &[peer], current_target: None, sentinel: None, class3: &[],
+        model26: &[3], families: None, runtime: None, global_rng: &mut rng };
+    let handle = SourceEntityHandle { source_slot: row.index, generation: 1 };
+    let actor = Actor { row: &mut row, handle };
+    assert_eq!(scan_peer(&actor, &ctx, true).map(|peer| peer.slot), Some(3));
+    assert_eq!(scan_peer(&actor, &ctx, false).map(|peer| peer.slot), None);
+}
+
+#[test]
+fn configured_linked_step_keeps_source_short_circuit_move_and_peer_tail() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let runtime = &simulation.session.state.live.core.runtime;
+    let at = position(20_000);
+
+    let mut unlinked = actor_row(1, LINK_ACTION, at);
+    unlinked.set_life(RULES.max_life);
+    unlinked.record[98..102].copy_from_slice(&100_i32.to_le_bytes());
+    put(&mut unlinked, 102, 2);
+    run_model26_action(&mut unlinked, terrain, runtime, &[], &[], &[]);
+    assert_eq!((unlinked.action, unlinked.life, word(&unlinked, 102)),
+        (ROAM_ACTION, RULES.max_life, 2), "word32 zero returns before damage");
+
+    let mut invalid = actor_row(1, LINK_ACTION, at);
+    invalid.set_life(RULES.max_life);
+    invalid.set_control_flags(invalid.control_flags & !0x800);
+    invalid.set_yaw(0);
+    invalid.set_source_roll(200);
+    invalid.set_actual_speed(0);
+    put(&mut invalid, 54, 9);
+    run_model26_action(&mut invalid, terrain, runtime, &[], &[], &[]);
+    assert_eq!((invalid.action, word(&invalid, 54), invalid.yaw), (ROAM_ACTION, 0, 5),
+        "invalid nonzero peer is discarded only after source movement");
+
+    let mut peer = player_target(3, position(21_000));
+    peer.class = 5;
+    peer.model = SOURCE_MODEL;
+    peer.action = STATIONARY_ACTION;
+    peer.maximum_speed = 50;
+    peer.actual_speed = 30;
+    let mut follower = actor_row(1, LINK_ACTION, at);
+    follower.set_life(RULES.max_life);
+    follower.set_phase(0);
+    follower.set_actual_speed(17);
+    put(&mut follower, 54, peer.slot);
+    run_model26_action(&mut follower, terrain, runtime, &[peer], &[], &[1, 3]);
+    assert_eq!(follower.actual_speed, 80, "source sums peer max and current speed");
+
+    let edge = Position { x: 65_520, y: 20_000, z: 5_000 };
+    let mut linked_peer = peer;
+    linked_peer.position.x = 65_000;
+    linked_peer.action = LINK_ACTION;
+    linked_peer.link = 5;
+    let next = player_target(5, Position { x: 64_000, ..edge });
+    let mut other = player_target(4, Position { x: 8, ..edge });
+    other.class = 5;
+    other.model = SOURCE_MODEL;
+    let mut follower = actor_row(1, LINK_ACTION, edge);
+    follower.set_life(RULES.max_life);
+    follower.set_phase(0);
+    follower.set_source_overlap_half_extents(0, 0);
+    put(&mut follower, 54, linked_peer.slot);
+    run_model26_action(&mut follower, terrain, runtime,
+        &[linked_peer, next, other], &[], &[1, 3, 4]);
+    assert_eq!(word(&follower, 54), 5);
+    assert_eq!(follower.source_roll(), heading_for_positions(other.position, edge) as i16,
+        "peer action211 also executes signed-coordinate fixed256 avoidance");
+    assert_eq!(follower.actual_speed, 80);
+}
+
+#[test]
+fn configured_roam_peer_scan_obeys_source_proximity_byte() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let runtime = &simulation.session.state.live.core.runtime;
+    let at = position(20_000);
+    let mut peer = player_target(3, position(21_000));
+    peer.class = 5;
+    peer.model = SOURCE_MODEL;
+    let mut row = actor_row(1, ROAM_ACTION, at);
+    row.set_life(RULES.max_life);
+    row.set_phase(0);
+    row.record[61] = 0;
+    run_model26_action(&mut row, terrain, runtime, &[peer], &[], &[1, 3]);
+    assert_eq!((row.action, word(&row, 54)), (ROAM_ACTION, 0),
+        "source68C70 zero proximity suppresses the peer fallback as well as the player scan");
+}
+
+#[test]
+fn configured_stage_dispatch_preserves_default_attack_and_fatal_population() {
+    let simulation = crate::native_world::tests::level_two_campaign_session();
+    let terrain = simulation.canonical_terrain();
+    let mut runtime = simulation.session.state.live.core.runtime.clone();
+    runtime.stage_variables[0] = RuntimeStageVariable {
+        kind: 1, flags: 0, word_2: 0,
+        relation: RuntimeRelation::AxisScalar((20_000_u32 << 16) | 30_000),
+    };
+    let mut attack = actor_row(1, STAGE_ACTION, position(20_000));
+    attack.set_life(RULES.max_life);
+    attack.record[76] = 255;
+    attack.record[77] = 10;
+    put(&mut attack, 154, 123);
+    run_model26_action(&mut attack, terrain, &runtime, &[], &[], &[]);
+    assert_eq!((attack.action, word(&attack, 154)), (DRAIN_ACTION, 123),
+        "source1E040 selects base+2 without consulting descriptor or target");
+
+    let mut default_case = actor_row(1, STAGE_ACTION, position(20_000));
+    default_case.set_life(RULES.max_life);
+    default_case.record[76] = 255;
+    default_case.record[77] = 11;
+    let before = default_case.clone();
+    let result = run_model26_action(&mut default_case, terrain, &runtime, &[], &[], &[]);
+    assert_eq!(default_case, before, "the source default returns without a StageVar lookup");
+    assert_eq!(result.population_decrements, 0);
+
+    let mut fatal = actor_row(1, STAGE_ACTION, position(20_000));
+    fatal.set_life(50);
+    fatal.record[76] = 0;
+    fatal.record[77] = 1;
+    fatal.record[98..102].copy_from_slice(&100_i32.to_le_bytes());
+    put(&mut fatal, 102, 2);
+    let result = run_model26_action(&mut fatal, terrain, &runtime, &[], &[], &[]);
+    assert_eq!((fatal.life, fatal.action), (-50, PREKILL_ACTION));
+    assert_eq!(result.population_decrements, 0,
+        "source1DDA0 fatal damage selects prekill without movement-population decrement");
+}
+
+#[test]
+fn configured_stage_linked_hit_compares_current_zero_sentinel_family() {
+    let terrain = terrain();
+    let mut child = player_target(3, position(20_100));
+    child.class = 5;
+    child.model = SOURCE_MODEL;
+    child.life = 900;
+    child.relations.attacker = Some(0);
+    let targets = [child];
+    for same_family in [true, false] {
+        let mut sentinel = player_target(0, Position::default());
+        sentinel.class = if same_family { 5 } else { 0 };
+        sentinel.model = if same_family { SOURCE_MODEL } else { 0 };
+        let mut row = actor_row(1, STAGE_ACTION, position(20_000));
+        row.set_life(1_000);
+        row.record[77] = 1;
+        put(&mut row, 56, child.slot);
+        put(&mut row, 154, 7);
+        let mut rng = 0;
+        let mut ctx = Context { rules: &RULES, terrain: &terrain, targets: &targets,
+            current_target: None, sentinel: Some(sentinel), class3: &[], model26: &[1, 3],
+            families: None, runtime: None, global_rng: &mut rng };
+        let handle = SourceEntityHandle { source_slot: 1, generation: 1 };
+        step(&mut Actor { row: &mut row, handle }, &mut ctx).unwrap();
+        assert_eq!(row.life, 900);
+        assert_eq!((row.action, word(&row, 154)),
+            if same_family { (STAGE_ACTION, 7) } else { (DRAIN_ACTION, 0) },
+            "source compares actual Entities[0] class/model after inherited attacker0");
+    }
+}
+
+#[test]
+fn level10_real_switch_produces_bound_model26_guard_route() {
+    use crate::campaign::{CampaignSession, source_arena::CreatureRootOrigin, spec::CampaignSelection};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let package = std::env::var_os("MC_LEVEL10_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/current-owner-package/level10"),
+        std::path::PathBuf::from,
+    );
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(10).unwrap())
+        .expect("whole qualified Level10 owner package").simulation().clone();
+    let switch = session.source_arena().handle(313).expect("real reset switch313");
+    let row = &session.entities()[313];
+    assert_eq!((row.class, row.model, row.action, row.source_id, row.level_gate),
+        (11, 32, 32, 15, 2));
+    assert_eq!(switch.generation, 0);
+    let feature = session.mission().authored_features().iter().find(|feature| feature.index == 119)
+        .expect("actual authored row119");
+    assert_eq!((feature.kind, feature.subtype, feature.activation_group), (5, 26, 15));
+
+    // Declared upstream objective prerequisite; the original switch, whole
+    // group15 scan, constructor and subsequent callbacks remain scheduled.
+    let player_color = usize::from(session.players()[0].player_color_index());
+    assert_eq!(session.runtime().stage_index, 4);
+    assert_eq!(session.runtime().objectives[player_color].stage_selectors[2], 1);
+    session.session.state.live.core.runtime
+        .set_level2_objective_stage_selector_for(player_color, 2, 2);
+    assert_eq!(session.runtime().objectives[player_color].stage_selectors[2], 2);
+    let mut produced = false;
+    for turn in 0..32 {
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })), "group turn{turn}: {:?}", session.dispatch_events());
+        if session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 313, group: 15, authored_indices, .. }
+                if authored_indices.contains(&119))) {
+            produced = true;
+            break;
+        }
+    }
+    assert!(produced, "actual switch313 must produce the full authored group15");
+    let root = session.creature_runtime_census().roots_of_kind(crate::level_definition::CreatureKind::Creature26)
+        .find(|root| root.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 119 }))
+        .expect("actual row119 original model26 generation").handle;
+    let initial = &session.entities()[usize::from(root.source_slot)];
+    assert_eq!((initial.class, initial.model, initial.action, initial.record[76], initial.record[77]),
+        (5, 26, STAGE_ACTION, 2, 2));
+    let point = Position { x: 37 << 8, y: 254 << 8, z: 0 };
+    let mut moved = false;
+    let mut steered = false;
+    for turn in 0..80 {
+        let peers = session.source_arena().rebuilt_class5_model_slots()[26].iter()
+            .copied().filter(|slot| *slot != root.source_slot)
+            .map(|slot| session.entities()[usize::from(slot)].position).collect::<Vec<_>>();
+        mc2::start_callback_damage_trace(root);
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        let callbacks = mc2::take_callback_damage_trace();
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })), "guard turn{turn}: {:?}", session.dispatch_events());
+        for callback in callbacks {
+            let Some(after) = callback.after else { continue };
+            let before = callback.before;
+            if before.action != STAGE_ACTION || before.record[77] != 2 { continue; }
+            moved |= before.position != after.position;
+            let away = (i32::from(before.position.x as i16) - i32::from(point.x as i16)).abs() > 3072
+                || (i32::from(before.position.y as i16) - i32::from(point.y as i16)).abs() > 3072;
+            let isolated = peers.iter().all(|peer|
+                (i32::from(before.position.x as i16) - i32::from(peer.x as i16)).abs() > 512
+                    || (i32::from(before.position.y as i16) - i32::from(peer.y as i16)).abs() > 512);
+            if away && isolated && before.phase & 7 == 0 && before.phase & 63 != 0
+                && after.control_flags & 0x40000 == 0 && after.life >= 0
+                && after.action == STAGE_ACTION && after.record[77] == 2 {
+                assert_eq!(after.source_roll(), heading_for_positions(after.position, point) as i16,
+                    "the actual bound guard points toward its authored StageVar after moving");
+                steered = true;
+            }
+        }
+        if moved && steered { break; }
+    }
+    assert!(moved && steered, "original119 must move and steer under real StageVar2: root={root:?} moved={moved} steered={steered}");
 }
 
 #[test]
@@ -1680,6 +2109,7 @@ fn stage_peer_avoidance_runs_even_when_heading_update_is_blocked() {
     actor.set_phase(8);
     actor.record[77] = 1;
     actor.set_source_roll(777);
+    actor.set_source_overlap_half_extents(RULES.collision_half_width, RULES.collision_half_width);
     actor.set_control_flags(actor.control_flags | 0x40000);
     let mut without_peer = actor.clone();
     let mut peer = player_target(3, position(20_100));
@@ -1771,7 +2201,8 @@ fn action215_turns_toward_its_bound_stage_point() {
 
     assert_eq!(fatal.life, -50);
     assert_eq!(fatal.action, PREKILL_ACTION);
-    assert_eq!(effects.population_decrements, 1);
+    assert_eq!(effects.population_decrements, 0,
+        "source1DDA0 fatal damage returns without the movement population decrement");
 
     let mut early_return_fatal = actor_row(1, STAGE_ACTION, position(20_000));
     early_return_fatal.life = 50;
@@ -1789,5 +2220,6 @@ fn action215_turns_toward_its_bound_stage_point() {
     );
 
     assert_eq!(early_return_fatal.action, PREKILL_ACTION);
-    assert_eq!(effects.population_decrements, 1);
+    assert_eq!(effects.population_decrements, 0,
+        "source1DBF0 fatal damage returns without the movement population decrement");
 }

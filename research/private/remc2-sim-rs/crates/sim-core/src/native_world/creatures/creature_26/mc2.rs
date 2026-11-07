@@ -15,6 +15,54 @@ use crate::native_world::{
 };
 use crate::renderable_map_chain::RenderableMapSeed;
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct CallbackDamageReceipt {
+    pub actor: SourceEntityHandle,
+    pub before: EntitySnapshot,
+    pub after: Option<EntitySnapshot>,
+    pub entry_writer: Option<crate::native_world::area_damage::PlayerMailboxWrite>,
+    pub kill_credit: Option<u16>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CALLBACK_DAMAGE_TRACE: std::cell::RefCell<Option<(SourceEntityHandle, Vec<CallbackDamageReceipt>)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_callback_damage_trace(actor: SourceEntityHandle) {
+    CALLBACK_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((actor, Vec::new())));
+}
+
+#[cfg(test)]
+pub(crate) fn take_callback_damage_trace() -> Vec<CallbackDamageReceipt> {
+    CALLBACK_DAMAGE_TRACE.with(|trace| trace.borrow_mut().take().map_or_else(Vec::new, |(_, rows)| rows))
+}
+
+pub(crate) const CALLBACK_SOUND: u16 = 62;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceSound {
+    pub slot: u16,
+    pub position: Position,
+    pub source_id: u16,
+    pub control_flags: u32,
+}
+
+/// sub_28FF0 prepares sound62 before damage, movement or target lookup.
+pub(crate) fn prepare_callback_sound(
+    arena: &SourceArena,
+    slot: u16,
+) -> Result<Option<SourceSound>, String> {
+    let row = arena.entities.get(usize::from(slot))
+        .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL)
+        .ok_or_else(|| format!("model26 sound source slot{slot} is absent"))?;
+    Ok((row.action == super::DRAIN_ACTION && row.phase & 31 == 0).then_some(SourceSound {
+        slot, position: row.position, source_id: row.source_id, control_flags: row.control_flags,
+    }))
+}
+
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
     u16::from_le_bytes([row.record[at], row.record[at + 1]])
 }
@@ -144,13 +192,23 @@ fn target(
         .get(usize::from(slot))
         .filter(|row| row.active && row.index == slot)?;
     let handle = arena.handle(slot)?;
+    Some(project_target(arena, shared, row, handle))
+}
+
+fn project_target(
+    arena: &SourceArena,
+    shared: &Level2SharedSpellResetSession,
+    row: &EntitySnapshot,
+    handle: SourceEntityHandle,
+) -> Target {
+    let slot = row.index;
     let player = player_state(row, shared);
     let player_entity = player.map_or(0, |player| player.entity_index);
     let left_spell =
         player.and_then(|player| offer(arena, shared, player, player.left_spell_slot_raw));
     let right_spell =
         player.and_then(|player| offer(arena, shared, player, player.right_spell_slot_raw));
-    Some(Target {
+    Target {
         handle,
         slot,
         source_id: row.source_id,
@@ -162,6 +220,13 @@ fn target(
         position: row.position,
         yaw: row.yaw,
         roll: row.source_roll(),
+        source_yaw: Some(row.yaw),
+        source_roll: Some(row.source_roll()),
+        relations: crate::native_world::source_target::Relations {
+            target: Some(word(row, 154)), attacker: Some(word(row, 42)), parent: Some(word(row, 44)),
+            stage_mode: Some(row.record[77]), stage_index: Some(row.record[76]),
+            stage_relation: Some(word(row, 78)), next: Some(word(row, 56)),
+        },
         player_entity,
         mana: row.mana,
         mana_regen: row.mana_regen,
@@ -170,13 +235,39 @@ fn target(
         target: word(row, 154),
         next: word(row, 56),
         parent: word(row, 44),
+        stage_index: Some(row.record[76]),
+        stage_relation: Some(word(row, 78)),
         stage_mode: row.record[77],
+        pitch_extent: Some(row.array_pitch()),
         link: word(row, 54),
         attacker: word(row, 42),
         killer: word(row, 40),
         actual_speed: row.actual_speed,
         maximum_speed: i16::from_le_bytes([row.record[138], row.record[139]]),
-    })
+    }
+}
+
+fn current_target(
+    arena: &SourceArena,
+    shared: &Level2SharedSpellResetSession,
+    context: crate::native_world::source_target::Context<'_>,
+    slot: u16,
+) -> Result<Option<Target>, String> {
+    let Some(view) = crate::native_world::source_target::read(arena, context, slot)? else {
+        return Ok(None);
+    };
+    let Some(row) = crate::native_world::source_target::status_parent(arena, context, slot)? else {
+        return Ok(None);
+    };
+    let handle = SourceEntityHandle { source_slot: slot, generation: arena.economy.slot_generation(slot) };
+    let mut target = project_target(arena, shared, &row, handle);
+    target.source_yaw = view.yaw;
+    target.source_roll = view.roll;
+    target.relations = view.relations;
+    target.stage_index = view.relations.stage_index;
+    target.stage_relation = view.relations.stage_relation;
+    target.pitch_extent = view.collision.map(|shape| shape.half_width);
+    Ok(Some(target))
 }
 
 fn targets(arena: &SourceArena, shared: &Level2SharedSpellResetSession) -> Vec<Target> {
@@ -192,35 +283,32 @@ fn apply_mana_drain(
     arena: &mut SourceArena,
     shared: &mut Level2SharedSpellResetSession,
     drain: ManaDrain,
-) -> bool {
-    if arena.resolve(drain.target).is_none() {
-        return false;
-    }
-    let Some(row) = arena
-        .entities
-        .get_mut(usize::from(drain.target.source_slot))
-        .filter(|row| {
-            row.active
-                && row.class == 3
-                && matches!(row.model, 0 | 1)
-                && row.life >= 0
-                && row.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
-        })
-    else {
-        return false;
+) -> Result<bool, String> {
+    let slot = drain.target.source_slot;
+    let context = crate::native_world::source_target::Context {
+        spells: Some(shared), ..Default::default()
     };
-    let mut mana = row.mana.wrapping_sub(drain.amount);
-    if mana < 0 {
-        mana = 0;
+    let Some(current) = crate::native_world::source_target::status_parent(arena, context, slot)? else {
+        return Ok(false);
+    };
+    if current.class != 3 || !matches!(current.model, 0 | 1)
+        || current.life < 0 || current.control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+    {
+        return Ok(false);
     }
-    row.set_mana(mana);
-    let updated = row.clone();
-    if shared.player_entity.index == updated.index {
+    if !crate::native_world::source_target::subtract_current_mana_lower_clamped(arena, slot, drain.amount)? {
+        return Ok(false);
+    }
+    // Only the actual raw local player updates these local player caches; a
+    // typed Castle replacing that address owns its own mana, not the shadow.
+    if shared.player_entity.index == slot && arena.economy.castle_entry(slot).is_none() {
+        let updated = arena.entities[usize::from(slot)].clone();
+        let mana = updated.mana;
         shared.sync_player_entity_from_authority(&updated);
         shared.player_mana = mana;
         shared.caster.mana = mana;
     }
-    true
+    Ok(true)
 }
 
 fn apply_theft_to_player(player: &mut PlayerSnapshot, theft: SpellTheft) -> bool {
@@ -600,6 +688,7 @@ pub(crate) fn step_row(
     runtime: &RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
+    source_context: crate::native_world::source_target::Context<'_>,
     slot: u16,
     class3: &[u16],
     families: &[Vec<u16>; 29],
@@ -608,24 +697,58 @@ pub(crate) fn step_row(
     let handle = arena
         .handle(slot)
         .ok_or_else(|| format!("model26 callback lost generation-bound slot{slot}"))?;
-    let mut effects = {
-        let row = arena
+    let mut row = arena
             .entities
-            .get_mut(usize::from(slot))
+            .get(usize::from(slot))
             .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL)
+            .cloned()
             .ok_or_else(|| format!("model26 callback lost slot{slot}"))?;
-        let mut actor = Actor { row, handle };
+    #[cfg(test)]
+    let callback_entry = CALLBACK_DAMAGE_TRACE.with(|trace| {
+        let trace = trace.borrow();
+        let (wanted, _) = trace.as_ref()?;
+        if *wanted != handle { return None; }
+        let mailbox = (i32::from_le_bytes(row.record[98..102].try_into().expect("source mailbox")),
+            word(&row, 102));
+        Some((handle, row.clone(),
+            crate::native_world::area_damage::current_actor_mailbox_writer(handle, mailbox)))
+    });
+    let mut rng = arena.economy.global_rng;
+    let read_error = std::cell::RefCell::new(None);
+    let result = {
+        let source_context = crate::native_world::source_target::Context {
+            spells: Some(&*shared), ..source_context
+        };
+        let lookup = |target_slot| match current_target(arena, shared, source_context, target_slot) {
+            Ok(target) => target,
+            Err(error) => {
+                *read_error.borrow_mut() = Some(error);
+                None
+            }
+        };
+        let mut actor = Actor { row: &mut row, handle };
         let mut context = Context {
             rules: &RULES,
             terrain,
             targets: &snapshots,
+            current_target: Some(&lookup),
+            sentinel: arena.entities.first().map(|row| project_target(arena, shared, row,
+                SourceEntityHandle { source_slot: 0, generation: arena.economy.slot_generation(0) })),
             class3,
             model26: &families[usize::from(SOURCE_MODEL)],
+            families: Some(families),
             runtime: Some(runtime),
-            global_rng: &mut arena.economy.global_rng,
+            global_rng: &mut rng,
         };
-        step(&mut actor, &mut context)?
+        step(&mut actor, &mut context)
     };
+    arena.entities[usize::from(slot)] = row;
+    arena.economy.global_rng = rng;
+    if let Some(error) = read_error.into_inner() { return Err(error); }
+    let mut effects = result?;
+
+    #[cfg(test)]
+    let callback_credit = effects.kill_credit;
 
     apply_peer_updates(arena, &effects);
     for (handle, flags) in &effects.linked_blink_flags {
@@ -640,7 +763,7 @@ pub(crate) fn step_row(
         arena.economy.record_authored_creature_kill(killer);
     }
     if let Some(drain) = effects.mana_drain {
-        apply_mana_drain(arena, shared, drain);
+        apply_mana_drain(arena, shared, drain)?;
     }
     if let Some(theft) = effects.spell_theft
         && apply_spell_theft(arena, shared, theft)
@@ -680,6 +803,23 @@ pub(crate) fn step_row(
     effects.population_decrements = 0;
     effects.stage_hide = false;
     effects.stage_expiry = None;
+    #[cfg(test)]
+    if let Some((actor, before, entry_writer)) = callback_entry {
+        let after = (arena.handle(slot) == Some(actor)).then(|| arena.entities[usize::from(slot)].clone());
+        if let Some(after) = &after {
+            let mailbox = (i32::from_le_bytes(before.record[98..102].try_into().expect("source mailbox")),
+                word(&before, 102));
+            if mailbox.1 != 0 && word(after, 102) == 0 {
+                let _ = crate::native_world::area_damage::take_player_mailbox_writer(actor, mailbox);
+            }
+        }
+        CALLBACK_DAMAGE_TRACE.with(|trace| {
+            if let Some((wanted, rows)) = trace.borrow_mut().as_mut()
+                && *wanted == actor && rows.len() < 64 {
+                rows.push(CallbackDamageReceipt { actor, before, after, entry_writer, kill_credit: callback_credit });
+            }
+        });
+    }
     Ok(effects)
 }
 
