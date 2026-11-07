@@ -8738,6 +8738,8 @@ pub(crate) mod tests {
     #[test]
     fn campaign_backend_binds_real_reset_goat_max_life_before_ordinary_damage_after_reopen_and_reset()
      {
+        use crate::Position;
+
         const PACKAGE_MAX_LIFE: u32 = 600;
         const AUTHORED_MAX_LIFE: u32 = 1_200;
         const DAMAGE: i32 = 700;
@@ -8860,12 +8862,268 @@ pub(crate) mod tests {
         damage(&mut session);
         assert_eq!(inspect(&session).1, 500);
 
+        // The same authored combat property also reaches a real paid public
+        // producer. Each definition gets one fixed incoming Fireball; no Goat
+        // state, life, source timer or RNG is changed to manufacture a hit.
+        for (definition, maximum) in [
+            (base.clone(), PACKAGE_MAX_LIFE as i32),
+            (published.clone(), AUTHORED_MAX_LIFE as i32),
+        ] {
+            let mut public = GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(definition),
+                96,
+                Mc2CampaignInputs::new(&root),
+            )
+            .unwrap();
+            let sim = public.backend().campaign.simulation();
+            let target = sim
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == goat_slot)
+                .unwrap()
+                .clone();
+            assert_eq!((target.max_life, target.life), (maximum, maximum));
+            let target_handle = sim.source_arena().handle(goat_slot).unwrap();
+            let player = sim.state.entity_index;
+            let player_handle = sim.source_arena().handle(player).unwrap();
+            let holder = sim.shared_spells().local_player().enabled_spell_holders[0];
+            let holder_handle = sim.source_arena().handle(holder).unwrap();
+            let shared = sim.shared_spells();
+            let holder_packet = shared
+                .pickups()
+                .iter()
+                .chain(shared.holders())
+                .chain(shared.dynamic_pickups())
+                .find(|row| row.index == holder)
+                .unwrap();
+            let fireball = crate::level_definition::FIREBALL_PROPERTIES.tiers[0];
+            // Holder manaRegen is sub68D50's Castle requirement, not the
+            // player's debit. sub68DE0 queues maxMana on the parent only
+            // after the actual launch; later player upkeep consumes it.
+            assert_eq!(holder_packet.mana_regen, fireball.castle_mana_required);
+            assert_eq!(holder_packet.max_mana, fireball.mana_cost);
+            // Put the real launch axis above this Goat, including its actual
+            // typed collision offset. Invert the ordinary left-hand256 offset
+            // once, as in the retained Firefly public-shot boundary below.
+            let target_top = Position {
+                z: target
+                    .position
+                    .z
+                    .wrapping_add(target.collision_vertical_offset)
+                    .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
+                ..target.position
+            };
+            let hand = Position {
+                z: target_top.z.wrapping_add(1024),
+                ..target_top
+            };
+            let aim = crate::level1_mission::projectile_guidance_angles(hand, target_top);
+            let mut position = Position {
+                z: hand.z.wrapping_sub(sim.state.entity_fov),
+                ..hand
+            };
+            let auxiliary = sim.shared_spells().beyond_sight_auxiliary().next_entity;
+            let hand_yaw = aim.0.wrapping_sub(auxiliary).wrapping_sub(512);
+            crate::move_entity(&mut position, hand_yaw.wrapping_add(1024), 0, 256);
+            let sim = public.backend_mut().campaign.simulation_mut();
+            sim.set_level2_entity_position(player, position).unwrap();
+            sim.state.actual_speed = 0;
+            sim.state.target_speed = 0;
+            sim.set_level2_player_aim_for_test(aim.0, aim.1);
+            let mut no_cast = public.backend().campaign.clone();
+            let tuning = public.backend().flight_binding.tuning();
+            let resource_visits = |sim: &crate::native_world::Mc2Simulation| {
+                sim.cf10_production_schedule_receipts()
+                    .into_iter()
+                    .filter_map(|receipt| match receipt {
+                        crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                            slot,
+                            original,
+                            current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. },
+                            ..
+                        } if slot == holder || slot == player => Some((
+                            slot,
+                            original.observed_player_resources()?,
+                            selector.observed_player_resources()?,
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            crate::native_world::area_damage::start_fireball_launch_trace();
+            crate::native_world::start_fireball_terminal_trace();
+            crate::native_world::area_damage::start_effect_damage_trace(goat_slot);
+            public
+                .step(
+                    guard(&public),
+                    GameCommand {
+                        cast_left: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let mut elapsed = 1;
+            let mut accepted = crate::native_world::area_damage::take_effect_damage_trace();
+            let mut terminals = crate::native_world::take_fireball_terminal_trace();
+            let launches = crate::native_world::area_damage::take_fireball_launch_trace();
+            let own_launches = launches
+                .iter()
+                .copied()
+                .filter(|(_, _, owner)| *owner == player)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                own_launches.len(),
+                1,
+                "one paid public Fireball: {launches:?}"
+            );
+            let (shot, shot_generation, _) = own_launches[0];
+            let sim = public.backend().campaign.simulation();
+            let mut payment_visits = resource_visits(sim);
+            let (_, before_charge, after_charge) = payment_visits.iter()
+                .find(|(slot, _, _)| *slot == holder)
+                .expect("the actual public holder receives its source callback");
+            assert_eq!(before_charge.0, player_handle);
+            assert!(before_charge.1 >= fireball.mana_cost);
+            assert_eq!(*after_charge, (
+                player_handle,
+                before_charge.1,
+                if before_charge.2 >= 0 { -fireball.mana_cost }
+                else { before_charge.2.wrapping_sub(fireball.mana_cost) },
+                before_charge.3,
+            ), "the successful holder queues the exact source charge before later upkeep");
+            let mut mana_after_turn = vec![sim.shared_spells().player_entity().mana];
+            let mut visits = Vec::new();
+            for _ in 0..12 {
+                let sim = public.backend().campaign.simulation();
+                assert!(
+                    sim.dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "{:?}",
+                    sim.dispatch_events()
+                );
+                assert_eq!(sim.source_arena().handle(player), Some(player_handle));
+                assert_eq!(sim.source_arena().handle(holder), Some(holder_handle));
+                let goat = sim
+                    .goats()
+                    .iter()
+                    .find(|goat| goat.entity_index == goat_slot)
+                    .unwrap();
+                visits.push((
+                    goat.position,
+                    goat.life,
+                    goat.pending_damage,
+                    goat.pending_attacker,
+                ));
+                if goat.life < maximum {
+                    break;
+                }
+                crate::native_world::start_fireball_terminal_trace();
+                crate::native_world::area_damage::start_effect_damage_trace(goat_slot);
+                public.step(guard(&public), GameCommand::default()).unwrap();
+                elapsed += 1;
+                terminals.extend(crate::native_world::take_fireball_terminal_trace());
+                accepted.extend(crate::native_world::area_damage::take_effect_damage_trace());
+                let sim = public.backend().campaign.simulation();
+                payment_visits.extend(resource_visits(sim));
+                mana_after_turn.push(sim.shared_spells().player_entity().mana);
+            }
+            let impact_births =
+                crate::native_world::area_damage::take_fireball_impact_birth_trace();
+            let terminal = terminals.iter().find(|terminal| terminal.projectile.source_slot == shot
+                && terminal.projectile.generation == shot_generation && terminal.owner == player
+                && terminal.target_handle == Some(target_handle)
+                && terminal.collision_target == Some(goat_slot))
+                .unwrap_or_else(|| panic!("actual Fireball must collide with original Goat: max={maximum} aim={aim:?} target={target:?} launches={launches:?} terminals={terminals:?} visits={visits:?}"));
+            let impact = terminal
+                .impact
+                .expect("the same real collision produces its ordinary impact");
+            assert!(impact_births.contains(&(
+                impact.source_slot,
+                impact.generation,
+                shot,
+                shot_generation,
+                player
+            )));
+            let owned_write = accepted.iter().find(|receipt| receipt.source_scoped
+                && receipt.source_slot == Some(impact.source_slot)
+                && receipt.target_slot == goat_slot && receipt.target_generation == target_handle.generation
+                && receipt.pulse.owner == player && receipt.pulse.payload == 250
+                && receipt.mailbox_after == Some((250, player))
+                && receipt.mailbox_before != receipt.mailbox_after
+                && (receipt.source_raw_impact.as_ref().is_some_and(|(generation, packet)|
+                    *generation == impact.generation && (packet.class, packet.model) == (10, 0))
+                    || receipt.source_impact.as_ref().is_some_and(|(generation, packet)|
+                        *generation == impact.generation && (packet.source_class, packet.model) == (10, 0))))
+                .unwrap_or_else(|| panic!("the actual impact generation must write the original Goat mailbox: impact={impact:?} receipts={accepted:?} visits={visits:?}"));
+            assert!(owned_write.target_in_scanned_cells);
+            let sim = public.backend().campaign.simulation();
+            let goat = sim
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == goat_slot)
+                .unwrap();
+            assert_eq!(sim.source_arena().handle(goat_slot), Some(target_handle));
+            assert_eq!(
+                (goat.max_life, goat.life),
+                (maximum, maximum - 250),
+                "the authored600/1200 maximum changes real combat: visits={visits:?}"
+            );
+            assert_eq!((goat.pending_damage, goat.pending_attacker), (250, 0));
+            assert_eq!(
+                goat.current_attacker, player as i16,
+                "the first observed subtraction retains the accepted mailbox owner"
+            );
+            assert_eq!(sim.entities()[usize::from(goat_slot)].life, goat.life);
+            let (_, before_debit, after_debit) = payment_visits.iter()
+                .find(|(slot, before, _)| *slot == player && before.2 <= -fireball.mana_cost)
+                .unwrap_or_else(|| panic!("the player must actually consume the queued paid charge: {payment_visits:?}"));
+            assert_eq!(before_debit.0, player_handle);
+            assert_eq!(after_debit.0, player_handle);
+            assert!(before_debit.1 >= fireball.mana_cost);
+            assert_eq!(after_debit.1, before_debit.1.wrapping_add(before_debit.2)
+                .clamp(0, before_debit.3));
+            assert!(before_debit.1 - after_debit.1 >= fireball.mana_cost);
+            let mut paid_balance_difference = false;
+            for turn in 0..elapsed {
+                no_cast.step_with_tuning(PlayerCommand::default(), CAMPAIGN_SPEED_INDEX, tuning);
+                assert!(
+                    no_cast
+                        .simulation()
+                        .dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+                );
+                paid_balance_difference |= no_cast.simulation().shared_spells().player_entity().mana
+                    .saturating_sub(mana_after_turn[turn]) >= fireball.mana_cost;
+            }
+            assert!(paid_balance_difference,
+                "equal-elapsed no-cast must retain at least the actual paid cost: cast={mana_after_turn:?} visits={payment_visits:?}");
+            assert_eq!(
+                no_cast.simulation().source_arena().handle(goat_slot),
+                Some(target_handle)
+            );
+            assert_eq!(
+                no_cast
+                    .simulation()
+                    .goats()
+                    .iter()
+                    .find(|goat| goat.entity_index == goat_slot)
+                    .unwrap()
+                    .life,
+                maximum,
+                "equal-elapsed no-cast retains the published maximum"
+            );
+        }
+
         std::fs::remove_dir_all(&workspace_root).unwrap();
         // No-Claim: this proves one reset-live Level 1 Goat's guarded
         // maximum-life publication, old-session isolation, explicit
-        // reopen/reset materialization, and ordinary mailbox damage branch.
-        // It does not author other Goat parameters, prove an organic attacker,
-        // or cover Goat death outputs, objectives, save/replay, or Unity UI.
+        // reopen/reset materialization, ordinary mailbox vectors and one real
+        // paid public Fireball against each bound maximum. It does not author
+        // other Goat parameters or cover Goat death outputs, objectives,
+        // save/replay, or Unity UI.
     }
 
     #[test]

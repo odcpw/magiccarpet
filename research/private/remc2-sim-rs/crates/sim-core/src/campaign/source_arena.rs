@@ -1457,23 +1457,17 @@ impl SourceArena {
 
     #[must_use]
     pub(crate) fn handle(&self, source_slot: u16) -> Option<SourceEntityHandle> {
-        self.economy
-            .live_arena_slots()
-            .iter()
-            .any(|(slot, _)| *slot == source_slot)
-            .then(|| SourceEntityHandle {
-                source_slot,
-                generation: self.economy.slot_generation(source_slot),
-            })
-            .or_else(|| {
-                self.entities
-                    .get(usize::from(source_slot))
-                    .filter(|entity| entity.active)
-                    .map(|_| SourceEntityHandle {
-                        source_slot,
-                        generation: self.economy.slot_generation(source_slot),
-                    })
-            })
+        // Either live carrier admits the same incarnation. Raw actors can
+        // answer existence without constructing the complete typed census.
+        (self
+            .entities
+            .get(usize::from(source_slot))
+            .is_some_and(|entity| entity.active)
+            || self.economy.live_arena_kind(source_slot).is_some())
+        .then(|| SourceEntityHandle {
+            source_slot,
+            generation: self.economy.slot_generation(source_slot),
+        })
     }
 
     #[must_use]
@@ -1481,12 +1475,7 @@ impl SourceArena {
         if self.economy.slot_generation(handle.source_slot) != handle.generation {
             return None;
         }
-        if let Some((_, kind)) = self
-            .economy
-            .live_arena_slots()
-            .into_iter()
-            .find(|(slot, _)| *slot == handle.source_slot)
-        {
+        if let Some(kind) = self.economy.live_arena_kind(handle.source_slot) {
             return Some(SourceEntityView::Dynamic(kind));
         }
         self.entities

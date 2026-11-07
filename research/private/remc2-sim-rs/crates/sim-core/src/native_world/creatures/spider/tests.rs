@@ -684,10 +684,13 @@ fn public_step(
 #[test]
 fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
-    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
     use crate::game_session::{GameCommand, GameSession, SpellAssignment, SpellAssignmentHand};
     use crate::level_definition::{CreatureKind, METEOR_PROPERTIES};
     use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage, lightning};
+    use crate::native_world::level2_dynamic_economy::{
+        PossessionSourceReceipt, start_possession_trace, take_possession_trace,
+    };
     use crate::{FlightWorld, PlayerCommand};
 
     const GROUP6: &[u16] = &[
@@ -1541,6 +1544,7 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
     let mut hidden = false;
     let mut dto_lost = false;
     let mut mana_dto = false;
+    let mut death_sphere = None;
     let mut burst_dto = false;
     let mut paid = 0_i32;
     let mut turns = 0;
@@ -1603,6 +1607,8 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
                 && *source_entity_index == root.source_slot
                 && *mana == 2750
             {
+                let slot = u16::try_from(*sphere_id).unwrap();
+                death_sphere = Some((sim.source_arena().handle(slot).unwrap(), *mana));
                 mana_dto |= sim.economy().spheres().iter().any(|sphere| {
                     sphere.id == *sphere_id
                         && sphere.active
@@ -1718,6 +1724,435 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
             .authored_bee_kill_census(player),
         credit_before
     );
+
+    // Shared-combat collection continuation. Every original combat/credit/
+    // lifetime/survivor assertion above remains a prerequisite. PossessionI
+    // is a declared carried player loadout at this boundary, not an earned
+    // pickup. Only one fixed public activation is made; no sphere/collector
+    // pose, ownership, timer, RNG or lifetime is edited.
+    let (sphere, birth_mana) = death_sphere.expect("original137 produced its real death sphere");
+    assert_eq!(
+        simulation(&game).source_arena().handle(sphere.source_slot),
+        Some(sphere)
+    );
+    simulation_mut(&mut game)
+        .apply_carried_spell_families(&[1, 7, 9], Some(1))
+        .unwrap();
+    public_step(
+        &mut game,
+        GameCommand {
+            assign_spell: Some(SpellAssignment {
+                spell_id: crate::game_definition::SemanticId::parse("spell.possession").unwrap(),
+                tier: 0,
+                hand: SpellAssignmentHand::Left,
+                holder_actor: None,
+            }),
+            ..Default::default()
+        },
+        "declared collection PossessionI assignment",
+        0,
+    );
+    assert_eq!(
+        simulation(&game).source_arena().handle(sphere.source_slot),
+        Some(sphere)
+    );
+    let target = simulation(&game)
+        .possession_guidance_target_top_for_test(sphere.source_slot)
+        .unwrap();
+    let mut approach = Position {
+        x: target.x.wrapping_sub(1024),
+        y: target.y,
+        z: target.z,
+    };
+    let terrain = simulation(&game).canonical_terrain();
+    let floor = terrain.ground_height(approach).wrapping_add(128);
+    let ceiling = terrain
+        .ceiling_height(approach)
+        .expect("actual Cave4 ceiling")
+        .wrapping_sub(
+            simulation(&game)
+                .shared_spells()
+                .player_entity()
+                .array_fov(),
+        )
+        .wrapping_sub(crate::level1_mission::POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT);
+    assert!(
+        floor <= ceiling,
+        "source-valid collection approach: target={target:?} floor={floor} ceiling={ceiling}"
+    );
+    approach.z = approach.z.clamp(floor, ceiling);
+    simulation_mut(&mut game)
+        .set_level2_entity_position(player, approach)
+        .unwrap();
+    simulation_mut(&mut game).state.actual_speed = 0;
+    simulation_mut(&mut game).state.target_speed = 0;
+    let mut hand = approach;
+    hand.z = hand.z.wrapping_add(
+        simulation(&game)
+            .shared_spells()
+            .player_entity()
+            .array_fov(),
+    );
+    let aim = crate::level1_mission::projectile_guidance_angles(hand, target);
+    simulation_mut(&mut game).set_level2_player_aim_for_test(aim.0, aim.1);
+    let possession_holder = simulation(&game)
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[1];
+    let possession_holder = simulation(&game)
+        .source_arena()
+        .handle(possession_holder)
+        .unwrap();
+    let mut no_possession = game.backend().compatibility_campaign().clone();
+    let mut claim = false;
+    let mut possession_paid = 0_i32;
+    let mut flyers: Vec<(
+        SourceEntityHandle,
+        crate::native_world::Level2PossessionProjectile,
+    )> = Vec::new();
+    let mut ownership_effects: Vec<(
+        SourceEntityHandle,
+        crate::native_world::Level2PossessionEffect,
+    )> = Vec::new();
+    let mut claim_history = Vec::new();
+    start_possession_trace();
+    for turn in 0..32 {
+        assert_eq!(
+            simulation(&game).source_arena().handle(sphere.source_slot),
+            Some(sphere)
+        );
+        let before = simulation(&game).shared_spells().player_entity().mana;
+        let events = simulation(&game).economy().events().len();
+        public_step(
+            &mut game,
+            GameCommand {
+                cast_left: turn == 0,
+                ..Default::default()
+            },
+            "one fixed public Possession of original death sphere",
+            turn,
+        );
+        no_possession.step(PlayerCommand::default(), 0);
+        no_dispatch_errors(
+            no_possession.simulation(),
+            "equal elapsed no-Possession",
+            turn,
+        );
+        let sim = simulation(&game);
+        possession_paid += before
+            .saturating_sub(sim.shared_spells().player_entity().mana)
+            .max(0);
+        assert_eq!(sim.source_arena().handle(player), Some(player_handle));
+        assert_eq!(
+            sim.source_arena().handle(possession_holder.source_slot),
+            Some(possession_holder)
+        );
+        for row in sim.economy().possession_projectiles().iter().filter(|row| {
+            row.source_id_entity_index == player
+                && row.holder_entity_index == possession_holder.source_slot
+        }) {
+            if let Some(handle) = sim.source_arena().handle(row.source_entity_index)
+                && !flyers.iter().any(|(old, _)| *old == handle)
+            {
+                flyers.push((handle, *row));
+            }
+        }
+        for row in sim
+            .economy()
+            .possession_effects()
+            .iter()
+            .filter(|row| row.source_id_entity_index == player)
+        {
+            if let Some(handle) = sim.source_arena().handle(row.source_entity_index)
+                && flyers.iter().any(|(flyer, _)| {
+                    flyer.source_slot == row.projectile_entity_index
+                        && sim.source_arena().slot_generation(flyer.source_slot) == flyer.generation
+                })
+                && !ownership_effects.iter().any(|(old, _)| *old == handle)
+            {
+                ownership_effects.push((handle, *row));
+            }
+        }
+        claim |= sim.economy().events()[events..].iter().any(|event| {
+            matches!(event,
+            Level2EconomyEvent::ManaSphereClaimed { sphere_id, owner_entity_index }
+                if *sphere_id == u32::from(sphere.source_slot) && *owner_entity_index == player)
+        });
+        let current = sim
+            .economy()
+            .spheres()
+            .iter()
+            .find(|row| row.source_entity_index == sphere.source_slot)
+            .copied();
+        claim_history.push((
+            turn,
+            sim.source_arena().handle(sphere.source_slot),
+            current,
+            sim.state.position,
+        ));
+        if claim {
+            break;
+        }
+    }
+    let possession_trace = take_possession_trace();
+    assert!(
+        claim && flyers.len() == 1 && !ownership_effects.is_empty(),
+        "paid holder/caster→9/1→10/12 must claim original sphere: target={target:?} approach={approach:?} aim={aim:?} flyers={flyers:?} effects={ownership_effects:?} history={claim_history:?}"
+    );
+    assert!(possession_paid >= crate::level_definition::POSSESSION_PROPERTIES.tiers[0].mana_cost);
+    assert_eq!(
+        (
+            flyers[0].1.source_class,
+            flyers[0].1.source_model,
+            flyers[0].1.action
+        ),
+        (9, 1, 1)
+    );
+    assert!(ownership_effects.iter().all(|(_, row)| (
+        row.source_class,
+        row.source_model,
+        row.action
+    ) == (10, 12, 12)));
+    let sphere_writer = possession_trace.iter().rev().find_map(|receipt| match receipt {
+        PossessionSourceReceipt::MailboxWrite { effect, target, source_id, amount, possessor, .. }
+            if *target == sphere && *source_id == player && *amount == 0 && *possessor == player => Some(*effect),
+        _ => None,
+    }).unwrap_or_else(|| panic!("actual typed-sphere ownership mailbox needs its generation-bound effect: sphere={sphere:?} trace={possession_trace:?}"));
+    assert!(
+        possession_trace.iter().any(|receipt| matches!(receipt,
+        PossessionSourceReceipt::ImpactBirth { effect, projectile, holder, owner, packet }
+            if *effect == sphere_writer && *projectile == flyers[0].0
+                && *holder == possession_holder && *owner == player_handle
+                && (packet.source_class, packet.source_model, packet.action) == (10, 12, 12))),
+        "the accepted original-sphere writer must come from this public holder/caster launch: {possession_trace:?}"
+    );
+    assert!(!simulation(&game).shared_spells().free_spell_usage);
+    assert_eq!(
+        simulation(&game).source_arena().handle(sphere.source_slot),
+        Some(sphere)
+    );
+    assert_eq!(
+        simulation(&game)
+            .economy()
+            .spheres()
+            .iter()
+            .find(|row| row.source_entity_index == sphere.source_slot)
+            .unwrap()
+            .player_entity_index,
+        player
+    );
+    assert!(
+        no_possession
+            .simulation()
+            .economy()
+            .spheres()
+            .iter()
+            .any(|row| row.source_entity_index == sphere.source_slot
+                && row.player_entity_index != player)
+    );
+
+    // Separate declared player-owned Castle resource prerequisite, AFTER the
+    // real paid claim: preserve its established capacity but start collection
+    // with an empty store. This is not earned mana, an upgrade, recharge, or a
+    // relaxation of the source full-store gathering gate.
+    let castle = simulation(&game)
+        .economy()
+        .castle_for_owner(player)
+        .unwrap()
+        .source_entity_index;
+    let castle_handle = simulation(&game).source_arena().handle(castle).unwrap();
+    let capacity = simulation(&game)
+        .economy()
+        .castle_at(castle)
+        .unwrap()
+        .mana_capacity;
+    for sim in [simulation_mut(&mut game), no_possession.simulation_mut()] {
+        assert!(
+            sim.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, 0)
+        );
+        assert_eq!(sim.economy().castle_at(castle).unwrap().mana, 0);
+        assert_eq!(
+            sim.economy().castle_at(castle).unwrap().mana_capacity,
+            capacity
+        );
+    }
+    let sphere_position = simulation(&game)
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.source_entity_index == sphere.source_slot)
+        .unwrap()
+        .position;
+    let castle_position = simulation(&game)
+        .economy()
+        .castle_at(castle)
+        .unwrap()
+        .position;
+    // Two48-unit collector legs plus the source1024/16 attraction tail,
+    // vertical32-unit convergence and maintenance cadence. Inputs stay neutral.
+    let travel = crate::distance_3d_wrapped(sphere_position, castle_position) as usize;
+    let collection_bound = 2 * travel.div_ceil(48) + 192;
+    let mut collected: Option<(SourceEntityHandle, i32)> = None;
+    let mut hidden_pass = None;
+    let mut reclaimed = false;
+    let mut deposited = false;
+    let mut pickup_count = 0;
+    let mut credit_count = 0;
+    let mut collection_history = Vec::new();
+    for pass in 0..collection_bound {
+        let sim = simulation(&game);
+        let before_children = sim.economy().castle_children().to_vec();
+        let before_store = sim.economy().castle_at(castle).unwrap().mana;
+        let event_start = sim.economy().events().len();
+        simulation_mut(&mut game).step_level2_source_pass((pass % 4) as u8);
+        no_possession
+            .simulation_mut()
+            .step_level2_source_pass((pass % 4) as u8);
+        no_dispatch_errors(simulation(&game), "real death-sphere collector", pass);
+        no_dispatch_errors(
+            no_possession.simulation(),
+            "same elapsed unclaimed sphere",
+            pass,
+        );
+        let sim = simulation(&game);
+        assert_eq!(sim.source_arena().handle(castle), Some(castle_handle));
+        let events = &sim.economy().events()[event_start..];
+        for event in events {
+            match *event {
+                Level2EconomyEvent::CastleDefenderCollectedSphere {
+                    defender_slot,
+                    sphere_id,
+                    mana,
+                } if sphere_id == u32::from(sphere.source_slot) => {
+                    pickup_count += 1;
+                    assert_eq!(sim.source_arena().handle(sphere.source_slot), Some(sphere));
+                    let retained = sim
+                        .economy()
+                        .spheres()
+                        .iter()
+                        .find(|row| row.source_entity_index == sphere.source_slot)
+                        .unwrap();
+                    assert_eq!(retained.mana, mana);
+                    assert!(
+                        mana >= birth_mana
+                            && retained.pending_delete
+                            && retained.control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+                    );
+                    let before = before_children
+                        .iter()
+                        .find(|row| row.source_entity_index == defender_slot)
+                        .unwrap();
+                    let after = sim
+                        .economy()
+                        .castle_children()
+                        .iter()
+                        .find(|row| row.source_entity_index == defender_slot)
+                        .unwrap();
+                    assert_eq!(
+                        before.mana, 0,
+                        "this collector has no unrelated prior payload"
+                    );
+                    assert_eq!(after.mana, before.mana.wrapping_add(mana));
+                    assert_eq!(after.id_entity_index, player);
+                    collected = Some((sim.source_arena().handle(defender_slot).unwrap(), mana));
+                    hidden_pass = Some(pass);
+                    assert!(
+                        !sim.campaign_entity_presentations(0)
+                            .unwrap()
+                            .iter()
+                            .any(|view| view.entity_index == sphere.source_slot)
+                    );
+                }
+                Level2EconomyEvent::CastleDefenderArrived {
+                    defender_slot,
+                    castle_id,
+                    mana,
+                } if collected.is_some_and(|(holder, payload)| {
+                    holder.source_slot == defender_slot && payload == mana
+                }) && castle_id == castle =>
+                {
+                    let (holder, payload) = collected.unwrap();
+                    assert_eq!(sim.source_arena().handle(defender_slot), Some(holder));
+                    assert_eq!(before_store, 0);
+                    assert_eq!(
+                        sim.economy().castle_at(castle).unwrap().mana,
+                        before_store.wrapping_add(payload)
+                    );
+                    assert_eq!(
+                        sim.economy()
+                            .castle_children()
+                            .iter()
+                            .find(|row| row.source_entity_index == defender_slot)
+                            .unwrap()
+                            .mana,
+                        0
+                    );
+                    credit_count += 1;
+                    deposited = true;
+                }
+                _ => {}
+            }
+        }
+        if hidden_pass.is_some_and(|hidden| pass == hidden + 1) {
+            assert!(
+                sim.source_arena().resolve(sphere).is_none(),
+                "pickup reclaims at following source boundary"
+            );
+            reclaimed = true;
+        }
+        if pass < 8 || pass % 64 == 0 {
+            collection_history.push((
+                pass,
+                sim.economy().castle_at(castle).copied(),
+                sim.economy()
+                    .spheres()
+                    .iter()
+                    .find(|row| row.source_entity_index == sphere.source_slot)
+                    .copied(),
+                sim.economy().castle_children().to_vec(),
+            ));
+        }
+        if deposited && reclaimed {
+            break;
+        }
+    }
+    assert!(
+        deposited && reclaimed && pickup_count == 1 && credit_count == 1,
+        "same death sphere must lift/collect/credit once/reclaim naturally: sphere={sphere:?} collected={collected:?} pickup={pickup_count} credit={credit_count} hidden={hidden_pass:?} bound={collection_bound} history={collection_history:?}"
+    );
+    let credited = collected.unwrap().1;
+    assert_eq!(
+        simulation(&game).economy().castle_at(castle).unwrap().mana,
+        credited
+    );
+    assert_eq!(
+        no_possession
+            .simulation()
+            .economy()
+            .castle_at(castle)
+            .unwrap()
+            .mana,
+        0
+    );
+    simulation_mut(&mut game).step_level2_source_pass(0);
+    no_possession.simulation_mut().step_level2_source_pass(0);
+    no_dispatch_errors(simulation(&game), "following once-only Castle credit", 0);
+    no_dispatch_errors(
+        no_possession.simulation(),
+        "following no-Possession boundary",
+        0,
+    );
+    assert_eq!(
+        simulation(&game).economy().castle_at(castle).unwrap().mana,
+        credited
+    );
+    assert!(simulation(&game).source_arena().resolve(sphere).is_none());
+    assert_eq!(
+        simulation(&game).economy().authored_bee_kill_census(player),
+        credit_before.wrapping_add(1)
+    );
+    assert!(simulation(&game).source_arena().resolve(root).is_none());
 }
 
 #[test]

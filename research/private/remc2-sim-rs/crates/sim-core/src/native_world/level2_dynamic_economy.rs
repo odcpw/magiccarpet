@@ -3393,9 +3393,38 @@ impl Level2EconomyState {
                     POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
                     POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
                 ) {
+                    #[cfg(test)]
+                    let before_amount = sphere.incoming_possession_payload;
+                    #[cfg(test)]
+                    let before_possessor = sphere.incoming_owner_entity_index;
                     let sphere = &mut self.spheres[sphere_index];
                     sphere.incoming_owner_entity_index = effect.source_id_entity_index;
                     sphere.incoming_possession_payload = u32::from(effect.source_model == 70);
+                    #[cfg(test)]
+                    let (amount, possessor) = (
+                        sphere.incoming_possession_payload,
+                        sphere.incoming_owner_entity_index,
+                    );
+                    #[cfg(test)]
+                    POSSESSION_TRACE.with(|trace| {
+                        if let Some(trace) = trace.borrow_mut().as_mut() {
+                            trace.push(PossessionSourceReceipt::MailboxWrite {
+                                effect: crate::campaign::source_arena::SourceEntityHandle {
+                                    source_slot,
+                                    generation: self.slot_generation(source_slot),
+                                },
+                                target: crate::campaign::source_arena::SourceEntityHandle {
+                                    source_slot: candidate_slot,
+                                    generation: self.slot_generation(candidate_slot),
+                                },
+                                source_id: effect.source_id_entity_index,
+                                before_amount,
+                                before_possessor,
+                                amount,
+                                possessor,
+                            });
+                        }
+                    });
                 }
             }
         }

@@ -28731,9 +28731,10 @@ impl Mc2Simulation {
     /// add to an unowned payload, matching the source primitive.  Shield
     /// status is evaluated later by the player's source callback.
     pub(super) fn queue_level2_player_contact_damage(&mut self, damage: i32, attacker: u16) {
-        if self.session.state.live.player_life < 0 || damage <= 0 || attacker == 0 {
-            return;
-        }
+        // sub_11900 receives an unsigned source word and writes even a zero
+        // payload/owner or an already-dead target. The player's own later
+        // callback decides whether the resulting mailbox is consumed.
+        let damage = i32::from(damage as u16);
         let player_entity_index = self.session.state.live.core.state.entity_index;
         #[cfg(test)]
         let actor_contact_source = CURRENT_ACTOR_CONTACT_SOURCE.with(|source| source.get());
@@ -28781,20 +28782,22 @@ impl Mc2Simulation {
                 .try_into()
                 .expect("player damage mailbox bytes"),
         );
-        let next_damage = if raw_attacker != 0 {
-            damage
-        } else {
-            raw_damage.wrapping_add(damage)
-        };
+        let mut next_damage = raw_damage;
+        let mut next_attacker = raw_attacker;
+        crate::combat::actors::DamageMailboxMut::new(&mut next_damage, &mut next_attacker).submit(
+            damage,
+            attacker,
+            crate::combat::actors::DamageWriter::Contact,
+        );
         entity.record[98..102].copy_from_slice(&next_damage.to_le_bytes());
-        entity.record[102..104].copy_from_slice(&attacker.to_le_bytes());
+        entity.record[102..104].copy_from_slice(&next_attacker.to_le_bytes());
         self.session.state.live.player_pending_damage = next_damage;
-        self.session.state.live.player_pending_attacker = attacker;
+        self.session.state.live.player_pending_attacker = next_attacker;
         self.session
             .state
             .live
             .shared_spells
-            .set_player_entity_damage_mailbox(next_damage, attacker);
+            .set_player_entity_damage_mailbox(next_damage, next_attacker);
         #[cfg(test)]
         let writer_sequence = area_damage::trace_player_mailbox_write(
             &self.session.state.live.economy,
@@ -37929,6 +37932,60 @@ mod tests {
     }
 
     #[test]
+    fn configured_player_contact_keeps_source_word_and_mailbox_semantics() {
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2)
+            .expect("qualified Level 2 campaign opens");
+        let sim = campaign.simulation_mut();
+        let player = sim.state.entity_index;
+        let row = &mut sim.session.state.live.economy.entities[usize::from(player)];
+        row.record[98..102].copy_from_slice(&i32::MAX.to_le_bytes());
+        row.record[102..104].fill(0);
+
+        let mailbox = |sim: &Mc2Simulation| {
+            let row = &sim.entities()[usize::from(player)];
+            (row.source_upkeep_payload(), row.source_upkeep_word_62())
+        };
+        sim.queue_level2_player_contact_damage(1, 0);
+        assert_eq!(
+            mailbox(sim),
+            (i32::MIN, 0),
+            "unowned contact adds with wrapping"
+        );
+        sim.queue_level2_player_contact_damage(0, 7);
+        assert_eq!(
+            mailbox(sim),
+            (i32::MIN, 7),
+            "zero payload still claims residue"
+        );
+        sim.queue_level2_player_contact_damage(0, 8);
+        assert_eq!(
+            mailbox(sim),
+            (0, 8),
+            "owned contact replaces even with zero"
+        );
+        sim.queue_level2_player_contact_damage(65_537, 9);
+        assert_eq!(
+            mailbox(sim),
+            (1, 9),
+            "source contact payload narrows to u16"
+        );
+
+        // Configured dead-player exception: 11900 still writes; 5EFA0 does
+        // not consume an owned mailbox while the actual player life is negative.
+        sim.session.state.live.player_life = -1;
+        sim.session.state.live.economy.entities[usize::from(player)].set_life(-1);
+        sim.session.state.live.shared_spells.set_player_entity_life(-1);
+        sim.queue_level2_player_contact_damage(3, 0);
+        assert_eq!(mailbox(sim), (3, 0));
+        sim.queue_level2_player_contact_damage(-1, 6);
+        assert_eq!(mailbox(sim), (65_538, 6));
+        assert_eq!(sim.consume_level2_player_damage(), None);
+        assert_eq!(mailbox(sim), (65_538, 6));
+    }
+
+    #[test]
     fn qualified_player_hit_suppresses_sixteen_upkeep_visits_then_regenerates() {
         let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2");
@@ -37978,10 +38035,76 @@ mod tests {
             starting_life
         );
         assert_eq!(campaign.simulation().shared_spells().player_mana(), 7);
-        // The nearest no-damage case must not arm a healing countdown.
-        campaign
+        // Both contact controls need a real unprotected player visit. Let the
+        // source Castle-protection countdown expire rather than bypassing it.
+        for turn in 0..256 {
+            if campaign.simulation().session.state.live.player_protection_ticks == 0 {
+                break;
+            }
+            let _ = campaign.step(PlayerCommand::default(), 0);
+            assert!(
+                campaign
+                    .simulation()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "contact protection turn{turn}"
+            );
+        }
+        assert_eq!(
+            campaign.simulation().session.state.live.player_protection_ticks,
+            0
+        );
+        // Restore the already-declared half-life test setup after natural
+        // upkeep during protection, retaining every authoritative projection.
+        {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            live.player_life = starting_life;
+            live.economy.entities[usize::from(player_slot)].set_life(starting_life);
+            live.shared_spells.set_player_entity_life(starting_life);
+            live.shared_spells.player_entities[0] = live.shared_spells.player_entity.clone();
+        }
+        // A source-admitted zero payload is still an owned contact. The
+        // player's scheduled callback consumes it, arms the normal hit
+        // cooldown and leaves health unchanged. Keep a no-contact branch for
+        // the independent positive-damage regeneration control below.
+        let mut zero_contact = campaign.clone();
+        let before_zero = zero_contact.simulation().canonical_player_life_for_test();
+        assert!(
+            before_zero >= 0,
+            "zero-contact consumer requires a living player"
+        );
+        let event_start = zero_contact.simulation().economy().events().len();
+        zero_contact
             .simulation_mut()
             .queue_level2_player_contact_damage(0, 1);
+        {
+            let row = &zero_contact.simulation().entities()[usize::from(player_slot)];
+            assert_eq!(
+                (row.source_upkeep_payload(), row.source_upkeep_word_62()),
+                (0, 1)
+            );
+        }
+        let _ = zero_contact.step(PlayerCommand::default(), 0);
+        assert_eq!(
+            zero_contact.simulation().canonical_player_life_for_test(),
+            before_zero
+        );
+        assert_eq!(
+            zero_contact.simulation().session.state.live.shared_spells.player_life_regen_cooldown,
+            15
+        );
+        let row = &zero_contact.simulation().entities()[usize::from(player_slot)];
+        assert_eq!(
+            (row.source_upkeep_payload(), row.source_upkeep_word_62()),
+            (0, 0)
+        );
+        assert!(zero_contact.simulation().economy().events()[event_start..]
+            .iter()
+            .any(|event| matches!(event,
+                Level2EconomyEvent::DamageApplied { target_entity_index,
+                    attacker_entity_index: 1, damage: 0, lethal: false }
+                    if *target_entity_index == player_slot)));
         let _ = campaign.step(PlayerCommand::default(), 0);
         assert_eq!(
             campaign.simulation().canonical_player_life_for_test(),

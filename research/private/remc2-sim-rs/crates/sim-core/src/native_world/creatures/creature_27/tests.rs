@@ -241,8 +241,9 @@ fn ordinary_level23_hydra_attacks_and_paid_meteor_reaches_capped_head_and_root()
     const GROUP16: &[u16] = &[554, 555, 556, 557, 558, 559, 560];
     let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
         || {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../generated/creatures-20261104-integration/current-owner-package/level23")
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../../../generated/creatures-20261104-integration/current-owner-package/level23",
+            )
         },
         std::path::PathBuf::from,
     );
