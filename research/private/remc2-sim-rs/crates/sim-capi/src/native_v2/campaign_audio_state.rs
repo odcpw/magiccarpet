@@ -225,6 +225,154 @@ mod tests {
     }
 
     #[test]
+    fn retained_authored_transport_audio_reaches_native_voice_commands() {
+        use sim_core::{FlightEvent, PlayerCommand, Position, campaign::journal::CampaignEffect};
+
+        let level = std::env::var("MC_TRANSPORT_LEVEL").map_or(15, |value| {
+            value.parse().expect("transport level is a number")
+        });
+        let package = std::env::var_os("MC_TRANSPORT_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-bhq6-ordinary-20261024-b/level15")
+            },
+            PathBuf::from,
+        );
+        let mut campaign =
+            CampaignSession::open(package, CampaignSelection::ordinary(level).unwrap())
+                .expect("same retained ordinary transport package");
+        let source = campaign
+            .simulation()
+            .entities()
+            .iter()
+            .find(|row| {
+                row.active && (row.class, row.model, row.action, row.life) == (10, 34, 36, 0)
+            })
+            .expect("actual persistent authored transport")
+            .clone();
+        let contact = Position {
+            y: source.position.y.wrapping_add(1),
+            ..source.position
+        };
+        let packet = source.record_bytes();
+        assert_ne!(
+            source.control_flags & 2,
+            0,
+            "the retained authored transport already ran its startup sound"
+        );
+        let destination = (
+            u16::from_le_bytes([packet[158], packet[159]]),
+            u16::from_le_bytes([packet[160], packet[161]]),
+        );
+        // Declared local-player contact and facing; the transport, all other
+        // owner rows, source lifetime and RNG remain unchanged.
+        {
+            let sim = campaign.simulation_mut();
+            let player = sim.state.entity_index;
+            sim.set_level2_entity_position(player, contact).unwrap();
+            // The source is exactly one unit north of contact: source yaw0.
+            sim.state.yaw = 0;
+            sim.state.actual_speed = 0;
+            sim.state.target_speed = 0;
+        }
+        let cursor = campaign.effect_cursor();
+        let generation = 77;
+        let mut audio = CampaignRuntimeAudio::default();
+        audio.reset(&campaign, generation);
+        campaign.step(PlayerCommand::default(), 0);
+        assert!(
+            campaign
+                .simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(
+                    event,
+                    sim_core::native_world::Mc2DispatchEvent::Error { .. }
+                )),
+            "{:?}",
+            campaign.simulation().dispatch_events()
+        );
+        let position = campaign.simulation().state.position;
+        let near = |a: u16, b: u16| i32::from(a.wrapping_sub(b) as i16).abs() < 256;
+        assert!(
+            near(position.x, destination.0) && near(position.y, destination.1),
+            "actual scheduled transport moved the canonical player"
+        );
+        let page = campaign.effects_after(cursor, 16_384).unwrap();
+        let transport = page
+            .records
+            .iter()
+            .filter(|record| {
+                matches!(record.effect,
+                    CampaignEffect::Flight(FlightEvent::PrepareSound {
+                        entity_index, player_index: -1, sound_id: 21 | 22, ..
+                    }) if entity_index == source.index
+                )
+            })
+            .collect::<Vec<_>>();
+        let sounds = transport
+            .iter()
+            .map(|record| match record.effect {
+                CampaignEffect::Flight(FlightEvent::PrepareSound { sound_id, .. }) => sound_id,
+                _ => unreachable!("retained preparation records"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sounds, [22], "ordinary local arrival without replaying startup");
+
+        let before_audio = campaign.state_hash();
+        audio.sync(&campaign, generation, false).unwrap();
+        assert_eq!(
+            campaign.state_hash(),
+            before_audio,
+            "audio does not mutate gameplay"
+        );
+        for record in transport {
+            let prepared = record.audio.expect("source-time prepared Flight audio");
+            assert!(prepared.command.audible);
+            let sequence = record.sequence.wrapping_add(1);
+            let command = &audio.commands[&sequence];
+            assert_eq!(command.generation, generation);
+            assert_eq!(command.event_sequence, sequence);
+            assert_eq!(command.state_hash, before_audio);
+            assert_eq!(command.entity_index, source.index);
+            assert_eq!(command.player_index, -1);
+            assert_eq!(command.sound_flags, source.source_id as i16);
+            assert_eq!(command.play_type, 1);
+            assert_eq!(command.rate_delta_percent, 0);
+            assert_eq!(command.playback_rate_hz, 22_050);
+            assert_eq!(command.loop_count, 0);
+            assert_eq!(
+                (command.relative_x, command.relative_y, command.relative_z),
+                (
+                    prepared.command.relative_x,
+                    prepared.command.relative_y,
+                    prepared.command.relative_z,
+                )
+            );
+            assert_eq!(
+                (command.volume_q15, command.pan_q16),
+                (prepared.command.volume_q15, prepared.command.pan_q16,)
+            );
+            assert_eq!(
+                command.action, MC_AUDIO_ACTION_START,
+                "actual unfiltered native audio drain admits the transport voice"
+            );
+            assert_ne!(command.voice_index, MC_AUDIO_VOICE_NONE);
+            let voice = audio.voices[usize::from(command.voice_index)].unwrap();
+            assert_eq!(
+                (voice.sound_id, voice.sound_flags, voice.event_sequence),
+                (command.sound_id, command.sound_flags, sequence,)
+            );
+        }
+        let commands = audio.commands.clone();
+        audio.sync(&campaign, generation, false).unwrap();
+        assert_eq!(
+            audio.commands, commands,
+            "the journal cursor prevents duplicate native commands"
+        );
+    }
+
+    #[test]
     fn real_selected_banks_suppress_null_without_consuming_voice() {
         let night = actual_bank("mc-oi68-level1-fullbank-v2-20261029", 1);
         let day = actual_bank("mc-oi68-level2-fullbank-v2-20261029", 2);

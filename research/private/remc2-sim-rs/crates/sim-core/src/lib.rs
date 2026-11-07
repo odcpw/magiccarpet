@@ -727,6 +727,10 @@ pub enum MissionAudioSite {
     SpiderAttack,
     SlowingFirstHit,
     WebFirstHit,
+    TransportStart,
+    TransportArrive,
+    TransportExpire,
+    StormChild,
     Count,
 }
 
@@ -1208,6 +1212,10 @@ impl MissionAudioSite {
         Self::SpiderAttack,
         Self::SlowingFirstHit,
         Self::WebFirstHit,
+        Self::TransportStart,
+        Self::TransportArrive,
+        Self::TransportExpire,
+        Self::StormChild,
     ];
 
     #[must_use]
@@ -1675,6 +1683,38 @@ impl MissionAudioSite {
                 "3",
                 "fixed 0",
                 "EventsFunctions.cpp sub_38F70 first-hit branch",
+                true,
+            ),
+            Self::TransportStart => (
+                "21",
+                "transport physical slot after flag2 and before lifetime/player visits",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:25780 sub_35390",
+                true,
+            ),
+            Self::TransportArrive => (
+                "22",
+                "transport physical slot with the current listener before each player copy",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:25801 sub_35390",
+                true,
+            ),
+            Self::TransportExpire => (
+                "20",
+                "transport physical slot after hide and before callback return",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:25814 sub_35390",
+                true,
+            ),
+            Self::StormChild => (
+                "23",
+                "first storm child after source postwrites and before second allocation",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:25931 sub_35640",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

@@ -103,8 +103,9 @@ pub(crate) fn step(
     terrain: &impl FlightWorld,
     destination_clearance: i16,
     local_player_color: u8,
+    sound: &mut impl FnMut(&EntitySnapshot, u16),
 ) -> Outcome {
-    let (mut outcome, visit_players) = begin(source);
+    let (mut outcome, visit_players) = begin(source, sound);
     if !visit_players {
         return outcome;
     }
@@ -117,6 +118,7 @@ pub(crate) fn step(
         destination_clearance,
         player.player_color_index == local_player_color,
         &mut outcome,
+        sound,
     ) {
         player.position = target;
     }
@@ -125,10 +127,14 @@ pub(crate) fn step(
 }
 
 /// The lifetime and loop sound are applied once before the source player scan.
-pub(crate) fn begin(source: &mut EntitySnapshot) -> (Outcome, bool) {
+pub(crate) fn begin(
+    source: &mut EntitySnapshot,
+    sound: &mut impl FnMut(&EntitySnapshot, u16),
+) -> (Outcome, bool) {
     let mut outcome = Outcome::default();
     if source.control_flags & 2 == 0 {
         source.set_control_flags(source.control_flags | 2);
+        sound(source, 21);
         outcome.sounds.push((source.index, 21));
     }
     let life = source.life;
@@ -136,6 +142,7 @@ pub(crate) fn begin(source: &mut EntitySnapshot) -> (Outcome, bool) {
         source.set_life(life.wrapping_sub(1));
         if life == 1 {
             source.disable_drawing();
+            sound(source, 20);
             outcome.sounds.push((source.index, 20));
             return (outcome, false);
         }
@@ -154,6 +161,7 @@ pub(crate) fn visit_player(
     destination_clearance: i16,
     is_local: bool,
     outcome: &mut Outcome,
+    sound: &mut impl FnMut(&EntitySnapshot, u16),
 ) -> Option<Position> {
     // sub_10630 wraps each horizontal difference to i16, but promotes the
     // vertical offsets before subtraction and uses independent X/Y extents.
@@ -176,6 +184,7 @@ pub(crate) fn visit_player(
                 .ground_height(target)
                 .wrapping_add(destination_clearance);
             set_destination(source, target);
+            sound(source, 22);
             player_body.set_position(target);
             outcome.transported = true;
             outcome.sounds.push((source.index, 22));

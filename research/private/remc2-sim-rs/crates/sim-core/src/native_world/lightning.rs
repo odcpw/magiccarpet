@@ -520,37 +520,138 @@ fn storm_shot(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: 
     Ok(outcome)
 }
 
-///35640. Rise to ground+1024, then emit two opposite short rays per visit.
-fn storm(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[ParticleParameter], slot: u16)
-    -> Result<guided_projectile::StepOutcome, String> {
+/// 4A190 child dispatch for the storm's actual constructor contracts. The
+/// bare4FFB0 controller retains NewEvent's10/0; ordinary66FD0 supplies9/9.
+fn storm_child(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    source_slot: u16,
+) -> Result<Option<u16>, String> {
+    use crate::level_definition::EffectKind;
+    let source = &arena.entities[usize::from(source_slot)];
+    let position = source.position;
+    let product = match (source.record[71], source.record[72]) {
+        (9, 9) => Product::Ray,
+        (9, 12) => Product::StormShot,
+        (10, 23) => Product::Endpoint,
+        (10, 38) => Product::Storm,
+        (10, 33) => {
+            return crate::world::fields::timed::construct(
+                arena,
+                terrain,
+                position,
+                Some(source_slot),
+                sim_definition::adapter::mc2_field_definition(
+                    crate::level_definition::FieldKind::TimedController,
+                    crate::level_definition::TilePosition { x: 0, y: 0 },
+                ),
+            );
+        }
+        (10, 35) => return Ok(crate::world::fields::timed::construct_blank(arena, terrain)),
+        // These source table entries have no constructor; they do not allocate.
+        (10, 20 | 21 | 24 | 37) => return Ok(None),
+        (10, model)
+            if crate::world::effects::source_kind(model).is_some_and(|kind| {
+                matches!(
+                    kind,
+                    EffectKind::Impact
+                        | EffectKind::RadialExplosion
+                        | EffectKind::Ash
+                        | EffectKind::GroundFire
+                        | EffectKind::FadingSmoke
+                        | EffectKind::DarkSmoke
+                )
+            }) =>
+        {
+            return crate::world::effects::allocate_from_source_position(
+                arena,
+                terrain,
+                sim_definition::adapter::mc2_effect_definition(
+                    crate::world::effects::source_kind(model).unwrap(),
+                ),
+                source_slot,
+                position,
+                particles,
+            );
+        }
+        selector => return Err(format!("storm has unowned child constructor {selector:?}")),
+    };
+    construct_at_address(
+        arena,
+        terrain,
+        particles,
+        product,
+        position,
+        Some(source_slot),
+    )
+}
+
+///35640. Rise to ground+1024, then construct two opposite configured children.
+fn storm(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    slot: u16,
+    sound: &mut impl FnMut(&EntitySnapshot, u16),
+) -> Result<guided_projectile::StepOutcome, String> {
     let mut row = arena.entities[usize::from(slot)].clone();
     let mut outcome = guided_projectile::StepOutcome::default();
     let height = terrain.ground_height(row.position).wrapping_add(1024);
     let adjust = row.position.z != height;
-    if row.position.z < height { row.set_position(Position { z: row.position.z.wrapping_add(64), ..row.position }); }
-    if row.position.z > height { row.set_position(Position { z: height, ..row.position }); }
+    if row.position.z < height {
+        row.set_position(Position {
+            z: row.position.z.wrapping_add(64),
+            ..row.position
+        });
+    }
+    if row.position.z > height {
+        row.set_position(Position {
+            z: height,
+            ..row.position
+        });
+    }
     if !adjust {
-        let life = row.life; row.set_life(life.wrapping_sub(1));
-        if life < 0 { row.disable_drawing(); }
-        else {
-            row.set_pitch(56); let yaw = draw(&mut row) as i16 & 2047; row.set_yaw(yaw);
+        let life = row.life;
+        row.set_life(life.wrapping_sub(1));
+        if life < 0 {
+            row.disable_drawing();
+        } else {
+            row.set_pitch(56);
+            let yaw = draw(&mut row) as i16 & 2047;
+            row.set_yaw(yaw);
             for side in 0..2 {
                 row.set_yaw(row.yaw.wrapping_add(1024) & 2047);
+                terrain.set_source_predicted_position(Position {
+                    z: row.position.z.wrapping_add(row.array_yaw()),
+                    ..row.position
+                });
                 arena.entities[usize::from(slot)] = row.clone();
-                let generation = arena.economy.slot_generation(slot);
-                if let Some(ray) = construct(arena, terrain, particles, Product::Ray, row.position)? {
-                    if arena.economy.slot_generation(slot) != generation { row = arena.entities[usize::from(slot)].clone(); }
-                    let child = &mut arena.entities[usize::from(ray)];
-                    owner(child, row.source_id); child.set_life(child.life / 3);
-                    child.set_yaw(row.yaw); child.set_pitch(row.pitch);
-                    child.record[71] = 10; child.record[72] = 23; child.set_subspell_index(row.subspell_index);
-                    if side == 0 { outcome.sounds.push((ray, 23)); }
+                let child = storm_child(arena, terrain, particles, slot)?;
+                // NewEvent's constructor may replace the fixed source address.
+                row = arena.entities[usize::from(slot)].clone();
+                if let Some(child) = child {
+                    let product = &mut arena.entities[usize::from(child)];
+                    owner(product, row.source_id);
+                    product.set_life(product.life / 3);
+                    product.set_yaw(row.yaw);
+                    product.set_pitch(row.pitch);
+                    product.record[71] = 10;
+                    product.record[72] = 23;
+                    product.set_subspell_index(row.subspell_index);
+                    if side == 0 {
+                        sound(product, 23);
+                        outcome.sounds.push((child, 23));
+                    }
                 }
+                // Preserve the post-birth writes when child and source alias.
+                row = arena.entities[usize::from(slot)].clone();
             }
         }
     }
     arena.economy.source_rng.insert(slot, row.entity_rng);
-    let position = row.position; let active = row.active;
+    let position = row.position;
+    let active = row.active;
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, active, false)?;
     Ok(outcome)
@@ -583,6 +684,7 @@ where F: FnMut(&mut SourceArena, crate::world::effects::DamagePulse) -> Result<u
 pub(crate) fn step(arena: &mut SourceArena, terrain: &mut SessionTerrain,
     particles: &[ParticleParameter], slot: u16, targets: Option<&guided_projectile::Targets<'_>>,
     context: source_target::Context<'_>,
+    sound: &mut impl FnMut(&EntitySnapshot, u16),
 ) -> Result<guided_projectile::StepOutcome, String> {
     let context = source_target::Context {
         particles: Some(particles),
@@ -598,7 +700,7 @@ pub(crate) fn step(arena: &mut SourceArena, terrain: &mut SessionTerrain,
             if row.life < -1 { row.disable_drawing(); }
             Ok(guided_projectile::StepOutcome::default())
         }
-        (10, 40) => storm(arena, terrain, particles, slot),
+        (10, 40) => storm(arena, terrain, particles, slot, sound),
         selector => Err(format!("Lightning callback has unowned selector{selector:?}")),
     }
 }

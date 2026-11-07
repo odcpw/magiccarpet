@@ -432,13 +432,31 @@ fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
         let mut saw_storm = false;
         let mut saw_endpoint = false;
         let mut damaged = false;
+        let mut storm_child_audio = false;
         let mut previous_target_life = target.life;
         let mut trace = Vec::new();
         for turn in 0..160 {
             let command = if turn == 0 { crate::PlayerCommand { flags: 0x10, ..Default::default() } }
                 else { crate::PlayerCommand::default() };
+            let audio_cursor = session.effect_journal().cursor(0).next_sequence;
             session.step_outer_turn(command, 0);
             let live = &session.session.state.live;
+            for record in session.effect_journal().records().iter()
+                .filter(|record| record.sequence >= audio_cursor)
+            {
+                if let crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::StormChild,
+                    entity_index, player_index: -1, sound_id: 23,
+                }) = record.effect {
+                    assert_ne!(entity_index, 0);
+                    assert_ne!(entity_index, player, "physical child emits23, not the caster");
+                    let prepared = record.audio.expect("ordinary Storm child reaches prepared Flight audio");
+                    assert_eq!(prepared.play_type, 1);
+                    assert_eq!(prepared.command.sound_flags, player as i16);
+                    assert_eq!(prepared.command.rate_delta_percent, 0);
+                    storm_child_audio |= prepared.command.audible;
+                }
+            }
             let current_mana = live.economy.entities[usize::from(player)].mana;
             charged |= previous_mana - current_mana == rule.mana_cost;
             previous_mana = current_mana;
@@ -515,7 +533,7 @@ fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
             let cleaned = reclaimed[0] && reclaimed[3]
                 && (tier == 0 || reclaimed[1] && reclaimed[2]);
             if saw_ray && saw_endpoint && damaged && (tier == 0 || saw_shot && saw_storm)
-                && charged && launch_sound && endpoint_sound && cleaned
+                && charged && launch_sound && endpoint_sound && (tier == 0 || storm_child_audio) && cleaned
                 && session.shared_spells().pickup(holder).unwrap().active_value == 0
                 && session.shared_spells().spell_experience()[7] > experience_before { break; }
         }
@@ -523,6 +541,8 @@ fn authored_lightning_pickup_and_public_hand_reach_scheduled_tier_consumers() {
             "ordinary tier {tier} must reach its scheduled Lightning damage consumer:\n{}", trace.join("\n"));
         assert!(charged, "tier {tier} must debit its source mana cost");
         assert!(launch_sound && endpoint_sound, "tier {tier} must prepare launch and endpoint sounds");
+        assert!(tier == 0 || storm_child_audio,
+            "ordinary tier{tier} first Storm child must reach audible prepared positional Flight audio");
         assert!(particles_seen[0] && particles_seen[2] && (tier == 0 || particles_seen[1]),
             "tier {tier} must bind the projectile, emitter, and endpoint presentation particles");
         assert!(projected_projectile && (tier == 0 || projected_storm),
@@ -625,7 +645,7 @@ fn lightning_storm_shot_attributes_accuracy_and_xp_only_to_player_owners() {
         }
         let old_parent_target = word(&arena.entities[usize::from(parent)], 154);
         let outcome = step(arena, &mut live.terrain, &particles, shot, None,
-            source_target::Context::default()).unwrap();
+            source_target::Context::default(), &mut |_, _| {}).unwrap();
         assert!(outcome.impact_slot.is_some(), "collision must produce the storm emitter");
         assert_eq!(outcome.experience, is_player.then_some((parent, 7, 1)));
         assert_eq!(outcome.accuracy, is_player.then_some((parent, true)));
@@ -654,6 +674,10 @@ fn lightning_storm_emitter_uses_one_rng_draw_and_produces_opposite_source_rays()
     )
     .unwrap()
     .unwrap();
+    // This configured emitter represents66FD0's actual9/9 child selector.
+    // Bare4FFB0 retains NewEvent's10/0 and is exercised separately below.
+    arena.entities[usize::from(emitter)].record[71] = 9;
+    arena.entities[usize::from(emitter)].record[72] = 9;
     owner(&mut arena.entities[usize::from(emitter)], parent);
     arena.entities[usize::from(emitter)].set_life(4);
     let seed = 0x1234;
@@ -664,8 +688,24 @@ fn lightning_storm_emitter_uses_one_rng_draw_and_produces_opposite_source_rays()
         .filter(|row| row.active)
         .map(|row| row.index)
         .collect::<BTreeSet<_>>();
+    let tile = arena.economy.map_chains.tile_of(emitter);
+    let previous_head = arena.economy.map_chains.tile_head(tile);
+    assert_eq!(
+        previous_head, emitter,
+        "the new controller is the initial tile head"
+    );
 
-    let outcome = step(arena, &mut live.terrain, &particles, emitter, None, source_target::Context::default()).unwrap();
+    let mut calls = Vec::new();
+    let outcome = step(
+        arena,
+        &mut live.terrain,
+        &particles,
+        emitter,
+        None,
+        source_target::Context::default(),
+        &mut |child, sound| calls.push((child.clone(), sound)),
+    )
+    .unwrap();
     let expected_rng = seed.wrapping_mul(9377).wrapping_add(9439);
     assert_eq!(
         arena.entities[usize::from(emitter)].entity_rng,
@@ -691,6 +731,341 @@ fn lightning_storm_emitter_uses_one_rng_draw_and_produces_opposite_source_rays()
     assert_eq!(rays.len(), 2);
     assert_eq!(rays[0].yaw.wrapping_add(1024) & 2047, rays[1].yaw);
     assert_eq!((rays[0].life, rays[1].life), (3, 3));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, 23);
+    assert_eq!(calls[0].0.index, outcome.sounds[0].0);
+    let first = rays
+        .iter()
+        .find(|ray| ray.index == calls[0].0.index)
+        .unwrap();
+    let second = rays.iter().find(|ray| ray.index != first.index).unwrap();
+    // AddEventToMap57D70 gives each new head next0 and old=previous head,
+    // then links the previous head forward to it. The sound precedes the
+    // second insertion, so its snapshot must retain the earlier topology.
+    assert_eq!(
+        (word(&calls[0].0, 26), word(&calls[0].0, 28)),
+        (previous_head, 0)
+    );
+    assert_eq!(
+        (word(first, 26), word(first, 28)),
+        (previous_head, second.index)
+    );
+    assert_eq!((word(second, 26), word(second, 28)), (first.index, 0));
+    assert_eq!(
+        word(&arena.entities[usize::from(previous_head)], 28),
+        first.index
+    );
+    assert_eq!(arena.economy.map_chains.tile_head(tile), second.index);
+    assert_eq!(
+        live.terrain.planes().entity_indices[usize::from(tile)] as u16,
+        second.index
+    );
+    for (row, previous, next) in [
+        (*first, previous_head, second.index),
+        (*second, first.index, 0),
+    ] {
+        assert_eq!(arena.economy.map_chains.old_map_entity(row.index), previous);
+        assert_eq!(arena.economy.map_chains.next_entity(row.index), next);
+    }
+    let mut expected_final = calls[0].0.clone();
+    expected_final.record[28..30].copy_from_slice(&second.index.to_le_bytes());
+    assert_eq!(
+        &expected_final, *first,
+        "only the independently verified second-birth map link changes after sound23"
+    );
+}
+
+#[test]
+fn bare_storm_default_children_reach_effect_presentation_and_natural_reclaim() {
+    let (mut session, _, parent) = ready_lightning(0);
+    let particles = session.session.definition.presentation.particles.clone();
+    // Explicit bare-constructor control, not an ordinary Lightning cast:
+    // choose its already-settled source height; keep default life32 and RNG.
+    let (emitter, emitter_handle, children) = {
+        let live = &mut session.session.state.live;
+        let base = live.economy.entities[usize::from(parent)].position;
+        let position = Position {
+            z: live.terrain.ground_height(base).wrapping_add(1024),
+            ..base
+        };
+        let emitter = crate::world::effects::allocate(
+            &mut live.economy,
+            &mut live.terrain,
+            sim_definition::adapter::mc2_effect_definition(
+                crate::level_definition::EffectKind::LightningStorm,
+            ),
+            position,
+            &particles,
+        )
+        .unwrap()
+        .unwrap();
+        let emitter_handle = live.economy.handle(emitter).unwrap();
+        let source = live.economy.entities[usize::from(emitter)].clone();
+        assert_eq!(
+            (source.record[71], source.record[72], source.life),
+            (10, 0, 32)
+        );
+        assert_eq!(
+            source.subspell_index, 100,
+            "semantic source default reaches the real constructor"
+        );
+        let before = live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| row.active)
+            .map(|row| (row.index, live.economy.slot_generation(row.index)))
+            .collect::<BTreeSet<_>>();
+        let outcome = step(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            emitter,
+            None,
+            source_target::Context::default(),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let expected_rng = source.entity_rng.wrapping_mul(9377).wrapping_add(9439);
+        let current = &live.economy.entities[usize::from(emitter)];
+        assert_eq!((current.life, current.entity_rng), (31, expected_rng));
+        assert_eq!(
+            live.terrain.source_predicted_position(),
+            Position {
+                z: position.z.wrapping_add(source.array_yaw()),
+                ..position
+            }
+        );
+        let children = live
+            .economy
+            .entities
+            .iter()
+            .filter(|row| {
+                row.active
+                    && !before.contains(&(row.index, live.economy.slot_generation(row.index)))
+            })
+            .map(|row| live.economy.handle(row.index).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 2);
+        assert_eq!(outcome.sounds.len(), 1);
+        assert_eq!(outcome.sounds[0].1, 23);
+        assert!(
+            children
+                .iter()
+                .any(|handle| handle.source_slot == outcome.sounds[0].0)
+        );
+        for child in &children {
+            let row = &live.economy.entities[usize::from(child.source_slot)];
+            assert_eq!(
+                (row.class, row.model, row.action, row.life, row.max_life),
+                (10, 0, 0, 2, 8)
+            );
+            assert_eq!(
+                (row.source_id, row.subspell_index, row.pitch),
+                (source.source_id, source.subspell_index, 56)
+            );
+            assert_eq!(
+                row.position, position,
+                "constructor receives the source position address"
+            );
+            assert_eq!((row.record[71], row.record[72]), (10, 23));
+        }
+        let first = &live.economy.entities[usize::from(outcome.sounds[0].0)];
+        let second = &live.economy.entities[usize::from(
+            children
+                .iter()
+                .find(|handle| handle.source_slot != first.index)
+                .unwrap()
+                .source_slot,
+        )];
+        assert_eq!(first.yaw.wrapping_add(1024) & 2047, second.yaw);
+        (emitter, emitter_handle, children)
+    };
+    let presentations = session.campaign_entity_presentations(0).unwrap();
+    for child in &children {
+        let view = presentations
+            .iter()
+            .find(|view| view.entity_index == child.source_slot)
+            .expect("actual10/0 child reaches original effect presentation");
+        assert_eq!(view.render_parameter_index, 7);
+        assert_eq!(view.base_tmap, particles[7].base_tmap);
+        assert_eq!(view.source_id, emitter);
+    }
+    let tracked = [emitter_handle, children[0], children[1]];
+    let mut hidden = [false; 3];
+    let mut reclaimed = [false; 3];
+    // Default32 emits through oldlife0, hides on oldlife−1, then reclaims.
+    // First children retain their actual shortened constructor life2.
+    for turn in 0..40 {
+        session.step_outer_turn(crate::PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, super::super::Mc2DispatchEvent::Error { .. })),
+            "bare storm lifecycle turn{turn}: {:?}",
+            session.dispatch_events()
+        );
+        let views = session.campaign_entity_presentations(0).unwrap();
+        let arena = &session.session.state.live.economy;
+        for (index, handle) in tracked.iter().enumerate() {
+            if arena.handle(handle.source_slot) == Some(*handle) {
+                if arena.entities[usize::from(handle.source_slot)].drawing_disabled() {
+                    hidden[index] = true;
+                    assert!(
+                        !views
+                            .iter()
+                            .any(|view| view.entity_index == handle.source_slot)
+                    );
+                }
+            } else {
+                assert!(
+                    hidden[index],
+                    "original generation must hide before following reclaim"
+                );
+                reclaimed[index] = true;
+            }
+        }
+        if reclaimed.iter().all(|value| *value) {
+            break;
+        }
+    }
+    assert_eq!((hidden, reclaimed), ([true; 3], [true; 3]));
+}
+
+#[test]
+fn configured_storm_selected_children_preserve_source_constructors_and_failures() {
+    for (selector, capacity) in [
+        ((10, 20), None),
+        ((10, 21), None),
+        ((10, 24), None),
+        ((10, 37), None),
+        ((10, 0), Some(0)),
+        ((10, 0), Some(1)),
+        ((10, 33), None),
+        ((10, 35), None),
+    ] {
+        let (mut session, _, parent) = ready_lightning(0);
+        let particles = session.session.definition.presentation.particles.clone();
+        let live = &mut session.session.state.live;
+        let base = live.economy.entities[usize::from(parent)].position;
+        let position = Position {
+            z: live.terrain.ground_height(base).wrapping_add(1024),
+            ..base
+        };
+        let emitter = construct(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            Product::Storm,
+            position,
+        )
+        .unwrap()
+        .unwrap();
+        let source = &mut live.economy.entities[usize::from(emitter)];
+        source.record[71] = selector.0;
+        source.record[72] = selector.1;
+        let seed = source.entity_rng;
+        if let Some(capacity) = capacity {
+            // Explicit capacity control; no source actor is made replaceable.
+            let free = *live.economy.economy.free_source_slots().last().unwrap();
+            exhaust(&mut live.economy);
+            if capacity == 1 {
+                live.economy.economy.release_slot(free, None);
+            }
+        }
+        let before = live
+            .economy
+            .entities
+            .iter()
+            .map(|row| (row.index, live.economy.slot_generation(row.index)))
+            .collect::<Vec<_>>();
+        let global_rng = live.economy.economy.global_rng;
+        let free = live.economy.economy.free_slot_count();
+        let mut calls = Vec::new();
+        let outcome = step(
+            &mut live.economy,
+            &mut live.terrain,
+            &particles,
+            emitter,
+            None,
+            source_target::Context::default(),
+            &mut |child, sound| calls.push((child.clone(), sound)),
+        )
+        .unwrap();
+        let source = &live.economy.entities[usize::from(emitter)];
+        assert_eq!(source.life, 31);
+        assert_eq!(
+            source.entity_rng,
+            seed.wrapping_mul(9377).wrapping_add(9439)
+        );
+        assert_eq!(source.yaw, (source.entity_rng as i16) & 2047);
+        if matches!(selector, (10, 33 | 35)) || capacity == Some(1) {
+            // Existing canonical source constructors, configured here only.
+            // Selector35 is an allocated blank, not a stamped transport actor.
+            let children = live
+                .economy
+                .entities
+                .iter()
+                .filter(|row| {
+                    before[usize::from(row.index)].1 != live.economy.slot_generation(row.index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(children.len(), if capacity == Some(1) { 1 } else { 2 });
+            for child in &children {
+                assert_eq!(
+                    (child.class, child.model, child.action, child.life),
+                    match selector.1 {
+                        33 => (10, 33, 35, 100),
+                        35 => (0, 0, 0, 0),
+                        _ => (10, 0, 0, 2),
+                    }
+                );
+                assert_eq!(child.source_id, source.source_id);
+                assert_eq!((child.record[71], child.record[72]), (10, 23));
+                assert_eq!(
+                    live.economy.economy.map_chains.is_linked(child.index),
+                    selector.1 == 0
+                );
+            }
+            assert_eq!(outcome.sounds.len(), 1);
+            assert_eq!(outcome.sounds[0].1, 23);
+            assert_eq!(calls.len(), 1);
+            assert_eq!((calls[0].0.index, calls[0].1), outcome.sounds[0]);
+            assert!(
+                children
+                    .iter()
+                    .any(|child| child.index == outcome.sounds[0].0)
+            );
+            if capacity == Some(1) {
+                assert_eq!(
+                    live.economy.economy.free_slot_count(),
+                    0,
+                    "the actual first product survives the second failed attempt"
+                );
+            }
+            continue;
+        }
+        assert!(
+            outcome.sounds.is_empty(),
+            "failed first construction has no sound23"
+        );
+        assert!(calls.is_empty());
+        assert_eq!(live.economy.economy.free_slot_count(), free);
+        assert_eq!(live.economy.economy.global_rng, global_rng);
+        assert!(
+            before
+                .iter()
+                .all(|&(slot, generation)| live.economy.slot_generation(slot) == generation)
+        );
+        assert_eq!(
+            live.terrain.source_predicted_position(),
+            Position {
+                z: position.z.wrapping_add(source.array_yaw()),
+                ..position
+            }
+        );
+    }
 }
 
 #[test]
@@ -726,7 +1101,7 @@ fn lightning_ray_keeps_segment_rng_and_trails_reach_the_hidden_state() {
         row.set_pitch(0);
     }
     let expected_rng = expected_one_step_ray_rng(seed);
-    let outcome = step(arena, &mut live.terrain, &particles, slot, None, source_target::Context::default()).unwrap();
+    let outcome = step(arena, &mut live.terrain, &particles, slot, None, source_target::Context::default(), &mut |_, _| {}).unwrap();
     assert_eq!(outcome.accuracy, Some((parent, false)));
     assert!(outcome.impact_slot.is_some());
     assert_eq!(arena.entities[usize::from(slot)].entity_rng, expected_rng);
@@ -749,7 +1124,7 @@ fn lightning_ray_keeps_segment_rng_and_trails_reach_the_hidden_state() {
         if arena.entities[usize::from(trail)].drawing_disabled() {
             break;
         }
-        step(arena, &mut live.terrain, &particles, trail, None, source_target::Context::default()).unwrap();
+        step(arena, &mut live.terrain, &particles, trail, None, source_target::Context::default(), &mut |_, _| {}).unwrap();
     }
     assert!(arena.entities[usize::from(trail)].drawing_disabled());
     assert!(

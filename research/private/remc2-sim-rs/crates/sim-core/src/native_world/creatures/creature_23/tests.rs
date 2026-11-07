@@ -366,6 +366,7 @@ fn source_adapter_commits_a_real_ray_runs_its_consumer_and_keeps_failed_birth_si
         ray_slot,
         None,
         crate::native_world::source_target::Context::default(),
+        &mut |_, _| {},
     )
     .unwrap();
     let endpoint = outcome

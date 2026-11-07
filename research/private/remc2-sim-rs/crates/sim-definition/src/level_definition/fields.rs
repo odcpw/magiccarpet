@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub enum FieldKind {
     Wind,
     Transport,
+    TimedController,
     Slowing,
     Web,
     SkeletonSummon,
@@ -19,6 +20,7 @@ impl FieldKind {
         match self {
             Self::Wind => "wind",
             Self::Transport => "transport",
+            Self::TimedController => "timed_controller",
             Self::Slowing => "slowing",
             Self::Web => "web",
             Self::SkeletonSummon => "skeleton_summon",
@@ -36,6 +38,11 @@ pub enum FieldDefinition {
     Transport {
         destination: TilePosition,
         lifetime: i32,
+    },
+    TimedController {
+        lifetime: i32,
+        half_width: i16,
+        half_height: i16,
     },
     Slowing {
         max_stages: u8,
@@ -64,6 +71,7 @@ impl FieldDefinition {
         match self {
             Self::Wind { .. } => FieldKind::Wind,
             Self::Transport { .. } => FieldKind::Transport,
+            Self::TimedController { .. } => FieldKind::TimedController,
             Self::Slowing { .. } => FieldKind::Slowing,
             Self::Web { .. } => FieldKind::Web,
             Self::SkeletonSummon { .. } => FieldKind::SkeletonSummon,

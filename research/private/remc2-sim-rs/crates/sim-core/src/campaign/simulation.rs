@@ -1002,6 +1002,22 @@ pub(crate) struct Creature17Trace {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TransportAudioBoundaryReceipt {
+    pub(crate) source: SourceEntityHandle,
+    pub(crate) target: Option<SourceEntityHandle>,
+    pub(crate) sound_id: u16,
+    pub(crate) source_position: Position,
+    pub(crate) source_id: u16,
+    pub(crate) source_flags: u32,
+    pub(crate) source_action: u8,
+    pub(crate) listener: SourceEntityHandle,
+    pub(crate) listener_position: Position,
+    pub(crate) listener_yaw: i16,
+    pub(crate) journal_sequence: u64,
+}
+
+#[cfg(test)]
 struct ActorContactTrace(Option<SourceEntityHandle>);
 
 #[cfg(test)]
@@ -1035,6 +1051,9 @@ std::thread_local! {
         std::cell::Cell<Option<SourceEntityHandle>> =
         const { std::cell::Cell::new(None) };
     static CREATURE17_TRACE: std::cell::RefCell<Option<Creature17Trace>> =
+        const { std::cell::RefCell::new(None) };
+    static TRANSPORT_AUDIO_TRACE:
+        std::cell::RefCell<Option<Vec<TransportAudioBoundaryReceipt>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -2205,6 +2224,16 @@ impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn take_creature17_trace(&self) -> Creature17Trace {
         CREATURE17_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_transport_audio_trace(&self) {
+        TRANSPORT_AUDIO_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_transport_audio_trace(&self) -> Vec<TransportAudioBoundaryReceipt> {
+        TRANSPORT_AUDIO_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
     }
 
     #[cfg(test)]
@@ -12415,7 +12444,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
-                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 34 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
+                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
                     )
                     | (11, 0..=44)
                     | (14, 1 | 2 | 3 | 4 | 5)
@@ -13144,6 +13173,29 @@ impl Mc2Simulation {
                         },
                         &self.session.definition.presentation.particles,
                     )?;
+                }
+                (10, 33) => {
+                    let properties = self.session.definition
+                        .mechanic_entity_for_authored_record(feature.index)
+                        .and_then(|id| self.session.definition.semantic_level()?.entity(id)?.field())
+                        .ok_or_else(|| format!(
+                            "authored timed controller {} lacks its field definition", feature.index,
+                        ))?;
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(
+                        live.terrain.ground_height(feature.world_position(0)),
+                    );
+                    crate::world::fields::timed::construct(
+                        &mut live.economy, &mut live.terrain, position, None, properties,
+                    )?;
+                }
+                (10, 35) => {
+                    // The enabled source constructor is only NewEvent. It
+                    // returns a blank class0 slot, not a transport/follower.
+                    let live = &mut self.session.state.live;
+                    let _ = crate::world::fields::timed::construct_blank(
+                        &mut live.economy, &mut live.terrain,
+                    );
                 }
                 (10, 34) => {
                     let properties = self
@@ -15386,7 +15438,7 @@ impl Mc2Simulation {
                                     24 | 25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 75 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
                                 )
                                 | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 30 | 31)
-                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=34 | 36 | 37 | 38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96)
+                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96)
                                 | (11, 0..=44)
                                 | (14, 6 | 7 | 8 | 9)
                         ))
@@ -18406,7 +18458,32 @@ impl Mc2Simulation {
                 | ExistingHandler::SummonArmyProjectile,
                 SourceRoute::Imported,
             ) => {
+                if self.session.state.live.economy.entities[usize::from(source_slot)].class == 10
+                    && self.session.state.live.economy.entities[usize::from(source_slot)].model == 38
+                {
+                    self.flush_shared_effects();
+                }
                 let live = &mut self.session.state.live;
+                let sound_listener = (live.core.state.position, live.core.state.yaw);
+                let mut storm_sounds = Vec::new();
+                let mut freeze_storm_sound = |emitter: &EntitySnapshot, sound_id| {
+                    // Source35640 prepares the first child's sound before
+                    // allocating its sibling. Freeze the actual child here;
+                    // the second NewEvent may reuse that physical address.
+                    let audio = (emitter.control_flags & 0x80 == 0).then(|| {
+                        crate::prepare_event_sound_command(
+                            sound_listener.0, sound_listener.1, emitter.position,
+                            sound_id, 0, emitter.source_id, emitter.action,
+                        )
+                    }).flatten();
+                    storm_sounds.push((FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::StormChild,
+                        entity_index: emitter.index,
+                        player_index: -1,
+                        sound_id,
+                    }, audio));
+                };
                 let owner_range = live
                     .economy
                     .entities
@@ -18643,6 +18720,7 @@ impl Mc2Simulation {
                         source_slot,
                         Some(&targets),
                         context,
+                        &mut freeze_storm_sound,
                     )?
                 };
                 if outcome.impact_slot.is_some_and(|slot| {
@@ -18735,6 +18813,11 @@ impl Mc2Simulation {
                 }
                 for (slot, sound) in outcome.sounds {
                     live.economy.prepare_sound(slot, slot, -1, sound);
+                }
+                for (event, audio) in storm_sounds {
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, event);
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -18993,14 +19076,74 @@ impl Mc2Simulation {
                 self.append_new_economy_events(pass, source_slot);
             }
             (ExistingHandler::Fields, SourceRoute::Imported) => {
+                if (self.session.state.live.economy.entities[usize::from(source_slot)].model,
+                    self.session.state.live.economy.entities[usize::from(source_slot)].action)
+                    == (34, 36)
+                {
+                    self.flush_shared_effects();
+                }
                 #[cfg(test)]
                 let _source_trace = area_damage::trace_effect_source(source_slot);
                 use crate::level_definition::{FieldKind, TilePosition};
                 use crate::world::fields::{status, transport};
+                struct TransportSound {
+                    event: FlightEvent,
+                    audio: Option<crate::PreparedEventSoundCommand>,
+                    #[cfg(test)]
+                    boundary: Option<TransportAudioBoundaryReceipt>,
+                }
                 let live = &mut self.session.state.live;
                 let mut source = live.economy.entities[usize::from(source_slot)].clone();
                 let local_color = live.core.state.player_color_index;
+                let _source_handle = live.economy.handle(source_slot);
+                let _listener_handle = live.economy.handle(player_entity_index);
+                let mut transport_sounds = Vec::new();
+                let mut freeze_transport_sound = |emitter: &EntitySnapshot, sound_id,
+                    listener_position, listener_yaw, _target| {
+                    // Sample the actual source callback boundary, before
+                    // preparation or player-body copy. Later participants
+                    // may have a different current local listener position.
+                    #[cfg(test)]
+                    let boundary = _source_handle.zip(_listener_handle).map(|(source, listener)| {
+                        TransportAudioBoundaryReceipt {
+                            source, target: _target, sound_id,
+                            source_position: emitter.position,
+                            source_id: emitter.source_id,
+                            source_flags: emitter.control_flags,
+                            source_action: emitter.action,
+                            listener, listener_position, listener_yaw,
+                            journal_sequence: 0,
+                        }
+                    });
+                    let audio = (emitter.control_flags & 0x80 == 0).then(|| {
+                        crate::prepare_event_sound_command(
+                            listener_position, listener_yaw, emitter.position,
+                            sound_id, 0, emitter.source_id, emitter.action,
+                        )
+                    }).flatten();
+                    transport_sounds.push(TransportSound {
+                        event: FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: match sound_id {
+                                21 => crate::MissionAudioSite::TransportStart,
+                                22 => crate::MissionAudioSite::TransportArrive,
+                                20 => crate::MissionAudioSite::TransportExpire,
+                                _ => unreachable!("transport only prepares source sounds20..22"),
+                            },
+                            entity_index: emitter.index,
+                            player_index: -1,
+                            sound_id,
+                        },
+                        audio,
+                        #[cfg(test)]
+                        boundary,
+                    });
+                };
                 let outcome = match (source.model, source.action) {
+                    (33, 35) => {
+                        crate::world::fields::timed::step(&mut source);
+                        crate::world::fields::Outcome::default()
+                    }
                     (34, 36) => {
                         let clearance = source
                             .parameter_relation
@@ -19012,7 +19155,14 @@ impl Mc2Simulation {
                                     .get(usize::from(index))
                             })
                             .map_or(0, |row| i16::from_le_bytes([row[12], row[13]]));
-                        let (mut outcome, visit_players) = transport::begin(&mut source);
+                        let listener_position = live.core.state.position;
+                        let listener_yaw = live.core.state.yaw;
+                        let (mut outcome, visit_players) = transport::begin(
+                            &mut source,
+                            &mut |emitter, sound| freeze_transport_sound(
+                                emitter, sound, listener_position, listener_yaw, None,
+                            ),
+                        );
                         if visit_players {
                             for player in live
                                 .core
@@ -19021,6 +19171,9 @@ impl Mc2Simulation {
                                 .take(usize::from(live.core.runtime.player_count))
                             {
                                 let slot = player.entity_index;
+                                let _target_handle = live.economy.handle(slot);
+                                let listener_position = live.core.state.position;
+                                let listener_yaw = live.core.state.yaw;
                                 let body = live
                                     .economy
                                     .entities
@@ -19044,6 +19197,9 @@ impl Mc2Simulation {
                                     clearance,
                                     player.player_color_index() == local_color,
                                     &mut outcome,
+                                    &mut |emitter, sound| freeze_transport_sound(
+                                        emitter, sound, listener_position, listener_yaw, _target_handle,
+                                    ),
                                 ) {
                                     if slot == player_entity_index {
                                         live.core.state.position = position;
@@ -19156,6 +19312,27 @@ impl Mc2Simulation {
                 for &(entity_index, sound_id) in &outcome.sounds {
                     live.economy
                         .prepare_sound(entity_index, entity_index, -1, sound_id);
+                }
+                // Commands were prepared at the literal source call sites,
+                // before teleport/height changes. Publishing never reads the
+                // emitter or listener again and retains the call order.
+                for sound in transport_sounds {
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut()
+                        .append_prepared_flight(turn, sound.event, sound.audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, sound.event);
+                    #[cfg(test)]
+                    if let Some(mut receipt) = sound.boundary {
+                        receipt.journal_sequence = self.effect_journal().records().last()
+                            .expect("transport preparation was just appended").sequence;
+                        TRANSPORT_AUDIO_TRACE.with(|trace| {
+                            if let Some(trace) = trace.borrow_mut().as_mut()
+                                && trace.len() < 256
+                            {
+                                trace.push(receipt);
+                            }
+                        });
+                    }
                 }
                 // Source38E70/38F70 prepare the current player's first-hit
                 // sound before contact damage. Economy receipts alone do not

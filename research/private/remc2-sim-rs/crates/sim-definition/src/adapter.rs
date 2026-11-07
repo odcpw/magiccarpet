@@ -307,7 +307,7 @@ pub const fn mc2_effect_definition(kind: EffectKind) -> EffectDefinition {
         EffectKind::PossessionContact => (8, 64000),
         EffectKind::FireSpheres => (80, 70),
         EffectKind::LightningEndpoint => (8, 25),
-        EffectKind::LightningStorm => (32, 0),
+        EffectKind::LightningStorm => (32, 100),
     };
     EffectDefinition::new(kind, life, damage)
 }
@@ -351,6 +351,11 @@ pub const fn mc2_field_definition(
         FieldKind::Transport => FieldDefinition::Transport {
             destination,
             lifetime: 0,
+        },
+        FieldKind::TimedController => FieldDefinition::TimedController {
+            lifetime: 300,
+            half_width: 512,
+            half_height: 512,
         },
         FieldKind::Slowing => FieldDefinition::Slowing {
             max_stages: 3,

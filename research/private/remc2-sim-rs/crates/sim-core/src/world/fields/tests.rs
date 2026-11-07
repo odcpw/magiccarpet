@@ -1,4 +1,4 @@
-use super::{status, transport, wind};
+use super::{status, timed, transport, wind};
 use crate::{
     FlightContext, FlightEffectsContext, FlightProfile, FlightState, FlightWorld, PlayerCommand,
     Position, Tile,
@@ -95,6 +95,188 @@ fn scheduled_impact(session: &mut crate::native_world::Mc2Simulation, kind: Fiel
         .copy_from_slice(&player.to_le_bytes());
     assert!(slot > player, "pin impact after the local player visit");
     slot
+}
+
+#[test]
+fn configured_timed_controller_and_bare_allocator_preserve_source_lifecycle() {
+    use crate::native_world::Mc2DispatchEvent;
+
+    let mut negative = new_event(120, 0, Position::default());
+    negative.set_life(i32::MIN);
+    negative.set_source_dword_10(i32::MAX);
+    timed::step(&mut negative);
+    assert_eq!(negative.life, i32::MAX);
+    assert_eq!(negative.source_dword_10(), i32::MIN);
+    assert!(negative.drawing_disabled());
+    assert_eq!(
+        negative.control_flags & 2,
+        0,
+        "negative old life returns before flag2"
+    );
+
+    let mut session = campaign();
+    let properties = definition(FieldKind::TimedController);
+    assert_eq!(
+        properties,
+        FieldDefinition::TimedController {
+            lifetime: 300,
+            half_width: 512,
+            half_height: 512,
+        }
+    );
+    let (blank, controller, short_lived, position) = {
+        let live = &mut session.session.state.live;
+        let position = live.core.state.position;
+        let next_free = *live
+            .economy
+            .economy
+            .free_source_slots()
+            .last()
+            .expect("configured package has a genuine free NewEvent slot");
+        let expected_rng = live.economy.economy.new_event_rng(next_free);
+        live.economy
+            .economy
+            .source_rng
+            .insert(next_free, expected_rng.wrapping_add(1));
+        let blank = timed::construct_blank(&mut live.economy, &mut live.terrain).unwrap();
+        assert_eq!(blank, next_free);
+        let blank_row = &live.economy.entities[usize::from(blank)];
+        assert_eq!(
+            (blank_row.class, blank_row.model, blank_row.action),
+            (0, 0, 0),
+            "selector35 returns the blank NewEvent without stamping a field"
+        );
+        assert_eq!(blank_row.source_id, blank);
+        assert_eq!(blank_row.position, Position::default());
+        assert_eq!((blank_row.max_life, blank_row.life), (300, 0));
+        assert_eq!((blank_row.control_flags, blank_row.actual_speed), (8, 16));
+        assert_eq!(blank_row.phase, blank as u8);
+        assert_eq!(blank_row.particle_parameter_index, Some(0));
+        assert_eq!(
+            blank_row.entity_rng,
+            live.economy.economy.new_event_rng(blank)
+        );
+        assert_eq!(
+            live.economy.economy.source_rng.get(&blank),
+            Some(&expected_rng),
+            "NewEvent replaces the stale RNG projection for its actual generation"
+        );
+        assert!(!live.economy.economy.map_chains.is_linked(blank));
+
+        let controller = timed::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            position,
+            None,
+            properties,
+        )
+        .unwrap()
+        .unwrap();
+        let row = &live.economy.entities[usize::from(controller)];
+        assert_eq!((row.class, row.model, row.action), (10, 33, 35));
+        assert_eq!((row.max_life, row.life), (300, 300));
+        assert_eq!(
+            (row.array_pitch(), row.array_roll(), row.array_fov()),
+            (512, 512, 512)
+        );
+        assert_eq!(row.control_flags & 8, 0);
+        assert_eq!(row.position, position);
+        assert!(!live.economy.economy.map_chains.is_linked(controller));
+
+        let short_lived = timed::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            position,
+            None,
+            FieldDefinition::TimedController {
+                lifetime: 0,
+                half_width: 512,
+                half_height: 512,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        (
+            blank,
+            live.economy.handle(controller).unwrap(),
+            live.economy.handle(short_lived).unwrap(),
+            position,
+        )
+    };
+    assert_ne!(blank, controller.source_slot);
+
+    // This configured lifetime exercises the actual source scheduler, its
+    // same-pass tail and the following reclaim; it is not an ordinary spawn.
+    for (turn, life, hidden) in [(0, -1, false), (1, -2, true)] {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let arena = session.source_arena();
+        assert_eq!(arena.handle(short_lived.source_slot), Some(short_lived));
+        let row = &arena.entities[usize::from(short_lived.source_slot)];
+        assert_eq!(row.life, life);
+        assert_eq!(row.source_dword_10(), turn + 1);
+        assert_eq!(row.control_flags & 2, 2);
+        assert_eq!(row.drawing_disabled(), hidden);
+        assert_eq!(row.position, position);
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+    );
+    assert!(session.source_arena().resolve(short_lived).is_none());
+
+    // Keep the real source-default300 controller running naturally. The
+    // preceding three outer turns have already advanced it three times.
+    for visits in 4_i32..=302 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let arena = session.source_arena();
+        assert_eq!(arena.handle(controller.source_slot), Some(controller));
+        let row = &arena.entities[usize::from(controller.source_slot)];
+        assert_eq!(row.life, 300 - visits);
+        assert_eq!(row.source_dword_10(), visits);
+        assert_eq!(
+            row.phase,
+            (controller.source_slot as u8).wrapping_add(visits as u8)
+        );
+        assert_eq!(row.control_flags & 2, 2);
+        assert_eq!(row.drawing_disabled(), visits == 302);
+        assert!(!arena.economy.map_chains.is_linked(controller.source_slot));
+    }
+    session.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        session
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+    );
+    assert!(session.source_arena().resolve(controller).is_none());
+
+    // The real allocator failure must not stamp a fake model33 or model35.
+    let live = &session.session.state.live;
+    let mut arena = live.economy.clone();
+    let mut terrain = live.terrain.clone();
+    arena.economy.exhaust_new_event_capacity_for_test();
+    arena.finish_source_group();
+    assert!(timed::construct_blank(&mut arena, &mut terrain).is_none());
+    assert!(
+        timed::construct(&mut arena, &mut terrain, position, None, properties)
+            .unwrap()
+            .is_none()
+    );
 }
 
 fn campaign_step(session: &mut crate::native_world::Mc2Simulation) {
@@ -1039,16 +1221,26 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
     use crate::native_world::{Level2DynamicArenaKind, Mc2DispatchEvent};
 
     let mut session = campaign();
-    let switch = session.level2_imported_switch_roots.iter()
+    let switch = session
+        .level2_imported_switch_roots
+        .iter()
         .find(|root| root.authored_index == 121 && root.target_group == 15)
-        .copied().expect("real group15 Wind producer");
+        .copied()
+        .expect("real group15 Wind producer");
     let player = session.state.entity_index;
     // Declared player-only approach to the actual imported proximity switch.
-    session.set_level2_entity_position(player, switch.position).unwrap();
+    session
+        .set_level2_entity_position(player, switch.position)
+        .unwrap();
     let mut activated = false;
     for _ in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
         if session.dispatch_events().iter().any(|event| matches!(event,
             Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 15, authored_indices, .. }
                 if *source_slot == switch.source_slot && authored_indices.as_ref() == [122])) {
@@ -1056,40 +1248,92 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
             break;
         }
     }
-    assert!(activated, "ordinary switch121 must publish authored group15");
-    let wind = *session.economy().authored_model22().iter()
-        .find(|wind| wind.authored_index == 122).expect("actual group15 Wind122");
+    assert!(
+        activated,
+        "ordinary switch121 must publish authored group15"
+    );
+    let wind = *session
+        .economy()
+        .authored_model22()
+        .iter()
+        .find(|wind| wind.authored_index == 122)
+        .expect("actual group15 Wind122");
     assert_eq!((wind.model, wind.action), (22, 22));
-    let root = session.source_arena().handle(wind.source_entity_index).unwrap();
-    let children: Vec<_> = session.economy().model22_spawned_children().iter()
+    let root = session
+        .source_arena()
+        .handle(wind.source_entity_index)
+        .unwrap();
+    let children: Vec<_> = session
+        .economy()
+        .model22_spawned_children()
+        .iter()
         .filter(|child| child.active && child.parent_entity_index == root.source_slot)
-        .map(|child| session.source_arena().handle(child.source_entity_index).unwrap()).collect();
-    assert_eq!(children.len(), 11, "ordinary Wind constructor publishes all linked children");
-    assert!(wind.life > 2, "the real authored lifetime must allow the encounter");
+        .map(|child| {
+            session
+                .source_arena()
+                .handle(child.source_entity_index)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        children.len(),
+        11,
+        "ordinary Wind constructor publishes all linked children"
+    );
+    assert!(
+        wind.life > 2,
+        "the real authored lifetime must allow the encounter"
+    );
 
     // Approach once at the live Wind axis. All actor and Wind state remains source-owned.
     let mut approach = wind.position;
-    approach.z = session.canonical_terrain().ground_height(approach).wrapping_add(1_000);
-    session.set_level2_entity_position(player, approach).unwrap();
-    assert!(root.source_slot > player, "the player visit precedes this Wind source visit");
+    approach.z = session
+        .canonical_terrain()
+        .ground_height(approach)
+        .wrapping_add(1_000);
+    session
+        .set_level2_entity_position(player, approach)
+        .unwrap();
+    assert!(
+        root.source_slot > player,
+        "the player visit precedes this Wind source visit"
+    );
     let player_steps = session.step_outer_turn(PlayerCommand::default(), 0);
-    assert_eq!(player_steps.len(), 1, "speed index0 runs one actual player source visit");
+    assert_eq!(
+        player_steps.len(),
+        1,
+        "speed index0 runs one actual player source visit"
+    );
     assert!(session.dispatch_events().iter().any(|event| matches!(event,
         Mc2DispatchEvent::DynamicArena { source_slot, kind: Level2DynamicArenaKind::AuthoredModel22, .. }
             if *source_slot == root.source_slot)), "actual Wind callback runs");
     let live = &session.session.state.live;
     let flags = live.economy.entities[usize::from(player)].control_flags;
-    let after_wind = live.economy.authored_model22().iter()
-        .find(|row| row.source_entity_index == root.source_slot).unwrap();
-    assert_ne!((live.core.state.position.x, live.core.state.position.y),
+    let after_wind = live
+        .economy
+        .authored_model22()
+        .iter()
+        .find(|row| row.source_entity_index == root.source_slot)
+        .unwrap();
+    assert_ne!(
+        (live.core.state.position.x, live.core.state.position.y),
         (player_steps[0].committed.x, player_steps[0].committed.y),
-        "the later Wind callback changes horizontal player position after ordinary flight");
-    assert_eq!((live.core.state.position.x, live.core.state.position.y),
+        "the later Wind callback changes horizontal player position after ordinary flight"
+    );
+    assert_eq!(
+        (live.core.state.position.x, live.core.state.position.y),
         (after_wind.axis_position.x, after_wind.axis_position.y),
-        "the actual player lands at the current Wind axis through sub33340's inner band");
+        "the actual player lands at the current Wind axis through sub33340's inner band"
+    );
     assert_ne!(flags & 0x1000_0000, 0, "Wind sets its actual airborne flag");
-    assert_eq!(live.economy.entities[usize::from(player)].position, live.core.state.position);
-    assert_eq!(live.shared_spells.player_entity().position, live.core.state.position);
+    assert_eq!(
+        live.economy.entities[usize::from(player)].position,
+        live.core.state.position
+    );
+    assert_eq!(
+        live.shared_spells.player_entity().position,
+        live.core.state.position
+    );
 
     // Retreat while the unmodified authored lifetime advances; return once
     // near its natural end so its real cleanup sees the same player carrier.
@@ -1102,41 +1346,76 @@ fn ordinary_level_two_wind_moves_player_and_naturally_reclaims_its_chain() {
     let mut reclaimed = false;
     let mut reaffected_before_expiry = false;
     for _ in 0..budget {
-        let current = session.economy().authored_model22().iter()
-            .find(|row| row.source_entity_index == root.source_slot).copied();
-        if let Some(current) = current && current.life <= 2 && !returned {
+        let current = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|row| row.source_entity_index == root.source_slot)
+            .copied();
+        if let Some(current) = current
+            && current.life <= 2
+            && !returned
+        {
             let mut near = current.position;
-            near.z = session.canonical_terrain().ground_height(near).wrapping_add(1_000);
+            near.z = session
+                .canonical_terrain()
+                .ground_height(near)
+                .wrapping_add(1_000);
             session.set_level2_entity_position(player, near).unwrap();
             returned = true;
         }
         session.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
         let arena = session.source_arena();
         if returned && arena.entities[usize::from(player)].control_flags & 0x1000_0000 != 0 {
             reaffected_before_expiry = true;
         }
         if arena.resolve(root).is_none() {
-            assert!(hidden, "the original Wind must hide before following-boundary reclaim");
-            assert!(children.iter().all(|child| arena.resolve(*child).is_none()),
-                "the original linked generations are reclaimed");
+            assert!(
+                hidden,
+                "the original Wind must hide before following-boundary reclaim"
+            );
+            assert!(
+                children.iter().all(|child| arena.resolve(*child).is_none()),
+                "the original linked generations are reclaimed"
+            );
             reclaimed = true;
             break;
         }
-        if let Some(row) = session.economy().authored_model22().iter()
+        if let Some(row) = session
+            .economy()
+            .authored_model22()
+            .iter()
             .find(|row| row.source_entity_index == root.source_slot)
-            && row.control_flags & 0x400 != 0 {
+            && row.control_flags & 0x400 != 0
+        {
             assert!(returned);
-            assert!(reaffected_before_expiry, "the actual player carried a Wind flag before cleanup");
+            assert!(
+                reaffected_before_expiry,
+                "the actual player carried a Wind flag before cleanup"
+            );
             assert_eq!(arena.handle(root.source_slot), Some(root));
             let player_flags = arena.entities[usize::from(player)].control_flags;
-            assert_eq!(player_flags & 0x1000_0800, 0, "Wind expiry clears its actual player flags");
-            assert!(session.field_source_rows().iter().any(|source|
-                source.index == root.source_slot && source.control_flags & 0x400 != 0));
+            assert_eq!(
+                player_flags & 0x1000_0800,
+                0,
+                "Wind expiry clears its actual player flags"
+            );
+            assert!(session.field_source_rows().iter().any(|source| source.index
+                == root.source_slot
+                && source.control_flags & 0x400 != 0));
             hidden = true;
         }
     }
-    assert!(returned && hidden && reclaimed, "authored Wind must naturally expire and reclaim");
+    assert!(
+        returned && hidden && reclaimed,
+        "authored Wind must naturally expire and reclaim"
+    );
 }
 
 #[test]
@@ -1432,6 +1711,7 @@ fn transport_uses_facing_and_destination_and_life_one_hides_before_contact() {
         &Ground,
         384,
         0,
+        &mut |_, _| {},
     );
     assert!(
         !rejected.transported,
@@ -1440,7 +1720,15 @@ fn transport_uses_facing_and_destination_and_life_one_hides_before_contact() {
     assert_eq!(rejected_player.position, state.position);
     state.yaw = 169;
     let phase = source.phase;
-    let outcome = transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0);
+    let outcome = transport::step(
+        &mut source,
+        &mut body,
+        &mut state,
+        &Ground,
+        384,
+        0,
+        &mut |_, _| {},
+    );
     assert!(outcome.transported);
     assert_eq!(
         state.position,
@@ -1456,7 +1744,15 @@ fn transport_uses_facing_and_destination_and_life_one_hides_before_contact() {
     assert_eq!(outcome.sounds, [(120, 21), (120, 22)]);
     source.set_life(1);
     let before = state.position;
-    let outcome = transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0);
+    let outcome = transport::step(
+        &mut source,
+        &mut body,
+        &mut state,
+        &Ground,
+        384,
+        0,
+        &mut |_, _| {},
+    );
     assert!(!outcome.transported);
     assert_eq!(
         (source.life, source.drawing_disabled(), state.position),
@@ -1497,11 +1793,23 @@ fn transport_uses_distinct_y_extent_and_unwrapped_vertical_distance() {
             &mut edge_state,
             &Ground,
             384,
-            0
+            0,
+            &mut |_, _| {},
         )
         .transported
     );
-    assert!(transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0).transported);
+    assert!(
+        transport::step(
+            &mut source,
+            &mut body,
+            &mut state,
+            &Ground,
+            384,
+            0,
+            &mut |_, _| {}
+        )
+        .transported
+    );
 
     let (mut body, mut state) = player();
     state.yaw = 0;
@@ -1518,7 +1826,18 @@ fn transport_uses_distinct_y_extent_and_unwrapped_vertical_distance() {
     );
     source.set_source_overlap_half_extents(256, 256);
     source.record[92..94].copy_from_slice(&256_i16.to_le_bytes());
-    assert!(!transport::step(&mut source, &mut body, &mut state, &Ground, 384, 0).transported);
+    assert!(
+        !transport::step(
+            &mut source,
+            &mut body,
+            &mut state,
+            &Ground,
+            384,
+            0,
+            &mut |_, _| {}
+        )
+        .transported
+    );
 }
 
 #[test]
@@ -1538,7 +1857,7 @@ fn transport_visits_each_player_before_finishing_its_single_lifetime_tick() {
     source.record[160..162].copy_from_slice(&40_000_u16.to_le_bytes());
     source.set_life(2);
     let original_height = source.position.z;
-    let (mut outcome, visit_players) = transport::begin(&mut source);
+    let (mut outcome, visit_players) = transport::begin(&mut source, &mut |_, _| {});
     assert!(visit_players);
     assert_eq!(source.life, 1, "one source callback decrements life once");
     let mut local = body.clone();
@@ -1553,7 +1872,8 @@ fn transport_visits_each_player_before_finishing_its_single_lifetime_tick() {
             &Ground,
             384,
             true,
-            &mut outcome
+            &mut outcome,
+            &mut |_, _| {},
         )
         .is_some()
     );
@@ -1566,7 +1886,8 @@ fn transport_visits_each_player_before_finishing_its_single_lifetime_tick() {
             &Ground,
             384,
             false,
-            &mut outcome
+            &mut outcome,
+            &mut |_, _| {},
         )
         .is_some()
     );
@@ -1579,7 +1900,8 @@ fn transport_visits_each_player_before_finishing_its_single_lifetime_tick() {
             &Ground,
             384,
             false,
-            &mut outcome
+            &mut outcome,
+            &mut |_, _| {},
         )
         .is_none()
     );
@@ -1600,6 +1922,8 @@ fn transport_visits_each_player_before_finishing_its_single_lifetime_tick() {
 
 #[test]
 fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() {
+    use crate::campaign::journal::CampaignEffect;
+
     let level = std::env::var("MC_TRANSPORT_LEVEL").map_or(15, |value| {
         value.parse().expect("transport level is a number")
     });
@@ -1626,6 +1950,15 @@ fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() 
         })
         .expect("owner-authored reset contains a persistent transport")
         .clone();
+    let source_handle = base.source_arena().handle(source.index).unwrap();
+    if level == 15 {
+        assert_ne!(
+            source.control_flags & 2,
+            0,
+            "the retained Level15 packet already has the source first-update flag"
+        );
+    }
+    let start_pending = source.control_flags & 2 == 0;
     let mut destination = transport::destination(&source);
     let parameter = source
         .parameter_relation
@@ -1674,11 +2007,26 @@ fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() 
             "multi-wizard source package has a participating rival"
         );
     }
-    for (facing, expected_transport) in [(heading, true), ((heading + 1024) & 2047, false)] {
+    let mut audible_rng = None;
+    for (facing, expected_transport, muted, expires) in [
+        (heading, true, false, false),
+        ((heading + 1024) & 2047, false, false, false),
+        (heading, true, true, false),
+        (heading, false, false, true),
+    ] {
         let mut session = base.clone();
         let player_slot;
         {
             let live = &mut session.session.state.live;
+            // Only these two variants configure exceptional audio branches.
+            // The ordinary facing pair keeps authored life0 and source flags.
+            let transport = &mut live.economy.entities[usize::from(source.index)];
+            if muted {
+                transport.set_control_flags(transport.control_flags | 0x80);
+            }
+            if expires {
+                transport.set_life(1);
+            }
             player_slot = live.core.state.entity_index;
             live.core.state.position = contact;
             live.core.state.yaw = facing;
@@ -1719,7 +2067,25 @@ fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() 
             .set_level2_entity_position(player_slot, contact)
             .unwrap();
         let old_tile = session.economy.map_chains.tile_of(player_slot);
+        let cursor = session.effect_journal().cursor(0).next_sequence;
+        let listener = session.source_arena().handle(player_slot).unwrap();
+        let visited_players = session
+            .core
+            .players
+            .iter()
+            .take(usize::from(session.core.runtime.player_count))
+            .filter(|player| {
+                player.entity_index == player_slot || Some(player.entity_index) == rival
+            })
+            .map(|player| session.source_arena().handle(player.entity_index).unwrap())
+            .collect::<Vec<_>>();
+        session.start_transport_audio_trace();
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let boundaries = session
+            .take_transport_audio_trace()
+            .into_iter()
+            .filter(|call| call.source == source_handle)
+            .collect::<Vec<_>>();
         assert!(
             !session
                 .dispatch_events()
@@ -1728,7 +2094,175 @@ fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() 
             "scheduled transport must not roll back: {:?}",
             session.dispatch_events()
         );
+        assert_eq!(
+            session.source_arena().handle(source.index),
+            Some(source_handle)
+        );
+        let transport_audio = session
+            .effect_journal()
+            .records()
+            .iter()
+            .filter_map(|record| {
+                if record.sequence < cursor {
+                    return None;
+                }
+                match record.effect {
+                    CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                        entity_index,
+                        player_index: -1,
+                        sound_id: 20..=22,
+                        ..
+                    }) if entity_index == source.index => Some(record),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let sound_ids = transport_audio
+            .iter()
+            .map(|record| match record.effect {
+                CampaignEffect::Flight(crate::FlightEvent::PrepareSound { sound_id, .. }) => {
+                    sound_id
+                }
+                _ => unreachable!("only transport preparation records were retained"),
+            })
+            .collect::<Vec<_>>();
+        let mut expected_sounds = if start_pending { vec![21] } else { Vec::new() };
+        if expires {
+            expected_sounds.push(20);
+        } else if expected_transport {
+            expected_sounds.extend(std::iter::repeat_n(22, 1 + usize::from(rival.is_some())));
+        }
+        assert_eq!(
+            sound_ids, expected_sounds,
+            "actual source-order transport audio"
+        );
+        assert_eq!(
+            boundaries.len(),
+            transport_audio.len(),
+            "one journal record per actual source call"
+        );
+        let mut local_has_teleported = false;
+        let mut arrival_targets = Vec::new();
+        for (record, boundary) in transport_audio.iter().zip(&boundaries) {
+            let entry = boundaries
+                .first()
+                .expect("this actual source call has an entry");
+            assert_eq!(boundary.journal_sequence, record.sequence);
+            assert_eq!(boundary.source, source_handle);
+            assert_eq!(boundary.listener, listener);
+            assert_eq!(
+                boundary.source_position, source.position,
+                "all preparation precedes finish lowering the emitter"
+            );
+            assert_eq!(boundary.source_id, source.source_id);
+            assert_eq!(boundary.source_action, 36);
+            let mut expected_source = source.clone();
+            expected_source.set_control_flags(
+                expected_source.control_flags | 2 | if muted { 0x80 } else { 0 },
+            );
+            if boundary.sound_id == 20 {
+                expected_source.disable_drawing();
+            }
+            assert_eq!(boundary.source_flags, expected_source.control_flags);
+            let expected_site = match boundary.sound_id {
+                21 => crate::MissionAudioSite::TransportStart,
+                22 => crate::MissionAudioSite::TransportArrive,
+                20 => crate::MissionAudioSite::TransportExpire,
+                _ => unreachable!("actual transport sounds only"),
+            };
+            assert!(
+                matches!(record.effect, CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                audio_site, entity_index, player_index: -1, sound_id,
+            }) if audio_site == expected_site && entity_index == source.index && sound_id == boundary.sound_id)
+            );
+            if boundary.sound_id == 22 {
+                arrival_targets.push(
+                    boundary
+                        .target
+                        .expect("arrival identifies the actual visited player"),
+                );
+                assert_eq!(
+                    boundary.listener_position,
+                    if local_has_teleported {
+                        destination
+                    } else {
+                        entry.listener_position
+                    },
+                    "sound22 precedes each player's teleport"
+                );
+                if !local_has_teleported {
+                    assert_ne!(
+                        boundary.listener_position, destination,
+                        "the actual listener has not yet been copied to the destination"
+                    );
+                }
+                assert_eq!(boundary.listener_yaw, entry.listener_yaw);
+                if boundary.target == Some(listener) {
+                    local_has_teleported = true;
+                }
+            } else {
+                assert_eq!(boundary.target, None);
+            }
+            let expected_audio = (!muted)
+                .then(|| {
+                    crate::prepare_event_sound_command(
+                        boundary.listener_position,
+                        boundary.listener_yaw,
+                        boundary.source_position,
+                        boundary.sound_id,
+                        0,
+                        boundary.source_id,
+                        boundary.source_action,
+                    )
+                })
+                .flatten();
+            assert_eq!(
+                record.audio, expected_audio,
+                "prepared projection uses independently observed pre-copy source and listener"
+            );
+            assert_eq!(
+                record.audio.is_none(),
+                muted,
+                "mute suppresses prepared audio without suppressing the source call"
+            );
+            let Some(prepared) = record.audio else {
+                continue;
+            };
+            assert_eq!(prepared.play_type, 1);
+            assert_eq!(prepared.command.rate_delta_percent, 0);
+            assert_eq!(prepared.command.sound_flags, source.source_id as i16);
+        }
+        assert_eq!(
+            arrival_targets,
+            if expected_transport {
+                visited_players
+            } else {
+                Vec::new()
+            },
+            "actual source player-array order is retained"
+        );
+        assert_eq!(local_has_teleported, expected_transport);
         let live = &session.session.state.live;
+        assert_eq!(
+            live.economy.entities[usize::from(source.index)].life,
+            0,
+            "ordinary life0 persists; configured oldlife1 decrements once"
+        );
+        assert_eq!(
+            live.economy.entities[usize::from(source.index)].drawing_disabled(),
+            expires
+        );
+        if facing == heading && !expires {
+            let rng = (
+                live.economy.economy.global_rng,
+                live.economy.entities[usize::from(source.index)].entity_rng,
+            );
+            if muted {
+                assert_eq!(Some(rng), audible_rng, "sound preparation spends no RNG");
+            } else {
+                audible_rng = Some(rng);
+            }
+        }
         if let Some((slot, before_phase, old_tile)) = ballistic {
             let row = &live.economy.entities[usize::from(slot)];
             assert!(row.active, "action20 survives its ordinary source pass");
@@ -1750,7 +2284,7 @@ fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() 
         assert_eq!(
             near(actual.x, destination.x) && near(actual.y, destination.y),
             expected_transport,
-            "forward-facing contact must be the real transport gate"
+            "forward-facing contact transports unless the configured source expires first"
         );
         if expected_transport {
             assert_eq!(
@@ -1780,7 +2314,115 @@ fn retained_ordinary_transport_moves_scheduled_player_and_publishes_map_heads() 
                 live.economy.map_chains.tile_head(tile)
             );
         }
+        if expires {
+            // The configured source expires naturally in its scheduled visit;
+            // its original generation is reclaimed only on the following pass.
+            let cursor = session.effect_journal().cursor(0).next_sequence;
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(
+                session.dispatch_events().iter().all(|event| !matches!(
+                    event,
+                    crate::native_world::Mc2DispatchEvent::Error { .. }
+                )),
+                "{:?}",
+                session.dispatch_events()
+            );
+            assert!(session.source_arena().resolve(source_handle).is_none());
+            assert!(
+                !session
+                    .effect_journal()
+                    .records()
+                    .iter()
+                    .any(|record| record.sequence >= cursor
+                        && matches!(record.effect,
+                    CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                        entity_index, sound_id: 20..=22, ..
+                    }) if entity_index == source.index)),
+                "reclaim has no repeated callback sound"
+            );
+        }
     }
+
+    // The retained Level15 packet already has flag2. Exercise source21 with
+    // a separately constructed, genuinely fresh transport, without rearming
+    // or changing the authored source in the ordinary route above.
+    let mut fresh = base.clone();
+    let particle =
+        fresh.session.definition.presentation.particles[usize::from(transport::PARTICLE)];
+    let fresh_slot = {
+        let live = &mut fresh.session.state.live;
+        transport::construct(
+            &mut live.economy,
+            &mut live.terrain,
+            source.position,
+            definition(FieldKind::Transport),
+            particle,
+        )
+        .unwrap()
+        .expect("configured fresh transport uses the actual source constructor")
+    };
+    let fresh_handle = fresh.source_arena().handle(fresh_slot).unwrap();
+    let initial = fresh.entities()[usize::from(fresh_slot)].clone();
+    assert_eq!(initial.control_flags & 2, 0);
+    let cursor = fresh.effect_journal().cursor(0).next_sequence;
+    fresh.start_transport_audio_trace();
+    fresh.step_outer_turn(PlayerCommand::default(), 0);
+    let fresh_boundaries = fresh.take_transport_audio_trace();
+    assert!(
+        fresh
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+    );
+    let start = fresh_boundaries
+        .iter()
+        .find(|call| call.source == fresh_handle && call.sound_id == 21)
+        .expect("new source emits its actual first-update sound21");
+    assert_eq!(start.target, None);
+    assert_eq!(start.source_position, initial.position);
+    assert_eq!(start.source_flags, initial.control_flags | 2);
+    assert_eq!(start.source_id, initial.source_id);
+    let start_record = fresh
+        .effect_journal()
+        .records()
+        .iter()
+        .find(|record| record.sequence >= cursor && record.sequence == start.journal_sequence)
+        .expect("the actual source21 boundary reaches the Flight journal");
+    assert!(matches!(start_record.effect,
+        CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+            audio_site: crate::MissionAudioSite::TransportStart,
+            entity_index, player_index: -1, sound_id: 21,
+        }) if entity_index == fresh_slot));
+    assert_eq!(
+        start_record.audio,
+        crate::prepare_event_sound_command(
+            start.listener_position,
+            start.listener_yaw,
+            initial.position,
+            21,
+            0,
+            initial.source_id,
+            initial.action,
+        )
+    );
+    let cursor = fresh.effect_journal().cursor(0).next_sequence;
+    fresh.step_outer_turn(PlayerCommand::default(), 0);
+    assert!(
+        fresh
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. }))
+    );
+    assert!(
+        !fresh.effect_journal().records().iter().any(|record| {
+            record.sequence >= cursor
+                && matches!(record.effect,
+            CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                entity_index, sound_id: 21, ..
+            }) if entity_index == fresh_slot)
+        }),
+        "a later visit does not replay the first-update sound"
+    );
 }
 
 #[test]

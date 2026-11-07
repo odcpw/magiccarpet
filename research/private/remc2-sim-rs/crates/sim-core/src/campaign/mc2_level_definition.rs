@@ -102,6 +102,9 @@ impl Mc2LevelDefinition {
             (10, 22) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
                 kind: FieldKind::Wind,
             })),
+            (10, 33) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
+                kind: FieldKind::TimedController,
+            })),
             (10, 34) => Some(LevelEntityKind::Mechanic(MechanicKind::Field {
                 kind: FieldKind::Transport,
             })),
@@ -247,6 +250,9 @@ impl Mc2LevelDefinition {
         match (class, model, action) {
             (10, 22, 22) => Some(MechanicKind::Field {
                 kind: FieldKind::Wind,
+            }),
+            (10, 33, 35) => Some(MechanicKind::Field {
+                kind: FieldKind::TimedController,
             }),
             (10, 34, 36) => Some(MechanicKind::Field {
                 kind: FieldKind::Transport,
@@ -1132,6 +1138,9 @@ impl Mc2LevelDefinition {
             let mechanic_kind = match (feature.kind, feature.subtype) {
                 (10, 22) => MechanicKind::Field {
                     kind: FieldKind::Wind,
+                },
+                (10, 33) => MechanicKind::Field {
+                    kind: FieldKind::TimedController,
                 },
                 (10, 34) => MechanicKind::Field {
                     kind: FieldKind::Transport,
