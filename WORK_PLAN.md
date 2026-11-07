@@ -104,7 +104,8 @@ Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7`, leaping creature21 `.8`
 and paired-body creature22 `.9` are delivered. Mana-hunting creature23's connected
 runtime is installed; `mc-1pb.10` retains its open shared-system dependencies.
 Cave melee creature24 `.11` and splitting creature25 `.12` are delivered and
-closed. Next is spell-thief creature26 `mc-1pb.13`. The proper original
+closed. Spell-thief26's connected runtime is now installed; `mc-1pb.13` retains
+its original open `mc-k5k.7` dependency. Next is creature28 `mc-1pb.15`. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -119,8 +120,9 @@ in their canonical owner when a real connected failure exposes them.
 
 AmberDune and CalmLynx delivered creatures23–25 through their actual producers,
 combat, consequences, cleanup and original presentation. CopperMountain
-serialized checks and delivery. Keep the small team and finish creature26 next, after reading its
-original acceptance and current source. `mc-1pb.10` remains open while its original
+serialized checks and delivery. AmberDune and RusticGrove have now completed
+creature26's finite runtime; keep the small team and continue with creature28 after reading its original
+acceptance and current source. `mc-1pb.10` remains open while its original
 `mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
 
@@ -138,7 +140,8 @@ without bypassing or rewriting those dependencies.
 - [x] Mana-hunting creature23 runtime — `mc-1pb.10` (bead retains open shared dependencies).
 - [x] Cave melee creature24 — `mc-1pb.11`.
 - [x] Splitting creature25 (port name Cymmerian; original name unverified) — `mc-1pb.12`.
-- [ ] Spell-thief26 and creature28 — `mc-1pb.13`/`.15`.
+- [x] Spell-thief26 runtime — `mc-1pb.13` (bead retains open `mc-k5k.7`).
+- [ ] Creature28 — `mc-1pb.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
@@ -154,7 +157,70 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: splitting creature25 (2026-11-07)
+### Current delivery: spell-thief26 (2026-11-07)
+
+Implemented and verified; committed/pushed at runtime
+`50873e9ec3ffa03da9e9abf849b740ea8f4e4cd2`; installed Original native
+`c20286859fdc52f448dba4114a2f11a505a2a329ab6e9b7ba2c3747665764bbd`
+(138,582,336 bytes). Original `mc-1pb.13` stays OPEN with its acceptance and
+`mc-k5k.7` dependency unchanged. The creature parent and full engine remain open.
+
+Constructor and enabled208–213/215 now preserve source movement subtype5,
+stationary/roaming peer direction and byte39 eligibility, linked callback211's
+early return/movement/speed/avoidance order, and full1D5D0 StageVar helpers.
+Unsigned/array-pitch avoidance in210 remains distinct from signed/fixed256 in211.
+Frozen lists enumerate scans; direct pointers resolve current fields, including
+the callback-local actor and source-reached sentinel. Signed mana subtraction
+wraps then clamps only below0. Ordinary Castle model2 remains excluded; typed
+model0/1 Castle controls are explicitly configured current-carrier exceptions,
+not proof of an ordinary Castle drain producer.214 stays source-unsupported.
+Entry sound62 now freezes its call-time pose/silence state and reaches the real
+Flight journal/native audio command before damage or movement, without a duplicate
+tail receipt or added source RNG consumption.
+
+Actual Level6 reset thief73 drains the actual player and steals genuinely
+acquired Speed; action78 detachment, real pickup and exact Shield-left/remembered
+return-hand consumers pass with its own audible62 (5.293s). Existing one-Army
+pickup placement control remains declared. The new Shield approach changes only
+player position512 west and checks every current eligible pickup AABB: the old
+Shield-center pose also overlapped Beyond Sight and correctly equipped12 first.
+
+Actual Level10 switch313/gate2 → full group15 → authored119/current generation
+→ StageVar2 guard-point movement/steering passes10.820s. Completion of actual
+objective index2 is a declared prerequisite, not earned mission progression;
+the copied selected-index3 shorthand had correctly failed to activate the switch.
+
+Actual Level6 switch63/player overlap → all six group13 authored roots → exact
+authored378 pinned before combat → paid carried MeteorIII9/3 →10/17 latest scoped
+fatal mailbox writer →212/213 credit → mana/death-burst DTOs/living-root loss →
+hide/following reclaim passes5.664s; same-elapsed no-cast retains that living
+generation. Player spell/Castle/resources are prepared before the trigger, then
+one fixed512 firing pose uses the actual open Cave room. Its flat source terrain
+was independently sampled. No NPC fields, RNG, lifetimes or160-turn combat bound
+were forced. Candidate2's authored304 instead died from source four-retry movement
+at phase7 before the first Meteor writer at10; corpse pulses remain rejected.
+Earlier imported73 is InitialPackage, not fresh AuthoredRecord production.
+
+Fresh bounded independent review supports the finite family and actual consumers.
+Candidate1's25 passing family controls, entry-audio3.167s and source-order0.617s
+are explicitly reused on unchanged production. Its three failed family gates were
+corrected with source/geometry evidence, including both old fatal-mailbox population
+expectations1→0; all three reruns pass on candidate2. Candidate3 changes only the
+public combat encounter. This is not a fabricated28/28 single run. Workspace
+all-targets passes38.993s; native build62.130s. Whole-file UBS critical findings
+remain legacy with none on added lines. Existing package-formatting debt remains.
+
+All445 Rust,162 upstream and37 extra inputs (637 unique) match canonical,
+isolated and rig source/artifact;196 qualified Original Unity inputs match.
+Root viewed canonical map/loading/NightSpire scene/HUD with the exact mapped
+native, one portal click/zero retries, then stopped owned smoke processes.
+No Unity/art change. Native thief26 encounters, human combat/FPS, hardware audio,
+full missions and old saves remain unverified. Current/immediate previous natives
+are regular/hash-preserved; completed build returns are SHA-preserved on rig ext4.
+Evidence: `generated/spell-thief-20261107-integration/` candidates1–3 and
+`Builds/delivery-spell-thief-20261107-batch1`.
+
+### Previous delivery: splitting creature25 (2026-11-07)
 
 Implemented and verified; committed/pushed at runtime
 `3f842e8b4e26552b26627d3be3111137c063d123`; installed Original native
