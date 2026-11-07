@@ -249,9 +249,9 @@ in their canonical owner when a real connected failure exposes them.
 AmberDune and CalmLynx delivered creatures23–25 through their actual producers,
 combat, consequences, cleanup and original presentation. CopperMountain
 serialized checks and delivery. FrostyPond (previously AmberDune) and RusticGrove
-have now completed creature26's finite runtime, Deep One28, Worm3, Spider20 and
-the shared-field prerequisite and Hydra27. Continue the remaining shared combat,
-player lifecycle, rival wizards and final boss through their original dependencies. Read each
+have now completed creature26's finite runtime, Deep One28, Worm3, Spider20,
+the shared-field prerequisite, Hydra27 and shared combat. Continue player
+lifecycle, rival wizards and final boss through their original dependencies. Read each
 original acceptance and current source; extend its existing family.
 `mc-1pb.10` remains open while its original
 `mc-bhq.10` shared-system dependency is open; move the actual required joins forward
@@ -280,8 +280,7 @@ without bypassing or rewriting those dependencies.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
 - [ ] Player death, banishment and revival — `mc-1pb.18`.
 - [ ] Final boss10 — `mc-1pb.3`.
-- [ ] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`,
-      integrated as actual family consumers require it.
+- [x] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`.
 
 Goat (`mc-1pb.1`, already closed) and the delivered Spider20 family are inputs. Existing
 18/25/26 checkpoints are installed inputs, not reasons to replay unchanged
@@ -289,7 +288,69 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current installed delivery: Hydra27 (2026-11-07)
+### Active player lifecycle — `mc-1pb.18`
+
+Shared combat is delivered and closed. RedElk owns this now-ready original
+capability; RusticGrove integrates its real producer/consumer checks with him.
+CopperMountain owns shared joins, serialized Cargo and Original installation.
+Finish ordinary lethal combat through actual held-spell scattering, owned mana
+and death-marker binding, source death camera/banishment, natural rival Castle
+revival or no-Castle removal, and the actual flow/objective consumer. Preserve
+full original acceptance and source1200 countdown/allocation-failure behavior.
+Read current source instead of the bead's historical file paths. Extend its
+canonical family with owned state/behavior; keep scheduler/ABI wiring thin.
+AmberStream now owns the separate voxel backend/simulation/economy edit windows;
+request precise shared-file joins rather than editing over that work. Later
+rivals/boss acceptance stays queued with its existing dependencies intact.
+
+### Current installed delivery: shared creature combat (2026-11-07)
+
+Implemented, verified, committed and pushed at `1e43eb6c`; installed Original
+native `24dfac3f528a38d09fc2806318aa2a021211ff0d4421737ddf505178a804636f`
+(139087984 bytes), refresh `build-9puvqwkk`. `mc-1pb.24` is CLOSED after fresh
+bounded original-acceptance review and independent Root verification.
+
+Actual Cave4 Spider kill now continues through its original same-generation
+2750-mana sphere, one paid public Possession, real collector pickup, once-only
+Castle credit and following reclaim (51.665s). Every original web/contact,
+Meteor/credit/death/objective/survivor predicate remains. Declared carried spells,
+player placement and a post-claim empty Castle store preserve the real gathering
+gate; this does not prove earned campaign progression. Actual paid FireballI
+through both published Goat600/1200 max-life definitions reaches the original
+impact/mailbox and250 life loss (3.813s), with real parent charge, later player
+debit and equal-elapsed no-cast controls. NPC pose/life/RNG remain unchanged.
+
+Admitted player contact now follows source11900 u16 narrowing and contact-mailbox
+semantics, including zero/ownerless/dead writes; actual5EFA0 retains its later
+life guard. Natural protection expiry, zero/positive hit/cooldown/regen, Castle
+transfer, wrapping/residue and linked/safe3/4 controls pass. Safe lanes remain an
+explicit repair of invalid C++ arithmetic; full spell casts retain their own
+acceptance. Single-slot arena lookup preserves generation/current-carrier
+priority; actual Hydra attack/paid body-head-root regression passes422.204s.
+No speedup/FPS claim follows from that bounded measurement.
+
+Evidence: `generated/shared-combat-20261107-integration/candidate-6` under
+`research/private/`, with explicit byte-identical production reuse of C5/C1.
+Workspace alltargets17.877s and strict rig native65.213s pass. All452 Rust,
+162 upstream and37 extra inputs (644 unique) match the rig and qualified Original
+installation. Separate pending voxel source/ABI/client work is excluded and
+preserved. Root viewed canonical map/loading/NightSpire terrain/HUD under the
+initial white spawn flash, verified the mapped native, and stopped owned smoke;
+one portal click, no retry/gameplay input. This is launch/load, not native combat
+visuals, human combat, FPS, hardware audio, full missions or old saves. No Unity/art
+change. Legacy formatting/whole-file scan debt remains; no critical added-line
+finding in the inspected owned changes.
+
+Use original configured RCH with `RCH_CONFIG_DIR` unset, existing socket and
+strict rig dispatch. The failed ExFAT staging experiment remains unused; its
+successful supported C1 recovery and the accidental unchanged C3 compile are
+explicitly recorded, not counted as new verification. Heavy stages require7.2GB
+measured headroom above the5GB floor; keep latest caches/current player/previous
+native. Known returned outputs and superseded incremental sessions are preserved
+on rig; nine closed scan reports are losslessly compressed with decompression
+hash receipts. Current24df and previous Hydra05d2 natives remain local.
+
+### Previous installed delivery: Hydra27 (2026-11-07)
 
 Implemented, verified, committed and pushed at
 `98f2c2ee903f8d8aa1834c34057d718cec2823e1`; original finite `mc-1pb.14`
