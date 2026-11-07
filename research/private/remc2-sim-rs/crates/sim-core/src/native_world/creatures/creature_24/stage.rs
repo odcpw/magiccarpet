@@ -127,7 +127,11 @@ fn follow(
             }
     }) {
         actor.roll = heading_for_positions(peer.position, actor.position) as i16;
-        return;
+        // Point movement returns here; actor-follow movement breaks its peer
+        // scan and still applies the selected target's separation test.
+        if width.is_none() {
+            return;
+        }
     }
     if let Some(width) = width {
         let separation = i32::from(actor.half_width) + i32::from(width);
@@ -414,7 +418,7 @@ pub(super) fn step(
             let point = route.is_some_and(|r| {
                 mode == 1 || (mode == 2 && !signed_near(actor.position, r.point, 3072))
             });
-            match consume(actor, ctx, !point) {
+            match consume(actor, ctx, true) {
                 2 => actor.action = 196,
                 1 => {
                     if ctx

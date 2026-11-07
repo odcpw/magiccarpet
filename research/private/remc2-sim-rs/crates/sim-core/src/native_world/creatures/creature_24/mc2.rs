@@ -11,6 +11,62 @@ use crate::native_world::{
 };
 use crate::{FlightWorld, Position};
 
+pub(crate) const CALLBACK_SOUND: u16 = 7;
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct CallbackDamageReceipt {
+    pub actor: crate::campaign::source_arena::SourceEntityHandle,
+    pub before: EntitySnapshot,
+    pub after: Option<EntitySnapshot>,
+    pub entry_writer: Option<crate::native_world::area_damage::PlayerMailboxWrite>,
+    pub kill_credit: Option<u16>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CALLBACK_DAMAGE_TRACE: std::cell::RefCell<Option<(crate::campaign::source_arena::SourceEntityHandle, Vec<CallbackDamageReceipt>)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_callback_damage_trace(
+    actor: crate::campaign::source_arena::SourceEntityHandle,
+) {
+    CALLBACK_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((actor, Vec::new())));
+}
+
+#[cfg(test)]
+pub(crate) fn take_callback_damage_trace() -> Vec<CallbackDamageReceipt> {
+    CALLBACK_DAMAGE_TRACE.with(|trace| {
+        trace.borrow_mut().take().map_or_else(Vec::new, |(_, receipts)| receipts)
+    })
+}
+
+/// Source 28570 prepares the sound before the action-194 callback moves.
+pub(crate) struct SourceSound {
+    pub slot: u16,
+    pub position: Position,
+    pub source_id: u16,
+    pub control_flags: u32,
+}
+
+pub(crate) fn prepare_callback_sound(
+    arena: &SourceArena,
+    slot: u16,
+) -> Result<Option<SourceSound>, String> {
+    let row = arena
+        .entities
+        .get(usize::from(slot))
+        .filter(|row| row.active && row.class == 5 && row.model == SOURCE_MODEL)
+        .ok_or_else(|| format!("cave creature sound source slot{slot} is absent"))?;
+    Ok((row.action == 194).then_some(SourceSound {
+        slot,
+        position: row.position,
+        source_id: row.source_id,
+        control_flags: row.control_flags,
+    }))
+}
+
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
     u16::from_le_bytes([row.record[at], row.record[at + 1]])
 }
@@ -382,6 +438,25 @@ pub(crate) fn step_row(
         .get(usize::from(slot))
         .filter(|r| r.active && r.class == 5 && r.model == SOURCE_MODEL)
         .ok_or_else(|| format!("cave creature callback lost slot{slot}"))?;
+    #[cfg(test)]
+    let callback_entry = arena.handle(slot).and_then(|handle| {
+        CALLBACK_DAMAGE_TRACE.with(|trace| {
+            let trace = trace.borrow();
+            let (wanted, _) = trace.as_ref()?;
+            if *wanted != handle {
+                return None;
+            }
+            let mailbox = (
+                i32::from_le_bytes(row.record[98..102].try_into().expect("source mailbox")),
+                word(row, 102),
+            );
+            Some((
+                handle,
+                row.clone(),
+                crate::native_world::area_damage::current_actor_mailbox_writer(handle, mailbox),
+            ))
+        })
+    });
     let mut actor = load(row, generation);
     let direct = crate::native_world::source_target::alliance_direct_references(arena, row)?;
     let targets = targets(arena, &direct);
@@ -418,6 +493,34 @@ pub(crate) fn step_row(
     }
     if effects.expire {
         expire(arena, terrain, particles, slot, effects.summon_expire)?;
+    }
+    #[cfg(test)]
+    if let Some((actor, before, entry_writer)) = callback_entry {
+        let after =
+            (arena.handle(slot) == Some(actor)).then(|| arena.entities[usize::from(slot)].clone());
+        if let Some(after) = &after {
+            let mailbox = (
+                i32::from_le_bytes(before.record[98..102].try_into().expect("source mailbox")),
+                word(&before, 102),
+            );
+            if mailbox.1 != 0 && word(after, 102) == 0 {
+                let _ = crate::native_world::area_damage::take_player_mailbox_writer(actor, mailbox);
+            }
+        }
+        CALLBACK_DAMAGE_TRACE.with(|trace| {
+            if let Some((wanted, receipts)) = trace.borrow_mut().as_mut()
+                && *wanted == actor
+                && receipts.len() < 64
+            {
+                receipts.push(CallbackDamageReceipt {
+                    actor,
+                    before,
+                    after,
+                    entry_writer,
+                    kill_credit: effects.kill_credit,
+                });
+            }
+        });
     }
     Ok(effects)
 }

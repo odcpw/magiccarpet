@@ -93,6 +93,110 @@ fn context<'a>(
     }
 }
 
+struct ConfiguredStage(StageDescriptor);
+
+impl StageRuntime for ConfiguredStage {
+    fn descriptor(&self, _: u8) -> Option<StageDescriptor> { Some(self.0) }
+    fn bind(&mut self, _: u8) -> Option<StageDescriptor> { Some(self.0) }
+    fn rearm_model_relations(&mut self) {}
+}
+
+#[test]
+fn configured_stage_point_inherits_child_hit_before_motion() {
+    let terrain = terrain();
+    let mut actor = actor();
+    actor.action = 199;
+    actor.stage.mode = 1;
+    actor.phase = 1;
+    actor.next = 702;
+    actor.control_flags |= 0x800;
+    let prior = actor.position;
+    let child = Target { slot: 702, life: 15000, attacker: 255, ..Target::default() };
+    let attacker = Target { slot: 255, source_id: 255, class: 3, model: 0, life: 10000, ..Target::default() };
+    let targets = [child, attacker];
+    let mut runtime = ConfiguredStage(StageDescriptor {
+        kind: 1, flags: 0, next: 0, point: prior, actor: 0, model: 0, scalar: 0,
+    });
+    let mut ctx = Creature24Context { terrain: &terrain, targets: &targets, class3: &[], model24: &[], class5: &[], stage_runtime: Some(&mut runtime) };
+    let mut effects = Creature24Effects::default();
+    stage::step(&mut actor, &mut ctx, &mut effects);
+    assert_eq!((actor.life, actor.attacker, actor.target, actor.stage.mode, actor.action), (15000, 255, 255, 10, 194));
+    assert_ne!(actor.control_flags & 0x800, 0, "hit handling must not call movement");
+    assert_eq!((actor.position.x, actor.position.y), (prior.x, prior.y));
+}
+
+#[test]
+fn configured_stage_follow_target_separation_overrides_peer_heading() {
+    let terrain = terrain();
+    let mut actor = actor();
+    actor.action = 199;
+    actor.stage.mode = 5;
+    actor.phase = 8;
+    actor.half_width = 256;
+    actor.control_flags |= 0x800;
+    let point = Position { x: actor.position.x - 64, ..actor.position };
+    let peer_position = Position { x: actor.position.x + 64, ..actor.position };
+    let target = Target { slot: 255, source_id: 255, class: 5, model: 4, life: 1000, position: point, half_width: 128, ..Target::default() };
+    let peer = Target { slot: 702, source_id: 702, class: 5, model: 24, life: 1000, position: peer_position, ..Target::default() };
+    let targets = [target, peer];
+    let mut runtime = ConfiguredStage(StageDescriptor { kind: 5, flags: 0, next: 0, point, actor: 255, model: 4, scalar: 0 });
+    let mut ctx = Creature24Context { terrain: &terrain, targets: &targets, class3: &[], model24: &[702], class5: &[], stage_runtime: Some(&mut runtime) };
+    let peer_heading = heading_for_positions(peer_position, actor.position) as i16;
+    let expected = heading_for_positions(point, actor.position) as i16;
+    assert_ne!(peer_heading, expected);
+    stage::step(&mut actor, &mut ctx, &mut Creature24Effects::default());
+    assert_eq!(actor.roll, expected);
+}
+
+#[test]
+fn configured_ground_motion_publishes_accepted_and_blocked_proposals_but_not_hold() {
+    use crate::native_world::TerrainPlanes;
+    fn world(flags: u8) -> SessionTerrain {
+        SessionTerrain::from_planes(MapType::Cave, TerrainPlanes {
+            terrain_types: vec![1; 65536].into_boxed_slice(),
+            ground_heights: vec![0; 65536].into_boxed_slice(),
+            shading: vec![0; 65536].into_boxed_slice(),
+            angles: vec![flags; 65536].into_boxed_slice(),
+            secondary_heights: vec![255; 65536].into_boxed_slice(),
+            entity_indices: vec![0; 65536].into_boxed_slice(),
+        }, 0)
+    }
+    let initial_scratch = Position { x: 1, y: 2, z: 3 };
+    let open = world(0);
+    open.set_source_predicted_position(initial_scratch);
+    let mut direct = actor();
+    direct.yaw = 0;
+    direct.roll = 200;
+    direct.speed = 512;
+    let original = direct.position;
+    let mut expected = original;
+    crate::move_entity(&mut expected, 0, 0, 512);
+    assert!(!move_actor(&mut direct, &context(&open, &[], &[])));
+    assert_eq!(open.source_predicted_position(), expected);
+    assert_eq!(direct.position, expected);
+    assert_eq!(direct.yaw, 5, "source 58350 clamps by descriptor subtype, not word4");
+
+    let blocked = world(8);
+    blocked.set_source_predicted_position(initial_scratch);
+    let mut stopped = actor();
+    stopped.yaw = 0;
+    stopped.roll = 0;
+    stopped.speed = 512;
+    let mut last = stopped.position;
+    crate::move_entity(&mut last, 1024, 0, 512);
+    assert!(move_actor(&mut stopped, &context(&blocked, &[], &[])));
+    assert_eq!(stopped.position, original);
+    assert_eq!(stopped.life, -1);
+    assert_ne!(last, original);
+    assert_eq!(blocked.source_predicted_position(), last);
+
+    stopped.control_flags |= 0x800;
+    let saved = blocked.source_predicted_position();
+    assert!(!move_actor(&mut stopped, &context(&blocked, &[], &[])));
+    assert_eq!(blocked.source_predicted_position(), saved);
+    assert_eq!(stopped.control_flags & 0x800, 0);
+}
+
 #[test]
 fn constructor_rejects_non_cave_without_advancing_counter_and_uses_one_rng_draw() {
     let mut counter = 255;
@@ -486,6 +590,180 @@ fn owner_cave21_roots_acquire_real_player_and_contact_reaches_same_arena_mailbox
         contacts.first().unwrap(),
         contacts.len()
     );
+}
+
+#[test]
+fn level16_authored_creature24_melee_reaches_player_life_and_audio() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::level_definition::CreatureKind;
+    use crate::native_world::{Mc2DispatchEvent, area_damage, Level2EconomyEvent};
+
+    let package = std::env::var_os("MC_LEVEL16_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/skeleton-20261106-integration/current-owner-package/level16"),
+        std::path::PathBuf::from,
+    );
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(16).unwrap())
+        .expect("whole qualified Level16 package")
+        .simulation()
+        .clone();
+    let player = session.state.entity_index;
+    let player_handle = session.source_arena().handle(player).unwrap();
+    let switch = session.source_arena().handle(92).unwrap();
+    let row = &session.entities()[92];
+    assert_eq!((row.class, row.model, row.action, row.source_id, row.level_gate), (11, 32, 32, 23, 3));
+    assert_eq!(switch.generation, 0);
+    assert!(session.source_arena().rebuilt_class5_model_slots()[24].is_empty());
+
+    // Survival resources are a player-only entry control.  Let the actual
+    // source player callback age its startup protection before activating the
+    // objective; never edit the protection word or any creature state.
+    {
+        let live = &mut session.session.state.live;
+        live.player_life = 200_000;
+        live.shared_spells.set_player_entity_life(200_000);
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_max_life(200_000);
+        parent.set_life(200_000);
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+    }
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    let initial_protection = session.session.state.live.player_protection_ticks;
+    assert_eq!(initial_protection, 100);
+    let mut wait_turns = 0;
+    for turn in 0..256 {
+        if session.session.state.live.player_protection_ticks == 0 { break; }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "protection wait turn {turn}: {:?}", session.dispatch_events());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 92, group: 23, .. })));
+        wait_turns += 1;
+    }
+    assert_eq!(session.session.state.live.player_protection_ticks, 0,
+        "ordinary player callbacks must exhaust source startup protection");
+    assert!(wait_turns > 0);
+    assert_eq!(session.source_arena().handle(player), Some(player_handle));
+    assert_eq!(session.source_arena().handle(92), Some(switch));
+    assert!(session.source_arena().rebuilt_class5_model_slots()[24].is_empty());
+
+    // Explicit upstream objective prerequisite; the actual reset switch and
+    // group callback still publish the whole unfiltered authored group.
+    session.set_level2_selected_objective_stage_state(2).unwrap();
+    let mut produced = None;
+    for turn in 0..32 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "group turn {turn}: {:?}", session.dispatch_events());
+        if let Some(indices) = session.dispatch_events().iter().find_map(|event| match event {
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 92, group: 23, authored_indices, .. }
+                if authored_indices.contains(&404) => Some(authored_indices.clone()),
+            _ => None,
+        }) {
+            produced = Some(indices);
+            break;
+        }
+    }
+    let produced = produced.expect("actual switch92 must publish authored model24 row404");
+    // Pin every real current group23 Creature24 generation before the
+    // interaction. The witness must remain one of these exact source roots.
+    let mut roots = Vec::new();
+    for identity in session.creature_runtime_census().roots_of_kind(CreatureKind::Creature24) {
+        let CreatureRootOrigin::AuthoredRecord { authored_record } = identity.origin else { continue };
+        if !produced.contains(&authored_record) { continue; }
+        let feature = session.session.state.live.mission.authored_features().iter()
+            .find(|feature| feature.index == authored_record).expect("published authored record");
+        assert_eq!((feature.kind, feature.subtype, feature.activation_group), (5, 24, 23));
+        let row = &session.entities()[usize::from(identity.handle.source_slot)];
+        assert_eq!((row.class, row.model), (5, 24));
+        assert!(identity.living);
+        assert_eq!(session.source_arena().handle(identity.handle.source_slot), Some(identity.handle));
+        roots.push((identity.handle, authored_record, row.source_id, row.position, false));
+    }
+    assert!(!roots.is_empty());
+    let handle = session.creature_runtime_census().roots_of_kind(CreatureKind::Creature24)
+        .find(|root| root.origin == (CreatureRootOrigin::AuthoredRecord { authored_record: 404 }))
+        .map(|root| { assert!(root.living); root.handle })
+        .expect("the current generation of real row404");
+    assert!(roots.iter().any(|(root, authored, _, _, _)| *root == handle && *authored == 404));
+    let source = session.entities()[usize::from(handle.source_slot)].clone();
+    assert_eq!((source.class, source.model, source.max_life, source.subspell_index), (5, 24, 16000, 1500));
+
+    // Declared player-only interception. The creature, its phase, route, RNG,
+    // target and mailbox all remain source-controlled.
+    let anchor = Position { x: source.position.x.wrapping_add(512), ..source.position };
+    session.set_level2_entity_position(player, anchor).unwrap();
+    // Setting the public player position does not reset flight velocity.
+    // Hold the declared initial player approach still; later movement remains
+    // under the ordinary player callback, including actual damage recoil.
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    let journal_start = session.effect_journal().records().len();
+    area_damage::start_player_damage_trace(player_handle);
+    let mut hit = None;
+    let mut observations = Vec::new();
+    let mut consumptions = Vec::new();
+    for turn in 0..320 {
+        let before = session.entities()[usize::from(handle.source_slot)].clone();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "melee turn {turn}: {:?}", session.dispatch_events());
+        assert_eq!(session.source_arena().handle(handle.source_slot), Some(handle));
+        assert_eq!(session.source_arena().handle(player), Some(player_handle));
+        let after = &session.entities()[usize::from(handle.source_slot)];
+        for (root, _, _, initial_position, moved) in &mut roots {
+            if session.source_arena().handle(root.source_slot) == Some(*root) {
+                *moved |= session.entities()[usize::from(root.source_slot)].position != *initial_position;
+            }
+        }
+        if observations.len() < 32
+            && (turn < 8 || turn % 32 == 0 || before.action != after.action)
+        {
+            observations.push((turn, (before.action, before.phase, before.source_word_96(), before.position),
+                (after.action, after.phase, after.source_word_96(), after.position, after.record[61]),
+                (session.state.position, session.state.actual_speed, session.state.target_speed),
+                area_damage::latest_player_mailbox_writer()));
+        }
+        for consumed in area_damage::take_player_damage_consumptions() {
+            if consumptions.len() < 16 { consumptions.push(consumed); }
+            let Some(writer) = consumed.writer else { continue };
+            let area_damage::PlayerMailboxSource::Contact(producer) = writer.source else { continue };
+            let Some((_, authored_record, source_id, _, moved)) = roots.iter().find(|(root, _, _, _, _)| *root == producer) else { continue };
+            if session.source_arena().handle(producer.source_slot) != Some(producer) { continue; }
+            let current = &session.entities()[usize::from(producer.source_slot)];
+            assert_eq!((current.class, current.model, current.source_id), (5, 24, *source_id));
+            assert!(*moved, "the exact witnessed source generation must have moved");
+            assert_eq!((consumed.target, writer.target, writer.mailbox, consumed.mailbox),
+                (player_handle, player_handle, consumed.mailbox, consumed.mailbox));
+            assert_eq!(consumed.mailbox.1, *source_id);
+            assert!(consumed.mailbox.0 >= 1500);
+            if consumed.life_after == consumed.life_before.wrapping_sub(consumed.mailbox.0)
+                && matches!(session.economy().events().get(consumed.event_cursor),
+                    Some(Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, lethal: false })
+                    if *target_entity_index == player && *attacker_entity_index == *source_id && *damage == consumed.mailbox.0)
+            {
+                hit = Some((turn, writer.sequence, consumed, producer, *authored_record));
+                break;
+            }
+        }
+        if hit.is_some() { break; }
+    }
+    let (_, _, _, witness, authored_record) = hit.unwrap_or_else(|| panic!(
+        "a pinned group23 model24 writer must reach player life: initial={source:?} roots={roots:?} player_anchor={anchor:?} observations={observations:?} consumptions={consumptions:?}"
+    ));
+    assert!(produced.contains(&authored_record));
+    assert_eq!(session.source_arena().handle(witness.source_slot), Some(witness));
+    assert!(session.effect_journal().records()[journal_start..].iter().any(|record| matches!(
+        &record.effect,
+        crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+            audio_site: crate::MissionAudioSite::Creature24Attack, entity_index, sound_id: 7, player_index: -1,
+        }) if *entity_index == witness.source_slot
+    ) && record.audio.is_some_and(|audio| audio.command.audible && audio.play_type == 3)),
+        "real action194 must prepare the original audible attack sound");
 }
 
 #[test]

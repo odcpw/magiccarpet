@@ -272,6 +272,9 @@ fn move_actor(actor: &mut Creature24State, ctx: &Creature24Context<'_>) -> bool 
         let mut predicted = actor.position;
         actor.position = original;
         crate::move_entity(&mut predicted, actor.yaw, 0, actor.speed);
+        // sub_1B8C0 publishes each candidate even when it is rejected.  The
+        // 0x800 hold above leaves the previous shared proposal untouched.
+        ctx.terrain.set_source_predicted_position(predicted);
         let crosses = (predicted.x >> 8, predicted.y >> 8) != (original.x >> 8, original.y >> 8);
         let mut blocked = false;
         if crosses || attempt != 0 {
@@ -304,7 +307,7 @@ fn move_actor(actor: &mut Creature24State, ctx: &Creature24Context<'_>) -> bool 
             actor.yaw =
                 actor
                     .yaw
-                    .wrapping_add(crate::turn_toward(actor.yaw, actor.roll, RULES.turn_limit))
+                    .wrapping_add(crate::turn_toward(actor.yaw, actor.roll, RULES.turn_response))
                     & 2047;
             if attempt == 0 {
                 actor.control_flags &= !0x40000;
