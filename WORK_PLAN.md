@@ -197,9 +197,9 @@ and paired-body creature22 `.9` are delivered. Mana-hunting creature23's connect
 runtime is installed; `mc-1pb.10` retains its open shared-system dependencies.
 Cave melee creature24 `.11` and splitting creature25 `.12` are delivered and
 closed. Spell-thief26's connected runtime is now installed; `mc-1pb.13` retains
-its original open `mc-k5k.7` dependency. Deep One28 `mc-1pb.15` and Worm3
-`mc-1pb.2` are delivered. Hydra27 `.14` retains its original open `.12`
-dependency; finish Spider20 `mc-bhq.3` and the actual shared field acceptance
+its original open `mc-k5k.7` dependency. Deep One28 `mc-1pb.15`, Worm3
+`mc-1pb.2` and Spider20 `mc-bhq.3` are delivered. Hydra27 `.14` retains its
+original open shared-field `.12` dependency; finish that actual acceptance
 before claiming Hydra. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
@@ -216,9 +216,9 @@ in their canonical owner when a real connected failure exposes them.
 AmberDune and CalmLynx delivered creatures23–25 through their actual producers,
 combat, consequences, cleanup and original presentation. CopperMountain
 serialized checks and delivery. AmberDune and RusticGrove have now completed
-creature26's finite runtime, Deep One28 and Worm3; keep the small team and
-continue with Spider20's ordinary web/contact/combat path, then shared fields
-and Hydra27, after reading each original acceptance and current source.
+creature26's finite runtime, Deep One28, Worm3 and Spider20; keep the small team
+and finish shared fields, including the confirmed ordinary transport audio
+consumer gap, then Hydra27. Read each original acceptance and current source.
 `mc-1pb.10` remains open while its original
 `mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
@@ -240,7 +240,7 @@ without bypassing or rewriting those dependencies.
 - [x] Spell-thief26 runtime — `mc-1pb.13` (bead retains open `mc-k5k.7`).
 - [x] Deep One28 — `mc-1pb.15` (original sound-name binding verified).
 - [x] Worm3 — `mc-1pb.2`.
-- [ ] Spider20 full ordinary web/contact/death capability — `mc-bhq.3`.
+- [x] Spider20 full ordinary web/contact/death capability — `mc-bhq.3`.
 - [ ] Hydra27 — `mc-1pb.14` (retains original shared-field dependency).
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
@@ -249,14 +249,71 @@ without bypassing or rewriting those dependencies.
 - [ ] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`,
       integrated as actual family consumers require it.
 
-Goat (`mc-1pb.1`, already closed) and existing Spider20 code remain inputs;
-Spider's full original ordinary combat/web acceptance is still open. Existing
+Goat (`mc-1pb.1`, already closed) and the delivered Spider20 family are inputs. Existing
 18/25/26 checkpoints are installed inputs, not reasons to replay unchanged
 long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current installed delivery: Worm3 (2026-11-07)
+### Current installed delivery: Spider20 (2026-11-07)
+
+Implemented, verified, committed and pushed at
+`0b1d0186620f66acdf044fdc7222c257187e24cd`; `mc-bhq.3` is closed with its
+original acceptance and dependencies unchanged. The family owns its source
+constructor, actions160–165/167, Stage branches, typed properties and assets,
+web producer and death lifetime. Source166 remains unsupported. Corrections
+include descriptor-backed turning, current player A4 authority and feedback,
+source duration arithmetic and linked state, canonical SourceArena death
+allocation, and positional attack/first-hit audio reaching the actual journal.
+
+Frozen candidate8's actual whole Cave4 group6 encounter passes11.992s:
+record137 produces its own9/21 → same-generation10/66 web, exact780 damage
+and prepared audible first-hit receipt, authoritative movement/status/overlay
+DTO and natural recovery. Its contact contributes100 through the actual source
+mailbox arithmetic and the same accepted writer to HP and DamageApplied.
+One paid MeteorII causes the original's fatal subtraction, one kill credit,
+mana/burst presentation, natural hide and following reclaim. The other five
+originals and equal-elapsed no-cast original survive. Declared entry resources,
+prior carry/task state, fixed lure, paid Lightning provocation and fixed shot
+pose are controls; the check also permits one disclosed player-only contact
+placement. No NPC pose, RNG or lifetime is forced. This is not earned mission
+progression or an automated fight.
+
+Earlier negatives are retained: tierIII legitimately credited two distinct
+Spiders, so the representative cast uses the source-supported sufficient tierII
+without relaxing the +1/survivor controls. The contact oracle now observes the
+real100 contribution rather than incorrectly assuming an empty damage mailbox;
+the held aim is set after public selection, matching source update order.
+Unchanged-production C2 motion/Stage/web/current-A4/lifetime/reuse/source-order
+controls and C3 real six-original absence/proximity checks remain valid. The
+absence control uses configured lethal contacts; the adjacent Manticore status
+check is a configured constructor/projectile/consumer control. Neither is an
+ordinary multi-enemy fight. Fresh bounded independent source/gate/evidence
+review found no further concrete defect in the finite family. Workspace
+all-targets passes39.153s; strict rig native build passes66.429s. Changed-source
+UBS has no critical on added lines; broad legacy scanner/formatting debt remains.
+
+Installed Original native
+`e012fc8275700d825e8a4b79b385dd66ab684f7be3902803617aa7d56b25ec63`
+(138949400bytes), qualified build `build-l38nnukl`. All451 workspace inputs
+(401 Rust source files),162 upstream and37 additional inputs (643 unique)
+match source, rig and the qualified Original client. The additive standalone
+character header from the separate Modern work required the existing full
+Original build qualification; all authored Original Unity inputs are unchanged.
+No qualification gate was bypassed. The previous Worm player and native remain.
+
+Root viewed normal canonical map, original loading art and NightSpire terrain/HUD
+through the initial spawn flash with the matching mapped native. One held portal
+click, zero retries and no gameplay input; owned smoke processes stopped cleanly.
+This is launch/load proof, not native Cave/Spider pixels, human combat, FPS,
+hardware audio, full missions or old-save proof. Current native copies were
+SHA-verified and deduplicated; completed RCH outputs are byte-preserved on rig.
+Evidence: `generated/spider-20261107-integration/candidate-8/` and
+`Builds/delivery-spider-20261107-qualified-smoke/` under `research/private/`.
+Next is `mc-bhq.12`'s confirmed transport sound20/21 consumer join and original
+finite shared-field acceptance, then Hydra27. Keep incomplete dependencies open.
+
+### Previous installed delivery: Worm3 (2026-11-07)
 
 Implemented, verified, committed and pushed at `5034ad97ff92a98db16995133fb46cdf3f9056fc`;
 `mc-1pb.2` is closed with its original acceptance and dependencies unchanged.
@@ -288,7 +345,8 @@ Worm defect. Changed-source UBS has no critical on added lines amid legacy
 whole-file findings; package formatting still reports broad existing debt.
 
 Installed Original native `9c757c0241263300c329dffb846db1c7eb89263641eed981514d87fee8117393`
-(138585728bytes), qualified refresh `build-vraodwgv`. All449 Rust,162 upstream
+(138585728bytes), qualified refresh `build-vraodwgv`. All449 workspace inputs
+(400 Rust source files),162 upstream
 and37 additional inputs (641 unique) match the committed isolated snapshot,
 rig and qualified Original client; foreign dirty Modern source is excluded.
 Root inspected normal canonical map/loading/NightSpire terrain/HUD, including
