@@ -1,5 +1,31 @@
 # Shared-engine delivery plan
 
+## Active Modern characters — finish the live Level 1 cycle (2026-11-07)
+
+Oliver rejected treating isolated animation previews as finished assets. Finish
+goat and archer in actual Level 1 gameplay before starting another asset. Preserve
+original gameplay speed/behaviour; author natural modern motion. A same-height
+archer target requires a horizontal arrow at release; elevated targets require
+coherent pitched aim. The checked preview milestone below remains prior evidence.
+
+- Goat Terra owner: measure source/game travel speeds and timing, repair gait
+  and stride/playback coupling, reactions/death and terrain contact. Own the
+  goat exporter and focused goat runtime presenter/checks through live delivery.
+- Archer Terra owner: repair nock/draw/release/flight alignment, movement,
+  reactions/death and complete clip transitions. Own archer export and focused
+  archer runtime presenter/checks through live delivery.
+- Root integration owner: typed native-state joins, shared playback/import,
+  real Level 1 model bindings, serialized Unity/native builds, installed player,
+  gameplay recording and independent important-frame inspection. Fix defects
+  with the asset owner until live movement, attacks, hit/death, cleanup and reset
+  are coherent. Keep all other asset remakes inactive. Record reusable pipeline
+  fixes in canonical code and the character README, with verifiable checks.
+
+Acceptance requires matching current Rust gameplay in the installed Modern
+Level 1 player, with real source-driven actors and attacks; a staged camera or
+declared scenario setup is acceptable evidence only when disclosed. An isolated
+review sequence or mocked entity row does not finish this capability.
+
 ## Modern goat and bow archer — checked asset delivery (2026-11-07)
 
 Oliver requested repaired, complete character actions and results checked in
@@ -105,7 +131,8 @@ and paired-body creature22 `.9` are delivered. Mana-hunting creature23's connect
 runtime is installed; `mc-1pb.10` retains its open shared-system dependencies.
 Cave melee creature24 `.11` and splitting creature25 `.12` are delivered and
 closed. Spell-thief26's connected runtime is now installed; `mc-1pb.13` retains
-its original open `mc-k5k.7` dependency. Next is creature28 `mc-1pb.15`. The proper original
+its original open `mc-k5k.7` dependency. Deep One28 `mc-1pb.15` is now delivered;
+next is Worm3 `mc-1pb.2`. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -121,7 +148,7 @@ in their canonical owner when a real connected failure exposes them.
 AmberDune and CalmLynx delivered creatures23–25 through their actual producers,
 combat, consequences, cleanup and original presentation. CopperMountain
 serialized checks and delivery. AmberDune and RusticGrove have now completed
-creature26's finite runtime; keep the small team and continue with creature28 after reading its original
+creature26's finite runtime and Deep One28; keep the small team and continue with Worm3 after reading its original
 acceptance and current source. `mc-1pb.10` remains open while its original
 `mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
@@ -141,7 +168,7 @@ without bypassing or rewriting those dependencies.
 - [x] Cave melee creature24 — `mc-1pb.11`.
 - [x] Splitting creature25 (port name Cymmerian; original name unverified) — `mc-1pb.12`.
 - [x] Spell-thief26 runtime — `mc-1pb.13` (bead retains open `mc-k5k.7`).
-- [ ] Creature28 — `mc-1pb.15`.
+- [x] Deep One28 — `mc-1pb.15` (original sound-name binding verified).
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
@@ -157,7 +184,69 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: spell-thief26 (2026-11-07)
+### Current delivery: Deep One28 (2026-11-07)
+
+Implemented, committed and pushed: `126e11bf8f00acbe0c98442619ae8c3ed412cc40`.
+The original name is independently bound by `DeepOne_38` in remc2's
+`WavIndexes.h` and this creature's actual sound38 call. Its canonical family
+owner now supplies constructor/action224–229/231 behavior, source movement,
+both descriptor93/94 forms, resident animation-header timing, water splash,
+melee, StageVar helpers, attributed death/rewards, hide and following reclaim.
+Action230 retains its exact unsupported, default bit8-clear classification.
+Shared joins repair valid null StageVar relations, the stale authored model23
+preflight whitelist, and current typed model53 yaw/geometry and child publication.
+They preserve canonical source state, admission, arithmetic and update order.
+
+Verified with real whole Night14 owner data and the existing runtime. The
+authored attack/form/splash/melee/audio path passes105.193s; configured absence
+and source31 scheduling controls pass11.826s/4.762s. Eighteen focused kernel and
+StageVar checks passed on the earlier frozen family candidate; its one failing
+authored encounter was repaired and passed separately, not relabeled an all-green
+family run. The corrected current model53 geometry/yaw/child check passes1.049s;
+source-order passes0.614s. Candidate17's connected public Meteor check passes
+170.716s: actual switch/group16 produces all28 authored members, including511/512;
+the same original511 naturally transforms, then a real paid MeteorIII reaches
+its exposed body through collision, supplies attributed fatal damage, awards
+credit/mana/presentation and reaches natural hide/following reclaim. The other
+original Deep One512 survives and still blocks whole-family absence. An
+equal-elapsed no-cast control keeps511 living.
+
+That connected check declares the prior objective/resource loadout, a fixed
+initial lure and one player-only placement at the observed exposed-form
+boundary. It fires once with fixed aim; it does not earn the prerequisite
+mission fight, adaptively track targets or edit NPC life/pose/RNG/lifetime.
+Earlier fixed-input Meteor/Lightning/Volcano negatives remain preserved. An
+adaptive tracking candidate was rejected and never run. Under real pool
+pressure, source NewEvent fallback clears family heads; homing admission remains
+unchanged. The passing path proves the real collision boundary, not homing
+acquisition in that cleared-list state. Configured rare-state controls remain
+distinct from ordinary owner gameplay.
+
+Candidate17 workspace/all-targets check passes43.567s on healthy strict rig RCH;
+native build passes66.878s. All445 Rust plus162 upstream inputs and37 additional
+workspace inputs (637 unique) match current source, isolated build and rig.
+Independent bounded source/gate review and changed-hunk inspection found no
+remaining concrete defect in the reviewed capability. Changed-source UBS retains
+legacy whole-file findings with no critical on added lines; package formatting
+still has existing broad debt. No acceptance was weakened to obtain green.
+
+Installed Original native:
+`e81f2dc905bb4b469058d5eb6a9509063ba5b3203f8c9ab3d26256b14c7ee918`
+(138442608bytes), pin `generated/two-form-creature-20261107-integration/candidate-17/`.
+Qualified native-only player refresh is `build-u7jgxa2g`. Root inspected canonical
+map, loading and NightSpire terrain/HUD with the matching mapped library; one
+portal click, zero retries, then owned smoke processes stopped. Native Deep One
+encounter visuals, human combat, FPS, hardware audio, full missions and old saves
+remain unverified. No Unity/art change. Evidence lives under
+`research/private/generated/two-form-creature-20261107-integration/` and
+`Builds/delivery-deep-one-20261107-batch1/`. Current/previous native pins and warm
+caches remain; completed artifacts and old compiler-crash outputs were moved
+byte-for-byte to the existing rig archive with before/after SHA receipts.
+Next: Worm3 `.2`, then multipart27, single-player rivals, player death/revival,
+boss10 and the remaining shared actor boundaries. Other families' original
+unfinished dependencies remain open.
+
+### Previous delivery: spell-thief26 (2026-11-07)
 
 Implemented and verified; committed/pushed at runtime
 `50873e9ec3ffa03da9e9abf849b740ea8f4e4cd2`; installed Original native
