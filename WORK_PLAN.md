@@ -103,8 +103,8 @@ tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
 Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7`, leaping creature21 `.8`
 and paired-body creature22 `.9` are delivered. Mana-hunting creature23's connected
 runtime is installed; `mc-1pb.10` retains its open shared-system dependencies.
-Cave melee creature24 `.11` is now delivered and closed. Next is splitting
-creature25 `mc-1pb.12`, including its actual children and minion expiry. The proper original
+Cave melee creature24 `.11` and splitting creature25 `.12` are delivered and
+closed. Next is spell-thief creature26 `mc-1pb.13`. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -117,9 +117,9 @@ objective consumers and original presentation/assets. Preserve the delivered
 spell checkpoints and already qualified creature paths; repair shared defects
 in their canonical owner when a real connected failure exposes them.
 
-AmberDune and CalmLynx delivered creatures23 and24 through their actual producers,
+AmberDune and CalmLynx delivered creatures23–25 through their actual producers,
 combat, consequences, cleanup and original presentation. CopperMountain
-serialized checks and delivery. Keep the small team and finish creature25 next, after reading its
+serialized checks and delivery. Keep the small team and finish creature26 next, after reading its
 original acceptance and current source. `mc-1pb.10` remains open while its original
 `mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
@@ -137,7 +137,8 @@ without bypassing or rewriting those dependencies.
 - [x] Paired-body creature22 — `mc-1pb.9`.
 - [x] Mana-hunting creature23 runtime — `mc-1pb.10` (bead retains open shared dependencies).
 - [x] Cave melee creature24 — `mc-1pb.11`.
-- [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
+- [x] Splitting creature25 (port name Cymmerian; original name unverified) — `mc-1pb.12`.
+- [ ] Spell-thief26 and creature28 — `mc-1pb.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
@@ -153,7 +154,56 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: Cave melee creature24 (2026-11-07)
+### Current delivery: splitting creature25 (2026-11-07)
+
+Implemented and verified; committed/pushed at runtime
+`3f842e8b4e26552b26627d3be3111137c063d123`; installed Original native
+`ae71ebabfd93087ef61026ccd0b08acb22de64ef29b8abca7d91609637bd08e2`
+(138,593,632 bytes). Original finite `mc-1pb.12` is closed with acceptance and
+dependencies unchanged. The creature parent, full boss and full engine stay open.
+
+The canonical family/shared joins now use actual subtype5 turning, promoted
+peer-position arithmetic, the ordinary constructor across authored/Army/boss
+producers (Army alone zeroes mana), current A4 ownership/target state and current
+Castle/raw contact carriers. Small prekill awards once; every qualifying death
+callback applies the literal source next-player header increment, preserving
+the result consumer and full header state/hash. Boss minion25 sound37 now reaches
+the native audio journal using the source's current NewEvent ID/pose/mute state;
+ordinary pursuit37 retains its different physical-pointer emitter convention.
+Other boss behavior/audio remains in its original unfinished family.
+
+Actual unfiltered Level10 authored283 → parent330/gen2 → projectile409/gen2 and
+its own audible37 → children404–406/gen2 → all natural landings → selected child
+60-damage Contact and scheduled Castle life subtraction/DamageApplied → three
+one-time credits → no resplit/hide/following reclaim passes4.713s. One declared
+fixed player-Castle placement precedes the lethal hit and all child births; no
+NPC, phase, RNG or lifetime is forced. Original authored31 production and its
+source-correct four-retry movement fatal remain mandatory negatives; the live
+attacker is pre-pinned to an actual current authored group8 model25 generation.
+No Other/stale writer, unrelated sound or unconsumed mailbox can satisfy the gate.
+
+Real Level24 absence, allocation/split lineage, current-contact/A4/header controls,
+enabled200–205/207, unsupported206, shared StageVar modes and boss17→16 natural
+expiry are covered by the saved focused runs. Boss phase/mode/attempt and one
+parent-death control are declared, not a full natural boss fight. Earlier
+unchanged-path evidence is reused explicitly, not presented as one35/35 run.
+The final workspace/all-targets check passes40.698s and native build77.728s.
+Fresh independent bounded source/gate review supports the finite acceptance.
+Whole-file UBS findings remain legacy, with no critical added-line finding;
+package formatting still fails existing debt and was not rewritten.
+
+All445 Rust,162 upstream and37 extra inputs (637 unique) match canonical,
+isolated and rig source/artifact. Native-only installation passed its qualified
+Original gates. Root viewed canonical map/loading/NightSpire scene/HUD with the
+exact mapped native, one portal click/zero retries, and stopped owned smoke.
+The initial blank startup is retained. No Unity/art change. Native model25
+encounters, human combat/FPS, hardware audio, full missions and old saves remain
+unverified. Current/immediate previous natives are preserved; completed build
+returns are SHA-preserved on rig ext4. Evidence:
+`generated/splitting-creature-20261107-integration/` candidates1–6 and
+`Builds/delivery-splitting-creature-20261107-batch1`.
+
+### Previous delivery: Cave melee creature24 (2026-11-07)
 
 Implemented, verified and committed/pushed at runtime
 `144c5cbca8ab2c559047e31a21aaa0305a1cacbe`; installed Original native
