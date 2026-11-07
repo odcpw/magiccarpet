@@ -233,8 +233,7 @@ Cave melee creature24 `.11` and splitting creature25 `.12` are delivered and
 closed. Spell-thief26's connected runtime is now installed; `mc-1pb.13` retains
 its original open `mc-k5k.7` dependency. Deep One28 `mc-1pb.15`, Worm3
 `mc-1pb.2` and Spider20 `mc-bhq.3` are delivered. Shared fields `mc-bhq.12`
-are delivered and closed; Hydra27 `.14` is next with its original dependencies
-satisfied. The proper original
+and Hydra27 `mc-1pb.14` are delivered and closed. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -251,7 +250,8 @@ AmberDune and CalmLynx delivered creatures23–25 through their actual producers
 combat, consequences, cleanup and original presentation. CopperMountain
 serialized checks and delivery. FrostyPond (previously AmberDune) and RusticGrove
 have now completed creature26's finite runtime, Deep One28, Worm3, Spider20 and
-the shared-field prerequisite; keep the small team on Hydra27 next. Read each
+the shared-field prerequisite and Hydra27. Continue the remaining shared combat,
+player lifecycle, rival wizards and final boss through their original dependencies. Read each
 original acceptance and current source; extend its existing family.
 `mc-1pb.10` remains open while its original
 `mc-bhq.10` shared-system dependency is open; move the actual required joins forward
@@ -275,7 +275,7 @@ without bypassing or rewriting those dependencies.
 - [x] Deep One28 — `mc-1pb.15` (original sound-name binding verified).
 - [x] Worm3 — `mc-1pb.2`.
 - [x] Spider20 full ordinary web/contact/death capability — `mc-bhq.3`.
-- [ ] Hydra27 — `mc-1pb.14` (shared-field prerequisite delivered).
+- [x] Hydra27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
 - [ ] Player death, banishment and revival — `mc-1pb.18`.
@@ -289,7 +289,54 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current installed delivery: shared fields before Hydra27 (2026-11-07)
+### Current installed delivery: Hydra27 (2026-11-07)
+
+Implemented, verified, committed and pushed at
+`98f2c2ee903f8d8aa1834c34057d718cec2823e1`; original finite `mc-1pb.14`
+is closed with acceptance and dependencies unchanged. FrostyPond/RedElk owned
+family behavior, RusticGrove the connected checks, and CopperMountain the
+shared joins, builds and installation. Bounded independent source/gate review
+found and rechecked the repaired enabled paths; root verified actual results.
+
+The family now preserves descriptor97 turning/material/pitch/slope rules,
+216's timed flags/relocation and two RNG draws,217's fatal early return,
+218's alignment-before-range animation reset, literal head-tail scratch/map
+copies and source body-state admission. Fatal local head flags survive packet
+commit. Original233/234 disabled callbacks and222 unsupported classification
+remain intact. Source15/17/22/23 freeze audio at their literal current-carrier
+calls into prepared Flight; fatal collapse does not invent idle5/6 sound17.
+Ordinary Level23 exposed the shared eighth spawn setter11 omission; the canonical
+initial Castle input now includes it and reaches actual player7/Castle611.
+
+Frozen C4 unfiltered Level23 gate passes508.489s: real authored producer,
+all51 original parts, both850 projectile lineages into actual player damage
+and prepared audio, then one paid MeteorIII actual body661/g2 collision into
+eligible head damage capped76 and original root646/g2 mailbox1600/attacker424.
+Its carried spell/resources, objective setup and fixed lure are declared controls;
+this is not a default-health defeat. Actual Level22 configured near-end head
+health then fatal contacts reach source death, real bound target objective,
+all51 hide/following reclaim and burst lifecycle in6.968s. Four new source-order
+controls and affected capacity/reuse/reward/startup/order regressions pass.
+Workspace all-targets42.505s and strict rig native75.516s pass. All452 workspace,
+162 upstream and37 additional inputs (644 unique) match source, rig and client.
+UBS's six whole-file criticals do not touch added lines; added findings were
+triaged. Family behavior formatting passes; shared-file formatting debt and one
+test path-wrapping hunk remain explicit, without a style-only rebuild.
+
+Installed Original native
+`05d22ec76a3ef8c1c62f42beaa948099e0f3e15ed0b1f919b5c8603c7a1b58f0`
+(139097344bytes), native refresh `build-qu2uk4jo`; no Unity/art change. Root
+viewed canonical map/loading/NightSpire terrain/HUD under the spawn flash with
+that mapped native: one click, zero retries, no gameplay input; owned smoke
+stopped. No native Hydra encounter visuals, human combat, FPS, hardware audio,
+full missions or old-save proof. Current/previous natives and previous full
+player remain. Completed returned artifacts are byte-preserved on rig; transient
+native transfer exceeded the former output budget, so future heavy stages need
+the actual measured transfer peak included. Evidence:
+`research/private/generated/hydra-20261107-integration/candidate-4/` and
+`research/private/remc2-unity-native/Builds/delivery-hydra-20261107-qualified-smoke/`.
+
+### Previous installed delivery: shared fields before Hydra27 (2026-11-07)
 
 Implemented, verified, committed and pushed at
 `06046071a0466257b8ff75b7a268fcecc607e75b`; original finite `mc-bhq.12` is
@@ -335,10 +382,8 @@ completed RCH outputs are byte-preserved on rig. Evidence:
 `research/private/generated/transport-audio-20261107-integration/candidate-4/`
 with unchanged C3 checks and
 `research/private/remc2-unity-native/Builds/delivery-shared-fields-20261107-qualified-smoke/`.
-Hydra27 `mc-1pb.14` is now in progress: FrostyPond owns the family through
-integration, RusticGrove owns its connected checks, and CopperMountain owns
-shared joins, serialized builds and delivery. Later creatures wait for its
-complete installed capability.
+At that checkpoint Hydra27 `mc-1pb.14` was the next owned capability; its
+subsequent complete installed delivery is recorded above.
 
 ### Previous installed delivery: Spider20 (2026-11-07)
 
