@@ -51,7 +51,7 @@ pub(crate) struct Actor {
     pub route_mode: u8,
     pub route_relation: u16,
     pub route_remaining: i16,
-    pub route_duration: i16,
+    pub route_duration: u16,
     pub attacker: u16,
     pub killer: u16,
     pub pending_damage: i32,
@@ -84,6 +84,10 @@ pub(crate) struct Target {
     pub route_target: u16,
     pub parent: u16,
     pub route_mode: u8,
+    pub relations: crate::native_world::source_target::Relations,
+    pub source_yaw: Option<i16>,
+    pub source_roll: Option<i16>,
+    pub pitch_extent: Option<i16>,
 }
 
 impl Target {
@@ -95,19 +99,39 @@ impl Target {
 pub(crate) struct Frame<'a> {
     pub terrain: &'a SessionTerrain,
     pub targets: &'a [Target],
+    pub current_target: Option<&'a dyn Fn(u16) -> Option<Target>>,
+    pub sentinel: Option<Target>,
+    pub class3: &'a [u16],
+    pub families: Option<&'a [Vec<u16>; 29]>,
+    pub attack_animation_count: Option<&'a dyn Fn() -> Result<Option<u16>, String>>,
     pub same_model: &'a [u16],
 }
 
 impl Frame<'_> {
     fn target(&self, slot: u16) -> Option<Target> {
-        (slot != 0)
-            .then(|| {
-                self.targets
-                    .iter()
-                    .find(|target| target.slot == slot)
-                    .copied()
-            })
-            .flatten()
+        if slot == 0 { return None; }
+        if let Some(current_target) = self.current_target {
+            return current_target(slot);
+        }
+        self.targets.iter().find(|target| target.slot == slot).copied()
+    }
+
+    fn actor_target(&self, actor: &Actor, slot: u16) -> Option<Target> {
+        if slot != actor.slot { return self.target(slot); }
+        Some(Target {
+            slot, source_id: actor.source_id, class: SOURCE_CLASS, model: SOURCE_MODEL,
+            action: actor.action, phase: actor.phase, flags: actor.flags, life: actor.life,
+            position: actor.position, yaw: actor.yaw, half_width: actor.half_width,
+            next: actor.child_head, attacker: actor.attacker, killer: actor.killer,
+            route_index: actor.route_index, route_relation: actor.route_relation,
+            route_target: actor.target, parent: actor.parent, route_mode: actor.route_mode,
+            relations: crate::native_world::source_target::Relations {
+                target: Some(actor.target), attacker: Some(actor.attacker), parent: Some(actor.parent),
+                stage_mode: Some(actor.route_mode), stage_index: Some(actor.route_index),
+                stage_relation: Some(actor.route_relation), next: Some(actor.child_head),
+            },
+            source_yaw: Some(actor.yaw), source_roll: Some(actor.roll), pitch_extent: Some(actor.half_width),
+        })
     }
 
     fn another_attacking(&self, actor: Actor) -> bool {
@@ -131,9 +155,18 @@ pub(crate) struct MeleeRequest {
 pub(crate) struct Effects {
     pub melee: Option<MeleeRequest>,
     pub sound: Option<u8>,
+    pub sound_origin: Option<SoundOrigin>,
     pub animation: Option<u16>,
     pub kill_credit: Option<u16>,
     pub feedback: Vec<(u16, u8)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SoundOrigin {
+    pub position: Position,
+    pub source_id: u16,
+    pub control_flags: u32,
+    pub action: u8,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -173,23 +206,9 @@ fn next_rng(actor: &mut Actor) -> u16 {
     actor.rng
 }
 
-fn tile_compare(terrain: &SessionTerrain, position: Position) -> u8 {
-    let tile_x = (position.x as u16 >> 8) as u8;
-    let tile_y = (position.y as u16 >> 8) as u8;
-    let heights = terrain.ground_heights();
-    let index = |x: u8, y: u8| usize::from(y) * 256 + usize::from(x);
-    let northwest = i16::from(heights[index(tile_x, tile_y)]);
-    let northeast = i16::from(heights[index(tile_x.wrapping_add(1), tile_y)]);
-    let southeast = i16::from(heights[index(tile_x.wrapping_add(1), tile_y.wrapping_add(1))]);
-    let southwest = i16::from(heights[index(tile_x, tile_y.wrapping_add(1))]);
-    let diagonal_a = (northwest + southwest - northeast - southeast).abs();
-    let diagonal_b = (northwest + northeast - southwest - southeast).abs();
-    diagonal_a.max(diagonal_b).min(i16::from(u8::MAX)) as u8
-}
-
 /// Source sub_2B9A0: consume the ordinary mailbox and inherit the weakest
 /// linked child life before action226 decides whether to continue or die.
-fn consume(actor: &mut Actor, frame: &Frame<'_>) -> DamageResult {
+fn consume(actor: &mut Actor, frame: &Frame<'_>) -> Result<DamageResult, String> {
     let mut hit = false;
     if actor.pending_attacker != 0 {
         actor.life = actor.life.wrapping_sub(actor.pending_damage);
@@ -200,27 +219,29 @@ fn consume(actor: &mut Actor, frame: &Frame<'_>) -> DamageResult {
         actor.attacker = 0;
     }
     let mut child = actor.child_head;
-    for _ in 0..=frame.targets.len() {
-        let Some(linked) = frame.target(child) else {
+    for _ in 0..1000 {
+        let Some(linked) = frame.actor_target(actor, child) else {
             break;
         };
         if linked.life < actor.life {
             actor.life = linked.life;
-            actor.attacker = linked.attacker;
+            actor.attacker = linked.relations.attacker.ok_or_else(||
+                format!("model28 linked slot{child} has no current attacker"))?;
             hit = true;
             break;
         }
-        child = linked.next;
+        child = linked.relations.next.ok_or_else(||
+            format!("model28 linked slot{child} has no current next relation"))?;
     }
     if actor.life < 0 {
         actor.killer = actor.attacker;
         actor.action = SOURCE_DEATH_ACTION;
-        DamageResult::Killed
+        Ok(DamageResult::Killed)
     } else if hit {
         actor.target = actor.attacker;
-        DamageResult::Hit
+        Ok(DamageResult::Hit)
     } else {
-        DamageResult::None
+        Ok(DamageResult::None)
     }
 }
 
@@ -247,8 +268,8 @@ fn set_visual_state(actor: &mut Actor, state: u8) -> Result<(), String> {
         1 => {
             actor.flags = (actor.flags & !0x09) | 0x08;
             actor.descriptor = SOURCE_DESCRIPTOR;
-            actor.source_animation = 0;
             actor.speed = actor.maximum_speed;
+            actor.half_width = SOURCE_PROPERTIES.idle_half_width;
             // Visual292's descriptor-defined shift and sprite remain bound by
             // the row adapter; this transition only resets its frame.
         }
@@ -256,6 +277,7 @@ fn set_visual_state(actor: &mut Actor, state: u8) -> Result<(), String> {
             actor.descriptor = SOURCE_DESCRIPTOR;
             actor.source_animation = 0;
             actor.speed = actor.minimum_speed;
+            actor.half_width = SOURCE_PROPERTIES.attack_half_width;
             actor.flags = (actor.flags & !0x09) | 0x08;
         }
         3 => {
@@ -276,99 +298,53 @@ enum MoveResult {
     Stuck,
 }
 
-fn collision_half_width(visual: u16) -> i16 {
-    match visual {
-        SOURCE_IDLE_VISUAL => SOURCE_PROPERTIES.idle_half_width,
-        SOURCE_ATTACK_VISUAL => SOURCE_PROPERTIES.attack_half_width,
-        _ => 0,
-    }
-}
-
-fn collision_blocked(
-    terrain: &SessionTerrain,
-    predicted: Position,
-    heading: u16,
-    visual: u16,
-) -> bool {
-    let mut probe = predicted;
-    let extent = collision_half_width(visual).max(0);
-    let mut offset = 0;
-    loop {
-        if terrain.material_mask(probe) & !SOURCE_PROPERTIES.terrain_mask != 0
-            || terrain.cave_collision_blocked(probe)
-        {
-            return true;
-        }
-        if offset + 256 > extent {
-            break;
-        }
-        move_entity(&mut probe, heading as i16, 0, 256);
-        offset += 256;
-    }
-    false
-}
-
-/// Bounded movement projection from sub_1B8C0. The shared terrain owner
-/// supplies the collision probe; the source fallback headings and rotation
-/// cadence remain owned by this model.
+/// Source sub_1B8C0 uses the shared collision/retry and prediction owner.
 fn move_actor(actor: &mut Actor, terrain: &SessionTerrain) -> MoveResult {
     if actor.flags & 0x800 != 0 {
         actor.flags &= !0x800;
         return MoveResult::Clear;
     }
-    let original = actor.position;
-    let yaw = actor.yaw as u16;
-    let candidates = [
-        yaw & 2047,
-        yaw.wrapping_add(341) & 2047,
-        (yaw.wrapping_sub(85) & 255) | (yaw.wrapping_sub(341) & 0x700),
-        (yaw.wrapping_add(1024) & 0x700) | (yaw & 255),
-    ];
-    for (attempt, heading) in candidates.into_iter().enumerate() {
-        let mut predicted = original;
-        let ground = terrain.ground_height(original);
-        if predicted.z > ground {
-            predicted.z = predicted.z.wrapping_add(SOURCE_PROPERTIES.descent);
-        }
-        let floor = ground.wrapping_add(SOURCE_PROPERTIES.ground_clearance);
-        if predicted.z <= floor {
-            predicted.z = floor;
-        }
-        move_entity(&mut predicted, heading as i16, 0, actor.speed);
-        let crossed_tile =
-            (predicted.x >> 8, predicted.y >> 8) != (original.x >> 8, original.y >> 8);
-        let blocked = crossed_tile
-            && (collision_blocked(terrain, predicted, heading, actor.visual)
-                || i32::from(tile_compare(terrain, predicted)) >= SOURCE_PROPERTIES.maximum_slope);
-        if !blocked {
-            actor.position = predicted;
-            let heading = heading as i16;
-            actor.yaw = heading.wrapping_add(crate::turn_toward(
-                heading,
-                actor.roll,
-                SOURCE_PROPERTIES.turn_response,
-            )) & 2047;
-            if attempt == 0 {
-                actor.flags &= !0x0004_0000;
-            }
-            return if attempt == 0 {
-                MoveResult::Clear
+    let motion = crate::ground_creature_motion::step_ground_creature_motion(
+        actor.position, actor.yaw, actor.roll, actor.speed, terrain,
+        crate::ground_creature_motion::GroundCreatureMotionConfig {
+            half_width: actor.half_width,
+            half_height: if actor.visual == SOURCE_ATTACK_VISUAL {
+                SOURCE_PROPERTIES.attack_half_height
             } else {
-                MoveResult::Avoided
-            };
-        }
-        actor.flags |= 0x40000;
-    }
-    actor.position = original;
-    if SOURCE_PROPERTIES.behavior_flags & 1 != 0 || terrain.material_mask(original) == 1 {
+                SOURCE_PROPERTIES.idle_half_height
+            },
+            ground_clearance: SOURCE_PROPERTIES.ground_clearance,
+            descent: SOURCE_PROPERTIES.descent,
+            turn_limit: SOURCE_PROPERTIES.turn_response,
+            terrain_mask: SOURCE_PROPERTIES.terrain_mask,
+            maximum_tile_slope: SOURCE_PROPERTIES.maximum_slope,
+        },
+    );
+    actor.position = motion.position;
+    actor.yaw = motion.yaw;
+    if motion.movement_blocked { actor.flags |= 0x40000; } else { actor.flags &= !0x40000; }
+    if motion.killed && (SOURCE_PROPERTIES.behavior_flags & 1 != 0 || terrain.material_mask(actor.position) == 1) {
         actor.life = -1;
     }
-    MoveResult::Stuck
+    match motion.result {
+        crate::ground_creature_motion::GroundCreatureMoveResult::Alternate => MoveResult::Avoided,
+        crate::ground_creature_motion::GroundCreatureMoveResult::Blocked => MoveResult::Stuck,
+        _ => MoveResult::Clear,
+    }
+}
+
+fn move_for_callback(actor: &mut Actor, terrain: &SessionTerrain, effects: &mut CallbackEffects) -> MoveResult {
+    let before = actor.life;
+    let result = move_actor(actor, terrain);
+    if result == MoveResult::Stuck && before >= 0 && actor.life < 0 {
+        effects.population_decrement = true;
+    }
+    result
 }
 
 fn target_attack(actor: &mut Actor, frame: &Frame<'_>) -> Option<Target> {
     let target = frame
-        .target(actor.target)
+        .actor_target(actor, actor.target)
         .filter(|target| target.living())?;
     actor.target = target.slot;
     Some(target)
@@ -376,15 +352,9 @@ fn target_attack(actor: &mut Actor, frame: &Frame<'_>) -> Option<Target> {
 
 fn acquire_target(actor: Actor, frame: &Frame<'_>) -> Option<Target> {
     let range_squared = SOURCE_PROPERTIES.target_radius * SOURCE_PROPERTIES.target_radius;
-    frame
-        .targets
-        .iter()
-        .copied()
+    frame.class3.iter().filter_map(|slot| frame.actor_target(&actor, *slot))
         .filter(|target| {
-            target.slot != actor.slot
-                && target.class == 3
-                && target.living()
-                && target.flags & 0x20 == 0
+            target.flags & 0x20 == 0
                 && distance_xy(actor.position, target.position) <= range_squared
                 && (crate::angle_distance(
                     i32::from(actor.yaw),
@@ -406,13 +376,34 @@ fn update_roam_roll(actor: &mut Actor) {
     actor.roll = actor.roll.wrapping_add(direction * magnitude) & 2047;
 }
 
-fn step_attack_animation(actor: &mut Actor, frame: &Frame<'_>, effects: &mut Effects) {
+/// sub_2BA50 assigns both the phase and its source countdown.
+fn set_attack_phase(actor: &mut Actor, phase: u8) {
+    actor.phase = phase;
+    actor.timer = match phase { 2 => 32, 8 => 16, _ => 0 };
+}
+
+/// Source's frozen model list supplies membership and order; each peer's
+/// current fields determine whether it changes the desired heading.
+fn avoid_nearby_peer(actor: &mut Actor, frame: &Frame<'_>) {
+    for slot in frame.same_model {
+        let Some(peer) = frame.target(*slot) else { continue };
+        if peer.source_id != actor.source_id
+            && (i32::from(actor.position.x) - i32::from(peer.position.x)).abs() < i32::from(actor.half_width)
+            && (i32::from(actor.position.y) - i32::from(peer.position.y)).abs() < i32::from(actor.half_width)
+        {
+            actor.roll = crate::heading_for_positions(peer.position, actor.position) as i16;
+            break;
+        }
+    }
+}
+
+fn step_attack_animation(actor: &mut Actor, frame: &Frame<'_>, effects: &mut CallbackEffects) {
     if actor.timer <= 0 {
-        actor.phase = 6;
+        set_attack_phase(actor, 6);
         return;
     }
 
-    actor.yaw = actor.source_animation as i16;
+    actor.yaw = actor.route_duration as i16;
     actor.roll = actor.yaw;
     if actor.phase == 4
         && actor.source_counter & 7 == 0
@@ -422,21 +413,24 @@ fn step_attack_animation(actor: &mut Actor, frame: &Frame<'_>, effects: &mut Eff
         actor.roll = crate::heading_for_positions(actor.position, target.position) as i16;
     }
     if actor.phase == 4
-        && actor.timer < i32::from(actor.animation_limit).saturating_sub(3)
+        && actor.timer < i32::from(actor.source_animation) - 3
         && actor.timer > 3
         && let Some(target) = target_attack(actor, frame)
         && distance(actor.position, target.position) < SOURCE_PROPERTIES.melee_radius
     {
         actor.phase = 5;
-        effects.melee = Some(MeleeRequest {
+        effects.notices.melee = Some(MeleeRequest {
             target_slot: target.slot,
             attacker_source_id: actor.source_id,
             damage: actor.subspell_index,
         });
     }
     actor.timer = actor.timer.wrapping_sub(1);
-    let _ = move_actor(actor, frame.terrain);
-    actor.source_animation = actor.yaw as u16;
+    if actor.source_counter & 3 == 0 {
+        avoid_nearby_peer(actor, frame);
+    }
+    let _ = move_for_callback(actor, frame.terrain, effects);
+    actor.route_duration = actor.yaw as u16;
     let turn = if actor.timer & 4 != 0 { 56 } else { -56 };
     actor.yaw = actor.yaw.wrapping_add(turn) & 2047;
 }
@@ -456,11 +450,15 @@ pub(crate) fn step(
         // StageVar helper owns damage consumption, movement, and transitions.
         DamageResult::None
     } else if matches!(action_at_start, 224..=SOURCE_ATTACK_ACTION) {
-        consume(actor, frame)
+        consume(actor, frame)?
     } else {
         DamageResult::None
     };
     if damage == DamageResult::Killed {
+        if action_at_start == 224 {
+            crate::ground_creature_motion::relax_to_terrain(&mut actor.position, frame.terrain,
+                SOURCE_PROPERTIES.ground_clearance, SOURCE_PROPERTIES.descent);
+        }
         return Ok(effects);
     }
     if action_at_start == SOURCE_DEATH_ACTION {
@@ -475,7 +473,8 @@ pub(crate) fn step(
 
     match action_at_start {
         224 => {
-            actor.position.z = frame.terrain.ground_height(actor.position);
+            crate::ground_creature_motion::relax_to_terrain(&mut actor.position, frame.terrain,
+                SOURCE_PROPERTIES.ground_clearance, SOURCE_PROPERTIES.descent);
             if damage == DamageResult::Hit {
                 actor.action = SOURCE_ATTACK_ACTION;
                 actor.phase = 0;
@@ -485,13 +484,14 @@ pub(crate) fn step(
             if damage == DamageResult::Hit {
                 actor.action = SOURCE_ATTACK_ACTION;
                 actor.phase = 0;
+                crate::ground_creature_motion::relax_to_terrain(&mut actor.position, frame.terrain,
+                    SOURCE_PROPERTIES.ground_clearance, SOURCE_PROPERTIES.descent);
             } else {
-                let _ = move_actor(actor, frame.terrain);
-                if actor.target_scan_limit != 0
-                    && actor.source_counter % SOURCE_PROPERTIES.scan_period == 0
-                {
+                let _ = move_for_callback(actor, frame.terrain, &mut effects);
+                if actor.source_counter % SOURCE_PROPERTIES.scan_period == 0 {
                     update_roam_roll(actor);
-                    if let Some(target) = acquire_target(*actor, frame) {
+                    if actor.target_scan_limit != 0
+                        && let Some(target) = acquire_target(*actor, frame) {
                         actor.target = target.slot;
                         actor.action = SOURCE_ATTACK_ACTION;
                         actor.phase = 0;
@@ -503,12 +503,11 @@ pub(crate) fn step(
         SOURCE_ATTACK_ACTION => match actor.phase {
             0 => {
                 set_visual_state(actor, 3)?;
-                actor.phase = 1;
+                set_attack_phase(actor, 1);
             }
             1 => {
                 effects.water_splash = true;
-                actor.phase = 2;
-                actor.timer = 32;
+                set_attack_phase(actor, 2);
             }
             2 => {
                 let target = target_attack(actor, frame);
@@ -516,64 +515,73 @@ pub(crate) fn step(
                     actor.timer = actor.timer.wrapping_sub(1);
                     if actor.timer <= 0 {
                         if !frame.another_attacking(*actor) {
-                            actor.phase = 3;
+                            set_attack_phase(actor, 3);
                         }
                     } else {
-                        actor.roll =
-                            crate::heading_for_positions(actor.position, target.position) as i16;
-                        let movement = move_actor(actor, frame.terrain);
+                        let mut approach_position = target.position;
+                        let yaw = target.source_yaw.ok_or_else(||
+                            format!("model28 target{} has no current yaw", target.slot))?;
+                        move_entity(&mut approach_position, yaw, 0, 768);
+                        if actor.source_counter & 3 == 0 {
+                            actor.roll = crate::heading_for_positions(actor.position, approach_position) as i16;
+                            avoid_nearby_peer(actor, frame);
+                        }
+                        let movement = move_for_callback(actor, frame.terrain, &mut effects);
                         if movement == MoveResult::Avoided {
-                            actor.phase = 7;
-                        } else {
-                            let mut approach_position = target.position;
-                            move_entity(&mut approach_position, target.yaw, 0, 768);
-                            if !frame.another_attacking(*actor)
-                                && distance_xy(actor.position, approach_position) < 2_768_896
-                            {
-                                actor.phase = 3;
-                            }
+                            set_attack_phase(actor, 7);
+                        } else if actor.source_counter & 3 == 0
+                            && actor.timer < 14
+                            && distance_xy(actor.position, approach_position) < 2_768_896
+                            && !frame.another_attacking(*actor)
+                        {
+                            set_attack_phase(actor, 3);
                         }
                     }
                 } else {
                     if !frame.another_attacking(*actor) {
-                        actor.phase = 3;
+                        set_attack_phase(actor, 3);
                     }
                 }
             }
             3 => {
-                actor.phase = 4;
+                set_attack_phase(actor, 4);
                 set_visual_state(actor, 2)?;
-                actor.source_animation = actor.yaw as u16;
+                actor.route_duration = actor.yaw as u16;
                 set_animation(actor, &mut effects.notices, particles, SOURCE_ATTACK_VISUAL)?;
-                actor.timer = i32::from(actor.animation_limit);
+                if let Some(count) = frame.attack_animation_count.map(|read| read()).transpose()?.flatten() {
+                    actor.timer = i32::from(count);
+                    actor.source_animation = count;
+                }
                 effects.notices.sound = Some(38);
-                step_attack_animation(actor, frame, &mut effects.notices);
+                effects.notices.sound_origin = Some(SoundOrigin {
+                    position: actor.position, source_id: actor.source_id,
+                    control_flags: actor.flags, action: actor.action,
+                });
+                step_attack_animation(actor, frame, &mut effects);
             }
-            4 | 5 => step_attack_animation(actor, frame, &mut effects.notices),
+            4 | 5 => step_attack_animation(actor, frame, &mut effects),
             6 => {
                 set_visual_state(actor, 3)?;
                 effects.water_splash = true;
                 if target_attack(actor, frame).is_some_and(|target| {
                     distance(actor.position, target.position) < SOURCE_PROPERTIES.target_radius
                 }) {
-                    actor.phase = 2;
-                    actor.timer = 32;
+                    set_attack_phase(actor, 2);
                 } else {
-                    actor.phase = 7;
+                    set_attack_phase(actor, 7);
                 }
             }
             7 => {
                 actor.roll = (next_rng(actor) & 0x7ff) as i16;
-                actor.phase = 8;
-                actor.timer = 16;
-                let _ = move_actor(actor, frame.terrain);
+                set_attack_phase(actor, 8);
+                let _ = move_for_callback(actor, frame.terrain, &mut effects);
                 actor.timer = actor.timer.wrapping_sub(1);
             }
             8 => {
-                let _ = move_actor(actor, frame.terrain);
+                let _ = move_for_callback(actor, frame.terrain, &mut effects);
                 actor.timer = actor.timer.wrapping_sub(1);
                 if actor.timer <= 0 {
-                    actor.phase = 9;
+                    set_attack_phase(actor, 9);
                 }
             }
             9 => {
@@ -582,7 +590,7 @@ pub(crate) fn step(
                 actor.action = SOURCE_IDLE_ACTION;
                 actor.target = 0;
             }
-            phase => return Err(format!("unsupported model28 phase{phase}")),
+            _ => {} // sub_2B260's default case returns without a state change.
         },
         231 => {
             stage::step(actor, frame, runtime, &mut effects)?;

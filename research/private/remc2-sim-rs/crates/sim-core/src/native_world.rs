@@ -1941,6 +1941,8 @@ pub struct Level2AuthoredModel53Source {
     pub life: i16,
     pub subspell_index: u16,
     pub actual_speed: i16,
+    /// Current source orientation, initialized by NewEvent before sub504B0.
+    pub source_yaw: i16,
     pub dword_0x10: i32,
     pub control_flags: u32,
     pub shift_rot_x: i16,
@@ -7750,11 +7752,14 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
         let value = read_u32(stage_var, 8, "runtime stage-variable relation")?;
         let relation = match domain {
             0 => RuntimeRelation::AxisScalar(value),
-            1 => RuntimeRelation::LiveEntity(one_based(
+            // InitStageVars11EE0 leaves direct-pointer routes null until
+            // sub12100 publishes their target. The exporter distinguishes
+            // nullptr (0) from the real entity0 sentinel pointer (1).
+            1 => relation_one_based(
                 value,
                 ENTITY_COUNT,
                 "runtime stage-variable entity relation",
-            )?),
+            )?.map_or(RuntimeRelation::Null, RuntimeRelation::LiveEntity),
             _ => {
                 return Err(NativeWorldError::new(format!(
                     "runtime stage-variable {index} domain is invalid"

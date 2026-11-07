@@ -88,6 +88,9 @@ fn source31_authored_model28_scheduled_contact_and_expiry_reclaim() {
         row.set_subspell_index(37);
         row.set_phase(0);
         row.set_control_flags(row.control_flags | 0x800);
+        // Configured attack countdown uses the source resident-frame word2C;
+        // particle playback limit97 is a separate field, not this count.
+        row.record[48..50].copy_from_slice(&16_u16.to_le_bytes());
         row.record[97] = 16;
         row.record[154..156].copy_from_slice(&player_slot.to_le_bytes());
         crate::world::effects::sync_position(

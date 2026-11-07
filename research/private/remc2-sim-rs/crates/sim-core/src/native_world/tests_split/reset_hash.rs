@@ -1825,6 +1825,46 @@ fn corrupt_package_hash_version_relation_and_bounds_fail_closed() {
 }
 
 #[test]
+fn actual_level14_stage_variable_null_preserves_sentinel_and_pointer_bounds() {
+    let package = std::env::var_os("MC_LEVEL14_PACKAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level14"),
+        PathBuf::from,
+    );
+    let bytes = fs::read(package.join("runtime.bin")).expect("whole retained Level14 runtime");
+    let offset = 392 + 5 * 12;
+    assert_eq!(&bytes[offset..offset + 12], &[3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        "actual StageVar5 is an unresolved kind3 direct pointer");
+    let mut runtime = parse_runtime(&bytes).expect("source-valid null pointer must materialize");
+    assert_eq!(runtime.stage_variables[5].relation, RuntimeRelation::Null);
+    assert_eq!(runtime.bytes(), bytes.as_slice(), "the raw save/hash carrier remains exact");
+    let point_offset = 392 + 12;
+    assert_eq!(runtime.stage_variables[1].relation, RuntimeRelation::AxisScalar(
+        u32::from_le_bytes(bytes[point_offset + 8..point_offset + 12].try_into().unwrap())));
+
+    for (value, slot) in [(1_u32, 0_u16), (1000, 999)] {
+        let mut configured = bytes.clone();
+        configured[offset + 8..offset + 12].copy_from_slice(&value.to_le_bytes());
+        let decoded = parse_runtime(&configured).unwrap();
+        assert_eq!(decoded.stage_variables[5].relation, RuntimeRelation::LiveEntity(slot));
+        assert_eq!(decoded.bytes(), configured.as_slice());
+    }
+    let mut invalid = bytes.clone();
+    invalid[offset + 8..offset + 12].copy_from_slice(&1001_u32.to_le_bytes());
+    assert!(parse_runtime(&invalid).is_err(), "the pointer upper bound is unchanged");
+    invalid[offset + 4] = 2;
+    invalid[offset + 8..offset + 12].fill(0);
+    assert!(parse_runtime(&invalid).is_err(), "unknown StageVar pointer domains still fail");
+
+    // Configured subsequent sub12100 publication uses the canonical carrier;
+    // this is not a claim that authored511 binds the unrelated StageVar5.
+    assert!(!runtime.bind_authored_stage_variable_entity(5, 0));
+    assert!(runtime.bind_authored_stage_variable_entity(5, 42));
+    assert_eq!(runtime.stage_variables[5].relation, RuntimeRelation::LiveEntity(42));
+    assert_eq!(&runtime.bytes()[offset + 8..offset + 12], &43_u32.to_le_bytes());
+}
+
+#[test]
 fn corrupt_component_version_relation_and_bounds_reach_their_parser_gates() {
     let (package, _) = fixture_paths();
 

@@ -2236,6 +2236,7 @@ impl Level2EconomyState {
             life: 6,
             subspell_index: 3000,
             actual_speed: 16,
+            source_yaw: 0,
             dword_0x10: 0,
             control_flags: 0,
             shift_rot_x: 0,
@@ -2317,7 +2318,7 @@ impl Level2EconomyState {
                 let _ = self.allocate_model0_child(
                     source_slot,
                     source.entity_id,
-                    0,
+                    source.source_yaw,
                     child_position,
                     0x0003_0080,
                     512,
@@ -7482,7 +7483,7 @@ impl Level2EconomyState {
                 hasher.update(child.position.z.to_le_bytes());
             }
         }
-        hasher.update(b"level2-authored-model53-v1");
+        hasher.update(b"level2-authored-model53-v2");
         for source in &self.authored_model53 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_id.to_le_bytes());
@@ -7500,6 +7501,7 @@ impl Level2EconomyState {
             hasher.update(source.life.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
             hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.source_yaw.to_le_bytes());
             hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.control_flags.to_le_bytes());
             hasher.update(source.shift_rot_x.to_le_bytes());

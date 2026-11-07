@@ -331,6 +331,7 @@ pub const fn supports_complete_creature_lifecycle(kind: CreatureKind) -> bool {
             | CreatureKind::Cymmerian
             | CreatureKind::Creature26
             | CreatureKind::Creature24
+            | CreatureKind::Creature28
     )
 }
 

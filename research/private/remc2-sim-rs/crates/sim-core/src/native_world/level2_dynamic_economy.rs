@@ -1745,8 +1745,9 @@ impl Level2EconomyState {
                     Some(target) => {
                         let shape = target.collision.ok_or_else(|| {
                             format!(
-                                "Fireball target {} lacks current source axes",
-                                projectile.target_source_entity_index
+                                "Fireball target {} lacks current source axes (current class={}, model={}, active={}, life={}, flags={:#x})",
+                                projectile.target_source_entity_index,
+                                target.class, target.model, target.active, target.life, target.control_flags
                             )
                         })?;
                         Some(super::guided_projectile::centre(
@@ -1811,8 +1812,9 @@ impl Level2EconomyState {
                     Some(target) => {
                         let shape = target.collision.ok_or_else(|| {
                             format!(
-                                "Fireball target {} lacks current source axes",
-                                projectile.target_source_entity_index
+                                "Fireball target {} lacks current source axes (current class={}, model={}, active={}, life={}, flags={:#x})",
+                                projectile.target_source_entity_index,
+                                target.class, target.model, target.active, target.life, target.control_flags
                             )
                         })?;
                         Some(super::guided_projectile::centre(
@@ -1946,8 +1948,9 @@ impl Level2EconomyState {
                     Some(target) => {
                         let shape = target.collision.ok_or_else(|| {
                             format!(
-                                "Fireball target {} lacks current source axes",
-                                projectile.target_source_entity_index
+                                "Fireball target {} lacks current source axes (current class={}, model={}, active={}, life={}, flags={:#x})",
+                                projectile.target_source_entity_index,
+                                target.class, target.model, target.active, target.life, target.control_flags
                             )
                         })?;
                         Some(super::guided_projectile::centre(

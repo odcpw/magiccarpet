@@ -1,6 +1,6 @@
 //! Source TMAP residency and the ordered animation-record pool.
 //!
-//! This owns only the state observed by the boss's literal `sub_221F0` read.
+//! This owns the state observed by source gameplay animation-record reads.
 //! Decoded files describe available assets; only source preload or admitted
 //! render demand makes them resident. It does not emulate animated pixels.
 
@@ -329,6 +329,34 @@ impl SourceAnimationResidency {
         Ok(())
     }
 
+    /// Source2B860 reads the resident record's CountOfFrames after71AB0.
+    /// That reset changes pixels/playback state, not this header or residency;
+    /// it does not demand an absent asset. This is distinct from221F0's
+    /// literal sixteen-record lookahead below.
+    pub(crate) fn resident_frame_count_read(&self, base_tmap: u16) -> Result<Option<u16>, String> {
+        let catalog = self
+            .catalog
+            .as_ref()
+            .ok_or("source frame count requires a qualified complete TMAP catalog")?;
+        let resident = self
+            .resident
+            .get(usize::from(base_tmap))
+            .ok_or("source frame count selector exceeds504")?;
+        if !resident {
+            return Ok(None);
+        }
+        if !self.animation_slots.contains(&Some(base_tmap)) {
+            return Err(format!(
+                "source frame count resident TMAP{base_tmap} has no animation record"
+            ));
+        }
+        catalog
+            .record(base_tmap)
+            .and_then(|record| record.encoded_frame_count)
+            .map(Some)
+            .ok_or_else(|| format!("source frame count TMAP{base_tmap} lacks its animation header"))
+    }
+
     pub(crate) fn boss_timer_read(&self, base_tmap: u16) -> Result<Option<u16>, String> {
         if self.catalog.is_none() {
             return Err("source221F0 requires a qualified complete TMAP catalog".into());
@@ -403,6 +431,27 @@ mod tests {
             catalog: Some(catalog()),
             ..SourceAnimationResidency::default()
         }
+    }
+
+    #[test]
+    fn resident_header_read_is_lazy_and_distinct_from_literal_boss_lookahead() {
+        let mut state = empty_pool();
+        let absent = state.clone();
+        assert_eq!(state.resident_frame_count_read(0).unwrap(), None);
+        assert_eq!(state, absent, "a gameplay read never loads an absent asset");
+        state.demand(0).unwrap();
+        assert_eq!(state.animation_slots[503], Some(0));
+        let resident = state.clone();
+        assert_eq!(state.resident_frame_count_read(0).unwrap(), Some(5));
+        assert_eq!(state, resident, "header reads preserve playback allocation");
+        assert!(state.boss_timer_read(0).unwrap_err().contains("record503+16"));
+        assert!(state.resident_frame_count_read(504).is_err());
+        assert!(SourceAnimationResidency::default().resident_frame_count_read(0).is_err());
+        state.unload_group(0).unwrap();
+        assert_eq!(state.resident_frame_count_read(0).unwrap(), None);
+        state.demand(0).unwrap();
+        state.animation_slots[503] = None;
+        assert!(state.resident_frame_count_read(0).unwrap_err().contains("no animation record"));
     }
 
     #[test]

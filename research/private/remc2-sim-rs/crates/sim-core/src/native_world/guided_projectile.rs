@@ -334,6 +334,39 @@ fn score(row: &EntitySnapshot, position: Position) -> u32 {
     score_with_pitch(row, position, 113)
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct AcquisitionCandidateObservation {
+    pub(crate) handle: Option<crate::campaign::source_arena::SourceEntityHandle>,
+    pub(crate) owner_kind: Option<super::Level2DynamicArenaKind>,
+    pub(crate) current: Option<super::source_target::View>,
+    pub(crate) gate_fields: Option<(u8, u8, u16)>,
+    pub(crate) eligible: bool,
+    pub(crate) score: Option<u32>,
+}
+
+/// Read the exact current fields and private acquisition score, without
+/// changing membership, target selection, RNG or the executing projectile.
+#[cfg(test)]
+pub(crate) fn observe_acquisition_candidate(
+    arena: &SourceArena,
+    context: super::source_target::Context<'_>,
+    projectile: &EntitySnapshot,
+    slot: u16,
+) -> Result<AcquisitionCandidateObservation, String> {
+    let current = super::source_target::read(arena, context, slot)?;
+    Ok(AcquisitionCandidateObservation {
+        handle: arena.handle(slot),
+        owner_kind: arena.economy.live_arena_kind(slot),
+        current,
+        gate_fields: class5_gate_fields(arena, slot),
+        eligible: current.is_some_and(|target| target.source_id != projectile.source_id)
+            && class5_eligible(arena, slot, projectile.source_id, false),
+        score: current.map(|_| target_position(arena, slot, context)
+            .map(|position| score(projectile, position))).transpose()?,
+    })
+}
+
 pub(super) fn score_with_pitch(row: &EntitySnapshot, position: Position, pitch_limit: i32) -> u32 {
     let (yaw, pitch) = projectile_guidance_angles(row.position, position);
     let yaw = angle_distance(i32::from(row.yaw), i32::from(yaw));

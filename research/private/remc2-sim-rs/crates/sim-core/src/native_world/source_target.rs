@@ -2682,15 +2682,27 @@ fn dynamic(
             view.collision = context.particle_shape(row.particle_index);
             view
         }
-        Kind::AuthoredModel53 => carrier!(
-            economy.authored_model53,
-            row,
-            row.source_class,
-            row.model,
-            row.entity_id,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
+        Kind::AuthoredModel53 => {
+            let row = economy.authored_model53.iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("target slot {slot} lost its current model53 carrier"))?;
+            View {
+                slot, source_id: row.entity_id, active: row.active,
+                class: row.source_class, model: row.model, position: row.position,
+                life: i32::from(row.life),
+                control_flags: row.control_flags | if row.drawing_enabled { 0 } else { 0x400 },
+                yaw: Some(row.source_yaw), roll: None, relations: Relations::default(),
+                collision: Some(Shape {
+                    half_width: row.shift_rot_x,
+                    half_depth: row.shift_rot_x,
+                    // NewEvent/sub504B0 leave axis yaw zero; authored4A310
+                    // does not change it, and38B90/49EA0 write only pitch,
+                    // roll and fov. This is the source field, not a fallback.
+                    vertical_offset: 0,
+                    half_height: row.shift_rot_y,
+                }),
+            }
+        },
         Kind::AuthoredModel5WaterSplash => {
             let row = economy.authored_model5_water_splashes.iter()
                 .find(|row| row.active && row.source_entity_index == slot)
@@ -3053,6 +3065,55 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 mod tests {
     use super::*;
     use sha2::Digest;
+
+    #[test]
+    fn model53_current_yaw_uses_typed_owner_and_reaches_its_real_children() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let source = arena.economy.allocate_authored_model53(439, session.state.position)
+            .expect("actual model53 source constructor");
+        let slot = source.source_entity_index;
+        let handle = arena.handle(slot).expect("current typed model53 generation");
+        arena.entities[usize::from(slot)].set_yaw(777);
+        for (offset, poison) in [(86, 501_i16), (88, 502), (90, 503), (92, 504)] {
+            arena.entities[usize::from(slot)].record[offset..offset + 2]
+                .copy_from_slice(&poison.to_le_bytes());
+        }
+        assert_eq!(read(&arena, Context::default(), slot).unwrap().unwrap().yaw, Some(0),
+            "NewEvent clears yaw before sub504B0; the retired raw projection is not the owner");
+        assert_eq!(read(&arena, Context::default(), slot).unwrap().unwrap().collision,
+            Some(Shape { half_width: 0, half_depth: 0, vertical_offset: 0, half_height: 0 }),
+            "sub504B0 retains actual NewEvent axes, independently of the poisoned raw mirror");
+        let before_hash = arena.economy.reset_hash();
+        arena.economy.authored_model53.iter_mut()
+            .find(|row| row.source_entity_index == slot).unwrap().source_yaw = -321;
+        assert_ne!(arena.economy.reset_hash(), before_hash, "current typed yaw participates in the state hash");
+        assert_eq!(arena.handle(slot), Some(handle));
+        let view = read(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((view.class, view.model, view.yaw), (10, 53, Some(-321)));
+        assert_eq!(status_parent(&arena, Context::default(), slot).unwrap().unwrap().yaw, -321,
+            "the materialized current packet uses the same typed yaw");
+        assert_eq!(arena.entities[usize::from(slot)].yaw, 777, "the stale raw slot remains untouched");
+        assert!(arena.economy.step_authored_model53_slot(slot));
+        let children = arena.economy.model17_spawned_children().iter()
+            .filter(|child| child.parent_entity_index == slot).collect::<Vec<_>>();
+        assert_eq!(children.len(), 3);
+        assert!(children.iter().all(|child| child.yaw == -321),
+            "source38B90 copies its current owner yaw to each successful model0 child");
+        assert_eq!(read(&arena, Context::default(), slot).unwrap().unwrap().collision,
+            Some(Shape { half_width: 0, half_depth: 0, vertical_offset: 0, half_height: 512 }),
+            "the first source49EA0 visit changes fov even while its shift is zero");
+        assert!(arena.economy.step_authored_model53_slot(slot));
+        let expected = Shape { half_width: 384, half_depth: 384, vertical_offset: 0, half_height: 512 };
+        assert_eq!(read(&arena, Context::default(), slot).unwrap().unwrap().collision, Some(expected),
+            "the next38B90 visit publishes its current nonzero typed shift dimensions");
+        let current = status_parent(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((current.array_pitch(), current.array_roll(), current.array_yaw(), current.array_fov()),
+            (expected.half_width, expected.half_depth, expected.vertical_offset, expected.half_height),
+            "current packet consumers receive the same authoritative axes");
+        assert_eq!((arena.entities[usize::from(slot)].array_pitch(), arena.entities[usize::from(slot)].array_yaw()),
+            (502, 501), "publication does not rewrite or consult the poisoned cold axes");
+    }
 
     #[test]
     fn creature25_castle_slot_reads_current_a4_without_owner_cache_or_life_gates() {
