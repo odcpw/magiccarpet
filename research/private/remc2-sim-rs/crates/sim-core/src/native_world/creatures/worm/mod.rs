@@ -6,6 +6,12 @@
 
 pub(crate) mod dynamic;
 pub(in crate::native_world) mod imported;
+pub(crate) mod mc2;
+pub(crate) mod projectile;
+pub(crate) mod stage;
 
 #[cfg(test)]
 mod dynamic_tests;
+
+#[cfg(test)]
+mod encounter_tests;

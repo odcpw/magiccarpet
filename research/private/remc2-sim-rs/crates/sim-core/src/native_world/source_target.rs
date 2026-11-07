@@ -271,6 +271,28 @@ pub(crate) fn status_parent(
             parent.record[136..138].copy_from_slice(&minimum.to_le_bytes());
             parent.set_actual_speed(actual);
         }
+        // Source1C560 follows the current peer's maxSpeed as well as its
+        // actual speed and action. A typed Worm cannot inherit these from
+        // the old occupant's NewEvent projection.
+        let worm_motion = match kind {
+            Kind::AuthoredClass5 if (view.class, view.model) == (5, 3) => {
+                let row = economy.authored_class5.iter()
+                    .find(|row| row.source_entity_index == slot)
+                    .ok_or_else(|| format!("current Worm {slot} lost its motion owner"))?;
+                Some((row.maximum_speed, row.action))
+            }
+            Kind::AuthoredClass5Model3Child => {
+                let row = economy.authored_class5_model3_children.iter()
+                    .find(|row| row.source_entity_index == slot)
+                    .ok_or_else(|| format!("current Worm body {slot} lost its motion owner"))?;
+                Some((row.maximum_speed, row.action))
+            }
+            _ => None,
+        };
+        if let Some((maximum, action)) = worm_motion {
+            parent.record[138..140].copy_from_slice(&maximum.to_le_bytes());
+            parent.set_source_action(action);
+        }
         let pitch = match kind {
             Kind::FireballProjectile => economy
                 .fireball_projectiles
@@ -1965,6 +1987,20 @@ pub(crate) fn read_word32(
         return Ok(None);
     };
     match status_kind(arena, slot) {
+        Some(Kind::AuthoredClass5) if (current.class, current.model) == (5, 3) => arena
+            .economy
+            .authored_class5_model3
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .map(|row| Some(row.word_0x32))
+            .ok_or_else(|| format!("current Worm {slot} lost its word32 owner")),
+        Some(Kind::AuthoredClass5Model3Child) => arena
+            .economy
+            .authored_class5_model3_children
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .map(|row| Some(row.word_0x32))
+            .ok_or_else(|| format!("current Worm body {slot} lost its word32 owner")),
         Some(Kind::AuthoredClass5) if (current.class, current.model) == (5, 19) => arena
             .economy
             .authored_fireflies
@@ -2008,6 +2044,102 @@ pub(crate) fn read_word32(
             Ok(Some(raw.word_32()))
         }
     }
+}
+
+/// Current killer relation read by the Worm's ordered source1C890 chain.
+pub(crate) fn read_word24(
+    arena: &SourceArena,
+    context: Context<'_>,
+    slot: u16,
+) -> Result<Option<u16>, String> {
+    if slot == 0 || usize::from(slot) >= arena.entities.len() { return Ok(None); }
+    match status_kind(arena, slot) {
+        Some(Kind::AuthoredClass5) => arena.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == slot && row.model == 3)
+            .map(|row| Some(row.word_0x24))
+            .ok_or_else(|| format!("current target {slot} has no Worm killer owner")),
+        Some(Kind::AuthoredClass5Model3Child) => arena.economy.authored_class5_model3_children.iter()
+            .find(|row| row.source_entity_index == slot)
+            .map(|row| Some(row.word_0x24))
+            .ok_or_else(|| format!("current Worm body {slot} lost its killer owner")),
+        Some(kind) => Err(format!("current target {slot} has no word24 binding for {kind:?}")),
+        None if context.external(slot).is_some() => Err(format!("current external target {slot} has no word24 binding")),
+        None => Ok(Some(arena.entities[usize::from(slot)].word_24())),
+    }
+}
+
+/// The chain callback writes action29 to the actual pointer occupant; raw
+/// source packets may already be hidden or free. Typed owners stay explicit.
+pub(crate) fn commit_worm_action(
+    arena: &mut SourceArena,
+    context: Context<'_>,
+    slot: u16,
+    action: u8,
+) -> Result<bool, String> {
+    if slot == 0 || usize::from(slot) >= arena.entities.len() { return Ok(false); }
+    match status_kind(arena, slot) {
+        Some(Kind::AuthoredClass5) => {
+            let row = arena.economy.authored_class5.iter_mut()
+                .find(|row| row.source_entity_index == slot && row.model == 3)
+                .ok_or_else(|| format!("current target {slot} has no Worm action owner"))?;
+            row.action = action;
+        }
+        Some(Kind::AuthoredClass5Model3Child) => {
+            let row = arena.economy.authored_class5_model3_children.iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("current Worm body {slot} lost its action owner"))?;
+            row.action = action;
+        }
+        Some(kind) => return Err(format!("current target {slot} has no Worm action binding for {kind:?}")),
+        None if context.external(slot).is_some() => return Err(format!("current external target {slot} has no Worm action binding")),
+        None => arena.entities[usize::from(slot)].set_source_action(action),
+    }
+    Ok(true)
+}
+
+/// Source1C560's peer hit tail writes the fixed address's current Worm owner.
+/// This does not require the previous root generation to remain allocated:
+/// source checks the current class/model, then writes target/peer/action.
+pub(crate) fn commit_worm_peer_attack(
+    arena: &mut SourceArena,
+    context: Context<'_>,
+    slot: u16,
+    attacker: u16,
+) -> Result<bool, String> {
+    let Some(current) = read(arena, context, slot)? else { return Ok(false) };
+    if (current.class, current.model) != (5, 3) { return Ok(false); }
+    match status_kind(arena, slot) {
+        Some(Kind::AuthoredClass5) => {
+            let root = arena.economy.authored_class5.iter()
+                .position(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("current Worm {slot} lost its peer-write root"))?;
+            let state = arena.economy.authored_class5_model3.iter()
+                .position(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("current Worm {slot} lost its peer-write state"))?;
+            arena.economy.authored_class5[root].word_0x96_150 = attacker;
+            arena.economy.authored_class5[root].action = 26;
+            arena.economy.authored_class5_model3[state].word_0x32 = 0;
+        }
+        Some(Kind::AuthoredClass5Model3Child) => {
+            let row = arena.economy.authored_class5_model3_children.iter_mut()
+                .find(|row| row.source_entity_index == slot)
+                .ok_or_else(|| format!("current Worm body {slot} lost its peer-write owner"))?;
+            row.word_0x96 = attacker;
+            row.word_0x32 = 0;
+            row.action = 26;
+        }
+        Some(kind) => return Err(format!("current Worm {slot} has no peer-write binding for {kind:?}")),
+        None => {
+            if context.external(slot).is_some() {
+                return Err(format!("current external Worm {slot} has no peer-write binding"));
+            }
+            let row = &mut arena.entities[usize::from(slot)];
+            row.record[154..156].copy_from_slice(&attacker.to_le_bytes());
+            row.record[54..56].copy_from_slice(&0_u16.to_le_bytes());
+            row.set_source_action(26);
+        }
+    }
+    Ok(true)
 }
 
 /// Carriers with no mutable flag field retain these source scalar fields in
@@ -3565,6 +3697,71 @@ mod tests {
             Some(0),
             "word34 retains its separate current child-chain owner"
         );
+
+        let worm = crate::native_world::creatures::worm::dynamic::construct_authored(
+                &mut arena, &mut terrain, 238, session.state.position, 9000,
+                &session.session.definition.presentation.particles)
+            .expect("actual Worm root and linked body constructor");
+        let root = arena.economy.authored_class5_model3.iter_mut()
+            .find(|row| row.source_entity_index == worm.source_entity_index).unwrap();
+        let child_slot = root.word_0x34;
+        assert_ne!(child_slot, 0);
+        root.word_0x32 = 712;
+        let raw = &mut arena.entities[usize::from(worm.source_entity_index)];
+        raw.record[54..56].copy_from_slice(&995_u16.to_le_bytes());
+        raw.record[56..58].copy_from_slice(&994_u16.to_le_bytes());
+        raw.record[138..140].copy_from_slice(&991_i16.to_le_bytes());
+        arena.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == worm.source_entity_index).unwrap().maximum_speed = 53;
+        assert_eq!(read_word32(&arena, Context::default(), worm.source_entity_index).unwrap(), Some(712));
+        assert_eq!(read(&arena, Context::default(), worm.source_entity_index).unwrap().unwrap().relations.next,
+            Some(child_slot), "the root's body chain is not its peer relation");
+        let child = arena.economy.authored_class5_model3_children.iter_mut()
+            .find(|row| row.source_entity_index == child_slot).unwrap();
+        let next_child = child.word_0x34;
+        child.word_0x32 = 713;
+        let raw = &mut arena.entities[usize::from(child_slot)];
+        raw.record[54..56].copy_from_slice(&993_u16.to_le_bytes());
+        raw.record[56..58].copy_from_slice(&992_u16.to_le_bytes());
+        raw.record[138..140].copy_from_slice(&990_i16.to_le_bytes());
+        arena.economy.authored_class5_model3_children.iter_mut()
+            .find(|row| row.source_entity_index == child_slot).unwrap().maximum_speed = 57;
+        assert_eq!(read_word32(&arena, Context::default(), child_slot).unwrap(), Some(713));
+        assert_eq!(read(&arena, Context::default(), child_slot).unwrap().unwrap().relations.next,
+            Some(next_child), "body predecessor and successor use their separate current fields");
+        for slot in [worm.source_entity_index, child_slot] {
+            assert!(commit_worm_peer_attack(&mut arena, Context::default(), slot, player).unwrap());
+            assert_eq!(read_word32(&arena, Context::default(), slot).unwrap(), Some(0));
+            assert_eq!(read(&arena, Context::default(), slot).unwrap().unwrap().relations.target, Some(player));
+            assert_eq!(status_parent(&arena, Context::default(), slot).unwrap().unwrap().action, 26);
+        }
+        for (slot, maximum) in [(worm.source_entity_index, 53_i16), (child_slot, 57_i16)] {
+            let current = status_parent(&arena, Context::default(), slot).unwrap().unwrap();
+            assert_eq!(i16::from_le_bytes(current.record[138..140].try_into().unwrap()), maximum,
+                "the peer's maximum speed comes from its current typed owner");
+        }
+        assert_eq!(arena.entities[usize::from(worm.source_entity_index)].word_32(), 995,
+            "a current typed write cannot repair or consult the retired root mirror");
+        assert_eq!(arena.entities[usize::from(child_slot)].word_32(), 993,
+            "the current body carrier also owns its peer-write tail");
+        assert!(!commit_worm_peer_attack(&mut arena, Context::default(), player, player).unwrap(),
+            "the source class/model gate must not retarget a current player occupant");
+        arena.economy.authored_class5.iter_mut()
+            .find(|row| row.source_entity_index == worm.source_entity_index).unwrap().word_0x24 = 714;
+        arena.economy.authored_class5_model3_children.iter_mut()
+            .find(|row| row.source_entity_index == child_slot).unwrap().word_0x24 = 715;
+        for (slot, killer) in [(worm.source_entity_index, 714), (child_slot, 715)] {
+            arena.entities[usize::from(slot)].record[40..42].copy_from_slice(&989_u16.to_le_bytes());
+            assert_eq!(read_word24(&arena, Context::default(), slot).unwrap(), Some(killer));
+            assert!(commit_worm_action(&mut arena, Context::default(), slot, 29).unwrap());
+            assert_eq!(status_parent(&arena, Context::default(), slot).unwrap().unwrap().action, 29);
+            assert_ne!(arena.entities[usize::from(slot)].action, 29,
+                "ordered prekill writes the current owner, not its cold projection");
+        }
+        arena.economy.authored_class5_model3.retain(|row|
+            row.source_entity_index != worm.source_entity_index);
+        assert!(read_word32(&arena, Context::default(), worm.source_entity_index).is_err(),
+            "a missing current Worm field owner cannot fall back to poisoned raw bytes");
 
         let bee = arena
             .economy

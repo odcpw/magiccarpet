@@ -502,7 +502,7 @@ mod tests {
         session.economy_mut().replacement_cursor_exclusions = (1..=1000).collect();
         let root = session
             .economy_mut()
-            .allocate_authored_worm(84, position, 9000, &terrain)
+            .allocate_authored_class5(84, 3, position)
             .expect("source retains the live root when following body allocations fail");
         assert_eq!(root.source_entity_index, slot);
         assert!(root.active && root.drawing_enabled && root.life >= 0);

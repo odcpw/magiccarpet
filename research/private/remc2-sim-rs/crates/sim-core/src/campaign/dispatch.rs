@@ -416,7 +416,8 @@ compiled_registry! {
         (DragonFamily, 5, [1, 2, 3, 4, 5, 7]);
         (GoatFamily, 5, [8, 9, 10, 11, 12, 13, 14, 15]);
         (BeeFamily, 5, [16, 17, 18, 19, 20, 21, 22, 23]);
-        (MultipartFamily, 5, [25, 26, 27, 28, 29, 30, 31]);
+        // Source24 dispatches1F950;30 has a table address but no Events.cpp case.
+        (MultipartFamily, 5, [24, 25, 26, 27, 28, 29, 31]);
         (ArcherFamily, 5, [32, 33, 34, 35, 36, 37, 39]);
         (Model9Family, 5, [72, 73, 74, 75, 76, 77]);
         (FinalBoss, 5, [80, 81, 82, 83, 84, 85, 86, 87]);
@@ -821,6 +822,7 @@ mod tests {
             ),
             (5, &[74, 75, 76, 77][..], "level2-model9-family"),
             (5, &[8][..], "goat-family"),
+            (5, &[24][..], "multipart-family"),
             (5, &[32][..], "archer-family"),
             (5, &[160, 161, 162, 163, 164, 165, 167][..], "spider-family"),
             (5, &[128, 129, 130, 131, 132, 133, 135][..], "wyvern-family"),
@@ -1092,24 +1094,23 @@ mod tests {
             .iter()
             .map(|item| item.as_str().expect("report key").to_owned())
             .collect::<BTreeSet<_>>();
-        // The archaeology receipt advertised Archer action 38, whose source
-        // address 0x201130 has no implemented callback. Its default descriptor
-        // cannot select the bit-8 flee branch. Keep the receipt intact while
-        // explicitly rejecting that unsupported callback at both source sites.
-        for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
-            let key = BehaviorKey {
-                dispatch_site: site.id(),
-                selector: BehaviorSelector::ClassAction {
-                    class: 5,
-                    action: 38,
-                },
-            };
-            assert!(report_keys.remove(&source_key(&key)));
-            assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
-            assert!(matches!(
-                CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
-                Err(RegistryValidationError::UnknownImplementedKey(_))
-            ));
+        // The archaeology receipt advertised Worm30/0x200A40 and
+        // Archer38/0x201130, which have table addresses but no source
+        // dispatcher cases. Their default descriptors cannot select the
+        // bit-8 flee branch. Preserve the receipt and reject both callbacks.
+        for action in [30, 38] {
+            for site in [DispatchSite::ApplyEvents, DispatchSite::UpdateEntities] {
+                let key = BehaviorKey {
+                    dispatch_site: site.id(),
+                    selector: BehaviorSelector::ClassAction { class: 5, action },
+                };
+                assert!(report_keys.remove(&source_key(&key)));
+                assert!(CAMPAIGN_BEHAVIOR_REGISTRY.entry(&key).is_none());
+                assert!(matches!(
+                    CAMPAIGN_BEHAVIOR_REGISTRY.validate_declared_closure(&BTreeSet::from([key])),
+                    Err(RegistryValidationError::UnknownImplementedKey(_))
+                ));
+            }
         }
         // Skeleton78, Wyvern134, model17/142, Spider166, model23/190 and
         // model26/214 have table addresses but no pinned source dispatcher
@@ -1194,6 +1195,10 @@ mod tests {
             assert_eq!(
                 expected_handlers.remove(&format!("{site}:ClassAction:5:38")),
                 Some("archer-family")
+            );
+            assert_eq!(
+                expected_handlers.remove(&format!("{site}:ClassAction:5:30")),
+                Some("multipart-family")
             );
         }
         expected_handlers.extend(supplemental_handlers);

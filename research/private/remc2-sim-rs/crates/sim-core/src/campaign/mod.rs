@@ -5955,6 +5955,13 @@ mod tests {
                 std::iter::once(root).chain((1..=16).map(move |offset| root + offset))
             })
             .collect::<Vec<_>>();
+        // Death effects can legitimately reuse a reclaimed fixed address.
+        // The obligation is reclaim of these original generations, not that
+        // their addresses remain empty after subsequent source NewEvents.
+        let family_handles = family_slots.iter().map(|slot| {
+            campaign.simulation().source_arena().handle(*slot)
+                .expect("original root/body remains current before kill callbacks")
+        }).collect::<Vec<_>>();
         let mut saw_mana_sphere = false;
         let mut saw_death_burst = false;
         let mut saw_countdown_armed = false;
@@ -5999,18 +6006,20 @@ mod tests {
                     .try_into()
                     .unwrap(),
             ) == 16;
-            if family_slots.iter().all(|slot| {
-                let row = &campaign.simulation().entities()[usize::from(*slot)];
-                !row.active || row.class == 0
+            if family_handles.iter().all(|handle| {
+                campaign.simulation().source_arena().resolve(*handle).is_none()
             }) {
                 break;
             }
         }
         assert!(saw_mana_sphere && saw_death_burst);
-        assert!(family_slots.iter().all(|slot| {
-            let row = &campaign.simulation().entities()[usize::from(*slot)];
-            !row.active || row.class == 0
-        }));
+        assert!(family_handles.iter().all(|handle| {
+            campaign.simulation().source_arena().resolve(*handle).is_none()
+        }), "original Worm generations still resolve after the unchanged cleanup bound: {:?}",
+            family_handles.iter().filter_map(|handle| {
+                campaign.simulation().source_arena().resolve(*handle)
+                    .map(|_| *handle)
+            }).collect::<Vec<_>>());
 
         fn countdown_timer(source: &crate::native_world::EntitySnapshot) -> i32 {
             i32::from_le_bytes(source.record_bytes()[20..24].try_into().unwrap())

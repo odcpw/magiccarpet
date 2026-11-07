@@ -27,7 +27,7 @@ pub(crate) use archer::ARCHER_MAX_LIFE;
 pub(crate) use dragon::DRAGON_LIFE;
 
 pub(crate) const BEE_MAX_LIFE: i32 = crate::level_definition::BEE_CLASS_PROPERTIES.max_life;
-pub(crate) const WORM_MAX_LIFE: i32 = 9_000;
+pub(crate) const WORM_MAX_LIFE: i32 = crate::level_definition::WORM_PROPERTIES.max_life;
 
 #[cfg(test)]
 mod tests;
@@ -129,12 +129,8 @@ impl Level2EconomyState {
 }
 
 impl Level2EconomyState {
-    /// Allocate an authored class-5/model-1, model-3, model-4, or model-9 row through
-    /// the pinned `AddCreature_4B490`/`sub_4B6F0`/`AddArchers_4BA10`/`sub_4BBB0`
-    /// constructors. The model-3 constructor
-    /// also creates a sixteen-child particle chain in remc2; this bounded
-    /// source row owns the root allocation and leaves that presentation
-    /// child callback for the dedicated creature slice.
+    /// Allocate an authored class-5 Goat, Archer, or Skeleton. Worms use
+    /// their family constructor over the shared SourceArena.
     pub fn allocate_authored_class5(
         &mut self,
         authored_index: u16,
@@ -180,27 +176,6 @@ impl Level2EconomyState {
         self.allocate_authored_class5_with_max_life(
             authored_index,
             9,
-            position,
-            Some(max_life),
-            terrain,
-        )
-    }
-
-    /// Allocate a semantic Worm root and its sixteen copied body rows through
-    /// the ordinary model-3 constructor.
-    pub fn allocate_authored_worm(
-        &mut self,
-        authored_index: u16,
-        position: Position,
-        max_life: i32,
-        terrain: &SessionTerrain,
-    ) -> Option<Level2AuthoredClass5Source> {
-        if max_life <= 0 {
-            return None;
-        }
-        self.allocate_authored_class5_with_max_life(
-            authored_index,
-            3,
             position,
             Some(max_life),
             terrain,
@@ -255,18 +230,6 @@ impl Level2EconomyState {
                 0,
                 crate::goat::GOAT_RENDER_PARAMETER_INDEX,
             ),
-            3 => (
-                25,
-                64,
-                16,
-                30,
-                max_life_override.unwrap_or(WORM_MAX_LIFE),
-                2_250,
-                4_500,
-                0,
-                0,
-                88,
-            ),
             9 => (
                 72,
                 crate::level_definition::SKELETON_CLASS_PROPERTIES.minimum_speed,
@@ -282,10 +245,6 @@ impl Level2EconomyState {
             ),
             _ => return None,
         };
-        // Retain a snapshot only for failure before the model-3 root itself
-        // is published. Once the root exists, sub_4B6F0 keeps any prefix of
-        // body rows created before NewEvent exhaustion.
-        let state_before = (model == 3).then(|| self.clone());
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
         // `AddCreature_4B490` performs no constructor RNG draw. The other
@@ -299,11 +258,6 @@ impl Level2EconomyState {
             crate::goat::GOAT_MODEL => {
                 let phase = self.class5_model1_constructor_phase;
                 self.class5_model1_constructor_phase = phase.wrapping_add(1);
-                phase
-            }
-            3 => {
-                let phase = self.class5_model3_constructor_phase;
-                self.class5_model3_constructor_phase = phase.wrapping_add(1);
                 phase
             }
             4 => {
@@ -338,14 +292,10 @@ impl Level2EconomyState {
             })
             .is_err()
         {
-            if let Some(state_before) = state_before {
-                *self = state_before;
-            } else {
-                self.release_slot(source_entity_index, None);
-            }
+            self.release_slot(source_entity_index, None);
             return None;
         }
-        let mut source = Level2AuthoredClass5Source {
+        let source = Level2AuthoredClass5Source {
             source_entity_index,
             entity_rng,
             authored_index,
@@ -359,7 +309,7 @@ impl Level2EconomyState {
             mana,
             max_mana,
             subspell_index,
-            dword_0x10: if matches!(model, 1 | 3 | 4) {
+            dword_0x10: if matches!(model, 1 | 4) {
                 i32::from(source_entity_index % 100)
             } else {
                 dword_0x10
@@ -372,29 +322,15 @@ impl Level2EconomyState {
             byte_0x46_70: 0,
             particle_index,
             source_byte_3e,
-            source_byte_39: if model == 3 {
-                34
-            } else if model == crate::goat::GOAT_MODEL {
+            source_byte_39: if model == crate::goat::GOAT_MODEL {
                 crate::goat::GOAT_DESCRIPTOR_CADENCE.cast_unsigned()
             } else {
                 0
             },
-            yaw: if model == 3 {
-                i16::try_from(entity_rng & 0x07ff).expect("11-bit Worm yaw") - 1
-            } else {
-                yaw
-            },
-            pitch: if model == 3 {
-                i16::try_from(entity_rng & 0x07ff).expect("11-bit Worm pitch") - 1
-            } else {
-                pitch
-            },
-            roll: if model == 3 {
-                i16::try_from(entity_rng & 0x07ff).expect("11-bit Worm roll") - 1
-            } else {
-                roll
-            },
-            fov: if model == 3 { 0 } else { fov },
+            yaw,
+            pitch,
+            roll,
+            fov,
             shift_rot_x: if model == crate::goat::GOAT_MODEL {
                 crate::goat::GOAT_CONSTRUCTOR_COLLISION_HALF_EXTENT
             } else if model == 4 {
@@ -419,32 +355,6 @@ impl Level2EconomyState {
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
-        let model3_state = if model == 3 {
-            Some(self.allocate_model3_chain(&mut source))
-        } else {
-            None
-        };
-        if model == 3 {
-            // `sub_4B6F0` links every body before it links the root. Reinsert
-            // the already-tracked root so the final authoritative same-tile
-            // topology is root -> last body -> ... -> first body.
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_entity_index,
-                    active: false,
-                    x: position.x,
-                    y: position.y,
-                })
-                .expect("Worm root unlinks from the map chain");
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_entity_index,
-                    active: true,
-                    x: position.x,
-                    y: position.y,
-                })
-                .expect("Worm root relinks at the map-chain head");
-        }
         if model == crate::goat::GOAT_MODEL {
             self.source_owner.insert(source_entity_index, 0);
             self.authored_class5_runtime
@@ -458,9 +368,6 @@ impl Level2EconomyState {
                 });
         }
         self.authored_class5.push(source);
-        if let Some(model3_state) = model3_state {
-            self.authored_class5_model3.push(model3_state);
-        }
         Some(source)
     }
 

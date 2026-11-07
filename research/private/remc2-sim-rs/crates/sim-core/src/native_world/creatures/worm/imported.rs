@@ -27,15 +27,16 @@ const MULTIPART_PRE_KILL_ACTION: u8 = 28;
 const MULTIPART_KILL_ACTION: u8 = 29;
 const MULTIPART_IDLE_ACTION: u8 = 25;
 const MULTIPART_LINKED_ACTION: u8 = 27;
-const MULTIPART_DESCRIPTOR_RANGE: u32 = 0x1400;
-const MULTIPART_DESCRIPTOR_TURN_LIMIT: i16 = 0x22;
-const MULTIPART_DESCRIPTOR_SLOPE_LIMIT: i32 = 0x14;
-const MULTIPART_DESCRIPTOR_MATERIAL_MASK: u32 = 0xfff0_80fe;
-const MULTIPART_DESCRIPTOR_SETTLE_STEP: i16 = -0x40;
+const MULTIPART_DESCRIPTOR_RANGE: u32 = crate::level_definition::WORM_PROPERTIES.target_range;
+// sub_58350 ignores the nominal word 34 and clamps to descriptor subtype 5.
+const MULTIPART_DESCRIPTOR_TURN_LIMIT: i16 = crate::level_definition::WORM_PROPERTIES.turn_response;
+const MULTIPART_DESCRIPTOR_SLOPE_LIMIT: i32 = crate::level_definition::WORM_PROPERTIES.maximum_slope;
+const MULTIPART_DESCRIPTOR_MATERIAL_MASK: u32 = crate::level_definition::WORM_PROPERTIES.terrain_mask;
+const MULTIPART_DESCRIPTOR_SETTLE_STEP: i16 = crate::level_definition::WORM_PROPERTIES.descent;
 const MULTIPART_MOTION_COLLISION_BIT: u32 = 0x0004_0000;
 // `str_D7BD6[74].byte_0x20 == 1`: fatal all-directions blockage is
 // enabled, while the alternate base+6 hit action is not.
-const MULTIPART_DESCRIPTOR_FLAGS: u8 = 1;
+const MULTIPART_DESCRIPTOR_FLAGS: u8 = crate::level_definition::WORM_PROPERTIES.behavior_flags;
 const STAGE_RELATION_SENTINEL: u16 = 0xae02;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,6 +160,8 @@ pub(crate) struct MultipartChildStep {
     pub source_slot: u16,
     pub predecessor_slot: u16,
     pub followed_predecessor: bool,
+    /// Source predictedAxis write, present only for the moving branch.
+    pub predicted_position: Option<Position>,
     pub consumed_mailbox_owner: Option<u16>,
     pub drawing_disabled: bool,
 }
@@ -742,7 +745,7 @@ fn step_raw_multipart_action26_inner<W: FlightWorld>(
         }
     }
 
-    let launch = if entities[source_index].phase % 30 == 0 {
+    let launch = if entities[source_index].phase % crate::level_definition::WORM_PROPERTIES.scan_period == 0 {
         if allied && wrapped_distance_3d(entities[source_index].position, target.position) >= MULTIPART_DESCRIPTOR_RANGE {
             entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
             return Ok(MultipartAttackStep { source_slot, launch: None, external_effect });
@@ -793,7 +796,6 @@ pub(crate) fn step_raw_multipart_action25<W: FlightWorld>(
     if prelude.life < 0 {
         write_u16(&mut entities[source_index], 40, prelude.attacker);
         entities[source_index].set_source_action(MULTIPART_PRE_KILL_ACTION);
-        settle_to_terrain(&mut entities[source_index], world);
         return Ok(MultipartRootExternalEffect::None);
     }
     if prelude.state == 1 {
@@ -808,8 +810,7 @@ pub(crate) fn step_raw_multipart_action25<W: FlightWorld>(
     } else {
         MultipartRootExternalEffect::None
     };
-    if entities[source_index].phase % 30 != 0 {
-        settle_to_terrain(&mut entities[source_index], world);
+    if entities[source_index].phase % crate::level_definition::WORM_PROPERTIES.scan_period != 0 {
         return Ok(external);
     }
     let first = next_rng(entities[source_index].entity_rng);
@@ -823,7 +824,6 @@ pub(crate) fn step_raw_multipart_action25<W: FlightWorld>(
         i16::try_from(roll).expect("11-bit Worm roll"),
     );
     if entities[source_index].record_bytes()[61] == 0 {
-        settle_to_terrain(&mut entities[source_index], world);
         return Ok(external);
     }
     let source = RawEntityView::read(&entities[source_index]);
@@ -840,13 +840,12 @@ pub(crate) fn step_raw_multipart_action25<W: FlightWorld>(
                 && crate::angle_distance(
                     i32::from(source.yaw),
                     i32::from(heading(source.position, candidate.position)),
-                ) < crate::native_world::MODEL3_TARGET_HALF_ANGLE
+                ) < crate::level_definition::WORM_PROPERTIES.target_half_angle
         })
         .min_by_key(|candidate| wrapped_distance_2d(source.position, candidate.position));
     if let Some(target) = target {
         write_u16(&mut entities[source_index], 154, target.slot);
         entities[source_index].set_source_action(MULTIPART_ATTACK_ACTION);
-        settle_to_terrain(&mut entities[source_index], world);
         return Ok(external);
     }
     if let Some(peer) = entities
@@ -864,14 +863,13 @@ pub(crate) fn step_raw_multipart_action25<W: FlightWorld>(
                 && crate::angle_distance(
                     i32::from(source.yaw),
                     i32::from(heading(candidate.position, source.position)),
-                ) < crate::native_world::MODEL3_TARGET_HALF_ANGLE
+                ) < crate::level_definition::WORM_PROPERTIES.target_half_angle
         })
         .min_by_key(|candidate| wrapped_distance_2d(source.position, candidate.position))
     {
         write_u16(&mut entities[source_index], 54, peer.slot);
         entities[source_index].set_source_action(MULTIPART_LINKED_ACTION);
     }
-    settle_to_terrain(&mut entities[source_index], world);
     Ok(external)
 }
 
@@ -932,7 +930,7 @@ pub(crate) fn step_raw_multipart_action27<W: FlightWorld>(
         entities[source_index].set_source_action(MULTIPART_IDLE_ACTION);
         return Ok(external);
     }
-    if entities[source_index].phase % 30 != 0 {
+    if entities[source_index].phase % crate::level_definition::WORM_PROPERTIES.scan_period != 0 {
         return Ok(external);
     }
     let mut followed = None;
@@ -1114,6 +1112,7 @@ pub(crate) fn step_raw_multipart_action232(
 
     let drawing_disabled = predecessor.class != MULTIPART_CLASS;
     let mut followed_predecessor = false;
+    let mut predicted_position = None;
     let mut consumed_mailbox_owner = None;
     let child = &mut entities[source_index];
     if drawing_disabled {
@@ -1133,6 +1132,7 @@ pub(crate) fn step_raw_multipart_action232(
             pitch,
             i16::from_ne_bytes(word_36.to_ne_bytes()).wrapping_neg(),
         );
+        predicted_position = Some(predicted);
         child.set_yaw(yaw);
         child.set_pitch(pitch);
         child.set_position(predicted);
@@ -1155,6 +1155,7 @@ pub(crate) fn step_raw_multipart_action232(
         source_slot,
         predecessor_slot,
         followed_predecessor,
+        predicted_position,
         consumed_mailbox_owner,
         drawing_disabled,
     })
@@ -1256,6 +1257,7 @@ fn step_root_motion<W: FlightWorld>(
     let mut predicted = before;
     settle_position(&mut predicted, world);
     crate::move_entity(&mut predicted, source.yaw, 0, source.actual_speed);
+    world.set_source_predicted_position(predicted);
     let crossed_tile = before.x >> 8 != predicted.x >> 8 || before.y >> 8 != predicted.y >> 8;
     if !crossed_tile {
         source.set_position(predicted);
@@ -1277,6 +1279,7 @@ fn step_root_motion<W: FlightWorld>(
         let mut candidate = before;
         settle_position(&mut candidate, world);
         crate::move_entity(&mut candidate, heading, 0, source.actual_speed);
+        world.set_source_predicted_position(candidate);
         if !candidate_blocked(source, candidate, heading, world) {
             source.set_position(candidate);
             turn_toward_roll(source);
@@ -1287,6 +1290,16 @@ fn step_root_motion<W: FlightWorld>(
         source.set_life(-1);
     }
     MultipartMotionResult::Blocked
+}
+
+/// The source Stage31 helpers share the same descriptor74 movement.
+/// The boolean reports the source all-directions-blocked population effect.
+pub(super) fn move_stage_actor<W: FlightWorld>(source: &mut EntitySnapshot, world: &W) -> bool {
+    step_root_motion(source, world) == MultipartMotionResult::Blocked
+}
+
+pub(super) fn settle_stage_actor<W: FlightWorld>(source: &mut EntitySnapshot, world: &W) {
+    settle_to_terrain(source, world);
 }
 
 fn settle_to_terrain<W: FlightWorld>(source: &mut EntitySnapshot, world: &W) {
@@ -1621,6 +1634,7 @@ mod tests {
         entities[2].set_phase(0);
         let step = step_raw_multipart_action232(&mut entities, 2).unwrap();
         assert!(step.followed_predecessor);
+        assert_eq!(step.predicted_position, None, "the copy branch does not write predictedAxis");
         assert_eq!(
             (entities[2].position, entities[2].yaw),
             (entities[1].position, 777)
@@ -1674,6 +1688,7 @@ mod tests {
         let step = step_raw_multipart_action232(&mut entities, 2).expect("valid child");
 
         assert!(step.followed_predecessor);
+        assert_eq!(step.predicted_position, Some(entities[2].position));
         assert_eq!(step.consumed_mailbox_owner, Some(3));
         assert_eq!(entities[2].life, 8_750);
         assert_eq!(read_i32(&entities[2], 98), 250);

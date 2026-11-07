@@ -54,6 +54,76 @@ pub const DRAGON_CLASS_PROPERTIES: DragonClassProperties = DragonClassProperties
     part_height: [150, 165, 185, 200, 210, 210, 200, 190, 170, 160, 150, 130, 110, 90, 70, 60],
 };
 
+/// Multipart Worm construction, movement and projectile combat. Sprite and
+/// source descriptor identities remain in the MC2 adapter; scales apply to
+/// the actual bound animation/particle geometry.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WormProperties {
+    pub max_life: i32,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub initial_speed: i16,
+    pub body_count: usize,
+    pub projectile_damage: u16,
+    pub root_scale_percent: u16,
+    pub body_scale_percent: u16,
+    pub first_body_spacing_percent: u16,
+    pub scan_period: u8,
+    pub target_range: u32,
+    pub target_half_angle: i16,
+    /// Descriptor word4, passed to source58350 but ignored by that helper.
+    pub turn_limit: i16,
+    /// Descriptor subtype: the effective source58350 turn clamp.
+    pub turn_response: i16,
+    pub ground_clearance: i16,
+    pub descent: i16,
+    pub maximum_slope: i32,
+    pub terrain_mask: u32,
+    pub behavior_flags: u8,
+}
+
+impl WormProperties {
+    /// Source49C70 runs on the constructor life before any authored override.
+    #[must_use]
+    pub const fn max_mana(self) -> i32 {
+        self.max_life >> 1
+    }
+
+    #[must_use]
+    pub const fn initial_mana(self) -> i32 {
+        self.max_mana() / 2
+    }
+
+    /// The copied body receives signed division toward zero, not a shift.
+    #[must_use]
+    pub const fn body_mana(self) -> i32 {
+        self.max_mana() / 32
+    }
+}
+
+/// Pinned sub_4B6F0, descriptor74 and sub_1CC20.
+pub const WORM_PROPERTIES: WormProperties = WormProperties {
+    max_life: 9000,
+    minimum_speed: 64,
+    maximum_speed: 16,
+    initial_speed: 30,
+    body_count: 16,
+    projectile_damage: 500,
+    root_scale_percent: 60,
+    body_scale_percent: 65,
+    first_body_spacing_percent: 125,
+    scan_period: 30,
+    target_range: 5120,
+    target_half_angle: 170,
+    turn_limit: 34,
+    turn_response: 5,
+    ground_clearance: 0,
+    descent: -64,
+    maximum_slope: 20,
+    terrain_mask: 0xfff0_80fe,
+    behavior_flags: 1,
+};
+
 /// Final encounter actor construction. Source selectors and sprite bindings
 /// remain in its MC2 adapter.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

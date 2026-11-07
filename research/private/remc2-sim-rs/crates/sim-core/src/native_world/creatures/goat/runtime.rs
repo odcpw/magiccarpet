@@ -623,12 +623,12 @@ pub(crate) fn spawn_expiry_visual(
     world: &mut SessionTerrain,
     position: Position,
     particles: &[ParticleParameter],
-) -> Result<(), String> {
+) -> Result<Option<u16>, String> {
     let particle = particles
         .get(220)
         .ok_or_else(|| "Goat expiry requires particle descriptor 220".to_owned())?;
     let Some(slot) = arena.allocate_source_slot_with_terrain(world) else {
-        return Ok(());
+        return Ok(None);
     };
     let seed = arena.new_event_rng(slot);
     let mut source = arena.entities[usize::from(slot)].clone();
@@ -678,6 +678,7 @@ pub(crate) fn spawn_expiry_visual(
         z: world.ground_height(position),
         ..position
     });
+    world.set_source_predicted_position(source.position);
     let yaw = (particle.rotation_speed / 2) as i16;
     let pitch = (particle.speed / 2) as i16;
     source.set_yaw(0);
@@ -699,7 +700,7 @@ pub(crate) fn spawn_expiry_visual(
     }
     arena.source_rng.insert(slot, seed);
     arena.entities[usize::from(slot)] = source;
-    Ok(())
+    Ok(Some(slot))
 }
 
 pub(crate) fn step_expiry_visual(source: &mut EntitySnapshot) -> Result<(), String> {

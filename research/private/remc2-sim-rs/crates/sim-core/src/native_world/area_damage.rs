@@ -1424,7 +1424,7 @@ pub(crate) fn start_player_damage_trace(target: crate::campaign::source_arena::S
     start_actor_damage_trace(&[target]);
 }
 
-/// Watch the same canonical raw mailboxes for exact actor generations.
+/// Watch the same canonical current mailboxes for exact actor generations.
 /// Player checks keep using the single-target entry point above.
 #[cfg(test)]
 pub(crate) fn start_actor_damage_trace(
@@ -1443,7 +1443,7 @@ pub(crate) fn start_actor_damage_trace(
     });
 }
 
-/// Observe every accepted write to a watched raw mailbox, including
+/// Observe every accepted write to a watched mailbox, including
 /// identical-value writes. Unattributed writers invalidate prior attribution.
 #[cfg(test)]
 pub(crate) fn trace_player_mailbox_write(
@@ -1460,7 +1460,13 @@ pub(crate) fn trace_player_mailbox_write(
         if arena.handle(slot) != Some(target) {
             return None;
         }
-        let row = &arena.entities[usize::from(slot)];
+        let mailbox = if arena.economy.live_arena_cursor_row(slot).is_some() {
+            read_arena_bounty(arena, slot)
+                .expect("an accepted arena-owned write retains its canonical mailbox")
+        } else {
+            let row = &arena.entities[usize::from(slot)];
+            (row.source_upkeep_payload(), row.source_upkeep_word_62())
+        };
         let source = source.unwrap_or_else(|| {
             CURRENT_EFFECT_SOURCE.with(|current| {
                 current
@@ -1473,7 +1479,7 @@ pub(crate) fn trace_player_mailbox_write(
             sequence: trace.sequence,
             target,
             source,
-            mailbox: (row.source_upkeep_payload(), row.source_upkeep_word_62()),
+            mailbox,
         });
         Some(trace.sequence)
     })
@@ -2189,10 +2195,13 @@ impl ArenaTargets<'_, '_> {
             .iter_mut()
             .find(|row| row.active && row.source_entity_index == slot)
         {
-            return Ok(edit(
+            let result = edit(
                 &mut row.damage_dword_0x5e_94,
                 &mut row.pending_word_0x62,
-            ));
+            );
+            #[cfg(test)]
+            trace_player_mailbox_write(self.arena, slot, None);
+            return Ok(result);
         }
         if let Some(row) = economy
             .authored_class5
@@ -2239,7 +2248,10 @@ impl ArenaTargets<'_, '_> {
                     .ok_or_else(|| format!("area class5 slot {slot} has no ordinary mailbox"))?
                     .pending_damage
             };
-            return Ok(edit(damage, &mut row.pending_word_0x62));
+            let result = edit(damage, &mut row.pending_word_0x62);
+            #[cfg(test)]
+            trace_player_mailbox_write(self.arena, slot, None);
+            return Ok(result);
         }
         let retained_typed = current_contact
             && (economy.retained_projectile_kind(slot).is_some()
@@ -3956,11 +3968,11 @@ mod tests {
     #[test]
     fn worm_area_owner_exclusion_uses_copied_root_identity() {
         let session = super::super::tests::level_two_campaign_session();
-        let terrain = session.canonical_terrain();
+        let mut terrain = session.canonical_terrain().clone();
         let mut arena = session.source_arena().clone();
-        let root = arena
-            .economy
-            .allocate_authored_class5(1, 3, session.state.position, terrain)
+        let root = crate::native_world::creatures::worm::dynamic::construct_authored(
+                &mut arena, &mut terrain, 1, session.state.position, 9000,
+                &session.session.definition.presentation.particles)
             .expect("ordinary Worm root and body constructor");
         let body_slots = arena
             .economy
@@ -3970,6 +3982,11 @@ mod tests {
             .map(|body| body.source_entity_index)
             .collect::<Vec<_>>();
         assert_eq!(body_slots.len(), 16);
+        let watched = std::iter::once(root.source_entity_index)
+            .chain(body_slots.iter().copied())
+            .map(|slot| arena.handle(slot).expect("actual constructed Worm generation"))
+            .collect::<Vec<_>>();
+        start_actor_damage_trace(&watched);
         let mut request = AreaDamage {
             position: root.position,
             shape: shape(2304, 2304, 0, 8192),
@@ -3983,6 +4000,9 @@ mod tests {
             0,
             "the root id excludes its whole copied chain"
         );
+        assert!(watched.iter().all(|handle| {
+            current_actor_mailbox_writer(*handle, (0, 0)).is_none()
+        }), "owner exclusion cannot manufacture an accepted writer");
         assert!(
             arena
                 .economy
@@ -3997,6 +4017,16 @@ mod tests {
             17,
             "a hostile field reaches the root and all sixteen real bodies"
         );
+        for &handle in &watched {
+            let writer = current_actor_mailbox_writer(handle, (200, request.owner))
+                .expect("the actual typed mailbox write must be observed");
+            assert_eq!(writer.target, handle);
+            assert_eq!(writer.source, PlayerMailboxSource::Other,
+                "this configured direct field has no invented effect producer");
+            let raw = &arena.entities[usize::from(handle.source_slot)];
+            assert_ne!((raw.source_upkeep_payload(), raw.source_upkeep_word_62()), writer.mailbox,
+                "the observer reads the typed owner rather than its retired raw packet");
+        }
         assert!(
             arena
                 .economy
@@ -4047,7 +4077,7 @@ mod tests {
         assert!(arena.economy.step_authored_class5_model3_slot_with_target(
             root.source_entity_index,
             None,
-            terrain
+            &terrain
         ));
         let source = arena
             .economy
@@ -4063,7 +4093,7 @@ mod tests {
         assert!(arena.economy.step_authored_class5_model3_slot_with_target(
             root.source_entity_index,
             None,
-            terrain
+            &terrain
         ));
         assert!(
             arena

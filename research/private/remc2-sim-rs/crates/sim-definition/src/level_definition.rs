@@ -22,7 +22,7 @@ pub use creatures::{
     Creature26ClassProperties, Creature27ClassProperties, Creature28ClassProperties,
     DRAGON_CLASS_PROPERTIES, DragonClassProperties,
     CymmerianClassProperties, FINAL_BOSS_CLASS_PROPERTIES, FinalBossClassProperties,
-    WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
+    WORM_PROPERTIES, WormProperties, WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
 };
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
