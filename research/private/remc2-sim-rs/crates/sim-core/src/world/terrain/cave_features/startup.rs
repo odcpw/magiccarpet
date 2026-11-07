@@ -877,7 +877,7 @@ fn initial_castle_inputs(
     let mut spawns = [Position::default(); 8];
     for row in features
         .iter()
-        .filter(|row| row.activation_group == 0 && row.kind == 3 && (4..=10).contains(&row.subtype))
+        .filter(|row| row.activation_group == 0 && row.kind == 3 && (4..=11).contains(&row.subtype))
     {
         spawns[(row.subtype - 4) as usize] = row.world_position(0);
     }

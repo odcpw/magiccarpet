@@ -947,6 +947,7 @@ pub(crate) struct MeteorLaunchReceipt {
 pub(crate) struct MeteorImpactBirthReceipt {
     pub(crate) projectile: SourceEntityHandle,
     pub(crate) impact: SourceEntityHandle,
+    pub(crate) collision_target: Option<SourceEntityHandle>,
     pub(crate) state: crate::native_world::Level2AuthoredModel17Source,
 }
 
@@ -17537,6 +17538,9 @@ impl Mc2Simulation {
                 self.append_new_economy_events(pass, source_slot);
             }
             (ExistingHandler::Creature27, SourceRoute::Imported) => {
+                self.flush_shared_effects();
+                let mut sounds = Vec::new();
+                let mut sound_error = None;
                 let outcome = {
                     let live = &mut self.session.state.live;
                     let empty_models = std::array::from_fn(|_| Vec::new());
@@ -17562,6 +17566,55 @@ impl Mc2Simulation {
                             &live.ordinary.houses,
                             &live.ordinary.villagers,
                         )
+                    };
+                    let mut prepare_sound = |arena: &SourceArena, slot, sound_id, site| {
+                        let prepared = (|| -> std::result::Result<_, String> {
+                            let audio = if slot == 0 {
+                                // Source's centered sentinel bypasses entity,
+                                // silence and listener reads entirely.
+                                crate::prepare_event_sound_command(
+                                    Position::default(), 0, Position::default(),
+                                    sound_id, 0, 0, 0,
+                                )
+                            } else {
+                                let emitter = source_target::read(arena, targets, slot)?
+                                    .ok_or_else(|| format!("Hydra sound lost emitter slot{slot}"))?;
+                                let listener = source_target::read(arena, targets, player_entity_index)?
+                                    .ok_or("Hydra sound lost the current local listener")?;
+                                let yaw = listener.yaw.ok_or("Hydra listener yaw is unavailable")?;
+                                // Source15/17/22/23 all have fixed pitch; their
+                                // preparation does not consume RNG or action.
+                                (emitter.control_flags & 0x80 == 0).then(|| {
+                                    crate::prepare_event_sound_command(
+                                        listener.position, yaw, emitter.position,
+                                        sound_id, 0, emitter.source_id, 0,
+                                    )
+                                }).flatten()
+                            };
+                            Ok((FlightEvent::PrepareSound {
+                                #[cfg(test)]
+                                audio_site: match site {
+                                    creatures::creature_27::SoundSite::HeadRegrowth =>
+                                        crate::MissionAudioSite::HydraHeadRegrowth,
+                                    creatures::creature_27::SoundSite::AfterAttack =>
+                                        crate::MissionAudioSite::HydraAfterAttack,
+                                    creatures::creature_27::SoundSite::Projectile =>
+                                        crate::MissionAudioSite::HydraProjectile,
+                                    creatures::creature_27::SoundSite::Relocation =>
+                                        crate::MissionAudioSite::HydraRelocation,
+                                },
+                                entity_index: slot,
+                                player_index: -1,
+                                sound_id,
+                            }, audio))
+                        })();
+                        #[cfg(not(test))]
+                        let _ = site;
+                        match prepared {
+                            Ok(sound) => sounds.push(sound),
+                            Err(error) if sound_error.is_none() => sound_error = Some(error),
+                            Err(_) => {}
+                        }
                     };
                     let shared = &mut live.shared_spells;
                     let players = &mut live.core.players;
@@ -17589,8 +17642,12 @@ impl Mc2Simulation {
                         creatures::creature_27::PROPERTIES.root_target_range,
                         creatures::creature_27::PROPERTIES.root_target_half_angle,
                         u16::from(live.source_setting_30.value()),
+                        &mut prepare_sound,
                     )?
                 };
+                if let Some(error) = sound_error {
+                    return Err(error);
+                }
                 for (sound_slot, sound) in outcome.sounds {
                     self.session.state.live.economy.prepare_sound(
                         sound_slot,
@@ -17598,6 +17655,11 @@ impl Mc2Simulation {
                         -1,
                         u16::from(sound),
                     );
+                }
+                for (event, audio) in sounds {
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, event);
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -18643,6 +18705,7 @@ impl Mc2Simulation {
                                 trace.meteor_impacts.push(MeteorImpactBirthReceipt {
                                     projectile,
                                     impact,
+                                    collision_target: outcome.collision_target,
                                     state,
                                 });
                             }

@@ -283,6 +283,7 @@ pub(crate) fn construct_model27(
     head_slot: u16,
     target_slot: u16,
     selector: u8,
+    sound: &mut dyn FnMut(&SourceArena, u16, u16),
 ) -> Result<Option<u16>, String> {
     let product = match selector {
         0 => Product::Creature27Fireball,
@@ -371,6 +372,10 @@ pub(crate) fn construct_model27(
                 u16::from_le_bytes([head.record[154], head.record[155]]),
             )
         };
+    // Source2A7F0 prepares sound at the head's current ID after successful
+    // construction/payload850 and before the later owner/aim/target writes.
+    // The addressed emitter may itself be the new current occupant.
+    sound(arena, head_owner, if selector == 0 { 15 } else { 23 });
     let target = crate::native_world::source_target::read(arena, targets, target_slot)?
         .ok_or("model27 target address is outside source arena")?;
     let (target_position, target_class, target_model) =
@@ -408,6 +413,10 @@ pub(crate) fn construct_model27(
             .copy_from_slice(&(u32::from(descriptor.source_index) + 1).to_le_bytes());
         row.record[69] = target_class;
         row.record[70] = target_model;
+    }
+    #[cfg(test)]
+    if product == Product::Creature27Fireball {
+        crate::native_world::area_damage::trace_fireball_launch(arena, slot, head_owner);
     }
     Ok(Some(slot))
 }

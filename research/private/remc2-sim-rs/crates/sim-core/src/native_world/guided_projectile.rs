@@ -94,6 +94,8 @@ pub(crate) struct Targets<'a> {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StepOutcome {
     pub impact_slot: Option<u16>,
+    #[cfg(test)]
+    pub collision_target: Option<crate::campaign::source_arena::SourceEntityHandle>,
     pub experience: Option<(u16, u8, u16)>,
     pub sounds: Vec<(u16, u16)>,
     pub mana_updates: Vec<(u16, i32)>,
@@ -917,6 +919,12 @@ pub(crate) fn step(
     arena.entities[usize::from(slot)] = row.clone();
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
     let hit = collision(arena, &row, context)?;
+    #[cfg(test)]
+    {
+        // Preserve the actual physical collider generation before impact
+        // NewEvent can reclaim or reuse its fixed source address.
+        outcome.collision_target = hit.and_then(|(target, _)| arena.handle(target));
+    }
     let terminal = if let Some((target, position)) = hit {
         if reflect(arena, terrain, slot, target, &mut outcome)? {
             return Ok(outcome);

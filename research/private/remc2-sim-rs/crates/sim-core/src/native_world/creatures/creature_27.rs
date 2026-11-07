@@ -27,6 +27,15 @@ pub(crate) const PROJECTILE_DESCRIPTOR: u16 = 106;
 
 pub(crate) const PROPERTIES: Creature27ClassProperties = CREATURE27_CLASS_PROPERTIES;
 
+/// Distinct source call sites for Hydra head sounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SoundSite {
+    HeadRegrowth,
+    AfterAttack,
+    Projectile,
+    Relocation,
+}
+
 /// The constructor's generation-stamped result. The source word-0x34 chain is
 /// the persistent topology; callers use these handles for the immediate
 /// producer commit and never keep them as a second live family table.

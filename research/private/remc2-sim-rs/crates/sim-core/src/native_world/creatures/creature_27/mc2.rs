@@ -418,6 +418,7 @@ pub(crate) fn step_row(
     attack_range: u16,
     attack_cone: u16,
     setting_30: u16,
+    sound: &mut dyn FnMut(&SourceArena, u16, u16, super::SoundSite),
 ) -> Result<Effects, String> {
     let list_epoch = arena.economy.replacement_list_epoch;
     let root = arena
@@ -507,11 +508,11 @@ pub(crate) fn step_row(
                 }
                 previous
             };
-            if matches!(previous, 3 | 12 | 15) {
-                let mask = if previous == 12 {
-                    0x0080_0000
-                } else {
-                    0x0100_0000
+            if matches!(previous, 3 | 6 | 12 | 15 | 18) {
+                let mask = match previous {
+                    6 | 12 => 0x0080_0000,
+                    3 | 15 => 0x0100_0000,
+                    _ => 0,
                 };
                 for handle in std::iter::once(root).chain(chain.ordered.iter().copied()) {
                     if arena.slot_generation(handle.source_slot) == handle.generation {
@@ -523,10 +524,36 @@ pub(crate) fn step_row(
             if matches!(previous, 0 | 18) {
                 combat::set_root_visual(arena, particles, slot, 337)?;
             }
+            if previous == 9 {
+                // sub_29400 mutates the shared scratch directly. Each failed
+                // probe advances it, including the final exhausted attempt;
+                // the final Z settle occurs only after source sound22.
+                let mut row = arena.entities[usize::from(slot)].clone();
+                let first = crate::native_world::level2_next_rng16(row.entity_rng);
+                let second = crate::native_world::level2_next_rng16(first);
+                row.set_entity_rng(second);
+                let mut candidate = row.position;
+                candidate.x = candidate.x.wrapping_add(((first & 7) + 8) << 8);
+                candidate.y = candidate.y.wrapping_add(((second & 7) + 8) << 8);
+                terrain.set_source_predicted_position(candidate);
+                for _ in 0..128 {
+                    candidate.z = terrain.ground_height(candidate);
+                    terrain.set_source_predicted_position(candidate);
+                    if !combat::root_candidate_blocked(&row, candidate, terrain) {
+                        break;
+                    }
+                    crate::move_entity(&mut candidate, row.yaw, 0, 768);
+                    terrain.set_source_predicted_position(candidate);
+                }
+                row.set_position(candidate);
+                arena.entities[usize::from(slot)] = row;
+                crate::world::effects::sync_position(arena, terrain, slot, candidate, true, false)?;
+                sound(arena, slot, 22, super::SoundSite::Relocation);
+                effects.sounds.push((slot, 22));
+            }
             let mut position = arena.entities[usize::from(slot)].position;
             position.z = terrain.ground_height(position);
             arena.entities[usize::from(slot)].set_position(position);
-            crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
         }
         219 => arena.entities[usize::from(slot)].set_source_action(217),
         217 | 218 => {}
@@ -563,9 +590,10 @@ pub(crate) fn step_row(
         PROPERTIES.head_target_range,
         PROPERTIES.head_target_half_angle,
         setting_30,
+        sound,
     )?;
     effects.projectile_slots = head_effects.projectile_slots;
-    effects.sounds = head_effects.sounds;
+    effects.sounds.extend(head_effects.sounds);
 
     Ok(effects)
 }
@@ -577,6 +605,7 @@ pub(super) fn launch_projectile(
     particles: &[ParticleParameter],
     targets: source_target::Context<'_>,
     shot: combat::ProjectileIntent,
+    sound: &mut dyn FnMut(&SourceArena, u16, u16, super::SoundSite),
 ) -> Result<Option<u16>, String> {
     crate::native_world::guided_projectile::boss::construct_model27(
         arena,
@@ -586,6 +615,7 @@ pub(super) fn launch_projectile(
         shot.head.source_slot,
         shot.target,
         shot.selector,
+        &mut |arena, slot, sample| sound(arena, slot, sample, super::SoundSite::Projectile),
     )
 }
 

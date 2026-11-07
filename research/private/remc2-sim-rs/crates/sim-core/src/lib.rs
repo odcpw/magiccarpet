@@ -731,6 +731,10 @@ pub enum MissionAudioSite {
     TransportArrive,
     TransportExpire,
     StormChild,
+    HydraHeadRegrowth,
+    HydraAfterAttack,
+    HydraProjectile,
+    HydraRelocation,
     Count,
 }
 
@@ -1216,6 +1220,10 @@ impl MissionAudioSite {
         Self::TransportArrive,
         Self::TransportExpire,
         Self::StormChild,
+        Self::HydraHeadRegrowth,
+        Self::HydraAfterAttack,
+        Self::HydraProjectile,
+        Self::HydraRelocation,
     ];
 
     #[must_use]
@@ -1715,6 +1723,38 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp:25931 sub_35640",
+                true,
+            ),
+            Self::HydraHeadRegrowth => (
+                "17",
+                "physical root during idle head state5/subphase6",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_29A90 head state5/subphase6",
+                true,
+            ),
+            Self::HydraAfterAttack => (
+                "17",
+                "physical root after the head state5 attack attempt",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_29A90 head state5",
+                true,
+            ),
+            Self::HydraProjectile => (
+                "15 or 23",
+                "current head ID after successful constructor before projectile postwrites",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:20552 sub_2A7F0",
+                true,
+            ),
+            Self::HydraRelocation => (
+                "22",
+                "physical root after relocation CopyEntityPosition before terrain settle",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:19499 sub_29400",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

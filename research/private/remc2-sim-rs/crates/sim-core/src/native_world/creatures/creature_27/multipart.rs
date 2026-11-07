@@ -566,6 +566,9 @@ pub(crate) fn pose_new_chain(
         let head = chain.heads[head_index];
         let mut row = arena.entities[usize::from(head.source_slot)].clone();
         super::combat::move_attached_head(&mut row, &root);
+        if row.actual_speed != 0 {
+            terrain.set_source_predicted_position(row.position);
+        }
         put_position(arena, terrain, head, row.position)?;
     }
     Ok(())

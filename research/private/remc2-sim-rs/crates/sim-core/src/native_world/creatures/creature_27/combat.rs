@@ -7,6 +7,60 @@ use crate::{FlightWorld, Position, move_entity, turn_toward};
 use super::multipart::{self, Chain};
 use super::{Allocation, PROJECTILE_DESCRIPTOR, PROPERTIES, SOURCE_MODEL};
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HeadDamageCopyReceipt {
+    pub root: SourceEntityHandle,
+    pub head: SourceEntityHandle,
+    pub mailbox: (i32, u16),
+    pub root_mailbox_after: (i32, u16),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HeadLaunchReceipt {
+    pub root: SourceEntityHandle,
+    pub head: SourceEntityHandle,
+    pub projectile: SourceEntityHandle,
+    pub selector: u8,
+}
+
+#[cfg(test)]
+thread_local! {
+    static HEAD_DAMAGE_TRACE: std::cell::RefCell<Option<(SourceEntityHandle, Vec<HeadDamageCopyReceipt>)>> = const { std::cell::RefCell::new(None) };
+    static HEAD_LAUNCH_TRACE: std::cell::RefCell<Option<(SourceEntityHandle, Vec<HeadLaunchReceipt>)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_head_launch_trace(root: SourceEntityHandle) {
+    HEAD_LAUNCH_TRACE.with(|trace| *trace.borrow_mut() = Some((root, Vec::new())));
+}
+
+#[cfg(test)]
+pub(crate) fn take_head_launch_trace() -> Vec<HeadLaunchReceipt> {
+    HEAD_LAUNCH_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .take()
+            .map_or_else(Vec::new, |(_, receipts)| receipts)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn start_head_damage_trace(root: SourceEntityHandle) {
+    HEAD_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((root, Vec::new())));
+}
+
+#[cfg(test)]
+pub(crate) fn take_head_damage_trace() -> Vec<HeadDamageCopyReceipt> {
+    HEAD_DAMAGE_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .take()
+            .map_or_else(Vec::new, |(_, receipts)| receipts)
+    })
+}
+
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
 }
@@ -68,6 +122,13 @@ fn consume_head_damage(
             .expect("fixed entity record contains model27 damage word"),
     );
     let killer = damage_word;
+    #[cfg(test)]
+    let life_before = head.life;
+    #[cfg(test)]
+    let writer = crate::native_world::area_damage::current_actor_mailbox_writer(
+        head_handle,
+        (damage, killer),
+    );
     let root_slot = root_handle.source_slot;
     let root = arena
         .entities
@@ -76,8 +137,42 @@ fn consume_head_damage(
         .ok_or_else(|| format!("model27 root {root_slot} lost its source row"))?;
     put_dword(root, 98, damage);
     put_word(root, 102, killer);
+    #[cfg(test)]
+    HEAD_DAMAGE_TRACE.with(|trace| {
+        if let Some((wanted, receipts)) = trace.borrow_mut().as_mut()
+            && *wanted == root_handle
+            && receipts.len() < 64
+        {
+            receipts.push(HeadDamageCopyReceipt {
+                root: root_handle,
+                head: head_handle,
+                mailbox: (damage, killer),
+                root_mailbox_after: (
+                    i32::from_le_bytes(root.record[98..102].try_into().unwrap()),
+                    word(root, 102),
+                ),
+            });
+        }
+    });
     head.set_life(head.life.wrapping_sub(damage.min(76)));
     head.record[102..104].fill(0);
+    #[cfg(test)]
+    {
+        let _ = crate::native_world::area_damage::take_player_mailbox_writer(
+            head_handle,
+            (damage, killer),
+        );
+        crate::native_world::area_damage::trace_player_damage_consumption(
+            crate::native_world::area_damage::PlayerDamageConsumptionReceipt {
+                target: head_handle,
+                mailbox: (damage, killer),
+                writer,
+                life_before,
+                life_after: head.life,
+                event_cursor: arena.economy.events().len(),
+            },
+        );
+    }
     put_word(&mut head, 42, killer);
     if head.life < 0 {
         head.record[74] = 6;
@@ -123,23 +218,44 @@ fn slope_measure(position: Position, terrain: &SessionTerrain) -> i32 {
             z: 0,
         })) >> 5
     };
-    let north_west = height(tile_x, tile_y);
-    let north_east = height(tile_x.wrapping_add(1), tile_y);
-    let south_east = height(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
-    let south_west = height(tile_x, tile_y.wrapping_add(1));
-    (north_west + south_west - north_east - south_east)
+    // sub_1B830 advances the final X coordinate by another two tiles.
+    let point1 = height(tile_x.wrapping_sub(1), tile_y.wrapping_sub(1));
+    let point2 = height(tile_x.wrapping_add(1), tile_y.wrapping_sub(1));
+    let point3 = height(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
+    let point4 = height(tile_x.wrapping_add(3), tile_y.wrapping_add(1));
+    (point1 + point4 - point2 - point3)
         .abs()
-        .max((north_west + north_east - south_west - south_east).abs())
+        .max((point1 + point2 - point4 - point3).abs())
 }
 
-fn root_candidate_blocked(position: Position, terrain: &SessionTerrain) -> bool {
-    terrain.cave_collision_blocked(position) || slope_measure(position, terrain) >= 32
+pub(super) fn root_candidate_blocked(
+    row: &EntitySnapshot,
+    position: Position,
+    terrain: &SessionTerrain,
+) -> bool {
+    let mut sample = position;
+    let extent = row.array_pitch().max(row.array_roll());
+    let mut distance = 0;
+    while distance <= i32::from(extent) {
+        if terrain.material_mask(sample) & !PROPERTIES.root_terrain_mask != 0
+            || terrain.cave_collision_blocked(sample)
+            || terrain.ceiling_height(sample).is_some_and(|ceiling| {
+                i32::from(row.array_fov()) + i32::from(terrain.ground_height(sample))
+                    > i32::from(ceiling)
+            })
+        {
+            return true;
+        }
+        distance += 256;
+        move_entity(&mut sample, row.yaw, 0, 256);
+    }
+    let (_, pitch) = crate::level1_mission::projectile_guidance_angles(row.position, position);
+    crate::angle_distance(0, i32::from(pitch)) > PROPERTIES.root_pitch_limit
+        || slope_measure(position, terrain) >= PROPERTIES.root_slope_limit
 }
 
 /// Source sub_2AF10's forward probe, terrain settle, alternating 91-unit
-/// heading search and descriptor-limited yaw correction. Model27 itself is
-/// rejected on Cave maps, so water remains admissible under descriptor97's
-/// all-material mask; the terrain slope and cave hooks still gate movement.
+/// heading search and descriptor-limited yaw correction.
 pub(super) fn step_root_motion(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
@@ -165,12 +281,12 @@ pub(super) fn step_root_motion(
     }
 
     let before = row.position;
-    let ground = terrain.ground_height(before);
     let mut candidate = before;
     if move_forward {
         move_entity(&mut candidate, row.yaw, 0, row.actual_speed);
     }
-    candidate.z = ground;
+    candidate.z = terrain.ground_height(candidate);
+    terrain.set_source_predicted_position(candidate);
     let same_tile = (before.x >> 8, before.y >> 8) == (candidate.x >> 8, candidate.y >> 8);
     let mut moved = false;
     let mut turn = false;
@@ -180,7 +296,7 @@ pub(super) fn step_root_motion(
         turn = true;
         result = 1;
         flags &= !0x0004_0000;
-    } else if !root_candidate_blocked(candidate, terrain) {
+    } else if !root_candidate_blocked(&row, candidate, terrain) {
         moved = move_forward;
         turn = true;
         result = 2;
@@ -193,14 +309,11 @@ pub(super) fn step_root_motion(
             while magnitude <= 1_024 {
                 let heading = row.yaw.wrapping_add(direction * magnitude) & 0x07ff;
                 let mut retry = before;
-                if move_forward {
-                    move_entity(&mut retry, heading, 0, row.actual_speed);
-                }
+                move_entity(&mut retry, heading, 0, row.actual_speed);
                 retry.z = terrain.ground_height(retry);
-                if !root_candidate_blocked(retry, terrain) {
+                terrain.set_source_predicted_position(retry);
+                if !root_candidate_blocked(&row, retry, terrain) {
                     row.set_source_roll(heading);
-                    candidate = retry;
-                    moved = move_forward;
                     turn = true;
                     result = 3;
                     break;
@@ -473,6 +586,21 @@ pub(super) fn move_attached_head(head: &mut EntitySnapshot, root: &EntitySnapsho
     head.set_position(position);
 }
 
+/// Commit each literal source CopyEntityPosition before later head work;
+/// retain map links changed by that copy in the callback-local packet.
+fn copy_head_position(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    slot: u16,
+    head: &mut EntitySnapshot,
+) -> Result<(), String> {
+    let position = head.position;
+    arena.entities[usize::from(slot)] = head.clone();
+    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
+    head.record[26..30].copy_from_slice(&arena.entities[usize::from(slot)].record[26..30]);
+    Ok(())
+}
+
 /// Root actions217/218 run before the same-pass 29A90 child tail. Damage copied
 /// from head mailboxes by that tail is therefore consumed on the next root
 /// callback, matching sub_2A6B0's source order. Idle action217 does not pick a
@@ -507,7 +635,7 @@ pub(crate) fn step_root_action(
             root.set_source_action(218);
             put_word(root, 154, damaged_by);
         }
-        if callback_action == 218 && root_row.record[63] == 0 {
+        if root_row.record[63] == 0 {
             return Ok(());
         }
     }
@@ -546,17 +674,6 @@ pub(crate) fn step_root_action(
     };
     let root_position = arena.entities[usize::from(root_slot)].position;
     let source_phase = arena.entities[usize::from(root_slot)].record[66];
-    if source_phase & 0x1f == 0
-        && multipart::distance_3d(root_position, target_row.position) >= i32::from(attack_range)
-    {
-        let root_row = &mut arena.entities[usize::from(root_slot)];
-        root_row.set_source_action(217);
-        put_word(root_row, 154, 0);
-        root_row.record[74] = 0;
-        set_root_visual(arena, particles, root_slot, super::ROOT_PARTICLE)?;
-        return Ok(());
-    }
-
     let desired_heading =
         crate::level1_mission::projectile_guidance_angles(root_position, target_row.position).0;
     if source_phase & 3 == 0
@@ -576,6 +693,13 @@ pub(crate) fn step_root_action(
             root_slot,
             if aligned { 337 } else { super::ROOT_PARTICLE },
         )?;
+        if multipart::distance_3d(root_position, target_row.position) >= i32::from(attack_range) {
+            let root_row = &mut arena.entities[usize::from(root_slot)];
+            root_row.set_source_action(217);
+            put_word(root_row, 154, 0);
+            root_row.record[74] = 0;
+            set_root_visual(arena, particles, root_slot, super::ROOT_PARTICLE)?;
+        }
     }
     Ok(())
 }
@@ -615,6 +739,7 @@ pub(crate) fn step_heads(
     attack_range: u16,
     attack_cone: u16,
     setting_30: u16,
+    sound: &mut dyn FnMut(&SourceArena, u16, u16, super::SoundSite),
 ) -> Result<CombatEffects, String> {
     let root_row = imported(arena, allocation.root)
         .ok_or_else(|| "model27 combat lost its root generation".to_owned())?;
@@ -634,9 +759,6 @@ pub(crate) fn step_heads(
         // sub_29A90 increments every head before selecting its state branch;
         // sub_2A660 is called only for the initial states 0 through 5.
         let initial_state = arena.entities[usize::from(head_slot)].record[74];
-        if initial_state <= 5 {
-            consume_head_damage(arena, allocation.root, head_handle)?;
-        }
         let mut head = arena
             .entities
             .get(usize::from(head_slot))
@@ -651,6 +773,10 @@ pub(crate) fn step_heads(
             head.set_entity_rng(rng);
             head.record[71] = (rng % 20) as u8;
             head.set_position(multipart::pose_head(&root_row, head_index));
+            terrain.set_source_predicted_position(head.position);
+            copy_head_position(arena, terrain, head_slot, &mut head)?;
+            consume_head_damage(arena, allocation.root, head_handle)?;
+            head = arena.entities[usize::from(head_slot)].clone();
             if head.record[74] == 1 {
                 let rng = crate::native_world::level2_next_rng16(head.entity_rng);
                 head.set_entity_rng(rng);
@@ -827,6 +953,12 @@ pub(crate) fn step_heads(
                     }
                 }
                 6 => {
+                    sound(
+                        arena,
+                        allocation.root.source_slot,
+                        17,
+                        super::SoundSite::HeadRegrowth,
+                    );
                     effects.sounds.push((allocation.root.source_slot, 17));
                     let timer = head.source_dword_10().wrapping_add(1);
                     head.set_source_dword_10(timer);
@@ -838,6 +970,8 @@ pub(crate) fn step_heads(
             },
             7 => {
                 head.set_position(multipart::pose_head(&root_row, head_index));
+                terrain.set_source_predicted_position(head.position);
+                copy_head_position(arena, terrain, head_slot, &mut head)?;
                 let mut wobble_yaw = false;
                 match head.record[72] {
                     0 if head.actual_speed == 0 => {
@@ -879,10 +1013,15 @@ pub(crate) fn step_heads(
                             } else {
                                 Some((9_usize.saturating_sub(timer as usize)).min(8))
                             };
-                            let handle = segment
-                                .map(|segment| chain.bodies[head_index][segment])
-                                .unwrap_or(chain.heads[head_index]);
-                            set_part_visibility(arena, handle, false)?;
+                            if let Some(segment) = segment {
+                                set_part_visibility(
+                                    arena,
+                                    chain.bodies[head_index][segment],
+                                    false,
+                                )?;
+                            } else {
+                                head.set_control_flags((head.control_flags | 1) & !8);
+                            }
                             head.set_source_dword_10(timer.wrapping_add(1));
                             head.record[71] = head.record[71].wrapping_add(1);
                             let curve =
@@ -901,6 +1040,10 @@ pub(crate) fn step_heads(
                 // switch; that switch only poses bodies for states 6 and 7.
                 step_head_steering(&mut head, terrain);
                 move_attached_head(&mut head, &root_row);
+                if head.actual_speed != 0 {
+                    terrain.set_source_predicted_position(head.position);
+                    copy_head_position(arena, terrain, head_slot, &mut head)?;
+                }
             }
             8 => {
                 let root = &mut arena.entities[usize::from(allocation.root.source_slot)];
@@ -972,7 +1115,7 @@ pub(crate) fn step_heads(
             }
             15 => {
                 head.record[74] = 8;
-                set_part_visibility(arena, chain.heads[head_index], false)?;
+                head.set_control_flags((head.control_flags | 1) & !8);
                 for body in chain.bodies[head_index] {
                     set_part_visibility(arena, body, false)?;
                 }
@@ -983,17 +1126,23 @@ pub(crate) fn step_heads(
         let final_state = head.record[74];
         if matches!(final_state, 11..=12) {
             head.set_position(multipart::pose_head(&root_row, head_index));
+            terrain.set_source_predicted_position(head.position);
+            copy_head_position(arena, terrain, head_slot, &mut head)?;
         }
         if matches!(final_state, 0..=5) {
             step_head_steering(&mut head, terrain);
         }
         if matches!(final_state, 0..=5 | 11..=12) {
             move_attached_head(&mut head, &root_row);
+            if head.actual_speed != 0 {
+                terrain.set_source_predicted_position(head.position);
+                copy_head_position(arena, terrain, head_slot, &mut head)?;
+            }
         }
-        let position = head.position;
         arena.entities[usize::from(head_slot)] = head;
-        crate::world::effects::sync_position(arena, terrain, head_slot, position, true, false)?;
-        multipart::pose_bodies(arena, terrain, chain, Some(head_index))?;
+        if matches!(final_state, 0..=7 | 11..=12) {
+            multipart::pose_bodies(arena, terrain, chain, Some(head_index))?;
+        }
         if matches!(final_state, 11..=12) {
             // Regrowth copies the current linked target after posing bodies.
             let target_slot = word(&arena.entities[usize::from(head_slot)], 154);
@@ -1004,6 +1153,7 @@ pub(crate) fn step_heads(
                     format!("model27 regrowth target {target_slot} is outside the source arena")
                 })?
                 .position;
+            terrain.set_source_predicted_position(position);
             arena.entities[usize::from(head_slot)].set_position(position);
             crate::world::effects::sync_position(arena, terrain, head_slot, position, true, false)?;
         }
@@ -1025,9 +1175,25 @@ pub(crate) fn step_heads(
             if effects.projectiles.len() > before {
                 let shot = effects.projectiles.pop().expect("a shot was just emitted");
                 if let Some(slot) =
-                    super::mc2::launch_projectile(arena, terrain, particles, targets, shot)?
+                    super::mc2::launch_projectile(arena, terrain, particles, targets, shot, sound)?
                 {
                     effects.projectile_slots.push(slot);
+                    #[cfg(test)]
+                    if let Some(projectile) = arena.handle(slot) {
+                        HEAD_LAUNCH_TRACE.with(|trace| {
+                            if let Some((wanted, receipts)) = trace.borrow_mut().as_mut()
+                                && *wanted == allocation.root
+                                && receipts.len() < 1024
+                            {
+                                receipts.push(HeadLaunchReceipt {
+                                    root: allocation.root,
+                                    head: head_handle,
+                                    projectile,
+                                    selector: shot.selector,
+                                });
+                            }
+                        });
+                    }
                     let sound_owner = if slot == head_slot {
                         slot
                     } else {
@@ -1038,6 +1204,12 @@ pub(crate) fn step_heads(
                         .push((sound_owner, if shot.selector == 0 { 15 } else { 23 }));
                 }
             }
+            sound(
+                arena,
+                allocation.root.source_slot,
+                17,
+                super::SoundSite::AfterAttack,
+            );
             effects.sounds.push((allocation.root.source_slot, 17));
         }
         if matches!(final_state, 0..=5 | 11..=12)
@@ -1048,6 +1220,7 @@ pub(crate) fn step_heads(
                 head_index,
                 arena.entities[usize::from(head_slot)].position,
             );
+            terrain.set_source_predicted_position(position);
             arena.entities[usize::from(head_slot)].set_position(position);
             crate::world::effects::sync_position(arena, terrain, head_slot, position, true, false)?;
         }

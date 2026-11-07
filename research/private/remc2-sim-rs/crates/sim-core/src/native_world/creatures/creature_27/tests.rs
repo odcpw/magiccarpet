@@ -6,6 +6,7 @@ use crate::{FlightWorld, Position};
 
 const AUTHORED_RECORD: u16 = 17;
 
+#[derive(Clone)]
 struct Fixture {
     arena: crate::campaign::source_arena::SourceArena,
     runtime: crate::native_world::RuntimeSnapshot,
@@ -199,6 +200,1311 @@ fn owner_level23_model27() -> (crate::native_world::Mc2Simulation, u16) {
 #[test]
 fn owner_level23_objective_gate_produces_model27_for_the_source_scheduler() {
     let _ = owner_level23_model27();
+}
+
+type HydraGame = crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>;
+
+fn hydra_sim(game: &HydraGame) -> &crate::native_world::Mc2Simulation {
+    game.backend().compatibility_campaign().simulation()
+}
+
+fn hydra_sim_mut(game: &mut HydraGame) -> &mut crate::native_world::Mc2Simulation {
+    game.backend_mut()
+        .compatibility_campaign_mut_for_test()
+        .simulation_mut()
+}
+
+fn hydra_public_step(
+    game: &mut HydraGame,
+    command: crate::game_session::GameCommand,
+    label: &str,
+    turn: usize,
+) {
+    game.advance(game.identity().guard(), command).unwrap();
+    assert!(
+        hydra_sim(game)
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "{label} turn{turn}: {:?}",
+        hydra_sim(game).dispatch_events()
+    );
+}
+
+#[test]
+fn ordinary_level23_hydra_attacks_and_paid_meteor_reaches_capped_head_and_root() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::journal::CampaignEffect;
+    use crate::game_session::{GameCommand, GameSession, SpellAssignment, SpellAssignmentHand};
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage, lightning};
+
+    const GROUP16: &[u16] = &[554, 555, 556, 557, 558, 559, 560];
+    let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/creatures-20261104-integration/current-owner-package/level23")
+        },
+        std::path::PathBuf::from,
+    );
+    let definition = load_mc2_campaign(
+        &package,
+        &crate::game_definition::default_catalog().unwrap(),
+    )
+    .unwrap();
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        2023,
+        Mc2CampaignInputs::new(&package),
+    )
+    .unwrap();
+    let player7 = hydra_sim(&game).players()[7].entity_index;
+    assert_eq!(player7, 585);
+    let player7_castle = hydra_sim(&game)
+        .economy()
+        .castle_for_owner(player7)
+        .expect("real eighth authored spawn binds player7's initial Castle");
+    assert_eq!(player7_castle.source_entity_index, 611);
+    assert_eq!(
+        (player7_castle.position.x, player7_castle.position.y),
+        (17_664, 11_008),
+        "source3/subtype11 uses its real BUILD1 anchor, not the zero spawn"
+    );
+    let player = hydra_sim(&game).state.entity_index;
+    let player_handle = hydra_sim(&game).source_arena().handle(player).unwrap();
+    let gate = hydra_sim(&game)
+        .entities()
+        .iter()
+        .find(|row| {
+            row.active && (row.class, row.model, row.action, row.source_id) == (11, 32, 32, 16)
+        })
+        .unwrap()
+        .clone();
+    let gate_handle = hydra_sim(&game).source_arena().handle(gate.index).unwrap();
+    assert_eq!(
+        gate.index, 422,
+        "qualified Level23 reset switch from authored553"
+    );
+    // Explicit player carry/progression/resources; no earned-upgrade claim.
+    // All authored rows and NPC life/pose/state/RNG remain untouched.
+    {
+        let sim = hydra_sim_mut(&mut game);
+        sim.apply_carried_spell_families(&[9], Some(9)).unwrap();
+        sim.apply_carried_spell_progression(&[crate::native_world::CarriedSpellProgress {
+            family: 9,
+            persistent_experience: crate::native_world::LEVEL2_SPELL_TIER_THRESHOLDS[9][2],
+            runtime_experience: 0,
+            unlocked_tier: 2,
+            selected_tier: 2,
+        }])
+        .unwrap();
+        let live = &mut sim.session.state.live;
+        let row = &mut live.economy.entities[usize::from(player)];
+        row.set_max_life(200_000);
+        row.set_life(200_000);
+        row.max_mana = 200_000;
+        row.record[144..148].copy_from_slice(&200_000_i32.to_le_bytes());
+        row.set_mana(200_000);
+        row.set_mana_regen(0);
+        let row = row.clone();
+        live.player_life = row.life;
+        live.shared_spells.sync_player_entity_from_authority(&row);
+        live.shared_spells.player_mana = row.mana;
+        live.shared_spells.caster.mana = row.mana;
+        live.shared_spells
+            .sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() {
+            fire.caster.mana = row.mana;
+        }
+    }
+    for turn in 0..256 {
+        if hydra_sim(&game).session.state.live.player_protection_ticks == 0 {
+            break;
+        }
+        hydra_public_step(
+            &mut game,
+            GameCommand::default(),
+            "natural startup protection",
+            turn,
+        );
+    }
+    assert_eq!(
+        hydra_sim(&game).session.state.live.player_protection_ticks,
+        0
+    );
+    assert!(
+        !hydra_sim(&game)
+            .dispatch_events()
+            .iter()
+            .any(|event| matches!(
+                event,
+                Mc2DispatchEvent::AuthoredGroupActivated { group: 16, .. }
+            ))
+    );
+    {
+        let sim = hydra_sim_mut(&mut game);
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            sim.economy_mut()
+                .set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32)
+            .flat_map(|y| {
+                (1_u16..32).map(move |x| Position {
+                    x: x * 2048,
+                    y: y * 2048,
+                    z: 0,
+                })
+            })
+            .find(|position| {
+                !sim.economy().castle_projectile_site_blocked(
+                    *position,
+                    sim.entities(),
+                    sim.canonical_terrain(),
+                )
+            })
+            .expect("source-valid Castle prerequisite");
+        let castle = sim.economy_mut().build_castle(site, player).unwrap();
+        assert!(
+            sim.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, 200_000)
+        );
+        let color = usize::from(sim.state.player_color_index);
+        sim.runtime
+            .set_level2_objective_stage_selector_for(color, gate.level_gate as usize, 2);
+    }
+    let mut produced = false;
+    for turn in 0..8 {
+        assert_eq!(
+            hydra_sim(&game).source_arena().handle(gate.index),
+            Some(gate_handle)
+        );
+        hydra_public_step(
+            &mut game,
+            if turn == 0 {
+                GameCommand {
+                    assign_spell: Some(SpellAssignment {
+                        spell_id: crate::game_definition::SemanticId::parse("spell.meteor")
+                            .unwrap(),
+                        tier: 2,
+                        hand: SpellAssignmentHand::Left,
+                        holder_actor: None,
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                GameCommand::default()
+            },
+            "actual553 group16 producer",
+            turn,
+        );
+        if hydra_sim(&game).dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 16, authored_indices, .. }
+                if *source_slot == gate.index && authored_indices.as_ref() == GROUP16)) {
+            produced = true; break;
+        }
+    }
+    assert!(
+        produced,
+        "actual gate publishes all six Wyverns and Hydra560"
+    );
+    let identity = hydra_sim(&game)
+        .creature_runtime_census()
+        .roots_of_kind(CreatureKind::Creature27)
+        .find(|row| {
+            row.origin
+                == CreatureRootOrigin::AuthoredRecord {
+                    authored_record: 560,
+                }
+        })
+        .expect("real authored560 current root");
+    let root = identity.handle;
+    let chain = multipart::read_chain(hydra_sim(&game).source_arena(), root).unwrap();
+    let parts = std::iter::once(root)
+        .chain(chain.ordered.iter().copied())
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 51);
+    assert_eq!(
+        parts
+            .iter()
+            .map(|handle| handle.source_slot)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        51
+    );
+    let initial = parts
+        .iter()
+        .map(|handle| hydra_sim(&game).entities()[usize::from(handle.source_slot)].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(initial[0].max_life, PROPERTIES.root_max_life);
+    for (index, head) in chain.heads.iter().enumerate() {
+        let row = &hydra_sim(&game).entities()[usize::from(head.source_slot)];
+        assert_eq!(
+            row.max_life,
+            PROPERTIES.head_base_life + PROPERTIES.head_life_per_index * (index as i32 * 10 + 1)
+        );
+        assert_eq!(row.action, HEAD_ACTION);
+    }
+    let mut lure = initial[0].position;
+    crate::move_entity(&mut lure, initial[0].yaw, 0, 2304);
+    lure.z = hydra_sim(&game)
+        .canonical_terrain()
+        .ground_height(lure)
+        .wrapping_add(384);
+    {
+        let sim = hydra_sim_mut(&mut game);
+        sim.set_level2_entity_position(player, lure).unwrap();
+        sim.state.actual_speed = 0;
+        sim.state.target_speed = 0;
+    }
+    // One fixed lure; no actor tracking, variant selection or NPC edits.
+    // The window spans32 natural eight-visit head-acquisition cadences.
+    let mut moved = vec![false; 51];
+    let mut presented = vec![false; 51];
+    let mut projectiles = [false; 2];
+    let mut audio = [false; 3];
+    let mut effects = Vec::new();
+    let mut consumed = Vec::new();
+    let mut history = Vec::new();
+    area_damage::start_actor_damage_trace(&[player_handle]);
+    area_damage::start_fireball_launch_trace();
+    lightning::start_endpoint_birth_trace();
+    combat::start_head_launch_trace(root);
+    for turn in 0..256 {
+        let sim = hydra_sim(&game);
+        let phases = chain
+            .heads
+            .map(|head| sim.entities()[usize::from(head.source_slot)].phase);
+        let body_phases = chain
+            .bodies
+            .map(|bodies| bodies.map(|body| sim.entities()[usize::from(body.source_slot)].phase));
+        let cursor = sim.effect_journal().cursor(0).next_sequence;
+        area_damage::start_effect_damage_trace(player);
+        hydra_public_step(
+            &mut game,
+            GameCommand::default(),
+            "ordinary Hydra lure",
+            turn,
+        );
+        effects.extend(area_damage::take_effect_damage_trace());
+        consumed.extend(area_damage::take_player_damage_consumptions());
+        let sim = hydra_sim(&game);
+        let views = sim.campaign_entity_presentations(0).unwrap();
+        for (index, handle) in parts.iter().enumerate() {
+            assert_eq!(sim.source_arena().handle(handle.source_slot), Some(*handle));
+            let row = &sim.entities()[usize::from(handle.source_slot)];
+            moved[index] |= row.position != initial[index].position;
+            let particle = if index == 0 {
+                assert!(matches!(
+                    row.particle_parameter_index,
+                    Some(ROOT_PARTICLE | 337)
+                ));
+                row.particle_parameter_index.unwrap()
+            } else if row.action == HEAD_ACTION {
+                HEAD_PARTICLE
+            } else {
+                BODY_PARTICLE
+            };
+            presented[index] |= views.iter().any(|view| {
+                view.entity_index == handle.source_slot
+                    && view.position == row.position
+                    && view.render_parameter_index == particle
+            });
+        }
+        for (index, head) in chain.heads.iter().enumerate() {
+            assert_eq!(
+                sim.entities()[usize::from(head.source_slot)].phase,
+                phases[index].wrapping_add(1),
+                "head phase is advanced by its root, not an independent233 callback"
+            );
+            for (segment, body) in chain.bodies[index].iter().enumerate() {
+                assert_eq!(
+                    sim.entities()[usize::from(body.source_slot)].phase,
+                    body_phases[index][segment],
+                    "disabled234 has no independent common phase tail"
+                );
+            }
+        }
+        for record in sim
+            .effect_journal()
+            .records()
+            .iter()
+            .filter(|record| record.sequence >= cursor)
+        {
+            if let CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                audio_site,
+                entity_index,
+                player_index: -1,
+                sound_id,
+            }) = record.effect
+            {
+                let index = match (audio_site, sound_id) {
+                    (crate::MissionAudioSite::HydraProjectile, 15) => Some(0),
+                    (crate::MissionAudioSite::HydraProjectile, 23) => Some(1),
+                    (crate::MissionAudioSite::HydraAfterAttack, 17) => Some(2),
+                    _ => None,
+                };
+                if let Some(index) = index {
+                    assert_eq!(
+                        entity_index, root.source_slot,
+                        "source addresses the heads' copied root ID"
+                    );
+                    let prepared = record
+                        .audio
+                        .expect("actual Hydra call reaches prepared Flight audio");
+                    assert_eq!(prepared.play_type, if sound_id == 17 { 3 } else { 1 });
+                    assert_eq!(prepared.command.rate_delta_percent, 0);
+                    assert_eq!(prepared.command.sound_flags, initial[0].source_id as i16);
+                    audio[index] |= prepared.command.audible;
+                }
+            }
+        }
+        if turn < 16 || turn % 16 == 0 {
+            history.push((
+                turn,
+                sim.entities()[usize::from(root.source_slot)].position,
+                sim.state.position,
+                chain.heads.map(|head| {
+                    let row = &sim.entities()[usize::from(head.source_slot)];
+                    (
+                        row.position,
+                        row.record[74],
+                        row.record[72],
+                        row.source_word_96(),
+                        row.life,
+                    )
+                }),
+            ));
+        }
+    }
+    let fireballs = area_damage::take_fireball_launch_trace();
+    let fireball_impacts = area_damage::take_fireball_impact_birth_trace();
+    let endpoints = lightning::take_endpoint_birth_trace();
+    let head_launches = combat::take_head_launch_trace();
+    for visit in &consumed {
+        let Some(writer) = visit.writer else {
+            continue;
+        };
+        let area_damage::PlayerMailboxSource::Effect(impact) = writer.source else {
+            continue;
+        };
+        if visit.target != player_handle
+            || visit.mailbox.1 != initial[0].source_id
+            || writer.target != player_handle
+            || writer.mailbox != visit.mailbox
+            || visit.life_after >= visit.life_before
+            || visit.life_after != visit.life_before.wrapping_sub(visit.mailbox.0)
+        {
+            continue;
+        }
+        if !effects.iter().any(|effect| {
+            effect.source_scoped
+                && effect.target_slot == player
+                && effect.source_slot == Some(impact.source_slot)
+                && effect.target_generation == player_handle.generation
+                && effect.pulse.owner == initial[0].source_id
+                && effect.pulse.payload == 850
+                && effect.writer_sequence == Some(writer.sequence)
+                && effect.mailbox_after == Some(visit.mailbox)
+        }) {
+            continue;
+        }
+        assert!(
+            matches!(hydra_sim(&game).economy().events().get(visit.event_cursor),
+            Some(Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, lethal: false })
+                if *target_entity_index == player && *attacker_entity_index == initial[0].source_id
+                    && *damage == visit.mailbox.0)
+        );
+        projectiles[0] |=
+            fireball_impacts
+                .iter()
+                .any(|&(slot, generation, shot, shot_generation, owner)| {
+                    slot == impact.source_slot
+                        && generation == impact.generation
+                        && owner == initial[0].source_id
+                        && fireballs.contains(&(shot, shot_generation, owner))
+                        && head_launches.iter().any(|launch| {
+                            launch.root == root
+                                && chain.heads.contains(&launch.head)
+                                && launch.selector == 0
+                                && launch.projectile.source_slot == shot
+                                && launch.projectile.generation == shot_generation
+                        })
+                });
+        projectiles[1] |= endpoints.iter().any(|birth| {
+            birth.endpoint == impact
+                && birth.owner == initial[0].source_id
+                && head_launches.iter().any(|launch| {
+                    launch.root == root
+                        && chain.heads.contains(&launch.head)
+                        && launch.selector == 9
+                        && launch.projectile == birth.ray
+                })
+        });
+    }
+    assert!(
+        moved.iter().all(|value| *value) && presented.iter().all(|value| *value),
+        "all51 original generations move/present: moved={moved:?} presented={presented:?} history={history:?}"
+    );
+    assert_eq!(
+        projectiles, [true; 2],
+        "both ordinary variants must cause actual player HP loss: launches={head_launches:?} audio={audio:?} fireballs={fireballs:?} impacts={fireball_impacts:?} endpoints={endpoints:?} consumed={consumed:?} history={history:?}"
+    );
+    assert_eq!(audio, [true; 3]);
+
+    // One declared player-only firing placement/aim at original body0/8.
+    // This representative paid hit proves capped head damage and root copy;
+    // it cannot defeat the intact default five-head chain and makes no such claim.
+    let target_handle = chain.bodies[0][8];
+    let target = hydra_sim(&game).entities()[usize::from(target_handle.source_slot)].clone();
+    assert_eq!(target.action, BODY_ACTION);
+    assert_eq!(
+        target.record[60], 0,
+        "234 retains its source damage immunity"
+    );
+    let firing = Position {
+        z: target.position.z.wrapping_add(1024),
+        ..target.position
+    };
+    let mut hand = firing;
+    hand.z = hand
+        .z
+        .wrapping_add(hydra_sim(&game).entities()[usize::from(player)].array_fov());
+    let centre = Position {
+        z: target.position.z.wrapping_add(target.array_yaw()),
+        ..target.position
+    };
+    let aim = crate::level1_mission::projectile_guidance_angles(hand, centre);
+    let shot_geometry = (
+        target_handle,
+        target.position,
+        centre,
+        (
+            target.array_pitch(),
+            target.array_roll(),
+            target.array_yaw(),
+            target.array_fov(),
+        ),
+        chain.heads.map(|head| {
+            let row = &hydra_sim(&game).entities()[usize::from(head.source_slot)];
+            (head, row.position, row.array_yaw(), row.array_fov())
+        }),
+    );
+    {
+        let sim = hydra_sim_mut(&mut game);
+        sim.set_level2_entity_position(player, firing).unwrap();
+        sim.state.actual_speed = 0;
+        sim.state.target_speed = 0;
+        sim.set_level2_player_aim_for_test(aim.0, aim.1);
+    }
+    let mut no_cast = game.backend().compatibility_campaign().clone();
+    let holder = hydra_sim(&game)
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[9];
+    let holder = hydra_sim(&game).source_arena().handle(holder).unwrap();
+    assert!(!hydra_sim(&game).shared_spells().free_spell_usage);
+    area_damage::start_actor_damage_trace(&chain.heads);
+    combat::start_head_damage_trace(root);
+    let mut launches = Vec::new();
+    let mut impacts = Vec::new();
+    let mut effects = Vec::new();
+    let mut consumed = Vec::new();
+    let mut paid = 0_i32;
+    let mut elapsed = 0;
+    for turn in 0..160 {
+        area_damage::start_effect_damage_trace_for_targets(
+            &chain.heads.map(|head| head.source_slot),
+        );
+        let before = hydra_sim(&game).shared_spells().player_entity().mana;
+        hydra_sim(&game).start_creature17_trace();
+        hydra_public_step(
+            &mut game,
+            GameCommand {
+                cast_left: turn == 0,
+                ..Default::default()
+            },
+            "one fixed public Meteor",
+            turn,
+        );
+        elapsed += 1;
+        let sim = hydra_sim(&game);
+        paid += before
+            .saturating_sub(sim.shared_spells().player_entity().mana)
+            .max(0);
+        let trace = sim.take_creature17_trace();
+        launches.extend(trace.meteor_launches);
+        impacts.extend(trace.meteor_impacts);
+        effects.extend(area_damage::take_effect_damage_trace());
+        consumed.extend(area_damage::take_player_damage_consumptions());
+        if consumed
+            .iter()
+            .any(|visit: &area_damage::PlayerDamageConsumptionReceipt| {
+                visit.mailbox.1 == player && visit.writer.is_some()
+            })
+        {
+            break;
+        }
+    }
+    let copies = combat::take_head_damage_trace();
+    for turn in 0..elapsed {
+        no_cast.step(crate::PlayerCommand::default(), 0);
+        assert!(
+            no_cast
+                .simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "no-cast turn{turn}: {:?}",
+            no_cast.simulation().dispatch_events()
+        );
+    }
+    let hit = consumed.iter().find(|visit| chain.heads.contains(&visit.target)
+        && visit.mailbox.1 == player && visit.life_after == visit.life_before.wrapping_sub(visit.mailbox.0.min(76))
+        && visit.writer.is_some_and(|writer| writer.target == visit.target && writer.mailbox == visit.mailbox
+            && impacts.iter().any(|impact| writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                && impact.collision_target.is_some_and(|collider| parts.contains(&collider))
+                && (impact.state.source_class, impact.state.model, impact.state.subspell_index) == (10, 17, 16000)
+                && launches.iter().any(|launch| launch.projectile == impact.projectile
+                    && launch.holder == holder && launch.caster == player_handle
+                    && (launch.packet.class, launch.packet.model, launch.packet.subspell_index) == (9, 3, 16000))
+                && effects.iter().any(|effect| effect.source_scoped && effect.target_slot == visit.target.source_slot
+                    && effect.target_generation == visit.target.generation && effect.pulse.owner == player
+                    && effect.pulse.payload == 1600 && effect.writer_sequence == Some(writer.sequence)))))
+        .expect(&format!("paid public Meteor must cause actual capped head damage: geometry={shot_geometry:?} launches={launches:?} impacts={impacts:?} consumed={consumed:?} copies={copies:?}"));
+    assert_eq!(launches.len(), 1);
+    assert!(paid >= crate::level_definition::METEOR_PROPERTIES.tiers[2].mana_cost);
+    assert!(copies.iter().any(|copy| copy.root == root
+        && copy.head == hit.target
+        && copy.mailbox == hit.mailbox
+        && copy.root_mailbox_after == hit.mailbox));
+    let collider = impacts
+        .iter()
+        .find(|impact| {
+            hit.writer.is_some_and(|writer| {
+                writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+            })
+        })
+        .and_then(|impact| impact.collision_target)
+        .unwrap();
+    eprintln!(
+        "HYDRA_PAID_COLLISION root={root:?} collider={collider:?} body_collider={} head={:?} mailbox={:?} copies={copies:?}",
+        chain.bodies.iter().flatten().any(|body| *body == collider),
+        hit.target,
+        hit.mailbox
+    );
+    assert!(
+        hydra_sim(&game)
+            .creature_identity_for_source_slot(root.source_slot)
+            .is_some_and(|identity| identity.handle == root && identity.living)
+    );
+    assert!(
+        no_cast
+            .simulation()
+            .creature_identity_for_source_slot(root.source_slot)
+            .is_some_and(|identity| identity.handle == root && identity.living)
+    );
+    assert!(
+        no_cast.simulation().entities()[usize::from(hit.target.source_slot)].life
+            > hydra_sim(&game).entities()[usize::from(hit.target.source_slot)].life,
+        "equal-elapsed no-cast does not receive the real paid capped head hit"
+    );
+}
+
+#[test]
+fn configured_root_motion_preserves_source_probe_retry_and_hold_boundaries() {
+    // Source-vector controls only. The ordinary Level23 encounter above never
+    // changes the Hydra or terrain to admit its movement.
+    let mut base = fixture();
+    let allocation = allocate(&mut base);
+    let origin = Position {
+        x: 32 * 256 + 128,
+        y: 32 * 256 + 10,
+        z: 0,
+    };
+    let mut expected_forward = origin;
+    crate::move_entity(&mut expected_forward, 0, 0, PROPERTIES.root_initial_speed);
+    assert_ne!(
+        origin.y >> 8,
+        expected_forward.y >> 8,
+        "proposal crosses a tile boundary"
+    );
+    for (blocked, held) in [(false, false), (true, false), (false, true)] {
+        let mut arena = base.arena.clone();
+        let mut terrain = base.terrain.clone();
+        {
+            let (planes, _, _, _) = terrain.disaster_parts();
+            planes.ground_heights.fill(0);
+            // Source terrain type1 maps to mask2, admitted by descriptor97;
+            // type0 maps to water bit1 and would reject even a flat proposal.
+            planes.terrain_types.fill(1);
+            planes.angles.fill(0);
+            if blocked {
+                // Literal1B830's fourth corner is +3,+1, not the usual
+                // adjacent +1,+1. The initial proposal must reject this
+                // source slope while the southward retry path stays flat.
+                let x = (expected_forward.x >> 8) as u8;
+                let y = (expected_forward.y >> 8) as u8;
+                planes.ground_heights
+                    [usize::from(x.wrapping_add(3)) | (usize::from(y.wrapping_add(1)) << 8)] = 64;
+            }
+        }
+        let root = &mut arena.entities[usize::from(allocation.root.source_slot)];
+        root.set_position(origin);
+        root.set_yaw(0);
+        root.set_source_roll(0);
+        root.set_actual_speed(PROPERTIES.root_initial_speed);
+        if held {
+            root.set_control_flags(root.control_flags | 0x800);
+        }
+        crate::world::effects::sync_position(
+            &mut arena,
+            &mut terrain,
+            allocation.root.source_slot,
+            origin,
+            true,
+            false,
+        )
+        .unwrap();
+        let old_scratch = Position {
+            x: 123,
+            y: 456,
+            z: 789,
+        };
+        terrain.set_source_predicted_position(old_scratch);
+        let result =
+            combat::step_root_motion(&mut arena, &mut terrain, allocation.root, true).unwrap();
+        let row = &arena.entities[usize::from(allocation.root.source_slot)];
+        if held {
+            assert_eq!(result, 4);
+            assert_eq!(row.position, origin);
+            assert_eq!(row.control_flags & 0x800, 0);
+            assert_eq!(row.action, 216);
+            assert_eq!(terrain.source_predicted_position(), old_scratch);
+        } else if blocked {
+            assert_eq!(result, 3);
+            assert_eq!(
+                row.position, origin,
+                "an accepted retry turns without moving the root"
+            );
+            assert_ne!(row.source_roll(), 0);
+            assert_eq!(
+                crate::angle_distance(0, i32::from(row.yaw)),
+                PROPERTIES.root_turn_limit
+            );
+            let mut retry = origin;
+            crate::move_entity(
+                &mut retry,
+                row.source_roll(),
+                0,
+                PROPERTIES.root_initial_speed,
+            );
+            retry.z = terrain.ground_height(retry);
+            assert_eq!(terrain.source_predicted_position(), retry);
+        } else {
+            assert_eq!(result, 2);
+            assert_eq!(row.position, expected_forward);
+            assert_eq!(terrain.source_predicted_position(), expected_forward);
+        }
+    }
+}
+
+#[test]
+fn configured_sleep_phase_flags_and_relocation_use_literal_source_order() {
+    // Configured callback-entry/terrain controls on a real constructor. No
+    // ordinary actor timer, RNG, lifetime or admission is changed by the live gate.
+    let mut base = fixture();
+    let allocation = allocate(&mut base);
+    let parts = std::iter::once(allocation.root)
+        .chain(allocation.heads.iter().copied())
+        .chain(allocation.bodies.iter().flatten().copied())
+        .collect::<Vec<_>>();
+    for (old_timer, expected_mask) in [(6, 0x0080_0000), (18, 0)] {
+        let mut f = base.clone();
+        for handle in &parts {
+            let row = &mut f.arena.entities[usize::from(handle.source_slot)];
+            row.set_control_flags(row.control_flags | 0x0180_0000);
+        }
+        let row = &mut f.arena.entities[usize::from(allocation.root.source_slot)];
+        row.set_source_action(216);
+        row.set_source_dword_10(old_timer);
+        row.record[154..156].copy_from_slice(&f.target.to_le_bytes());
+        mc2::step_row(
+            &mut f.arena,
+            &mut f.runtime,
+            &mut f.terrain,
+            &f.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &f.class3,
+            &f.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+            &mut |_, _, _, _| {},
+        )
+        .unwrap();
+        for handle in &parts {
+            assert_eq!(f.arena.handle(handle.source_slot), Some(*handle));
+            assert_eq!(
+                f.arena.entities[usize::from(handle.source_slot)].control_flags & 0x0180_0000,
+                expected_mask,
+                "old timer{old_timer} applies to all51 current parts"
+            );
+        }
+        let row = &f.arena.entities[usize::from(allocation.root.source_slot)];
+        assert_eq!(row.source_dword_10(), old_timer + 1);
+        assert_eq!(row.action, if old_timer == 18 { 218 } else { 216 });
+        if old_timer == 18 {
+            assert_eq!(row.source_word_96(), 0);
+            assert_eq!(row.record[74], 1);
+            assert_eq!(row.particle_parameter_index, Some(337));
+        }
+    }
+
+    let origin = Position {
+        x: 32 * 256 + 128,
+        y: 32 * 256 + 128,
+        z: 0,
+    };
+    for (exhausted, high_plateau) in [(false, false), (false, true), (true, false)] {
+        let mut f = base.clone();
+        let row = &mut f.arena.entities[usize::from(allocation.root.source_slot)];
+        row.set_source_action(216);
+        row.set_source_dword_10(9);
+        row.set_position(origin);
+        row.set_yaw(0);
+        let seed = row.entity_rng;
+        let first = crate::native_world::level2_next_rng16(seed);
+        let second = crate::native_world::level2_next_rng16(first);
+        let mut expected_copy = origin;
+        expected_copy.x = expected_copy.x.wrapping_add(((first & 7) + 8) << 8);
+        expected_copy.y = expected_copy.y.wrapping_add(((second & 7) + 8) << 8);
+        {
+            let (planes, _, _, _) = f.terrain.disaster_parts();
+            planes
+                .ground_heights
+                .fill(if high_plateau { 127 } else { 0 });
+            planes.angles.fill(0);
+            // Type1/mask2 admits the first flat candidate; type0/water
+            // rejects every candidate through the exact descriptor97 mask.
+            planes.terrain_types.fill(if exhausted { 0 } else { 1 });
+            if high_plateau {
+                // The actor's low origin is source-grounded. Every proposed
+                // destination lies on a flat high plateau, so mode1 and slope
+                // pass, while mode4 rejects the first steep upward pitches.
+                let x = (origin.x >> 8) as u8;
+                let y = (origin.y >> 8) as u8;
+                for dy in 0..=1_u8 {
+                    for dx in 0..=2_u8 {
+                        planes.ground_heights[usize::from(x.wrapping_add(dx))
+                            | (usize::from(y.wrapping_add(dy)) << 8)] = 0;
+                    }
+                }
+            }
+            if exhausted {
+                // The untested128th advance has a different final ground.
+                // Its copied Z is still the127th probe's zero; sound22 must
+                // see that Z before the literal final terrain settle.
+                let mut final_xy = expected_copy;
+                for _ in 0..128 {
+                    crate::move_entity(&mut final_xy, 0, 0, 768);
+                }
+                let x = (final_xy.x >> 8) as u8;
+                let y = (final_xy.y >> 8) as u8;
+                for dy in 0..=1_u8 {
+                    for dx in 0..=2_u8 {
+                        planes.ground_heights[usize::from(x.wrapping_add(dx))
+                            | (usize::from(y.wrapping_add(dy)) << 8)] = 8;
+                    }
+                }
+            }
+        }
+        assert_eq!(f.terrain.ground_height(origin), origin.z);
+        let mut rejected = 0;
+        for _ in 0..128 {
+            expected_copy.z = f.terrain.ground_height(expected_copy);
+            let pitch = crate::level1_mission::projectile_guidance_angles(origin, expected_copy).1;
+            if !exhausted
+                && crate::angle_distance(0, i32::from(pitch)) <= PROPERTIES.root_pitch_limit
+            {
+                break;
+            }
+            rejected += 1;
+            crate::move_entity(&mut expected_copy, 0, 0, 768);
+        }
+        if high_plateau {
+            assert!(
+                (1..128).contains(&rejected),
+                "real signed-pitch rejection then admission"
+            );
+        } else {
+            assert_eq!(rejected, if exhausted { 128 } else { 0 });
+        }
+        crate::world::effects::sync_position(
+            &mut f.arena,
+            &mut f.terrain,
+            allocation.root.source_slot,
+            origin,
+            true,
+            false,
+        )
+        .unwrap();
+        let mut at_call = Vec::new();
+        let effects = mc2::step_row(
+            &mut f.arena,
+            &mut f.runtime,
+            &mut f.terrain,
+            &f.particles,
+            crate::native_world::source_target::Context::default(),
+            &mut |_, _, _| {},
+            allocation.root.source_slot,
+            &f.class3,
+            &f.families,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+            0,
+            &mut |arena, slot, sample, site| {
+                if site == SoundSite::Relocation {
+                    assert_eq!((slot, sample), (allocation.root.source_slot, 22));
+                    at_call.push((
+                        arena.handle(slot).unwrap(),
+                        arena.entities[usize::from(slot)].clone(),
+                        arena.economy.map_chains.tile_of(slot),
+                    ));
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(at_call.len(), 1);
+        let (handle, row, tile) = &at_call[0];
+        assert_eq!(*handle, allocation.root);
+        assert_eq!(row.position, expected_copy);
+        assert_eq!(row.entity_rng, second, "only the two literal root draws");
+        assert_eq!(row.source_dword_10(), 10);
+        let expected_tile = (expected_copy.x >> 8) | ((expected_copy.y >> 8) << 8);
+        assert_eq!(
+            *tile, expected_tile,
+            "actual CopyPosition/map insertion precedes22"
+        );
+        assert_eq!(
+            f.terrain.source_predicted_position(),
+            f.arena.entities[usize::from(allocation.heads[4].source_slot)].position,
+            "after22/settle the ordinary fifth head's2A9F0 tail is the last scratch writer"
+        );
+        let mut settled = expected_copy;
+        settled.z = f.terrain.ground_height(settled);
+        assert_eq!(
+            f.arena.entities[usize::from(allocation.root.source_slot)].position,
+            settled
+        );
+        assert_eq!(
+            f.arena.entities[usize::from(allocation.root.source_slot)].entity_rng,
+            second
+        );
+        if exhausted {
+            assert_ne!(settled.z, row.position.z);
+        }
+        assert_eq!(
+            effects
+                .sounds
+                .iter()
+                .filter(|(_, sample)| *sample == 22)
+                .count(),
+            1
+        );
+    }
+
+    // The same reached216/9 path goes through the actual scheduler/audio
+    // consumer on the whole owner Level22. Direct callbacks above establish
+    // call-time RNG/pose; this checks Flight publication without a stale
+    // prepass-listener reconstruction.
+    let (mut session, root_slot) = owner_level22_model27();
+    let root = session.source_arena().handle(root_slot).unwrap();
+    let row = &mut session.session.state.live.economy.entities[usize::from(root_slot)];
+    row.set_source_action(216);
+    row.set_source_dword_10(9);
+    let source_id = row.source_id;
+    let expected_rng = crate::native_world::level2_next_rng16(
+        crate::native_world::level2_next_rng16(row.entity_rng),
+    );
+    let cursor = session.effect_journal().cursor(0).next_sequence;
+    session.step_outer_turn(crate::PlayerCommand::default(), 0);
+    assert!(
+        session
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "{:?}",
+        session.dispatch_events()
+    );
+    assert_eq!(session.source_arena().handle(root_slot), Some(root));
+    assert_eq!(
+        session.entities()[usize::from(root_slot)].entity_rng,
+        expected_rng
+    );
+    let sounds = session
+        .effect_journal()
+        .records()
+        .iter()
+        .filter(|record| record.sequence >= cursor)
+        .filter(|record| {
+            matches!(record.effect,
+            crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::HydraRelocation,
+                entity_index, player_index: -1, sound_id: 22,
+            }) if entity_index == root_slot)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sounds.len(),
+        1,
+        "scheduled216/9 publishes exactly its reached22"
+    );
+    let audio = sounds[0]
+        .audio
+        .expect("actual positional Flight command reaches native consumer");
+    assert_eq!(audio.play_type, 1);
+    assert_eq!(audio.command.rate_delta_percent, 0);
+    assert_eq!(audio.command.sound_flags, source_id as i16);
+}
+
+#[test]
+fn configured_prekill_skips_root_motion_and_keeps_linked_tail() {
+    let mut f = fixture();
+    let allocation = allocate(&mut f);
+    let origin = f.arena.entities[usize::from(allocation.root.source_slot)].position;
+    let root = &mut f.arena.entities[usize::from(allocation.root.source_slot)];
+    root.set_source_action(217);
+    root.record[63] = 0;
+    root.set_control_flags(root.control_flags | 0x800);
+    crate::native_world::area_damage::contact(
+        &mut f.arena,
+        None,
+        allocation.root.source_slot,
+        76,
+        f.target,
+    )
+    .unwrap();
+    let phases = allocation
+        .heads
+        .map(|head| f.arena.entities[usize::from(head.source_slot)].phase);
+    let old_body = f.arena.entities[usize::from(allocation.bodies[0][8].source_slot)].position;
+    let scratch = Position {
+        x: 123,
+        y: 456,
+        z: 789,
+    };
+    f.terrain.set_source_predicted_position(scratch);
+    let effects = mc2::step_row(
+        &mut f.arena,
+        &mut f.runtime,
+        &mut f.terrain,
+        &f.particles,
+        crate::native_world::source_target::Context::default(),
+        &mut |_, _, _| {},
+        allocation.root.source_slot,
+        &f.class3,
+        &f.families,
+        PROPERTIES.root_target_range,
+        PROPERTIES.root_target_half_angle,
+        0,
+        &mut |_, _, _, _| {},
+    )
+    .unwrap();
+    let root = &f.arena.entities[usize::from(allocation.root.source_slot)];
+    assert_eq!(
+        root.action, 220,
+        "prekill selection cannot be overwritten by hold→216"
+    );
+    assert_eq!(root.position, origin);
+    assert_eq!(
+        root.control_flags & 0x800,
+        0x800,
+        "root motion was not called"
+    );
+    assert_eq!(
+        f.terrain.source_predicted_position(),
+        f.arena.entities[usize::from(allocation.heads[4].source_slot)].position,
+        "root motion is skipped, but the ordinary linked-head tail still writes scratch"
+    );
+    assert_ne!(f.terrain.source_predicted_position(), scratch);
+    assert_eq!(
+        u16::from_le_bytes(root.record[40..42].try_into().unwrap()),
+        f.target
+    );
+    assert_eq!(
+        u16::from_le_bytes(root.record[42..44].try_into().unwrap()),
+        f.target
+    );
+    assert_eq!(&root.record[102..104], &[0, 0]);
+    assert!(effects.callback_executed && effects.kill_credit.is_none());
+    for (head, phase) in allocation.heads.into_iter().zip(phases) {
+        assert_eq!(
+            f.arena.entities[usize::from(head.source_slot)].phase,
+            phase.wrapping_add(1)
+        );
+    }
+    assert_ne!(
+        f.arena.entities[usize::from(allocation.bodies[0][8].source_slot)].position,
+        old_body,
+        "source29A90 still poses the linked chain after early prekill"
+    );
+}
+
+#[test]
+fn configured_alignment_visual_precedes_far_target_exit() {
+    let mut base = fixture();
+    let allocation = allocate(&mut base);
+    let origin = Position {
+        x: 32 * 256 + 128,
+        y: 64 * 256 + 128,
+        z: 0,
+    };
+    for phase in [31, 32] {
+        let mut f = base.clone();
+        {
+            let (planes, _, _, _) = f.terrain.disaster_parts();
+            planes.ground_heights.fill(0);
+            planes.terrain_types.fill(1);
+            planes.angles.fill(0);
+        }
+        let root = &mut f.arena.entities[usize::from(allocation.root.source_slot)];
+        root.set_source_action(218);
+        root.set_phase(phase);
+        root.set_position(origin);
+        root.set_yaw(0);
+        root.set_source_roll(0);
+        root.record[74] = 1;
+        root.record[154..156].copy_from_slice(&f.target.to_le_bytes());
+        assert_eq!(root.particle_parameter_index, Some(ROOT_PARTICLE));
+        root.record[96] = 7;
+        let mut far = origin;
+        crate::move_entity(&mut far, 0, 0, (PROPERTIES.root_target_range + 256) as i16);
+        f.arena.entities[usize::from(f.target)].set_position(far);
+        combat::step_root_action(
+            &mut f.arena,
+            &mut f.terrain,
+            &f.particles,
+            crate::native_world::source_target::Context::default(),
+            allocation.root,
+            218,
+            &f.class3,
+            PROPERTIES.root_target_range,
+            PROPERTIES.root_target_half_angle,
+        )
+        .unwrap();
+        let root = &f.arena.entities[usize::from(allocation.root.source_slot)];
+        assert_eq!(root.particle_parameter_index, Some(ROOT_PARTICLE));
+        if phase == 32 {
+            assert_eq!(root.action, 217);
+            assert_eq!(root.source_word_96(), 0);
+            assert_eq!(
+                root.record[96], 0,
+                "aligned315→337→315 must reset animation before range exit"
+            );
+        } else {
+            assert_eq!(root.action, 218);
+            assert_eq!(root.source_word_96(), f.target);
+            assert_eq!(
+                root.record[96], 7,
+                "outside the32 cadence no visual/range transition runs"
+            );
+        }
+    }
+}
+
+#[test]
+fn configured_head_tail_retains_hidden_flags_and_literal_map_copies() {
+    // Separate source-exception controls. The relocation/prekill and ordinary
+    // encounter above retain their actual constructor-default head states.
+    let mut base = fixture();
+    let allocation = allocate(&mut base);
+    for initial in [9, 7, 15] {
+        let mut f = base.clone();
+        for handle in allocation.heads {
+            let head = &mut f.arena.entities[usize::from(handle.source_slot)];
+            head.record[74] = 9;
+            head.set_source_dword_10(10);
+        }
+        let head = allocation.heads[4];
+        let mut first_copy = Position::default();
+        let mut second_copy = Position::default();
+        if initial == 7 {
+            {
+                let (planes, _, _, _) = f.terrain.disaster_parts();
+                planes.ground_heights.fill(0);
+                planes.terrain_types.fill(1);
+                planes.angles.fill(0);
+            }
+            let root = &mut f.arena.entities[usize::from(allocation.root.source_slot)];
+            root.set_yaw(0);
+            root.set_pitch(0);
+            root.set_position(Position {
+                x: 16_384,
+                y: 16_384,
+                z: 0,
+            });
+            let pose = multipart::pose_head(root, 4);
+            let mut position = root.position;
+            position.y = position.y.wrapping_add(100_u16.wrapping_sub(pose.y & 255));
+            root.set_position(position);
+            first_copy = multipart::pose_head(root, 4);
+            second_copy = first_copy;
+            second_copy.z = second_copy
+                .z
+                .wrapping_sub(28)
+                .max(f.terrain.ground_height(second_copy));
+            crate::move_entity(&mut second_copy, 0, 0, 180);
+            assert_ne!(first_copy.y >> 8, second_copy.y >> 8);
+            crate::world::effects::sync_position(
+                &mut f.arena,
+                &mut f.terrain,
+                allocation.root.source_slot,
+                position,
+                true,
+                false,
+            )
+            .unwrap();
+            // A real retained sibling occupies the final tile ahead of this
+            // head. Leaving that tile and returning must reorder them; a
+            // collapsed final-only copy cannot satisfy the expected map.
+            for handle in [head, allocation.heads[0]] {
+                f.arena.entities[usize::from(handle.source_slot)].set_position(second_copy);
+                crate::world::effects::sync_position(
+                    &mut f.arena,
+                    &mut f.terrain,
+                    handle.source_slot,
+                    second_copy,
+                    true,
+                    false,
+                )
+                .unwrap();
+            }
+        }
+        let row = &mut f.arena.entities[usize::from(head.source_slot)];
+        row.record[74] = initial;
+        if initial == 7 {
+            row.record[72] = 8;
+            row.set_source_dword_10(0);
+            row.record[71] = 0;
+            row.record[48..50].copy_from_slice(&6_u16.to_le_bytes());
+            row.record[58..60].fill(0);
+            row.record[136..138].copy_from_slice(&12_i16.to_le_bytes());
+            row.set_actual_speed(192);
+            row.set_source_roll(0);
+            row.set_fov(0);
+        }
+        let before_positions = allocation.bodies.map(|group| {
+            group.map(|body| f.arena.entities[usize::from(body.source_slot)].position)
+        });
+        let before_map = f.arena.economy.map_chains.clone();
+        let scratch = Position {
+            x: 123,
+            y: 456,
+            z: 789,
+        };
+        f.terrain.set_source_predicted_position(scratch);
+        let chain = multipart::read_chain(&f.arena, allocation.root).unwrap();
+        let epoch = f.arena.economy.replacement_list_epoch;
+        combat::step_heads(
+            &mut f.arena,
+            &mut f.terrain,
+            &f.particles,
+            crate::native_world::source_target::Context::default(),
+            &allocation,
+            &chain,
+            &f.class3,
+            epoch,
+            PROPERTIES.head_target_range,
+            PROPERTIES.head_target_half_angle,
+            0,
+            &mut |_, _, _, _| {},
+        )
+        .unwrap();
+        let row = &f.arena.entities[usize::from(head.source_slot)];
+        if initial == 7 {
+            assert_eq!(row.record[74], 7);
+            assert_eq!(
+                row.control_flags & 9,
+                1,
+                "timer0 hides the local head before its final commit"
+            );
+            assert_eq!(row.position, second_copy);
+            assert_eq!(
+                f.terrain.source_predicted_position(),
+                second_copy,
+                "nonzero2A940 is the last reached copy for final state7"
+            );
+            let seed = |slot, position: Position| crate::renderable_map_chain::RenderableMapSeed {
+                entity_index: slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            };
+            let mut expected = before_map.clone();
+            expected
+                .sync_entity(seed(head.source_slot, first_copy))
+                .unwrap();
+            expected
+                .sync_entity(seed(head.source_slot, second_copy))
+                .unwrap();
+            let mut collapsed = before_map.clone();
+            collapsed
+                .sync_entity(seed(head.source_slot, second_copy))
+                .unwrap();
+            for body in allocation.bodies[4] {
+                let position = f.arena.entities[usize::from(body.source_slot)].position;
+                expected
+                    .sync_entity(seed(body.source_slot, position))
+                    .unwrap();
+                collapsed
+                    .sync_entity(seed(body.source_slot, position))
+                    .unwrap();
+            }
+            assert_ne!(
+                expected, collapsed,
+                "the retained sibling discriminates both literal copies"
+            );
+            assert_eq!(f.arena.economy.map_chains, expected);
+            for handle in [head, allocation.heads[0]] {
+                let row = &f.arena.entities[usize::from(handle.source_slot)];
+                assert_eq!(
+                    u16::from_le_bytes(row.record[26..28].try_into().unwrap()),
+                    expected.old_map_entity(handle.source_slot)
+                );
+                assert_eq!(
+                    u16::from_le_bytes(row.record[28..30].try_into().unwrap()),
+                    expected.next_entity(handle.source_slot)
+                );
+            }
+        } else {
+            assert_eq!(row.record[74], if initial == 15 { 8 } else { 9 });
+            assert_eq!(f.terrain.source_predicted_position(), scratch);
+            assert_eq!(
+                f.arena.economy.map_chains, before_map,
+                "final8/9 skip head and body position/map copies"
+            );
+            for (group, positions) in allocation.bodies.iter().zip(before_positions) {
+                for (body, position) in group.iter().zip(positions) {
+                    assert_eq!(
+                        f.arena.entities[usize::from(body.source_slot)].position,
+                        position
+                    );
+                }
+            }
+            if initial == 15 {
+                for handle in std::iter::once(head).chain(allocation.bodies[4]) {
+                    assert_eq!(f.arena.handle(handle.source_slot), Some(handle));
+                    assert_eq!(
+                        f.arena.entities[usize::from(handle.source_slot)].control_flags & 9,
+                        1,
+                        "state15's actual head/body hide survives callback-local commit"
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn owner_level20_model27() -> (crate::native_world::Mc2Simulation, u16) {
@@ -938,7 +2244,12 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
         (root, chain)
     };
     let mut defeated = false;
+    // Source17 is outer state5 / inner phase6 (idle curl), not fatal
+    // outer state6. The fatal mailbox above selects6, which initializes7
+    // and enters the silent death/collapse path instead of the idle call.
+    let mut idle_curl_audio_during_death = false;
     for _ in 0..64 {
+        let cursor = session.effect_journal().cursor(0).next_sequence;
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(
             !session
@@ -948,6 +2259,18 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
             "source scheduler error: {:?}",
             session.dispatch_events()
         );
+        idle_curl_audio_during_death |= session
+            .effect_journal()
+            .records()
+            .iter()
+            .filter(|record| record.sequence >= cursor)
+            .any(|record| {
+                matches!(record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::HydraHeadRegrowth,
+                    entity_index, player_index: -1, sound_id: 17,
+                }) if entity_index == root_slot)
+            });
         let row = &session.session.state.live.economy.entities[usize::from(root_slot)];
         if row.record[63] == 0 {
             defeated = true;
@@ -957,6 +2280,10 @@ fn assert_linked_damage_death_and_next_pass_reclaim_all_slots(
     assert!(
         defeated,
         "all five damaged heads must complete their source death phases"
+    );
+    assert!(
+        !idle_curl_audio_during_death,
+        "fatal6→7 collapse must not invent the idle5/phase6 source17 call"
     );
     area_damage::contact(
         &mut session.session.state.live.economy,
@@ -1499,6 +2826,7 @@ fn authored_root_builds_and_advances_five_linked_nine_segment_chains() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     assert!(effects.callback_executed);
@@ -1543,6 +2871,7 @@ fn authored_root_builds_and_advances_five_linked_nine_segment_chains() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
@@ -1591,6 +2920,7 @@ fn root_tail_advances_all_heads_but_only_consumes_active_head_damage() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
 
@@ -1671,6 +3001,7 @@ fn pursuit_reads_the_live_player_position_instead_of_retained_row_bytes() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
@@ -1711,6 +3042,7 @@ fn head_state_zero_reuses_the_previous_heads_source_roll() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     assert_eq!(
@@ -1767,6 +3099,7 @@ fn stage_attack_transition_updates_the_root_and_linked_heads_in_one_pass() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
 
@@ -1816,6 +3149,7 @@ fn authored_point_stage_binds_and_advances_the_real_root() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     let row = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
@@ -1892,6 +3226,7 @@ fn actor_follow_mode_attacks_the_followed_actors_current_target() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         let root = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
@@ -1948,6 +3283,7 @@ fn summoned_stage_expires_if_its_parent_is_missing_or_reused() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         assert!(
@@ -1994,6 +3330,7 @@ fn regrowing_head_uses_same_pass_fallthrough_and_next_linked_position() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         let head = &fixture.arena.entities[usize::from(head_slot)];
@@ -2086,6 +3423,7 @@ fn head_allocation_replacement_clears_later_frozen_target_scans() {
             PROPERTIES.head_target_range,
             PROPERTIES.head_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         assert!(
@@ -2136,6 +3474,7 @@ fn newly_acquired_head_target_enters_attack_on_the_next_visit() {
             PROPERTIES.head_target_range,
             PROPERTIES.head_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         let head = &fixture.arena.entities[usize::from(allocation.heads[0].source_slot)];
@@ -2217,6 +3556,7 @@ fn summoned_target_acquisition_uses_the_frozen_class3_membership() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         let row = &fixture.arena.entities[usize::from(allocation.root.source_slot)];
@@ -2284,6 +3624,7 @@ fn summoned_and_allied_feedback_runs_before_the_linked_head_tail() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         let mut expected = Vec::new();
@@ -2335,6 +3676,7 @@ fn live_head_uses_the_linked_target_and_emits_a_real_source_projectile() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     assert_eq!(effects.projectile_slots.len(), 1);
@@ -2370,6 +3712,7 @@ fn live_head_uses_the_linked_target_and_emits_a_real_source_projectile() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     assert_eq!(effects.projectile_slots.len(), 1);
@@ -2420,6 +3763,7 @@ fn head_projectiles_do_not_report_creation_when_the_source_arena_is_full() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         assert!(effects.projectile_slots.is_empty());
@@ -2450,6 +3794,7 @@ fn head_projectiles_do_not_report_creation_when_the_source_arena_is_full() {
             PROPERTIES.root_target_range,
             PROPERTIES.root_target_half_angle,
             0,
+            &mut |_, _, _, _| {},
         )
         .unwrap();
         if selector == 9 {
@@ -2507,6 +3852,7 @@ fn projectile_constructor_rereads_a_target_slot_replaced_by_its_own_allocation()
             head_slot,
             fixture.target,
             selector,
+            &mut |_, _, _| {},
         )
         .unwrap()
         .expect("replacement cursor can allocate its target address");
@@ -2554,6 +3900,7 @@ fn prekill_counts_once_then_death_hides_the_generation_bound_chain() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     assert_eq!(
@@ -2619,6 +3966,7 @@ fn prekill_counts_once_then_death_hides_the_generation_bound_chain() {
         7_680,
         2_048,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     let outcome = death.death.expect("action221 runs source death products");
@@ -2774,6 +4122,7 @@ fn prekill_parts_run_their_enabled_death_callbacks_in_the_same_pass() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
 
@@ -2792,6 +4141,7 @@ fn prekill_parts_run_their_enabled_death_callbacks_in_the_same_pass() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap()
     .death
@@ -2818,6 +4168,7 @@ fn prekill_parts_run_their_enabled_death_callbacks_in_the_same_pass() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap()
     .death
@@ -2843,6 +4194,7 @@ fn death_suffix_stops_at_a_reused_part_slot() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
 
@@ -2877,6 +4229,7 @@ fn death_suffix_stops_at_a_reused_part_slot() {
         PROPERTIES.root_target_range,
         PROPERTIES.root_target_half_angle,
         0,
+        &mut |_, _, _, _| {},
     )
     .unwrap();
     assert!(fixture.arena.entities[usize::from(head.source_slot)].drawing_disabled());
