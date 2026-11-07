@@ -1,5 +1,28 @@
 # Shared-engine delivery plan
 
+## Modern goat and bow archer — checked asset delivery (2026-11-07)
+
+Oliver requested repaired, complete character actions and results checked in
+Unity. Implementation `41fe2868` delivers the grounded goat idle/walk and archer
+idle/walk, standing reach/nock/draw/release/recovery, descent, kneeling shot and
+rise. Selected owner-local exports are `goat-neutral2` and `archer-candidate12`
+under `research/private/generated/characters-complete-20261106/`. Canonical
+authoring/export scripts and Unity importer/playback/checks are recorded in
+`research/private/character-pipeline/README.md`; generated assets stay ignored.
+
+Fresh Unity checks pass 12/12. Actual-player capture contains 874 full portrait
+frames, with zero framing failures; root and the Terra motion owner inspected
+key action/contact frames. Real selection, pause, Shoot, scrub and normal exit
+pass on a private display. The installed `run-characters.sh` launcher was also
+checked. Phone review: `http://3090.bumblebee-hue.ts.net:8095/` within the tailnet;
+raw evidence: `/mnt/pinokio-shared/magiccarpet-character-checked-unity/` and
+`generated/characters-complete-20261106/delivery.json` under `research/private/`.
+The archer retains modeled finger grips. This milestone covers character assets
+and the dedicated inspection player; ordinary campaign binding, terrain foot
+placement, deaths, crowd LODs and actual-desktop FPS remain unverified. Do not
+treat the character-specific repairs as universal automatic video-to-animation.
+Keep the separate Original gameplay work below untouched.
+
 ## Modern buildings — source-shaped sandbox delivery (2026-11-06)
 
 Oliver accepted the environment and chose original-inspired, richly detailed
