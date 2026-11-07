@@ -101,8 +101,9 @@ Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
 tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
 Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7`, leaping creature21 `.8`
-and paired-body creature22 `.9` are delivered. Next is mana-hunting creature23
-`mc-1pb.10`; its full shared-system dependencies remain open. The proper original
+and paired-body creature22 `.9` are delivered. Mana-hunting creature23's connected
+runtime is now installed; `mc-1pb.10` retains its open shared-system dependencies.
+Next is creature24 `mc-1pb.11`. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -115,10 +116,11 @@ objective consumers and original presentation/assets. Preserve the delivered
 spell checkpoints and already qualified creature paths; repair shared defects
 in their canonical owner when a real connected failure exposes them.
 
-AmberDune owns the next creature23 capability through real authored production,
-sphere claim/lift/consumption, separate Lightning damage and cleanup/consumers.
-CalmLynx implements required shared joins; CopperMountain serializes builds and
-delivery. `mc-1pb.10` is assigned but remains open while its original
+AmberDune delivered creature23 through real authored production, sphere
+claim/lift/consumption, outgoing Lightning, public Meteor defeat and cleanup.
+CalmLynx implemented required shared joins; CopperMountain serialized checks and
+delivery. Keep the small team and finish creature24 next, after reading its
+original acceptance and current source. `mc-1pb.10` remains open while its original
 `mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
 
@@ -133,7 +135,8 @@ without bypassing or rewriting those dependencies.
 - [x] Sentinel18 — `mc-1pb.7`.
 - [x] Leaping creature21 — `mc-1pb.8`.
 - [x] Paired-body creature22 — `mc-1pb.9`.
-- [ ] Creatures23/24 — `mc-1pb.10`/`.11`.
+- [x] Mana-hunting creature23 runtime — `mc-1pb.10` (bead retains open shared dependencies).
+- [ ] Creature24 — `mc-1pb.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
@@ -150,7 +153,62 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: paired-body creature22 (2026-11-06)
+### Current delivery: mana-hunting creature23 (2026-11-07)
+
+Implemented and verified, committed/pushed at runtime
+`6ee32f709b9a068600374986098dfaff7d3ea862`, and installed as Original native
+`19bc05bc8c004eda4eac7b238255e3959e2ab16c00c9b99cabc62df1aff79fa6`
+(138,552,464 bytes). Original `.10` acceptance/dependencies are unchanged;
+the bead stays open with shared `.10/.12`, and the full engine remains open.
+
+Actual unfiltered Level18 root29 follows the ordinary source callbacks.
+Public carried Steal Mana III hits actual rival184 outside its current Castle209,
+debits the Castle and creates16 real mana spheres. Original sphere253/gen1
+merges from500 to1500, is claimed at349, genuinely lifted, and consumed at361:
+hunter mana100→1600, hidden retained sphere, then following original-generation
+reclaim. The corrected connected gate passes66.783s. Carry/XP/resources, a
+constructed player Castle and player entry/travel are declared controls;
+the rival/hunter poses, health, RNG and timers stay ordinary. The test waits
+naturally outside Castle protection; a protected prefix correctly clears hits.
+
+The separate real hunter→9/9 Ray→10/23 Lightning→actual player damage path
+passes8.827s. Public carried Meteor III now supplies the exact original hunter's
+fatal mailbox writer, credited188→189, mana/burst DTO, hide, living-root loss
+and following reclaim, with error-free same-elapsed no-cast control (4.497s).
+The shared KillEntity birth now uses the canonical death-burst producer,
+preserving post-mana current reads, suppression, aliasing and final hide while
+joining existing provenance/events. The earlier burst failure established
+missing registration, not missing rendering.
+
+Source movement/targeting, current A4 Castle geometry/music, retained claims,
+source-order damage tails and all enabled184–189/191 are connected;190 remains
+explicitly unsupported. Configured Stage191 modes, current-parent physical reuse,
+allocation failure, contact/reward/statistics and actual frozen semantic absence
+are checked. The longer run exposed remote Morph's stale shared holder projection;
+the canonical generation-bound holder/body relation now admits its visible body
+and actual callback/phase epilogue (27.710s). No hidden-body bypass is claimed.
+
+Final shared-kill24 lifecycle/alias and26 death checks pass; source order passes
+0.598s, warm-context save/replay6.703s, workspace/all-targets42.687s and strict rig
+native build65.828s. A fresh bounded source/gate review found no further concrete
+finite-family defect. Whole-file UBS/format debt remains; the only added-line
+critical is the intentional cfg(test) dispatch-error panic. No production finding
+was left untriaged. Failed gates and the interrupted/recovered candidate6 build
+remain recorded; they are not counted as successful outer checks.
+
+All445 Rust-workspace,162 upstream and37 extra inputs (637 unique), exact worker/
+returned native bytes and196 Original Unity inputs match. Root viewed canonical
+Original map/loading/NightSpire terrain/HUD with the matching mapped native,
+one click/zero retries, and stopped owned smoke processes. The initial blank
+startup capture is retained separately. No Unity/art change. Native23 encounters,
+human combat/FPS, hardware audio, full missions and old saves remain unverified.
+
+Evidence: `generated/mana-hunter-20261106-integration/candidate-13`, candidate11
+capture and earlier supporting/negative receipts, plus
+`Builds/delivery-mana-hunter-20261107-batch1`. Completed build returns are
+SHA-preserved on rig ext4; current and immediate previous native pins remain regular.
+
+### Previous delivery: paired-body creature22 (2026-11-06)
 
 Finite original `.9` acceptance is implemented, verified, committed/pushed at
 runtime `9cedba178dd4ad80999359be6f6738751f7c3bfc` and installed as Original native
