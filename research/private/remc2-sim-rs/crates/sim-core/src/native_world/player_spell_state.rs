@@ -72,6 +72,10 @@ pub struct GlobalSpecialState {
     pub speed: i16,
     #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_angle")]
     pub speed_changed: i16,
+    /// Source5EF70 may target a current model0 whose A4 is NewEvent's
+    /// shared context, rather than a player-specific A4.
+    #[serde(default, skip_serializing_if = "GlobalSpecialState::zero_angle")]
+    pub music_countdown: i16,
 }
 
 impl GlobalSpecialState {
@@ -82,6 +86,10 @@ impl GlobalSpecialState {
         *self == Self::default()
     }
     pub(super) fn append_hash(self, hasher: &mut Sha256) {
+        if self.music_countdown != 0 {
+            hasher.update(b"source-global-a4-music-countdown-v1");
+            hasher.update(self.music_countdown.to_le_bytes());
+        }
         if self.speed != 0 || self.speed_changed != 0 {
             hasher.update(b"source-global-speed-input-v1");
             hasher.update(self.speed.to_le_bytes());

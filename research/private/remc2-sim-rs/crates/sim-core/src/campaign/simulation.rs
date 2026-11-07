@@ -16441,11 +16441,58 @@ impl Mc2Simulation {
                         && holder.action == 12
                         && holder.source_spell_parent_entity_index() == parent
                         && (holder.source_word_96() == source_slot
+                            // Raw Morph controllers update their arena carrier;
+                            // the shared pickup projection can retain word96=0.
+                            // Check the current generation-bound birth relation.
+                            || self.session.state.live.economy.handle(holder.index)
+                                .and_then(|handle| self.session.state.live.economy.economy
+                                    .morph.body_for_holder(handle))
+                                .is_some_and(|body| {
+                                    let current = body.source_slot == source_slot
+                                        && self.session.state.live.economy.handle(source_slot) == Some(body);
+                                    #[cfg(test)]
+                                    if current {
+                                        creatures::morph::observe_binding_admission(
+                                            &self.session.state.live.economy,
+                                            self.session.state.live.economy.handle(holder.index)
+                                                .expect("current holder was resolved for this binding"),
+                                            body,
+                                            holder.source_word_96(),
+                                        );
+                                    }
+                                    current
+                                })
                             || self.session.state.live.economy.entities[usize::from(source_slot)]
                                 .drawing_disabled())
                 })
                 .then_some(())
                 .ok_or_else(|| {
+                    #[cfg(test)]
+                    {
+                        let live = &self.session.state.live;
+                        let arena = &live.economy;
+                        let row = &arena.entities[usize::from(source_slot)];
+                        let handle = arena.handle(source_slot);
+                        let current = handle.and_then(|handle| arena.resolve(handle)).map(|view| match view {
+                            crate::campaign::source_arena::SourceEntityView::Imported(_) => "imported".to_owned(),
+                            crate::campaign::source_arena::SourceEntityView::Dynamic(kind) => format!("dynamic:{kind:?}"),
+                        });
+                        let parent_row = arena.entities.get(usize::from(parent));
+                        let holders = live.shared_spells.holders().iter()
+                            .chain(live.shared_spells.pickups())
+                            .chain(live.shared_spells.dynamic_pickups())
+                            .filter(|holder| holder.model == 4).take(8)
+                            .map(|holder| (arena.handle(holder.index), holder.active, holder.class, holder.model,
+                                holder.action, holder.source_spell_parent_entity_index(), holder.source_word_96(), holder.control_flags))
+                            .collect::<Vec<_>>();
+                        let bindings = arena.economy.morph.bodies.iter().take(8).collect::<Vec<_>>();
+                        let census = arena.creature_runtime_census(&std::collections::BTreeMap::new(), &std::collections::BTreeMap::new());
+                        let origin = census.entries().iter().find(|entry| entry.handle.source_slot == source_slot);
+                        return format!("Morph body source slot {source_slot} lost its owning holder; guard handle={handle:?} current={current:?} packet={:?} parent={:?} holders={holders:?} bindings={bindings:?} origin={origin:?}",
+                            (row.active, row.class, row.model, row.action, row.phase, row.record[77], row.source_id, row.source_word_96(), row.life, row.control_flags, row.position),
+                            parent_row.map(|row| (arena.handle(row.index), row.active, row.class, row.model, row.action, row.source_id, row.control_flags)));
+                    }
+                    #[cfg(not(test))]
                     format!("Morph body source slot {source_slot} lost its owning holder")
                 });
         }
@@ -17544,6 +17591,44 @@ impl Mc2Simulation {
                     });
                     self.append_new_economy_events(pass, source_slot);
                 }
+                // Source27E00/27C10 prepare sound59 before movement, target
+                // reads or NewEvent. Publish that call-time packet here so
+                // later work cannot replace its source pose or identity.
+                if visit.handler == ExistingHandler::Creature23
+                    && let Some(sound) = creatures::creature_23::mc2::prepare_callback_sound(
+                        &self.session.state.live.economy, source_slot,
+                    )?
+                {
+                    let sound_id = creatures::creature_23::mc2::CALLBACK_SOUND;
+                    let live = &self.session.state.live;
+                    // Sound59 has fixed pitch and flags0; PrepareEventSound
+                    // does not consume an action-dependent or RNG value.
+                    let audio = (sound.control_flags & 0x80 == 0).then(|| {
+                        crate::prepare_event_sound_command(
+                            live.core.state.position, live.core.state.yaw,
+                            sound.position, sound_id, 0, sound.source_id, 0,
+                        )
+                    }).flatten();
+                    let event = FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: if live.economy.entities[usize::from(source_slot)].action == 186 {
+                            crate::MissionAudioSite::Creature23Attack
+                        } else {
+                            crate::MissionAudioSite::Creature23ManaPursuit
+                        },
+                        entity_index: sound.slot,
+                        player_index: -1,
+                        sound_id,
+                    };
+                    self.session.state.live.economy.prepare_sound(
+                        source_slot, sound.slot, -1, sound_id,
+                    );
+                    self.flush_shared_effects();
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    Vec::push(&mut self.session.state.live.shared_spells.events, event);
+                    self.append_new_economy_events(pass, source_slot);
+                }
                 let empty_models = std::array::from_fn(|_| Vec::new());
                 let (models, players) = if effect_lists.is_current(&self.session.state.live.economy)
                 {
@@ -17753,11 +17838,34 @@ impl Mc2Simulation {
                         let mana_slots = effect_lists.mana_chain().current_slots(
                             &live.economy, &live.economy.entities,
                         );
+                        let targets = source_target::Context {
+                            map_type: Some(live.terrain.map_type()),
+                            player: Some((
+                                live.core.state.entity_index,
+                                live.core.state.position,
+                                live.player_life,
+                            )),
+                            player_orientation: Some((
+                                live.core.state.yaw,
+                                live.core.state.roll_accumulator,
+                            )),
+                            particles: Some(&self.session.definition.presentation.particles),
+                            ..source_target::Context::default()
+                        };
+                        let mut player_feedback = source_target::Creature23PlayerFeedback {
+                            shared: &mut live.shared_spells,
+                            core_players: &mut live.core.players,
+                            local_state: &mut live.core.state,
+                            domains: Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                                .with_particles(&self.session.definition.presentation.particles)),
+                        };
                         let outcome = creatures::creature_23::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
                             &mut live.terrain,
                             &self.session.definition.presentation.particles,
+                            targets,
+                            &mut player_feedback,
                             source_slot,
                             players,
                             models,
@@ -17767,8 +17875,8 @@ impl Mc2Simulation {
                             None,
                             outcome.kill_credit,
                             None,
-                            outcome.sound,
-                            outcome.target_music,
+                            None,
+                            None,
                         )
                     } else if visit.handler == ExistingHandler::Creature17 {
                         #[cfg(test)]
@@ -18206,6 +18314,8 @@ impl Mc2Simulation {
                 } else if live.economy.entities[usize::from(source_slot)].class == 10
                     && live.economy.entities[usize::from(source_slot)].model == 23
                 {
+                    #[cfg(test)]
+                    let _source_trace = area_damage::trace_effect_source(source_slot);
                     let mut actors =
                         area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
                     lightning::step_endpoint(&mut live.economy, source_slot, |arena, pulse| {
@@ -23408,7 +23518,7 @@ impl Mc2Simulation {
     /// scheduler. The adapter owns phase placement, live resolution, registry
     /// selection, callback invocation, epilogue policy, and following cleanup;
     /// retained family methods own only their typed callback bodies.
-    pub(super) fn step_level2_source_pass_with_player(
+    pub(crate) fn step_level2_source_pass_with_player(
         &mut self,
         pass: u8,
         latched_command: crate::LatchedCommand,
@@ -23827,12 +23937,10 @@ impl Mc2Simulation {
                     .economy
                     .economy
                     .morph
-                    .bodies
-                    .get(&source_slot)
-                    .is_some_and(|(generation, child)| {
-                        *generation == handle.generation
-                            && child.source_slot == child_slot
-                            && self.session.state.live.economy.resolve(*child).is_some()
+                    .body_for_holder(handle)
+                    .is_some_and(|child| {
+                        child.source_slot == child_slot
+                            && self.session.state.live.economy.resolve(child).is_some()
                     })
             });
             if !local && body_current {
@@ -31597,6 +31705,150 @@ mod tests {
             .is_some_and(|actor| actor.life >= 0 && !actor.hidden()));
         assert_eq!(no_cleanup.runtime().objectives[owner].stage_selectors[stage], 1,
             "ordinary no-cleanup source visits keep the same root alive and absence blocked");
+    }
+
+    #[test]
+    fn configured_level18_creature23_contact_death_preserves_frozen_absence_and_reclaim() {
+        use crate::level_definition::LevelObjectiveConditionAccess;
+        use sim_definition::adapter::{build_level_definition, objective_definition, stable_objective_id};
+
+        let package = std::env::var_os("MC_CREATURE23_LEVEL18_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/all-spells-20261104-integration/current-owner-package/level18"),
+            PathBuf::from,
+        );
+        let campaign = CampaignSession::open(package, CampaignSelection::ordinary(18).unwrap())
+            .expect("the unfiltered owner Level18 package opens");
+        let definition = campaign.definition().clone();
+        let mut session = campaign.simulation().clone();
+        let original = definition.level_definition();
+        let stage = original.objectives().len();
+        assert_eq!(usize::from(session.runtime().stage_index), stage);
+        assert!(stage < session.runtime().stages.len());
+        assert_eq!(session.runtime().stages[stage].kind, 0);
+        let mut objectives = original.objectives().to_vec();
+        objectives.push(objective_definition(
+            stable_objective_id("objective.configured.creature23_absence").unwrap(),
+            ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature23),
+            LevelObjectiveConditionAccess::SessionReset,
+        ));
+        let level = build_level_definition(
+            original.entities().to_vec(), objectives, original.activation_groups().collect(),
+        ).expect("configured absence admits the implemented package-present Creature23");
+        assert_eq!(level.entities(), original.entities());
+        assert_eq!(&level.objectives()[..stage], original.objectives(),
+            "retain every original task and placement; only append the declared control");
+        let rival_wizard_by_id = definition.rival_wizard_selectors().iter().map(|(id, selector)| {
+            let target = crate::campaign::objectives::rival_wizard::target_from_selector(*selector).unwrap();
+            assert_eq!(target.id(), id);
+            let bound = crate::campaign::objectives::rival_wizard::bind_target(
+                &target, session.players(), session.entities(),
+            ).unwrap();
+            (bound.id, bound.entity_index)
+        }).collect();
+        session.bind_semantic_level_definition(SemanticLevelBindings {
+            level,
+            authored_creature_kinds: definition.creature_bindings().clone(),
+            authored_creature_entities: definition.authored_creature_entity_bindings(),
+            initial_source_creatures: definition.initial_creature_bindings().clone(),
+            creature_models: definition.creature_models().clone(),
+            authored_spells: definition.spell_bindings().clone(),
+            spell_families: definition.spell_families().clone(),
+            authored_buildings: definition.building_bindings().clone(),
+            authored_building_entities: definition.authored_building_entity_bindings(),
+            initial_source_buildings: definition.initial_building_bindings().clone(),
+            authored_scenery: definition.scenery_bindings().clone(),
+            authored_scenery_entities: definition.authored_scenery_entity_bindings(),
+            initial_source_scenery: definition.initial_scenery_bindings().clone(),
+            authored_items: definition.item_bindings().clone(),
+            authored_item_entities: definition.item_entity_bindings(),
+            authored_switches: definition.switch_bindings().clone(),
+            authored_switch_entities: definition.authored_switch_entity_bindings(),
+            initial_source_switches: definition.initial_switch_bindings().clone(),
+            initial_source_switch_entities: definition.initial_switch_entity_bindings().clone(),
+            authored_mechanics: definition.mechanic_bindings().clone(),
+            initial_source_mechanics: definition.initial_mechanic_bindings().clone(),
+            authored_mechanic_entities: definition.mechanic_entity_bindings().clone(),
+            initial_source_mechanic_entities: definition.initial_mechanic_entity_bindings().clone(),
+            standing_building_chains: definition.standing_building_chains().clone(),
+            rival_wizard_by_id,
+        });
+        let player = session.state.entity_index;
+        let owner = usize::from(session.players().iter().find(|row| row.entity_index == player)
+            .unwrap().player_color_index());
+        {
+            let runtime = &mut session.session.state.live.core.runtime;
+            runtime.stage_index = u8::try_from(stage + 1).unwrap();
+            runtime.bytes[65] = runtime.stage_index;
+            runtime.stages[stage] = RuntimeStage {
+                kind: 7, flags: 0, axis_x: 0, axis_y: 0, relation: RuntimeRelation::Scalar(23),
+            };
+            let offset = 192 + stage * 14;
+            assert_eq!(&runtime.bytes[offset..offset + 14], &[0; 14]);
+            runtime.bytes[offset] = 7;
+            runtime.bytes[offset + 10..offset + 14].copy_from_slice(&23_u32.to_le_bytes());
+            runtime.set_level2_objective_stage_selector_for(owner, stage, 1);
+            runtime.set_level2_objective_text_selector_for(owner, stage);
+        }
+        let roots = session.source_arena().rebuilt_class5_model_slots()[23].iter()
+            .map(|slot| session.source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+        assert!(!roots.is_empty());
+        assert!(roots.iter().any(|handle| handle.source_slot == 29),
+            "the unchanged reset supplies the actual model23 root29");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 1,
+            "actual living model23 roots block the configured semantic objective");
+        let mut no_contact = session.clone();
+        for handle in &roots {
+            assert_eq!(session.source_arena().handle(handle.source_slot), Some(*handle));
+            let life = session.entities()[usize::from(handle.source_slot)].life;
+            assert!(life >= 0);
+            area_damage::contact(
+                &mut session.session.state.live.economy, None, handle.source_slot,
+                u16::try_from(life + 1).unwrap(), player,
+            ).expect("the existing contact writer queues source damage without selecting death");
+            assert_eq!(session.entities()[usize::from(handle.source_slot)].life, life);
+        }
+        let mut evidence = Vec::new();
+        let (frozen, buildings) = session.step_level2_source_pass_with_player(
+            0, crate::LatchedCommand::default(), crate::FlightTuning::CLASSIC, &mut evidence,
+        ).unwrap();
+        assert!(frozen[23], "membership is frozen before the real lethal callbacks");
+        assert!(roots.iter().all(|handle| {
+            let row = &session.entities()[usize::from(handle.source_slot)];
+            session.source_arena().handle(handle.source_slot) == Some(*handle)
+                && row.life == -1 && row.action == 188 && !row.drawing_disabled()
+        }));
+        assert!(session.source_arena().rebuilt_class5_model_slots()[23].is_empty());
+        session.advance_level2_objectives(&frozen, &buildings).unwrap();
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 1,
+            "the same-pass objective must use its nonempty frozen head, not the rebuilt dead roots");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert_eq!(session.runtime().objectives[owner].stage_selectors[stage], 2,
+            "the next pass freezes empty and completes semantic Creature23 absence");
+        let mut hidden = false;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(session.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+            if roots.iter().all(|handle| session.source_arena().handle(handle.source_slot) == Some(*handle)
+                && session.entities()[usize::from(handle.source_slot)].drawing_disabled()) {
+                hidden = true;
+                break;
+            }
+        }
+        assert!(hidden, "ordinary prekill/death cadence hides every original generation");
+        assert!(session.campaign_entity_presentations(0).unwrap().iter()
+            .all(|view| roots.iter().all(|handle| view.entity_index != handle.source_slot)));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(roots.iter().all(|handle| session.source_arena().resolve(*handle).is_none()),
+            "the next source boundary reclaims the original root generations");
+        no_contact.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(roots.iter().all(|handle| no_contact.source_arena().handle(handle.source_slot) == Some(*handle)
+            && no_contact.entities()[usize::from(handle.source_slot)].life >= 0));
+        assert_eq!(no_contact.runtime().objectives[owner].stage_selectors[stage], 1,
+            "without contact the real same roots continue blocking absence");
     }
 
     #[test]

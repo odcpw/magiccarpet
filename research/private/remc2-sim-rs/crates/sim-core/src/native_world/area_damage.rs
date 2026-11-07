@@ -21,6 +21,7 @@ pub(crate) struct ActorDomains<'a> {
     goats: &'a mut GoatFamily,
     houses: &'a mut HouseFamily,
     villagers: &'a mut VillagerFamily,
+    house_parameters: &'a std::collections::BTreeMap<u8, crate::house::HouseParameter>,
     particles: Option<&'a [super::ParticleParameter]>,
 }
 
@@ -33,6 +34,7 @@ impl<'a> ActorDomains<'a> {
             goats,
             houses: &mut ordinary.houses,
             villagers: &mut ordinary.villagers,
+            house_parameters: &ordinary.house_parameters,
             particles: None,
         }
     }
@@ -47,6 +49,7 @@ impl<'a> ActorDomains<'a> {
             goats: &mut *self.goats,
             houses: &mut *self.houses,
             villagers: &mut *self.villagers,
+            house_parameters: self.house_parameters,
             particles: self.particles,
         }
     }
@@ -56,6 +59,7 @@ impl<'a> ActorDomains<'a> {
             goats: Some(self.goats),
             houses: Some(self.houses),
             villagers: Some(self.villagers),
+            house_parameters: Some(self.house_parameters),
             particles: self.particles,
             ..super::source_target::Context::default()
         }
@@ -1761,8 +1765,11 @@ pub(crate) fn apply_effect(
         EffectDamageReceipt {
             source_slot,
             source_scoped: scoped_source.is_some(),
+            // The scoped callback also identifies a real Lightning endpoint.
+            // Preserve its packet/generation for the ordinary Ray ancestry
+            // check; source inference above remains limited to model0.
             source_raw_impact: source_slot.and_then(|slot| world.targets.arena.entities.get(usize::from(slot))
-                .filter(|row| row.active && (row.class, row.model) == (10, 0))
+                .filter(|row| row.active && row.class == 10 && matches!(row.model, 0 | 23))
                 .map(|row| (world.targets.arena.economy.slot_generation(slot), row.clone()))),
             source_impact: source_slot.and_then(|source_slot| {
                 world.targets.arena.economy.model17_spawned_children().iter()

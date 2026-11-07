@@ -2025,11 +2025,19 @@ pub struct PlayerSnapshot {
     /// Source player A4 byte_0x1BF_447; distinct from a nonplayer holder's
     /// GlobalSpecialState and from compact spell-blocked byte 447.
     pub visibility_mode: u8,
+    /// Source A4 word0x36, omitted by the compact player export. Nonlocal
+    /// A4 writes remain here; the local FlightState owns its live countdown.
+    /// An omitted imported value stays unknown until a source write occurs.
+    pub source_music_countdown: Option<i16>,
     pub(super) record: Box<[u8]>,
 }
 
 impl PlayerSnapshot {
     pub(crate) fn append_omitted_state_hash(&self, hasher: &mut Sha256) {
+        if let Some(countdown) = self.source_music_countdown {
+            hasher.update(b"source-player-a4-music-countdown-v1");
+            hasher.update(countdown.to_le_bytes());
+        }
         if let Some(auxiliary) = self.type_str_164_auxiliary.as_ref()
             && auxiliary.padding_words_0x23c.iter().any(Option::is_some)
         {

@@ -36,6 +36,31 @@ const PROJECTILE_SPEED: i16 = 384;
 const PROJECTILE_RANGE: i32 = 0x2000;
 const FIELD_LIFETIME: i32 = 8;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StealManaSphereBirthReceipt {
+    pub caster: crate::campaign::source_arena::SourceEntityHandle,
+    pub target: crate::campaign::source_arena::SourceEntityHandle,
+    pub sphere: crate::campaign::source_arena::SourceEntityHandle,
+    pub tier: u8,
+    pub mana: i32,
+}
+
+#[cfg(test)]
+thread_local! {
+    static STEAL_MANA_SPHERE_BIRTH_TRACE: std::cell::RefCell<Option<Vec<StealManaSphereBirthReceipt>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_steal_mana_sphere_birth_trace() {
+    STEAL_MANA_SPHERE_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_steal_mana_sphere_birth_trace() -> Vec<StealManaSphereBirthReceipt> {
+    STEAL_MANA_SPHERE_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 pub(crate) const STEAL_MANA_SOURCE_CONSTRUCTOR: super::guided_projectile::Constructor = super::guided_projectile::Constructor {
     model: STEAL_MANA_PROJECTILE_MODEL, action: STEAL_MANA_PROJECTILE_MODEL,
     parameter: STEAL_MANA_PARAMETER, particle: STEAL_MANA_PARTICLE,
@@ -833,6 +858,8 @@ where
         .take_player_effect(crate::combat::actors::PlayerEffectLane::StealMana);
     if let Some(hit) = steal_hit {
         let caster_slot = hit.attacker;
+        #[cfg(test)]
+        let original_owners = arena.handle(caster_slot).zip(arena.handle(actor_slot));
         outcome.steal_consumed = true;
         outcome.steal_attacker_resolved = arena.handle(caster_slot).is_some();
         if let (Some(mut thief), Some(mut victim)) =
@@ -875,7 +902,7 @@ where
                         u32::try_from(pitch * pitch + roll * roll).unwrap_or(u32::MAX),
                     );
                     for grant in &result.mana_spheres {
-                        let _ = spawn_steal_mana_sphere(
+                        let spawned = spawn_steal_mana_sphere(
                             arena,
                             terrain,
                             actor_slot,
@@ -884,6 +911,26 @@ where
                             grant.mana,
                             grant.player_entity_index,
                         )?;
+                        #[cfg(test)]
+                        if let (Some((caster, target)), Some(slot)) = (original_owners, spawned)
+                            && let Some(sphere) = arena.handle(slot)
+                        {
+                            STEAL_MANA_SPHERE_BIRTH_TRACE.with(|trace| {
+                                if let Some(receipts) = trace.borrow_mut().as_mut()
+                                    && receipts.len() < 128
+                                {
+                                    receipts.push(StealManaSphereBirthReceipt {
+                                        caster,
+                                        target,
+                                        sphere,
+                                        tier: result.tier,
+                                        mana: grant.mana,
+                                    });
+                                }
+                            });
+                        }
+                        #[cfg(not(test))]
+                        let _ = spawned;
                     }
                 }
                 outcome.steal_mana = Some(StealManaConsumption {

@@ -17,6 +17,49 @@ use super::{
 use crate::campaign::source_arena::{SourceArena, SourceEntityHandle, SourceEntityView};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingStealCastleReceipt {
+    pub(crate) slot: u16,
+    pub(crate) position: Position,
+    pub(crate) axes: [i16; 4],
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingStealPreludeReceipt {
+    pub(crate) actor: SourceEntityHandle,
+    pub(crate) pending: crate::combat::actors::PlayerEffectHit,
+    pub(crate) position: Position,
+    pub(crate) axes: [i16; 4],
+    pub(crate) a4_castle_slot: u16,
+    pub(crate) effective_castle_slot: u16,
+    pub(crate) castle: Option<PendingStealCastleReceipt>,
+    pub(crate) word159_before: i16,
+    pub(crate) word159_after: i16,
+    pub(crate) castle_overlaps: bool,
+    pub(crate) admitted: bool,
+    pub(crate) cleared: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PENDING_STEAL_PRELUDE_TRACE: std::cell::RefCell<Option<Vec<PendingStealPreludeReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+    static PENDING_STEAL_OWNER: std::cell::Cell<Option<SourceEntityHandle>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_pending_steal_prelude_trace() {
+    PENDING_STEAL_PRELUDE_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_pending_steal_prelude_trace() -> Vec<PendingStealPreludeReceipt> {
+    PENDING_STEAL_PRELUDE_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 /// Current typed target records and the source pass's ordered class-5 list.
 /// The records are read-only callback projections, never replacement owners.
 #[derive(Clone, Copy)]
@@ -283,6 +326,8 @@ pub(super) struct Level2NyphurCommonUpkeep {
 pub(super) struct NyphurDirectionalPrelude {
     source_slot: u16,
     protected: bool,
+    #[cfg(test)]
+    castle_overlaps: bool,
 }
 
 impl NyphurDirectionalPrelude {
@@ -1737,6 +1782,8 @@ impl Level2NyphurCommonUpkeep {
         Ok(NyphurDirectionalPrelude {
             source_slot,
             protected,
+            #[cfg(test)]
+            castle_overlaps,
         })
     }
 
@@ -3646,7 +3693,14 @@ impl RivalWizardRoster {
             return None;
         }
         entry.dispatcher.common_upkeep.watcom_rand_state = self.watcom_rand_state;
+        #[cfg(test)]
+        let prior_steal_owner = PENDING_STEAL_OWNER.with(|owner| {
+            let active = PENDING_STEAL_PRELUDE_TRACE.with(|trace| trace.borrow().is_some());
+            owner.replace(active.then_some(handle))
+        });
         let result = visit(&mut entry.dispatcher);
+        #[cfg(test)]
+        PENDING_STEAL_OWNER.with(|owner| owner.set(prior_steal_owner));
         self.watcom_rand_state = entry.dispatcher.common_upkeep.watcom_rand_state;
         Some(result)
     }
@@ -4012,12 +4066,65 @@ impl Level2NyphurDispatcher {
         } else {
             None
         };
-        self.common_upkeep.begin_directional_upkeep(
+        #[cfg(test)]
+        let pending_observation = PENDING_STEAL_OWNER.with(|owner| {
+            let actor = owner.get().filter(|handle| handle.source_slot == source_slot)?;
+            let row = entities.get(usize::from(source_slot))?;
+            let pending = row
+                .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana)?;
+            let a4_castle_slot = players.iter()
+                .find(|player| player.entity_index == source_slot)
+                .map_or(0, |player| u16::from_le_bytes([player.record[42], player.record[43]]));
+            let effective_castle_slot = self.common_upkeep.castle_entity_index;
+            let castle = castle_projection.as_ref().or_else(|| {
+                (effective_castle_slot != 0)
+                    .then(|| entities.get(usize::from(effective_castle_slot)))
+                    .flatten()
+            }).map(|castle| PendingStealCastleReceipt {
+                slot: castle.index,
+                position: castle.position,
+                axes: [
+                    castle.array_yaw(), castle.array_pitch(), castle.array_roll(), castle.array_fov(),
+                ],
+            });
+            Some(PendingStealPreludeReceipt {
+                actor,
+                pending,
+                position: row.position,
+                axes: [row.array_yaw(), row.array_pitch(), row.array_roll(), row.array_fov()],
+                a4_castle_slot,
+                effective_castle_slot,
+                castle,
+                word159_before: self.common_upkeep.word_0x159,
+                word159_after: 0,
+                castle_overlaps: false,
+                admitted: false,
+                cleared: false,
+            })
+        });
+        let prelude = self.common_upkeep.begin_directional_upkeep(
             source_slot,
             entities,
             castle_projection.as_ref(),
             occupied_typed_slots,
-        )
+        )?;
+        #[cfg(test)]
+        if let Some(mut receipt) = pending_observation {
+            receipt.word159_after = self.common_upkeep.word_0x159;
+            receipt.castle_overlaps = prelude.castle_overlaps;
+            receipt.admitted = prelude.admitted();
+            receipt.cleared = entities[usize::from(source_slot)]
+                .pending_player_effect(crate::combat::actors::PlayerEffectLane::StealMana)
+                .is_none();
+            PENDING_STEAL_PRELUDE_TRACE.with(|trace| {
+                if let Some(receipts) = trace.borrow_mut().as_mut()
+                    && receipts.len() < 128
+                {
+                    receipts.push(receipt);
+                }
+            });
+        }
+        Ok(prelude)
     }
 
     /// Execute the production `sub_12910` carrier. The selected state is

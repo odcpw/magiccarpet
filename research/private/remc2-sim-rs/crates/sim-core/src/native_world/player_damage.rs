@@ -61,6 +61,11 @@ pub(super) fn publish_flight_feedback(state: &FlightState, player: &mut PlayerSn
     if player.entity_index != state.entity_index {
         return;
     }
+    // The compact export omits this A4 word. Once a source write makes its
+    // mirror known, publish the actual local music consumer's decrement.
+    if player.source_music_countdown.is_some() {
+        player.source_music_countdown = Some(state.music_countdown);
+    }
     player.record[32..34].copy_from_slice(&state.recoil_speed.to_le_bytes());
     player.record[34..36].copy_from_slice(&state.recoil_yaw.to_le_bytes());
     player.record[38..40].copy_from_slice(&state.effective_pitch.to_le_bytes());

@@ -14,6 +14,29 @@ pub(crate) use crate::spell_activation::{
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EndpointBirthReceipt {
+    pub ray: crate::campaign::source_arena::SourceEntityHandle,
+    pub endpoint: crate::campaign::source_arena::SourceEntityHandle,
+    pub owner: u16,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENDPOINT_BIRTH_TRACE: std::cell::RefCell<Option<Vec<EndpointBirthReceipt>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_endpoint_birth_trace() {
+    ENDPOINT_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_endpoint_birth_trace() -> Vec<EndpointBirthReceipt> {
+    ENDPOINT_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Product { Ray, StormShot, Endpoint, Storm }
 
@@ -380,6 +403,8 @@ fn ray(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[Parti
     arena.entities[usize::from(slot)] = row.clone();
     let hit = guided_projectile::collision(arena, &row, context)?.map(|(slot, _)| slot);
     let intended_target = word(&row, 154);
+    #[cfg(test)]
+    let ray_before_endpoint = arena.handle(slot);
     let Some(endpoint) = construct(arena, terrain, particles, Product::Endpoint, position)? else { return Ok(outcome); };
     if let Some(target) = hit {
         if let Some(parent) = arena.entities.get_mut(usize::from(row.source_id))
@@ -409,6 +434,14 @@ fn ray(arena: &mut SourceArena, terrain: &mut SessionTerrain, particles: &[Parti
     let effect = &mut arena.entities[usize::from(endpoint)];
     owner(effect, current.source_id); effect.set_yaw(current.yaw); effect.set_pitch(current.pitch);
     put(effect, 154, hit.unwrap_or(0xae02)); effect.set_subspell_index(damage);
+    #[cfg(test)]
+    if let (Some(ray), Some(endpoint)) = (ray_before_endpoint, arena.handle(endpoint)) {
+        ENDPOINT_BIRTH_TRACE.with(|trace| {
+            if let Some(receipts) = trace.borrow_mut().as_mut() {
+                receipts.push(EndpointBirthReceipt { ray, endpoint, owner: current.source_id });
+            }
+        });
+    }
     outcome.impact_slot = Some(endpoint);
     Ok(outcome)
 }

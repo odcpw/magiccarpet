@@ -7647,6 +7647,7 @@ fn parse_players(
             hit_frame_time: 0,
             castle_destroyed: 0,
             visibility_mode: 0,
+            source_music_countdown: None,
             record: record.to_vec().into_boxed_slice(),
         });
     }

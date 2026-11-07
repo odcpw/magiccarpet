@@ -13,6 +13,63 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BindingAdmissionReceipt {
+    pub(crate) holder: SourceEntityHandle,
+    pub(crate) body: SourceEntityHandle,
+    pub(crate) shared_word96: u16,
+    pub(crate) raw_word96: u16,
+    pub(crate) raw_holder_selector: (u8, u8, u8),
+    pub(crate) raw_holder_parent: u16,
+    pub(crate) parent: u16,
+    pub(crate) phase: u8,
+    pub(crate) body_drawing_disabled: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BINDING_ADMISSION_TRACE: std::cell::RefCell<Option<Vec<BindingAdmissionReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_binding_admission_trace() {
+    BINDING_ADMISSION_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_binding_admission_trace() -> Vec<BindingAdmissionReceipt> {
+    BINDING_ADMISSION_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn observe_binding_admission(
+    arena: &SourceArena,
+    holder: SourceEntityHandle,
+    body: SourceEntityHandle,
+    shared_word96: u16,
+) {
+    BINDING_ADMISSION_TRACE.with(|trace| {
+        let mut trace = trace.borrow_mut();
+        let Some(receipts) = trace.as_mut() else { return; };
+        if receipts.len() >= 128 { return; }
+        let raw_holder = &arena.entities[usize::from(holder.source_slot)];
+        let raw_body = &arena.entities[usize::from(body.source_slot)];
+        receipts.push(BindingAdmissionReceipt {
+            holder,
+            body,
+            shared_word96,
+            raw_word96: raw_holder.source_word_96(),
+            raw_holder_selector: (raw_holder.class, raw_holder.model, raw_holder.action),
+            raw_holder_parent: raw_holder.source_spell_parent_entity_index(),
+            parent: raw_body.source_spell_parent_entity_index(),
+            phase: raw_body.phase,
+            body_drawing_disabled: raw_body.drawing_disabled(),
+        });
+    });
+}
+
 /// Constructor counters absent from the ordinary creature families. Model19
 /// shares its existing Firefly counter; Day model2 uses the canonical Bee.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -26,6 +83,12 @@ impl State {
     pub(crate) fn bind_body(&mut self, holder: SourceEntityHandle, body: SourceEntityHandle) {
         self.bodies
             .insert(holder.source_slot, (holder.generation, body));
+    }
+
+    pub(crate) fn body_for_holder(&self, holder: SourceEntityHandle) -> Option<SourceEntityHandle> {
+        self.bodies.get(&holder.source_slot)
+            .filter(|(generation, _)| *generation == holder.generation)
+            .map(|(_, body)| *body)
     }
 
     pub(crate) fn take_body(&mut self, holder: SourceEntityHandle) -> Option<SourceEntityHandle> {

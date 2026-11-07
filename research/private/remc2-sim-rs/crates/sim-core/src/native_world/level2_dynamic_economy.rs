@@ -2,6 +2,34 @@ use super::*;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ClaimedSphereLiftReceipt {
+    pub(crate) sphere: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) holder: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) before: Position,
+    pub(crate) holder_position: Position,
+    pub(crate) lift_step: i16,
+    pub(crate) proposal: Position,
+    pub(crate) after: Position,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CLAIMED_SPHERE_LIFT_TRACE: std::cell::RefCell<Option<Vec<ClaimedSphereLiftReceipt>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_claimed_sphere_lift_trace() {
+    CLAIMED_SPHERE_LIFT_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_claimed_sphere_lift_trace() -> Vec<ClaimedSphereLiftReceipt> {
+    CLAIMED_SPHERE_LIFT_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PossessionSourceReceipt {
     ImpactBirth {
         effect: crate::campaign::source_arena::SourceEntityHandle,
@@ -4783,7 +4811,7 @@ impl Level2EconomyState {
                     .map(|child| (child.position, 32_i16))
             } else if current.is_none() {
                 entities.get(usize::from(defender_slot))
-                    .filter(|entity| entity.active && entity.index == defender_slot)
+                    .filter(|entity| entity.index == defender_slot)
                     .and_then(|entity| match (entity.class, entity.model) {
                         (3, 3) => Some((entity.position, 32_i16)),
                         (5, 23) => Some((entity.position,
@@ -4793,6 +4821,17 @@ impl Level2EconomyState {
             } else { None };
             let mut position_changed = false;
             if let Some((holder_position, lift_step)) = holder {
+                #[cfg(test)]
+                let handles = (
+                    crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: sphere_slot,
+                        generation: self.slot_generation(sphere_slot),
+                    },
+                    crate::campaign::source_arena::SourceEntityHandle {
+                        source_slot: defender_slot,
+                        generation: self.slot_generation(defender_slot),
+                    },
+                );
                 let sphere = &mut self.spheres[sphere_index];
                 sphere.vertical_velocity = 128;
                 sphere.yaw = i16::try_from(heading_for_positions(sphere.position, holder_position))
@@ -4817,7 +4856,24 @@ impl Level2EconomyState {
                     if ground > predicted.z {
                         predicted.z = ground;
                     }
+                    #[cfg(test)]
+                    let before = sphere.position;
+                    terrain.set_source_predicted_position(predicted);
                     sphere.position = predicted;
+                    #[cfg(test)]
+                    CLAIMED_SPHERE_LIFT_TRACE.with(|trace| {
+                        if let Some(receipts) = trace.borrow_mut().as_mut() {
+                            receipts.push(ClaimedSphereLiftReceipt {
+                                sphere: handles.0,
+                                holder: handles.1,
+                                before,
+                                holder_position,
+                                lift_step,
+                                proposal: terrain.source_predicted_position(),
+                                after: sphere.position,
+                            });
+                        }
+                    });
                     position_changed = true;
                 } else {
                     sphere.control_flags &= !0x40;

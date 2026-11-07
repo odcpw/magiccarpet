@@ -718,6 +718,8 @@ pub enum MissionAudioSite {
     Model21Jump,
     Creature22Ownership,
     Creature22Oscillation,
+    Creature23Attack,
+    Creature23ManaPursuit,
     Count,
 }
 
@@ -1190,6 +1192,8 @@ impl MissionAudioSite {
         Self::Model21Jump,
         Self::Creature22Ownership,
         Self::Creature22Oscillation,
+        Self::Creature23Attack,
+        Self::Creature23ManaPursuit,
     ];
 
     #[must_use]
@@ -1585,6 +1589,22 @@ impl MissionAudioSite {
                 "1",
                 "fixed 0",
                 "EventsFunctions.cpp sub_272C0 previous animation frame1..15",
+                true,
+            ),
+            Self::Creature23Attack => (
+                "59",
+                "current model23 before attack movement and target reads",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_27E00 callback entry",
+                true,
+            ),
+            Self::Creature23ManaPursuit => (
+                "59",
+                "current model23 before mana pursuit movement and target reads",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp sub_27C10 callback entry",
                 true,
             ),
             Self::WaterSplashFirstUpdate => (

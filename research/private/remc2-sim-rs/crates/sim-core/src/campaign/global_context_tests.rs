@@ -39,6 +39,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         castle_entity_index: 19,
         speed: -37,
         speed_changed: 2,
+        music_countdown: 37,
     };
     original
         .session_mut()
@@ -70,6 +71,7 @@ fn warm_source_context_survives_reset_detach_and_replay_after_load() {
         castle_entity_index: 23,
         speed: 91,
         speed_changed: -1,
+        music_countdown: 91,
     };
     let mut loaded = GameRuntime::<Mc2CampaignBackend>::title(81803).unwrap();
     let guard = loaded.identity().guard();

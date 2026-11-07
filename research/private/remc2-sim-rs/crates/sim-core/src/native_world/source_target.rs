@@ -86,7 +86,7 @@ pub(crate) fn status_parent(
     if let Some(yaw) = view.yaw {
         parent.set_yaw(yaw);
     }
-    if kind == Some(Kind::ManaSphere) && let Some(roll) = view.roll {
+    if let Some(roll) = view.roll {
         parent.set_source_roll(roll);
     }
     if let Some(shape) = view.collision {
@@ -561,12 +561,11 @@ pub(crate) fn status_player_color(
     }
 }
 
-pub(crate) fn status_castle(
-    arena: &SourceArena,
+fn current_a4_castle_slot(
     shared: &super::Level2SharedSpellResetSession,
     parent: &EntitySnapshot,
-) -> Result<Option<EntitySnapshot>, String> {
-    let slot = match parent.special_relation {
+) -> Result<u16, String> {
+    Ok(match parent.special_relation {
         super::EntitySpecialRelation::PlayerState(index) => {
             let player = shared.players.get(usize::from(index)).ok_or_else(|| {
                 format!("status parent {} has no PlayerState {index}", parent.index)
@@ -577,7 +576,15 @@ pub(crate) fn status_castle(
             shared.global_special_state.castle_entity_index
         }
         _ => 0,
-    };
+    })
+}
+
+pub(crate) fn status_castle(
+    arena: &SourceArena,
+    shared: &super::Level2SharedSpellResetSession,
+    parent: &EntitySnapshot,
+) -> Result<Option<EntitySnapshot>, String> {
+    let slot = current_a4_castle_slot(shared, parent)?;
     status_parent(
         arena,
         Context {
@@ -586,6 +593,111 @@ pub(crate) fn status_castle(
         },
         slot,
     )
+}
+
+/// Source282D0 reads the current occupant at each frozen class3 address.
+/// Balloons use their current source-ID owner, then that owner's A4 Castle;
+/// player models use their own A4. The resulting fixed Castle address is
+/// dereferenced even when it is the sentinel or a retained/reused occupant.
+pub(crate) fn creature23_castle_protection(
+    arena: &SourceArena,
+    context: Context<'_>,
+    target_slot: u16,
+) -> Result<Option<(Position, Shape)>, String> {
+    let Some(target) = status_parent(arena, context, target_slot)? else {
+        return Ok(None);
+    };
+    let parent = match target.model {
+        0 | 1 => target,
+        3 if target.mana > 0 => {
+            if target.source_id == 0 {
+                arena.entities.first().cloned()
+            } else {
+                status_parent(arena, context, target.source_id)?
+            }.ok_or_else(|| format!(
+                "creature23 target {target_slot} has no current owner {}", target.source_id
+            ))?
+        }
+        _ => return Ok(None),
+    };
+    let shared = context.spells.ok_or_else(||
+        "creature23 Castle protection requires current player A4 state".to_owned())?;
+    if parent.special_relation == super::EntitySpecialRelation::None {
+        return Err(format!("creature23 target {target_slot} owner {} has no current A4", parent.index));
+    }
+    let castle_slot = current_a4_castle_slot(shared, &parent)?;
+    castle_upgrade_target(arena, context, castle_slot)
+}
+
+/// The actual player/A4 domains needed by source1D260's synchronous 5EF70
+/// feedback. Read borrows end before the successful NewEvent can write the
+/// current target's A4; no readonly player snapshot substitutes for that owner.
+pub(crate) struct Creature23PlayerFeedback<'a> {
+    pub(crate) shared: &'a mut super::Level2SharedSpellResetSession,
+    pub(crate) core_players: &'a mut [super::PlayerSnapshot],
+    pub(crate) local_state: &'a mut crate::FlightState,
+    pub(crate) domains: Option<area_damage::ActorDomains<'a>>,
+}
+
+impl Creature23PlayerFeedback<'_> {
+    pub(crate) fn context<'a>(&'a self, mut base: Context<'a>) -> Context<'a> {
+        if let Some(domains) = self.domains.as_ref() {
+            let current = domains.source_target_context();
+            base.goats = current.goats;
+            base.houses = current.houses;
+            base.villagers = current.villagers;
+            base.house_parameters = current.house_parameters;
+        }
+        base.spells = Some(self.shared);
+        base
+    }
+
+    pub(crate) fn commit_flags(
+        &mut self,
+        arena: &mut SourceArena,
+        before: &EntitySnapshot,
+        after: &EntitySnapshot,
+    ) -> Result<(), String> {
+        commit_status_parent(arena, self.shared, self.domains.as_mut(), before, after)
+    }
+
+    /// Source5EF70 is a current fixed-address read after successful NewEvent,
+    /// followed by a write through that occupant's A4. A generation-bound
+    /// provenance handle must not refuse a live or retained replacement.
+    pub(crate) fn apply(
+        &mut self,
+        arena: &SourceArena,
+        base: Context<'_>,
+        target_slot: u16,
+    ) -> Result<bool, String> {
+        let Some(target) = status_parent(arena, self.context(base), target_slot)? else {
+            return Ok(false);
+        };
+        if (target.class, target.model) != (3, 0) {
+            return Ok(false);
+        }
+        match target.special_relation {
+            super::EntitySpecialRelation::PlayerState(index) => {
+                self.shared.players.get_mut(usize::from(index))
+                    .ok_or_else(|| format!("source5EF70 target {target_slot} has no PlayerState {index}"))?
+                    .source_music_countdown = Some(100);
+                for player in self.core_players.iter_mut().filter(|player| player.slot == index) {
+                    player.source_music_countdown = Some(100);
+                }
+                if self.shared.local_player.slot == index {
+                    self.shared.local_player.source_music_countdown = Some(100);
+                    self.local_state.music_countdown = 100;
+                }
+            }
+            super::EntitySpecialRelation::GlobalSpecialState => {
+                self.shared.global_special_state.music_countdown = 100;
+            }
+            super::EntitySpecialRelation::None => return Err(format!(
+                "source5EF70 current target {target_slot} has no A4 owner"
+            )),
+        }
+        Ok(true)
+    }
 }
 
 pub(crate) fn status_castle_mana(
@@ -2847,6 +2959,7 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     #[test]
     fn current_castle_pose_is_owned_and_hashes_independently_of_collision_axes() {
@@ -2860,12 +2973,15 @@ mod tests {
                 session.canonical_terrain(),
             )
             .unwrap();
+        arena.entities[usize::from(slot)].set_source_roll(88);
         let initial = read(&arena, Context::default(), slot).unwrap().unwrap();
         assert_eq!(
             (initial.yaw, initial.roll),
             (Some(0), Some(0)),
             "4AA40 retains NewEvent's zero pose, not BUILD collision axes"
         );
+        assert_eq!(status_parent(&arena, Context::default(), slot).unwrap().unwrap().source_roll(), 0,
+            "an authoritative source zero also replaces poisoned raw roll");
         let before = arena.economy.reset_hash();
         // A configured current-owner pose, as also retained by reset adoption,
         // must be read independently of the previous raw incarnation.
@@ -2879,9 +2995,146 @@ mod tests {
         castle.shift_roll = 1_664;
         arena.retire_previous_source_projection(slot);
         arena.entities[usize::from(slot)].set_yaw(99);
-        arena.entities[usize::from(slot)].set_source_roll(-88);
+        arena.entities[usize::from(slot)].set_source_roll(88);
         let current = read(&arena, Context::default(), slot).unwrap().unwrap();
         assert_eq!((current.yaw, current.roll), (Some(-321), Some(777)));
+        let packet = status_parent(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((packet.yaw, packet.source_roll()), (-321, 777),
+            "current packet projects the authoritative typed pose, including roll");
+        assert_eq!(arena.entities[usize::from(slot)].source_roll(), 88,
+            "poisoned raw scalar is not the typed Castle's current roll");
+    }
+
+    #[test]
+    fn creature23_castle_protection_uses_current_owner_a4_and_nonlocal_typed_geometry() {
+        // Configured current-address selector controls over real Castle
+        // constructors. Ordinary sphere/Lightning production is checked by
+        // the family through the authored owner package.
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let mut shared = session.shared_spells().clone();
+        let owner = session.state.entity_index;
+        let first = arena.economy.build_castle(
+            session.state.position, owner, &terrain,
+        ).unwrap();
+        let second = arena.economy.build_castle(
+            Position { x: 12345, y: 23456, z: 3456 }, owner.wrapping_add(1), &terrain,
+        ).unwrap();
+        assert_ne!(first, second);
+        let super::super::EntitySpecialRelation::PlayerState(player_index) =
+            arena.entities[usize::from(owner)].special_relation else {
+                panic!("actual reset player must have its current A4 binding");
+            };
+        shared.players[usize::from(player_index)].record[42..44]
+            .copy_from_slice(&second.to_le_bytes());
+        shared.global_special_state.castle_entity_index = first;
+        arena.retire_previous_source_projection(second);
+        arena.entities[usize::from(second)].position = Position { x: 1, y: 2, z: 3 };
+        let expected = castle_upgrade_target(&arena, Context::default(), second).unwrap();
+        assert_ne!(expected.unwrap().0, arena.entities[usize::from(second)].position);
+        let balloon = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+        let row = &mut arena.entities[usize::from(balloon)];
+        // The frozen-list address is not re-admitted by class, life, drawing
+        // or activity. Model3's Castle comes from source-ID owner, not these
+        // deliberately conflicting current raw words/A4.
+        row.active = false;
+        row.class = 0;
+        row.model = 3;
+        row.source_id = owner;
+        row.set_mana(1);
+        row.set_life(-1);
+        row.set_control_flags(0x400);
+        row.special_relation = super::super::EntitySpecialRelation::GlobalSpecialState;
+        row.record[42..44].copy_from_slice(&first.to_le_bytes());
+        let context = Context { spells: Some(&shared), ..Context::default() };
+        assert_eq!(creature23_castle_protection(&arena, context, balloon).unwrap(), expected);
+        assert_eq!(creature23_castle_protection(&arena, context, owner).unwrap(), expected);
+        arena.entities[usize::from(balloon)].set_mana(0);
+        assert_eq!(creature23_castle_protection(&arena, context, balloon).unwrap(), None);
+
+        // Current player A4 changes take effect immediately, including the
+        // source sentinel Castle address, with no old owner/cache fallback.
+        shared.players[usize::from(player_index)].record[42..44].fill(0);
+        arena.entities[0].position = Position { x: 77, y: 88, z: 99 };
+        let context = Context { spells: Some(&shared), ..Context::default() };
+        assert_eq!(creature23_castle_protection(&arena, context, owner).unwrap(),
+            castle_upgrade_target(&arena, context, 0).unwrap());
+        assert_eq!(creature23_castle_protection(&arena, context, owner).unwrap().unwrap().0,
+            arena.entities[0].position);
+    }
+
+    #[test]
+    fn creature23_lightning_feedback_writes_current_a4_before_its_local_consumer() {
+        // Configured fixed-address feedback controls. The family check
+        // separately requires a successful ordinary Ray birth before this
+        // source5EF70 boundary is reached.
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let mut shared = session.shared_spells().clone();
+        let mut core_players = shared.players.clone();
+        let mut local_state = session.state;
+        let local_index = shared.local_player.slot;
+        let rival_index = shared.players.iter().find(|player| player.slot != local_index).unwrap().slot;
+        assert!(shared.players.iter().all(|player| player.source_music_countdown.is_none()));
+        let baseline = shared.clone();
+        let target = arena.allocate_source_slot_with_terrain(&mut terrain).unwrap();
+        let raw = &mut arena.entities[usize::from(target)];
+        raw.active = false;
+        raw.class = 3;
+        raw.model = 0;
+        raw.set_life(-100);
+        raw.set_control_flags(0x400);
+        raw.special_relation = super::super::EntitySpecialRelation::PlayerState(rival_index);
+        raw.record[58..60].copy_from_slice(&1234_i16.to_le_bytes());
+        let local_before = local_state.music_countdown;
+        {
+            let mut feedback = Creature23PlayerFeedback {
+                shared: &mut shared, core_players: &mut core_players, local_state: &mut local_state, domains: None,
+            };
+            assert!(feedback.apply(&arena, Context::default(), target).unwrap());
+            assert!(!feedback.apply(&arena, Context::default(), 0).unwrap());
+        }
+        assert_eq!(shared.players[usize::from(rival_index)].source_music_countdown, Some(100));
+        assert_eq!(core_players[usize::from(rival_index)].source_music_countdown, Some(100));
+        assert_eq!(local_state.music_countdown, local_before);
+        assert_eq!(&arena.entities[usize::from(target)].record[58..60], &1234_i16.to_le_bytes());
+        let mut before = sha2::Sha256::new();
+        let mut after = sha2::Sha256::new();
+        baseline.players[usize::from(rival_index)].append_omitted_state_hash(&mut before);
+        shared.players[usize::from(rival_index)].append_omitted_state_hash(&mut after);
+        assert_ne!(before.finalize(), after.finalize());
+        assert_eq!(baseline.players[usize::from(rival_index)].source_music_countdown, None);
+
+        // The same current address now names the local A4; its original
+        // hidden/dead row and creator generation do not veto the source write.
+        arena.entities[usize::from(target)].special_relation =
+            super::super::EntitySpecialRelation::PlayerState(local_index);
+        {
+            let mut feedback = Creature23PlayerFeedback {
+                shared: &mut shared, core_players: &mut core_players, local_state: &mut local_state, domains: None,
+            };
+            assert!(feedback.apply(&arena, Context::default(), target).unwrap());
+        }
+        assert_eq!(local_state.music_countdown, 100);
+        assert_eq!(shared.local_player.source_music_countdown, Some(100));
+        local_state.music_countdown = 99;
+        super::super::player_damage::publish_flight_feedback(&local_state, &mut shared.local_player);
+        assert_eq!(shared.local_player.source_music_countdown, Some(99));
+        assert_eq!(shared.players[usize::from(rival_index)].source_music_countdown, Some(100));
+        arena.entities[usize::from(target)].special_relation =
+            super::super::EntitySpecialRelation::GlobalSpecialState;
+        {
+            let mut feedback = Creature23PlayerFeedback {
+                shared: &mut shared, core_players: &mut core_players, local_state: &mut local_state, domains: None,
+            };
+            assert!(feedback.apply(&arena, Context::default(), target).unwrap());
+            arena.entities[usize::from(target)].model = 1;
+            assert!(!feedback.apply(&arena, Context::default(), target).unwrap());
+        }
+        assert_eq!(shared.global_special_state.music_countdown, 100);
+        assert_eq!(local_state.music_countdown, 99);
     }
 
     #[test]

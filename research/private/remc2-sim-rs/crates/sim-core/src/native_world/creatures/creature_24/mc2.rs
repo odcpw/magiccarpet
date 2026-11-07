@@ -482,34 +482,16 @@ pub(crate) fn kill(
             arena.entities[usize::from(slot)].set_source_player_entity_index(0);
         }
     }
-    let (position, _, _, _, _, flags) = current(arena, slot);
+    let (position, id, _, _, _, flags) = current(arena, slot);
     if flags & 0x100000 == 0 {
-        let child = crate::world::effects::allocate(
+        let _ = crate::world::effects::spawn_death_burst(
             arena,
             terrain,
-            sim_definition::adapter::mc2_effect_definition(
-                crate::level_definition::EffectKind::RadialExplosion,
-            ),
-            position,
             particles,
+            slot,
+            position,
+            id,
         )?;
-        if let Some(child) = child {
-            let id = current(arena, slot).1;
-            let row = &mut arena.entities[usize::from(child)];
-            row.source_id = id;
-            put(row, 30, id);
-            if child == slot {
-                row.set_position(Position::default());
-                crate::world::effects::sync_position(
-                    arena,
-                    terrain,
-                    slot,
-                    Position::default(),
-                    true,
-                    true,
-                )?;
-            }
-        }
     }
     hide_current(arena, slot);
     Ok(())

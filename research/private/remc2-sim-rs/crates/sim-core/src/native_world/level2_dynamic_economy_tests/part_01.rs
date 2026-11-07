@@ -2674,6 +2674,12 @@ fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
         sphere.assigned_defender_slot = holder_slot;
         sphere.control_flags |= 0x40;
     }
+    let before_lift_proposal = Position {
+        x: 17,
+        y: 29,
+        z: -13,
+    };
+    terrain.set_source_predicted_position(before_lift_proposal);
     {
         let live = &mut session.session.state.live;
         assert!(live.economy.economy.step_mana_sphere_slot(
@@ -2690,8 +2696,49 @@ fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
         .find(|row| row.source_entity_index == sphere_slot)
         .expect("lifted sphere remains live");
     assert_eq!(lifted.position.z, holder_position.z + 40);
+    assert_eq!(
+        terrain.source_predicted_position(),
+        lifted.position,
+        "35940 publishes the clamped proposal before the actual position copy"
+    );
     assert_ne!(lifted.control_flags & 0x40, 0);
     assert_eq!(lifted.phase, sphere.phase.wrapping_add(1));
+
+    // Configured fixed-record exception: source35940 tests only the holder's
+    // current class/model, including a retained inactive/dead/hidden record.
+    // This does not assert an ordinary producer for that retained state.
+    entities[usize::from(holder_slot)].active = false;
+    entities[usize::from(holder_slot)].set_life(-1);
+    entities[usize::from(holder_slot)].set_control_flags(0x400);
+    {
+        let mut economy = session.economy_mut();
+        let sphere = economy
+            .spheres_mut()
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .unwrap();
+        sphere.position = Position {
+            z: holder_position.z - 8,
+            ..holder_position
+        };
+        sphere.control_flags |= 0x40;
+    }
+    terrain.set_source_predicted_position(before_lift_proposal);
+    assert!(session.session.state.live.economy.economy.step_mana_sphere_slot(
+        sphere_slot,
+        &terrain,
+        &mut entities,
+        |_| 105,
+    ));
+    let retained_lift = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.source_entity_index == sphere_slot)
+        .unwrap();
+    assert_eq!(retained_lift.position.z, holder_position.z + 40);
+    assert_ne!(retained_lift.control_flags & 0x40, 0);
+    assert_eq!(terrain.source_predicted_position(), retained_lift.position);
 
     // A reused raw slot must not be rescued by an older typed relation. The
     // failed holder check consumes this visit and preserves its source tail.
@@ -2719,6 +2766,12 @@ fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
         .find(|row| row.source_entity_index == sphere_slot)
         .unwrap()
         .phase;
+    let rejected_proposal = Position {
+        x: 31,
+        y: 53,
+        z: -23,
+    };
+    terrain.set_source_predicted_position(rejected_proposal);
     {
         let live = &mut session.session.state.live;
         assert!(live.economy.economy.step_mana_sphere_slot(
@@ -2737,6 +2790,46 @@ fn model23_mana_sphere_lift_uses_raw_holder_word2c_and_rejects_a_stale_slot() {
     assert_eq!(rejected.position, stale_position);
     assert_eq!(rejected.control_flags & 0x40, 0);
     assert_eq!(rejected.phase, phase_before_stale.wrapping_add(1));
+    assert_eq!(
+        terrain.source_predicted_position(),
+        rejected_proposal,
+        "a rejected current holder does not write predictedAxis"
+    );
+
+    // A valid source holder beyond the exact 1024-unit attraction radius
+    // also clears the claim without proposing or applying any movement.
+    entities[usize::from(holder_slot)].model = 23;
+    entities[usize::from(holder_slot)].record[68] = 23;
+    let outside = Position {
+        x: holder_position.x + 1_025,
+        ..holder_position
+    };
+    {
+        let mut economy = session.economy_mut();
+        let sphere = economy
+            .spheres_mut()
+            .iter_mut()
+            .find(|row| row.source_entity_index == sphere_slot)
+            .unwrap();
+        sphere.position = outside;
+        sphere.control_flags |= 0x40;
+    }
+    terrain.set_source_predicted_position(rejected_proposal);
+    assert!(session.session.state.live.economy.economy.step_mana_sphere_slot(
+        sphere_slot,
+        &terrain,
+        &mut entities,
+        |_| 105,
+    ));
+    let outside_sphere = session
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.source_entity_index == sphere_slot)
+        .unwrap();
+    assert_eq!(outside_sphere.position, outside);
+    assert_eq!(outside_sphere.control_flags & 0x40, 0);
+    assert_eq!(terrain.source_predicted_position(), rejected_proposal);
 }
 
 #[test]
