@@ -2362,6 +2362,7 @@ namespace MagicCarpet.Native
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntime()
         {
+            if (FindFirstObjectByType<ModernCharacterReview>() != null) return;
             if (FindFirstObjectByType<MagicCarpetRuntime>() == null)
             {
                 new GameObject("Magic Carpet Runtime").AddComponent<MagicCarpetRuntime>();

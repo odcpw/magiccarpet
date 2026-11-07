@@ -4,6 +4,114 @@ Fresh sprite-informed goat experiment: `../generated/goat-animation-20261106/`.
 Original sprites inform identity; no rejected prototype mesh, rig or motion is
 reused. Generated files, original assets and credentials remain owner-local.
 
+## Checked complete-action Unity characters
+
+The earlier one-second loops below are retained experiments. The current work
+uses one synchronized FBX timeline per character, editable Blender scenes,
+explicit PBR texture files and a JSON manifest of named clip ranges. Unity's
+native importer creates Generic rigs and the review player uses the actual
+imported clips through `ModernCharacterInstance`.
+
+The goat has a separately authored four-hoof standing idle and the repaired
+walk. The archer has Idle, Walk, a five-second reach/nock/draw/release/recover
+action, kneel preparation/descent, a kneeling shot and a rise. Modern motion
+between the source game's held sprite stances remains authored interpretation.
+The hands retain modeled grips rather than individual finger articulation.
+
+Load-bearing integration fixes:
+
+- Normalize model facing, origin and scale before export; keep one bind pose.
+- Export all body, bow, string and arrow tracks on one timeline. Independent
+  NLA stacks in FBX lose synchronization between those objects.
+- Give packed images distinct filenames and retain explicit albedo, normal and
+  ORM maps. Empty filenames caused the FBX reimporter to use albedo as normals.
+- `ModernCharacterImport` converts ORM channels into Unity metallic, occlusion
+  and smoothness, then creates URP materials and named clips from the manifest.
+- Preserve fine contact keys with `ModelImporter.resampleCurves = false`.
+  Resampling lost the planted walk and separated the nock from the hand between
+  authored presentation frames; the same exported FBX passes with its keys kept.
+- Unity geometry checks use `BakeMesh(mesh, true)` before `TransformPoint`.
+  Otherwise the goat renderer's import scale is applied twice to the measurement.
+
+The selected assets are `goat-neutral2` and `archer-candidate12` under
+`../generated/characters-complete-20261106/`. Each contains its editable blend,
+FBX, clip manifest and three source texture maps. All 12 focused Unity checks
+pass (`unity-final-check-tests.xml`, 2026-11-07). Actual player frames exposed a
+front shoe that lifted/slid during rising and an idle inherited from walking;
+the selected archer has a separately grounded idle and planted-front-leg IK.
+The rise check measures a maximum 5.8 mm sole height and 12.6 mm horizontal
+centroid drift; the previous candidate failed at 182 mm and 412 mm respectively.
+
+The first 36.4-second portrait capture is retained at
+`/mnt/pinokio-shared/magiccarpet-character-review-portrait/`, with a separate
+visual rejection receipt: its raised bow and held arrow overlapped/crossed the
+view boundary. The selected player uses Unity's conservative world culling
+bounds to fit the character and held props inside a separate viewport, with
+titles outside it. A discarded preview snapshot calculation enlarged scaled
+bow props by 100x after the first frame. The corrected actual-player capture
+has 874 complete 1080x1920 frames at 24 fps (36.42 seconds), with zero finite/
+near/far/viewport failures:
+`/mnt/pinokio-shared/magiccarpet-character-checked-unity/characters.mp4`.
+Goat gait, standing draw/release, descent, kneeling shot, rise and settled stance
+frames were inspected by both the motion owner and integration owner. The real
+interactive player also passed keyboard selection/pause, Shoot, slider scrub
+and clean Escape exit on a private display. Recording is presentation evidence,
+not a desktop performance qualification.
+
+The installed inspection player is launched with
+`research/private/remc2-unity-native/run-characters.sh` from the repository root.
+Its `Builds/Characters` link selects the checked player on the HDD. The phone
+review is available within Oliver's tailnet at
+`http://3090.bumblebee-hue.ts.net:8095/`, with chapter buttons and MP4 download.
+Its local-only service reuses FitTimer's existing range-serving implementation;
+it serves a separate directory containing only this review page and media.
+
+Canonical implementation:
+
+- `goat_complete.py`: load the selected rigged goat blend; author compatible
+  idle/walk and bake a ground root, then reopen before FBX export to refresh
+  Blender's cached bind matrices.
+- `archer_complete.py`: assemble the selected walk, standing and kneeling
+  blends into complete actions; bake contact and ground corrections at 96 Hz.
+- `character_textures.py`: preserve source map bytes with distinct image paths.
+- Unity `ModernCharacterImport.Prepare`: import clips, textures, prefab and
+  definition from `Assets/Resources/ModernCharacters/{Goat,Archer}/`.
+- Unity `ModernCharacterBuild.Build`: build the interactive inspection player;
+  it does not open a campaign or a save.
+- Unity `Tools/capture-character-review.py`: record the player on an owned
+  private display, encode full frames and retain logs/receipts on failure.
+
+Focused checks and a new player build, after staging owner-local exports:
+
+```sh
+UNITY=/home/oliver/Unity/Hub/Editor/6000.3.20f1/Editor/Unity
+CLIENT="$PWD/research/private/remc2-unity-native"
+"$UNITY" -batchmode -nographics --burst-disable-compilation \
+  -projectPath "$CLIENT" -runTests -testPlatform EditMode \
+  -testFilter MagicCarpet.Native.Tests.ModernCharacterEditModeTests \
+  -testResults /absolute/new/tests.xml -logFile /absolute/new/tests.log
+MC_CHARACTER_IMPORT_REPORT=/absolute/new/import.json \
+MC_CHARACTER_PLAYER_OUTPUT=/absolute/new/player/MagicCarpetCharacters.x86_64 \
+  "$UNITY" -batchmode -nographics -quit -projectPath "$CLIENT" \
+  -executeMethod MagicCarpet.Native.Editor.ModernCharacterBuild.Build \
+  -logFile /absolute/new/build.log
+python3 "$CLIENT/Tools/capture-character-review.py" \
+  --player /absolute/new/player/MagicCarpetCharacters.x86_64 \
+  --output /absolute/new/capture
+```
+
+Stage the selected `goat.fbx` and `goat.clips.json` as `Goat.fbx` and
+`Goat.clips.json` in `Assets/Resources/ModernCharacters/Goat/`; likewise capitalize
+the archer pair in `Archer/`. Copy each export's `textures/` folder there too.
+These files and all importer products remain ignored. The test-only Burst flag
+avoids an observed Editor startup/unused-asset-GC deadlock; the built player
+retains normal Burst compilation.
+
+Original campaign animation mapping, terrain foot placement, deaths and crowd
+LODs are separate from these character assets. This is a working author/export/
+import/inspect path for two characters, with character-specific motion repair;
+it is not a general automatic image/video-to-rigged-animation system.
+
 The initial experiment separates reference art, a fixed textured mesh, motion
 video and deformation reconstruction. A video is only a motion reference. The
 deliverable must be independently renderable 3D geometry, inspected from both

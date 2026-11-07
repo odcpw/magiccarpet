@@ -18,11 +18,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--start-frame", type=int, default=1)
+    parser.add_argument("--timeline", action="store_true", help="Check a walk within a longer FBX timeline")
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
     if args.output.exists():
         raise FileExistsError(args.output)
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=str(args.model.resolve()))
+    if args.model.suffix.lower() == '.fbx':
+        bpy.ops.import_scene.fbx(filepath=str(args.model.resolve()))
+    else:
+        bpy.ops.import_scene.gltf(filepath=str(args.model.resolve()))
     scene = bpy.context.scene
     obj = max((o for o in scene.objects if o.type == "MESH"),
               key=lambda o: len(o.data.vertices))
@@ -44,7 +49,7 @@ def main():
     movement = 0.0
     floors, distances = [], []
     for sample in range(97):
-        frame = 1 + sample / 4
+        frame = args.start_frame + sample / 4
         scene.frame_set(int(frame), subframe=frame % 1)
         evaluated_obj = obj.evaluated_get(deps)
         evaluated = evaluated_obj.to_mesh()
@@ -67,7 +72,7 @@ def main():
     if movement < .001:
         failures.append("missing character motion")
     ranges = [tuple(action.frame_range) for action in bpy.data.actions]
-    if not ranges or abs(min(r[0] for r in ranges) - 1) > .001 or abs(max(r[1] for r in ranges) - 25) > .001:
+    if not ranges or (not args.timeline and (abs(min(r[0] for r in ranges) - 1) > .001 or abs(max(r[1] for r in ranges) - 25) > .001)) or (args.timeline and (min(r[0] for r in ranges) > args.start_frame or max(r[1] for r in ranges) < args.start_frame + 24)):
         failures.append("one-second exported animation range")
     if min(floors) <= -.001 or max(floors) >= .003:
         failures.append("ground contact")

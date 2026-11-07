@@ -24,7 +24,10 @@ def main():
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
     args.output.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=str(args.model.resolve()))
+    if args.model.suffix.lower() == '.fbx':
+        bpy.ops.import_scene.fbx(filepath=str(args.model.resolve()))
+    else:
+        bpy.ops.import_scene.gltf(filepath=str(args.model.resolve()))
     scene = bpy.context.scene
     meshes = [o for o in scene.objects if o.type == "MESH"]
     if not meshes:

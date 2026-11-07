@@ -18,11 +18,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--start-frame', type=int, default=1)
+    parser.add_argument('--ground-baked', action='store_true', help='Check the ground-root, reversed-forward FBX')
     args = parser.parse_args(sys.argv[sys.argv.index('--') + 1:])
     if args.output.exists():
         raise FileExistsError(args.output)
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=str(args.model.resolve()))
+    if args.model.suffix.lower() == '.fbx':
+        bpy.ops.import_scene.fbx(filepath=str(args.model.resolve()))
+    else:
+        bpy.ops.import_scene.gltf(filepath=str(args.model.resolve()))
     scene = bpy.context.scene
     rig = next(o for o in scene.objects if o.type == 'ARMATURE')
     obj = max((o for o in scene.objects if o.type == 'MESH'), key=lambda o: len(o.data.vertices))
@@ -32,12 +37,12 @@ def main():
     for name in ['head'] + [n + '_hoof' for n in phases]:
         group = obj.vertex_groups[name]
         regions[name] = [v.index for v in obj.data.vertices
-                         if (name == 'head' or v.co.z < -.46)
+                         if (name == 'head' or v.co.z < (.03 if args.ground_baked else -.46))
                          and any(g.group == group.index and g.weight > .999 for g in v.groups)]
         if len(regions[name]) < 10:
             raise ValueError(f'{name}: not enough rigid-region vertices')
     positions, lengths = [], []
-    for frame in range(1, 26):
+    for frame in range(args.start_frame, args.start_frame + 25):
         scene.frame_set(frame)
         evaluated = obj.evaluated_get(deps)
         mesh = evaluated.to_mesh()
@@ -62,7 +67,7 @@ def main():
         p = positions[frame % 24]
         for name, offset in phases.items():
             if (t + offset) % 1 < .64:
-                floor_y = -t * .095 / .64
+                floor_y = (1 if args.ground_baked else -1) * t * .095 / .64
                 indices = regions[name + '_hoof']
                 sample = (float(p[indices, 1].mean() - floor_y), float(p[indices, 2].min()))
                 observed[name].setdefault(int(t + offset), []).append(sample)
