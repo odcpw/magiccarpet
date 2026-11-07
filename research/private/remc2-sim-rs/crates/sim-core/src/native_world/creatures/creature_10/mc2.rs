@@ -303,18 +303,14 @@ fn materialize_model25_summon(
         .handle(parent_slot)
         .ok_or("final encounter model25 parent lost its source generation")?;
 
-    // The family allocator owns the real source sub_4CE00 constructor,
-    // model25 counter, RNG, map link, and failure behavior. Its Army-specific
-    // StageVar/origin writes are replaced below with the boss's source writes.
-    let Some(handle) = crate::native_world::creatures::creature_25::mc2::allocate_summoned(
+    // The boss invokes ordinary sub_4CE00, retaining its3750 mana. Army's
+    // zero-mana override belongs only to the spell-ring producer.
+    let Some(handle) = crate::native_world::creatures::creature_25::mc2::allocate_source_default(
         arena,
         runtime,
         terrain,
         particles,
         request.position,
-        parent_slot,
-        request.owner,
-        parent_slot,
     )?
     else {
         return Ok(None);
@@ -445,6 +441,8 @@ fn materialize_summons(
     runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
+    boss_slot: u16,
+    player_slot: u16,
     effects: &mut Effects,
 ) -> Result<(), String> {
     for request in effects.summons.drain(..) {
@@ -511,6 +509,32 @@ fn materialize_summons(
             }
         };
         if let Some(sound) = sound {
+            if request.kind == SummonKind::Model25 {
+                use crate::native_world::source_target::{self, Context};
+                // 21AB0 reads a1.id AFTER the successful constructor and
+                // child writes, then uses that ID as the sound source address.
+                let emitter = source_target::read(arena, Context::default(), boss_slot)?
+                    .ok_or("boss summon sound lost its current caller")?
+                    .source_id;
+                let source = if emitter == 0 {
+                    None
+                } else {
+                    let current = source_target::read(arena, Context::default(), emitter)?
+                        .ok_or("boss summon sound emitter is outside the source arena")?;
+                    Some((current.position, current.source_id, current.control_flags))
+                };
+                let listener = source_target::read(arena, Context::default(), player_slot)?
+                    .ok_or("boss summon sound lost its current listener")?;
+                effects.cymmerian_summon_sound = Some(super::CallSound {
+                    sample: sound,
+                    emitter,
+                    source,
+                    listener: listener.position,
+                    listener_yaw: listener
+                        .yaw
+                        .ok_or("boss summon sound listener has no current yaw")?,
+                });
+            }
             effects.sounds.push(sound);
         }
     }
@@ -886,7 +910,7 @@ pub(crate) fn step_row(
     arena.economy.source_rng.insert(slot, rng);
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    materialize_summons(arena, runtime, terrain, particles, &mut effects)?;
+    materialize_summons(arena, runtime, terrain, particles, slot, frame.player_slot, &mut effects)?;
     materialize_source_effects(arena, runtime, terrain, &mut effects)?;
     if effects.clear_stage_variable_count && !runtime.clear_active_stage_variable_count() {
         return Err("final encounter could not clear the active StageVar count".to_owned());
@@ -999,6 +1023,324 @@ mod tests {
     use super::super::FINAL_REWARD_PHASE;
     use super::*;
     use crate::campaign::source_arena::SourceArena;
+
+    #[test]
+    fn configured_level25_boss_model25_reaches_stage_launch_parent_expiry_and_reclaim() {
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::level_definition::CreatureKind;
+        use crate::native_world::Mc2DispatchEvent;
+        use std::path::PathBuf;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || generated.join("mc-bhq10-owner-v3-level25-20261029"),
+            PathBuf::from,
+        );
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || generated.join("dragon-bee-20261105-integration/current-level25-environment"),
+            PathBuf::from,
+        );
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            &package,
+            &cache,
+            CampaignSelection::ordinary(25).unwrap(),
+        )
+        .expect("whole Level25 and its qualified owner cache");
+        campaign.step(crate::PlayerCommand::default(), 0);
+        let simulation = campaign.simulation_mut();
+        // Declared upstream progression, then one configured source attack
+        // branch. This does not claim natural boss RNG selection or victory.
+        simulation
+            .activate_authored_group_prerequisite_for_test(29)
+            .unwrap();
+        let boss = simulation
+            .entities()
+            .iter()
+            .find(|row| row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
+            .expect("actual group29 boss constructor")
+            .index;
+        let parent = simulation.source_arena().handle(boss).unwrap();
+        let player = simulation.state.entity_index;
+        let owner = simulation.entities()[usize::from(boss)].source_id;
+        assert!(
+            simulation.source_arena().rebuilt_class5_model_slots()[25].len() < 6,
+            "configured mode5 is below the source selector population cap"
+        );
+        let mut approach = simulation.entities()[usize::from(boss)].position;
+        crate::move_entity(&mut approach, 1024, 0, 4096);
+        approach.z = simulation
+            .canonical_terrain()
+            .ground_height(approach)
+            .wrapping_add(768);
+        simulation
+            .set_level2_entity_position(player, approach)
+            .unwrap();
+        simulation.state.actual_speed = 0;
+        simulation.state.target_speed = 0;
+        {
+            // Fixed player survival budget; no later replenishment.
+            let live = &mut simulation.session.state.live;
+            let player_row = &mut live.economy.entities[usize::from(player)];
+            player_row.set_max_life(200_000);
+            player_row.set_life(200_000);
+            live.player_life = player_row.life;
+            live.shared_spells
+                .sync_player_entity_from_authority(player_row);
+            // Exact sub21AB0 mode5 entry: one pending source attempt. No
+            // child, constructor result, RNG or child lifetime is supplied.
+            let row = &mut live.economy.entities[usize::from(boss)];
+            row.set_source_byte_46(9);
+            row.record[71] = 5;
+            put_word(row, 40, 1);
+            row.set_source_dword_10(1);
+        }
+        let counter = simulation.runtime().constructor_counters().unwrap()[25];
+        // Isolated call-input controls prove source ID is dereferenced as an
+        // address, including silence and source0. They do not claim these
+        // identity variants occur in the unmodified group29 producer.
+        for (emitter, muted) in [(player, false), (player, true), (0, false)] {
+            let mut control = simulation.clone();
+            let journal_start = control.effect_journal().records().len();
+            let live = &mut control.session.state.live;
+            let caller = &mut live.economy.entities[usize::from(boss)];
+            caller.source_id = emitter;
+            caller.record[30..32].copy_from_slice(&emitter.to_le_bytes());
+            let listener = &mut live.economy.entities[usize::from(player)];
+            listener.set_control_flags(if muted {
+                listener.control_flags | 0x80
+            } else {
+                listener.control_flags & !0x80
+            });
+            control.step_level2_source_pass(0);
+            let sound = control.effect_journal().records()[journal_start..]
+                .iter()
+                .find(|record| {
+                    matches!(record.effect,
+                    crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                        audio_site: crate::MissionAudioSite::BossCymmerianSummon,
+                        entity_index, player_index: -1, sound_id: 37,
+                    }) if entity_index == emitter)
+                })
+                .expect("the successful real mode5 constructor publishes its addressed sound call");
+            if muted {
+                assert!(
+                    sound.audio.is_none(),
+                    "current addressed emitter's silence flag suppresses playback"
+                );
+            } else {
+                let audio = sound
+                    .audio
+                    .expect("null/player emitter reaches native prepared audio");
+                assert_eq!(audio.play_type, 3);
+                assert!(audio.command.audible);
+                assert_eq!(
+                    (
+                        audio.command.relative_x,
+                        audio.command.relative_y,
+                        audio.command.relative_z
+                    ),
+                    (0, 0, 0)
+                );
+                assert_eq!(
+                    (
+                        audio.command.volume_q15,
+                        audio.command.pan_q16,
+                        audio.command.rate_delta_percent
+                    ),
+                    (0x7fff, 0x7fff, 0)
+                );
+                let flags = if emitter == 0 {
+                    0
+                } else {
+                    control.entities()[usize::from(player)]
+                        .source_id
+                        .cast_signed()
+                };
+                assert_eq!(audio.command.sound_flags, flags);
+            }
+        }
+        let journal_start = simulation.effect_journal().records().len();
+        simulation.step_level2_source_pass(0);
+        assert!(
+            simulation
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let child = simulation
+            .creature_runtime_census()
+            .roots_of_kind(CreatureKind::Cymmerian)
+            .find(|entry| {
+                entry.origin
+                    == CreatureRootOrigin::CreatureConversion {
+                        producer_slot: boss,
+                    }
+                    && simulation
+                        .source_arena()
+                        .creature_parent_binding(entry.handle)
+                        == Some(parent)
+            })
+            .expect("real boss mode5 constructs and binds its model25")
+            .handle;
+        let birth = simulation.entities()[usize::from(child.source_slot)].clone();
+        assert_eq!(
+            (birth.class, birth.model, birth.action, birth.record[77]),
+            (5, 25, 207, 17)
+        );
+        assert_eq!(
+            (birth.max_life, birth.life, birth.mana, birth.max_mana),
+            (7500, 7500, 3750, 0),
+            "boss preserves ordinary4CE00 mana; Army alone overrides it to zero"
+        );
+        assert_eq!(
+            (word(&birth, 44), word(&birth, 50), word(&birth, 154)),
+            (boss, 250, player)
+        );
+        assert_eq!(birth.source_id, owner);
+        assert_eq!(
+            simulation.runtime().constructor_counters().unwrap()[25],
+            counter.wrapping_add(1)
+        );
+        let birth_visit = u8::from(child.source_slot > boss);
+        assert_eq!(
+            (birth.phase, birth.actual_speed),
+            (
+                counter.wrapping_add(birth_visit),
+                320 - 8 * i16::from(birth_visit)
+            ),
+            "a higher source slot executes in its birth pass; a lower slot waits"
+        );
+        assert!(
+            simulation
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|view| view.entity_index == child.source_slot)
+        );
+        let summon_sound = simulation.effect_journal().records()[journal_start..]
+            .iter()
+            .find(|record| {
+                matches!(record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::BossCymmerianSummon,
+                    entity_index, player_index: -1, sound_id: 37,
+                }) if entity_index == owner)
+            })
+            .expect(
+                "successful source allocation reaches its current source-ID prepared sound consumer",
+            );
+        let prepared = summon_sound
+            .audio
+            .expect("actual group29 emitter is not silent");
+        assert_eq!(prepared.play_type, 3);
+        assert!(prepared.command.audible);
+        let emitter = crate::native_world::source_target::read(
+            simulation.source_arena(),
+            crate::native_world::source_target::Context::default(),
+            owner,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            prepared.command.sound_flags,
+            emitter.source_id.cast_signed()
+        );
+        assert_eq!(prepared.command.rate_delta_percent, 0);
+
+        // Source1E320 subtracts8 from320 until <=16, after ordinary movement.
+        // Step the actual shared scheduler, preserving all source tails.
+        let launch_bound = (320_usize - 16) / 8 + 1;
+        let mut transitioned = false;
+        let mut moved = false;
+        for visit in 0..launch_bound {
+            let before = simulation.entities()[usize::from(child.source_slot)].clone();
+            assert_eq!(before.record[77], 17);
+            simulation.step_level2_source_pass(0);
+            assert_eq!(
+                simulation.source_arena().handle(child.source_slot),
+                Some(child)
+            );
+            let after = &simulation.entities()[usize::from(child.source_slot)];
+            assert!(
+                after.life >= 0 && !after.drawing_disabled(),
+                "source launch must survive its real terrain/target: visit{visit} before={before:?} after={after:?}"
+            );
+            assert_eq!(after.phase, before.phase.wrapping_add(1));
+            assert_eq!(word(after, 50), 250);
+            assert_eq!(after.actual_speed, before.actual_speed.wrapping_sub(8));
+            moved |= before.position != after.position;
+            if after.record[77] == 16 {
+                assert_eq!(after.actual_speed, 16);
+                assert_eq!(after.action, 207);
+                transitioned = true;
+                break;
+            }
+            assert_eq!(after.record[77], 17);
+        }
+        assert!(
+            transitioned && moved,
+            "actual launch motion reaches source mode16"
+        );
+        let before = simulation.entities()[usize::from(child.source_slot)].clone();
+        let mut alive = simulation.clone();
+        alive.step_level2_source_pass(0);
+        assert_eq!(alive.source_arena().handle(child.source_slot), Some(child));
+        assert!(
+            !alive.entities()[usize::from(child.source_slot)].drawing_disabled(),
+            "the same scheduled child remains visible with its current live parent"
+        );
+
+        // Isolated configured current-parent-death branch, not earned boss
+        // victory. The original child's life/timer/action/pose remain intact.
+        assert!(simulation.economy().free_slot_count() > 1);
+        let generations = simulation
+            .entities()
+            .iter()
+            .map(|row| simulation.source_arena().slot_generation(row.index))
+            .collect::<Vec<_>>();
+        simulation.session.state.live.economy.entities[usize::from(boss)].set_life(-1);
+        simulation.step_level2_source_pass(0);
+        assert_eq!(
+            simulation.source_arena().handle(child.source_slot),
+            Some(child)
+        );
+        let expired = &simulation.entities()[usize::from(child.source_slot)];
+        assert!(expired.drawing_disabled());
+        assert_eq!(
+            (expired.life, expired.mana, expired.position),
+            (before.life, before.mana, before.position)
+        );
+        assert_eq!(
+            (expired.action, expired.record[77], word(expired, 50)),
+            (207, 16, 0)
+        );
+        assert!(
+            simulation.entities().iter().any(|row| simulation
+                .source_arena()
+                .slot_generation(row.index)
+                != generations[usize::from(row.index)]
+                && row.active
+                && (row.class, row.model) == (10, 0)
+                && row.position == before.position),
+            "mode16 parent expiry allocates the actual10/0 product at the original current pose"
+        );
+        assert!(
+            !simulation
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|view| view.entity_index == child.source_slot)
+        );
+        simulation.step_level2_source_pass(0);
+        assert!(
+            simulation.source_arena().resolve(child).is_none(),
+            "following source boundary reclaims the retained original generation"
+        );
+        assert!(
+            !simulation.source_arena().rebuilt_class5_model_slots()[25].contains(&child.source_slot)
+        );
+    }
 
     #[test]
     fn level25_boss_naturally_produces_model21_then_parent_loss_reclaims_it() {

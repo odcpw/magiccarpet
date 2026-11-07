@@ -2,6 +2,40 @@ use super::*;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CastleDamageReceipt {
+    pub(crate) target: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) mailbox_before: (i32, u16),
+    pub(crate) mailbox_after: (i32, u16),
+    pub(crate) life_before: i32,
+    pub(crate) life_after: i32,
+    pub(crate) event_cursor: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CASTLE_DAMAGE_TRACE: std::cell::RefCell<Option<(
+        crate::campaign::source_arena::SourceEntityHandle, Vec<CastleDamageReceipt>,
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_castle_damage_trace(target: crate::campaign::source_arena::SourceEntityHandle) {
+    CASTLE_DAMAGE_TRACE.with(|trace| *trace.borrow_mut() = Some((target, Vec::new())));
+}
+
+/// End the explicitly selected generation scope and return its observations.
+#[cfg(test)]
+pub(crate) fn take_castle_damage_trace() -> Vec<CastleDamageReceipt> {
+    CASTLE_DAMAGE_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .take()
+            .map_or_else(Vec::new, |(_, rows)| rows)
+    })
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ClaimedSphereLiftReceipt {
     pub(crate) sphere: crate::campaign::source_arena::SourceEntityHandle,
     pub(crate) holder: crate::campaign::source_arena::SourceEntityHandle,
@@ -559,26 +593,6 @@ impl Level2EconomyState {
             projectile.source_model = 28;
             projectile.action = 29;
         }
-    }
-
-    /// Source sub_11900's Castle contact mailbox. An already latched
-    /// attacker causes replacement; an empty attacker lane accumulates.
-    pub(crate) fn apply_source_castle_contact(
-        &mut self,
-        slot: u16,
-        attacker_source_id: u16,
-        damage: u16,
-    ) -> bool {
-        let Some(castle) = self.castle_at_mut(slot) else {
-            return false;
-        };
-        castle.pending_damage = if castle.pending_attacker_entity_index != 0 {
-            i32::from(damage)
-        } else {
-            castle.pending_damage.wrapping_add(i32::from(damage))
-        };
-        castle.pending_attacker_entity_index = attacker_source_id;
-        true
     }
 
     /// sub_33710's Castle lane always adds the payload, independently of
@@ -8615,12 +8629,19 @@ impl Level2EconomyState {
             return Some(lethal);
         }
         let local_owner = self.local_player_entity_index;
+        #[cfg(test)]
+        let target = crate::campaign::source_arena::SourceEntityHandle {
+            source_slot: target_slot,
+            generation: self.slot_generation(target_slot),
+        };
         let castle = self.castle_at_mut(target_slot)?;
         let damage = castle.pending_damage;
         let attacker = castle.pending_attacker_entity_index;
         if attacker == 0 {
             return None;
         }
+        #[cfg(test)]
+        let life_before = castle.life;
         castle.life = castle.life.wrapping_sub(damage);
         castle.pending_attacker_entity_index = 0;
         let lethal = castle.life < 0;
@@ -8631,14 +8652,37 @@ impl Level2EconomyState {
             // sub_609E0 clears nonlethal damage independently of the
             // separate word80 upgrade mailbox.
         }
+        #[cfg(test)]
+        let (life_after, mailbox_after) = (
+            castle.life,
+            (castle.pending_damage, castle.pending_attacker_entity_index),
+        );
         if !lethal && castle.owner_entity_index == local_owner {
             self.player_castle_aux_flags = 4;
         }
+        #[cfg(test)]
+        let receipt = CastleDamageReceipt {
+            target,
+            mailbox_before: (damage, attacker),
+            mailbox_after,
+            life_before,
+            life_after,
+            event_cursor: self.events.len(),
+        };
         self.events.push(Level2EconomyEvent::DamageApplied {
             target_entity_index: target_slot,
             attacker_entity_index: attacker,
             damage,
             lethal,
+        });
+        #[cfg(test)]
+        CASTLE_DAMAGE_TRACE.with(|trace| {
+            if let Some((wanted, rows)) = trace.borrow_mut().as_mut()
+                && *wanted == target
+                && rows.len() < 64
+            {
+                rows.push(receipt);
+            }
         });
         Some(lethal)
     }

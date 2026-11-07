@@ -81,7 +81,10 @@ pub struct CymmerianClassProperties {
     pub projectile_damage: u16,
     pub collision_half_width: i16,
     pub collision_half_height: i16,
+    /// Descriptor word4, passed to source58350 but ignored by that helper.
     pub turn_limit: i16,
+    /// Descriptor subtype, the effective source58350 turn clamp.
+    pub turn_response: i16,
     pub ground_clearance: i16,
     pub descent: i16,
     pub maximum_slope: i32,
@@ -97,7 +100,10 @@ pub struct CymmerianClassProperties {
     pub split_speed_bonus: i16,
     pub split_attack_damage: u16,
     pub split_half_extent: i16,
+    /// Split descriptor word4, passed but ignored by source58350.
     pub split_turn_limit: i16,
+    /// Split descriptor subtype, the effective source58350 turn clamp.
+    pub split_turn_response: i16,
     pub split_descent: i16,
     pub split_maximum_slope: i32,
     pub split_scan_period: u8,
@@ -117,6 +123,7 @@ pub const CYMMERIAN_CLASS_PROPERTIES: CymmerianClassProperties = CymmerianClassP
     collision_half_width: 384,
     collision_half_height: 384,
     turn_limit: 113,
+    turn_response: 5,
     ground_clearance: 0,
     descent: -32,
     maximum_slope: 20,
@@ -133,6 +140,7 @@ pub const CYMMERIAN_CLASS_PROPERTIES: CymmerianClassProperties = CymmerianClassP
     split_attack_damage: 15000,
     split_half_extent: 32,
     split_turn_limit: 170,
+    split_turn_response: 5,
     split_descent: -256,
     split_maximum_slope: 512,
     split_scan_period: 16,

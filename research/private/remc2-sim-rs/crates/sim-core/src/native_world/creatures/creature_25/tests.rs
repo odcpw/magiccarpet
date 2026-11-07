@@ -6,6 +6,28 @@ fn terrain() -> SessionTerrain {
         .clone()
 }
 
+fn configured_player_headers() -> crate::campaign::source_player_result::SourcePlayerResult {
+    crate::campaign::source_player_result::SourcePlayerResult::source_level_start(0)
+}
+
+fn level18_shared_player_state() -> crate::native_world::Level2SharedSpellResetSession {
+    use crate::native_world::{
+        Level2SharedSpellResetSession, OwnerPackageProfile, OwnerPackageSchema,
+        parse_entities, parse_players, parse_runtime,
+    };
+    let package = crate::campaign::spec::DecodedCampaignPackage::decode(
+        mission_eighteen_root().join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    )
+    .expect("actual Mission18 source package");
+    let entities = parse_entities(package.member("entities.bin").unwrap()).unwrap();
+    let players = parse_players(package.member("players.bin").unwrap(),
+        OwnerPackageProfile::Level2, OwnerPackageSchema::V5).unwrap();
+    let runtime = parse_runtime(package.member("runtime.bin").unwrap()).unwrap();
+    Level2SharedSpellResetSession::from_campaign_parts(&entities, &players, &runtime)
+        .expect("Mission18 actual player and holder records")
+}
+
 fn target(slot: u16, class: u8, model: u8, position: Position) -> Target {
     Target {
         slot,
@@ -176,6 +198,113 @@ fn source_constructor_uses_canonical_descriptor92_fields() {
     assert_eq!(row.array_pitch(), RULES.collision_half_width);
     assert_eq!(row.array_roll(), RULES.collision_half_width);
     assert_eq!(row.array_fov(), RULES.collision_half_height);
+}
+
+#[test]
+fn configured_source_default_and_army_share_birth_but_keep_distinct_mana() {
+    let (mut arena, runtime, terrain, particles, parent, owner, position) = summoned_source_parts();
+    let holder = arena.allocate_source_slot().expect("Army holder slot");
+    let mut default_arena = arena.clone();
+    let mut default_runtime = runtime.clone();
+    let mut default_terrain = terrain.clone();
+    let mut army_runtime = runtime;
+    let mut army_terrain = terrain;
+    let counter = default_runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)];
+    let ordinary = mc2::allocate_source_default(
+        &mut default_arena, &mut default_runtime, &mut default_terrain, &particles, position,
+    ).unwrap().expect("actual default source allocation");
+    let army = mc2::allocate_summoned(
+        &mut arena, &mut army_runtime, &mut army_terrain, &particles, position,
+        parent, owner, holder,
+    ).unwrap().expect("actual Army source allocation");
+    assert_eq!(ordinary, army, "both producers use the same constructor slot and generation");
+    let ordinary = &default_arena.entities[usize::from(ordinary.source_slot)];
+    let army = &arena.entities[usize::from(army.source_slot)];
+    assert_eq!((ordinary.class, ordinary.model, ordinary.action, ordinary.mana), (5, 25, 201, 3750));
+    assert_eq!((army.class, army.model, army.action, army.mana), (5, 25, 207, 0));
+    assert_eq!((ordinary.max_life, ordinary.life, ordinary.phase, ordinary.entity_rng),
+        (army.max_life, army.life, army.phase, army.entity_rng));
+    assert_eq!(default_runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)], counter.wrapping_add(1));
+    assert_eq!(army_runtime.constructor_counters().unwrap()[usize::from(SOURCE_MODEL)], counter.wrapping_add(1));
+}
+
+#[test]
+fn configured_large_and_small_motion_use_source_descriptor_turn_response() {
+    let terrain = terrain();
+    for descriptor in [DESCRIPTOR, SPLIT_DESCRIPTOR] {
+        let mut row = cymmerian(201, Position { x: 20_000, y: 20_000, z: 400 });
+        row.parameter_relation = Some(descriptor);
+        row.set_yaw(0);
+        row.set_source_roll(200);
+        // Same-tile, zero-speed motion isolates the source58350 turn after
+        // the real movement helper; descriptor92 and95 both have subtype5.
+        row.set_actual_speed(0);
+        let ctx = Context {
+            terrain: &terrain, targets: &[], class3: &[], model25: &[],
+            reader: None, read_error: std::cell::Cell::new(None),
+        };
+        move_actor(&mut Actor { row: &mut row }, &ctx, &mut Effects::default());
+        assert_eq!(row.yaw, 5, "descriptor{descriptor} must use subtype, not word4");
+    }
+}
+
+#[test]
+fn configured_pursuit_peer_overlap_uses_promoted_unsigned_axes() {
+    let terrain = terrain();
+    let position = Position { x: 65520, y: 20000, z: 400 };
+    let target_position = Position { y: position.y + 512, ..position };
+    let peer_position = Position { x: 8, ..position };
+    let targets = [target(42, 3, 0, target_position), target(43, 5, 25, peer_position)];
+    let mut row = cymmerian(202, position);
+    row.set_phase(4);
+    row.set_control_flags(row.control_flags | 0x800);
+    row.record[154..156].copy_from_slice(&42_u16.to_le_bytes());
+    let mut ctx = Context {
+        terrain: &terrain, targets: &targets, class3: &[42], model25: &[43],
+        reader: None, read_error: std::cell::Cell::new(None),
+    };
+    let expected = heading_for_positions(position, target_position) as i16;
+    let incorrectly_wrapped_peer = heading_for_positions(peer_position, position) as i16;
+    assert_ne!(expected, incorrectly_wrapped_peer);
+    step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
+    assert_eq!(row.source_roll(), expected,
+        "source peer overlap sees 65512, not a wrapped distance of24");
+}
+
+#[test]
+fn configured_small_body_reads_current_player_and_retained_castle_without_list_or_life_gate() {
+    let terrain = terrain();
+    let position = Position { x: 20_000, y: 20_000, z: 400 };
+    let mut player = target(42, 3, 0, position);
+    player.castle_slot = 43;
+    player.life = -1;
+    let mut castle = target(43, 1, 0, position);
+    castle.life = -1;
+    castle.flags = crate::native_world::ENTITY_DRAW_DISABLED_BIT;
+    castle.pitch_extent = Some(384);
+    castle.roll_extent = Some(384);
+    let targets = [player, castle];
+    let mut ctx = Context {
+        terrain: &terrain, targets: &targets, class3: &[], model25: &[],
+        reader: None, read_error: std::cell::Cell::new(None),
+    };
+    let mut row = cymmerian(200, position);
+    row.parameter_relation = Some(SPLIT_DESCRIPTOR);
+    row.set_subspell_index(15000);
+    row.set_phase(8);
+    row.record[74] = 3;
+    row.record[40..42].copy_from_slice(&42_u16.to_le_bytes());
+    row.set_control_flags(row.control_flags | 0x800);
+    step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
+    assert_eq!((row.record[74], word(&row, 154)), (5, 42),
+        "direct source player address is independent of frozen class3 membership");
+    row.set_phase(8);
+    row.set_control_flags(row.control_flags | 0x800);
+    step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
+    assert_eq!(row.record[74], 6, "the current retained Castle remains the source target");
+    row.set_control_flags(row.control_flags | 0x800);
+    let effects = step(&mut Actor { row: &mut row }, &mut ctx).unwrap();
+    assert_eq!(effects.castle_hit, Some(CastleHit { player_slot: 42, castle_slot: 43, damage: 60 }));
 }
 
 #[test]
@@ -519,7 +648,7 @@ fn stage_follow_reads_ordinary_castle_defenders_live_target_over_raw_shadow() {
     put(row, 78, leader);
     let mut families = family_with_cymmerian(actor);
     families[15].push(leader);
-    mc2::step_row(&mut arena, &mut runtime, &mut terrain, &particles, actor,
+    mc2::step_row(&mut arena, &mut runtime, &mut configured_player_headers(), &mut terrain, &particles, actor,
         &[hostile.index], &families, source_target::Context::default())
         .expect("source mode4 consumes its cached current defender target");
     let row = &arena.entities[usize::from(actor)];
@@ -578,7 +707,7 @@ fn stage_follow_reads_current_mana_sphere_collector_through_hidden_reclaim() {
     row.set_phase(8);
     put(row, 78, sphere);
     let families = family_with_cymmerian(actor);
-    mc2::step_row(arena, runtime, terrain, &particles, actor, &[], &families,
+    mc2::step_row(arena, runtime, &mut configured_player_headers(), terrain, &particles, actor, &[], &families,
         Default::default()).expect("a cached numeric leader reads the neutral sphere's zero target");
     assert_eq!((arena.entities[usize::from(actor)].action,
         word(&arena.entities[usize::from(actor)], 154)), (207, 0));
@@ -633,7 +762,7 @@ fn stage_follow_reads_current_mana_sphere_collector_through_hidden_reclaim() {
     put(&mut arena.entities[usize::from(sphere)], 154, 999);
     assert_eq!(source_target::read(arena, Default::default(), sphere).unwrap().unwrap()
         .relations.target, Some(collector));
-    mc2::step_row(arena, runtime, terrain, &particles, actor, &[], &families,
+    mc2::step_row(arena, runtime, &mut configured_player_headers(), terrain, &particles, actor, &[], &families,
         Default::default()).expect("cached StageVar4 reads the current nonzero sphere collector");
     assert_eq!((arena.entities[usize::from(actor)].action,
         arena.entities[usize::from(actor)].record[77], word(&arena.entities[usize::from(actor)], 154)),
@@ -1336,6 +1465,49 @@ fn ordinary_death_callback_requests_three_children_before_parent_kill() {
 }
 
 #[test]
+fn configured_small_prekill_awards_one_credit_across_all_kill_visits() {
+    let (mut arena, mut runtime, mut terrain, particles, player, _, position) = source_parts(18);
+    let shared = level18_shared_player_state();
+    let mut headers = crate::campaign::source_player_result::SourcePlayerResult::source_level_start(
+        u16::from(runtime.local_player_slot),
+    );
+    let header_index = usize::from(runtime.local_player_slot) + 1;
+    assert_eq!(shared.players[usize::from(runtime.local_player_slot)].entity_index, player);
+    let target_context = crate::native_world::source_target::Context {
+        spells: Some(&shared), ..Default::default()
+    };
+    let child = mc2::allocate_source_default(
+        &mut arena, &mut runtime, &mut terrain, &particles, position,
+    ).unwrap().expect("real constructor for configured small prekill");
+    let row = &mut arena.entities[usize::from(child.source_slot)];
+    row.parameter_relation = Some(SPLIT_DESCRIPTOR);
+    row.record[74] = 3;
+    row.set_source_action(204);
+    row.set_life(-1);
+    row.set_phase(1);
+    put(row, 40, player);
+    let families = family_with_cymmerian(child.source_slot);
+    let prekill = mc2::step_row(&mut arena, &mut runtime, &mut headers, &mut terrain, &particles,
+        child.source_slot, &[], &families, target_context).unwrap();
+    assert_eq!(prekill.kill_credit, Some(player));
+    assert_eq!(headers.raw_headers()[header_index], 0, "source204 is not the header writer");
+    assert_eq!(arena.entities[usize::from(child.source_slot)].action, 205);
+    for phase in 1..=8 {
+        arena.entities[usize::from(child.source_slot)].set_phase(phase);
+        let result = mc2::step_row(&mut arena, &mut runtime, &mut headers, &mut terrain, &particles,
+            child.source_slot, &[], &families, target_context).unwrap();
+        assert_eq!(result.kill_credit, None, "source205 visit{phase} must not repeat prekill credit");
+        assert_eq!(headers.raw_headers()[header_index], u32::from(phase),
+            "each source205 visit writes the neighboring header before phase-gated hide");
+        if phase < 8 {
+            assert!(!arena.entities[usize::from(child.source_slot)].drawing_disabled());
+        } else {
+            assert!(arena.entities[usize::from(child.source_slot)].drawing_disabled());
+        }
+    }
+}
+
+#[test]
 fn action206_is_rejected_because_the_pinned_source_has_no_handler() {
     let terrain = terrain();
     let targets = [];
@@ -1450,7 +1622,7 @@ fn summoned_cymmerian_follows_reused_parent_until_it_dies() {
     freed.economy.release_slot(parent_slot, None);
     let families = family_with_cymmerian(child.source_slot);
     mc2::step_row(
-        &mut freed, &mut freed_runtime, &mut freed_terrain, &particles, child.source_slot,
+        &mut freed, &mut freed_runtime, &mut configured_player_headers(), &mut freed_terrain, &particles, child.source_slot,
         &[], &families, crate::native_world::source_target::Context::default(),
     ).unwrap();
     assert!(!freed.entities[usize::from(child.source_slot)].drawing_disabled());
@@ -1473,6 +1645,7 @@ fn summoned_cymmerian_follows_reused_parent_until_it_dies() {
     mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         child.source_slot,
@@ -1484,7 +1657,7 @@ fn summoned_cymmerian_follows_reused_parent_until_it_dies() {
     assert!(!arena.entities[usize::from(child.source_slot)].drawing_disabled());
     arena.entities[usize::from(parent_slot)].set_life(-1);
     mc2::step_row(
-        &mut arena, &mut runtime, &mut terrain, &particles, child.source_slot,
+        &mut arena, &mut runtime, &mut configured_player_headers(), &mut terrain, &particles, child.source_slot,
         &[], &families, crate::native_world::source_target::Context::default(),
     ).unwrap();
     assert!(arena.entities[usize::from(child.source_slot)].drawing_disabled());
@@ -1577,6 +1750,7 @@ fn authored_cymmerian_alliance_impact_follows_current_parent_until_death() {
     mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         slot,
@@ -1602,6 +1776,7 @@ fn authored_cymmerian_alliance_impact_follows_current_parent_until_death() {
     mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         slot,
@@ -1614,7 +1789,7 @@ fn authored_cymmerian_alliance_impact_follows_current_parent_until_death() {
     assert_eq!(word(&arena.entities[usize::from(slot)], 44), parent_slot);
     arena.entities[usize::from(parent_slot)].set_life(0);
     mc2::step_row(
-        &mut arena, &mut runtime, &mut terrain, &particles, slot, &[parent_slot], &families,
+        &mut arena, &mut runtime, &mut configured_player_headers(), &mut terrain, &particles, slot, &[parent_slot], &families,
         crate::native_world::source_target::Context::default(),
     ).unwrap();
     assert_eq!(arena.entities[usize::from(slot)].record[77], 10);
@@ -1950,7 +2125,8 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
     use crate::PlayerCommand;
     use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityView};
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
-    use crate::native_world::{FireballProjectileOrigin, Mc2DispatchEvent};
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent};
+    use crate::native_world::level2_dynamic_economy::{start_castle_damage_trace, take_castle_damage_trace};
     use std::collections::{BTreeMap, BTreeSet};
 
     let campaign = CampaignSession::open(
@@ -2137,12 +2313,22 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
         matches!(row.record[77], 2 | 10),
         "row31 uses its authored guard route"
     );
+    // Pin actual current generations from this same unfiltered group before
+    // examining their later trajectories; this is diagnostic only.
+    let authored_group25: Vec<_> = session.mission().authored_features().iter()
+        .filter(|feature| feature.kind == 5 && feature.subtype == 25 && feature.activation_group == 8)
+        .filter_map(|feature| session.entities().iter().find_map(|row| {
+            let identity = session.source_arena()
+                .imported_creature_runtime_identity(row.index, &empty_bindings)?;
+            (identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record: feature.index })
+                .then_some((feature.index, identity.handle))
+        })).collect();
+    let mut group_observations = Vec::new();
 
     // Place the actual player inside the guard's view cone; callbacks and
     // projectile allocation then run only through the ordinary scheduler.
     let position = row.position;
     let yaw = row.yaw;
-    let actor_id = row.source_id;
     let candidates = [
         (2048_i16, 0_i16),
         (-2048, 0),
@@ -2166,14 +2352,42 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
         })
         .expect("a bounded nearby position lies in the guard's source view cone");
     session.set_level2_entity_position(player, point).unwrap();
-    let mut fired = false;
-    let mut prepared_pursuit_audio = false;
+    // The source position setter does not change flight velocity. Keep the
+    // declared one-time player entry still; all later recoil remains live.
+    let entry_speed = (session.state.actual_speed, session.state.target_speed);
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    let mut shooter = None;
+    let mut row31_blocked_death = false;
+    let mut guard_observations = Vec::new();
     // The actual initial phase is1: scan20 acquires the target, then
     // pursuit at40 emits the first shot. The previous32-visit deadline
     // ended at33, before that second source cadence. Preserve both scans.
     let acquisition_and_attack_visits = 2 * usize::from(RULES.scan_period) + 1;
-    for _ in 0..acquisition_and_attack_visits {
+    for turn in 0..acquisition_and_attack_visits {
+        let before = session.entities()[usize::from(guard.source_slot)].clone();
+        // Diagnostic only: project the next source movement against a cloned
+        // pre-turn terrain, keeping its scratch writes out of the live world.
+        let projected_motion = (turn < 4).then(|| {
+            let terrain = session.canonical_terrain().clone();
+            crate::ground_creature_motion::step_ground_creature_motion(
+                before.position, before.yaw, before.source_roll(), before.actual_speed,
+                &terrain,
+                crate::ground_creature_motion::GroundCreatureMotionConfig {
+                    half_width: RULES.collision_half_width,
+                    half_height: RULES.collision_half_height,
+                    ground_clearance: RULES.ground_clearance,
+                    descent: RULES.descent,
+                    turn_limit: RULES.turn_response,
+                    terrain_mask: RULES.terrain_mask,
+                    maximum_tile_slope: RULES.maximum_slope,
+                },
+            )
+        });
+        let journal_start = session.effect_journal().cursor(0).next_sequence;
+        mc2::start_attack_birth_trace();
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let attacks = mc2::take_attack_birth_trace();
         assert!(
             !session
                 .dispatch_events()
@@ -2182,43 +2396,93 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
             "ordinary guard/projectile dispatch failed: {:?}",
             session.dispatch_events()
         );
-        fired |= session
-            .economy()
-            .fireball_projectiles()
-            .iter()
-            .any(|projectile| {
-                projectile.origin == FireballProjectileOrigin::Cymmerian
-                    && projectile.owner_entity_index == actor_id
-                    && projectile.target_source_entity_index == player
+        let after = &session.entities()[usize::from(guard.source_slot)];
+        row31_blocked_death |= session.source_arena().handle(guard.source_slot) == Some(guard)
+            && before.life == 7500 && after.life == -1
+            && before.record[98..104] == [0; 6] && after.record[98..104] == [0; 6]
+            && after.control_flags & 0x40000 != 0
+            && after.yaw == before.yaw.wrapping_add(1024) & 2047
+            && before.position == after.position
+            && projected_motion.is_some_and(|motion| motion.killed && motion.movement_blocked);
+        if turn < 4 || turn % 8 == 0 {
+            group_observations.push((turn, authored_group25.iter().map(|&(record, handle)| {
+                (record, handle, session.source_arena().resolve(handle).map(|_| {
+                    let row = &session.entities()[usize::from(handle.source_slot)];
+                    (row.action, row.phase, row.position, row.life, row.control_flags)
+                }))
+            }).collect::<Vec<_>>()));
+        }
+        if guard_observations.len() < 16 && (turn < 4 || turn % 8 == 0 || before.action != after.action) {
+            let packet = |row: &EntitySnapshot| (
+                (row.action, row.phase, row.position, row.yaw, row.source_roll(), row.actual_speed),
+                (row.life, row.max_life, row.control_flags,
+                    i32::from_le_bytes(row.record[98..102].try_into().unwrap()),
+                    u16::from_le_bytes(row.record[102..104].try_into().unwrap()),
+                    u16::from_le_bytes(row.record[42..44].try_into().unwrap()),
+                    row.source_word_96()),
+            );
+            guard_observations.push((turn,
+                packet(&before),
+                packet(after),
+                (session.state.position, session.state.actual_speed, session.state.target_speed),
+                (session.canonical_terrain().ground_height(before.position),
+                    session.canonical_terrain().ground_height(after.position),
+                    session.canonical_terrain().source_predicted_position()),
+                projected_motion));
+        }
+        if shooter.is_none() {
+            shooter = attacks.into_iter().find_map(|attack| {
+                let &(record, handle) = authored_group25.iter().find(|(_, handle)| *handle == attack.actor)?;
+                if attack.target != player || session.source_arena().handle(handle.source_slot) != Some(handle) {
+                    return None;
+                }
+                let row = &session.entities()[usize::from(handle.source_slot)];
+                if (row.class, row.model) != (5, 25) || row.life < 0 || row.drawing_disabled() {
+                    return None;
+                }
+                let identity = session.source_arena()
+                    .imported_creature_runtime_identity(handle.source_slot, &empty_bindings)?;
+                if identity.handle != handle || identity.origin != (CreatureRootOrigin::AuthoredRecord { authored_record: record }) {
+                    return None;
+                }
+                let audible = session.effect_journal().records().iter().filter(|event|
+                    event.sequence >= journal_start
+                ).any(|event| {
+                    matches!(event.effect,
+                        crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                            entity_index, player_index: -1, sound_id: 37, ..
+                        }) if entity_index == handle.source_slot
+                    ) && event.audio.is_some_and(|audio| audio.command.audible)
+                });
+                audible.then_some((record, handle, attack.projectile))
             });
-        prepared_pursuit_audio |= session.effect_journal().records().iter().any(|record| {
-            matches!(record.effect,
-                crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
-                    entity_index, player_index: -1, sound_id: 37, ..
-                }) if entity_index == guard.source_slot
-            ) && record.audio.is_some()
-        });
-        if fired {
+        }
+        if shooter.is_some() && row31_blocked_death {
             break;
         }
     }
     assert!(
-        fired,
-        "the real row31 guard must reach its ordinary projectile consumer"
+        row31_blocked_death,
+        "the original row31 source-blocked death must remain observed: observations={guard_observations:?}"
     );
-    assert!(
-        prepared_pursuit_audio,
-        "the actual guard must publish prepared audio consumed by native playback, not only an economy receipt"
+    let (shooter_record, guard, projectile) = shooter.expect(
+        "an original authored group8 Cymmerian must actually fire at the player and publish its own audible source37"
     );
+    assert_eq!(session.source_arena().handle(guard.source_slot), Some(guard));
+    assert!(authored_group25.contains(&(shooter_record, guard)));
 
-    // A real Castle is the source-required target for the small bodies'
-    // action200 state5/6/7 combat. Its location and the later lethal hits are
-    // explicit check controls; the row31 producer and all callbacks stay real.
-    let castle_position = session.entities()[usize::from(guard.source_slot)].position;
+    // One fixed player-side Castle placement before the parent is hit. The
+    // previous encounter placed it at the split and observed child404 travel
+    // north for the source's 52 protected visits (~110 units per visit),
+    // reaching state5 about 6,000 units away. This control does not track or
+    // change a child after birth; the real constructor and terrain still decide.
+    let mut castle_position = session.entities()[usize::from(guard.source_slot)].position;
+    castle_position.y = castle_position.y.wrapping_sub(6_000);
     let castle = session
         .economy_mut()
         .build_castle(castle_position, player)
         .expect("Castle combat prerequisite for the actual authored split");
+    let castle_handle = session.source_arena().handle(castle).expect("current Castle generation");
     let phase = session.entities()[usize::from(guard.source_slot)].phase;
     crate::native_world::area_damage::contact(
         session.source_arena_mut(),
@@ -2247,8 +2511,16 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
     let mut parent_hidden = false;
     let mut parent_reclaimed = false;
     let mut small_hit = false;
-    for _ in 0..320 {
+    let mut castle_contacts = Vec::new();
+    let mut castle_consumed = None;
+    let mut all_castle_consumptions = Vec::new();
+    let mut castle_observations = Vec::new();
+    for turn in 0..320 {
+        start_castle_damage_trace(castle_handle);
+        mc2::start_castle_contact_trace();
         session.step_outer_turn(PlayerCommand::default(), 0);
+        castle_contacts.extend(mc2::take_castle_contact_trace());
+        let consumed = take_castle_damage_trace();
         assert!(
             !session
                 .dispatch_events()
@@ -2298,11 +2570,57 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
             .economy
             .castle_at(castle)
             .expect("Castle survives the bounded contact check");
-        small_hit |= target.pending_damage > 0
-            && children.keys().any(|&slot| {
-                arena.entities[usize::from(slot)].source_id == target.pending_attacker_entity_index
-            });
-        if children.len() == 3 && landed.len() == 3 && parent_reclaimed && small_hit {
+        // A child before the Castle's numeric slot can write and have its
+        // mailbox consumed in this same pass. Observe the actual source write
+        // rather than requiring its mailbox to remain pending after the turn.
+        small_hit |= castle_contacts.iter().any(|writer|
+            writer.castle == castle_handle && writer.damage == 60
+                && children.values().any(|child| *child == writer.actor)
+                && landed.contains(&writer.actor.source_slot)
+                && writer.mailbox.0 >= 60 && writer.mailbox.1 == writer.source_id
+                && writer.source_id != 0);
+        if turn < 4 || turn % 32 == 0 {
+            let current_a4 = crate::native_world::source_target::creature25_castle_slot(
+                arena,
+                crate::native_world::source_target::Context {
+                    spells: Some(session.shared_spells()), ..Default::default()
+                },
+                player,
+            );
+            let child_states = children.values().map(|&child| (child,
+                arena.resolve(child).map(|_| {
+                    let row = &arena.entities[usize::from(child.source_slot)];
+                    (row.action, row.phase, row.record[74], row.position, row.life, row.source_word_96())
+                }))).collect::<Vec<_>>();
+            castle_observations.push((turn, current_a4, arena.handle(castle),
+                (target.life, target.pending_damage, target.pending_attacker_entity_index),
+                session.session.state.live.player_life, child_states));
+        }
+        all_castle_consumptions.extend(consumed.iter().copied().map(|receipt| (turn, receipt)));
+        for receipt in consumed {
+            if receipt.target != castle_handle { continue; }
+            let Some(writer) = castle_contacts.iter().rev().find(|writer|
+                writer.castle == castle_handle && writer.event_cursor <= receipt.event_cursor
+            ) else { continue };
+            if !children.values().any(|child| *child == writer.actor)
+                || arena.handle(writer.actor.source_slot) != Some(writer.actor)
+                || writer.mailbox != receipt.mailbox_before
+                || writer.damage != 60
+                || writer.source_id != receipt.mailbox_before.1
+            {
+                continue;
+            }
+            assert_eq!(arena.handle(castle), Some(castle_handle));
+            assert_eq!(writer.source_id, arena.entities[usize::from(writer.actor.source_slot)].source_id);
+            assert!(receipt.mailbox_before.0 >= 60);
+            assert_eq!(receipt.mailbox_after.1, 0);
+            assert_eq!(receipt.life_after, receipt.life_before.wrapping_sub(receipt.mailbox_before.0));
+            assert!(matches!(arena.economy.events().get(receipt.event_cursor),
+                Some(Level2EconomyEvent::DamageApplied { target_entity_index, attacker_entity_index, damage, lethal: false })
+                if *target_entity_index == castle && *attacker_entity_index == writer.source_id && *damage == receipt.mailbox_before.0));
+            castle_consumed = Some((turn, *writer, receipt));
+        }
+        if children.len() == 3 && landed.len() == 3 && parent_reclaimed && small_hit && castle_consumed.is_some() {
             break;
         }
     }
@@ -2319,9 +2637,12 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
     assert!(parent_hidden && parent_reclaimed);
     assert!(
         small_hit,
-        "a landed small body must damage the actual Castle mailbox"
+        "an original landed small body must write the actual Castle mailbox: record={shooter_record} parent={guard:?} castle_position={castle_position:?} castle={castle_handle:?} contacts={castle_contacts:?} consumptions={all_castle_consumptions:?} observations={castle_observations:?}"
     );
+    assert!(castle_consumed.is_some(),
+        "one original child must write the actual Castle mailbox consumed by its scheduled callback: record={shooter_record} parent={guard:?} castle_position={castle_position:?} castle={castle_handle:?} contacts={castle_contacts:?} consumptions={all_castle_consumptions:?} observations={castle_observations:?}");
 
+    let credit_before_children = session.economy().authored_bee_kill_census(player);
     for child in children.values() {
         crate::native_world::area_damage::contact(
             session.source_arena_mut(),
@@ -2385,6 +2706,11 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
         (3, 3),
         "small death hides before following-pass reclaim"
     );
+    assert_eq!(
+        session.economy().authored_bee_kill_census(player),
+        credit_before_children.wrapping_add(3),
+        "each actual small-body prekill contributes exactly one A4 creature credit"
+    );
     let frozen = session.source_arena().rebuilt_class5_model_slots();
     assert!(!frozen[25].contains(&guard.source_slot));
     assert!(
@@ -2392,7 +2718,7 @@ fn level_ten_buildings_release_switch_group_into_cymmerian_guard() {
         "the source absence consumer drops the entire retired lineage"
     );
     eprintln!(
-        "Level10 row31 ordinary Cymmerian combat/split/landing/Castle damage/death/reclaim: parent={guard:?}, children={children:?}"
+        "Level10 authored Cymmerian combat/split/landing/Castle damage/death/reclaim: record={shooter_record}, parent={guard:?}, projectile={projectile:?}, children={children:?}"
     );
 }
 
@@ -2432,7 +2758,7 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
     selected.entities[usize::from(target_slot)] = target;
     selected.entities[usize::from(slot)].set_phase(0);
     mc2::step_row(
-        &mut selected, &mut selected_runtime, &mut selected_terrain, &particles, slot,
+        &mut selected, &mut selected_runtime, &mut configured_player_headers(), &mut selected_terrain, &particles, slot,
         &[target_slot], &family_with_cymmerian(slot),
         crate::native_world::source_target::Context::default(),
     ).unwrap();
@@ -2444,6 +2770,7 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
     let effects = mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         slot,
@@ -2470,6 +2797,7 @@ fn army_action207_consumes_parent_timer_and_stage13_expiry_products() {
     let effects = mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         slot,
@@ -2536,6 +2864,7 @@ fn ordinary_step_row_materializes_one_cymmerian_class9_model0_attack() {
         let effects = mc2::step_row(
             &mut arena,
             &mut runtime,
+            &mut configured_player_headers(),
             &mut terrain,
             &particles,
             slot,
@@ -2626,6 +2955,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         parent_slot,
@@ -2663,6 +2993,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     mc2::step_row(
         &mut exhausted,
         &mut exhausted_runtime,
+        &mut configured_player_headers(),
         &mut exhausted_terrain,
         &particles,
         parent_slot,
@@ -2713,6 +3044,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     mc2::step_row(
         &mut partial,
         &mut partial_runtime,
+        &mut configured_player_headers(),
         &mut partial_terrain,
         &particles,
         parent_slot,
@@ -2769,6 +3101,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     mc2::step_row(
         &mut replaced,
         &mut replaced_runtime,
+        &mut configured_player_headers(),
         &mut replaced_terrain,
         &particles,
         parent_slot,
@@ -2810,6 +3143,7 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     mc2::step_row(
         &mut arena,
         &mut runtime,
+        &mut configured_player_headers(),
         &mut terrain,
         &particles,
         parent_slot,
@@ -2857,17 +3191,42 @@ fn ordinary_split_publishes_generation_bound_cymmerian_children() {
     assert_eq!(burst.source_id, parent_id);
     assert_eq!(arena.entities[usize::from(parent_slot)].action, 205);
     let denominator = arena.economy.source_creature_population;
-    mc2::step_row(
-        &mut arena,
-        &mut runtime,
-        &mut terrain,
-        &particles,
-        parent_slot,
-        &[],
-        &families,
-        crate::native_world::source_target::Context::default(),
-    )
+    let shared = level18_shared_player_state();
+    let local_slot = u16::from(runtime.local_player_slot);
+    let local_entity = shared.players[usize::from(local_slot)].entity_index;
+    assert_eq!(local_entity, attacker_slot);
+    assert_eq!(word(&arena.entities[usize::from(parent_slot)], 40), local_entity);
+    let mut headers = crate::campaign::source_player_result::SourcePlayerResult::source_level_start(local_slot);
+    let context = crate::native_world::source_target::Context { spells: Some(&shared), ..Default::default() };
+    let mut missing_arena = arena.clone();
+    let mut missing_runtime = runtime.clone();
+    let mut missing_terrain = terrain.clone();
+    let mut missing_headers = headers;
+    let before_missing = missing_arena.entities[usize::from(parent_slot)].clone();
+    assert!(mc2::step_row(&mut missing_arena, &mut missing_runtime, &mut missing_headers,
+        &mut missing_terrain, &particles, parent_slot, &[], &families, Default::default()).is_err());
+    assert_eq!(missing_arena.entities[usize::from(parent_slot)], before_missing);
+    assert_eq!(missing_headers.raw_headers()[usize::from(local_slot) + 1], 0);
+    // Separate configured nonmatching-killer control of the same large205
+    // source callback. It may hide, but must not write the neighboring header.
+    let mut other_arena = arena.clone();
+    let mut other_runtime = runtime.clone();
+    let mut other_terrain = terrain.clone();
+    let mut other_headers = headers;
+    put(&mut other_arena.entities[usize::from(parent_slot)], 40, local_entity.wrapping_add(1));
+    mc2::step_row(&mut other_arena, &mut other_runtime, &mut other_headers, &mut other_terrain,
+        &particles, parent_slot, &[], &families, context).unwrap();
+    assert_eq!(other_headers.raw_headers()[usize::from(local_slot) + 1], 0);
+    assert!(other_arena.entities[usize::from(parent_slot)].drawing_disabled());
+    mc2::step_row(&mut arena, &mut runtime, &mut headers, &mut terrain,
+    &particles,
+    parent_slot,
+    &[],
+    &families,
+    context,)
     .unwrap();
+    assert_eq!(headers.raw_headers()[usize::from(local_slot) + 1], 1,
+        "large source205 updates the neighboring header before hiding");
     assert_eq!(
         arena.economy.source_creature_population, denominator,
         "source28EC0 hides the large body without reducing the global denominator"
@@ -2903,6 +3262,18 @@ fn special_castle_contact_commits_damage_inside_cymmerian_adapter() {
     assert_eq!((castle.source_class, castle.source_model), (3, 2));
     let player_slot = castle.owner_entity_index;
     let player = arena.entities[usize::from(player_slot)].clone();
+    // This configured adapter check uses the actual owner package's A4
+    // carrier, with the Castle constructed above bound in its current word.
+    let mut shared = level18_shared_player_state();
+    match player.special_relation {
+        crate::native_world::EntitySpecialRelation::PlayerState(index) => {
+            shared.players[usize::from(index)].record[42..44].copy_from_slice(&built_castle_slot.to_le_bytes());
+        }
+        crate::native_world::EntitySpecialRelation::GlobalSpecialState => {
+            shared.global_special_state.castle_entity_index = built_castle_slot;
+        }
+        other => panic!("source player lacks configured A4 carrier: {other:?}"),
+    }
     let slot = mc2::allocate_authored(
         &mut arena,
         &mut runtime,
@@ -2927,16 +3298,12 @@ fn special_castle_contact_commits_damage_inside_cymmerian_adapter() {
         castle.pending_attacker_entity_index, 0,
         "Mission18 Castle contact mailbox starts clear"
     );
-    let _ = mc2::step_row(
-        &mut arena,
-        &mut runtime,
-        &mut terrain,
-        &particles,
-        slot,
-        &[player_slot],
-        &families,
-        crate::native_world::source_target::Context::default(),
-    )
+    let _ = mc2::step_row(&mut arena, &mut runtime, &mut configured_player_headers(), &mut terrain,
+    &particles,
+    slot,
+    &[player_slot],
+    &families,
+    crate::native_world::source_target::Context { spells: Some(&shared), ..Default::default() },)
     .unwrap();
     let after = arena.economy.castle().expect("Castle remains live");
     assert_eq!(after.pending_damage, previous_damage + 60);
@@ -2952,33 +3319,25 @@ fn special_castle_contact_commits_damage_inside_cymmerian_adapter() {
         row.set_position(castle.position);
         row.record[74] = 7;
     }
-    let _ = mc2::step_row(
-        &mut arena,
-        &mut runtime,
-        &mut terrain,
-        &particles,
-        slot,
-        &[player_slot],
-        &families,
-        crate::native_world::source_target::Context::default(),
-    )
+    let _ = mc2::step_row(&mut arena, &mut runtime, &mut configured_player_headers(), &mut terrain,
+    &particles,
+    slot,
+    &[player_slot],
+    &families,
+    crate::native_world::source_target::Context { spells: Some(&shared), ..Default::default() },)
     .unwrap();
     assert_eq!(
         arena.economy.castle().unwrap().pending_damage,
         latched_damage,
         "a latched Castle attacker replaces rather than adds the Cymmerian hit"
     );
-    assert!(
-        arena
-            .economy
-            .apply_source_castle_contact(castle.source_entity_index, 0, 9)
-    );
+    crate::native_world::area_damage::contact(
+        &mut arena, None, castle.source_entity_index, 9, 0,
+    ).unwrap();
     assert_eq!(arena.economy.castle().unwrap().pending_damage, 9);
-    assert!(
-        arena
-            .economy
-            .apply_source_castle_contact(castle.source_entity_index, 0, 5)
-    );
+    crate::native_world::area_damage::contact(
+        &mut arena, None, castle.source_entity_index, 5, 0,
+    ).unwrap();
     let zero_owner = arena.economy.castle().unwrap();
     assert_eq!(
         (

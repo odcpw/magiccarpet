@@ -13,12 +13,30 @@ use crate::villager::VillagerFamily;
 
 use super::{EntitySnapshot, Level2DynamicArenaKind as Kind, ParticleParameter, area_damage};
 
+/// The allocated current Castle carrier, including its terminal retained
+/// state. A different live kind, reclaim, or NewEvent generation ends it.
+pub(crate) fn current_castle_entry(
+    arena: &SourceArena,
+    slot: u16,
+) -> Option<&super::Level2CastleState> {
+    match arena.economy.live_arena_kind(slot) {
+        Some(Kind::CastleRoot) => arena.economy.castle_entry(slot),
+        None if !arena.economy.free_source_slots().contains(&slot) => {
+            arena.economy.castle_entry(slot)
+        }
+        _ => None,
+    }
+}
+
 fn status_kind(arena: &SourceArena, slot: u16) -> Option<Kind> {
     if let Some(kind) = arena.economy.live_arena_kind(slot) {
         return Some(kind);
     }
     if arena.economy.free_source_slots().contains(&slot) {
         return None;
+    }
+    if current_castle_entry(arena, slot).is_some() {
+        return Some(Kind::CastleRoot);
     }
     // Match read_current's retained flyer owners until the next reclaim
     // prologue. Hidden drawing does not invalidate a source parent pointer.
@@ -131,7 +149,7 @@ pub(crate) fn status_parent(
                 .iter()
                 .find(|row| row.active && row.source_entity_index == slot)
                 .map(|row| row.carried_mana),
-            Kind::CastleRoot => economy.castle_at(slot).map(|row| row.mana),
+            Kind::CastleRoot => economy.castle_entry(slot).map(|row| row.mana),
             Kind::CastleChild | Kind::CastleController | Kind::CastleDefender => economy
                 .castle_children
                 .iter()
@@ -595,6 +613,25 @@ pub(crate) fn status_castle(
     )
 }
 
+/// Source28860 reads the reached current player's A4 Castle word directly.
+/// Its caller owns the per-state class/null tests; neither frozen class3
+/// membership nor generation-bound Castle ownership admits this read.
+pub(crate) fn creature25_castle_slot(
+    arena: &SourceArena,
+    context: Context<'_>,
+    player_slot: u16,
+) -> Result<u16, String> {
+    let player = status_parent(arena, context, player_slot)?
+        .ok_or_else(|| format!("creature25 player address {player_slot} is unavailable"))?;
+    let shared = context
+        .spells
+        .ok_or("creature25 Castle lookup requires current player A4 state")?;
+    if player.special_relation == super::EntitySpecialRelation::None {
+        return Err(format!("creature25 player {player_slot} has no current A4"));
+    }
+    current_a4_castle_slot(shared, &player)
+}
+
 /// Source282D0 reads the current occupant at each frozen class3 address.
 /// Balloons use their current source-ID owner, then that owner's A4 Castle;
 /// player models use their own A4. The resulting fixed Castle address is
@@ -902,7 +939,7 @@ pub(crate) fn commit_status_parent(
             Some(Kind::FireballProjectile) => set_flags!(economy.fireball_projectiles),
             Some(Kind::CastleProjectile) => set_flags!(economy.castle_projectiles),
             Some(Kind::CastleRoot) => {
-                if let Some(row) = economy.castle_at_mut(slot) {
+                if let Some(row) = economy.castle_entry_mut(slot) {
                     row.control_flags = (row.control_flags & !mask) | (flags & mask);
                 }
             }
@@ -2006,6 +2043,9 @@ fn read_current(
         }
         return dynamic(arena, context, slot, cursor.kind).map(Some);
     }
+    if let Some(castle) = current_castle_entry(arena, slot) {
+        return Ok(Some(castle_view(castle)));
+    }
     // The numeric dispatcher stops visiting a hidden typed flyer, but its
     // fixed row is still allocated until the following reclaim prologue.
     // Light and pointer consumers must see that hidden incarnation meanwhile.
@@ -2125,6 +2165,29 @@ pub(crate) fn font_type_index(
     }
 }
 
+fn castle_view(row: &super::Level2CastleState) -> View {
+    View {
+        slot: row.source_entity_index,
+        source_id: row.source_id_entity_index,
+        active: row.active,
+        // Final Castle loss calls57F20 before the following free-stack sweep.
+        class: if row.active { row.source_class } else { 0 },
+        model: row.source_model,
+        position: row.position,
+        life: row.life,
+        control_flags: row.control_flags,
+        yaw: Some(row.source_yaw),
+        roll: Some(row.source_roll),
+        relations: Relations::default(),
+        collision: Some(Shape {
+            half_width: row.shift_pitch,
+            half_depth: row.shift_roll,
+            vertical_offset: row.shift_yaw,
+            half_height: row.shift_fov,
+        }),
+    }
+}
+
 fn dynamic(
     arena: &SourceArena,
     context: Context<'_>,
@@ -2132,11 +2195,14 @@ fn dynamic(
     kind: Kind,
 ) -> Result<View, String> {
     let economy = &arena.economy;
+    if kind == Kind::CastleRoot {
+        return current_castle_entry(arena, slot).map(castle_view)
+            .ok_or_else(|| format!("target slot {slot} lost its current Castle carrier"));
+    }
     if matches!(
         kind,
         Kind::ManaSphere
             | Kind::AuthoredTree
-            | Kind::CastleRoot
             | Kind::CastleAuxiliary
             | Kind::BeeCreature
             | Kind::HouseResident
@@ -2960,6 +3026,97 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 mod tests {
     use super::*;
     use sha2::Digest;
+
+    #[test]
+    fn creature25_castle_slot_reads_current_a4_without_owner_cache_or_life_gates() {
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let terrain = session.canonical_terrain().clone();
+        let mut shared = session.shared_spells().clone();
+        let owner = session.state.entity_index;
+        let first = arena
+            .economy
+            .build_castle(session.state.position, owner, &terrain)
+            .unwrap();
+        let second = arena
+            .economy
+            .build_castle(
+                Position {
+                    x: 12345,
+                    y: 23456,
+                    z: 3456,
+                },
+                owner.wrapping_add(1),
+                &terrain,
+            )
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            arena
+                .economy
+                .castle_for_owner(owner)
+                .unwrap()
+                .source_entity_index,
+            first
+        );
+        let super::super::EntitySpecialRelation::PlayerState(index) =
+            arena.entities[usize::from(owner)].special_relation
+        else {
+            panic!("real reset player has its current A4 binding");
+        };
+        shared.players[usize::from(index)].record[42..44].copy_from_slice(&second.to_le_bytes());
+        // The current owner address may be retained/dead/hidden and outside
+        // a frozen membership list. The reached source A4 read still occurs.
+        let player = &mut arena.entities[usize::from(owner)];
+        player.active = false;
+        player.set_life(-1);
+        player.set_control_flags(player.control_flags | 0x400);
+        let context = Context {
+            spells: Some(&shared),
+            ..Context::default()
+        };
+        assert_eq!(
+            creature25_castle_slot(&arena, context, owner).unwrap(),
+            second
+        );
+        assert_eq!(
+            arena
+                .economy
+                .castle_for_owner(owner)
+                .unwrap()
+                .source_entity_index,
+            first,
+            "reading the current A4 does not rebind the historical Castle owner"
+        );
+
+        shared.players[usize::from(index)].record[42..44].fill(0);
+        let context = Context {
+            spells: Some(&shared),
+            ..Context::default()
+        };
+        assert_eq!(
+            creature25_castle_slot(&arena, context, owner).unwrap(),
+            0,
+            "current zero stays zero rather than falling back to a live Castle"
+        );
+        shared.global_special_state.castle_entity_index = second;
+        arena.entities[usize::from(owner)].special_relation =
+            super::super::EntitySpecialRelation::GlobalSpecialState;
+        let context = Context {
+            spells: Some(&shared),
+            ..Context::default()
+        };
+        assert_eq!(
+            creature25_castle_slot(&arena, context, owner).unwrap(),
+            second
+        );
+        assert!(creature25_castle_slot(&arena, Context::default(), owner).is_err());
+        arena.entities[usize::from(owner)].special_relation = super::super::EntitySpecialRelation::None;
+        assert!(
+            creature25_castle_slot(&arena, context, owner).is_err(),
+            "genuinely unavailable A4 is a checked failure, not guessed Castle state"
+        );
+    }
 
     #[test]
     fn current_castle_pose_is_owned_and_hashes_independently_of_collision_axes() {

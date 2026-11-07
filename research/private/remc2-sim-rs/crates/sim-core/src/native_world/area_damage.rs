@@ -170,6 +170,11 @@ pub(crate) fn contact(
     payload: u16,
     owner: u16,
 ) -> Result<(), String> {
+    if slot == 0 || usize::from(slot) >= arena.entities.len() {
+        return Err(format!(
+            "contact target {slot} is null or outside source arena"
+        ));
+    }
     ArenaTargets {
         arena,
         actors,
@@ -369,7 +374,7 @@ fn edit_source_bounty<R>(
         actors: None,
         player: None,
     }
-    .edit_arena_bounty(slot, edit)
+    .edit_arena_bounty(slot, false, edit)
 }
 
 /// Read the same current carrier used by damage writers. Terrain owns cell
@@ -2043,6 +2048,19 @@ impl ArenaTargets<'_, '_> {
         owner: u16,
         writer: DamageWriter,
     ) -> Result<(), String> {
+        let current_contact = matches!(writer, DamageWriter::Contact);
+        if current_contact && super::source_target::current_castle_entry(self.arena, slot).is_some() {
+            let economy = &mut self.arena.economy;
+            let castle = economy
+                .castle_entry_mut(slot)
+                .ok_or_else(|| format!("contact Castle {slot} lost its current carrier"))?;
+            DamageMailboxMut::new(
+                &mut castle.pending_damage,
+                &mut castle.pending_attacker_entity_index,
+            )
+            .submit(i32::from(payload), owner, writer);
+            return Ok(());
+        }
         if let Some(actors) = self.actors.as_mut()
             && actors.source_view(slot).is_some()
         {
@@ -2077,7 +2095,7 @@ impl ArenaTargets<'_, '_> {
             }
             return Ok(());
         }
-        self.edit_arena_bounty(slot, |damage, attacker| {
+        self.edit_arena_bounty(slot, current_contact, |damage, attacker| {
             DamageMailboxMut::new(damage, attacker).submit(i32::from(payload), owner, writer);
         })
     }
@@ -2087,6 +2105,7 @@ impl ArenaTargets<'_, '_> {
     fn edit_arena_bounty<R>(
         &mut self,
         slot: u16,
+        current_contact: bool,
         edit: impl FnOnce(&mut i32, &mut u16) -> R,
     ) -> Result<R, String> {
         let economy = &mut self.arena.economy;
@@ -2222,7 +2241,12 @@ impl ArenaTargets<'_, '_> {
             };
             return Ok(edit(damage, &mut row.pending_word_0x62));
         }
-        if economy.live_arena_cursor_row(slot).is_some() {
+        let retained_typed = current_contact
+            && (economy.retained_projectile_kind(slot).is_some()
+                || !economy.free_source_slots().contains(&slot)
+                    && economy.speed_trails.iter().any(|row|
+                        row.source_entity_index == slot && !row.active && row.control_flags & 0x400 != 0));
+        if economy.live_arena_cursor_row(slot).is_some() || retained_typed {
             return Err(format!(
                 "damage slot {slot} has no canonical mailbox writer"
             ));
@@ -2231,7 +2255,7 @@ impl ArenaTargets<'_, '_> {
             .arena
             .entities
             .get_mut(usize::from(slot))
-            .filter(|row| row.active)
+            .filter(|row| current_contact || row.active)
             .ok_or_else(|| format!("area raw slot {slot} no longer live"))?;
         let mut damage = row.source_wind_spell_payload();
         let mut attacker = row.source_wind_spell_owner();
@@ -3207,6 +3231,222 @@ mod tests {
             0
         );
         assert!(contact(&mut arena, None, u16::MAX, 200, owner).is_err());
+    }
+
+    #[test]
+    fn selected_contact_keeps_current_castle_free_record_and_new_event_owners_distinct() {
+        use super::super::source_target::{self, Context};
+
+        let session = super::super::tests::level_two_campaign_session();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.canonical_terrain().clone();
+        let owner = session.state.entity_index;
+        let sentinel = arena.entities[0].clone();
+        assert!(contact(&mut arena, None, 0, 60, owner).is_err());
+        assert!(contact(&mut arena, None, u16::MAX, 60, owner).is_err());
+        assert_eq!(arena.entities[0], sentinel);
+        let slot = arena
+            .economy
+            .build_castle(session.state.position, owner, &terrain)
+            .unwrap();
+        let generation = arena.slot_generation(slot);
+        // Configured source-pointer exceptions, not natural alias reachability.
+        // The real Castle's current carrier disagrees with its cold raw row.
+        let raw = &mut arena.entities[usize::from(slot)];
+        raw.set_position(Position { x: 1, y: 2, z: 3 });
+        raw.set_life(888);
+        raw.record[98..102].copy_from_slice(&777_i32.to_le_bytes());
+        raw.record[102..104].copy_from_slice(&999_u16.to_le_bytes());
+        let shadow = raw.clone();
+        let castle = arena.economy.castle_entry_mut(slot).unwrap();
+        castle.pending_damage = 11;
+        castle.pending_attacker_entity_index = 0;
+        contact(&mut arena, None, slot, 60, 31).unwrap();
+        let castle = arena.economy.castle_entry(slot).unwrap();
+        assert_eq!(
+            (castle.pending_damage, castle.pending_attacker_entity_index),
+            (71, 31)
+        );
+        assert_eq!(arena.entities[usize::from(slot)], shadow);
+
+        let castle = arena.economy.castle_entry_mut(slot).unwrap();
+        castle.active = false;
+        castle.life = -1;
+        castle.source_yaw = 321;
+        castle.source_roll = -456;
+        castle.pending_damage = i32::MAX;
+        castle.pending_attacker_entity_index = 0;
+        let expected = *castle;
+        assert!(arena.economy.live_arena_kind(slot).is_none());
+        assert!(!arena.economy.free_source_slots().contains(&slot));
+        let view = source_target::read(&arena, Context::default(), slot)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (view.active, view.class, view.model, view.source_id),
+            (
+                false,
+                0,
+                expected.source_model,
+                expected.source_id_entity_index
+            )
+        );
+        assert_eq!(
+            (view.position, view.life, view.yaw, view.roll),
+            (expected.position, -1, Some(321), Some(-456))
+        );
+        let axes = view.collision.unwrap();
+        assert_eq!(
+            (
+                axes.half_width,
+                axes.half_depth,
+                axes.vertical_offset,
+                axes.half_height
+            ),
+            (
+                expected.shift_pitch,
+                expected.shift_roll,
+                expected.shift_yaw,
+                expected.shift_fov
+            )
+        );
+        contact(&mut arena, None, slot, 1, 31).unwrap();
+        let castle = arena.economy.castle_entry(slot).unwrap();
+        assert_eq!(
+            (castle.pending_damage, castle.pending_attacker_entity_index),
+            (i32::MIN, 31)
+        );
+        contact(&mut arena, None, slot, 60, 32).unwrap();
+        let castle = arena.economy.castle_entry(slot).unwrap();
+        assert_eq!(
+            (castle.pending_damage, castle.pending_attacker_entity_index),
+            (60, 32)
+        );
+        assert_eq!(
+            arena.entities[usize::from(slot)],
+            shadow,
+            "retained typed state owns this write"
+        );
+
+        // Publish and free this real address through the existing source
+        // operations. An explicit free-record residue now belongs to raw,
+        // even while the inactive Castle cache still has the old generation.
+        arena.retain_castle_target(view);
+        arena.economy.release_slot(slot, None);
+        assert!(source_target::current_castle_entry(&arena, slot).is_none());
+        let raw = &mut arena.entities[usize::from(slot)];
+        raw.record[98..102].copy_from_slice(&i32::MAX.to_le_bytes());
+        raw.record[102..104].fill(0);
+        contact(&mut arena, None, slot, 1, 33).unwrap();
+        let raw = &arena.entities[usize::from(slot)];
+        assert_eq!(
+            (
+                raw.source_wind_spell_payload(),
+                raw.source_wind_spell_owner()
+            ),
+            (i32::MIN, 33)
+        );
+        assert!(!raw.active);
+        assert!(
+            ArenaTargets {
+                arena: &mut arena,
+                actors: None,
+                player: None
+            }
+            .ordinary_damage(slot, 1, 33)
+            .is_err(),
+            "Contact alone accepts the selected inactive raw row"
+        );
+        let old = arena.economy.castle_entry(slot).unwrap();
+        assert_eq!(
+            (old.pending_damage, old.pending_attacker_entity_index),
+            (60, 32)
+        );
+
+        // A genuine subsequent NewEvent and constructor reuse the released
+        // LIFO address. The generation barrier forbids mutating that Castle.
+        let replacement = crate::world::effects::allocate(
+            &mut arena,
+            &mut terrain,
+            sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+            session.state.position,
+            &session.session.definition.presentation.particles,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(replacement, slot);
+        assert_ne!(arena.slot_generation(slot), generation);
+        assert!(arena.economy.castle_entry(slot).is_none());
+        assert!(source_target::current_castle_entry(&arena, slot).is_none());
+        let view = source_target::read(&arena, Context::default(), slot)
+            .unwrap()
+            .unwrap();
+        assert_eq!((view.class, view.model), (10, 0));
+        contact(&mut arena, None, slot, 60, 34).unwrap();
+        let raw = &arena.entities[usize::from(slot)];
+        assert_eq!(
+            (
+                raw.source_wind_spell_payload(),
+                raw.source_wind_spell_owner()
+            ),
+            (60, 34)
+        );
+        let old = arena
+            .economy
+            .castle
+            .0
+            .iter()
+            .find(|row| row.source_entity_index == slot)
+            .unwrap();
+        assert_eq!(
+            (
+                old.slot_generation,
+                old.pending_damage,
+                old.pending_attacker_entity_index
+            ),
+            (generation, 60, 32)
+        );
+
+        // A retained typed flyer still owns its fixed address. Its missing
+        // ordinary mailbox is a checked error, never a write to cold raw.
+        let flyer = arena
+            .economy
+            .spawn_fireball_projectile_with_payload(
+                super::super::level2_dynamic_economy::Level2FireballProjectileLaunchPayload {
+                    origin: super::super::FireballProjectileOrigin::PlayerSpell,
+                    position: session.state.position,
+                    yaw: 0,
+                    pitch: 0,
+                    axis_position: Position::default(),
+                    source_id_entity_index: owner,
+                    holder_entity_index: 0,
+                    source_subspell_index: 100,
+                    source_mana: 50,
+                    source_dword_0x10: 0,
+                    target_source_entity_index: 0,
+                    target_class: 0,
+                    target_model: 0,
+                },
+                0,
+            )
+            .unwrap();
+        let row = arena
+            .economy
+            .fireball_projectiles
+            .iter_mut()
+            .find(|row| row.source_entity_index == flyer)
+            .unwrap();
+        row.active = false;
+        row.drawing_disabled = true;
+        let shadow = arena.entities[usize::from(flyer)].clone();
+        assert!(
+            !source_target::read(&arena, Context::default(), flyer)
+                .unwrap()
+                .unwrap()
+                .active
+        );
+        assert!(contact(&mut arena, None, flyer, 60, owner).is_err());
+        assert_eq!(arena.entities[usize::from(flyer)], shadow);
     }
 
     #[test]

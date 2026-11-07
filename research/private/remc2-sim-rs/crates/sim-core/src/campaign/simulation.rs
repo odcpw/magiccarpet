@@ -17340,12 +17340,60 @@ impl Mc2Simulation {
                         .record_authored_creature_kill(killer);
                 }
                 for sound in outcome.sounds {
-                    self.session.state.live.economy.prepare_sound(
-                        source_slot,
-                        source_slot,
-                        -1,
-                        u16::from(sound),
-                    );
+                    let sound_id = u16::from(sound);
+                    if let Some(call) = outcome
+                        .cymmerian_summon_sound
+                        .filter(|call| call.sample == sound)
+                    {
+                        self.session
+                            .state
+                            .live
+                            .economy
+                            .prepare_sound(source_slot, call.emitter, -1, sound_id);
+                        let audio = match call.source {
+                            Some((position, source_id, flags)) if flags & 0x80 == 0 => {
+                                crate::prepare_event_sound_command(
+                                    call.listener,
+                                    call.listener_yaw,
+                                    position,
+                                    sound_id,
+                                    0,
+                                    source_id,
+                                    0,
+                                )
+                            }
+                            Some(_) => None,
+                            // Source37 has fixed pitch/play type3; null uses
+                            // full centred volume and bypasses source silence.
+                            None => crate::prepare_event_sound_command(
+                                call.listener,
+                                call.listener_yaw,
+                                call.listener,
+                                sound_id,
+                                0,
+                                0,
+                                0,
+                            ),
+                        };
+                        let event = FlightEvent::PrepareSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::BossCymmerianSummon,
+                            entity_index: call.emitter,
+                            player_index: -1,
+                            sound_id,
+                        };
+                        self.flush_shared_effects();
+                        let turn = self.session.state.live.core.runtime.global_turn;
+                        self.effect_journal_mut()
+                            .append_prepared_flight(turn, event, audio);
+                        self.session.state.live.shared_spells.events.push(event);
+                        continue;
+                    }
+                    self.session
+                        .state
+                        .live
+                        .economy
+                        .prepare_sound(source_slot, source_slot, -1, sound_id);
                 }
                 if let Some(pressure) = outcome.player_pressure {
                     let live = &mut self.session.state.live;
@@ -17783,6 +17831,7 @@ impl Mc2Simulation {
                         let outcome = creatures::creature_25::mc2::step_row(
                             &mut live.economy,
                             &mut live.core.runtime,
+                            &mut live.source_player_result,
                             &mut live.terrain,
                             &self.session.definition.presentation.particles,
                             source_slot,

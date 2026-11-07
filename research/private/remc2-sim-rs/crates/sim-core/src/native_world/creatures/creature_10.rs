@@ -132,6 +132,9 @@ pub(crate) struct PlayerPressureEffect {
 pub(crate) struct Effects {
     pub animation: Option<u16>,
     pub sounds: Vec<u8>,
+    /// Source21AB0's successful model25 sound37, captured after NewEvent.
+    /// The numeric sound also remains in the existing outcome observation.
+    pub cymmerian_summon_sound: Option<CallSound>,
     pub summons: Vec<SummonRequest>,
     pub source_effects: Vec<SourceEffectRequest>,
     pub player_pressure: Option<PlayerPressureEffect>,
@@ -159,6 +162,16 @@ pub(crate) struct Effects {
     /// Source kill credit returned by the shared class-5 pre-kill chain walk.
     pub kill_credit: Option<u16>,
     pub hide: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CallSound {
+    pub sample: u8,
+    pub emitter: u16,
+    /// None is source PrepareEventSound's null/full-centred branch.
+    pub source: Option<(Position, u16, u32)>,
+    pub listener: Position,
+    pub listener_yaw: i16,
 }
 
 /// Per-pass world facts consumed by the source boss callback. Population

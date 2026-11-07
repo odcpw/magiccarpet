@@ -1237,6 +1237,23 @@ fn digest_outer_reset_state(hasher: &mut Sha256, state: &ResetState) {
 
 pub(crate) fn digest_source_menu_state(hasher: &mut Sha256, state: &ResetState) {
     let result = state.source_player_result;
+    // Preserve the established local result hash while also observing literal
+    // sub_28EC0 changes to the next player's complete header. Local word[1]
+    // remains the same authoritative view consumed below.
+    if result.raw_headers().iter().enumerate().any(|(slot, header)| {
+        let omitted = if slot == usize::from(result.source_player_slot()) {
+            *header & 0xffff
+        } else {
+            *header
+        };
+        omitted != 0
+    }) {
+        hasher.update(b"source-player-headers-v1");
+        hasher.update(result.source_player_slot().to_le_bytes());
+        for header in result.raw_headers() {
+            hasher.update(header.to_le_bytes());
+        }
+    }
     if result.raw_word() != 0 || state.source_menu_admission.is_some() {
         hasher.update(b"source-menu-result-v1");
         hasher.update(result.source_player_slot().to_le_bytes());

@@ -1,4 +1,4 @@
-//! Authoritative per-player result word produced by source PlayerEvents.
+//! Source player headers and their local PlayerEvents result word.
 //!
 //! The remc2 `dw_w_b.word[1]` result is a 16-bit field. Source action 29
 //! reaches PlayerEvents case 0x1D, which writes 8 and sets bit 0x10 in the
@@ -11,24 +11,27 @@ const SECRET_RESULT_BIT: u16 = 0x0010;
 const SECRET_RESULT_LEVEL_THRESHOLD: u16 = 24;
 const SECRET_BANISHMENT_RESULT: u16 = PLAYER_EVENT_1D_RESULT | SECRET_RESULT_BIT;
 
-/// The source player's live `dw_w_b.word[1]` result, scoped to one player in
-/// one live mission session. The owning session carries its runtime identity;
-/// cloning preserves the result through replay without inventing a second
-/// generation counter here. The owning campaign hash must include its slot
-/// and raw word. `source_player_slot` is the player-array slot, not the
-/// player's entity index.
+/// The eight live `dw_w_b.dword` headers and the local result view into them.
+/// Source `sub_28EC0` increments the NEXT player's complete header; it does
+/// not award another A4 creature kill. Keeping word[1] in this same carrier
+/// preserves its alias with PlayerEvents instead of duplicating local state.
+/// The owning session carries identity and hashes nonzero headers. This is
+/// reset-derived state for qualified fresh sessions, not arbitrary imported
+/// save/header data. `source_player_slot` is the player-array slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SourcePlayerResult {
     source_player_slot: u16,
-    result_word: u16,
+    headers: [u32; 8],
 }
 
 impl SourcePlayerResult {
-    /// Initialize the source result word at the real start of a level.
+    /// sub_53160 calls clean_x_D41A0_BYTEARRAY_0_0x2BDE for all eight rows.
+    /// The existing fresh-session result initialization shares those zeros.
     pub(crate) const fn source_level_start(source_player_slot: u16) -> Self {
+        assert!(source_player_slot < 8);
         Self {
             source_player_slot,
-            result_word: 0,
+            headers: [0; 8],
         }
     }
 
@@ -46,12 +49,14 @@ impl SourcePlayerResult {
             return false;
         }
 
-        self.result_word = PLAYER_EVENT_1D_RESULT
+        let result = PLAYER_EVENT_1D_RESULT
             | if internal_level > SECRET_RESULT_LEVEL_THRESHOLD {
                 SECRET_RESULT_BIT
             } else {
                 0
             };
+        let header = &mut self.headers[usize::from(self.source_player_slot)];
+        *header = (*header & 0xffff) | (u32::from(result) << 16);
         true
     }
 
@@ -61,13 +66,38 @@ impl SourcePlayerResult {
 
     /// Return the raw source-width word, preserving ordinary result 0x0008.
     pub(crate) const fn raw_word(&self) -> u16 {
-        self.result_word
+        (self.headers[self.source_player_slot as usize] >> 16) as u16
+    }
+
+    pub(crate) const fn raw_headers(&self) -> &[u32; 8] {
+        &self.headers
+    }
+
+    /// Exact sub_28EC0 write, before its KillEntity/hide branch on every
+    /// enabled action205 visit. The caller supplies current playerIndex,
+    /// not an entity source ID or mission number. Single-player's local
+    /// slot is zero. An unsupported last-slot overrun is explicit here;
+    /// source memory beyond the eight-player array is not invented.
+    pub(crate) fn record_creature25_kill_visit(
+        &mut self,
+        killer_entity: u16,
+        local_player_entity: u16,
+    ) -> Result<(), String> {
+        if killer_entity != local_player_entity {
+            return Ok(());
+        }
+        let next = usize::from(self.source_player_slot) + 1;
+        let header = self.headers.get_mut(next).ok_or_else(|| {
+            "source creature25 next-player header lies beyond the eight-player array".to_owned()
+        })?;
+        *header = header.wrapping_add(1);
+        Ok(())
     }
 
     /// An ordinary action-29 result exits through the ordinary menu path,
     /// never through the secret-frame consumer.
     pub(crate) const fn is_ordinary_banishment_for(&self, source_player_slot: u16) -> bool {
-        self.source_player_slot == source_player_slot && self.result_word == PLAYER_EVENT_1D_RESULT
+        self.source_player_slot == source_player_slot && self.raw_word() == PLAYER_EVENT_1D_RESULT
     }
 
     /// Match only the exact secret result for the same source player. The
@@ -75,7 +105,7 @@ impl SourcePlayerResult {
     /// frame and runtime/session generation before returning from it.
     pub(crate) const fn is_secret_banishment_for(&self, source_player_slot: u16) -> bool {
         self.source_player_slot == source_player_slot
-            && matches!(self.result_word, SECRET_BANISHMENT_RESULT)
+            && matches!(self.raw_word(), SECRET_BANISHMENT_RESULT)
     }
 }
 
@@ -124,6 +154,41 @@ mod tests {
         let next_source_session = SourcePlayerResult::source_level_start(1);
         assert_eq!(next_source_session.raw_word(), 0);
         assert_eq!(source_session.raw_word(), SECRET_BANISHMENT_RESULT);
+    }
+
+    #[test]
+    fn creature25_visits_change_next_header_without_duplicating_the_local_result() {
+        let mut state = SourcePlayerResult::source_level_start(0);
+        assert!(state.record_player_event_0x1d(0, 25));
+        state.record_creature25_kill_visit(94, 95).unwrap();
+        assert_eq!(state.headers[1], 0);
+        for _ in 0..257 {
+            state.record_creature25_kill_visit(95, 95).unwrap();
+        }
+        assert_eq!(state.headers[1], 0x101);
+        assert_eq!(state.headers[2..], [0; 6]);
+        assert_eq!(state.raw_word(), SECRET_BANISHMENT_RESULT);
+        assert!(state.is_secret_banishment_for(0));
+        assert_eq!(state, state.clone());
+        // The source compares words literally, without an extra nonzero gate.
+        state.record_creature25_kill_visit(0, 0).unwrap();
+        assert_eq!(state.headers[1], 0x102);
+    }
+
+    #[test]
+    fn creature25_header_wrap_and_result_word_alias_keep_source_widths() {
+        let mut state = SourcePlayerResult::source_level_start(2);
+        state.headers[2] = 0xabcd_9876;
+        state.headers[3] = u32::MAX;
+        assert!(state.record_player_event_0x1d(2, 24));
+        assert_eq!(state.headers[2], 0x0008_9876);
+        state.record_creature25_kill_visit(90, 90).unwrap();
+        assert_eq!(state.headers[3], 0);
+        assert_eq!(state.raw_word(), PLAYER_EVENT_1D_RESULT);
+        let mut last = SourcePlayerResult::source_level_start(7);
+        last.record_creature25_kill_visit(90, 91).unwrap();
+        assert!(last.record_creature25_kill_visit(91, 91).is_err());
+        assert_eq!(last.raw_headers(), &[0; 8]);
     }
 
     #[test]

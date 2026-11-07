@@ -8,6 +8,51 @@ use crate::campaign::source_arena::{CreatureRootOrigin, SourceArena, SourceEntit
 use crate::native_world::{EntitySnapshot, ParticleParameter, RuntimeSnapshot, SessionTerrain};
 use crate::{FlightWorld, Position};
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CastleContactReceipt {
+    pub actor: SourceEntityHandle,
+    pub castle: SourceEntityHandle,
+    pub source_id: u16,
+    pub damage: i32,
+    pub mailbox: (i32, u16),
+    pub event_cursor: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AttackBirthReceipt {
+    pub actor: SourceEntityHandle,
+    pub projectile: SourceEntityHandle,
+    pub target: u16,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CASTLE_CONTACT_TRACE: std::cell::RefCell<Option<Vec<CastleContactReceipt>>> = const { std::cell::RefCell::new(None) };
+    static ATTACK_BIRTH_TRACE: std::cell::RefCell<Option<Vec<AttackBirthReceipt>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_attack_birth_trace() {
+    ATTACK_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_attack_birth_trace() -> Vec<AttackBirthReceipt> {
+    ATTACK_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+pub(crate) fn start_castle_contact_trace() {
+    CASTLE_CONTACT_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn take_castle_contact_trace() -> Vec<CastleContactReceipt> {
+    CASTLE_CONTACT_TRACE.with(|trace| trace.borrow_mut().take().unwrap_or_default())
+}
+
 fn word(row: &EntitySnapshot, at: usize) -> u16 {
     u16::from_le_bytes([row.record[at], row.record[at + 1]])
 }
@@ -42,10 +87,6 @@ pub(super) fn target_at(
             parent: view.relations.parent,
             stage_relation: view.relations.stage_relation,
             next: view.relations.next,
-            castle_slot: arena
-                .economy
-                .castle_for_owner(slot)
-                .map_or(0, |castle| castle.source_entity_index),
             ..Target::default()
         }),
     )
@@ -92,18 +133,15 @@ pub(crate) fn prepare_callback_sound(arena: &mut SourceArena, slot: u16) -> bool
     true
 }
 
-/// Ordinary `sub_4CE00` authored producer. A failed allocation leaves the
-/// source model counter and route table untouched.
-pub(crate) fn allocate_authored(
+/// Source `sub_4CE00`, before an authored, Army, or boss producer applies its
+/// own fields and origin. A failed allocation leaves the counter untouched.
+pub(crate) fn allocate_source_default(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     position: Position,
-    max_life: i32,
-    stage_index: Option<u8>,
-    authored_record: u16,
-) -> Result<Option<u16>, String> {
+) -> Result<Option<SourceEntityHandle>, String> {
     particles
         .get(usize::from(PARTICLE))
         .and_then(ParticleParameter::animation_limit)
@@ -116,18 +154,36 @@ pub(crate) fn allocate_authored(
         .bytes
         .get(phase_at)
         .ok_or("Cymmerian source constructor counter table is absent")?;
-    let mut row = construct_row(slot, arena.new_event_rng(slot), position, phase, particles)?;
-    row.bind_frame_zero_max_life(max_life);
+    let row = construct_row(slot, arena.new_event_rng(slot), position, phase, particles)?;
     runtime.bytes[phase_at] = phase.wrapping_add(1);
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    if let Some(index) = stage_index {
-        bind_authored_route(arena, runtime, slot, index)?;
-    }
     let handle = arena
         .handle(slot)
         .ok_or_else(|| format!("Cymmerian constructor lost slot{slot}"))?;
+    Ok(Some(handle))
+}
+
+/// Ordinary authored producer applies life and StageVar after source birth.
+pub(crate) fn allocate_authored(
+    arena: &mut SourceArena,
+    runtime: &mut RuntimeSnapshot,
+    terrain: &mut SessionTerrain,
+    particles: &[ParticleParameter],
+    position: Position,
+    max_life: i32,
+    stage_index: Option<u8>,
+    authored_record: u16,
+) -> Result<Option<u16>, String> {
+    let Some(handle) = allocate_source_default(arena, runtime, terrain, particles, position)? else {
+        return Ok(None);
+    };
+    let slot = handle.source_slot;
+    arena.entities[usize::from(slot)].bind_frame_zero_max_life(max_life);
+    if let Some(index) = stage_index {
+        bind_authored_route(arena, runtime, slot, index)?;
+    }
     if !arena.bind_raw_creature_origin(
         handle,
         crate::level_definition::CreatureKind::Cymmerian,
@@ -153,26 +209,16 @@ pub(crate) fn allocate_summoned(
     owner_id: u16,
     holder_slot: u16,
 ) -> Result<Option<SourceEntityHandle>, String> {
-    particles
-        .get(usize::from(PARTICLE))
-        .and_then(ParticleParameter::animation_limit)
-        .ok_or_else(|| "Cymmerian Army summon requires retained particle290".to_owned())?;
-
-    let counter_at = crate::native_world::RUNTIME_BYTES + usize::from(SOURCE_MODEL);
-    let phase = *runtime
-        .bytes
-        .get(counter_at)
-        .ok_or("Cymmerian source constructor counter table is absent")?;
-    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+    let Some(handle) = allocate_source_default(arena, runtime, terrain, particles, position)? else {
         return Ok(None);
     };
-
-    let mut row = construct_row(slot, arena.new_event_rng(slot), position, phase, particles)?;
+    let slot = handle.source_slot;
+    let row = &mut arena.entities[usize::from(slot)];
     row.set_source_action(8 * SOURCE_MODEL + 7);
     row.record[77] = crate::native_world::summon_army::SUMMONED_STAGE_MODE;
-    put(&mut row, 44, parent_slot);
+    put(row, 44, parent_slot);
     let remaining_lifetime = crate::native_world::summon_army::SUMMONED_REMAINING_LIFETIME;
-    put(&mut row, 50, remaining_lifetime);
+    put(row, 50, remaining_lifetime);
     row.active_value = i16::from_le_bytes(remaining_lifetime.to_le_bytes());
     row.record[154..156].fill(0);
     row.set_mana(0);
@@ -180,17 +226,7 @@ pub(crate) fn allocate_summoned(
     row.mana_cost = 0;
     row.record[144..148].fill(0);
     row.source_id = owner_id;
-    put(&mut row, 30, owner_id);
-
-    // Source array_0x10[25] is a byte counter and increments modulo 256.
-    runtime.bytes[counter_at] = phase.wrapping_add(1);
-    arena.economy.source_rng.insert(slot, row.entity_rng);
-    arena.entities[usize::from(slot)] = row;
-    crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-
-    let handle = arena
-        .handle(slot)
-        .ok_or_else(|| format!("Cymmerian Army summon lost allocated slot{slot}"))?;
+    put(row, 30, owner_id);
     if !arena.bind_raw_creature_origin(
         handle,
         crate::level_definition::CreatureKind::Cymmerian,
@@ -283,17 +319,7 @@ fn apply_castle_contact(
             hit.damage
         )
     })?;
-    if arena
-        .economy
-        .apply_source_castle_contact(hit.castle_slot, source_id, damage)
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "Cymmerian castle contact lost castle slot{}",
-            hit.castle_slot
-        ))
-    }
+    crate::native_world::area_damage::contact(arena, None, hit.castle_slot, damage, source_id)
 }
 
 fn child_row(
@@ -422,6 +448,7 @@ fn split(
 pub(crate) fn step_row(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
+    player_headers: &mut crate::campaign::source_player_result::SourcePlayerResult,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     slot: u16,
@@ -435,6 +462,16 @@ pub(crate) fn step_row(
         .filter(|row| row.active && row.class == SOURCE_CLASS && row.model == SOURCE_MODEL)
         .ok_or_else(|| format!("Cymmerian callback lost slot{slot}"))?
         .clone();
+    if row.action == 205 {
+        // sub_28EC0 updates the neighboring source player header on every
+        // visit, before either KillEntity's phase gate or the large-body hide.
+        let shared = target_context.spells.ok_or(
+            "Cymmerian action205 requires the current source player array",
+        )?;
+        let local = shared.players.get(usize::from(player_headers.source_player_slot()))
+            .ok_or("Cymmerian action205 lost the current source player")?;
+        player_headers.record_creature25_kill_visit(word(&row, 40), local.entity_index)?;
+    }
     let source_id = row.source_id;
     let parent_slot = word(&row, 44);
     let parent_current = matches!(row.record[77], 13 | 14 | 16) || arena.handle(slot).is_some_and(|child| {
@@ -573,10 +610,48 @@ pub(crate) fn step_row(
         kill_summoned_child(arena, terrain, particles, slot)?;
     }
     if let Some(attack) = effects.attack.take() {
-        let _ = launch_attack(arena, terrain, attack)?;
+        #[cfg(test)]
+        let actor = arena.handle(slot);
+        let projectile = launch_attack(arena, terrain, attack)?;
+        #[cfg(test)]
+        if let (Some(actor), Some(projectile), Some(created)) = (
+            actor,
+            projectile.and_then(|slot| arena.handle(slot)),
+            projectile.and_then(|slot| arena.economy.fireball_projectiles.iter()
+                .find(|row| row.source_entity_index == slot && row.active)),
+        ) {
+            ATTACK_BIRTH_TRACE.with(|trace| {
+                if let Some(receipts) = trace.borrow_mut().as_mut() && receipts.len() < 64 {
+                    receipts.push(AttackBirthReceipt {
+                        actor, projectile, target: created.target_source_entity_index,
+                    });
+                }
+            });
+        }
+        #[cfg(not(test))]
+        let _ = projectile;
     }
     if let Some(hit) = effects.castle_hit.take() {
         apply_castle_contact(arena, source_id, hit)?;
+        #[cfg(test)]
+        if let (Some(actor), Some(castle), Some(current)) = (
+            arena.handle(slot),
+            arena.handle(hit.castle_slot),
+            arena.economy.castle_at(hit.castle_slot),
+        ) {
+            CASTLE_CONTACT_TRACE.with(|trace| {
+                if let Some(receipts) = trace.borrow_mut().as_mut() && receipts.len() < 64 {
+                    receipts.push(CastleContactReceipt {
+                        actor,
+                        castle,
+                        source_id,
+                        damage: hit.damage,
+                        mailbox: (current.pending_damage, current.pending_attacker_entity_index),
+                        event_cursor: arena.economy.events().len(),
+                    });
+                }
+            });
+        }
     }
     Ok(effects)
 }

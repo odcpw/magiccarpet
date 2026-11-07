@@ -179,6 +179,14 @@ impl Context<'_> {
             })
             .flatten()
     }
+
+    fn castle_slot(&self, player: Target) -> Result<u16, String> {
+        if let Some((arena, context)) = self.reader {
+            crate::native_world::source_target::creature25_castle_slot(arena, context, player.slot)
+        } else {
+            Ok(player.castle_slot)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -334,9 +342,9 @@ fn move_actor(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) {
                 RULES.descent
             },
             turn_limit: if is_split_body(actor) {
-                RULES.split_turn_limit
+                RULES.split_turn_response
             } else {
-                RULES.turn_limit
+                RULES.turn_response
             },
             terrain_mask: RULES.terrain_mask,
             maximum_tile_slope: if is_split_body(actor) {
@@ -484,8 +492,10 @@ fn pursue(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> Re
             let Some(peer) = ctx.target(*slot) else {
                 continue;
             };
-            let dx = i32::from(peer.position.x.wrapping_sub(actor.row.position.x) as i16).abs();
-            let dy = i32::from(peer.position.y.wrapping_sub(actor.row.position.y) as i16).abs();
+            // sub_1C310 promotes each unsigned axis before subtraction;
+            // unlike the distance helper, this peer overlap does not wrap.
+            let dx = (i32::from(peer.position.x) - i32::from(actor.row.position.x)).abs();
+            let dy = (i32::from(peer.position.y) - i32::from(actor.row.position.y)).abs();
             if peer.source_id != actor.row.source_id
                 && dx < i32::from(actor.row.array_pitch())
                 && dy < i32::from(actor.row.array_pitch())
@@ -581,24 +591,23 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> R
         }
         3 => {
             let player = ctx.target(actor.owner()).filter(|target| {
-                ctx.class3.contains(&target.slot)
-                    && target.class == 3
-                    && matches!(target.model, 0 | 1)
+                target.class == 3 && matches!(target.model, 0 | 1)
             });
             match player {
                 None => {
                     actor.set_state(8);
                     actor.set_timer(100);
                 }
-                Some(player) if player.castle_slot != 0 => {
-                    actor.set_state(5);
-                    actor.put(154, player.slot);
-                }
-                Some(_) => {
-                    let rng = level2_next_rng16(actor.row.entity_rng);
-                    actor.row.set_entity_rng(rng);
-                    actor.set_state(4);
-                    actor.set_timer(i32::from(rng % 100 + 100));
+                Some(player) => {
+                    if ctx.castle_slot(player)? != 0 {
+                        actor.set_state(5);
+                        actor.put(154, player.slot);
+                    } else {
+                        let rng = level2_next_rng16(actor.row.entity_rng);
+                        actor.row.set_entity_rng(rng);
+                        actor.set_state(4);
+                        actor.set_timer(i32::from(rng % 100 + 100));
+                    }
                 }
             }
         }
@@ -614,9 +623,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> R
                 actor.set_state(3);
                 return Ok(());
             };
-            let castle = ctx
-                .target(player.castle_slot)
-                .filter(|target| target.living());
+            let castle = ctx.target(ctx.castle_slot(player)?);
             if let Some(castle) = castle {
                 if actor.row.phase & 7 == 0 {
                     actor
@@ -640,10 +647,7 @@ fn special(actor: &mut Actor<'_>, ctx: &Context<'_>, effects: &mut Effects) -> R
                 actor.set_state(3);
                 return Ok(());
             };
-            if let Some(castle) = ctx
-                .target(player.castle_slot)
-                .filter(|target| target.living())
-            {
+            if let Some(castle) = ctx.target(ctx.castle_slot(player)?) {
                 if actor_collision(actor, castle)? {
                     effects.castle_hit = Some(CastleHit {
                         player_slot: player.slot,
@@ -726,8 +730,8 @@ pub(crate) fn step(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<Effects, 
             effects.population_increments = 3;
         }
         205 if actor.state() != 0 && actor.row.phase & 7 == 0 => {
-            let owner = actor.owner();
-            effects.kill_credit = (owner != 0).then_some(owner);
+            // sub_28EC0's next-player header dword is distinct from the A4
+            // creature credit already emitted by the preceding prekill.
             effects.kill = true;
         }
         205 if actor.state() != 0 => {}
