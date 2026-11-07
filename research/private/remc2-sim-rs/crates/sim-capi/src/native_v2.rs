@@ -11,6 +11,7 @@ mod campaign_facade;
 mod campaign_minimap_labels;
 mod campaign_sound_bank;
 mod campaign_world_map;
+mod character_abi;
 mod events_audio_abi;
 mod game_runtime_abi;
 mod game_session_abi;

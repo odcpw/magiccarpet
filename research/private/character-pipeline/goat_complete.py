@@ -1,8 +1,9 @@
-"""Assemble the approved goat gait and a compatible breathing idle.
+"""Build a source-scaled goat gallop, reaction and death timeline.
 
-Output timeline (24 fps): idle 1..49; walk 50..74. The independent idle keeps
-all four hooves planted; the walk keeps the existing four-beat gait. Both use
-one bind skeleton and ground root for controller crossfades.
+The short contact phases allow a gallop to cover several body lengths without
+the trip-trap cadence of the previous tiny walk. Playback is driven by actual
+travel, not by changing simulation speed. Frame numbers are at 24 fps; gait
+keys are sampled every quarter frame for contact preservation.
 """
 import argparse
 import json
@@ -52,6 +53,85 @@ def neutral_standing(rig):
     return {b.name: b.matrix_basis.copy() for b in rig.pose.bones}
 
 
+def gait_pose(rig, standing, t, stance):
+    # Paired hind and fore contacts with a small left/right offset. At the
+    # source sprite height (150/64), 0.16/stance model units per cycle is
+    # multiplied by 150/64/0.95917 to obtain the real travel per cycle.
+    phases = {'hind_L': 0.0, 'hind_R': .035, 'front_L': .48, 'front_R': .515}
+    stride = .16
+    for name, matrix in standing.items():
+        rig.pose.bones[name].matrix_basis = matrix
+    cycle = {name: (t + phase) % 1 for name, phase in phases.items()}
+    # Body stays low at contact, lifting between contact groups.
+    proximity = min(min(p, 1-p) for p in cycle.values())
+    flight = min(1.0, max(0.0, (proximity - stance * .5) / .16))
+    flight = flight * flight * (3 - 2 * flight)
+    # Enough crouch to keep the longest rear reach inside the leg's actual
+    # two-bone length throughout stance; otherwise the IK clamp slides.
+    bob = -.06 + .045 * flight
+    rig.pose.bones['body'].location = (0, 0, bob)
+    bpy.context.view_layer.update()
+    for name, phase in cycle.items():
+        upper = rig.data.bones[name + '_upper']
+        lower = rig.data.bones[name + '_lower']
+        hip = upper.head_local + Vector((0, 0, bob))
+        knee, ankle = lower.head_local.copy(), lower.tail_local.copy()
+        if phase < stance:
+            travel = stride * (.5 - phase / stance)
+            lift = 0.0
+        else:
+            u = (phase - stance) / (1 - stance)
+            eased = u * u * (3 - 2 * u)
+            travel = stride * (-.5 + eased)
+            lift = .10 * math.sin(math.pi * u) ** 2 + max(0, bob)
+        target = ankle + Vector((0, travel, lift))
+        a, b = (knee - upper.head_local).length, (ankle - knee).length
+        direction = target - hip
+        distance = direction.length
+        if distance >= a + b:
+            direction *= (a + b - 1e-6) / distance
+            target = hip + direction
+            distance = direction.length
+        along = (a*a - b*b + distance*distance) / (2 * distance)
+        height = math.sqrt(max(0, a*a - along*along))
+        unit = direction.normalized()
+        bend = Vector((0, unit.z, -unit.y))
+        if name.startswith('front'):
+            bend.negate()
+        joint = hip + along * unit + height * bend
+        for suffix, start, end in [('upper', hip, joint), ('lower', joint, target)]:
+            bone = rig.pose.bones[name + '_' + suffix]
+            rest = rig.data.bones[bone.name]
+            rotation = (rest.tail_local - rest.head_local).rotation_difference(end - start)
+            bone.matrix = Matrix.Translation(start) @ rotation.to_matrix().to_4x4() @ rest.matrix_local.to_3x3().to_4x4()
+            bpy.context.view_layer.update()
+        hoof = rig.pose.bones[name + '_hoof']
+        rest = rig.data.bones[hoof.name]
+        hoof.matrix = Matrix.Translation(target) @ rest.matrix_local.to_3x3().to_4x4()
+        bpy.context.view_layer.update()
+
+
+def key_pose(rig, frame):
+    for bone in rig.pose.bones:
+        bone.rotation_mode = 'QUATERNION'
+        for path in ('location', 'rotation_quaternion', 'scale'):
+            bone.keyframe_insert(data_path=path, frame=frame, group=bone.name)
+
+
+def mesh_floor(scene):
+    bpy.context.view_layer.update()
+    deps = bpy.context.evaluated_depsgraph_get()
+    bottoms = []
+    for obj in scene.objects:
+        if obj.type != 'MESH':
+            continue
+        evaluated = obj.evaluated_get(deps)
+        mesh = evaluated.to_mesh()
+        bottoms.extend((obj.matrix_world @ vertex.co).z for vertex in mesh.vertices)
+        evaluated.to_mesh_clear()
+    return min(bottoms)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--output', type=Path, required=True)
@@ -59,29 +139,45 @@ def main():
     a.output.mkdir(parents=True, exist_ok=True)
     scene = bpy.context.scene
     rig = next(o for o in scene.objects if o.type == 'ARMATURE')
-    samples = []
-    for frame in range(1, 26):
-        scene.frame_set(frame)
-        samples.append({b.name: b.matrix_basis.copy() for b in rig.pose.bones})
     rig.animation_data_clear()
     standing = neutral_standing(rig)
+    standing_floor = mesh_floor(scene)
     scene.render.fps = 24
-    scene.frame_start, scene.frame_end = 1, 74
-    for frame in range(1, 75):
-        if frame <= 49:
-            pose = standing
+    scene.frame_start, scene.frame_end = 1, 146
+    for frame in range(1, 50):
+        for name, matrix in standing.items():
+            rig.pose.bones[name].matrix_basis = matrix
+        rig.pose.bones['head'].rotation_quaternion @= Quaternion((1, 0, 0), .018 * math.sin(2 * math.pi * (frame - 1) / 48))
+        key_pose(rig, frame)
+    for first, stance in [(50, .18), (76, .075)]:
+        for sample in range(97):
+            frame = first + sample / 4
+            gait_pose(rig, standing, sample / 96, stance)
+            key_pose(rig, frame)
+    # Distinct, bounded non-looping reactions. Source death is reclaimed in
+    # two visits, so the presentation owner retains the last pose briefly.
+    for frame in range(102, 147):
+        for name, matrix in standing.items():
+            rig.pose.bones[name].matrix_basis = matrix
+        if frame <= 112:
+            u = (frame - 102) / 10
+            rig.pose.bones['head'].rotation_quaternion @= Quaternion((1, 0, 0), -.22 * math.sin(math.pi * u))
         else:
-            pose = samples[frame - 50]
-        for name, matrix in pose.items():
-            bone = rig.pose.bones[name]
-            bone.rotation_mode = 'QUATERNION'
-            bone.matrix_basis = matrix
-            if frame <= 49 and name == 'head':
-                # Two-second loop; endpoints and derivatives match exactly.
-                t = (frame - 1) / 48
-                bone.rotation_quaternion @= Quaternion((1, 0, 0), .018 * math.sin(2 * math.pi * t))
-            for path in ('location', 'rotation_quaternion', 'scale'):
-                bone.keyframe_insert(data_path=path, frame=frame, group=name)
+            u = min(1, (frame - 113) / 20)
+            u = u*u*(3-2*u)
+            rig.pose.bones['body'].location.z -= .24 * u
+            rig.pose.bones['body'].rotation_quaternion @= Quaternion((0, 1, 0), 1.45 * u)
+            rig.pose.bones['head'].rotation_quaternion @= Quaternion((1, 0, 0), -.20 * u)
+            for name in ('hind_L', 'hind_R', 'front_L', 'front_R'):
+                bend = -1 if name.startswith('front') else 1
+                rig.pose.bones[name + '_upper'].rotation_quaternion @= Quaternion((1, 0, 0), bend * .9 * u)
+                rig.pose.bones[name + '_lower'].rotation_quaternion @= Quaternion((1, 0, 0), -bend * 1.65 * u)
+            # Death may fold through the terrain. Project the deformed mesh's
+            # lowest point back onto the original floor before recording it.
+            floor_error = standing_floor - mesh_floor(scene)
+            rig.pose.bones['body'].location.z += floor_error
+            bpy.context.view_layer.update()
+        key_pose(rig, frame)
     rig.animation_data.action.name = 'Goat_Timeline'
     scene.frame_set(1)
     # The source goat was authored around its torso. Present a ground-plane
@@ -117,7 +213,8 @@ def main():
         axis_forward='-Z', axis_up='Y', add_leaf_bones=False,
         path_mode='COPY', embed_textures=True, use_mesh_modifiers=False,
         bake_anim=True, bake_anim_use_nla_strips=False,
-        bake_anim_use_all_actions=False, bake_anim_simplify_factor=0.0)
+        bake_anim_use_all_actions=False, bake_anim_simplify_factor=0.0,
+        bake_anim_step=.25)
     (a.output / 'goat.clips.json').write_text(json.dumps({
         'fps': 24, 'forward': [0, -1, 0], 'coordinateSystem': 'Blender Z-up',
         'height': 0.95917, 'material': {
@@ -127,8 +224,11 @@ def main():
         }, 'clips': [
             {'name': 'Idle', 'firstFrame': 1, 'lastFrame': 49, 'loop': True},
             {'name': 'Walk', 'firstFrame': 50, 'lastFrame': 74, 'loop': True},
+            {'name': 'Sprint', 'firstFrame': 76, 'lastFrame': 100, 'loop': True},
+            {'name': 'Hit', 'firstFrame': 102, 'lastFrame': 112, 'loop': False},
+            {'name': 'Death', 'firstFrame': 113, 'lastFrame': 146, 'loop': False},
         ]}, indent=2) + '\n')
-    print('GOAT_TIMELINE_OK idle=1..49 walk=50..74 fps=24', flush=True)
+    print('GOAT_TIMELINE_OK idle=1..49 walk=50..74 sprint=76..100 hit=102..112 death=113..146 fps=24', flush=True)
 
 
 if __name__ == '__main__':

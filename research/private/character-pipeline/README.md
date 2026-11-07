@@ -1,5 +1,163 @@
 # Character animation experiments
 
+## Live Level 1 character delivery
+
+The active cycle replaces the actual Level 1 goats, archers and native archer
+arrows. Other character remakes remain inactive until this cycle is accepted.
+`run-characters.sh` starts the qualified Modern campaign; `--preview` retains
+the earlier isolated inspection player. Rust owns movement, damage, projectile
+allocation and cleanup. The Unity presenters consume read-only observations;
+they do not create damaging arrows or change original movement speeds.
+
+| Owner / asset | Required result | Decisive check |
+| --- | --- | --- |
+| Goat Terra owner | Sprite identity, idle, gallop, flee, hit, death; distance-driven gait and terrain contact | Original native displacement measurements, imported rig/contact checks and actual Level 1 frames |
+| Archer Terra owner | Sprite identity, walk, standing/kneeling draw and recovery, hit/death; complete arrow mesh and nock | Level/up/down shaft checks, actual allocated source child, important release/recovery/death frames |
+| Integrator | Native slot generations, terrain placement, camera/input, removal/reset, installation and phone delivery | Same-revision native/player hashes, real gameplay captures and launcher checks |
+
+The new goat export is `../generated/characters-complete-20261107/goat-gallop5/`;
+the archer candidate is owner-local at
+`/mnt/pinokio-shared/magiccarpet-archer-level-20261107-candidate20/`.
+The previous selected assets below remain preserved comparisons. Source speed
+18 raw units/tick gives measured ordinary goat travel about 8.438 Unity units/s
+at 30 Hz. Flee speed54 gives about 25.322 units/s. These are game coordinates,
+not calibrated real-world metres. The former tiny stride forced implausibly
+fast foot cycling; the authored gallop and sprint now advance by actual
+interpolated horizontal distance. The imported model's front is checked against
+native travel at all four cardinal headings.
+
+Pipeline fixes learned from the live cycle:
+
+- Add all required actions to the canonical rig/timeline before calling an
+  asset complete; five goat clips and eight archer clips are currently required.
+- Keep original source speed and derive animation phase from travel. Do not
+  guess animation FPS from a sprite sheet or assume the preview's treadmill
+  speed equals gameplay speed.
+- Observe health and source actions. Zero goat life is still alive; death is
+  negative life or source death actions. Distinguish visibility culling from
+  actual removal and retain only a bounded visual death tail.
+- Join source slot, source ID, allocation generation and world generation.
+  Imported generation zero is valid. Reset/dispose all joins on world changes.
+- Use the source archer target field and an actual allocated arrow child.
+  A periodic firing attempt may fail allocation; it cannot release a visual
+  arrow. Do not re-trigger a shot from an old in-flight child loaded in a save.
+- Align the exported shaft, held nock and native flight direction. Correct
+  world-space aim after terrain tilt. Same-height targets are horizontal;
+  elevated targets pitch coherently. The child starts at the held nock and
+  joins its authoritative native trajectory over one simulation tick.
+- Inspect transition frames as well as the individual clips. Live recording
+  exposed an abrupt recovery-to-next-draw join that isolated clip checks missed.
+  Standing aim also needs a continuous exit to idle/walk. Preserve the authored
+  walking lower body and its Armature height while joining the aimed upper body;
+  preserving leg bones alone left both shoes floating. Compare deformed soles
+  with the same imported Walk sample, rather than another crossfade.
+- Keep moving damage reactions over locomotion. The goat's authored Hit is a
+  head recoil; sampling it as a whole-body clip froze moving feet. Its actual
+  imported head track now overlays the distance-driven gait, with a short grace
+  for measured zero-displacement interpolation boundaries. A stopped goat still
+  uses the stationary Hit action.
+- Measure deformed hoof soles against the actual rendered terrain. A flat-floor
+  import check does not prove hillside contact. Visible goats use bounded
+  two-bone correction, preserving segment lengths and the airborne gait phase.
+- Record actual gameplay with the existing capture tool and an earned public-input
+  replay. The optional spectator camera admits its selected real actor even
+  outside the player's native draw list; captures disclose this override.
+  Higher recording cadence resolves fast arrows while native simulation stays
+  at 30 Hz. Capture cadence is never a desktop performance measurement.
+- Fit the review camera to terrain-oriented body/held-prop bounds and keep it
+  above ground; reject every recorded framing failure. The capture receipt
+  hashes the player, native library, runtime assembly and build receipt before
+  and after recording, so later installs cannot silently change its identity.
+- Keep separate Unity import databases for separate qualified projects. An
+  observed stale MonoScript association produced zero script pointers in both
+  character assets. Import and Modern build now validate the actual script
+  binding, required clips and Resources load; unresolved imports fail before
+  writing a replacement. A fresh Editor invocation after script reimport
+  resolved the observed case, with the broken products preserved as evidence.
+
+The final integrated character checks pass 48/48, including moving-hit
+interpolation boundaries and both standing-aim exits. The installed native
+is `dc5a115321b1780f5f328ea6c6e2edad1cf4818885e655ff5e32365d58b2288d`.
+Normal Modern and character launchers select the qualified campaign player;
+`run-characters.sh --preview` retains the earlier inspection player and the
+environment sandbox retains its frozen input/profile selection. Source-shaped
+buildings and the rest of the approved environment remain included.
+
+This is not a performance signoff. Private unthrottled gameplay at 1000x700
+recorded median37.77ms/p9569.40ms; campaign processing dominated measured CPU
+time, while the Modern render scope averaged1.97ms in the preceding sample.
+The runs were not controlled before/after comparisons and the desktop remains
+locked. Keep the gameplay CPU/performance issue open; recording-rate videos
+demonstrate visual behavior rather than achievable FPS. UBS found no critical
+issues but its C# semantic coverage is partial; Unity compilation, focused
+checks, changed-hunk review and live captures supply the remaining evidence.
+
+Live evidence and preserved losing candidates are under
+`/mnt/pinokio-shared/magiccarpet-character-level1-evidence-20261107/`.
+The checks and installed result are recorded in the current WORK_PLAN section.
+The 24.5-second portrait review is at `http://3090.bumblebee-hue.ts.net:8095/`
+inside the tailnet, with chapter buttons, mobile/HQ downloads and HTTP range
+seeking. Its `phone-delivery-final/delivery.json` records the checked builds and
+the complementary standing-exit angles. Important frames were inspected by root
+and the Terra owner; terrain/rocks obscure some live shoes, so do not claim
+precise archer hillside sole clearance from those images. Flat imported geometry
+supplies the measured transition contact check. In captures only,
+`-mc-character-follow-yaw <degrees>` selects another inspection angle without
+changing native state.
+
+### Level 1 asset inventory — queued, not started
+
+Counts below come from the canonical package's `authored-level.bin`, parsed by
+`remc2-level-exporter/scripts/campaign_census.py:parse_authored`, and source kind
+mapping in `campaign/mc2_level_definition.rs`. They count authored records,
+including later activation groups, rather than simultaneous live actors.
+
+| Character family | Authored records | Work after the active cycle |
+| --- | ---: | --- |
+| Goat | 33 | Finish current gait/contact/damage/install cycle |
+| Bow archer and arrow | 4 | Finish current aiming/shooting/damage/install cycle |
+| Villager | 28 | Source-sheet identity; idle/walk/run, interactions and death; native resident binding |
+| Worm | 4 | Source-sheet identity; movement/attack/hit/death; burrow/body/ground contact |
+| Firefly | 6 | Source-sheet identity; flight/turn/attack/hit/death; wings and projectile binding |
+
+The flying enemies authored in this Level 1 package are Fireflies. Do not infer
+Bees from the general game's creature list. House production can create further
+residents; its own source runtime determines those occupants.
+
+The earned Level 1 replay's typed `definition.level_definition.entities` also
+confirms the non-character inventory below. Emission-site counts are not counts
+of simultaneously visible effects or distinct meshes.
+
+| Authored visual/content family | Records | Remaining asset work |
+| --- | ---: | --- |
+| Houses/building constructors | 81 | Retain the four source-shaped profiles; inspect live construction/destruction and resident emissions separately |
+| Trees | 18 | Retain approved environment meshes and source placement bindings |
+| Stone | 1 | Retain approved geometry and source binding |
+| Experience scroll | 5 | High-resolution collectible model/material and pickup feedback |
+| Exit portal | 1 | Portal surface, activation/entry and transition presentation |
+| Castle pickup | 1 | Pickup model, player castle stages and construction effects |
+| Speed pickup | 1 | Pickup model and speed presentation |
+| Ambient smoke emitters | 9 | Retain environment work; verify each live emission binding |
+| Ash emitters | 31 | Match the source locations and bounded particles |
+| Radial explosion emitters | 42 | Modern impact/explosion presentation without changing damage |
+
+The raw authored census also retains three scenery-selector `2/2` records,
+one `3/4` record, two `10/29` records and three `10/59` records not named by
+that typed inventory. Their source identity/visibility must be confirmed before
+assigning a remake; they are not grounds to invent another creature. The three
+class0 records and the typed area/objective/exit/absence gates are control data.
+
+The rest of the Level 1 visual inventory includes terrain/shore/water/sky and
+night lighting, trees/stone and decorative scenery, source-shaped house/building
+variants and construction/destruction, player carpet/hands and rival/player
+presentation, Castle and Speed spell pickups, experience scrolls, mana spheres,
+the exit portal, fireballs/arrows/impact/fire/smoke effects, HUD/map/menu assets
+and sound. Existing environment/building work is retained; that does not certify
+every gameplay construction or destruction transition. Invisible triggers and
+objective gates require behavior, not invented visible creature assets. Each
+future character follows the same reference → normalized mesh/PBR → rig/full
+actions → native binding → live frame repair → qualified install cycle above.
+
 Fresh sprite-informed goat experiment: `../generated/goat-animation-20261106/`.
 Original sprites inform identity; no rejected prototype mesh, rig or motion is
 reused. Generated files, original assets and credentials remain owner-local.

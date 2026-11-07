@@ -19,6 +19,7 @@ namespace MagicCarpet.Native
         private readonly Dictionary<ushort, NativeSim.CampaignEntityPresentation> rows = new();
         private readonly byte[] palette;
         private readonly Mesh quad;
+        private readonly ModernCharacterActors characters;
         private readonly Shader shader;
         private readonly Shader smokeShader;
         private bool loggedSmoke;
@@ -29,7 +30,7 @@ namespace MagicCarpet.Native
         internal IEnumerable<NativeSim.CampaignEntityPresentation> VisibleRows => rows.Values;
         private readonly MaterialPropertyBlock emission = new MaterialPropertyBlock();
 
-        internal ModernEntityPresenter(Transform parent, OwnerAssetCache cache)
+        internal ModernEntityPresenter(Transform parent, OwnerAssetCache cache, ModernTerrainMesh terrain)
         {
             this.cache = cache;
             if (cache.EnvironmentMaterials == null)
@@ -41,6 +42,7 @@ namespace MagicCarpet.Native
             if (shader == null) throw new InvalidOperationException("Missing ModernEntity shader");
             root = new GameObject("Live campaign actors").transform;
             root.SetParent(parent, false);
+            characters = new ModernCharacterActors(root, terrain);
             quad = new Mesh { name = "Modern actor billboard" };
             quad.vertices = new[] { new Vector3(-.5f, 0, 0), new Vector3(.5f, 0, 0), new Vector3(-.5f, 1, 0), new Vector3(.5f, 1, 0) };
             quad.uv = new[] { new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, 0), new Vector2(1, 0) };
@@ -52,11 +54,14 @@ namespace MagicCarpet.Native
         internal void Present(NativeCampaignSession session, short yaw)
         {
             rows.Clear();
-            foreach (var row in session.EntityPresentations(yaw))
+            var presentations = session.EntityPresentations(yaw);
+            characters.Observe(session, presentations);
+            foreach (var row in presentations)
             {
+                rows.Add(row.entityIndex, row);
+                if (characters.Replaces(row.entityIndex)) continue;
                 if (!assets.TryGetValue(row.selectedTmap, out var texture))
                     throw new InvalidOperationException($"Live entity {row.entityIndex} has absent sprite {row.selectedTmap}");
-                rows.Add(row.entityIndex, row);
                 if (!objects.TryGetValue(row.entityIndex, out var node))
                 {
                     node = new GameObject($"Actor {row.entityIndex}");
@@ -84,7 +89,7 @@ namespace MagicCarpet.Native
                 var height = row.logicalHeight / 64f;
                 node.transform.localScale = new Vector3(height * texture.width / texture.height * (row.mirrored == 0 ? 1 : -1), height, 1);
             }
-            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key)).ToArray())
+            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || characters.Replaces(key)).ToArray())
             {
                 UnityEngine.Object.Destroy(objects[key]);
                 objects.Remove(key);
@@ -105,6 +110,7 @@ namespace MagicCarpet.Native
             var logDiagnostic = ModernCapture.VisualDebug && loggedDebug != ModernCapture.SmokeDebug;
             foreach (var pair in rows)
             {
+                if (characters.Replaces(pair.Key)) continue;
                 var row = pair.Value;
                 var x = position.x + Mathf.Repeat(row.x / 64f - position.x + 512f, 1024f) - 512f;
                 var z = position.z + Mathf.Repeat(row.y / 64f - position.z + 512f, 1024f) - 512f;
@@ -131,7 +137,10 @@ namespace MagicCarpet.Native
             }
             loggedGeometry = true;
             loggedDebug = ModernCapture.SmokeDebug;
+            characters.Render(camera);
         }
+
+        internal bool ReviewCamera(Camera camera) => characters.ReviewCamera(camera);
 
         private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke)
         {
@@ -167,6 +176,7 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            characters.Dispose();
             UnityEngine.Object.Destroy(root.gameObject);
             UnityEngine.Object.Destroy(quad);
             foreach (var value in materials.Values) UnityEngine.Object.Destroy(value);

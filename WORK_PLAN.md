@@ -26,6 +26,41 @@ Level 1 player, with real source-driven actors and attacks; a staged camera or
 declared scenario setup is acceptable evidence only when disclosed. An isolated
 review sequence or mocked entity row does not finish this capability.
 
+Current implementation: source-backed goat/archer/arrow presenters, an 80-byte
+read-only native observation, allocation/world identities, actual target aim,
+distance-driven gallop/flee and moving-hit head overlay, bounded terrain IK,
+standing/kneeling shots, continuous recovery/hit/rise and death cleanup. The
+asset/task inventory and reusable repairs are in the character-pipeline README.
+All 48 combined character checks pass, including moving-hit interpolation stalls
+and both standing-aim exits. Native public-input checkpoint checks cover eight
+movement/damage/stance scenarios and a real allocated archer arrow/target.
+
+The qualified player is installed through the existing build/install checker at
+`/home/oliver/Projects/odcpw/magiccarpet-character-level1-20261107/remc2-unity-native`,
+currently `build-txchc9z2`, native SHA256
+`dc5a115321b1780f5f328ea6c6e2edad1cf4818885e655ff5e32365d58b2288d`.
+Normal `run-modern.sh` and `run-characters.sh` select it; the frozen environment
+sandbox and Original installation retain their previous selectors. Real X11
+keyboard restart/save/F10 exit passes on this installed build (saved tick1,
+clean exit0). Nine scenario captures plus two final standing-exit views pass
+all 1,410 full portrait frames. Root and Terra inspected important action and
+transition frames. Terrain obscures some shoes; precise sole clearance is
+measured separately on flat imported geometry, with live goat terrain telemetry.
+The 24.5-second phone review is installed at
+`http://3090.bumblebee-hue.ts.net:8095/`, with checked H264 decode, HTTP range
+seeking and browser playback. Its manifest names each checked build/angle;
+recording cadence is not FPS. The visual asset cycle is self-verified and
+installed; user review and the gameplay performance issue below remain open.
+Evidence: `/mnt/pinokio-shared/magiccarpet-character-level1-evidence-20261107/`.
+
+Gameplay performance remains open. The private 1000x700, Vulkan, unthrottled
+launcher smoke measured median37.77ms/p9569.40ms; measured campaign processing
+is the largest CPU component (step/snapshot mean14.77ms, campaign-frame mean
+24.66ms in the first run; Modern rendering mean1.97ms). These cold/private
+measurements are not a comparable baseline or an actual-desktop qualification.
+Do not call this a smooth-play milestone or start another asset family while
+the operator's current hold remains in force.
+
 ## Modern goat and bow archer — checked asset delivery (2026-11-07)
 
 Oliver requested repaired, complete character actions and results checked in

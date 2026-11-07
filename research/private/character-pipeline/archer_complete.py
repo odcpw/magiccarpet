@@ -82,6 +82,14 @@ def main():
     # Near a relaxed nock the two hands almost coincide. Deriving direction
     # from their difference there produces unstable 180-degree bow rolls.
     aim_q = control.rotation_quaternion.copy()
+    # The source pose carries a small upward pitch.  A level target needs a
+    # level shaft and a level flight path; apply the same correction to the
+    # entire bow frame before solving the string and hand contacts below.
+    # This leaves target elevation to the runtime presenter instead of baking
+    # one arbitrary target into the asset.
+    aim_forward = aim_q @ Vector((0, 1, 0))
+    level_forward = Vector((aim_forward.x, aim_forward.y, 0)).normalized()
+    aim_q = aim_forward.rotation_difference(level_forward) @ aim_q
     # The source is an NLA animation. Clear it after sampling, including shape
     # animations, so the assembled timeline has a single authoritative writer.
     for obj in scene.objects:
@@ -94,6 +102,12 @@ def main():
                  'RightUpLeg', 'RightLeg', 'RightFoot', 'RightToeBase'}
     standing = ({name: shot[0][0][name].copy() if name in leg_names else matrix.copy()
                  for name, matrix in walk[0][0].items()}, shot[0][1].copy())
+    for name, matrix in standing[0].items():
+        rig.pose.bones[name].matrix_basis = matrix
+    rig.location = standing[1]
+    bpy.context.view_layer.update()
+    death_feet = {side: (rig.matrix_world @ rig.pose.bones[side + 'Foot'].head).copy()
+                  for side in ('Left', 'Right')}
     for name, matrix in kneel[0][0].items():
         rig.pose.bones[name].matrix_basis = matrix
     rig.location = kneel[0][1]
@@ -118,8 +132,12 @@ def main():
     carry_up = Vector((0, .40, .9165)).normalized()
     carry_fwd = Vector((0, carry_up.z, -carry_up.y))
     carry_q = Matrix((carry_fwd.cross(carry_up).normalized(), carry_fwd, carry_up)).transposed().to_quaternion()
+    # Keep the held bow off the floor as the body falls face-down.
+    carry_axis = carry_q @ Vector((0, 0, 1))
+    horizontal_axis = Vector((carry_axis.x, carry_axis.y, 0)).normalized()
+    fallen_carry_q = carry_axis.rotation_difference(horizontal_axis) @ carry_q
     scene.render.fps = 24
-    scene.frame_start, scene.frame_end = 1, 340
+    scene.frame_start, scene.frame_end = 1, 386
     launch_location = launch_rotation = None
     previous_location = previous_rotation = None
     was_visible = False
@@ -140,7 +158,7 @@ def main():
         evaluated_obj.to_mesh_clear()
         return floor
 
-    for f in range(1, 341):
+    for f in range(1, 387):
         # The initial standing sequence includes an actual hand-to-quiver
         # reach, extraction, nocking, draw, release and return to idle.
         if f <= 49:
@@ -180,15 +198,28 @@ def main():
             else:
                 pose = interpolate(kneel[16], kneel[0], smooth((t - 1.15) / .8))
             mode = 'kneel_shot'
-        else:
+        elif f <= 340:
             pose = interpolate(kneel[0], standing, smooth((f - 316) / 24))
             mode, t = 'kneel_exit', (f - 316) / 24
+        elif f <= 350:
+            pose, mode, t = standing, 'hit', (f - 341) / 9
+        else:
+            pose, mode, t = standing, 'death', (f - 351) / 35
         for name, matrix in pose[0].items():
             bone = rig.pose.bones[name]
             bone.rotation_mode = 'QUATERNION'
             bone.matrix_basis = matrix
             if mode == 'idle' and name == 'Head':
                 bone.rotation_quaternion @= Quaternion((1, 0, 0), .012 * math.sin(2 * math.pi * (f - 1) / 48))
+        if mode == 'hit':
+            rig.pose.bones['Spine02'].rotation_quaternion @= Quaternion((0, 0, 1), -.18 * math.sin(math.pi * t))
+        elif mode == 'death':
+            fall = smooth(t / .72)
+            rig.pose.bones['Hips'].rotation_quaternion @= Quaternion((1, 0, 0), 1.50 * fall)
+            rig.pose.bones['Spine02'].rotation_quaternion @= Quaternion((1, 0, 0), .18 * fall)
+            rig.pose.bones['LeftUpLeg'].rotation_quaternion @= Quaternion((1, 0, 0), .28 * fall)
+            rig.pose.bones['LeftLeg'].rotation_quaternion @= Quaternion((1, 0, 0), -.45 * fall)
+            rig.pose.bones['RightArm'].rotation_quaternion @= Quaternion((1, 0, 0), -.30 * fall)
         rig.location = pose[1]
         bpy.context.view_layer.update()
         # Reach back over the shoulder and bring the extracted arrow to the
@@ -223,10 +254,26 @@ def main():
             # sweep a shoe through the floor even when both endpoints stand on
             # it. Raise the shared root by the measured penetration, preserving
             # the skeletal pose and the planted lowest point.
-            rig.location.z += max(0, .001 - body_floor())
+            correction = .001 - body_floor()
+            rig.location.z += correction if mode == 'death' else max(0, correction)
             bpy.context.view_layer.update()
-            # Maintain a stable planted front foot while the rear leg moves.
-            # The solver uses the current bone lengths; never scale the chain.
+        if mode == 'death':
+            # Bend the legs against their planted feet before releasing them.
+            free = smooth((t - .18) / .52)
+            for side in ('Left', 'Right'):
+                hip = rig.matrix_world @ rig.pose.bones[side + 'UpLeg'].head
+                knee = rig.matrix_world @ rig.pose.bones[side + 'Leg'].head
+                ankle = rig.matrix_world @ rig.pose.bones[side + 'Foot'].head
+                target = death_feet[side].lerp(ankle, free)
+                length = (knee - hip).length + (ankle - knee).length
+                delta = target - hip
+                if delta.length >= length - 1e-4:
+                    target = hip + delta.normalized() * (length - 1e-4)
+                _solve_leg(rig, side + 'UpLeg', side + 'Leg', side + 'Foot', target, Vector((0, -1, .2)))
+            rig.location.z += .001 - body_floor()
+            bpy.context.view_layer.update()
+        # Maintain a stable planted front foot while the rear leg moves.
+        if mode not in {'walk', 'death'}:
             hip = rig.matrix_world @ rig.pose.bones['LeftUpLeg'].head
             knee = rig.matrix_world @ rig.pose.bones['LeftLeg'].head
             ankle = rig.matrix_world @ rig.pose.bones['LeftFoot'].head
@@ -243,7 +290,7 @@ def main():
             left_toe.matrix = left_foot.matrix @ left_foot.bone.matrix_local.inverted() @ left_toe.bone.matrix_local
             bpy.context.view_layer.update()
         hands = surface_hands()
-        if mode in {'idle', 'walk'}:
+        if mode in {'idle', 'walk', 'hit', 'death'}:
             amount = 0
         elif mode == 'shot':
             amount = smooth((t - .7) / .95) * (1 - smooth((t - 3.45) / 1.15))
@@ -256,6 +303,8 @@ def main():
         control.location = hands['Left']
         control.rotation_mode = 'QUATERNION'
         control.rotation_quaternion = carry_q.slerp(aim_q, amount)
+        if mode == 'death':
+            control.rotation_quaternion = carry_q.slerp(fallen_carry_q, smooth(t / .72))
         bpy.context.view_layer.update()
         local = control.rotation_quaternion.inverted() @ (hands['Right'] - hands['Left'])
         engaged = ((mode == 'kneel_enter' and t >= 1.65) or
@@ -343,13 +392,15 @@ def main():
     # Preserve contact between integer samples as the legs descend and rise.
     # The bow is independent of the skeleton, so apply exactly the same root
     # correction to its control at those subframes.
-    for quarter in range(75 * 4 + 1, 340 * 4):
+    for quarter in range(75 * 4 + 1, 386 * 4):
         if quarter % 4 == 0:
             continue
         frame = quarter / 4
         scene.frame_set(int(frame), subframe=frame % 1)
-        delta = max(0, .001 - body_floor())
-        if delta > 1e-7:
+        delta = .001 - body_floor()
+        if frame < 351:
+            delta = max(0, delta)
+        if abs(delta) > 1e-7:
             rig.location.z += delta
             control.location.z += delta
             rig.keyframe_insert(data_path='location', frame=frame)
@@ -417,8 +468,10 @@ def main():
             {'name': 'KneelEnter', 'firstFrame': 196, 'lastFrame': 268, 'loop': False},
             {'name': 'KneelingShot', 'firstFrame': 268, 'lastFrame': 316, 'loop': False},
             {'name': 'KneelExit', 'firstFrame': 316, 'lastFrame': 340, 'loop': False},
+            {'name': 'Hit', 'firstFrame': 341, 'lastFrame': 350, 'loop': False},
+            {'name': 'Death', 'firstFrame': 351, 'lastFrame': 386, 'loop': False},
         ]}, indent=2) + '\n')
-    print('ARCHER_TIMELINE_OK fps=24 idle=1..49 walk=50..74 shot=75..195 kneel_enter=196..268 kneel_shot=268..316 kneel_exit=316..340', flush=True)
+    print('ARCHER_TIMELINE_OK fps=24 idle=1..49 walk=50..74 shot=75..195 kneel_enter=196..268 kneel_shot=268..316 kneel_exit=316..340 hit=341..350 death=351..386', flush=True)
 
 
 if __name__ == '__main__':

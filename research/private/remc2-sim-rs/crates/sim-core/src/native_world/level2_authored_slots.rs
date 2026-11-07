@@ -4890,7 +4890,8 @@ impl Level2EconomyState {
     }
 
     #[must_use]
-    pub(crate) fn slot_generation(&self, slot: u16) -> u32 {
+    /// Read-only incarnation identity for observers of reused source slots.
+    pub fn slot_generation(&self, slot: u16) -> u32 {
         self.slot_generations
             .get(&slot)
             .copied()

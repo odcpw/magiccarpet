@@ -519,6 +519,28 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignCharacterState
+        {
+            internal uint abiVersion, structSize;
+            internal ulong generation, tick;
+            internal uint slotGeneration, parentGeneration;
+            internal ushort entityIndex, sourceId, parentIndex, parentId;
+            internal byte classId, model, action, phase, active, hasTarget, hasParent, stance;
+            internal ushort x, y;
+            internal short z, yaw, pitch, speed;
+            internal int life;
+            internal ushort targetIndex, targetX, targetY;
+            internal short targetZ;
+            internal uint controlFlags;
+            internal ushort ageTicks, reserved1;
+        }
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_character_states_copy(
+            ulong handle, ulong generation, ulong tick,
+            [Out] CampaignCharacterState[] buffer, uint capacity, uint elementSize, out uint written);
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignEntityPresentation
         {
             internal uint abiVersion;
@@ -3294,6 +3316,9 @@ namespace MagicCarpet.Native
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<CampaignEntityPresentation>(64);
+            RequireSize<CampaignCharacterState>(80);
+            RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.x), 48);
+            RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.life), 60);
             RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<CampaignInvisibleSnapshot>(80);
             RequireSize<CampaignBeyondSightSnapshot>(80);

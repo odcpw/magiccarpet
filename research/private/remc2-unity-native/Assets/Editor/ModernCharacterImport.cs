@@ -46,13 +46,39 @@ namespace MagicCarpet.Native.Editor
 
         public static void Prepare()
         {
-            PrepareCharacter("Goat", .14844f);
-            PrepareCharacter("Archer", 1.65f);
+            // A reused/imported project database can lose MonoScript binding
+            // while still loading the managed class. Never serialize a
+            // Character asset with a zero script pointer in that state.
+            const string scriptPath = "Assets/Scripts/ModernCharacterAsset.cs";
+            var script = AssetDatabase.LoadAssetAtPath<MonoScript>(scriptPath);
+            if (script == null || script.GetClass() != typeof(ModernCharacterAsset))
+            {
+                AssetDatabase.ImportAsset(scriptPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+                throw new InvalidOperationException("Character asset script import is unresolved; repair the project import database before preparing assets");
+            }
+            PrepareCharacter("Goat", .14844f, script);
+            PrepareCharacter("Archer", 1.65f, script);
             AssetDatabase.SaveAssets();
+            Validate();
             Probe();
         }
 
-        private static void PrepareCharacter(string name, float walkSpeed)
+        public static void Validate()
+        {
+            var script = AssetDatabase.LoadAssetAtPath<MonoScript>("Assets/Scripts/ModernCharacterAsset.cs");
+            if (script == null || script.GetClass() != typeof(ModernCharacterAsset))
+                throw new InvalidOperationException("Character asset script binding is unresolved");
+            foreach (var name in new[] { "Goat", "Archer" })
+            {
+                var asset = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
+                if (asset == null || asset.model == null || MonoScript.FromScriptableObject(asset) != script)
+                    throw new InvalidOperationException("Imported character cannot be loaded with its actual script binding: " + name);
+                foreach (var clip in name == "Goat" ? new[] { "Idle", "Walk", "Sprint", "Hit", "Death" } :
+                    new[] { "Idle", "Walk", "StandingShot", "KneelEnter", "KneelingShot", "KneelExit", "Hit", "Death" }) asset.Clip(clip);
+            }
+        }
+
+        private static void PrepareCharacter(string name, float walkSpeed, MonoScript script)
         {
             var folder = Folder + name + "/";
             var path = folder + name + ".fbx";
@@ -118,7 +144,16 @@ namespace MagicCarpet.Native.Editor
                 }
                 var authored = PrefabUtility.SaveAsPrefabAsset(instance, folder + "character.prefab");
                 var definition = AssetDatabase.LoadAssetAtPath<ModernCharacterAsset>(folder + "Character.asset");
-                if (definition == null) { definition = ScriptableObject.CreateInstance<ModernCharacterAsset>(); AssetDatabase.CreateAsset(definition, folder + "Character.asset"); }
+                if (definition == null)
+                {
+                    definition = ScriptableObject.CreateInstance<ModernCharacterAsset>();
+                    if (MonoScript.FromScriptableObject(definition) != script)
+                    {
+                        UnityEngine.Object.DestroyImmediate(definition);
+                        throw new InvalidOperationException("Character script association is missing; refusing to overwrite " + folder + "Character.asset");
+                    }
+                    AssetDatabase.CreateAsset(definition, folder + "Character.asset");
+                }
                 definition.name = name;
                 definition.model = authored;
                 definition.clips = AssetDatabase.LoadAllAssetsAtPath(path).OfType<AnimationClip>()

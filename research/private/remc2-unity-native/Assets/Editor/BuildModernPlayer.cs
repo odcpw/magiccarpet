@@ -12,6 +12,7 @@ namespace MagicCarpet.Native.Editor
         // Author assets once; both presentation modes continue to use the same native session.
         public static void Prepare()
         {
+            ModernCharacterImport.Validate();
             ModernNatureImport.Prepare();
             ModernVegetationMeshLods.Validate();
             ModernTerrainTextures.Prepare();

@@ -14,8 +14,8 @@ namespace MagicCarpet.Native.Tests
             return asset;
         }
 
-        [TestCase("Goat", 2)]
-        [TestCase("Archer", 6)]
+        [TestCase("Goat", 5)]
+        [TestCase("Archer", 8)]
         public void ImportedModelHasNamedClipsAndTexturedUrpMaterials(string name, int count)
         {
             var asset = Asset(name);
@@ -56,7 +56,10 @@ namespace MagicCarpet.Native.Tests
                 }
                 TestContext.WriteLine($"{name} sole range: {low:R}..{high:R}");
                 Assert.That(low, Is.GreaterThan(-.001f), "Imported walk penetrates the floor");
-                Assert.That(high, Is.LessThan(.003f), "Imported walk loses supporting-foot contact");
+                if (name == "Goat")
+                    Assert.That(high, Is.GreaterThan(.02f), "Gallop must have a genuine aerial phase; planted stances are checked separately");
+                else
+                    Assert.That(high, Is.LessThan(.003f), "Imported walk loses supporting-foot contact");
                 Assert.That(first.Zip(last, Vector3.Distance).Max(), Is.LessThan(.0001f));
             }
             finally { UnityEngine.Object.DestroyImmediate(mesh); }

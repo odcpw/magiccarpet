@@ -1385,6 +1385,24 @@ namespace MagicCarpet.Native
             return rows;
         }
 
+        internal NativeSim.CampaignCharacterState[] CharacterStates()
+        {
+            var rows = new NativeSim.CampaignCharacterState[1000];
+            var status = NativeSim.mc_native_campaign_character_states_copy(Handle, generation, tick,
+                rows, (uint)rows.Length, 80, out var written);
+            NativeSession.Check(status, "read live character animation state");
+            if (written > rows.Length) throw new InvalidOperationException("Character batch exceeds capacity");
+            Array.Resize(ref rows, checked((int)written));
+            var seen = new HashSet<ushort>();
+            foreach (var row in rows)
+                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 80 ||
+                    row.generation != generation || row.tick != tick || !seen.Add(row.entityIndex) ||
+                    row.stance > 1 || row.reserved1 != 0 || row.active > 1 || row.hasTarget > 1 || row.hasParent > 1 ||
+                    !(row.classId == 5 && (row.model == 1 || row.model == 4) || row.classId == 9 && row.model == 13))
+                    throw new InvalidOperationException("Invalid source-backed character state");
+            return rows;
+        }
+
         internal NativeSim.CampaignGoatSnapshot[] Goats()
         {
             var goats = new NativeSim.CampaignGoatSnapshot[36];

@@ -34,7 +34,8 @@ namespace MagicCarpet.Native
             var visual = UnityEngine.Object.Instantiate(asset.model, Root.transform);
             visual.transform.localPosition = Vector3.zero;
             visual.transform.localRotation = Quaternion.Euler(0, asset.forwardYaw, 0);
-            var animator = visual.GetComponent<Animator>() ?? visual.AddComponent<Animator>();
+            var animator = visual.GetComponent<Animator>();
+            if (animator == null) animator = visual.AddComponent<Animator>();
             animator.applyRootMotion = false;
             animator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
             graph = PlayableGraph.Create("Character " + asset.name);
@@ -70,10 +71,14 @@ namespace MagicCarpet.Native
             blendElapsed = 0;
         }
 
-        internal void Tick(float dt)
+        internal void Tick(float dt) => Tick(dt, dt);
+
+        // Locomotion phase follows distance; crossfades retain real-time duration.
+        internal void Tick(float dt, float targetAdvance)
         {
             if (disposed) throw new ObjectDisposedException(nameof(ModernCharacterInstance));
             if (float.IsNaN(dt) || float.IsInfinity(dt) || dt < 0) throw new ArgumentOutOfRangeException(nameof(dt));
+            if (!float.IsFinite(targetAdvance) || targetAdvance < 0) throw new ArgumentOutOfRangeException(nameof(targetAdvance));
             blendElapsed += dt;
             var blend = blendDuration == 0 ? 1 : Mathf.SmoothStep(0, 1, Mathf.Clamp01(blendElapsed / blendDuration));
             for (var i = 0; i < players.Length; i++)
@@ -81,7 +86,7 @@ namespace MagicCarpet.Native
                 weights[i] = Mathf.Lerp(blendFrom[i], i == target ? 1 : 0, blend);
                 if (weights[i] > 0 || i == target)
                 {
-                    times[i] += dt;
+                    times[i] += i == target ? targetAdvance : dt;
                     var length = Asset.clips[i].length;
                     if (Asset.clips[i].isLooping && length > 0) times[i] %= length;
                     else times[i] = Math.Min(times[i], length);

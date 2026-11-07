@@ -177,7 +177,7 @@ namespace MagicCarpet.Native
             Shader.SetGlobalFloat("_ModernShoreMaskReady",1);
             terrain = new ModernTerrainMesh(root.transform, landMaterial, waterMaterial,sourceShore) { ViewDistance = 650f };
             vegetation = new ModernVegetation(terrain);
-            entities = new ModernEntityPresenter(root.transform, cache);
+            entities = new ModernEntityPresenter(root.transform, cache, terrain);
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
             nightLighting = new ModernNightLighting(root.transform);
             waterSystem = new ModernWaterSystem(root.transform, terrain, nightLighting, landMaterial);
@@ -293,6 +293,7 @@ namespace MagicCarpet.Native
             if (sandbox != null) sandbox.Update();
             else camera.transform.SetPositionAndRotation(ModernCapture.ReviewPosition ?? Vector3.Lerp(camera.transform.position, targetPosition, blend),
                     ModernCapture.ReviewPosition.HasValue ? ModernCapture.ReviewRotation : Quaternion.Slerp(camera.transform.rotation, targetRotation, blend));
+            if (sandbox == null) entities.ReviewCamera(camera);
             waterSystem.Update(camera);
             buildings?.Render(camera.transform.position);
             nightLighting.Render(camera);
