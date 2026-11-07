@@ -102,8 +102,9 @@ Continue the existing original `mc-1pb` acceptance and dependencies; this list
 tracks delivery, not missing-code counts. Settlement `.16`, Skeleton `.22`,
 Firefly `.23`, Manticore17 `.6`, Sentinel18 `.7`, leaping creature21 `.8`
 and paired-body creature22 `.9` are delivered. Mana-hunting creature23's connected
-runtime is now installed; `mc-1pb.10` retains its open shared-system dependencies.
-Next is creature24 `mc-1pb.11`. The proper original
+runtime is installed; `mc-1pb.10` retains its open shared-system dependencies.
+Cave melee creature24 `.11` is now delivered and closed. Next is splitting
+creature25 `mc-1pb.12`, including its actual children and minion expiry. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -116,10 +117,9 @@ objective consumers and original presentation/assets. Preserve the delivered
 spell checkpoints and already qualified creature paths; repair shared defects
 in their canonical owner when a real connected failure exposes them.
 
-AmberDune delivered creature23 through real authored production, sphere
-claim/lift/consumption, outgoing Lightning, public Meteor defeat and cleanup.
-CalmLynx implemented required shared joins; CopperMountain serialized checks and
-delivery. Keep the small team and finish creature24 next, after reading its
+AmberDune and CalmLynx delivered creatures23 and24 through their actual producers,
+combat, consequences, cleanup and original presentation. CopperMountain
+serialized checks and delivery. Keep the small team and finish creature25 next, after reading its
 original acceptance and current source. `mc-1pb.10` remains open while its original
 `mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
@@ -136,7 +136,7 @@ without bypassing or rewriting those dependencies.
 - [x] Leaping creature21 — `mc-1pb.8`.
 - [x] Paired-body creature22 — `mc-1pb.9`.
 - [x] Mana-hunting creature23 runtime — `mc-1pb.10` (bead retains open shared dependencies).
-- [ ] Creature24 — `mc-1pb.11`.
+- [x] Cave melee creature24 — `mc-1pb.11`.
 - [ ] Creatures25/26/28 — `mc-1pb.12`/`.13`/`.15`.
 - [ ] Worm3 — `mc-1pb.2`; multipart27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
@@ -153,7 +153,58 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current delivery: mana-hunting creature23 (2026-11-07)
+### Current delivery: Cave melee creature24 (2026-11-07)
+
+Implemented, verified and committed/pushed at runtime
+`144c5cbca8ab2c559047e31a21aaa0305a1cacbe`; installed Original native
+`245a8764e20f161487e6fdf442381f4c902ea50eeebe61c41cbe66253540b676`
+(138,561,840 bytes). Original finite `mc-1pb.11` is closed with its acceptance
+and dependencies unchanged. The creature parent and full engine remain open.
+
+Five source defects are repaired in the canonical family and shared joins:
+movement now publishes its accepted/rejected source proposal while preserving
+the hold branch; turning uses source subtype5 rather than the ignored170
+argument; inherited child damage triggers the point route's hit branch;
+actor-following applies target separation after peer avoidance; and callback194
+prepares sound7 into the real journal/audio stream at its source entry pose.
+All192–199 are enabled in the pinned source table.
+
+Actual unfiltered Level16 switch92 activates group23 and authored404. After
+natural startup protection expires, a pre-pinned current authored family24
+generation moves, supplies the exact contact writer consumed by player life and
+DamageApplied, and produces its own audible sound7 (4.292s). The witness is
+validated as authored group23, semantic Creature24 and raw5/24; no Other,
+model17, stale or unpinned writer qualifies. Record404 production remains
+mandatory; it need not be the particular attacker selected by the live crowd.
+
+Prior-carried public MeteorIII, a real Castle and declared player resources,
+entry/aim and objective prerequisites reach the original404 fatal mailbox,
+credited196→197, actual mana/burst DTOs, living-root loss, hide and following
+reclaim (7.944s). The firing pose clears actual Cave floor/ceiling/FOV; a fixed
+34-turn held input and identical no-cast input replay remain within the original
+160-turn bound. There is no adaptive tracking or NPC/RNG/lifetime edit. Aggregate
+mana spending is a consistency check, not individual-debit attribution.
+
+Candidate1's other family controls, real absence2.575s and source-order0.661s
+pass on byte-identical production. Final workspace/all-targets passes24.347s,
+native build50.202s. Fresh bounded source/gate review found no further concrete
+finite-family defect. Six whole-file UBS critical findings remain legacy;
+none are on added lines. Formatting/scanner debt is retained. Earlier melee
+and Meteor negatives remain failures: retained velocity/protection/crowd
+attribution and an invalid firing corridor/impossible one-impact kill required
+honest scenario corrections, with original causal predicates preserved.
+
+All445 Rust,162 upstream and37 extra inputs (637 unique) match canonical,
+isolated and rig sources/artifact;196 qualified Original Unity inputs match.
+Root viewed normal canonical map/loading/NightSpire scene/HUD with the matching
+mapped native, one click/zero retries, and stopped owned smoke processes. The
+initial blank startup capture is retained. No Unity/art change. Native Cave24
+encounters, human combat/FPS, hardware audio, full missions and old saves remain
+unverified. Current/previous natives remain regular, and completed returns are
+SHA-preserved on rig ext4. Evidence: `generated/cave-melee-20261107-integration/`
+candidates1–3 and `Builds/delivery-cave-melee-20261107-batch1`.
+
+### Previous delivery: mana-hunting creature23 (2026-11-07)
 
 Implemented and verified, committed/pushed at runtime
 `6ee32f709b9a068600374986098dfaff7d3ea862`, and installed as Original native
