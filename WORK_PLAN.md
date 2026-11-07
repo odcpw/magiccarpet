@@ -198,9 +198,9 @@ runtime is installed; `mc-1pb.10` retains its open shared-system dependencies.
 Cave melee creature24 `.11` and splitting creature25 `.12` are delivered and
 closed. Spell-thief26's connected runtime is now installed; `mc-1pb.13` retains
 its original open `mc-k5k.7` dependency. Deep One28 `mc-1pb.15`, Worm3
-`mc-1pb.2` and Spider20 `mc-bhq.3` are delivered. Hydra27 `.14` retains its
-original open shared-field `.12` dependency; finish that actual acceptance
-before claiming Hydra. The proper original
+`mc-1pb.2` and Spider20 `mc-bhq.3` are delivered. Shared fields `mc-bhq.12`
+are delivered and closed; Hydra27 `.14` is next with its original dependencies
+satisfied. The proper original
 names of models21/22/23 remain unverified. Name each active creature alongside its source model in
 progress updates. Root
 serializes shared joins, Cargo and installation with the small native team.
@@ -215,12 +215,12 @@ in their canonical owner when a real connected failure exposes them.
 
 AmberDune and CalmLynx delivered creatures23–25 through their actual producers,
 combat, consequences, cleanup and original presentation. CopperMountain
-serialized checks and delivery. AmberDune and RusticGrove have now completed
-creature26's finite runtime, Deep One28, Worm3 and Spider20; keep the small team
-and finish shared fields, including the confirmed ordinary transport audio
-consumer gap, then Hydra27. Read each original acceptance and current source.
+serialized checks and delivery. FrostyPond (previously AmberDune) and RusticGrove
+have now completed creature26's finite runtime, Deep One28, Worm3, Spider20 and
+the shared-field prerequisite; keep the small team on Hydra27 next. Read each
+original acceptance and current source; extend its existing family.
 `mc-1pb.10` remains open while its original
-`mc-bhq.10`/`mc-bhq.12` shared-system dependencies are open; move the actual required joins forward
+`mc-bhq.10` shared-system dependency is open; move the actual required joins forward
 without bypassing or rewriting those dependencies.
 
 - [x] Wyvern16 — `mc-1pb.5`.
@@ -241,7 +241,7 @@ without bypassing or rewriting those dependencies.
 - [x] Deep One28 — `mc-1pb.15` (original sound-name binding verified).
 - [x] Worm3 — `mc-1pb.2`.
 - [x] Spider20 full ordinary web/contact/death capability — `mc-bhq.3`.
-- [ ] Hydra27 — `mc-1pb.14` (retains original shared-field dependency).
+- [ ] Hydra27 — `mc-1pb.14` (shared-field prerequisite delivered).
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
 - [ ] Player death, banishment and revival — `mc-1pb.18`.
@@ -255,7 +255,58 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Current installed delivery: Spider20 (2026-11-07)
+### Current installed delivery: shared fields before Hydra27 (2026-11-07)
+
+Implemented, verified, committed and pushed at
+`06046071a0466257b8ff75b7a268fcecc607e75b`; original finite `mc-bhq.12` is
+closed with acceptance and dependencies unchanged. Transport21/22/20 and
+Storm-child23 now freeze positional audio at their literal source calls, before
+player copy or second child allocation, and reach the real native consumer.
+Retained ordinary transports already have startup flag2; their arrival gate
+preserves it. A separate real constructor proves first21 and no repeat.
+
+Source33/action35 has typed default300/512 properties, actual NewEvent RNG
+projection, increment/decrement/old-life behavior and the full scheduling join.
+The connected check exposed a second admission list silently skipping35; that
+canonical join is fixed. Bare constructor35 returns an actual unstamped class0
+NewEvent and is registered distinctly from null. Storm38 uses each current child
+selector and sequential postwrites. Bare default10/0 and payload100, ordinary9/9,
+null entries and partial allocation remain distinct. No ordinary33/35 campaign
+producer is claimed; configured Storm calls their real constructors. Disabled
+constructor37 and enabled configured/restored follower behavior retain their
+existing classification.
+
+C4 full natural300 controller life/hide/following reclaim passes9.141s; ray RNG,
+exact call-time/final map links, registry and source order pass. The old packet
+oracle compared before-second-birth state with its later map link; the repaired
+gate explicitly proves that sole link change and keeps all other fields equal.
+Unchanged C3 evidence covers actual transport2.299s, native voice1.770s, acquired
+all-tier Lightning/Storm10.460s, bare child presentation/reclaim2.035s and
+configured null/capacity controls8.456s. C3/C4 differ only in admission35,
+constructor35 registration and that test oracle. Workspace all-targets39.088s
+and strict rig native68.872s pass. Fresh bounded reviews and root's exact-source
+checks support finite acceptance. Focused formatting passes; UBS has no critical
+added-line finding. Whole-file legacy debt remains.
+
+Installed Original native
+`8d7df89de38eb4e7fb2676e7b7cb07048d2152a48ba11f3aab72d1fd48aca566`
+(139069232bytes), native refresh `build-cfkkf4tl`. All452 workspace inputs,
+162 upstream and37 additional inputs (644 unique) match source, rig and client.
+No Unity/art change. Root viewed canonical map/loading/NightSpire terrain/HUD
+under the initial spawn flash with matching mapped native; one click, zero
+retries, no gameplay input. Owned smoke stopped. This proves launch/load, not
+native field encounter visuals, human combat, FPS, hardware audio, full missions
+or old saves. Current/previous natives and the previous full player remain;
+completed RCH outputs are byte-preserved on rig. Evidence:
+`research/private/generated/transport-audio-20261107-integration/candidate-4/`
+with unchanged C3 checks and
+`research/private/remc2-unity-native/Builds/delivery-shared-fields-20261107-qualified-smoke/`.
+Hydra27 `mc-1pb.14` is now in progress: FrostyPond owns the family through
+integration, RusticGrove owns its connected checks, and CopperMountain owns
+shared joins, serialized builds and delivery. Later creatures wait for its
+complete installed capability.
+
+### Previous installed delivery: Spider20 (2026-11-07)
 
 Implemented, verified, committed and pushed at
 `0b1d0186620f66acdf044fdc7222c257187e24cd`; `mc-bhq.3` is closed with its
@@ -310,8 +361,8 @@ hardware audio, full missions or old-save proof. Current native copies were
 SHA-verified and deduplicated; completed RCH outputs are byte-preserved on rig.
 Evidence: `generated/spider-20261107-integration/candidate-8/` and
 `Builds/delivery-spider-20261107-qualified-smoke/` under `research/private/`.
-Next is `mc-bhq.12`'s confirmed transport sound20/21 consumer join and original
-finite shared-field acceptance, then Hydra27. Keep incomplete dependencies open.
+The subsequent shared-field prerequisite is delivered above. Keep remaining
+creature and shared-system acceptance open until its own complete delivery.
 
 ### Previous installed delivery: Worm3 (2026-11-07)
 
