@@ -1,11 +1,160 @@
-# Level 1 voxel sandbox
+# Level 1 voxel experiments
+
+## Modern environment with fine voxels
+
+The new opt-in player combines the existing Modern environment with local
+voxel destruction and the approved goat/archer rigs driven by native gameplay.
+The previous standalone comparison and accepted Modern campaign remain available.
+This is still an experimental sandbox, not a fully voxelized campaign.
+
+`run-voxels.sh` selects the separately installed `Builds/VoxelsModern` player.
+`run-voxels.sh --classic` runs the preserved first experiment described below.
+`run-voxels.sh --goat` and `--archer` start the matching live character views.
+The Modern sandbox starts from an earned Level 1 input replay; it then continues
+normal native simulation. Its save destination is separate from the campaign;
+`MC_VOXEL_SAVE` can override that destination.
+
+Controls: WASD and Q/E move, right-drag looks, Space/click fires a local voxel
+ball, B returns to the house/free camera, F2 returns to the native game camera,
+N cycles lighting and F10 exits. Only one local shot/destruction operation is
+admitted at a time; the on-screen busy message makes this explicit.
+
+The house uses 0.25-world-unit cells at the original full scale. The 32×40-unit
+editable ground patch uses 0.125-unit cells, joined to the surrounding Modern
+terrain with a visible, collidable vertical seam; distant terrain keeps its
+existing mesh detail. The seam closes the quantization lip without placing a
+floor across excavations.
+World units are treated as metres for display, not a source-game unit assertion.
+The shell follows the source BUILD profile; it is not a voxelization of every
+ornament on the Modern building meshes. Plants uprooted by a ground edit are
+removed from affected vegetation chunks. Textured terrain, vegetation, water,
+clouds and lighting come from the existing Modern system.
+
+Nearby characters use 96 cells per authored model height. Distance detail uses
+existing 64/40 goat and 64 archer skins with hysteresis, while a followed character
+keeps 96. Skins share the original rig, motion and contact correction. The archer's
+bow, string and arrow remain their approved separate meshes. Internal faces are
+removed only between cells with identical skin weights, preserving animated
+seams. Death snapshots skin cached cell centres directly rather than baking
+all cube vertices. Native death triggers fragmentation; custom sandbox balls
+currently damage local terrain/buildings, not native character health.
+
+Rubble is now a prewarmed pool of 768 independent boxes, with up to 192 spatial
+samples per emission and 64 activations per render frame. Source mass is
+represented by weighted samples; not every removed voxel is rendered and rubble
+volume is not conserved. Blocks are at most 0.20 units; the fireball uses 0.065
+cells. Gravity, contact, friction, rebound, sleeping and rest-based fading are
+physical. All debris sweeps against static geometry; debris-to-debris contact
+is discrete at 120 Hz. The intact ball uses continuous dynamic collision. Native
+gameplay stays at 30 Hz. Meshing/support work is spread over render frames.
+Local destruction is not written into native terrain, saves or AI pathfinding.
+Terrain contacts are retained in 32-unit tiles around the camera and active
+fragments, including pieces rolling away downhill. Camera cuts do not cook the
+empty space between old debris and the new view. Source terrain revisions refresh
+only tiles whose sampled heights changed. Continuous static contact applies to
+all fragment sizes; an actual triangle-mesh crossing test covers 2.5, 12.5 and
+20 cm cubes at 30 m/s. This avoids the expensive all-pairs dynamic CCD mode.
+
+Builds use `BuildVoxelPlayer.Build` as below, with GPU batched skinning scoped to
+this player. `-mc-voxel-modern` composes it with the normal native runtime.
+`Tools/capture-voxel-sandbox.py --arguments-json PATH --backend compositor`
+accepts the installed native resource/replay arguments. Add `--benchmark` to
+measure without capture readback or `--expect-native-death` for the death case.
+The world validator requires three completed edits, both house and ground removal,
+and a collision probe showing an actual crater. All Modern runs reject active
+debris below the unchanged terrain; the editable crater is excluded from that
+height test. Character runs require advancing
+native ticks. `Tools/check-voxel-controls.py --arguments-json PATH` tests real
+keyboard movement, camera switching, a physical impact and exit on a private
+X display. Recording uses an authored camera/shot sequence; character behaviour
+comes from the running game. Offline video timings are not frame-rate evidence.
+
+## Modern refinement verification
+
+Evidence root: `/mnt/pinokio-shared/magiccarpet-voxel-modern-20261107/`.
+Installed `player-15` contains the actual reduced Goat96 mesh (305,872 vertices,
+down from 510,600) and Archer96 (294,192, down from 316,080). The importer checks
+the stored face count; an earlier CopySerialized failure was caught by the
+topology test and repaired before qualification. Original generated assets were
+backed up. Matching-weight face seams and death poses are checked independently.
+
+The 36.5-second [phone demo](http://3090.bumblebee-hue.ts.net:8095/avatar-lab/voxels-fine/index.html)
+has chapter controls, a 19 MB phone copy and an 80 MB full-quality copy. The local
+master is `level1-fine-voxels-checked.mp4` under the evidence root. Final player-15
+frames inspected include goat 100, archer 40/60, native death 25, and world
+285/690/820: intact fine skins, coherent draw/release, separate fragments,
+closed terrain seam, an open crater and settling/fade. Native death's first
+frames retain the conspicuous original flame sprite; native combat effects have
+not all been voxelized. This is a known visual limitation, not hidden in the video.
+
+`installed-controls-15/controls.json` records actual F2/B/W/Space/F10 input through
+the installed launcher, including camera movement and a real impact. The
+launcher verifies the installed payload against `voxel-install.json`. Both
+`Builds/Voxels` (first sandbox) and `Builds/CharactersGameplay` (approved Modern)
+retain their previous targets. The artifact receipt hashes the native plugin
+independently and records all C# inputs, including unused pre-existing untracked
+SteamWake sources; those unrelated files are not included in this delivery commit.
+
+`tests-4.xml`: 93/93 relevant tests passed. After the final terrain-height cache,
+`tests-5.xml`: 29/29 affected terrain, hoof-contact and integration tests passed.
+These sets overlap and should not be added as a unique test total. The cache
+stores the exact periodic detail lattice and invalidates on terrain changes;
+it does not simplify terrain shape. Its mutation test compares warmed sampling
+against a freshly constructed terrain across height, material, water and level
+generation changes. Existing rendered-triangle agreement checks still pass.
+
+`tests-11.xml`: 18/18 focused physics, sparse contact, source-height refresh and
+seam tests passed. The physical seam regression drives a 6.5 cm box horizontally
+below the outer terrain height at 120 Hz, requiring the lip to stop it while a
+vertical ray confirms the patch interior stays open. Earlier actual-player
+failures are retained: player-10 had 92 fragments beyond camera-only contacts;
+player-14's remaining fragments last contacted the two patch edges before
+escaping beneath the uncollidable visual seam. Qualification now rejects any
+active fragment more than 0.25 units below the unchanged surrounding terrain.
+
+Unthrottled 1280×960 runs on the RTX 3090, private GPU compositor, no image readback:
+
+| Scenario | Median ms | p95 ms | Worst frame ms |
+|---|---:|---:|---:|
+| House/ground, player-15 | 25.27 | 33.55 | 88.48 |
+| House/ground, player-15 repeat | 26.87 | 39.25 | 95.25 |
+| Native goat death and debris, player-15 | 29.11 | 36.50 | 67.18 |
+
+Both world runs completed three edits: 1,077 house and 6,532 ground cells,
+with a collision-verified 2.125-unit crater. No emissions were dropped and zero
+active fragments were below surrounding terrain. The 120-Hz physics work's
+worst native turn was 9.81 / 23.47 ms; the earlier packed
+ContinuousDynamic debris candidate reached 168 ms. Body-to-body CCD was the
+destruction spike, not chunk meshing. Whole-frame outliers remain; this is not
+a hitch-free or 60-fps claim. These native-game world runs are about 37–40 fps median,
+not the 239 fps of the simpler first experiment without the full native game.
+In the isolated player-8/player-9 cache comparison, the goat camera previously
+measured 50.52 ms median; caching terrain contacts
+reduced character-render median from 6.78 to 0.85 ms and full frame median to
+28.20 ms. GPU skinning alone and hidden-face reduction were not the main CPU fix.
+
+UBS was run on worker and integrator changes. C# semantic analysis remains
+partial. Whole-file actor warnings concern existing dictionary paths and structs,
+not a discriminating candidate scan. The final terrain scan had zero critical
+or warning findings within its partial scope. Python's executable-selection
+warning is the intentional `--player` argument with an argv array and no shell;
+processes are terminated/waited in finally blocks, and JSON errors reach the
+outer fatal handler. Focused compilation, tests, changed-hunk review and actual
+player checks provide the main evidence. No Rust source was changed for this
+iteration; the native plugin is the accepted `dc5a1153…2288d` artifact.
+The final seam scan exits 2 for unresolved C# callable/null effects; it is not a
+clean semantic scan. Its two First() warnings are intentional test fixture lookups
+that must fail if the required retained collider is absent.
+
+## First accepted experiment — preserved installation
+
 
 This is a separate, owner-local Unity physics experiment. The accepted Modern
 and Original players, their assets and campaign saves remain available. It does
 not replace Rust's authoritative campaign simulation or implement campaign
 terrain persistence/network replication.
 
-Run `research/private/remc2-unity-native/run-voxels.sh` from the repository root.
+Run `research/private/remc2-unity-native/run-voxels.sh --classic` from the repository root.
 WASD moves the camera; Q/E moves down/up; right-drag looks; click or Space shoots.
 1/2/3 rebuild with 0.50 / 0.33 / 0.25-unit terrain/building voxels (fine is the default); R resets;
 F10 or Escape exits. All three goat skins are visible together: 24/40/64 cells

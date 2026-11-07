@@ -53,6 +53,8 @@ namespace MagicCarpet.Native
         private readonly byte[] angles = new byte[PlaneSize];
         private readonly float[] landform = new float[PlaneSize];
         private readonly bool[] landformDirty = new bool[PlaneSize];
+        private readonly float[] detailHeights = new float[512 * 512];
+        private readonly bool[] detailHeightValid = new bool[512 * 512];
         private readonly bool[] dirty = new bool[Sections * Sections];
         private readonly Plane[] frustumPlanes = new Plane[6];
         private static readonly int WaveStrength = Shader.PropertyToID("_WaveStrength");
@@ -65,6 +67,8 @@ namespace MagicCarpet.Native
         internal int VisibleFarCopies { get; private set; }
         // Values up to one world period are supported by the 3x3 copy window.
         internal float ViewDistance { get; set; } = 320f;
+        // Set before the first Update; local voxel physics replaces this aligned patch.
+        internal Bounds? VoxelPatch { get; set; }
 
         internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null)
         {
@@ -136,6 +140,7 @@ namespace MagicCarpet.Native
             if (changed) unchecked { Revision++; }
             if (changed) sourceShore?.Update(heights,types,angles,Revision);
             if (changed) ReconstructLandform();
+            if (changed) Array.Clear(detailHeightValid,0,detailHeightValid.Length);
             for (var i = 0; i < sections.Length; i++)
             {
                 if (!dirty[i]) continue;
@@ -400,6 +405,20 @@ namespace MagicCarpet.Native
                 if (top) AddFan(target, center, ref previous, a + 1);
                 AddFan(target, center, ref previous, a);
             }
+            if(VoxelPatch.HasValue)
+            {
+                var patch=VoxelPatch.Value;
+                void Cut(List<int> list) {
+                    int write=0;
+                    for(int read=0;read<list.Count;read+=3){
+                        var p=(vertices[list[read]]+vertices[list[read+1]]+vertices[list[read+2]])/3+new Vector3(baseX*CellSize,0,baseZ*CellSize);
+                        if(p.x>patch.min.x&&p.x<patch.max.x&&p.z>patch.min.z&&p.z<patch.max.z)continue;
+                        list[write++]=list[read];list[write++]=list[read+1];list[write++]=list[read+2];
+                    }
+                    if(write<list.Count)list.RemoveRange(write,list.Count-write);
+                }
+                Cut(land);Cut(farLand);Cut(shore);
+            }
             SetMesh(mesh, vertices, normals, colors, uv, land, water);
             SetMesh(farMesh, vertices, normals, colors, uv, farLand, farWater);
             shoreMesh.Clear();shoreMesh.vertices=vertices;shoreMesh.normals=normals;
@@ -571,6 +590,16 @@ namespace MagicCarpet.Native
         }
 
         private float DetailHeight(int x, int z)
+        {
+            // Mesh construction and every hoof/contact sample consume the same
+            // periodic height lattice. Relief depends only on the current
+            // terrain snapshot, so don't recompute its noise per contact point.
+            int key=(x&511)+(z&511)*512;
+            if(!detailHeightValid[key]){detailHeights[key]=ComputeDetailHeight(x,z);detailHeightValid[key]=true;}
+            return detailHeights[key];
+        }
+
+        private float ComputeDetailHeight(int x, int z)
         {
             var original = BaseHalfHeight(x, z);
             var ix = x >> 1;

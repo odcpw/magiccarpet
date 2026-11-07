@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -53,10 +54,21 @@ namespace MagicCarpet.Native
         private int centerZ = int.MinValue;
         private ulong terrainRevision = ulong.MaxValue;
         private bool dirty = true;
+        private bool residencyChanged;
         private bool disposed;
         // Sandbox architecture owns its footprint. Exclusion is evaluated only
         // when retained chunks are built, never as an extra per-frame draw scan.
         internal Func<float,float,bool> ExcludedFootprint { get; set; }
+
+        internal void InvalidateFootprint(Bounds area)
+        {
+            // Rebuild only retained chunks affected by a local excavation.
+            // The updated exclusion predicate removes uprooted instances.
+            var keys=chunks.Keys.Where(key=>key.x*ChunkSize<=area.max.x && (key.x+1)*ChunkSize>=area.min.x &&
+                key.y*ChunkSize<=area.max.z && (key.y+1)*ChunkSize>=area.min.z).ToArray();
+            foreach(var key in keys)chunks.Remove(key);
+            residencyChanged=true;
+        }
 
         internal long SubmittedTriangleCount { get; private set; }
         internal long ShadowOnlyTriangleCount { get; private set; }
@@ -557,7 +569,7 @@ namespace MagicCarpet.Native
             if (disposed) return;
             var x = Mathf.FloorToInt(position.x / ChunkSize);
             var z = Mathf.FloorToInt(position.z / ChunkSize);
-            if (dirty || terrainRevision != terrain.Revision || x != centerX || z != centerZ)
+            if (dirty || residencyChanged || terrainRevision != terrain.Revision || x != centerX || z != centerZ)
             {
                 if (dirty || terrainRevision != terrain.Revision) chunks.Clear();
                 centerX = x;
@@ -565,6 +577,7 @@ namespace MagicCarpet.Native
                 UpdateChunks();
                 terrainRevision = terrain.Revision;
                 dirty = false;
+                residencyChanged = false;
             }
         }
 

@@ -23,12 +23,20 @@ namespace MagicCarpet.Native.Editor
             const string path = "Assets/Scenes/VoxelSandbox.unity";
             EditorSceneManager.SaveScene(scene, path);
             var previous = GraphicsSettings.defaultRenderPipeline;
+            var previousDeformation = PlayerSettings.meshDeformation;
             try {
                 GraphicsSettings.defaultRenderPipeline = Resources.Load<UniversalRenderPipelineAsset>("ModernPipeline");
+                // Fine voxel skins reuse the approved rigs but contain many
+                // more vertices. Deform them on the GPU in this experimental
+                // player without changing the normal campaign build settings.
+                PlayerSettings.meshDeformation = MeshDeformation.GPUBatched;
                 var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions { scenes = new[]{path}, locationPathName=output, target=BuildTarget.StandaloneLinux64, options=BuildOptions.None });
                 if(report.summary.result != BuildResult.Succeeded) throw new BuildFailedException("Voxel player build failed");
                 Debug.Log("MC_VOXEL_PLAYER_BUILT " + output);
-            } finally { GraphicsSettings.defaultRenderPipeline=previous; }
+            } finally {
+                GraphicsSettings.defaultRenderPipeline=previous;
+                PlayerSettings.meshDeformation=previousDeformation;
+            }
         }
     }
 }

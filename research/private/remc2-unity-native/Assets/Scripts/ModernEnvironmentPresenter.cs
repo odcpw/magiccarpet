@@ -16,6 +16,7 @@ namespace MagicCarpet.Native
         internal bool SandboxActive => Ready && sandbox != null;
         private readonly ModernEnvironmentSandbox sandbox;
         private readonly ModernBuildings buildings;
+        private readonly Voxels.VoxelModernWorld voxelWorld;
         private readonly GameObject root;
         private readonly Camera camera;
         private readonly Light moon;
@@ -181,6 +182,12 @@ namespace MagicCarpet.Native
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
             nightLighting = new ModernNightLighting(root.transform);
             waterSystem = new ModernWaterSystem(root.transform, terrain, nightLighting, landMaterial);
+            if (Voxels.VoxelModernWorld.Requested)
+            {
+                voxelWorld=root.AddComponent<Voxels.VoxelModernWorld>();
+                voxelWorld.Configure(terrain,vegetation,camera,landMaterial,waterSystem,nightLighting,moon,skyMaterial);
+                vegetation.ExcludedFootprint=voxelWorld.ExcludesVegetation;
+            }
             if (ModernEnvironmentSandbox.Requested)
             {
                 buildings=new ModernBuildings(root.transform,terrain);
@@ -245,6 +252,7 @@ namespace MagicCarpet.Native
                 terrainSequence = state.mutationSequence;
             }
             ModernCapture.EndMeasurement("modern_terrain_observe", terrainStart);
+            voxelWorld?.Observe(session);
             var pose = snapshot.source_camera_pose;
             var wrapped = new Vector3(pose.x / 64f, pose.z / 64f, pose.y / 64f);
             if (positioned)
@@ -294,12 +302,17 @@ namespace MagicCarpet.Native
             else camera.transform.SetPositionAndRotation(ModernCapture.ReviewPosition ?? Vector3.Lerp(camera.transform.position, targetPosition, blend),
                     ModernCapture.ReviewPosition.HasValue ? ModernCapture.ReviewRotation : Quaternion.Slerp(camera.transform.rotation, targetRotation, blend));
             if (sandbox == null) entities.ReviewCamera(camera);
+            voxelWorld?.Render();
             waterSystem.Update(camera);
             buildings?.Render(camera.transform.position);
             nightLighting.Render(camera);
             terrain.Present(camera.transform.position);
+            var vegetationStart=ModernCapture.BeginMeasurement();
             vegetation.Render(camera);
+            ModernCapture.EndMeasurement("vegetation_render",vegetationStart);
+            var characterRenderStart=ModernCapture.BeginMeasurement();
             if (sandbox == null) entities.Render(camera);
+            ModernCapture.EndMeasurement("entities_render",characterRenderStart);
             var reflectionStart = ModernCapture.BeginMeasurement();
             waterReflection.Render(camera, vegetation, terrain);
             ModernCapture.EndMeasurement("water_reflection", reflectionStart);
@@ -313,6 +326,7 @@ namespace MagicCarpet.Native
 
         internal void DrawHud(string instruction)
         {
+            if (voxelWorld != null) { voxelWorld.Draw(); return; }
             if (sandbox != null) { sandbox.Draw(); return; }
             waterSystem?.DrawReviewLabel();
             if (snapshot?.player_vitals == null || ModernCapture.HideHud) return;

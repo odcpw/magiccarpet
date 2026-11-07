@@ -25,11 +25,16 @@ def wait_for(predicate, seconds, message):
 def session(args):
     output = args.output.resolve()
     log = output/'player.log'
+    extra=json.loads(args.arguments_json.read_text()) if args.arguments_json else []
+    if not isinstance(extra,list) or not all(isinstance(value,str) for value in extra):
+        raise ValueError('Launch arguments must be a JSON string array')
+    modern=args.modern or '-mc-voxel-modern' in extra
     player = subprocess.Popen([str(args.player.resolve()),'-force-vulkan','-screen-fullscreen','0',
-                               '-screen-width','1280','-screen-height','960','-logFile',str(log)])
+                               '-screen-width','1280','-screen-height','960','-logFile',str(log),*extra])
     display = None
     try:
-        wait_for(lambda: log.exists() and 'MC_VOXEL_READY' in log.read_text(errors='replace'), 60, 'Player not ready')
+        ready='MC_VOXEL_MODERN_READY' if modern else 'MC_VOXEL_READY'
+        wait_for(lambda: log.exists() and ready in log.read_text(errors='replace'), 120, 'Player not ready')
         time.sleep(1)
         x = C.CDLL('libX11.so.6')
         xt = C.CDLL('libXtst.so.6')
@@ -77,7 +82,8 @@ def session(args):
         def screenshot(name):
             subprocess.run(['import','-display',os.environ['DISPLAY'],'-window',str(window),str(output/(name+'.png'))],check=True,timeout=15)
         screenshot('initial')
-        for i,(name,size) in enumerate([('3','0.25'),('1','0.5'),('2','0.3333333'),('r','0.3333333')],1):
+        presets=[] if modern else [('3','0.25'),('1','0.5'),('2','0.3333333'),('r','0.3333333')]
+        for i,(name,size) in enumerate(presets,1):
             key(name)
             wait_for(lambda:log.read_text(errors='replace').count('MC_VOXEL_RESET')>=i,30,'Reset key did not rebuild scene')
             resets=[line for line in log.read_text(errors='replace').splitlines() if line.startswith('MC_VOXEL_RESET')]
@@ -85,18 +91,24 @@ def session(args):
                 raise RuntimeError('Preset key selected wrong voxel size: '+resets[-1])
             time.sleep(.75)
             screenshot('key-'+name)
-        key('w',.35)
+        if modern:
+            key('F2');wait_for(lambda:'MC_VOXEL_VIEW game' in log.read_text(errors='replace'),5,'F2 did not restore game view')
+            key('b');wait_for(lambda:'MC_VOXEL_VIEW free' in log.read_text(errors='replace'),5,'B did not restore sandbox view')
+        key('w',.7 if modern else .35)
         key('space')
-        wait_for(lambda:'MC_VOXEL_IMPACT' in log.read_text(errors='replace'),8,'Space did not produce an impact')
+        impact='MC_VOXEL_MODERN_IMPACT' if modern else 'MC_VOXEL_IMPACT'
+        wait_for(lambda:impact in log.read_text(errors='replace'),20,'Space did not produce an impact')
         screenshot('impact')
         key('F10')
         player.wait(timeout=10)
         text=log.read_text(errors='replace')
-        if player.returncode or 'MC_VOXEL_EXIT camera=(21.00, 9.00, -15.00)' in text or 'MC_VOXEL_EXIT' not in text:
+        exit_marker='MC_VOXEL_MODERN_EXIT' if modern else 'MC_VOXEL_EXIT'
+        unchanged='camera=(188.000, 60.500, 738.000)' if modern else 'MC_VOXEL_EXIT camera=(21.00, 9.00, -15.00)'
+        if player.returncode or unchanged in text or exit_marker not in text:
             raise RuntimeError('Exit or movement check failed')
         receipt={'schema':'mc-voxel-controls/v1','status':'passed','actual_desktop':False,
-                 'inputs':['3','1','2','R','W','Space','F10'],'reset_count':text.count('MC_VOXEL_RESET'),
-                 'impact_count':text.count('MC_VOXEL_IMPACT'),'player':str(args.player.resolve())}
+                 'inputs':['F2','B','W','Space','F10'] if modern else ['3','1','2','R','W','Space','F10'],'reset_count':text.count('MC_VOXEL_RESET'),
+                 'impact_count':text.count(impact),'player':str(args.player.resolve())}
         (output/'controls.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
         print(json.dumps(receipt))
     finally:
@@ -112,6 +124,8 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--player',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--arguments-json',type=Path)
+    parser.add_argument('--modern',action='store_true',help='Check Modern controls when the launcher supplies its own native arguments')
     parser.add_argument('--session',action='store_true',help=argparse.SUPPRESS)
     args=parser.parse_args()
     if args.session:
@@ -125,6 +139,8 @@ def main():
                QT_QPA_PLATFORM='offscreen',XDG_SESSION_TYPE='wayland',SDL_VIDEODRIVER='x11')
     alsa=runtime/'alsa.conf';alsa.write_text('pcm.!default { type null }\n',encoding='utf-8');env['ALSA_CONFIG_PATH']=str(alsa)
     command=[sys.executable,str(Path(__file__).resolve()),'--session','--player',str(args.player.resolve()),'--output',str(args.output)]
+    if args.arguments_json:command+=['--arguments-json',str(args.arguments_json.resolve())]
+    if args.modern:command+=['--modern']
     read_fd,write_fd=os.pipe();display=None
     try:
         with (args.output/'display.log').open('w',encoding='utf-8') as log:
@@ -136,7 +152,7 @@ def main():
         if not number.isdigit():raise RuntimeError('Invalid private display')
         env.update(DISPLAY=':'+number,XDG_SESSION_TYPE='x11')
         with (args.output/'session.log').open('w',encoding='utf-8') as log:
-            subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=180)
+            subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=240)
     finally:
         os.close(read_fd)
         if write_fd is not None:os.close(write_fd)

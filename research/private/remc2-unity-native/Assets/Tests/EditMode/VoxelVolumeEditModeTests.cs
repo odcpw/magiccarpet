@@ -156,18 +156,27 @@ namespace MagicCarpet.Native.Tests
             }
             using (var local = new VoxelVolume(parent.transform, Vector3.zero, size, 1, material))
             using (var full = new VoxelVolume(parent.transform, Vector3.zero, size, 1, material))
+            using (var incremental = new VoxelVolume(parent.transform, Vector3.zero, size, 1, material))
             {
                 foreach (Vector3Int p in cells)
                 {
                     local.SetCell(p.x, p.y, p.z, Stone);
                     full.SetCell(p.x, p.y, p.z, Stone);
+                    incremental.SetCell(p.x, p.y, p.z, Stone);
                 }
-                local.Build(); full.Build();
+                local.Build(); full.Build(); incremental.Build();
                 Assert.That(local.DetachUnsupported(), Is.Empty, "Scenario starts supported.");
                 Assert.That(full.DetachUnsupported(), Is.Empty, "Scenario starts supported.");
+                Assert.That(incremental.DetachUnsupported(), Is.Empty, "Scenario starts supported.");
                 Assert.That(local.RemoveSphere(center, radius).Count, Is.EqualTo(full.RemoveSphere(center, radius).Count));
+                incremental.RemoveSphere(center, radius);
                 var actual = local.DetachAffectedUnsupported();
                 var expected = full.DetachUnsupported();
+                var support = incremental.BeginDetachAffectedUnsupported();
+                Assert.Throws<InvalidOperationException>(() => incremental.RemoveSphere(center, radius));
+                int steps = 0;
+                while (!support.Complete && steps++ < 10000) support.Step(1);
+                Assert.That(support.Complete, Is.True, "Budgeted support search must finish.");
                 Assert.That(actual.Count, Is.EqualTo(expectedGroups));
                 Assert.That(actual.Sum(group => group.Count), Is.EqualTo(expectedCells));
                 // Compare components as sets: flood and hash iteration order is irrelevant.
@@ -175,8 +184,10 @@ namespace MagicCarpet.Native.Tests
                     .Select(group => string.Join(";", group.Select(c => c.Position.ToString("R")).OrderBy(s => s)))
                     .OrderBy(s => s).ToArray();
                 CollectionAssert.AreEqual(Canonical(expected), Canonical(actual));
+                CollectionAssert.AreEqual(Canonical(expected), Canonical(support.Groups));
                 Assert.That(local.DetachUnsupported(), Is.Empty, "No affected island remains.");
                 Assert.That(local.DetachAffectedUnsupported(), Is.Empty, "The removal frontier is consumed.");
+                Assert.That(incremental.DetachUnsupported(), Is.Empty, "Budgeted search leaves no affected island.");
             }
         }
 
@@ -203,6 +214,58 @@ namespace MagicCarpet.Native.Tests
             filters = parent.GetComponentsInChildren<MeshFilter>();
             Assert.That(filters.Length, Is.EqualTo(1));
             Assert.That(filters[0].sharedMesh.triangles.Length, Is.EqualTo(36));
+        }
+
+        [TestCase(.125f)]
+        [TestCase(1f / 6f)]
+        public void IncrementalSphereMatchesSynchronousResultAndCollidersEachStep(float cell)
+        {
+            parent.layer = 8;
+            var size = new Vector3Int(48, 1, 16);
+            var other = new GameObject("Synchronous comparison");
+            other.layer = 9;
+            var offset = new Vector3(100, 0, 0);
+            try
+            {
+                using (var stepped = new VoxelVolume(parent.transform, Vector3.zero, size, cell, material))
+                using (var synchronous = new VoxelVolume(other.transform, offset, size, cell, material))
+                {
+                    for (int z = 0; z < size.z; z++) for (int x = 0; x < size.x; x++)
+                    {
+                        stepped.SetCell(x, 0, z, Stone);
+                        synchronous.SetCell(x, 0, z, Stone);
+                    }
+                    stepped.Build(); synchronous.Build();
+                    Vector3 center = new Vector3(16 * cell, .5f * cell, 8 * cell);
+                    float radius = 3.1f * cell;
+                    var expected = synchronous.RemoveSphere(center + offset, radius);
+                    var edit = stepped.BeginRemoveSphere(center, radius);
+                    Assert.Throws<InvalidOperationException>(() => stepped.RemoveSphere(center, radius));
+                    Assert.Throws<InvalidOperationException>(() => stepped.DetachAffectedUnsupported());
+                    int steps = 0;
+                    while (!edit.Complete)
+                    {
+                        edit.Step(1); steps++;
+                        Physics.SyncTransforms();
+                        foreach (var fragment in edit.Removed)
+                        {
+                            var ray = new Ray(fragment.Position + Vector3.up * 2, Vector3.down);
+                            Assert.That(Physics.Raycast(ray, 4, 1 << 8), Is.False, "Every committed hole must already be reflected in collision.");
+                        }
+                        Assert.That(Physics.Raycast(new Ray(new Vector3(.5f * cell, 2, .5f * cell), Vector3.down), 4, 1 << 8), Is.True);
+                    }
+                    Assert.That(steps, Is.GreaterThan(1));
+                    Assert.That(edit.ScannedChunks, Is.EqualTo(steps));
+                    Assert.That(edit.RebuiltChunks, Is.GreaterThan(0));
+                    Assert.That(edit.MaximumStepMilliseconds, Is.GreaterThanOrEqualTo(0));
+                    var expectedPositions = expected.Select(c => c.Position - offset).ToArray();
+                    Assert.That(edit.Removed.Count, Is.EqualTo(expectedPositions.Length));
+                    foreach (var p in expectedPositions)
+                        Assert.That(edit.Removed.Any(c => (c.Position - p).sqrMagnitude < 1e-8f), Is.True);
+                    Assert.That(stepped.DetachAffectedUnsupported(), Is.Empty);
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(other); }
         }
     }
 }

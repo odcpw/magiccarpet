@@ -22,6 +22,7 @@ namespace MagicCarpet.Native
             internal float TerrainSlope;
             internal Renderer[] Renderers;
             internal int RenderedFrame = -1;
+            internal bool VoxelExploded;
             internal bool IsDying => Goat != null ? Goat.IsDying : Archer.IsDying;
             internal GameObject Root => Goat != null ? Goat.Root : Archer.Root;
             internal bool Finished => Goat != null ? Goat.DeathFinished : Archer.DeathFinished;
@@ -51,6 +52,7 @@ namespace MagicCarpet.Native
         private readonly List<Actor> dying = new();
         private readonly Dictionary<ushort, NativeSim.CampaignCharacterState> observed = new();
         private ModernCharacterAsset goatAsset, archerAsset;
+        private Voxels.VoxelGoatAsset goatFine,goatMiddle,goatFar,archerFine,archerFar;
         private GameObject arrowTemplate;
         private ulong generation = ulong.MaxValue, tick = ulong.MaxValue;
         private bool logged;
@@ -62,6 +64,7 @@ namespace MagicCarpet.Native
         private Quaternion lastReviewRotation;
         private Camera renderedCamera;
         private float reviewDistance;
+        private readonly Plane[] voxelViewPlanes=new Plane[6];
 
         internal ModernCharacterActors(Transform parent, ModernTerrainMesh terrain)
         {
@@ -214,11 +217,13 @@ namespace MagicCarpet.Native
                     {
                         goatAsset ??= Load("Goat");
                         actor.Goat = new ModernGoatPresenter(goatAsset, parent, 150f / 64);
+                        if(Voxels.VoxelModernWorld.Requested){PrepareVoxelDetails();actor.Goat.AttachVoxelSkin(goatFine);}
                     }
                     else
                     {
                         archerAsset ??= Load("Archer");
                         actor.Archer = new ModernArcherPresenter(archerAsset, parent, 250f / 64);
+                        if(Voxels.VoxelModernWorld.Requested){PrepareVoxelDetails();actor.Archer.AttachVoxelSkin(archerFine);}
                     }
                     actors.Add(state.entityIndex, actor);
                     actor.Root.transform.SetPositionAndRotation(
@@ -294,23 +299,34 @@ namespace MagicCarpet.Native
             renderedCamera = camera;
             var dt = Time.deltaTime;
             var followed = Followed();
+            if(Voxels.VoxelModernWorld.Requested)GeometryUtility.CalculateFrustumPlanes(camera,voxelViewPlanes);
             foreach (var actor in actors.Values)
             {
                 var sampled = actor.RenderedFrame == Time.frameCount;
                 var position = Interpolated(actor);
+                // The voxel workbench camera can be far from the native player.
+                // Continue observing every native actor, but don't evaluate/IK
+                // distant presentation rigs that cannot contribute to this view.
+                if(Voxels.VoxelModernWorld.Requested && actor!=followed &&
+                    (Delta(camera.transform.position,position).sqrMagnitude>14400 ||
+                     !GeometryUtility.TestPlanesAABB(voxelViewPlanes,new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,new Vector3(12,16,12)))))
+                { actor.Root.SetActive(false); continue; }
+                if(Voxels.VoxelModernWorld.Requested)SetVoxelDetail(actor,actor==followed?0:Delta(camera.transform.position,position).magnitude);
                 Place(actor, position, InterpolatedYaw(actor), camera);
                 // The diagnostic camera may be outside the native player's
                 // admission list. Admit only its selected source actor here;
                 // normal play and native visibility rules are unchanged.
-                actor.Root.SetActive((actor.Visible || actor == followed || actor.IsDying && actor.WasVisible) && ModernCapture.EntityVisibility != 1);
+                actor.Root.SetActive((actor.Visible || actor == followed || actor.IsDying && actor.WasVisible || Voxels.VoxelModernWorld.Requested&&actor.State.active!=0) && ModernCapture.EntityVisibility != 1);
                 actor.Render(dt);
                 if (!sampled && actor.Goat != null && actor.Root.activeSelf)
                     actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleHeight);
+                FractureIfDead(actor);
             }
             for (var i = dying.Count - 1; i >= 0; i--)
             {
                 var actor = dying[i]; Place(actor, actor.To, actor.ToYaw, camera);
                 actor.Root.SetActive((actor.WasVisible || actor == followed) && ModernCapture.EntityVisibility != 1); actor.Render(dt);
+                FractureIfDead(actor);
                 if (actor.Finished) { actor.Dispose(); dying.RemoveAt(i); }
             }
             foreach (var arrow in arrows.Values)
@@ -328,6 +344,35 @@ namespace MagicCarpet.Native
                 position += arrow.BirthOffset * offsetWeight;
                 arrow.Root.transform.SetPositionAndRotation(Wrap(position, camera.transform.position), arrow.Rotation);
             }
+        }
+
+        private static void FractureIfDead(Actor actor)
+        {
+            if(!Voxels.VoxelModernWorld.Requested)return;
+            if(actor.IsDying&&!actor.VoxelExploded&&actor.Root.activeSelf&&Voxels.VoxelModernWorld.Active!=null)
+            {
+                var cells=actor.Goat!=null?actor.Goat.SnapshotVoxelFragments():actor.Archer.SnapshotVoxelFragments();
+                actor.VoxelExploded=Voxels.VoxelModernWorld.Active.Explode(cells,Delta(actor.From,actor.To)/Mathf.Max(actor.Interval,.0333f),actor.Root.transform.position,actor.State.entityIndex,actor.State.model);
+            }
+            if(actor.VoxelExploded)actor.Root.SetActive(false);
+        }
+
+        private void PrepareVoxelDetails()
+        {
+            if(goatFine!=null)return;
+            Voxels.VoxelGoatAsset LoadDetail(string name,int resolution) {
+                var asset=Resources.Load<Voxels.VoxelGoatAsset>($"ModernCharacters/{name}/Voxels/{name}{resolution}");
+                Voxels.VoxelCharacterSkin.PrepareDetail(asset);return asset;
+            }
+            goatFine=LoadDetail("Goat",96);goatMiddle=LoadDetail("Goat",64);goatFar=LoadDetail("Goat",40);
+            archerFine=LoadDetail("Archer",96);archerFar=LoadDetail("Archer",64);
+        }
+        private void SetVoxelDetail(Actor actor,float distance)
+        {
+            int current=actor.Goat!=null?actor.Goat.VoxelResolution:actor.Archer.VoxelResolution;
+            bool fine=distance<(current==96?16:12);
+            if(actor.Goat!=null)actor.Goat.SetVoxelDetail(fine?goatFine:distance<(current==40?32:40)?goatMiddle:goatFar);
+            else actor.Archer.SetVoxelDetail(fine?archerFine:archerFar);
         }
 
         private void Place(Actor actor, Vector3 position, float yaw, Camera camera)

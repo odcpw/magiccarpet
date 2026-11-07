@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import select
 import signal
@@ -30,6 +31,8 @@ def main():
     parser.add_argument('--benchmark', action='store_true')
     parser.add_argument('--size', type=float, default=.25)
     parser.add_argument('--goat-target', type=int, choices=(0,1,2), default=1)
+    parser.add_argument('--arguments-json', type=Path, help='Verified native launch argument array for the Modern voxel mode')
+    parser.add_argument('--expect-native-death', action='store_true', help='Require a native-driven character death and nonempty physical debris')
     parser.add_argument('--diagnostic', choices=('no-goats','no-shadows','no-render'))
     parser.add_argument('--graphics-api', choices=('vulkan','glcore'), default='vulkan')
     parser.add_argument('--backend', choices=('xvfb','compositor'), default='xvfb')
@@ -54,9 +57,10 @@ def main():
     player = display = None
     binary = args.player.resolve()
     managed = binary.parent / (binary.stem + '_Data') / 'Managed/MagicCarpet.Native.Runtime.dll'
+    native = binary.parent / (binary.stem + '_Data') / 'Plugins/x86_64/libsim_capi.so'
     def hashes():
         result = {}
-        for path in (binary, managed):
+        for path in (binary, managed, *([native] if args.arguments_json else [])):
             with path.open('rb') as stream:
                 result[str(path)] = hashlib.file_digest(stream, 'sha256').hexdigest()
         return result
@@ -85,6 +89,11 @@ def main():
                    '-mc-voxel-goat-target',str(args.goat_target),
                    '-mc-voxel-benchmark' if args.benchmark else '-mc-voxel-capture', str(output/'result')]
         receipt['command'] = command
+        if args.arguments_json:
+            extra=json.loads(args.arguments_json.read_text(encoding='utf-8'))
+            if not isinstance(extra,list) or not all(isinstance(x,str) for x in extra):
+                raise ValueError('Native arguments must be a string array')
+            command += extra
         if args.diagnostic:
             command += ['-mc-voxel-diagnostic', args.diagnostic]
         launch = command
@@ -110,8 +119,23 @@ def main():
             raise RuntimeError(f'Player exit {player.returncode}; inspect player.log')
         report_path = output/'result/report.json'
         report = json.loads(report_path.read_text(encoding='utf-8'))
-        if not args.diagnostic and (report['impacts'] != 4 or report['goatDeaths'] != 1 or report['removedCells'] <= 0):
-            raise RuntimeError('Runtime did not complete the four impacts and goat destruction; inspect report.json')
+        character_scene=args.arguments_json and '-mc-character-follow' in command
+        expected_impacts=3 if args.arguments_json else 4
+        if args.arguments_json and report['nativeTick'] <= report['firstNativeTick']:
+            raise RuntimeError('Native gameplay did not advance; inspect report.json')
+        if args.arguments_json and report.get('belowTerrain',-1) != 0:
+            raise RuntimeError('Active debris passed below its terrain contact surface')
+        if not args.diagnostic and not character_scene and (report['impacts'] != expected_impacts or (not args.arguments_json and report['goatDeaths'] != 1) or report['removedCells'] <= 0):
+            raise RuntimeError('Runtime did not complete its expected impacts and destruction; inspect report.json')
+        if args.arguments_json and not character_scene and not args.diagnostic:
+            if report.get('completedEdits') != 3 or report.get('editing', True) or report.get('groundRemoved', 0) <= 0 or report.get('houseRemoved', 0) <= 0 or report.get('craterDepth', 0) < .5:
+                raise RuntimeError('House/ground edits or physical crater check failed; inspect report.json')
+        if args.expect_native_death:
+            log=(output/'player.log').read_text(errors='replace')
+            slot=command[command.index('-mc-character-follow')+1] if character_scene else None
+            deaths=re.findall(r'MC_VOXEL_NATIVE_DEATH tick=\d+ slot=(\d+) model=\d+ cells=([1-9]\d*)',log)
+            if report['goatDeaths'] < 1 or report['sampled'] < 1 or not any(slot is None or found==slot for found,_ in deaths):
+                raise RuntimeError('Expected native character death did not emit physical voxels')
         if receipt['artifacts'] != hashes():
             raise RuntimeError('Player changed during run')
         if not args.benchmark:

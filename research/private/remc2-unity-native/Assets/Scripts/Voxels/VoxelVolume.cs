@@ -43,6 +43,8 @@ namespace MagicCarpet.Native.Voxels
         private readonly Dictionary<Vector3Int, Chunk> chunks = new Dictionary<Vector3Int, Chunk>();
         private readonly HashSet<Vector3Int> dirty = new HashSet<Vector3Int>();
         private readonly HashSet<Vector3Int> affected = new HashSet<Vector3Int>();
+        private SphereEdit activeEdit;
+        private SupportEdit activeSupport;
         private bool disposed;
 
         internal VoxelVolume(Transform parent, Vector3 origin, Vector3Int dimensions, float cellSize, Material material)
@@ -68,6 +70,7 @@ namespace MagicCarpet.Native.Voxels
         internal void SetCell(int x, int y, int z, Color32 color)
         {
             ThrowIfDisposed();
+            ThrowIfEditing();
             if (!Inside(x, y, z)) throw new ArgumentOutOfRangeException(nameof(x), "Cell is outside the volume.");
             int index = Index(x, y, z);
             if (occupied[index] && colors[index].Equals(color)) return;
@@ -86,43 +89,122 @@ namespace MagicCarpet.Native.Voxels
 
         internal List<VoxelFragment> RemoveSphere(Vector3 worldCenter, float radius)
         {
+            SphereEdit edit = BeginRemoveSphere(worldCenter, radius);
+            while (!edit.Complete) edit.Step(int.MaxValue);
+            return edit.Removed;
+        }
+
+        // Each step commits at most maxChunks scan chunks and synchronously
+        // refreshes every affected mesh/collider before returning. Other edits
+        // must wait until Complete, when support can be checked on the result.
+        internal SphereEdit BeginRemoveSphere(Vector3 worldCenter, float radius)
+        {
             ThrowIfDisposed();
+            ThrowIfEditing();
             if (float.IsNaN(radius) || float.IsInfinity(radius) || radius < 0)
                 throw new ArgumentOutOfRangeException(nameof(radius));
+            if (!float.IsFinite(worldCenter.x) || !float.IsFinite(worldCenter.y) || !float.IsFinite(worldCenter.z))
+                throw new ArgumentOutOfRangeException(nameof(worldCenter));
+            if (dirty.Count != 0) Build();
             affected.Clear();
-            var removed = new List<VoxelFragment>();
-            Vector3 p = (worldCenter - origin) / cellSize - Vector3.one * 0.5f;
-            float r = radius / cellSize;
-            int minX = Mathf.Max(0, Mathf.CeilToInt(p.x - r));
-            int minY = Mathf.Max(0, Mathf.CeilToInt(p.y - r));
-            int minZ = Mathf.Max(0, Mathf.CeilToInt(p.z - r));
-            int maxX = Mathf.Min(dimensions.x - 1, Mathf.FloorToInt(p.x + r));
-            int maxY = Mathf.Min(dimensions.y - 1, Mathf.FloorToInt(p.y + r));
-            int maxZ = Mathf.Min(dimensions.z - 1, Mathf.FloorToInt(p.z + r));
-            float r2 = radius * radius;
-            for (int z = minZ; z <= maxZ; z++)
-            for (int y = minY; y <= maxY; y++)
-            for (int x = minX; x <= maxX; x++)
+            var edit = new SphereEdit(this, worldCenter, radius);
+            if (!edit.Complete) activeEdit = edit;
+            return edit;
+        }
+
+        internal sealed class SphereEdit
+        {
+            private readonly VoxelVolume volume;
+            private readonly Vector3 center;
+            private readonly float radiusSquared;
+            private readonly Vector3Int min, max, firstChunk, lastChunk;
+            private int chunkX, chunkY, chunkZ;
+            internal readonly List<VoxelFragment> Removed = new List<VoxelFragment>();
+            internal bool Complete { get; private set; }
+            internal int ScannedChunks { get; private set; }
+            internal int RebuiltChunks { get; private set; }
+            internal double ScanMilliseconds { get; private set; }
+            internal double MeshColliderMilliseconds { get; private set; }
+            internal double MaximumStepMilliseconds { get; private set; }
+
+            internal SphereEdit(VoxelVolume volume, Vector3 center, float radius)
             {
-                int index = Index(x, y, z);
-                Vector3 center = Center(x, y, z);
-                if (!occupied[index] || (center - worldCenter).sqrMagnitude > r2) continue;
-                removed.Add(new VoxelFragment(center, cellSize, colors[index]));
-                occupied[index] = false;
-                foreach (Vector3Int d in Directions)
-                {
-                    var neighbor = new Vector3Int(x + d.x, y + d.y, z + d.z);
-                    if (Inside(neighbor.x, neighbor.y, neighbor.z)) affected.Add(neighbor);
-                }
-                MarkDirty(x, y, z);
+                this.volume = volume;
+                this.center = center;
+                radiusSquared = radius * radius;
+                Vector3 p = (center - volume.origin) / volume.cellSize - Vector3.one * .5f;
+                float r = radius / volume.cellSize;
+                min = new Vector3Int(Mathf.Max(0, Mathf.CeilToInt(p.x-r)), Mathf.Max(0, Mathf.CeilToInt(p.y-r)), Mathf.Max(0, Mathf.CeilToInt(p.z-r)));
+                max = new Vector3Int(Mathf.Min(volume.dimensions.x-1, Mathf.FloorToInt(p.x+r)), Mathf.Min(volume.dimensions.y-1, Mathf.FloorToInt(p.y+r)), Mathf.Min(volume.dimensions.z-1, Mathf.FloorToInt(p.z+r)));
+                Complete = min.x > max.x || min.y > max.y || min.z > max.z;
+                firstChunk = new Vector3Int(min.x / ChunkSize, min.y / ChunkSize, min.z / ChunkSize);
+                lastChunk = new Vector3Int(max.x / ChunkSize, max.y / ChunkSize, max.z / ChunkSize);
+                chunkX = firstChunk.x; chunkY = firstChunk.y; chunkZ = firstChunk.z;
             }
-            Build();
-            return removed;
+
+            internal void Step(int maxChunks)
+            {
+                volume.ThrowIfDisposed();
+                if (maxChunks <= 0) throw new ArgumentOutOfRangeException(nameof(maxChunks));
+                if (Complete) return;
+                if (volume.activeEdit != this) throw new InvalidOperationException("Sphere edit no longer owns the volume.");
+                long start = System.Diagnostics.Stopwatch.GetTimestamp();
+                int count = 0;
+                while (!Complete && count < maxChunks)
+                {
+                    ScanChunk(); count++; ScannedChunks++;
+                    if (++chunkX > lastChunk.x)
+                    {
+                        chunkX = firstChunk.x;
+                        if (++chunkY > lastChunk.y)
+                        {
+                            chunkY = firstChunk.y;
+                            if (++chunkZ > lastChunk.z) Complete = true;
+                        }
+                    }
+                }
+                long scanEnd = System.Diagnostics.Stopwatch.GetTimestamp();
+                int rebuilt = volume.dirty.Count;
+                volume.Build();
+                long end = System.Diagnostics.Stopwatch.GetTimestamp();
+                double tickMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                ScanMilliseconds += (scanEnd - start) * tickMs;
+                MeshColliderMilliseconds += (end - scanEnd) * tickMs;
+                MaximumStepMilliseconds = Math.Max(MaximumStepMilliseconds, (end - start) * tickMs);
+                RebuiltChunks += rebuilt;
+                if (Complete) volume.activeEdit = null;
+            }
+
+            private void ScanChunk()
+            {
+                int firstRemoved = Removed.Count;
+                int x0 = Math.Max(min.x, chunkX * ChunkSize), y0 = Math.Max(min.y, chunkY * ChunkSize), z0 = Math.Max(min.z, chunkZ * ChunkSize);
+                int x1 = Math.Min(max.x, (chunkX + 1) * ChunkSize - 1), y1 = Math.Min(max.y, (chunkY + 1) * ChunkSize - 1), z1 = Math.Min(max.z, (chunkZ + 1) * ChunkSize - 1);
+                var changed = new List<Vector3Int>();
+                for (int z = z0; z <= z1; z++) for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++)
+                {
+                    int index = volume.Index(x, y, z);
+                    if (!volume.occupied[index]) continue;
+                    Vector3 position = volume.Center(x, y, z);
+                    if ((position - center).sqrMagnitude > radiusSquared) continue;
+                    Removed.Add(new VoxelFragment(position, volume.cellSize, volume.colors[index]));
+                    volume.occupied[index] = false;
+                    changed.Add(new Vector3Int(x, y, z));
+                    volume.MarkDirty(x, y, z);
+                }
+                if (Removed.Count == firstRemoved) return;
+                foreach (Vector3Int p in changed) foreach (Vector3Int d in Directions)
+                {
+                    Vector3Int n = p + d;
+                    if (volume.Inside(n.x, n.y, n.z) && volume.occupied[volume.Index(n.x, n.y, n.z)]) volume.affected.Add(n);
+                }
+            }
         }
 
         internal List<List<VoxelFragment>> DetachUnsupported()
         {
             ThrowIfDisposed();
+            ThrowIfEditing();
             affected.Clear();
             // Flood all supported cells first, then collect each disconnected island independently.
             var visited = new bool[occupied.Length];
@@ -153,6 +235,7 @@ namespace MagicCarpet.Native.Voxels
         internal List<List<VoxelFragment>> DetachAffectedUnsupported()
         {
             ThrowIfDisposed();
+            ThrowIfEditing();
             var groups = new List<List<VoxelFragment>>();
             var supported = new HashSet<Vector3Int>();
             var visited = new HashSet<Vector3Int>();
@@ -201,17 +284,126 @@ namespace MagicCarpet.Native.Voxels
             return groups;
         }
 
-        // Most terrain columns have a direct path to the bottom. Cache the
-        // proven path; otherwise the ordinary flood finds lateral support.
+        // Incremental counterpart to DetachAffectedUnsupported. The volume must
+        // have been supported before its latest sphere edit. Search and removal
+        // are budgeted in cells; every removal step refreshes its colliders.
+        internal SupportEdit BeginDetachAffectedUnsupported()
+        {
+            ThrowIfDisposed();
+            ThrowIfEditing();
+            var edit = new SupportEdit(this);
+            activeSupport = edit;
+            return edit;
+        }
+
+        internal sealed class SupportEdit
+        {
+            private enum Phase { Candidate, Search, MarkSupported, Remove }
+            private readonly VoxelVolume volume;
+            private readonly IEnumerator<Vector3Int> candidates;
+            private readonly HashSet<Vector3Int> supported = new HashSet<Vector3Int>();
+            private HashSet<Vector3Int> visited;
+            private List<Vector3Int> component;
+            private Queue<Vector3Int> queue;
+            private List<VoxelFragment> currentGroup;
+            private Phase phase;
+            private int cursor;
+            internal readonly List<List<VoxelFragment>> Groups = new List<List<VoxelFragment>>();
+            internal bool Complete { get; private set; }
+            internal int VisitedCells { get; private set; }
+            internal int RebuiltChunks { get; private set; }
+            internal double SearchMilliseconds { get; private set; }
+            internal double MeshColliderMilliseconds { get; private set; }
+            internal double MaximumStepMilliseconds { get; private set; }
+
+            internal SupportEdit(VoxelVolume volume)
+            {
+                this.volume = volume;
+                candidates = volume.affected.GetEnumerator();
+            }
+
+            internal void Step(int maxCells)
+            {
+                volume.ThrowIfDisposed();
+                if (maxCells <= 0) throw new ArgumentOutOfRangeException(nameof(maxCells));
+                if (Complete) return;
+                if (volume.activeSupport != this) throw new InvalidOperationException("Support edit no longer owns the volume.");
+                long start = System.Diagnostics.Stopwatch.GetTimestamp();
+                for (int work = 0; work < maxCells && !Complete; work++)
+                {
+                    if (phase == Phase.Candidate)
+                    {
+                        if (!candidates.MoveNext())
+                        {
+                            candidates.Dispose();
+                            volume.affected.Clear();
+                            Complete = true;
+                            break;
+                        }
+                        Vector3Int p = candidates.Current;
+                        if (!volume.occupied[volume.Index(p.x, p.y, p.z)] || supported.Contains(p)) continue;
+                        visited = new HashSet<Vector3Int> { p };
+                        component = new List<Vector3Int> { p };
+                        queue = new Queue<Vector3Int>(); queue.Enqueue(p);
+                        phase = Phase.Search;
+                    }
+                    else if (phase == Phase.Search)
+                    {
+                        Vector3Int p = queue.Dequeue();
+                        VisitedCells++;
+                        if (supported.Contains(p) || volume.HasVerticalSupport(p, supported))
+                        {
+                            cursor = 0; phase = Phase.MarkSupported;
+                            continue;
+                        }
+                        foreach (Vector3Int d in Directions)
+                        {
+                            Vector3Int n = p + d;
+                            if (!volume.Inside(n.x, n.y, n.z) || !volume.occupied[volume.Index(n.x, n.y, n.z)] || !visited.Add(n)) continue;
+                            component.Add(n); queue.Enqueue(n);
+                        }
+                        if (queue.Count == 0)
+                        {
+                            cursor = 0; currentGroup = new List<VoxelFragment>();
+                            Groups.Add(currentGroup); phase = Phase.Remove;
+                        }
+                    }
+                    else if (phase == Phase.MarkSupported)
+                    {
+                        supported.Add(component[cursor++]);
+                        if (cursor == component.Count) phase = Phase.Candidate;
+                    }
+                    else
+                    {
+                        Vector3Int p = component[cursor++];
+                        int index = volume.Index(p.x, p.y, p.z);
+                        currentGroup.Add(new VoxelFragment(volume.Center(p.x, p.y, p.z), volume.cellSize, volume.colors[index]));
+                        volume.occupied[index] = false;
+                        volume.MarkDirty(p.x, p.y, p.z);
+                        if (cursor == component.Count) phase = Phase.Candidate;
+                    }
+                }
+                long scanEnd = System.Diagnostics.Stopwatch.GetTimestamp();
+                int rebuilt = volume.dirty.Count;
+                volume.Build();
+                long end = System.Diagnostics.Stopwatch.GetTimestamp();
+                double tickMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                SearchMilliseconds += (scanEnd - start) * tickMs;
+                MeshColliderMilliseconds += (end - scanEnd) * tickMs;
+                MaximumStepMilliseconds = Math.Max(MaximumStepMilliseconds, (end - start) * tickMs);
+                RebuiltChunks += rebuilt;
+                if (Complete) volume.activeSupport = null;
+            }
+        }
+
+        // Most terrain columns have a direct path to the bottom. Do not insert
+        // the entire deep column into a hash table for every exposed cell.
+        // The surrounding flood still caches searched cells and lateral support.
         private bool HasVerticalSupport(Vector3Int p, HashSet<Vector3Int> supported)
         {
-            int y = p.y;
-            while (y > 0 && !supported.Contains(new Vector3Int(p.x, y, p.z)))
-            {
-                if (!occupied[Index(p.x, y - 1, p.z)]) return false;
-                y--;
-            }
-            for (int yy = y; yy <= p.y; yy++) supported.Add(new Vector3Int(p.x, yy, p.z));
+            for (int y = p.y - 1; y >= 0; y--)
+                if (!occupied[Index(p.x, y, p.z)]) return false;
+            supported.Add(p);
             return true;
         }
 
@@ -242,12 +434,14 @@ namespace MagicCarpet.Native.Voxels
 
         private void MarkDirty(int x, int y, int z)
         {
-            dirty.Add(new Vector3Int(x / ChunkSize, y / ChunkSize, z / ChunkSize));
-            foreach (Vector3Int d in Directions)
-            {
-                int nx = x + d.x, ny = y + d.y, nz = z + d.z;
-                if (Inside(nx, ny, nz)) dirty.Add(new Vector3Int(nx / ChunkSize, ny / ChunkSize, nz / ChunkSize));
-            }
+            int cx = x / ChunkSize, cy = y / ChunkSize, cz = z / ChunkSize;
+            dirty.Add(new Vector3Int(cx, cy, cz));
+            if (x > 0 && x % ChunkSize == 0) dirty.Add(new Vector3Int(cx - 1, cy, cz));
+            if (x + 1 < dimensions.x && x % ChunkSize == ChunkSize - 1) dirty.Add(new Vector3Int(cx + 1, cy, cz));
+            if (y > 0 && y % ChunkSize == 0) dirty.Add(new Vector3Int(cx, cy - 1, cz));
+            if (y + 1 < dimensions.y && y % ChunkSize == ChunkSize - 1) dirty.Add(new Vector3Int(cx, cy + 1, cz));
+            if (z > 0 && z % ChunkSize == 0) dirty.Add(new Vector3Int(cx, cy, cz - 1));
+            if (z + 1 < dimensions.z && z % ChunkSize == ChunkSize - 1) dirty.Add(new Vector3Int(cx, cy, cz + 1));
         }
 
         private void RebuildChunk(Vector3Int key)
@@ -319,6 +513,7 @@ namespace MagicCarpet.Native.Voxels
         private bool Inside(int x, int y, int z) => x >= 0 && y >= 0 && z >= 0 && x < dimensions.x && y < dimensions.y && z < dimensions.z;
         private Vector3 Center(int x, int y, int z) => origin + (new Vector3(x, y, z) + Vector3.one * 0.5f) * cellSize;
         private void ThrowIfDisposed() { if (disposed) throw new ObjectDisposedException(nameof(VoxelVolume)); }
+        private void ThrowIfEditing() { if (activeEdit != null || activeSupport != null) throw new InvalidOperationException("Complete the active volume edit first."); }
         private static void DestroyObject(UnityEngine.Object obj)
         {
             if (obj == null) return;

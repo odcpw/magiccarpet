@@ -6,421 +6,278 @@ using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native.Voxels
 {
-    // Sandbox-only physical debris. Every input voxel remains in a rendered mesh;
-    // a cluster uses one conservative box collider, never one object per cell.
+    // A bounded, prewarmed pool of independent physical cubes. Large source
+    // emissions are represented by spatial samples with source-mass weighting;
+    // rendered cube count is intentionally not the number of source cells.
     internal sealed class VoxelRubble : MonoBehaviour
     {
-        internal const int MaxBodies = 160;
-        internal const int MaxClustersPerEmission = 32;
+        internal const int MaxBodies = 768;
+        internal const int MaxPiecesPerEmission = 192;
+        internal const int MaxActivationsPerFrame = 64;
+        internal const float MaximumBlockSize = .20f;
         internal const float Density = 1f;
         internal const float MinimumVisibleSeconds = 3f;
-        // A distant or continuously disturbed piece eventually expires too; the
-        // forced path is counted separately from pieces that actually sleep.
         internal const float MaximumActiveSeconds = 45f;
         internal const float FadeSeconds = 2f;
-        private readonly List<Piece> pieces = new List<Piece>();
+        private const float MinimumMass = .0000001f;
+        private readonly List<Piece> active = new List<Piece>(MaxBodies);
+        private readonly Stack<Piece> available = new Stack<Piece>(MaxBodies);
         private readonly Queue<Emission> pending = new Queue<Emission>();
+        private readonly List<Vector3> activePositions=new(MaxBodies);
+        private MaterialPropertyBlock properties;
+        private Mesh cubeMesh;
         private Material material;
         private PhysicsMaterial contactMaterial;
-        private readonly MaterialPropertyBlock properties = new MaterialPropertyBlock();
-        internal int ActiveBodies => pieces.Count;
+        private int reserved, budgetFrame = -1, frameActivations;
+        private static readonly int AlphaId = Shader.PropertyToID("_Alpha");
+        private static readonly int ColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int EmissionId = Shader.PropertyToID("_Emission");
+
+        internal int ActiveBodies => active.Count;
+        internal IReadOnlyList<Vector3> ActivePositions {
+            get {activePositions.Clear();foreach(var p in active)activePositions.Add(p.Body.position);return activePositions;}
+        }
         internal int PeakBodies { get; private set; }
         internal int PendingEmissions => pending.Count;
-        internal int SleepingBodies
-        {
-            get { int count = 0; foreach (var p in pieces) if (p.Body != null && p.Body.IsSleeping()) count++; return count; }
-        }
+        internal int SleepingBodies { get { int n = 0; foreach (var p in active) if (p.Body.IsSleeping()) n++; return n; } }
         internal int MovingBodies => ActiveBodies - SleepingBodies;
-        internal int FallingBodies
+        internal int FallingBodies { get { int n = 0; foreach (var p in active) if (p.Body.linearVelocity.y < -1f) n++; return n; } }
+        internal float LowestBodyY { get { float v = float.PositiveInfinity; foreach (var p in active) v = Mathf.Min(v, p.Body.position.y); return float.IsPositiveInfinity(v) ? 0f : v; } }
+        internal float FastestBodySpeed { get { float v = 0f; foreach (var p in active) v = Mathf.Max(v, p.Body.linearVelocity.magnitude); return v; } }
+        internal int CountBelowSurface(Func<float,float,float> height)
         {
-            get { int count = 0; foreach (var p in pieces) if (p.Body != null && p.Body.linearVelocity.y < -1f) count++; return count; }
-        }
-        internal float LowestBodyY
-        {
-            get { float lowest = float.PositiveInfinity; foreach (var p in pieces) if (p.Body != null) lowest = Mathf.Min(lowest, p.Body.position.y); return float.IsPositiveInfinity(lowest) ? 0f : lowest; }
-        }
-        internal float FastestBodySpeed
-        {
-            get { float fastest = 0f; foreach (var p in pieces) if (p.Body != null) fastest = Mathf.Max(fastest, p.Body.linearVelocity.magnitude); return fastest; }
+            int count=0;
+            foreach(var p in active){var at=p.Body.position;if(at.y<height(at.x,at.z)-.25f){
+                if(count<5){bool hit=Physics.Raycast(new Vector3(at.x,height(at.x,at.z)+30,at.z),Vector3.down,out var contact,1000,1<<8);
+                    UnityEngine.Debug.Log($"MC_VOXEL_BELOW at={at.ToString("F3")} surface={height(at.x,at.z):F3} velocity={p.Body.linearVelocity.ToString("F3")} ray={hit} contact={(hit?contact.point.y:float.NaN):F3} born={p.Born:F3} spawn={p.SpawnPosition.ToString("F3")} size={p.Object.transform.localScale.x:F3} last_contact={p.Probe.LastContact}");}
+                count++;}}
+            return count;
         }
         internal int ContactEvents { get; private set; }
         internal int ContactPoints { get; private set; }
         internal int ReboundEvents { get; private set; }
+        // Source counts and visible counts are separate: one weighted cube may
+        // represent the mass of many unsampled source cells.
         internal int EmittedCells { get; private set; }
+        internal int SampledCells { get; private set; }
+        internal int UnrenderedCells { get; private set; }
+        internal int DroppedEmissions { get; private set; }
+        internal int DisposedCells { get; private set; }
+        internal int SettledPieces { get; private set; }
+        internal int ForcedFadePieces { get; private set; }
+        internal int PeakActivationsPerFrame { get; private set; }
         internal int EmissionCount { get; private set; }
         internal int SingleClusterEmissions { get; private set; }
         internal int LastEmissionCells { get; private set; }
         internal int LastEmissionGroups { get; private set; }
         internal int MinimumEmissionGroups { get; private set; } = int.MaxValue;
-        internal int DisposedCells { get; private set; }
-        internal int SettledPieces { get; private set; }
-        internal int ForcedFadePieces { get; private set; }
         internal double ManagementMilliseconds { get; private set; }
-        // Exclusive stage timings in milliseconds, accumulated and for the last
-        // emitted group; spawn excludes mesh construction. Neither is PhysX time.
-        internal double PartitionMilliseconds { get; private set; }
-        internal double MeshMilliseconds { get; private set; }
+        internal double PartitionMilliseconds => 0;
+        internal double MeshMilliseconds => 0;
         internal double SpawnMilliseconds { get; private set; }
-        internal double LastPartitionMilliseconds { get; private set; }
-        internal double LastMeshMilliseconds { get; private set; }
+        internal double LastPartitionMilliseconds => 0;
+        internal double LastMeshMilliseconds => 0;
         internal double LastSpawnMilliseconds { get; private set; }
         internal double LastEmissionMilliseconds { get; private set; }
-        internal int LastGridCandidates { get; private set; }
-        internal int LastGeneralCandidates { get; private set; }
+        internal int LastGridCandidates => 0;
+        internal int LastGeneralCandidates => 0;
 
         internal sealed class Emission
         {
             internal VoxelFragment[] Cells;
-            internal Vector3 Velocity, Origin;
-            internal float Energy;
-            internal float TotalMass;
-            internal int TargetClusters;
-            internal int MinimumClusters;
-            internal bool Spawned;
-            internal bool HasImpactPlane;
-            internal Vector3 ImpactNormal;
+            internal Vector3 Velocity, Origin, Offset;
+            internal float Energy, TotalMass;
+            internal int Count, Next;
+            internal bool Impact, Spawned;
+            internal long SpawnTicks;
         }
         private sealed class Piece
         {
             internal GameObject Object;
             internal Rigidbody Body;
-            internal Mesh Mesh;
+            internal BoxCollider Collider;
             internal MeshRenderer Renderer;
-            internal float Born, FadeStart = -1f;
-            internal int Cells;
+            internal ContactProbe Probe;
+            internal float Born, FadeStart;
+            internal Vector3 SpawnPosition;
+            internal int RepresentedCells;
         }
-
         private sealed class ContactProbe : MonoBehaviour
         {
             private VoxelRubble owner;
             private Rigidbody body, other;
             private Vector3 incoming, normal, point;
             private bool awaitingRebound;
-            internal void Initialize(VoxelRubble owner, Rigidbody body)
-            { this.owner = owner; this.body = body; incoming = body.linearVelocity; }
-
+            internal Vector3 LastContact {get;private set;}
+            internal void Initialize(VoxelRubble owner, Rigidbody body) { this.owner = owner; this.body = body; }
+            internal void ResetProbe(Vector3 velocity) { incoming = velocity; awaitingRebound = false; other = null;LastContact=Vector3.zero; }
             private void FixedUpdate()
             {
                 if (awaitingRebound)
                 {
-                    Vector3 relative = body.GetPointVelocity(point) - (other != null ? other.GetPointVelocity(point) : Vector3.zero);
+                    var relative = body.GetPointVelocity(point) - (other != null ? other.GetPointVelocity(point) : Vector3.zero);
                     if (Vector3.Dot(relative, normal) > .1f) owner.ReboundEvents++;
                     awaitingRebound = false;
                 }
                 incoming = body.linearVelocity;
             }
-
             private void OnCollisionEnter(Collision collision)
             {
-                owner.ContactEvents++;
-                owner.ContactPoints += collision.contactCount;
+                owner.ContactEvents++; owner.ContactPoints += collision.contactCount;
                 if (collision.contactCount == 0 || awaitingRebound) return;
-                var contact = collision.GetContact(0);
-                var otherBody = collision.rigidbody;
-                Vector3 otherVelocity = otherBody != null ? otherBody.GetPointVelocity(contact.point) : Vector3.zero;
-                if (Vector3.Dot(incoming - otherVelocity, contact.normal) >= -.1f) return;
-                normal = contact.normal; point = contact.point; other = otherBody; awaitingRebound = true;
+                var c = collision.GetContact(0); var otherBody = collision.rigidbody;
+                LastContact=c.point;
+                var otherVelocity = otherBody != null ? otherBody.GetPointVelocity(c.point) : Vector3.zero;
+                if (Vector3.Dot(incoming - otherVelocity, c.normal) >= -.1f) return;
+                normal = c.normal; point = c.point; other = otherBody; awaitingRebound = true;
             }
         }
 
-        internal void Emit(IReadOnlyList<VoxelFragment> cells, Vector3 inheritedVelocity, Vector3 impulseOrigin, float energy)
+        private void Awake()
         {
-            EmitInternal(cells, inheritedVelocity, impulseOrigin, energy, MaxClustersPerEmission);
+            properties=new MaterialPropertyBlock();
+            var shader = Shader.Find("MagicCarpet/VoxelSurface");
+            if (shader == null) throw new InvalidOperationException("Missing MagicCarpet/VoxelSurface shader");
+            material = new Material(shader) { name = "Pooled voxel rubble" };
+            contactMaterial = new PhysicsMaterial("Voxel rubble") { dynamicFriction = .65f, staticFriction = .8f,
+                bounciness = .36f, bounceCombine = PhysicsMaterialCombine.Maximum };
+            var white = new[] { new VoxelFragment(Vector3.zero, 1f, new Color32(255, 255, 255, 255)) };
+            cubeMesh = BuildMesh(white, Vector3.zero);
+            for (int i = 0; i < MaxBodies; i++)
+            {
+                var go = new GameObject("Pooled voxel rubble");
+                // Default layer keeps debris out of the sandbox's terrain-only
+                // layer-8 height raycasts while retaining physical collisions.
+                go.SetActive(false); go.transform.SetParent(transform, false);
+                go.AddComponent<MeshFilter>().sharedMesh = cubeMesh;
+                var renderer = go.AddComponent<MeshRenderer>(); renderer.sharedMaterial = material;
+                var collider = go.AddComponent<BoxCollider>(); collider.size = Vector3.one * .92f; collider.sharedMaterial = contactMaterial;
+                var body = go.AddComponent<Rigidbody>();
+                var probe = go.AddComponent<ContactProbe>(); probe.Initialize(this, body);
+                available.Push(new Piece { Object = go, Renderer = renderer, Body = body, Collider = collider, Probe = probe });
+            }
         }
 
-        internal Emission EmitImpact(IReadOnlyList<VoxelFragment> cells, Vector3 inheritedVelocity, Vector3 impulseOrigin, Vector3 impactNormal)
-        {
-            return EmitInternal(cells, inheritedVelocity, impulseOrigin, 0f, MaxClustersPerEmission, 8, impactNormal);
-        }
+        internal void Emit(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy)
+        { EmitInternal(cells, velocity, origin, energy, false, Vector3.zero); }
+        internal void EmitConnected(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy)
+        { EmitInternal(cells, velocity, origin, energy, false, Vector3.zero); }
+        internal Emission EmitImpact(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, Vector3 normal)
+        { return EmitInternal(cells, velocity, origin, 0f, true, normal); }
 
-        // Connected volumes stay in one body where possible; the input retains all cells.
-        internal void EmitConnected(IReadOnlyList<VoxelFragment> cells, Vector3 inheritedVelocity, Vector3 impulseOrigin, float energy)
+        internal static int SampleCount(int cellCount, int freeSlots)
+        { return Mathf.Min(Mathf.Max(0, cellCount), Mathf.Min(MaxPiecesPerEmission, Mathf.Max(0, freeSlots))); }
+        internal static int SampleIndex(int index, int cellCount, int sampleCount)
+        { return (int)(((2L * index + 1) * cellCount) / (2L * sampleCount)); }
+        internal static int RepresentedCellCount(int index, int cellCount, int sampleCount)
+        { return (int)((long)(index + 1) * cellCount / sampleCount - (long)index * cellCount / sampleCount); }
+        internal static float SampleMass(float totalMass, int sampleCount)
+        { return Mathf.Max(MinimumMass, totalMass / sampleCount); }
+        internal static float BlockSize(float cellSize) => Mathf.Min(cellSize, MaximumBlockSize);
+        internal static float ContactOffset(float blockSize) => Mathf.Clamp(blockSize * .92f * .02f, .0001f, .004f);
+        internal static float Mass(IReadOnlyList<VoxelFragment> cells)
         {
-            EmitInternal(cells, inheritedVelocity, impulseOrigin, energy, 1);
+            float mass = 0f;
+            for (int i = 0; i < cells.Count; i++) mass += Density * cells[i].Size * cells[i].Size * cells[i].Size;
+            return mass;
         }
+        internal static bool ShouldBeginFade(float age, bool sleeping)
+        { return age >= MinimumVisibleSeconds && (sleeping || age >= MaximumActiveSeconds); }
+        private static double Milliseconds(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
-        private Emission EmitInternal(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy, int target, int minimum = 1, Vector3 impactNormal = default)
+        private Emission EmitInternal(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy, bool impact, Vector3 normal)
         {
             if (cells == null || cells.Count == 0) return null;
+            long start = Stopwatch.GetTimestamp();
+            int count = SampleCount(cells.Count, available.Count - reserved);
+            EmissionCount++; LastEmissionCells = cells.Count; LastEmissionGroups = count;
+            MinimumEmissionGroups = Mathf.Min(MinimumEmissionGroups, count);
+            if (count == 1) SingleClusterEmissions++;
+            UnrenderedCells += cells.Count - count;
+            if (count == 0)
+            {
+                DroppedEmissions++;
+                LastSpawnMilliseconds = 0; LastEmissionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - start);
+                return new Emission { Spawned = true };
+            }
             var copy = new VoxelFragment[cells.Count];
-            for (int i = 0; i < cells.Count; i++) copy[i] = cells[i];
-            var emission = new Emission { Cells = copy, Velocity = velocity, Origin = origin,
-                Energy = Mathf.Max(0f, energy), TargetClusters = target, MinimumClusters = Mathf.Min(minimum, cells.Count),
-                HasImpactPlane = impactNormal.sqrMagnitude > .000001f, ImpactNormal = impactNormal.normalized };
+            float mass = 0;
+            for (int i = 0; i < cells.Count; i++) { copy[i] = cells[i]; mass += Density * cells[i].Size * cells[i].Size * cells[i].Size; }
+            var emission = new Emission { Cells = copy, Velocity = velocity, Origin = origin, Energy = Mathf.Max(0, energy),
+                TotalMass = mass, Count = count, Impact = impact };
+            if (impact && normal.sqrMagnitude > .000001f)
+                emission.Offset = ImpactClearance(copy, count, origin, normal.normalized);
+            reserved += count;
             pending.Enqueue(emission);
             Drain();
+            LastEmissionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - start);
             return emission;
         }
 
-        private void EnsureMaterials()
+        internal static Vector3 ImpactClearance(IReadOnlyList<VoxelFragment> cells, int count, Vector3 point, Vector3 normal)
         {
-            if (material == null)
+            float lowest = float.PositiveInfinity;
+            for (int i = 0; i < count; i++)
             {
-                var shader = Shader.Find("MagicCarpet/VoxelSurface");
-                if (shader == null) throw new InvalidOperationException("Missing MagicCarpet/VoxelSurface shader");
-                material = new Material(shader) { name = "Voxel rubble" };
+                var c = cells[SampleIndex(i, cells.Count, count)];
+                float half = BlockSize(c.Size) * .5f;
+                float projection = Vector3.Dot(c.Position - point, normal) - half * (Mathf.Abs(normal.x) + Mathf.Abs(normal.y) + Mathf.Abs(normal.z));
+                lowest = Mathf.Min(lowest, projection);
             }
-            if (contactMaterial == null)
-                contactMaterial = new PhysicsMaterial("Voxel rubble") { dynamicFriction = .65f, staticFriction = .8f,
-                    bounciness = .36f, bounceCombine = PhysicsMaterialCombine.Maximum };
+            return count == 0 ? Vector3.zero : normal * Mathf.Max(0f, .005f - lowest);
         }
 
         private void Drain()
         {
-            while (pending.Count > 0 && pieces.Count < MaxBodies)
+            if (budgetFrame != Time.frameCount) { budgetFrame = Time.frameCount; frameActivations = 0; }
+            while (pending.Count > 0 && frameActivations < MaxActivationsPerFrame)
             {
-                if (MaxBodies - pieces.Count < pending.Peek().MinimumClusters) break;
-                var e = pending.Dequeue();
-                long emissionStart = Stopwatch.GetTimestamp();
-                if (e.Energy > 0f) e.TotalMass = Mathf.Max(.0001f, Mass(e.Cells));
-                int count = Mathf.Min(e.Cells.Length, Mathf.Min(e.TargetClusters, MaxBodies - pieces.Count));
-                long partitionStart = Stopwatch.GetTimestamp();
-                var groups = Partition(e.Cells, count, out int gridCandidates, out int generalCandidates);
-                LastGridCandidates = gridCandidates;
-                LastGeneralCandidates = generalCandidates;
-                EmissionCount++;
-                LastEmissionCells = e.Cells.Length;
-                LastEmissionGroups = groups.Count;
-                MinimumEmissionGroups = Mathf.Min(MinimumEmissionGroups, groups.Count);
-                if (groups.Count == 1) SingleClusterEmissions++;
-                LastPartitionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - partitionStart);
-                PartitionMilliseconds += LastPartitionMilliseconds;
-                EnsureMaterials();
-                var offset = e.HasImpactPlane ? ImpactClearance(groups, e.Origin, e.ImpactNormal) : Vector3.zero;
-                long spawnStart = Stopwatch.GetTimestamp(), meshTicks = 0;
-                foreach (var group in groups) Spawn(group, e, offset, ref meshTicks);
-                long spawnTicks = Stopwatch.GetTimestamp() - spawnStart;
-                LastMeshMilliseconds = Milliseconds(meshTicks);
-                LastSpawnMilliseconds = Milliseconds(spawnTicks - meshTicks);
-                MeshMilliseconds += LastMeshMilliseconds;
-                SpawnMilliseconds += LastSpawnMilliseconds;
-                EmittedCells += e.Cells.Length;
-                e.Spawned = true;
-                LastEmissionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - emissionStart);
-            }
-        }
-
-        private static double Milliseconds(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
-
-        private sealed class SplitCache
-        {
-            internal bool Evaluated, CanSplit;
-            internal int Axis, Mid;
-        }
-
-        // Split only at a separating plane: the resulting cluster AABBs do not
-        // overlap each other, including for irregular/rotated voxel positions.
-        internal static List<List<VoxelFragment>> Partition(IReadOnlyList<VoxelFragment> cells, int count)
-        {
-            return Partition(cells, count, out _, out _);
-        }
-
-        private static List<List<VoxelFragment>> Partition(IReadOnlyList<VoxelFragment> cells, int count,
-            out int gridCandidates, out int generalCandidates)
-        {
-            gridCandidates = 0; generalCandidates = 0;
-            var result = new List<List<VoxelFragment>>();
-            if (cells == null || cells.Count == 0 || count <= 0) return result;
-            var all = new List<VoxelFragment>(cells.Count);
-            for (int i = 0; i < cells.Count; i++) all.Add(cells[i]);
-            result.Add(all);
-            var candidates = new List<SplitCache> { new SplitCache() };
-            count = Mathf.Min(count, all.Count);
-            while (result.Count < count)
-            {
-                int selected = -1, selectedAxis = -1, selectedMid = 0, selectedSize = 0;
-                for (int i = 0; i < result.Count; i++)
+                var e = pending.Peek();
+                long start = Stopwatch.GetTimestamp();
+                while (e.Next < e.Count && frameActivations < MaxActivationsPerFrame)
                 {
-                    if (result[i].Count <= selectedSize) continue;
-                    var candidate = candidates[i];
-                    if (!candidate.Evaluated)
-                    {
-                        candidate.CanSplit = FindSplit(result[i], out candidate.Axis, out candidate.Mid, out bool usedGrid);
-                        if (usedGrid) gridCandidates++; else generalCandidates++;
-                        candidate.Evaluated = true;
-                    }
-                    if (candidate.CanSplit)
-                    { selected = i; selectedAxis = candidate.Axis; selectedMid = candidate.Mid; selectedSize = result[i].Count; }
+                    var cell = e.Cells[SampleIndex(e.Next, e.Cells.Length, e.Count)];
+                    int represented = RepresentedCellCount(e.Next, e.Cells.Length, e.Count);
+                    Activate(available.Pop(), cell, e, represented);
+                    e.Next++; reserved--; frameActivations++; SampledCells++;
                 }
-                if (selected < 0) break;
-                var group = result[selected];
-                group.Sort((a, b) => a.Position[selectedAxis].CompareTo(b.Position[selectedAxis]));
-                var second = group.GetRange(selectedMid, group.Count - selectedMid);
-                group.RemoveRange(selectedMid, group.Count - selectedMid);
-                result.Add(second);
-                // The two children changed; other cached groups remain exact.
-                candidates[selected] = new SplitCache();
-                candidates.Add(new SplitCache());
+                long ticks = Stopwatch.GetTimestamp() - start;
+                e.SpawnTicks += ticks; SpawnMilliseconds += Milliseconds(ticks);
+                LastSpawnMilliseconds = Milliseconds(e.SpawnTicks);
+                PeakActivationsPerFrame = Mathf.Max(PeakActivationsPerFrame, frameActivations);
+                if (e.Next < e.Count) break;
+                pending.Dequeue(); EmittedCells += e.Cells.Length; e.Spawned = true;
             }
-            return result;
         }
 
-        private static bool FindSplit(List<VoxelFragment> group, out int bestAxis, out int bestMid, out bool usedGrid)
+        private void Activate(Piece p, VoxelFragment cell, Emission e, int represented)
         {
-            bestAxis = -1; bestMid = 0; usedGrid = false;
-            int bestBalance = int.MaxValue;
-            if (group.Count < 2) return false;
-            if (TryFindGridSplit(group, out bestAxis, out bestMid)) { usedGrid = true; return bestAxis >= 0; }
-            bestAxis = -1; bestMid = 0;
-            BoundsOf(group, out Vector3 boundsMin, out Vector3 boundsMax);
-            Vector3 span = boundsMax - boundsMin;
-            float bestSpan = float.NegativeInfinity;
-            var sorted = new List<VoxelFragment>(group);
-            var rightMin = new float[group.Count];
-            for (int axis = 0; axis < 3; axis++)
+            float size = BlockSize(cell.Size);
+            p.Object.transform.SetPositionAndRotation(cell.Position + e.Offset, Quaternion.identity);
+            p.SpawnPosition=cell.Position+e.Offset;
+            p.Object.transform.localScale = Vector3.one * size;
+            p.Collider.contactOffset = ContactOffset(size);
+            properties.Clear(); properties.SetColor(ColorId, cell.Color); properties.SetFloat(AlphaId, 1f);
+            properties.SetFloat(EmissionId, e.Impact ? .45f : 0f);
+            p.Renderer.SetPropertyBlock(properties);
+            p.Object.SetActive(true);
+            p.Body.mass = SampleMass(e.TotalMass, e.Count);
+            // Fast fragments sweep against static walls. Fragment-to-fragment
+            // contacts use discrete physics steps unless the other body requests
+            // ContinuousDynamic; the intact projectile remains ContinuousDynamic.
+            // Fine character pieces can move farther than their diameter in
+            // one 120Hz step even at ordinary falling speed.
+            p.Body.collisionDetectionMode = CollisionDetectionMode.Continuous;
+            p.Body.linearVelocity = e.Velocity; p.Body.angularVelocity = Vector3.zero;
+            if (e.Energy > 0f)
             {
-                int a = axis;
-                sorted.Sort((x, y) => x.Position[a].CompareTo(y.Position[a]));
-                float min = float.PositiveInfinity;
-                for (int i = sorted.Count - 1; i >= 0; i--)
-                { min = Mathf.Min(min, sorted[i].Position[a] - sorted[i].Size * .5f); rightMin[i] = min; }
-                float max = float.NegativeInfinity;
-                for (int i = 1; i < sorted.Count; i++)
-                {
-                    var previous = sorted[i - 1];
-                    max = Mathf.Max(max, previous.Position[a] + previous.Size * .5f);
-                    // Tolerate only floating-point noise at touching faces.
-                    float tolerance = Mathf.Min(previous.Size, sorted[i].Size) * .0001f;
-                    if (max > rightMin[i] + tolerance) continue;
-                    int balance = Mathf.Abs(sorted.Count - 2 * i);
-                    if (span[axis] > bestSpan || (axis == bestAxis && balance < bestBalance))
-                    { bestSpan = span[axis]; bestBalance = balance; bestAxis = axis; bestMid = i; }
-                }
+                var direction = cell.Position - e.Origin;
+                if (direction.sqrMagnitude > .000001f)
+                    p.Body.linearVelocity += direction.normalized * Mathf.Min(5f, Mathf.Sqrt(2f * e.Energy / Mathf.Max(MinimumMass, e.TotalMass)));
             }
-            return bestAxis >= 0;
+            p.Probe.ResetProbe(p.Body.linearVelocity); p.Born = Time.time; p.FadeStart = -1f; p.RepresentedCells = represented;
+            active.Add(p); PeakBodies = Mathf.Max(PeakBodies, active.Count);
         }
-
-        // Returns false when a lattice cannot be established, so FindSplit
-        // falls back to the exact general algorithm. A successful recognition may
-        // still find no separating plane (axis == -1).
-        internal static bool TryFindGridSplit(IReadOnlyList<VoxelFragment> group, out int bestAxis, out int bestMid)
-        {
-            bestAxis = -1; bestMid = 0;
-            if (group == null || group.Count < 2) return false;
-            float size = group[0].Size;
-            if (!(size > 0f) || float.IsInfinity(size)) return false;
-            for (int i = 1; i < group.Count; i++) if (group[i].Size != size) return false;
-            int balanceBest = int.MaxValue;
-            BoundsOf(group, out Vector3 boundsMin, out Vector3 boundsMax);
-            Vector3 span = boundsMax - boundsMin;
-            float bestSpan = float.NegativeInfinity;
-            var indices = new int[group.Count];
-            float half = size * .5f, tolerance = size * .0001f;
-            for (int axis = 0; axis < 3; axis++)
-            {
-                float origin = group[0].Position[axis];
-                if (float.IsNaN(origin) || float.IsInfinity(origin)) return false;
-                int low = 0, high = 0;
-                for (int i = 0; i < group.Count; i++)
-                {
-                    float position = group[i].Position[axis];
-                    if (float.IsNaN(position) || float.IsInfinity(position)) return false;
-                    double scaled = ((double)position - origin) / size;
-                    if (scaled < -8192 || scaled > 8192) return false;
-                    int index = (int)Math.Round(scaled);
-                    // Include float-position rounding at large world coordinates,
-                    // but reject any grid too imprecise to disambiguate cells.
-                    double allowed = .01 * size + Math.Max(Math.Abs((double)origin), Math.Abs((double)position)) * 2.4e-7;
-                    if (allowed >= .2 * size || Math.Abs(((double)position - origin) - index * (double)size) > allowed) return false;
-                    indices[i] = index;
-                    if (index < low) low = index;
-                    if (index > high) high = index;
-                }
-                int length = high - low + 1;
-                if (length > 8192) return false;
-                var counts = new int[length];
-                var minLeft = new float[length];
-                var maxRight = new float[length];
-                for (int i = 0; i < length; i++) { minLeft[i] = float.PositiveInfinity; maxRight[i] = float.NegativeInfinity; }
-                for (int i = 0; i < group.Count; i++)
-                {
-                    int bucket = indices[i] - low;
-                    float position = group[i].Position[axis];
-                    counts[bucket]++;
-                    minLeft[bucket] = Mathf.Min(minLeft[bucket], position - half);
-                    maxRight[bucket] = Mathf.Max(maxRight[bucket], position + half);
-                }
-                // A purported bucket must not itself contain a separating cut.
-                // The lattice bound above normally makes this true; checking the
-                // actual extents also covers large-coordinate float precision.
-                for (int i = 0; i < length; i++)
-                    if (counts[i] > 1 && maxRight[i] - minLeft[i] >= 2f * size - tolerance) return false;
-                var suffix = new float[length];
-                float right = float.PositiveInfinity;
-                for (int i = length - 1; i >= 0; i--) { right = Mathf.Min(right, minLeft[i]); suffix[i] = right; }
-                int leftCount = 0;
-                float left = float.NegativeInfinity;
-                for (int i = 0; i + 1 < length; i++)
-                {
-                    leftCount += counts[i]; left = Mathf.Max(left, maxRight[i]);
-                    if (counts[i] == 0 || leftCount == group.Count || left > suffix[i + 1] + tolerance) continue;
-                    int balance = Mathf.Abs(group.Count - 2 * leftCount);
-                    if (span[axis] > bestSpan || (axis == bestAxis && balance < balanceBest))
-                    { bestSpan = span[axis]; balanceBest = balance; bestAxis = axis; bestMid = leftCount; }
-                }
-            }
-            return true;
-        }
-
-        internal static Vector3 ImpactClearance(List<List<VoxelFragment>> groups, Vector3 point, Vector3 normal)
-        {
-            float lowest = float.PositiveInfinity;
-            foreach (var group in groups)
-            {
-                BoundsOf(group, out Vector3 min, out Vector3 max);
-                Vector3 center = (min + max) * .5f, half = (max - min) * .5f;
-                float projection = Vector3.Dot(center - point, normal) -
-                    (Mathf.Abs(normal.x) * half.x + Mathf.Abs(normal.y) * half.y + Mathf.Abs(normal.z) * half.z);
-                lowest = Mathf.Min(lowest, projection);
-            }
-            return normal * Mathf.Max(0f, .005f - lowest);
-        }
-
-        private static void BoundsOf(IReadOnlyList<VoxelFragment> cells, out Vector3 min, out Vector3 max)
-        {
-            min = Vector3.one * float.PositiveInfinity; max = Vector3.one * float.NegativeInfinity;
-            foreach (var c in cells) { var h = Vector3.one * (c.Size * .5f); min = Vector3.Min(min, c.Position - h); max = Vector3.Max(max, c.Position + h); }
-        }
-
-        internal static float Mass(IReadOnlyList<VoxelFragment> cells)
-        {
-            float mass = 0f;
-            for (int i = 0; i < cells.Count; i++) mass += Density * Mathf.Pow(cells[i].Size, 3f);
-            return mass;
-        }
-
-        internal static bool ShouldBeginFade(float age, bool sleeping)
-        {
-            return age >= MinimumVisibleSeconds && (sleeping || age >= MaximumActiveSeconds);
-        }
-
-        private void Spawn(List<VoxelFragment> cells, Emission emission, Vector3 offset, ref long meshTicks)
-        {
-            BoundsOf(cells, out Vector3 min, out Vector3 max);
-            Vector3 center = (min + max) * .5f;
-            var go = new GameObject("Voxel rubble cluster");
-            go.transform.SetParent(transform, false); go.transform.position = center + offset;
-            long meshStart = Stopwatch.GetTimestamp();
-            var mesh = BuildMesh(cells, center);
-            meshTicks += Stopwatch.GetTimestamp() - meshStart;
-            go.AddComponent<MeshFilter>().sharedMesh = mesh;
-            var renderer = go.AddComponent<MeshRenderer>(); renderer.sharedMaterial = material;
-            var box = go.AddComponent<BoxCollider>(); box.size = (max - min) * .98f; box.sharedMaterial = contactMaterial;
-            var body = go.AddComponent<Rigidbody>(); body.mass = Mathf.Max(.0001f, Mass(cells));
-            body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-            body.linearVelocity = emission.Velocity;
-            go.AddComponent<ContactProbe>().Initialize(this, body);
-            if (emission.Energy > 0f)
-            {
-                // Energy is shared by mass; a bounded outward impulse supplements inherited motion.
-                Vector3 outward = center - emission.Origin;
-                if (outward.sqrMagnitude > .000001f)
-                    body.linearVelocity += outward.normalized * Mathf.Min(5f, Mathf.Sqrt(2f * emission.Energy / emission.TotalMass));
-            }
-            pieces.Add(new Piece { Object = go, Body = body, Mesh = mesh, Renderer = renderer, Born = Time.time, Cells = cells.Count });
-            PeakBodies = Mathf.Max(PeakBodies, pieces.Count);
-        }
-
         internal static Mesh BuildMesh(IReadOnlyList<VoxelFragment> cells, Vector3 center)
         {
             // Four separate vertices per face allow hard normals and faithful cell colors.
@@ -443,9 +300,9 @@ namespace MagicCarpet.Native.Voxels
         private void Update()
         {
             long start = Stopwatch.GetTimestamp();
-            for (int i = pieces.Count - 1; i >= 0; i--)
+            for (int i = active.Count - 1; i >= 0; i--)
             {
-                var p = pieces[i]; float age = Time.time - p.Born;
+                var p = active[i]; float age = Time.time - p.Born;
                 if (p.FadeStart < 0f && ShouldBeginFade(age, p.Body.IsSleeping()))
                 {
                     p.FadeStart = Time.time;
@@ -453,17 +310,21 @@ namespace MagicCarpet.Native.Voxels
                 }
                 if (p.FadeStart < 0f) continue;
                 float alpha = 1f - (Time.time - p.FadeStart) / FadeSeconds;
-                if (alpha <= 0f) { DisposedCells += p.Cells; Destroy(p.Object); Destroy(p.Mesh); pieces.RemoveAt(i); continue; }
-                p.Renderer.GetPropertyBlock(properties); properties.SetFloat("_Alpha", alpha); p.Renderer.SetPropertyBlock(properties);
+                if (alpha <= 0f)
+                {
+                    DisposedCells += p.RepresentedCells; p.Object.SetActive(false);
+                    active.RemoveAt(i); available.Push(p); continue;
+                }
+                p.Renderer.GetPropertyBlock(properties); properties.SetFloat(AlphaId, alpha); p.Renderer.SetPropertyBlock(properties);
             }
             Drain();
-            ManagementMilliseconds += (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
+            ManagementMilliseconds += Milliseconds(Stopwatch.GetTimestamp() - start);
         }
 
         private void OnDestroy()
         {
-            foreach (var p in pieces) { if (p.Object != null) Destroy(p.Object); if (p.Mesh != null) Destroy(p.Mesh); }
-            pieces.Clear(); pending.Clear();
+            pending.Clear(); active.Clear(); available.Clear();
+            if (cubeMesh != null) Destroy(cubeMesh);
             if (material != null) Destroy(material);
             if (contactMaterial != null) Destroy(contactMaterial);
         }

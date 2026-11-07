@@ -1,5 +1,39 @@
 # Shared-engine delivery plan
 
+## Installed Modern voxel refinement (2026-11-07)
+
+Oliver accepted the first voxel experiment and requests smaller independent
+marble-like rubble, removal of destruction hitches, and the beautiful Modern
+environment with voxelized approved goats and archers retaining native game
+behaviour. Use brick-sized house cells, finer characters and varied terrain
+resolution. Preserve existing installed versions. Root owns Modern composition,
+native-state joins, installation and checked video; Terra physics owns pooled
+small debris, Terra characters owns fine skinned conversion/snapshot, and Terra
+volume owns bounded edits and local terrain contacts. Verify the real integrated
+player, important frames and comparable impact/steady frame timings before
+handoff. Do not substitute authored character motion for native behaviour or
+claim local Unity terrain edits are Rust campaign persistence.
+
+Implemented and installed as separate `Builds/VoxelsModern` player-15; the launcher
+defaults to this iteration, with `--classic` preserving player-7. The approved
+Modern player is unchanged. House cells are 0.25 units, editable ground 0.125,
+and near goat/archer skins 96 cells high, using original rigs and native decisions.
+Pooled small rubble, bounded edits, sparse terrain contact tiles and the physical
+patch seam fix the measured allocation/CCD spike and escaped-fragment defects.
+Exact terrain-height caching removes the repeated hoof-sampling computation.
+
+Self-verified: 93 relevant tests, 29 subsequent affected terrain tests and 18
+final physics/contact/seam tests passed (overlapping sets). Final repeated world
+runs, native death, all four captures and installed F2/B/W/Space/F10 checks pass.
+Inspected gait, release, impact, crater and settling frames in the 36.5-second
+video. Evidence: `/mnt/pinokio-shared/magiccarpet-voxel-modern-20261107/`;
+phone video and exact scope are in `research/private/remc2-unity-native/VOXEL_SANDBOX.md`.
+Full-scene 3090 median is 37–40 fps at 1280×960, p95 33.55–39.25 ms, worst
+88.48–95.25 ms: whole-frame hitch/performance work remains open. Local destruction
+does not alter native campaign terrain/saves/AI, and the native combat flame is
+still a legacy sprite. Actual desktop/VR remain unqualified; runs used a private
+GPU compositor, with installed controls on a private X display.
+
 ## Delivered voxel sandbox experiment (2026-11-07)
 
 Oliver accepted the Modern goat/archer delivery and requested a separate small

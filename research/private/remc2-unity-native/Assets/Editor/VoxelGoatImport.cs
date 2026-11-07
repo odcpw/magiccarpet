@@ -12,7 +12,6 @@ namespace MagicCarpet.Native.Editor
     // Owner-local output; source geometry, material and skin come from the approved prefab.
     public static class VoxelGoatImport
     {
-        private const string Folder = "Assets/Resources/ModernCharacters/Goat/Voxels";
         private sealed class Cell
         {
             internal float distance = float.PositiveInfinity;
@@ -21,38 +20,49 @@ namespace MagicCarpet.Native.Editor
             internal BoneWeight weight;
         }
 
-        [MenuItem("Magic Carpet/Prepare voxel goats")]
+        [MenuItem("Magic Carpet/Prepare voxel characters")]
         public static void Prepare()
         {
-            var character = Resources.Load<ModernCharacterAsset>("ModernCharacters/Goat/Character");
+            PrepareCharacter("Goat", new[] { 24, 40, 64, 96 });
+            PrepareCharacter("Archer", new[] { 64, 96 });
+            AssetDatabase.SaveAssets();
+        }
+
+        private static void PrepareCharacter(string name, int[] resolutions)
+        {
+            var character = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
             if (character == null || character.model == null || character.height <= 0)
-                throw new InvalidOperationException("The approved goat character must be imported first");
-            Directory.CreateDirectory(Folder);
+                throw new InvalidOperationException("The approved " + name + " character must be imported first");
+            var folder = "Assets/Resources/ModernCharacters/" + name + "/Voxels";
+            Directory.CreateDirectory(folder);
             AssetDatabase.Refresh();
             var instance = UnityEngine.Object.Instantiate(character.model);
             try
             {
                 var skins = instance.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-                if (skins.Length != 1) throw new InvalidOperationException("Expected one approved goat skin; inspect the model before regenerating voxels");
-                var renderer = skins[0];
-                foreach (var resolution in new[] { 24, 40, 64 })
+                var renderer = name == "Goat" ? skins.Single() : skins.Single(skin => skin.name == "char1");
+                foreach (var resolution in resolutions)
                 {
-                    var path = $"{Folder}/Goat{resolution}.asset";
+                    var path = $"{folder}/{name}{resolution}.asset";
                     var existing = AssetDatabase.LoadAssetAtPath<VoxelGoatAsset>(path);
                     if (existing != null)
                     {
                         if (existing.sourceMesh != renderer.sharedMesh || existing.mesh == null || existing.resolution != resolution)
                             throw new InvalidOperationException("Existing generated asset differs from approved source: " + path);
-                        Debug.Log("Retaining existing voxel goat " + path);
+                        if (resolution == 96 && (existing.meshFormat == 0 ||
+                            existing.meshFormat == 1 && existing.mesh.vertexCount != CountFaceVertices(existing.cellFaceMasks)))
+                            Optimize(existing);
+                        else Debug.Log("Retaining existing voxel character " + path);
                         continue;
                     }
                     var result = Build(character, renderer, resolution);
+                    result.name = name + resolution;
                     AssetDatabase.CreateAsset(result, path);
                     AssetDatabase.AddObjectToAsset(result.mesh, result);
+                    if (resolution == 96) Optimize(result);
                     EditorUtility.SetDirty(result);
-                    Debug.Log($"Voxel goat {resolution}: {result.cellColors.Length} cells, {result.cellSize} local units");
+                    Debug.Log($"Voxel {name} {resolution}: {result.cellColors.Length} cells, {result.cellSize} local units");
                 }
-                AssetDatabase.SaveAssets();
             }
             finally { UnityEngine.Object.DestroyImmediate(instance); }
         }
@@ -61,7 +71,7 @@ namespace MagicCarpet.Native.Editor
         {
             var source = renderer.sharedMesh;
             if (source == null || !source.isReadable || source.boneWeights.Length != source.vertexCount || source.uv.Length != source.vertexCount)
-                throw new InvalidOperationException("Goat mesh needs readable vertices, UVs and bone weights");
+                throw new InvalidOperationException("Character mesh needs readable vertices, UVs and bone weights");
             var relativeY = renderer.transform.InverseTransformVector(instanceUp(renderer.transform.root)).magnitude;
             var size = character.height * relativeY / resolution;
             var vertices = source.vertices; var uv = source.uv; var weights = source.boneWeights;
@@ -112,6 +122,8 @@ namespace MagicCarpet.Native.Editor
                 var output = ScriptableObject.CreateInstance<VoxelGoatAsset>();
                 output.name = "Goat" + resolution; output.sourceMesh = source; output.cellSize = size; output.resolution = resolution;
                 output.cellColors = ordered.Select(cell => cell.color).ToArray();
+                output.cellCenters = ordered.Select(cell => cell.center).ToArray();
+                output.cellWeights = ordered.Select(cell => cell.weight).ToArray();
                 output.mesh = MakeMesh(source, ordered, size);
                 return output;
             }
@@ -193,6 +205,81 @@ namespace MagicCarpet.Native.Editor
             if (Mathf.Abs(denominator) < 1e-20f) return new Vector3(1, 0, 0);
             var v2 = vb / denominator; var w2 = vc / denominator;
             return new Vector3(1 - v2 - w2, v2, w2);
+        }
+
+        private static int CountFaceVertices(byte[] masks)
+        {
+            if (masks == null) return -1;
+            var faces = 0;
+            foreach (var mask in masks)
+                for (var face = 0; face < 6; face++) if ((mask & (1 << face)) != 0) faces++;
+            return faces * 4;
+        }
+
+        // Only erase paired faces whose complete skin transform is identical.
+        // The adjoining quads then remain coincident under every rig pose, so
+        // no hole can open even at a moving joint. Different weights keep both.
+        private static void Optimize(VoxelGoatAsset asset)
+        {
+            if (asset.cellCenters == null || asset.cellWeights == null || asset.cellColors == null ||
+                asset.cellCenters.Length != asset.cellColors.Length || asset.cellWeights.Length != asset.cellColors.Length)
+                throw new InvalidOperationException("Cannot optimize a legacy character without center and weight metadata");
+            var size = asset.cellSize;
+            var count = asset.cellCenters.Length;
+            var lookup = new Dictionary<Vector3Int, int>(count);
+            Vector3Int Key(Vector3 p) => new Vector3Int(Mathf.RoundToInt(p.x / size - .5f),
+                Mathf.RoundToInt(p.y / size - .5f), Mathf.RoundToInt(p.z / size - .5f));
+            for (var i = 0; i < count; i++) lookup.Add(Key(asset.cellCenters[i]), i);
+            var directions = new[] { Vector3Int.right, Vector3Int.left, Vector3Int.up, Vector3Int.down,
+                new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1) };
+            var faceNormals = new[] { Vector3.right, Vector3.left, Vector3.up, Vector3.down, Vector3.forward, Vector3.back };
+            var axesU = new[] { Vector3.back, Vector3.forward, Vector3.right, Vector3.right, Vector3.right, Vector3.left };
+            var axesV = new[] { Vector3.up, Vector3.up, Vector3.back, Vector3.forward, Vector3.up, Vector3.up };
+            var masks = new byte[count];
+            var faces = 0;
+            for (var i = 0; i < count; i++)
+            {
+                var key = Key(asset.cellCenters[i]);
+                for (var face = 0; face < 6; face++)
+                {
+                    if (lookup.TryGetValue(key + directions[face], out var neighbor) && asset.cellWeights[i].Equals(asset.cellWeights[neighbor])) continue;
+                    masks[i] |= (byte)(1 << face); faces++;
+                }
+            }
+            if (faces == 0) throw new InvalidOperationException("Voxel optimization produced no visible faces");
+            var verts = new Vector3[faces * 4]; var normals = new Vector3[verts.Length];
+            var colors = new Color32[verts.Length]; var weights = new BoneWeight[verts.Length];
+            var indices = new int[faces * 6]; var n = 0;
+            for (var i = 0; i < count; i++)
+            for (var face = 0; face < 6; face++)
+            {
+                if ((masks[i] & (1 << face)) == 0) continue;
+                var start = n * 4; var p = asset.cellCenters[i] + faceNormals[face] * size * .5f;
+                var u = axesU[face] * size * .5f; var v = axesV[face] * size * .5f;
+                verts[start] = p - u - v; verts[start + 1] = p + u - v;
+                verts[start + 2] = p + u + v; verts[start + 3] = p - u + v;
+                for (var k = 0; k < 4; k++) { normals[start + k] = faceNormals[face]; colors[start + k] = asset.cellColors[i]; weights[start + k] = asset.cellWeights[i]; }
+                var t = n * 6;
+                indices[t] = start; indices[t + 1] = start + 1; indices[t + 2] = start + 2;
+                indices[t + 3] = start; indices[t + 4] = start + 2; indices[t + 5] = start + 3;
+                n++;
+            }
+            // CopySerialized can silently leave a Mesh unchanged on some
+            // existing Unity subassets (observed on Goat96). Assign its data
+            // directly, preserving the subasset identity and existing references.
+            var mesh = asset.mesh;
+            var before = mesh.vertexCount;
+            var poses = mesh.bindposes;
+            var bounds = mesh.bounds;
+            mesh.Clear();
+            mesh.indexFormat = IndexFormat.UInt32;
+            mesh.vertices = verts; mesh.normals = normals; mesh.colors32 = colors; mesh.boneWeights = weights;
+            mesh.bindposes = poses; mesh.triangles = indices; mesh.bounds = bounds;
+            if (mesh.vertexCount != faces * 4 || mesh.triangles.Length != faces * 6)
+                throw new InvalidOperationException("Voxel mesh update did not apply completely");
+            asset.cellFaceMasks = masks; asset.meshFormat = 1;
+            EditorUtility.SetDirty(mesh); EditorUtility.SetDirty(asset);
+            Debug.Log($"Voxel character {asset.name} exact-weight faces: {before} -> {mesh.vertexCount} vertices ({faces} faces)");
         }
 
         private static Mesh MakeMesh(Mesh source, Cell[] cells, float size)

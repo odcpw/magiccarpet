@@ -8,6 +8,12 @@ namespace MagicCarpet.Native.Voxels
         public Mesh sourceMesh;
         public Mesh mesh;
         public Color32[] cellColors;
+        public Vector3[] cellCenters;
+        public BoneWeight[] cellWeights;
+        // 0 = legacy 24-vertex cubes; 1 = faces culled only across
+        // neighboring cells with exactly identical skin weights.
+        public int meshFormat;
+        public byte[] cellFaceMasks;
         public float cellSize;
         public int resolution;
     }

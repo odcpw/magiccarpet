@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using MagicCarpet.Native.Voxels;
 
 namespace MagicCarpet.Native
 {
@@ -16,6 +17,7 @@ namespace MagicCarpet.Native
         private const float DeathHoldSeconds = .25f;
         private const float MovingHitGraceSeconds = .08f;
         private readonly ModernCharacterInstance character;
+        private VoxelCharacterSkin voxelSkin;
         private readonly float visualScale;
         private Vector3 lastRenderPosition;
         private bool hasRenderPosition, hasObservation, removed;
@@ -59,6 +61,23 @@ namespace MagicCarpet.Native
             character = new ModernCharacterInstance(asset, parent);
             Root.transform.localScale = Vector3.one * visualScale;
         }
+
+        internal void AttachVoxelSkin(VoxelGoatAsset skin)
+        {
+            if (voxelSkin != null) throw new InvalidOperationException("Voxel skin already attached");
+            voxelSkin = new VoxelCharacterSkin(Root, skin);
+        }
+
+        internal int VoxelResolution => voxelSkin != null ? voxelSkin.Resolution : 0;
+
+        internal void SetVoxelDetail(VoxelGoatAsset skin)
+        {
+            if (voxelSkin == null) throw new InvalidOperationException("Voxel skin not attached");
+            voxelSkin.SetDetail(skin);
+        }
+
+        internal List<VoxelFragment> SnapshotVoxelFragments() =>
+            voxelSkin != null ? voxelSkin.SnapshotFragments() : throw new InvalidOperationException("Voxel skin not attached");
 
         internal void Observe(Vector3 worldPosition, float yawDegrees, int life, byte sourceAction, ulong tick)
         {
@@ -235,7 +254,7 @@ namespace MagicCarpet.Native
         private void EnsureContactCache()
         {
             if (contactRenderer != null) return;
-            contactRenderer = Root.GetComponentsInChildren<SkinnedMeshRenderer>(true)
+            contactRenderer = voxelSkin != null ? voxelSkin.Source : Root.GetComponentsInChildren<SkinnedMeshRenderer>(true)
                 .OrderByDescending(renderer => renderer.sharedMesh.vertexCount).First();
             var weights = contactRenderer.sharedMesh.boneWeights;
             var bones = contactRenderer.bones;
@@ -369,6 +388,7 @@ namespace MagicCarpet.Native
                 else UnityEngine.Object.DestroyImmediate(contactMesh);
                 contactMesh = null;
             }
+            voxelSkin?.Dispose();
             character.Dispose();
         }
     }

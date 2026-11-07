@@ -16,8 +16,8 @@ namespace MagicCarpet.Native.Voxels
     // An isolated local-physics experiment. Never opens or modifies a campaign/save.
     public sealed class VoxelSandbox : MonoBehaviour
     {
-        [Serializable] private sealed class Building { public int source_slot, build_index; public float x,z,base_height,width,depth,height; }
-        [Serializable] private sealed class Inputs { public int[] heights; public Building building; public ModernBuildingMeshes.Profile profile; }
+        [Serializable] internal sealed class Building { public int source_slot, build_index; public float x,z,base_height,width,depth,height; }
+        [Serializable] internal sealed class Inputs { public int[] heights; public Building building; public ModernBuildingMeshes.Profile profile; }
         [Serializable] private sealed class Sample { public float time; public double frameMs, physicsMs, cpuMainMs,cpuRenderMs,presentMs,gpuMs,goatUpdateMs; public string phase; public int bodies, pending, sleeping, contacts, rebounds; }
         [Serializable] private sealed class Report {
             public string mode, device, resolution, diagnostic; public float voxelSize; public bool physicsRecorderAvailable, frameTimingsAvailable;
@@ -57,6 +57,7 @@ namespace MagicCarpet.Native.Voxels
         }
         private void Awake()
         {
+            if (VoxelModernWorld.Requested) { enabled=false; return; }
             try {
                 input=JsonUtility.FromJson<Inputs>(Resources.Load<TextAsset>("ModernCharacters/VoxelSandbox/Level1").text);
                 if(input.heights.Length!=65536) throw new InvalidDataException("Invalid Level 1 terrain");
@@ -152,13 +153,13 @@ namespace MagicCarpet.Native.Voxels
             PopulateHouse(house,p,cell);
             house.Build();
         }
-        internal static void PopulateHouse(VoxelVolume house,ModernBuildingMeshes.Profile p,float cell)
+        internal static void PopulateHouse(VoxelVolume house,ModernBuildingMeshes.Profile p,float cell,float scale=1)
         {
-            float w=(p.columns-1)*2,d=(p.rows-1)*2;
-            int nx=Mathf.RoundToInt(w/cell),nz=Mathf.RoundToInt(d/cell),ny=Mathf.CeilToInt(p.heights.Max()*.5f/cell);
+            float w=(p.columns-1)*2*scale,d=(p.rows-1)*2*scale;
+            int nx=Mathf.RoundToInt(w/cell),nz=Mathf.RoundToInt(d/cell),ny=Mathf.CeilToInt(p.heights.Max()*.5f*scale/cell);
             float Top(float x,float z) {
-                float u=x/2,v=z/2; int ix=Mathf.Min((int)u,p.columns-2), iz=Mathf.Min((int)v,p.rows-2); u-=ix;v-=iz;
-                float a=p.heights[ix+iz*p.columns]*.5f,b=p.heights[ix+1+iz*p.columns]*.5f,c=p.heights[ix+(iz+1)*p.columns]*.5f,dd=p.heights[ix+1+(iz+1)*p.columns]*.5f;
+                float u=x/(2*scale),v=z/(2*scale); int ix=Mathf.Min((int)u,p.columns-2), iz=Mathf.Min((int)v,p.rows-2); u-=ix;v-=iz;
+                float a=p.heights[ix+iz*p.columns]*.5f*scale,b=p.heights[ix+1+iz*p.columns]*.5f*scale,c=p.heights[ix+(iz+1)*p.columns]*.5f*scale,dd=p.heights[ix+1+(iz+1)*p.columns]*.5f*scale;
                 if(((ix+iz+p.diagonal_parity)&1)==0) return u<v ? a+(dd-c)*u+(c-a)*v : a+(b-a)*u+(dd-b)*v;
                 return u+v<1 ? a+(b-a)*u+(c-a)*v : dd+(c-dd)*(1-u)+(b-dd)*(1-v);
             }
@@ -166,12 +167,12 @@ namespace MagicCarpet.Native.Voxels
                 float xx=(x+.5f)*cell,zz=(z+.5f)*cell,top=Top(xx,zz);
                 for(int y=0;y<ny;y++) {
                     float yy=(y+.5f)*cell;
-                    if(yy>top || (yy<top-1.6f && yy>cell))continue;
+                    if(yy>top || (yy<top-1.6f*scale && yy>cell))continue;
                     // Openings are real missing cells through the shell.
-                    bool door=Mathf.Abs(xx-w*.5f)<.65f && zz<2.2f && yy<2.2f;
-                    bool window=(Mathf.Abs(zz-d*.5f-2)<.55f || Mathf.Abs(zz-d*.5f+2)<.55f) && yy>2.2f && yy<3.1f && (xx<2 || xx>w-2);
+                    bool door=Mathf.Abs(xx-w*.5f)<.65f*scale && zz<2.2f*scale && yy<2.2f*scale;
+                    bool window=(Mathf.Abs(zz-d*.5f-2*scale)<.55f*scale || Mathf.Abs(zz-d*.5f+2*scale)<.55f*scale) && yy>2.2f*scale && yy<3.1f*scale && (xx<2*scale || xx>w-2*scale);
                     if(door||window) continue;
-                    bool roof=top>5.8f;
+                    bool roof=top>5.8f*scale;
                     float grain=Mathf.PerlinNoise(xx*5+4,zz*5+y*.29f);
                     Color color=roof?Color.Lerp(new Color(.19f,.24f,.27f),new Color(.32f,.37f,.37f),grain):Color.Lerp(new Color(.53f,.46f,.33f),new Color(.75f,.67f,.49f),grain);
                     house.SetCell(x,y,z,color);

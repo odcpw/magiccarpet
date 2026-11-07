@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using MagicCarpet.Native.Voxels;
 
 namespace MagicCarpet.Native
 {
@@ -11,6 +13,7 @@ namespace MagicCarpet.Native
         private const float ModelWalkTravel = 1.65f;
         private const float DeathHoldSeconds = .25f;
         private readonly ModernCharacterInstance character;
+        private VoxelCharacterSkin voxelSkin;
         private readonly Transform visual, spine, bow, arrow;
         private readonly SkinnedMeshRenderer bowstring;
         private readonly Transform[] animatedNodes;
@@ -77,6 +80,23 @@ namespace MagicCarpet.Native
             arrowLocalForward = arrow.InverseTransformDirection(Root.transform.TransformDirection(flight.normalized));
             character.Sample("Idle", 0);
         }
+
+        internal void AttachVoxelSkin(VoxelGoatAsset skin)
+        {
+            if (voxelSkin != null) throw new InvalidOperationException("Voxel skin already attached");
+            voxelSkin = new VoxelCharacterSkin(Root, skin);
+        }
+
+        internal int VoxelResolution => voxelSkin != null ? voxelSkin.Resolution : 0;
+
+        internal void SetVoxelDetail(VoxelGoatAsset skin)
+        {
+            if (voxelSkin == null) throw new InvalidOperationException("Voxel skin not attached");
+            voxelSkin.SetDetail(skin);
+        }
+
+        internal List<VoxelFragment> SnapshotVoxelFragments() =>
+            voxelSkin != null ? voxelSkin.SnapshotFragments() : throw new InvalidOperationException("Voxel skin not attached");
 
         // Called on source ticks. aim points from the source archer to its
         // current target; confirmedArrowSpawn is an actual allocation event.
@@ -387,6 +407,6 @@ namespace MagicCarpet.Native
         }
 
         private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
-        public void Dispose() => character.Dispose();
+        public void Dispose() { voxelSkin?.Dispose(); character.Dispose(); }
     }
 }

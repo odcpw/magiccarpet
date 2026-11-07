@@ -45,6 +45,30 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void WarmContactSamplesTrackHeightMaterialWaterAndGenerationChanges()
+        {
+            var points=new[]{new Vector2(127.25f,126.75f),new Vector2(-.75f,1.25f),new Vector2(1023.25f,1025.25f)};
+            foreach(var p in points)terrain.SampleHeight(p.x,p.y);
+            for(int turn=1;turn<=4;turn++)
+            {
+                foreach(int index in new[]{Index(31,31),Index(0,0),Index(255,0)})
+                {
+                    if(turn==1)heights[index]=(byte)(heights[index]+20);
+                    if(turn==2)types[index]=0;
+                    if(turn==3){types[index]=1;water[index]^=8;}
+                }
+                terrain.Update(heights,types,water,turn==4?2UL:1UL,(ulong)turn);
+                using var fresh=new ModernTerrainMesh(parent.transform,material,material);
+                fresh.Update(heights,types,water,1,0);
+                foreach(var p in points)
+                {
+                    Assert.That(terrain.SampleHeight(p.x,p.y),Is.EqualTo(fresh.SampleHeight(p.x,p.y)).Within(.00001f));
+                    Assert.That(terrain.SampleHeight(p.x+1024,p.y-1024),Is.EqualTo(fresh.SampleHeight(p.x,p.y)).Within(.0001f));
+                }
+            }
+        }
+
+        [Test]
         public void ShoreCoverageTracksOrientationOnlyMutationAndLowersItsBed()
         {
             var atlas = new byte[256*608];

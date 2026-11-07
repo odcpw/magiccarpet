@@ -2362,7 +2362,7 @@ namespace MagicCarpet.Native
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntime()
         {
-            if (FindFirstObjectByType<Voxels.VoxelSandbox>() != null) return;
+            if (FindFirstObjectByType<Voxels.VoxelSandbox>() != null && !Voxels.VoxelModernWorld.Requested) return;
             if (FindFirstObjectByType<ModernCharacterReview>() != null) return;
             if (FindFirstObjectByType<MagicCarpetRuntime>() == null)
             {
