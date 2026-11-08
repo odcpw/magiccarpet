@@ -378,12 +378,48 @@ formatting/whole-file findings remain. Failed C1 compile and its exact source
 are preserved; the retained scatter test now calls the canonical helper with
 its original assertions. Completed return artifacts are verified on Rig.
 
-Next creature is final boss10 (`mc-1pb.3`). Its ordinary building68/group29
-producer already exists. The first diagnosed missing consumer is source-time
-prepared attack/death audio: most sounds currently stop at the economy journal,
-and periodic death sound63 has no producer. RedElk owns the family correction;
-Root coordinates the narrow shared audio join and matching delivery. Preserve
-the original whole-family acceptance and actual source24 data/feature gate.
+### Installed final boss audio, source tails and death ownership — `mc-1pb.3` (2026-11-08)
+
+Implemented, committed and pushed at `351793fc`; matching optimized Original
+native `dedc2c40` is installed through refresh `build-cj8_6p33`. All654 unique
+inputs match canonical source, isolated checkout and Rig. Root viewed the normal
+canonical map/loading/NightSpire terrain/HUD with that mapped native, one portal
+click and zero retries, then stopped the owned player/display. This proves
+launch/load, not native boss combat, human play/FPS/hardware audio/full missions
+or old saves. No Unity/art changes were required.
+
+Boss attack, approach, pressure and death sounds now reach prepared native audio
+at their source-time reads. Null-emitter centering/pitch, current ID-addressed
+emitters, mute/listener order and non-advancing RNG reads are preserved. The
+missing ground/facing tail now uses current player state, frame timing and source
+turn arithmetic. Source58490 is signed-16 XY distance despite its XYZ name;
+boss targeting/protection use that actual arithmetic. Summon gates, death-child
+owner reads after allocation and family ownership of the Volcano reward are
+corrected without replacing generic constructors.
+
+Frozen C3 passes the real whole-Level25 boss's natural Firefly production,
+flight, audio and parent-loss cleanup (2.714s), and actual BUILD68 demolition
+through group29/boss production and approach audio (1.015s). Configured controls
+cover four child branches, projectile construction, exhausted allocation,
+ground/facing, protection and death sound/owner order; native audio drain and
+source-order checks pass. The workspace release all-targets check passes.
+Fresh bounded source/gate review found no introduced defect. UBS found no critical
+on changed executable lines; legacy formatting/whole-file findings remain.
+
+C1/C2 negatives are preserved. Their natural-child fixture funded current player
+life without matching maximum life, allowing source12A70 to clamp the declared
+survival control. C3 funds the same200000 as both current/maximum, leaving boss,
+NPCs, RNG, lure, lifetime bound and assertions intact. The pressure callback
+control proves family call order; production movement was inspected statically.
+Configured death controls do not establish a naturally earned defeat.
+
+Evidence: `research/private/generated/boss-audio-20261108-integration/candidate-3`
+and its Original smoke. Full boss acceptance stays OPEN/unchecked. Next is the
+successful Volcano constructor's missing source-global clear before its owner
+read, then one real paid Meteor hit through same-generation boss consumption
+and the complete natural death sequence. Preserve default300000 boss life and
+source300-per-callback cap. The Volcano mode flag is not mission victory;
+whole final-route/ending assembly remains in its original owning beads.
 
 ### Installed rival Morph steering/full activation — `mc-1pb.17` (2026-11-08)
 
