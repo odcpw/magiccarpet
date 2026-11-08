@@ -278,7 +278,7 @@ without bypassing or rewriting those dependencies.
 - [x] Hydra27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [ ] All single-player rival wizards — `mc-1pb.17`.
-- [ ] Player death, banishment and revival — `mc-1pb.18`.
+- [x] Player death, banishment and revival — `mc-1pb.18`.
 - [ ] Final boss10 — `mc-1pb.3`.
 - [x] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`.
 
@@ -288,12 +288,30 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
-### Active player lifecycle — `mc-1pb.18`
+### Installed player lifecycle — `mc-1pb.18` (2026-11-08)
 
-Shared combat is delivered and closed. RedElk owns this now-ready original
-capability; RusticGrove integrates its real producer/consumer checks with him.
-CopperMountain owns shared joins, serialized Cargo and Original installation.
-Finish ordinary lethal combat through actual held-spell scattering, owned mana
+Source `7487708b` is committed/pushed; optimized native `3965057f` is installed
+with the matching Original player `build-edg_38r2`. All653 unique native build
+inputs match worker/local source and the installed artifact. The two focused
+Original Unity checks pass with200 source/settings inputs unchanged. Root viewed
+the canonical map, loading artwork and NightSpire terrain/HUD with that mapped
+native, zero retries, then stopped owned smoke. Bead `.18` is closed after
+independent bounded original-acceptance/source/gate review and root verification.
+This is not a native death-encounter visual, human combat/FPS/hardware-audio,
+whole-mission or old-save claim. The previous player and native remain preserved.
+Rival wizards `.17` and final boss10 `.3` remain unfinished; preserve their
+original dependencies and deliver the next real missing connected capability.
+RedElk now owns `.17` through integration: actual imported rival profiles and
+their own holders must reach source AI decisions, real casting/Castle/mana,
+hostility and defeat/revival consumers. Inspect current code before treating
+the bead's old Nyphur-only assessment as truth. Select one concrete unmet join
+for the next batch; reuse delivered spell and lifecycle paths. CopperMountain
+owns shared integration/checks/delivery. `.17` retains its open prerequisite
+acceptance and remains open; no dependency bypass or roster-wide claim.
+
+RedElk and RusticGrove delivered this original capability with CopperMountain
+owning shared joins, serialized Cargo and Original installation. It connects
+ordinary lethal combat through actual held-spell scattering, owned mana
 and death-marker binding, source death camera/banishment, natural rival Castle
 revival or no-Castle removal, and the actual flow/objective consumer. Preserve
 full original acceptance and source1200 countdown/allocation-failure behavior.
@@ -307,7 +325,8 @@ dependencies intact.
 The lifecycle candidate now implements source fall/camera, current A4 Castle
 revival, full-arena burst/marker/holder births, mutable source spawn XY and public
 no-Castle recovery, plus per-participant original-font notices with a separate
-guarded, replayed presentation clock. This is implemented, not installed. Candidate3
+guarded, replayed presentation clock. The following records the qualification
+sequence; current installation is stated above. Candidate3
 core/CAPI compilation passed with460 unchanged Rust inputs. The current-carrier,
 generation-bound Morph/Bee repair passes its focused discriminator1.092s and
 existing acquired all-tier/follow/expiry/reclaim check47.639s; source order0.617s
@@ -360,10 +379,10 @@ warning; source wrapping arithmetic is intentional, with test/legacy findings
 and whole-package formatting debt retained. The integrated strict-Rig workspace
 all-target check PASS51.165s with461 Rust and37 extra inputs unchanged. It
 returned no local compiler artifacts; no cleanup or repeated check is needed.
-Full acceptance remains open until native/client delivery qualifies; installed
-Original24df bytes are unchanged. Frozen Original-only
-runtime and test C# compilation passes with68 immutable source inputs; Unity
-execution, matching native/player build and installation remain pending.
+Frozen Original-only runtime and test C# compilation passed with68 immutable
+source inputs; both actual Unity checks and matching native/player delivery
+subsequently qualified as recorded above. Original24df remains preserved as
+the immediate previous native.
 
 Evidence is in `generated/player-lifecycle-20261107-integration` under
 `research/private/`. The next source candidate uses the existing native
@@ -377,7 +396,7 @@ an existing RAM alias. Keep the5GB root floor and measured7.2GB heavy
 stage reserve; `/tmp` has only about0.85GB free. Do not remove source, data, current
 players or remote warm caches to create room.
 
-### Current installed delivery: shared creature combat (2026-11-07)
+### Previous installed delivery: shared creature combat (2026-11-07)
 
 Implemented, verified, committed and pushed at `1e43eb6c`; installed Original
 native `24dfac3f528a38d09fc2806318aa2a021211ff0d4421737ddf505178a804636f`
