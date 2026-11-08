@@ -6,6 +6,30 @@ use crate::{
     native_world::{Level2AuthoredTreeSource, ParticleParameter, SessionTerrain, source_target},
 };
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GroundFireBirth {
+    parent: crate::campaign::source_arena::SourceEntityHandle,
+    child: crate::campaign::source_arena::SourceEntityHandle,
+    position: Position,
+}
+
+#[cfg(test)]
+thread_local! {
+    static GROUND_FIRE_BIRTH_TRACE: std::cell::RefCell<Option<(crate::campaign::source_arena::SourceEntityHandle, Option<GroundFireBirth>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn start_ground_fire_birth_trace(parent: crate::campaign::source_arena::SourceEntityHandle) {
+    GROUND_FIRE_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some((parent, None)));
+}
+
+#[cfg(test)]
+fn take_ground_fire_birth_trace() -> Option<GroundFireBirth> {
+    GROUND_FIRE_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().and_then(|(_, birth)| birth))
+}
+
 /// Present the current typed Tree occupant through the ordinary sprite path.
 pub(crate) fn sprite_sources(
     trees: &[Level2AuthoredTreeSource],
@@ -39,6 +63,12 @@ pub(crate) fn step_imported(
     use crate::level_definition::EffectKind;
     use crate::world::effects::{allocate_from_source_position, bind_particle, sync_position};
 
+    #[cfg(test)]
+    let trace_target = arena
+        .handle(slot)
+        .map(|target| (target, arena.economy.events().len()));
+    #[cfg(test)]
+    let mut consumed = None;
     let tree = arena
         .entities
         .get_mut(usize::from(slot))
@@ -55,7 +85,13 @@ pub(crate) fn step_imported(
                     tree.record[100],
                     tree.record[101],
                 ]);
+                #[cfg(test)]
+                let before = tree.life;
                 tree.set_life(tree.life.wrapping_sub(damage));
+                #[cfg(test)]
+                {
+                    consumed = Some(((damage, owner), before, tree.life));
+                }
             }
             owner != 0
         }
@@ -93,6 +129,21 @@ pub(crate) fn step_imported(
             particles,
         )?
     {
+        #[cfg(test)]
+        if let (Some((parent, _)), Some(child)) = (trace_target, arena.handle(child_slot)) {
+            let birth = GroundFireBirth {
+                parent,
+                child,
+                position: arena.entities[usize::from(child_slot)].position,
+            };
+            GROUND_FIRE_BIRTH_TRACE.with(|trace| {
+                if let Some((watched, result)) = trace.borrow_mut().as_mut()
+                    && *watched == parent
+                {
+                    *result = Some(birth);
+                }
+            });
+        }
         let current = &arena.entities[usize::from(slot)];
         let owner = u16::from_le_bytes([current.record[102], current.record[103]]);
         let owner_id = if owner == 0 {
@@ -125,6 +176,22 @@ pub(crate) fn step_imported(
     let current = &mut arena.entities[usize::from(slot)];
     if had_owner {
         current.record[102..104].fill(0);
+    }
+    #[cfg(test)]
+    if let (Some((target, event_cursor)), Some((mailbox, life_before, life_after))) =
+        (trace_target, consumed)
+    {
+        let writer = crate::native_world::area_damage::take_player_mailbox_writer(target, mailbox);
+        crate::native_world::area_damage::trace_player_damage_consumption(
+            crate::native_world::area_damage::PlayerDamageConsumptionReceipt {
+                target,
+                mailbox,
+                writer,
+                life_before,
+                life_after,
+                event_cursor,
+            },
+        );
     }
     let mut position = current.position;
     position.z = terrain.ground_height(position);
@@ -420,4 +487,485 @@ pub(crate) fn prepare_reclaim(
         arena.entities[usize::from(slot)].reclaim_source_row();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::campaign::{
+        CampaignSession,
+        schedule::{CurrentOccupant, ScheduleReceipt},
+        spec::CampaignSelection,
+    };
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+
+    #[test]
+    fn ordinary_level_three_paid_fireballs_burn_original_tree_and_leave_stump() {
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-cf14-campaign-package-v1-a/qualified-level3");
+        let authored = crate::level1_mission::parse_authored_features(
+            &std::fs::read(package.join("authored-level.bin")).unwrap(),
+        )
+        .unwrap();
+        let feature = &authored[14];
+        assert_eq!(
+            (
+                feature.kind,
+                feature.subtype,
+                feature.activation_group,
+                feature.tile_x,
+                feature.tile_y
+            ),
+            (2, 0, 0, 100, 149)
+        );
+        let mut game = CampaignSession::open(package, CampaignSelection::LEVEL3)
+            .expect("the whole ordinary Level3 owner package opens");
+        game.simulation_mut()
+            .apply_carried_spell_families(&[0], Some(0))
+            .unwrap();
+        let ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 0)
+            .unwrap() as i8;
+        game.step(
+            crate::PlayerCommand {
+                opcode: 31,
+                argument_1: ui,
+                argument_2: 0,
+                ..Default::default()
+            },
+            0,
+        );
+        assert!(
+            game.simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let sim = game.simulation();
+        let target_slot = 95_u16;
+        let tree = sim.entities()[usize::from(target_slot)].clone();
+        assert!(tree.active && (tree.class, tree.model, tree.action) == (2, 0, 0));
+        assert_eq!(
+            (tree.position.x >> 8, tree.position.y >> 8),
+            (feature.tile_x, feature.tile_y)
+        );
+        assert_eq!((tree.max_life, tree.life), (300, 300));
+        assert_ne!(tree.control_flags & 8, 0);
+        assert_ne!(tree.record_bytes()[60] & 1, 0);
+        assert_ne!(
+            sim.canonical_terrain().material_mask(tree.position),
+            crate::WATER_AMBIENCE_MASK
+        );
+        let original_particle = tree.particle_parameter_index.unwrap();
+        assert!([83, 84].contains(&original_particle));
+        let target = sim.source_arena().handle(target_slot).unwrap();
+        let player = sim.state.entity_index;
+        let player_handle = sim.source_arena().handle(player).unwrap();
+        let owner_id = sim.entities()[usize::from(player)].source_id;
+        let holder = sim.shared_spells().local_player().enabled_spell_holders[0];
+        let holder_handle = sim.source_arena().handle(holder).unwrap();
+        let cost = crate::level_definition::FIREBALL_PROPERTIES.tiers[0].mana_cost;
+        let holder_row = sim
+            .shared_spells()
+            .pickups()
+            .iter()
+            .chain(sim.shared_spells().holders())
+            .chain(sim.shared_spells().dynamic_pickups())
+            .find(|row| row.index == holder)
+            .unwrap();
+        assert_eq!(
+            (
+                holder_row.level_gate,
+                holder_row.max_mana,
+                holder_row.mana_regen
+            ),
+            (0, cost, 0)
+        );
+        assert!(sim.shared_spells().player_entity().mana >= 2 * cost);
+        assert!(
+            sim.campaign_entity_presentations(sim.state.yaw)
+                .unwrap()
+                .iter()
+                .any(|dto| dto.entity_index == target_slot
+                    && dto.render_parameter_index == original_particle)
+        );
+        // One fixed, declared player-only overhead firing line. The target
+        // pose, health, actor RNG, callback cadence and all other actors stay live.
+        let centre = Position {
+            z: tree
+                .position
+                .z
+                .wrapping_add(tree.array_yaw())
+                .wrapping_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
+            ..tree.position
+        };
+        let hand = Position {
+            z: centre.z.wrapping_add(1024),
+            ..centre
+        };
+        let aim = crate::level1_mission::projectile_guidance_angles(hand, centre);
+        let mut origin = Position {
+            z: hand.z.wrapping_sub(sim.state.entity_fov),
+            ..hand
+        };
+        let hand_yaw = aim
+            .0
+            .wrapping_sub(sim.shared_spells().beyond_sight_auxiliary().next_entity)
+            .wrapping_sub(512);
+        crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+        assert!(
+            origin.z
+                >= sim
+                    .canonical_terrain()
+                    .ground_height(origin)
+                    .wrapping_add(sim.profile().ground_clearance)
+        );
+        assert!(!sim.canonical_terrain().cave_collision_blocked(origin));
+        assert_eq!(
+            crate::resolve_legacy_movement(
+                &mut crate::FlightState::default(),
+                origin,
+                origin,
+                sim.profile(),
+                sim.canonical_terrain(),
+            ),
+            crate::MovementResolution::Accept(origin),
+            "the real terrain admits the fixed firing pose"
+        );
+        let target_view = source_target::read(
+            sim.source_arena(),
+            source_target::Context::default(),
+            target_slot,
+        )
+        .unwrap()
+        .unwrap();
+        let shape = target_view
+            .collision
+            .expect("real Tree has source collision axes");
+        assert_eq!(
+            (
+                shape.half_width,
+                shape.half_depth,
+                shape.vertical_offset,
+                shape.half_height
+            ),
+            (
+                tree.array_pitch(),
+                tree.array_roll(),
+                tree.array_yaw(),
+                tree.array_fov()
+            )
+        );
+        assert!(shape.half_width > 0 && shape.half_depth > 0 && shape.half_height > 0);
+        assert_eq!(
+            (centre.x, centre.y),
+            (target_view.position.x, target_view.position.y)
+        );
+        assert_eq!(
+            i32::from(centre.z)
+                + i32::from(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET),
+            i32::from(target_view.position.z) + i32::from(shape.vertical_offset)
+        );
+        game.simulation_mut()
+            .set_level2_entity_position(player, origin)
+            .unwrap();
+        let mut no_cast = game.clone();
+        area_damage::start_actor_damage_trace(&[target]);
+        let (mut launches, mut impacts, mut terminals, mut accepted, mut consumed) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut birth = None;
+        let mut hidden_on_prior_turn: Option<crate::campaign::source_arena::SourceEntityHandle> =
+            None;
+        let (
+            mut queued,
+            mut paid,
+            mut child_presented,
+            mut child_hidden,
+            mut child_reclaimed,
+            mut stump_presented,
+        ) = (0, 0, false, false, false, false);
+        let mut elapsed = 0;
+        for turn in 0..256 {
+            let firing = turn == 0 || turn == 8;
+            if firing {
+                game.simulation_mut()
+                    .set_level2_player_aim_for_test(aim.0, aim.1);
+            }
+            area_damage::start_fireball_launch_trace();
+            crate::native_world::start_fireball_terminal_trace();
+            area_damage::start_effect_damage_trace(target_slot);
+            start_ground_fire_birth_trace(target);
+            game.step(
+                crate::PlayerCommand {
+                    flags: if firing { 0x10 } else { 0 },
+                    ..Default::default()
+                },
+                0,
+            );
+            elapsed += 1;
+            let new_launches = area_damage::take_fireball_launch_trace();
+            let launched = new_launches.iter().any(|(_, _, owner)| *owner == player);
+            launches.extend(new_launches);
+            impacts.extend(area_damage::take_fireball_impact_birth_trace());
+            terminals.extend(crate::native_world::take_fireball_terminal_trace());
+            accepted.extend(area_damage::take_effect_damage_trace());
+            consumed.extend(area_damage::take_player_damage_consumptions());
+            let newborn = take_ground_fire_birth_trace();
+            if let Some(actual) = newborn {
+                birth = Some(actual);
+            }
+            let sim = game.simulation();
+            assert!(
+                sim.dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "actual Tree encounter turn{turn}: {:?}",
+                sim.dispatch_events()
+            );
+            if let Some(hidden) = hidden_on_prior_turn.take() {
+                let current = sim.source_arena().handle(hidden.source_slot);
+                assert_ne!(
+                    current,
+                    Some(hidden),
+                    "the actual hidden GroundFire is reclaimed on the following source boundary"
+                );
+                if current.is_none() {
+                    assert!(
+                        !sim.economy().map_chains().is_linked(hidden.source_slot),
+                        "the reclaimed GroundFire no longer occupies the live map chain"
+                    );
+                }
+                eprintln!(
+                    "Tree95 GroundFire following reclaim: turn={turn} original={hidden:?} current={current:?} linked={}",
+                    sim.economy().map_chains().is_linked(hidden.source_slot)
+                );
+                child_reclaimed = true;
+            }
+            if let Some(actual) = newborn {
+                let visited = sim.cf10_production_schedule_receipts().iter().any(|receipt| matches!(
+                    receipt, ScheduleReceipt::CallbackCompleted { slot, selector, .. }
+                    if *slot == actual.child.source_slot && matches!(
+                        &selector.registry_key().selector,
+                        crate::campaign::spec::BehaviorSelector::ClassAction { class: 10, action: 6 }
+                    )
+                ));
+                assert_eq!(
+                    visited,
+                    actual.child.source_slot > target_slot,
+                    "the real numeric cursor owns the newborn's same-pass visit"
+                );
+                eprintln!(
+                    "Tree95 GroundFire birth: turn={turn} parent={:?} child={:?} same_pass_callback={visited}",
+                    actual.parent, actual.child
+                );
+            }
+            for receipt in sim.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original,
+                    current: CurrentOccupant::Known { selector, .. },
+                    ..
+                } = receipt
+                else {
+                    continue;
+                };
+                let (Some(before), Some(after)) = (
+                    original.observed_player_resources(),
+                    selector.observed_player_resources(),
+                ) else {
+                    continue;
+                };
+                if slot == holder
+                    && launched
+                    && sim.source_arena().handle(holder) == Some(holder_handle)
+                    && before.0 == player_handle
+                    && after
+                        == (
+                            player_handle,
+                            before.1,
+                            if before.2 >= 0 {
+                                -cost
+                            } else {
+                                before.2.wrapping_sub(cost)
+                            },
+                            before.3,
+                        )
+                {
+                    queued += 1;
+                }
+                if slot == player
+                    && before.0 == player_handle
+                    && after.0 == player_handle
+                    && before.2 <= -cost
+                    && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+                    && before.1 - after.1 >= cost
+                {
+                    paid += 1;
+                }
+            }
+            assert_eq!(sim.source_arena().handle(target_slot), Some(target));
+            let current = &sim.entities()[usize::from(target_slot)];
+            if current.action == 2 {
+                let expected_particle = if original_particle == 83 { 226 } else { 227 };
+                assert_eq!(current.particle_parameter_index, Some(expected_particle));
+                stump_presented |= sim
+                    .campaign_entity_presentations(sim.state.yaw)
+                    .unwrap()
+                    .iter()
+                    .any(|dto| {
+                        dto.entity_index == target_slot
+                            && dto.render_parameter_index == expected_particle
+                    });
+            }
+            if let Some(actual) = birth {
+                if sim.source_arena().handle(actual.child.source_slot) == Some(actual.child) {
+                    let child = &sim.entities()[usize::from(actual.child.source_slot)];
+                    assert_eq!(
+                        (child.class, child.model, child.action, child.source_id),
+                        (10, 6, 6, owner_id)
+                    );
+                    assert_eq!(
+                        child.source_word_2c(),
+                        (i32::from(tree.array_fov()) * 3 / 4) as i16
+                    );
+                    if child.drawing_disabled() {
+                        child_hidden = true;
+                        hidden_on_prior_turn = Some(actual.child);
+                    }
+                    child_presented |= sim
+                        .campaign_entity_presentations(sim.state.yaw)
+                        .unwrap()
+                        .iter()
+                        .any(|dto| dto.entity_index == actual.child.source_slot);
+                } else {
+                    assert!(
+                        child_reclaimed,
+                        "GroundFire identity loss must follow an observed hidden packet"
+                    );
+                }
+            }
+            if stump_presented && child_presented && child_hidden && child_reclaimed && paid >= 2 {
+                break;
+            }
+        }
+        let own = launches
+            .iter()
+            .filter(|(_, _, owner)| *owner == player)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            own.len(),
+            2,
+            "exactly two public Fireball launches: {launches:?}"
+        );
+        let hits = consumed
+            .iter()
+            .filter(|hit| hit.target == target)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hits.len(),
+            2,
+            "two actual original Tree mailbox consumptions: {consumed:?}"
+        );
+        let mut matched_projectiles = std::collections::BTreeSet::new();
+        for (hit, before) in hits.iter().zip([300, 50]) {
+            assert_eq!(
+                (hit.mailbox, hit.life_before, hit.life_after),
+                ((250, player), before, before - 250)
+            );
+            let writer = hit
+                .writer
+                .expect("the actual Tree subtraction retains its accepted writer");
+            assert!(accepted.iter().any(|receipt| receipt.source_scoped
+                && receipt.target_slot == target_slot
+                && receipt.target_generation == target.generation
+                && receipt.pulse.owner == player
+                && receipt.pulse.payload == 250
+                && receipt.writer_sequence == Some(writer.sequence)));
+            let terminal = terminals
+                .iter()
+                .find(|terminal| {
+                    own.iter().any(|(slot, generation, _)| {
+                        terminal.projectile.source_slot == *slot
+                            && terminal.projectile.generation == *generation
+                    }) && terminal.target_handle == Some(target)
+                        && terminal.impact.is_some_and(|impact| {
+                            writer.source == area_damage::PlayerMailboxSource::Effect(impact)
+                        })
+                })
+                .expect("the accepted hit comes from one actual Tree collision");
+            assert!(
+                matched_projectiles.insert((
+                    terminal.projectile.source_slot,
+                    terminal.projectile.generation
+                )),
+                "each paid shot must supply its own Tree hit"
+            );
+            assert!(impacts.iter().any(
+                |(impact, generation, parent, parent_generation, owner)| {
+                    *owner == player
+                        && *parent == terminal.projectile.source_slot
+                        && *parent_generation == terminal.projectile.generation
+                        && writer.source
+                            == area_damage::PlayerMailboxSource::Effect(
+                                crate::campaign::source_arena::SourceEntityHandle {
+                                    source_slot: *impact,
+                                    generation: *generation,
+                                },
+                            )
+                }
+            ));
+        }
+        let birth = birth.expect("the actual lethal Tree callback constructs GroundFire");
+        assert_eq!((birth.parent, birth.position), (target, tree.position));
+        assert!(
+            queued == 2
+                && paid >= 2
+                && child_presented
+                && child_hidden
+                && child_reclaimed
+                && stump_presented,
+            "paid={paid} queued={queued} fire={child_presented}/{child_hidden}/{child_reclaimed} stump={stump_presented}"
+        );
+        let stump = &game.simulation().entities()[usize::from(target_slot)];
+        assert_eq!(
+            (
+                stump.class,
+                stump.model,
+                stump.action,
+                stump.source_upkeep_word_62()
+            ),
+            (2, 0, 2, 0)
+        );
+        assert_eq!(
+            game.simulation().source_arena().handle(target_slot),
+            Some(target)
+        );
+        // TLS traces are generation-keyed, not session-keyed; the negative
+        // world advances only after all positive receipts have been collected.
+        for turn in 0..elapsed {
+            if turn == 0 || turn == 8 {
+                no_cast
+                    .simulation_mut()
+                    .set_level2_player_aim_for_test(aim.0, aim.1);
+            }
+            no_cast.step(crate::PlayerCommand::default(), 0);
+            assert!(
+                no_cast
+                    .simulation()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+        }
+        assert_eq!(
+            no_cast.simulation().source_arena().handle(target_slot),
+            Some(target)
+        );
+        let untouched = &no_cast.simulation().entities()[usize::from(target_slot)];
+        assert_eq!(
+            (untouched.action, untouched.life, untouched.entity_rng),
+            (0, tree.life, tree.entity_rng)
+        );
+    }
 }
