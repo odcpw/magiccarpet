@@ -354,6 +354,106 @@ Keep the complete acceptance and dependencies. Then continue existing
 terrain/scenery, activation/objective and progression/flow capabilities, one
 connected runtime result at a time. Do not restart delivered spells/creatures.
 
+### Current connected batch: scenery, world geometry, activation (2026-11-08)
+
+Oliver explicitly queued these three capabilities in this order. Keep their
+original acceptance and dependencies; this is execution of the existing plan.
+Root CopperMountain owns shared joins and sole Cargo/push/installation.
+
+1. **Dolmen identity and collision bindings — partial `mc-bhq.13`.** NavyBridge
+   implemented the missing neutral Dolmen role, source-default 1024/1024
+   dimensions and readonly initial semantic-to-live binding. Root integrated the
+   existing authored-group constructor and scheduler validator. Frozen C16
+   passes the real paid Crater/contact/recharge/reset path (0.185 s), configured
+   constructor/current contact boundary/reset (0.083 s), real backend/schema
+   consumer plus duplicate Cave Mushrooms (0.082 s), source order (0.066 s) and
+   definition serialization/immutability. Source is committed/pushed in
+   `e646e767`; matching native/client delivery is installed below.
+2. **Source terrain deformation through voxel collision/presentation — partial
+   `mc-bhq.8`.** TopazAnchor found an actual shared gap: source spells changed
+   the floor planes while voxel-enabled height queries retained the enable-time
+   surface. The candidate rebases terrain columns with source interpolation,
+   preserves world-position removals and Building volumes, and publishes a base
+   hash. Root joins synchronize before subsequent source consumers, including
+   same-callback Volcano child placement and Gravity pull; the client refreshes
+   the base while preserving removal intent and impact cursors. The immutable
+   source binding participates in deterministic hashing. C18's two native
+   source-projection/hash controls pass. All 12 focused client checks pass in
+   a private source copy; its existing native is `dc5ea148`, so this is managed
+   geometry proof, not combined native/client casting. Final C19 public Crater
+   passes in 0.327 s using the unchanged qualified Level 2 entry and real house
+   12. It checks paid casting, changed composed collision/base/revision, prior
+   removals/buildings, natural cleanup, a no-cast control and exact serialized
+   input replay from the same declared controlled baseline. Existing voxel
+   configuration/cold replay passes in 1.212 s. Source is committed/pushed in
+   `e646e767`; matching native/client delivery is installed below. The older Level 1
+   carry fixture correctly fails its admission guard and is not bypassed.
+3. **Real completion to later-group scenery — partial `mc-bhq.7`.** CrimsonForge
+   traced Level 7's real all-rivals objective to source 271 and group 10's eight
+   moving objects. Existing production wiring was present; no new objective
+   implementation is claimed. Keep this item queued. C16 failed an inadmissible
+   initial player pose; C18's corrected pose reached real paid impacts but did
+   not establish all default-health deaths/Castle removals. Source Meteor II
+   deals 1600 here, and the fixed encounters do not guarantee moving-target
+   admission. Expanding this into a mission-combat script would violate scope.
+   The owner preserved its exact source/patch/logs and reverted only the new
+   test, proving the remaining file equals HEAD. No runtime, old predicate or
+   original acceptance was changed; no positive mission result is claimed.
+
+C15/C17 test-access compiler negatives and C16's pose failure remain preserved.
+C16's optimized binary matches all 657 frozen dispatcher/Rig inputs; source
+terrain work was explicitly excluded from that earlier snapshot. C18 includes
+the combined Rust source with no excluded compile inputs. C19 removes the
+speculative mission-combat test and corrects only the Crater entry fixture;
+its focused test-target typecheck and optimized compilation pass. All 657
+canonical/dispatcher/Rig inputs match. Final C19 paid Crater/Dolmen (0.186 s)
+and source order (0.069 s) pass; unchanged C18 production workspace/all-target
+and source-projection controls remain applicable. Rust UBS's two added-line
+critical heuristics are public entity identity comparisons, not secrets. C#
+semantic scanning is partial; compiler/12 focused Unity checks and bounded
+review supply the managed evidence. Whole-package formatting debt remains.
+Use `generated/scenery-20261108-integration/candidate-16`, `candidate-18` and
+`candidate-19` under `research/private/` for commands and results. Unity crashes
+even on `-version` inside minimal bwrap, while the same binary works outside;
+no cause below that boundary is established. A private source/cache copy avoids
+that wrapper without modifying the qualified player. Its first Goat-resource
+lookup failed; an exact baseline control and the restored unchanged candidate
+then pass. All negatives remain; no first-attempt or old-save claim.
+Do not replay successful unchanged
+checks. Full `.13`, `.8` and `.7` stay open.
+
+**Installed batch 1/2:** Source `e646e7673885c4dcaa4c481761da841ab1b9619a`
+is committed/pushed. Matching optimized native
+`8acb9d956b69aa47d789ce653c5f207f153032ad13f232f05d33a094af2fc0f9`
+built in 202.647 s with all 657 canonical/dispatcher/Rig inputs matching before
+and after. Original native-only refresh `build-m4344n2r` passes its unchanged
+source/contract gates. Root viewed normal canonical map/loading/NightSpire
+terrain/HUD, verified the mapped plugin hash and stopped owned processes after
+one portal click with no retry.
+
+The separate existing Presentation client was rebuilt with the three changed
+C# files and that exact native. All 628 private authored inputs are unchanged
+across the build; all 170 payload files are pinned. The default Presentation
+pointer now selects C19's `presentation-player`; the prior pointer/player and
+prior native bytes are preserved. A single installed default voxel launcher
+run reaches native projection and NVIDIA/Vulkan scene readback over ticks1–91.
+All32 source buildings remain known; the selected voxel building38 correctly
+leaves31 regular building meshes. A copied Modern-only oracle initially
+expected32 meshes/slot−1; the same saved run was qualified against the actual
+voxel consumer and frozen slot38, without another run or runtime change.
+
+Old preset replay definitions correctly reject the new Dolmen structure. Fresh
+opening/Goat/Archer sidecars are new current-native executions of the recorded
+public inputs, preserving the old files. All280/440 inputs and warm/cold state
+equality pass; actual Goat94/model1 and Archer273/model4 remain alive. An extra
+root identity check initially used wrong remembered model selectors; source
+selectors corrected that check, without runtime edits. The unchanged owner
+layout passes all32 rows/1220 cells plus generation/tick/no-mutation controls.
+Details, negatives and receipts are under C19. This proves installed launch,
+projection and focused Rust capabilities, not a native paid-Crater visual,
+human combat/FPS/hardware audio, full missions or old-save migration. No art
+change was introduced. Item3 remains queued with its full acceptance open.
+
 ### Installed outdoor moving scenery and fire collateral — partial `mc-bhq.13` (2026-11-08)
 
 Implemented, committed and pushed source `3353744e`, on the shared presentation
