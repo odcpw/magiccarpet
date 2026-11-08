@@ -1336,7 +1336,7 @@ pub(crate) struct CastleCollectorConsumer<'a> {
 pub(crate) fn publish_collector_player_resources(
     arena: &SourceArena,
     shared: &mut super::Level2SharedSpellResetSession,
-    rivals: &mut super::level2_nyphur::RivalWizardRoster,
+    rivals: &mut super::creatures::rival_wizards::RivalWizardRoster,
     slot: u16,
 ) {
     if arena.economy.live_arena_kind(slot).is_some() { return; }

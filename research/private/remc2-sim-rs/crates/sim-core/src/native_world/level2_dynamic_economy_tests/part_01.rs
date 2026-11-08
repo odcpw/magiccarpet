@@ -1209,7 +1209,7 @@ fn ordinary_level_23_rival_last_castle_loss_removes_only_its_real_holder() {
             assert_ne!(trace.state_byte, 3,
                 "feature4 must not enter the no-Castle rebuild mode after removing the holder");
             assert!(trace.calls.iter().any(|call| matches!(call,
-                crate::native_world::level2_nyphur::Level2NyphurDispatchCall::Sub12e70)),
+                crate::native_world::creatures::rival_wizards::Level2NyphurDispatchCall::Sub12e70)),
                 "the ordinary AI visit must execute the decision tail");
         }
         let live = &simulation.session.state.live;
@@ -1314,7 +1314,7 @@ fn ordinary_level_5_rival_last_castle_loss_preserves_holder_without_feature4() {
                 "below-capacity premise: AI {} vs current holder {}", ai.max_mana, current_holder.max_mana);
             assert_ne!(trace.state_byte, 3, "insufficient capacity cannot enter rebuild mode");
             assert!(trace.calls.iter().any(|call| matches!(call,
-                crate::native_world::level2_nyphur::Level2NyphurDispatchCall::Sub12e70)));
+                crate::native_world::creatures::rival_wizards::Level2NyphurDispatchCall::Sub12e70)));
             assert_ne!(live.nyphur_dispatcher.get(owner_handle).unwrap().state_byte(), 3,
                 "the actual selector must reject the retained holder below its capacity gate");
         }

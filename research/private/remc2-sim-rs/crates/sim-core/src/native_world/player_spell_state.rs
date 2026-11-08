@@ -604,7 +604,7 @@ struct CastlePlayerConsumer<'a> {
     entities: &'a mut [EntitySnapshot],
     shared_spells: &'a mut Level2SharedSpellResetSession,
     core: &'a mut crate::campaign::state::CanonicalRuntimeState,
-    nyphur_dispatcher: &'a mut level2_nyphur::RivalWizardRoster,
+    nyphur_dispatcher: &'a mut creatures::rival_wizards::RivalWizardRoster,
     mana_chain: &'a crate::campaign::source_arena::SourceManaChain,
     remove_rival_castle_spell: bool,
     final_profile: Option<(u8, Level2SetSpellProfile)>,

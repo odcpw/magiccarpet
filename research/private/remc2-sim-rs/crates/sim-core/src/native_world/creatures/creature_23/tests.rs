@@ -1108,7 +1108,7 @@ fn level18_steal_mana_encounter(remote_morph_regression: bool) {
     use crate::native_world::level2_dynamic_economy::{
         start_claimed_sphere_lift_trace, take_claimed_sphere_lift_trace,
     };
-    use crate::native_world::level2_nyphur::{
+    use crate::native_world::creatures::rival_wizards::{
         start_pending_steal_prelude_trace, take_pending_steal_prelude_trace,
     };
     use std::{collections::BTreeMap, path::PathBuf};

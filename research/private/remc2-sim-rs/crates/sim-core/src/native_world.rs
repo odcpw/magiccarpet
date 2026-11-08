@@ -583,7 +583,6 @@ pub(crate) use effects::hidden_slots as hidden_effect_slots;
 pub(crate) use effects::prepare_retained_effects_reclaim;
 pub(crate) use effects::prepare_fire_spheres_reclaim;
 pub(crate) use effects::prepare_spell_flyers_reclaim;
-mod level2_nyphur;
 pub(crate) mod lightning;
 mod meteor;
 pub(crate) use meteor::{Admission as MeteorAdmission, admission as meteor_admission};
@@ -596,12 +595,12 @@ mod support_spells;
 pub(crate) mod terrain_strip;
 use creatures::worm::imported as campaign_multipart;
 pub(crate) use level2_class5::archer::creature_runtime_identity as archer_creature_runtime_identity;
-pub(crate) use level2_nyphur::level2_nyphur_source_identity_parts;
-pub use level2_nyphur::{
+pub(crate) use creatures::rival_wizards::level2_nyphur_source_identity_parts;
+pub use creatures::rival_wizards::{
     Level2NyphurCommonUpkeepSnapshot, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,
     Level2NyphurDispatchTrace, Level2NyphurParticipant, Level2NyphurVisibility,
 };
-use level2_nyphur::{Level2NyphurDispatcher, RivalWizardRoster, level2_nyphur_source_identity};
+use creatures::rival_wizards::{Level2NyphurDispatcher, RivalWizardRoster, level2_nyphur_source_identity};
 pub(crate) use terrain_strip::cave_corridors;
 
 /// One source-owned Day spell-hand row consumed by the HUD presenter.

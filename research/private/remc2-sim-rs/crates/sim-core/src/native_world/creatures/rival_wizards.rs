@@ -1,4 +1,4 @@
-use super::{
+use crate::native_world::{
     BTreeSet, Digest, EntityAuthority, EntitySnapshot, FlightWorld,
     LEVEL2_CASTLE_DEFENDER_COLLISION_HALF_WIDTH, LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET,
     LEVEL2_NYPHUR_SOURCE_SPELL_TIER_COUNT, LEVEL2_NYPHUR_SPELL_COOLDOWNS, Level2CastleChild,
@@ -10,12 +10,14 @@ use super::{
     mark_source_audio_call, terrain_index,
 };
 #[cfg(test)]
-use super::{
+use crate::native_world::{
     LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX, LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX, Mc2DispatchEvent,
     NativeWorld, POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand,
 };
 use crate::campaign::source_arena::{SourceArena, SourceEntityHandle, SourceEntityView};
 use std::collections::BTreeMap;
+
+pub(crate) mod lifecycle;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
@@ -63,7 +65,7 @@ pub(crate) fn take_pending_steal_prelude_trace() -> Vec<PendingStealPreludeRecei
 /// Current typed target records and the source pass's ordered class-5 list.
 /// The records are read-only callback projections, never replacement owners.
 #[derive(Clone, Copy)]
-pub(super) struct NyphurTargetFrame<'a> {
+pub(in crate::native_world) struct NyphurTargetFrame<'a> {
     pub rows: &'a [EntitySnapshot],
     pub class5_buckets: &'a [Vec<u16>; 29],
     pub mana_slots: &'a [u16],
@@ -72,7 +74,7 @@ pub(super) struct NyphurTargetFrame<'a> {
 /// Source-list heads after the Castle seed attempt, including allocation
 /// failure. `None` leaves detached test callers' original frame unchanged.
 #[derive(Default)]
-pub(super) struct NyphurCastleSeed {
+pub(in crate::native_world) struct NyphurCastleSeed {
     pub castle: Option<Level2CastleState>,
     pub class5_buckets: Option<[Vec<u16>; 29]>,
     pub mana_slots: Option<Vec<u16>>,
@@ -110,7 +112,7 @@ const LEVEL2_NYPHUR_MODE14_ATTACK_MIN_DISTANCE: u32 = 0x0a00;
 /// The source Nyphur target selectors and projectile threat latch
 /// multiply at signed 32-bit width before dividing by 255. A maximum-stage
 /// Castle can give its owner enough mana to wrap that intermediate product.
-pub(super) fn source_mana_pressure_score(max_mana: i32, pressure: i16) -> i32 {
+pub(in crate::native_world) fn source_mana_pressure_score(max_mana: i32, pressure: i16) -> i32 {
     50_000_i32.wrapping_sub((max_mana / 10).wrapping_mul(i32::from(pressure)) / 255)
 }
 
@@ -249,12 +251,12 @@ impl Level2NyphurDispatchTrace {
 /// player and `MissionWizardMapSettings`; the entity remains authoritative for
 /// the source position/life/mana projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Level2NyphurCommonUpkeep {
+pub(in crate::native_world) struct Level2NyphurCommonUpkeep {
     #[cfg(test)]
     damage_trace_context: Option<(SourceEntityHandle, usize)>,
     player_slot: u8,
     player_color_index: u8,
-    pub(super) source_slot: u16,
+    pub(in crate::native_world) source_slot: u16,
     source_list_model_zero: Option<u16>,
     castle_entity_index: u16,
     speed: i16,
@@ -325,7 +327,7 @@ pub(super) struct Level2NyphurCommonUpkeep {
 
 /// One source visit suspended after its Castle-protection prefix. The token
 /// moves into the continuation so that the prefix cannot run twice.
-pub(super) struct NyphurDirectionalPrelude {
+pub(in crate::native_world) struct NyphurDirectionalPrelude {
     source_slot: u16,
     protected: bool,
     #[cfg(test)]
@@ -333,7 +335,7 @@ pub(super) struct NyphurDirectionalPrelude {
 }
 
 impl NyphurDirectionalPrelude {
-    pub(super) fn admitted(&self) -> bool {
+    pub(in crate::native_world) fn admitted(&self) -> bool {
         !self.protected
     }
 }
@@ -588,7 +590,7 @@ impl Level2NyphurCommonUpkeep {
         }
     }
 
-    pub(super) fn hash_into(&self, hasher: &mut Sha256, phase: u8) {
+    pub(in crate::native_world) fn hash_into(&self, hasher: &mut Sha256, phase: u8) {
         hasher.update(b"level2-nyphur-common-upkeep-v1");
         hasher.update([
             self.player_slot,
@@ -2688,7 +2690,7 @@ fn level2_nyphur_turn_direction(from: i16, to: i16) -> i16 {
 /// entity id, model, and class discriminator.  The exported entity fields are
 /// unsigned carriers, so perform the source-width wrap before interpreting
 /// the checksum as signed.
-pub(super) fn level2_nyphur_source_identity(entity: &EntitySnapshot) -> i16 {
+pub(in crate::native_world) fn level2_nyphur_source_identity(entity: &EntitySnapshot) -> i16 {
     level2_nyphur_source_identity_parts(entity.source_id, entity.model, entity.class)
 }
 
@@ -3006,7 +3008,7 @@ fn level2_nyphur_map_angle_allowed(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Level2NyphurDispatcher {
     state_byte: i8,
-    pub(super) common_upkeep: Level2NyphurCommonUpkeep,
+    pub(in crate::native_world) common_upkeep: Level2NyphurCommonUpkeep,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3035,7 +3037,7 @@ impl RivalWizardRoster {
         owner: SourceEntityHandle,
         arena: &SourceArena,
         players: &mut [PlayerSnapshot],
-        shared: &super::Level2SharedSpellResetSession,
+        shared: &crate::native_world::Level2SharedSpellResetSession,
     ) -> bool {
         let Some(SourceEntityView::Imported(actor)) = arena.resolve(owner) else {
             return false;
@@ -3072,7 +3074,7 @@ impl RivalWizardRoster {
                 source.type_str_164_auxiliary.as_ref(),
             ) {
                 target.dword_0x16D_365 = source_aux.dword_0x16D_365;
-                let offset = super::PLAYER_LEGACY_RECORD_BYTES + 17;
+                let offset = crate::native_world::PLAYER_LEGACY_RECORD_BYTES + 17;
                 player.record[offset..offset + 4].copy_from_slice(&source.record[offset..offset + 4]);
             }
             for index in 0..8 {
@@ -3099,7 +3101,7 @@ impl RivalWizardRoster {
         owner: SourceEntityHandle,
         arena: &SourceArena,
         players: &mut [PlayerSnapshot],
-        shared: &mut super::Level2SharedSpellResetSession,
+        shared: &mut crate::native_world::Level2SharedSpellResetSession,
     ) -> bool {
         if self.get(owner).is_none() || arena.handle(owner.source_slot) != Some(owner) {
             return false;
@@ -3128,7 +3130,7 @@ impl RivalWizardRoster {
     pub(crate) fn step_dying_tether(
         &mut self,
         arena: &mut SourceArena,
-        shared: &mut super::Level2SharedSpellResetSession,
+        shared: &mut crate::native_world::Level2SharedSpellResetSession,
         fire: Option<&mut crate::SpellFireContext>,
         local_life: &mut i32,
         players: &[PlayerSnapshot],
@@ -3151,14 +3153,14 @@ impl RivalWizardRoster {
         binding.holder_entity_index = players.iter()
             .find(|player| player.entity_index == source_slot)
             .map_or(0, |player| player.enabled_spell_holders[14]);
-        let source_context = super::source_target::Context { spells: Some(shared), ..Default::default() };
-        let holder_active_value = super::source_target::status_parent(
+        let source_context = crate::native_world::source_target::Context { spells: Some(shared), ..Default::default() };
+        let holder_active_value = crate::native_world::source_target::status_parent(
             arena, source_context, binding.holder_entity_index,
         )?.map(|holder| holder.active_value);
         let target_handle = arena.handle(binding.target_entity_index);
         let rule = crate::spells::directional::duel::tether_rule(binding.tier)
             .ok_or_else(|| "Duel tether has invalid source tier".to_owned())?;
-        let target = super::source_target::status_parent(arena, source_context, binding.target_entity_index)?
+        let target = crate::native_world::source_target::status_parent(arena, source_context, binding.target_entity_index)?
             .map(|row| {
                 let admitted = row.life >= 0 && holder_active_value.is_some_and(|value| value != 0)
                     && crate::distance_3d_wrapped(caster.position, row.position) < u32::from(rule.range);
@@ -3219,7 +3221,7 @@ impl RivalWizardRoster {
     pub(crate) fn step_dying_flight(
         &mut self,
         arena: &mut SourceArena,
-        shared: &mut super::Level2SharedSpellResetSession,
+        shared: &mut crate::native_world::Level2SharedSpellResetSession,
         players: &mut [PlayerSnapshot],
         local_life: &mut i32,
         local_owner: u16,
@@ -3238,15 +3240,15 @@ impl RivalWizardRoster {
         let common = &dispatcher.common_upkeep;
         let binding = dispatcher.duel_tether();
         let holder_index = player.enabled_spell_holders[14];
-        let source_context = super::source_target::Context { spells: Some(shared), ..Default::default() };
+        let source_context = crate::native_world::source_target::Context { spells: Some(shared), ..Default::default() };
         let holder = if binding.is_some() {
-            super::source_target::status_parent(arena, source_context, holder_index)?
+            crate::native_world::source_target::status_parent(arena, source_context, holder_index)?
                 .map(|holder| crate::SpellHolder { entity_index: holder_index, active_value: holder.active_value })
         } else { None };
         let speed_holder = self.bound_live_holder(handle, player, arena, 3)
             .map(|holder| arena.entities[usize::from(holder.source_slot)].clone());
         let target_handle = binding.and_then(|binding| arena.handle(binding.target_entity_index));
-        let target = binding.map(|binding| super::source_target::status_parent(
+        let target = binding.map(|binding| crate::native_world::source_target::status_parent(
             arena, source_context, binding.target_entity_index,
         )).transpose()?.flatten()
             .map(|row| {
@@ -3387,7 +3389,7 @@ impl RivalWizardRoster {
         mission: &MissionContentSession,
     ) -> Result<Self> {
         let mut entries = BTreeMap::new();
-        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+        let typed_slots: BTreeMap<u16, crate::native_world::Level2DynamicArenaKind> = arena
             .economy
             .live_arena_slots()
             .into_iter()
@@ -3413,7 +3415,7 @@ impl RivalWizardRoster {
             };
             if entity.class != 3
                 || entity.model != 1
-                || entity.special_relation != super::EntitySpecialRelation::PlayerState(player.slot)
+                || entity.special_relation != crate::native_world::EntitySpecialRelation::PlayerState(player.slot)
             {
                 return Err(NativeWorldError::new(format!(
                     "rival player {} does not own its source A4 at slot {}",
@@ -3521,7 +3523,7 @@ impl RivalWizardRoster {
 
     fn source_holder_handle(
         arena: &SourceArena,
-        typed_slots: &BTreeMap<u16, super::Level2DynamicArenaKind>,
+        typed_slots: &BTreeMap<u16, crate::native_world::Level2DynamicArenaKind>,
         owner: u16,
         slot: u16,
         family: usize,
@@ -3529,8 +3531,8 @@ impl RivalWizardRoster {
         let holder = arena.entities.get(usize::from(slot))?;
         let typed_matches = match typed_slots.get(&slot) {
             None => true,
-            Some(super::Level2DynamicArenaKind::SpellPickup) => arena.economy.spell_pickups().iter().any(|row| row.active && row.source_entity_index == slot && usize::from(row.family) == family && usize::from(row.action) == family * 3),
-            Some(super::Level2DynamicArenaKind::SpellReplacement) => arena.economy.spell_replacements().iter().any(|row| row.active && row.source_entity_index == slot && usize::from(row.family) == family && usize::from(row.action) == family * 3),
+            Some(crate::native_world::Level2DynamicArenaKind::SpellPickup) => arena.economy.spell_pickups().iter().any(|row| row.active && row.source_entity_index == slot && usize::from(row.family) == family && usize::from(row.action) == family * 3),
+            Some(crate::native_world::Level2DynamicArenaKind::SpellReplacement) => arena.economy.spell_replacements().iter().any(|row| row.active && row.source_entity_index == slot && usize::from(row.family) == family && usize::from(row.action) == family * 3),
             Some(_) => false,
         };
         (slot != 0
@@ -3565,7 +3567,7 @@ impl RivalWizardRoster {
         {
             return false;
         }
-        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+        let typed_slots: BTreeMap<u16, crate::native_world::Level2DynamicArenaKind> = arena
             .economy
             .live_arena_slots()
             .into_iter()
@@ -3617,7 +3619,7 @@ impl RivalWizardRoster {
         if *entry.holder_relations.get(family)? != slot {
             return None;
         }
-        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+        let typed_slots: BTreeMap<u16, crate::native_world::Level2DynamicArenaKind> = arena
             .economy
             .live_arena_slots()
             .into_iter()
@@ -3649,7 +3651,7 @@ impl RivalWizardRoster {
         {
             return false;
         }
-        let typed_slots: BTreeMap<u16, super::Level2DynamicArenaKind> = arena
+        let typed_slots: BTreeMap<u16, crate::native_world::Level2DynamicArenaKind> = arena
             .economy
             .live_arena_slots()
             .into_iter()
@@ -3805,13 +3807,13 @@ impl Level2NyphurDispatcher {
         self.common_upkeep.damage_trace_context = context;
     }
 
-    pub(super) fn has_duel_target(&self) -> bool {
+    pub(in crate::native_world) fn has_duel_target(&self) -> bool {
         self.common_upkeep.contact_target_entity.is_some_and(|slot| slot != 0)
     }
 
     /// The source Duel relation is owned by the caster's Type_str_164, not
     /// by the recipient or the local player's FlightState.
-    pub(super) fn install_duel_tether(
+    pub(in crate::native_world) fn install_duel_tether(
         &mut self,
         binding: crate::spells::directional::DuelTetherBinding,
     ) -> bool {
@@ -3828,7 +3830,7 @@ impl Level2NyphurDispatcher {
         true
     }
 
-    pub(super) fn duel_tether(&self) -> Option<crate::spells::directional::DuelTetherBinding> {
+    pub(in crate::native_world) fn duel_tether(&self) -> Option<crate::spells::directional::DuelTetherBinding> {
         let common = &self.common_upkeep;
         let target = common.contact_target_entity?;
         let tier = u8::try_from(common.contact_word_0x14a).ok()?;
@@ -3842,7 +3844,7 @@ impl Level2NyphurDispatcher {
         })
     }
 
-    pub(super) fn clear_duel_tether(&mut self) {
+    pub(in crate::native_world) fn clear_duel_tether(&mut self) {
         self.common_upkeep.contact_target_entity = None;
     }
 
@@ -3864,7 +3866,7 @@ impl Level2NyphurDispatcher {
     /// `EventsFunctions.cpp:43893` seam.  The qualified package does not
     /// serialize the 1,136-byte `Type_str_164`; derive only this reset value
     /// after validating the source-bound participant chain.
-    pub(super) fn from_qualified_reset(
+    pub(in crate::native_world) fn from_qualified_reset(
         players: &[PlayerSnapshot],
         entities: &[EntitySnapshot],
         runtime: &RuntimeSnapshot,
@@ -3908,7 +3910,7 @@ impl Level2NyphurDispatcher {
 
     /// The source `Type_str_164::byte_0x154_340` carrier is advanced by the
     /// common callback and consumed by the two ordinary spell producers.
-    pub(super) const fn source_byte_0x154(&self) -> u8 {
+    pub(in crate::native_world) const fn source_byte_0x154(&self) -> u8 {
         self.common_upkeep.byte_0x154
     }
 
@@ -3924,34 +3926,34 @@ impl Level2NyphurDispatcher {
 
     /// Clear the source byte only after a producer has committed its shared
     /// class-9 allocation and launch event.
-    pub(super) const fn clear_source_byte_0x154(&mut self) {
+    pub(in crate::native_world) const fn clear_source_byte_0x154(&mut self) {
         self.common_upkeep.byte_0x154 = 0;
     }
 
     /// Publish the source `sub_68DE0` holder charge into the authoritative
     /// common carrier. The fixed entity row remains a same-pass projection
     /// for later source slots; the next Nyphur visit consumes this value.
-    pub(super) const fn apply_holder_mana_regen(&mut self, mana_regen: i32) {
+    pub(in crate::native_world) const fn apply_holder_mana_regen(&mut self, mana_regen: i32) {
         self.common_upkeep.mana_regen = mana_regen;
     }
 
     /// Source A4 inputs to this owner's `GetScroll_69DB0` Speed holder.
-    pub(super) const fn speed_holder_inputs(&self) -> (i16, i16) {
+    pub(in crate::native_world) const fn speed_holder_inputs(&self) -> (i16, i16) {
         (self.common_upkeep.speed, self.common_upkeep.word_0xe_14)
     }
 
     /// Publish the holder's target speed to the same owner's A4 carrier.
-    pub(super) const fn apply_holder_target_speed(&mut self, speed: i16) {
+    pub(in crate::native_world) const fn apply_holder_target_speed(&mut self, speed: i16) {
         self.common_upkeep.speed = speed;
     }
 
     /// `sub_5E7C0` clears recoil on every banished-player visit.
-    pub(super) const fn clear_banished_recoil(&mut self) {
+    pub(in crate::native_world) const fn clear_banished_recoil(&mut self) {
         self.common_upkeep.move_boost = 0;
     }
 
     /// Keep the AI's compact A4 projection in sync with `sub_605E0`.
-    pub(super) fn apply_final_castle_loss(&mut self, owner: u16, remove_spell: bool) {
+    pub(in crate::native_world) fn apply_final_castle_loss(&mut self, owner: u16, remove_spell: bool) {
         if self.common_upkeep.source_slot == owner {
             self.common_upkeep.castle_entity_index = 0;
             if remove_spell {
@@ -3962,7 +3964,7 @@ impl Level2NyphurDispatcher {
 
     /// Keep direct spell writes visible to the next ordinary AI upkeep.
     /// Life and mana are retained here as well as in the numeric source row.
-    pub(super) fn sync_spell_target_resources(&mut self, source: &EntitySnapshot) -> bool {
+    pub(in crate::native_world) fn sync_spell_target_resources(&mut self, source: &EntitySnapshot) -> bool {
         if !source.active || source.class != 3 || source.index != self.common_upkeep.source_slot {
             return false;
         }
@@ -3980,7 +3982,7 @@ impl Level2NyphurDispatcher {
     /// Publish a support holder's parent writes before the next AI visit.
     /// The caller resolves the current generation and passes the callback's
     /// explicit stop result, rather than inferring it from a spell family.
-    pub(super) fn sync_support_parent_resources(
+    pub(in crate::native_world) fn sync_support_parent_resources(
         &mut self,
         source: &EntitySnapshot,
         stop_player: bool,
@@ -4001,7 +4003,7 @@ impl Level2NyphurDispatcher {
     /// `Type_str_164::array_0x1FC` carrier. The caller supplies the attacking
     /// player's color and the source-width signed delta; this branch does not
     /// set the adjacent war latch for model-39 targets.
-    pub(super) fn apply_projectile_threat(
+    pub(in crate::native_world) fn apply_projectile_threat(
         &mut self,
         attacker_color: u8,
         delta: i32,
@@ -4020,7 +4022,7 @@ impl Level2NyphurDispatcher {
     /// the one player record owned by this dispatcher. Non-player entity
     /// indices are deliberately ignored rather than creating a second
     /// authority for the player field in the class-5 arena.
-    pub(super) fn apply_class5_player_feedback(&mut self, entity_index: u16) -> bool {
+    pub(in crate::native_world) fn apply_class5_player_feedback(&mut self, entity_index: u16) -> bool {
         if self.common_upkeep.source_slot != entity_index {
             return false;
         }
@@ -4030,7 +4032,7 @@ impl Level2NyphurDispatcher {
 
     /// Publish `sub_5EFA0` / `sub_61050` victim feedback after the typed
     /// effect lanes are consumed, even when the effect itself cannot bind.
-    pub(super) fn apply_directional_feedback(
+    pub(in crate::native_world) fn apply_directional_feedback(
         &mut self,
         actor: &mut EntitySnapshot,
         duel_consumed: bool,
@@ -4073,7 +4075,7 @@ impl Level2NyphurDispatcher {
 
     /// Perform the exact source prefix before an ordinary Nyphur visit. The
     /// caller resumes with this token after any admitted directional hit.
-    pub(super) fn prepare_directional_upkeep(
+    pub(in crate::native_world) fn prepare_directional_upkeep(
         &mut self,
         source_slot: u16,
         entities: &mut [EntitySnapshot],
@@ -4181,7 +4183,7 @@ impl Level2NyphurDispatcher {
     /// returned trace.
     #[allow(clippy::too_many_arguments)]
     #[cfg(test)]
-    pub(super) fn step_dispatch(
+    pub(in crate::native_world) fn step_dispatch(
         &mut self,
         pass: u8,
         source_slot: u16,
@@ -4208,7 +4210,7 @@ impl Level2NyphurDispatcher {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn step_dispatch_with_castle_seed(
+    pub(in crate::native_world) fn step_dispatch_with_castle_seed(
         &mut self,
         pass: u8,
         source_slot: u16,
@@ -4695,7 +4697,7 @@ impl Level2NyphurDispatcher {
         if angle_distance(i32::from(source.yaw), i32::from(source.source_roll())) >= 227 {
             return false;
         }
-        let horizontal = crate::legacy_sqrt(super::level2_wrapping_xy_distance(
+        let horizontal = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
             source.position, target.position,
         ));
         let pitch = crate::pitch_for_delta(
@@ -4735,7 +4737,7 @@ impl Level2NyphurDispatcher {
             return false;
         }
 
-        let horizontal = crate::legacy_sqrt(super::level2_wrapping_xy_distance(
+        let horizontal = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
             source.position,
             target.position,
         ));
@@ -5458,7 +5460,7 @@ impl Level2NyphurDispatcher {
                 )
             };
             let castle_overlap = castle.as_ref().is_some_and(|castle| {
-                super::level2_model76_sub106c0_matches(
+                crate::native_world::level2_model76_sub106c0_matches(
                     source.position,
                     source.array_yaw(),
                     source.array_pitch(),
@@ -6544,7 +6546,7 @@ impl Level2NyphurDispatcher {
     }
 
     #[must_use]
-    pub(super) fn common_upkeep(&self, phase: u8) -> Level2NyphurCommonUpkeepSnapshot {
+    pub(in crate::native_world) fn common_upkeep(&self, phase: u8) -> Level2NyphurCommonUpkeepSnapshot {
         self.common_upkeep.snapshot(phase)
     }
 
@@ -6634,5 +6636,5 @@ pub struct Level2NyphurVisibility {
 }
 
 #[cfg(test)]
-#[path = "level2_nyphur_tests.rs"]
+#[path = "rival_wizards_tests.rs"]
 mod tests;

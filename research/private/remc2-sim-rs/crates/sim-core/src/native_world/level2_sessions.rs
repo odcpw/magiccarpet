@@ -751,7 +751,7 @@ impl Level2SharedSpellResetSession {
         &mut self,
         arena: &mut crate::campaign::source_arena::SourceArena,
         players: &[PlayerSnapshot],
-        _rivals: &level2_nyphur::RivalWizardRoster,
+        _rivals: &creatures::rival_wizards::RivalWizardRoster,
         fire: Option<&mut crate::SpellFireContext>,
         owner: u16,
         busy: bool,
@@ -867,7 +867,7 @@ impl Level2SharedSpellResetSession {
         state
     }
 
-    fn register_starting_acquisition(&mut self, source: &EntitySnapshot, player: &PlayerSnapshot) {
+    pub(in crate::native_world) fn register_starting_acquisition(&mut self, source: &EntitySnapshot, player: &PlayerSnapshot) {
         self.bind_cold_holder_lifecycle(source, player);
         if self
             .acquisitions
@@ -1584,7 +1584,7 @@ impl Level2SharedSpellResetSession {
     /// The shared AddSpell constructor used by campaign carry and sub_5CF40.
     /// Start from NewEvent and the allocated slot's RNG, never a dropped
     /// holder's live cooldown, damage or lifecycle state.
-    fn starting_spell_holder(
+    pub(in crate::native_world) fn starting_spell_holder(
         source: Level2StartingSpellHolderSource,
         player_entity_index: u16,
         tier: u8,
@@ -1671,7 +1671,7 @@ impl Level2SharedSpellResetSession {
         holder
     }
 
-    fn revival_castle_stage(
+    pub(in crate::native_world) fn revival_castle_stage(
         arena: &crate::campaign::source_arena::SourceArena,
         slot: u16,
     ) -> Result<Option<i32>> {
@@ -1849,125 +1849,6 @@ impl Level2SharedSpellResetSession {
 
     /// Existing AI actor branch of sub_5C950. The caller owns the live
     /// Castle/generation check and publishes these actual constructor rows.
-    pub(crate) fn revive_rival_at_castle(
-        &mut self,
-        arena: &mut crate::campaign::source_arena::SourceArena,
-        terrain: &mut SessionTerrain,
-        castle_slot: u16,
-        mut actor: EntitySnapshot,
-        castle_position: Position,
-    ) -> Result<(EntitySnapshot, Vec<EntitySnapshot>)> {
-        let owner_index = self
-            .players
-            .iter()
-            .position(|player| player.is_ai && player.entity_index == actor.index)
-            .ok_or_else(|| NativeWorldError::new("Castle revival rival player row is absent"))?;
-        if !actor.active || actor.life >= 0 || actor.class != 3 || actor.model != 1 {
-            return Err(NativeWorldError::new(
-                "Castle revival requires the existing dead rival actor",
-            ));
-        }
-        let (pre_revival_life, pre_revival_mana) = (actor.life, actor.mana);
-        actor.set_source_action(1);
-        actor.set_control_flags(actor.control_flags & !0x20);
-        actor.set_position(castle_position);
-        let rules = crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES;
-        actor.set_max_life(rules.revival_max_life);
-        actor.max_mana = rules.revival_max_mana;
-        actor.record[144..148].copy_from_slice(&rules.revival_max_mana.to_le_bytes());
-        actor.set_life(rules.revival_max_life);
-        actor.set_mana(rules.revival_max_mana);
-        let mut source_actor = actor.clone();
-        source_actor.set_life(pre_revival_life);
-        source_actor.set_mana(pre_revival_mana);
-        source_actor.set_map_links(arena.economy.map_chains.old_map_entity(actor.index), arena.economy.map_chains.next_entity(actor.index));
-        arena.entities[usize::from(actor.index)] = source_actor;
-        self.sync_player_entity_from_authority(&actor);
-        let mut player = self.players[owner_index].clone();
-        player.record[20..24].fill(0);
-        player.record[32..38].fill(0);
-        player.record[565..569].copy_from_slice(&2_048_i32.to_le_bytes());
-        player.record[569..573].copy_from_slice(&2_048_i32.to_le_bytes());
-        if let Some(auxiliary) = player.type_str_164_auxiliary.as_mut() {
-            auxiliary.dword_0x16D_365 = 2_000;
-            let offset = PLAYER_LEGACY_RECORD_BYTES + 17;
-            player.record[offset..offset + 4].copy_from_slice(&2_000_i32.to_le_bytes());
-        }
-        for index in 0..8 {
-            let _ = player.set_type_str_164_array_word(4 * index + 4, 24_607);
-        }
-        self.players[owner_index] = player.clone();
-        let mut holders = Vec::new();
-        for family in 0..PLAYER_SPELL_COUNT {
-            if player.enabled_spell_holders[family] == 0 {
-                continue;
-            }
-            if level2_set_spell_profile(family as u8, 0).is_none() {
-                player.set_enabled_spell_holder_index(family, 0);
-                continue;
-            }
-            let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
-                player.set_enabled_spell_holder_index(family, 0);
-                continue;
-            };
-            let Some(source) = arena.economy.initialize_starting_spell_holder_at(slot, family as u8, castle_position) else {
-                player.set_enabled_spell_holder_index(family, 0);
-                continue;
-            };
-            crate::world::effects::sync_position(arena, terrain, slot, castle_position, true, false)
-                .map_err(NativeWorldError::new)?;
-            let stage = if family == 2 { Self::revival_castle_stage(arena, castle_slot)? } else { None };
-            let profile = self
-                .physical_spell_profile(family as u8, 0, actor.index, stage)
-                .ok_or_else(|| NativeWorldError::new("rival starting holder profile is absent"))?;
-            let mut holder = Self::starting_spell_holder(source, actor.index, 0, profile);
-            holder.set_map_links(arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
-            arena.entities[usize::from(slot)] = holder.clone();
-            player.set_enabled_spell_holder_index(family, holder.index);
-            holders.push(holder);
-        }
-        self.players[owner_index] = player;
-        for family in 0..PLAYER_SPELL_COUNT {
-            self.update_spell_experience(actor.index, family as u8, 0, false);
-        }
-        let player = self.players[owner_index].clone();
-        for holder in &mut holders {
-            let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
-            let stage = if holder.model == 2 { Self::revival_castle_stage(arena, castle_slot)? } else { None };
-            let profile = self
-                .physical_spell_profile(holder.model, tier, actor.index, stage)
-                .ok_or_else(|| NativeWorldError::new("rival selected holder profile is absent"))?;
-            holder.apply_nyphur_spell_profile(profile, tier);
-            holder.set_map_links(
-                arena.economy.map_chains.old_map_entity(holder.index),
-                arena.economy.map_chains.next_entity(holder.index),
-            );
-            self.register_starting_acquisition(holder, &player);
-            if let Some(existing) = self.pickup_mut(holder.index) {
-                *existing = holder.clone();
-            } else {
-                self.dynamic_pickups.push(holder.clone());
-            }
-        }
-        let relation = 4 + 4 * usize::from(player.player_color_index());
-        let local_entity_index = self.local_player.entity_index;
-        let mut update_local_hostility = false;
-        for other in &mut self.players {
-            if self.player_entities.iter().any(|entity| {
-                entity.index == other.entity_index
-                    && entity.source_id != actor.source_id
-                    && matches!(entity.model, 0 | 1)
-            }) {
-                other.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
-                update_local_hostility |= other.entity_index == local_entity_index;
-            }
-        }
-        if update_local_hostility {
-            self.local_player.set_type_str_164_array_word(relation, (-24_609_i16).cast_unsigned());
-        }
-        Ok((actor, holders))
-    }
-
     #[must_use]
     pub fn pickups(&self) -> &[EntitySnapshot] {
         &self.pickups
@@ -3772,7 +3653,7 @@ impl Level2SharedSpellResetSession {
         self.update_spell_experience(parent_entity_index, family, amount, true);
     }
 
-    fn update_spell_experience(
+    pub(in crate::native_world) fn update_spell_experience(
         &mut self,
         parent_entity_index: u16,
         family: u8,

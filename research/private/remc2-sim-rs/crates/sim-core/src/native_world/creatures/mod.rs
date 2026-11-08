@@ -22,6 +22,7 @@ pub(crate) mod creature_28;
 pub(crate) mod morph;
 pub(crate) mod player_lifecycle;
 pub(crate) mod raw_lifecycle;
+pub(crate) mod rival_wizards;
 pub(crate) mod settlements;
 pub(crate) mod skeleton;
 pub(crate) mod spider;

@@ -1,5 +1,25 @@
-use super::super::tests::{level_two_campaign_session, level_two_fixture_path};
-use super::*;
+use crate::native_world::tests::{level_two_campaign_session, level_two_fixture_path};
+use super::{
+    BTreeMap, BTreeSet, EntitySnapshot, FlightWorld, LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX,
+    LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX, LEVEL2_NYPHUR_SPELL_COOLDOWNS,
+    Level2NyphurCommonUpkeep, Level2NyphurDispatchCall, Level2NyphurDispatchHelper,
+    Level2NyphurDispatcher, MapType, Mc2DispatchEvent, NativeWorld, NyphurCastleSeed,
+    PLAYER_SPELL_COUNT, POSSESSION_PROJECTILE_LIFETIME_TICKS, PlayerCommand, Position,
+    RivalWizardRoster, RuntimeRelation, SessionTerrain, SourceEntityHandle, heading_for_positions,
+    level2_castle_shift_axes, level2_direct_starting_spell_profile, level2_nyphur_axis_position,
+    level2_nyphur_class10_target_source_order, level2_nyphur_class5_bucket_order,
+    level2_nyphur_mode14_attack_band, level2_nyphur_mode14_bucket_admitted,
+    level2_nyphur_mode14_primary_admitted, level2_nyphur_project_castle_root,
+    level2_nyphur_project_mana_sphere, level2_nyphur_rebuild_class10_source_order,
+    level2_nyphur_set_axis_position, level2_nyphur_source_distance_3d,
+    level2_nyphur_source_distance_xy_euclidean_sq, level2_nyphur_source_distance_xy_max,
+    level2_nyphur_source_identity, level2_nyphur_source_identity_matches,
+    level2_nyphur_source_identity_parts, level2_nyphur_sub_13b00_grid_quadrant,
+    level2_nyphur_sub_133b0_castle_is_far, level2_nyphur_sub_16730,
+    level2_nyphur_sub_16e70, level2_nyphur_sub_580e0, level2_nyphur_watcominitrandnext,
+    level2_nyphur_watcomrand, level2_set_spell_profile, level2_wrapping_target_distance,
+    terrain_index,
+};
 use crate::native_world::{
     LEVEL2_NYPHUR_ENTITY_INDEX, Mc2Simulation, POSSESSION_PROJECTILE_MODEL,
     level2_possession_guidance_target_top, projectile_guidance_angles,
@@ -213,7 +233,7 @@ fn configured_mission18_rival_meteor_uses_source_availability_and_aim_order() {
         assert_eq!(source.control_flags & 0x100, 0);
         assert_eq!(ai.common_upkeep.word_0x1a2, burst, "Meteor has no family-0 burst write");
         if succeeds {
-            let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+            let horizontal = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
                 source.position, target.position));
             assert_eq!(source.pitch, crate::pitch_for_delta(horizontal as i32,
                 i32::from(target.position.z) - i32::from(source.position.z)));
@@ -462,7 +482,7 @@ fn ordinary_mission18_rival_selects_and_pays_for_a_real_offensive_spell() {
     let nearest_distance = watched
         .iter()
         .map(|handle| {
-            crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+            crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
                 caster_before.position,
                 session.entities()[usize::from(handle.source_slot)].position,
             ))
@@ -2518,7 +2538,7 @@ fn configured_mission18_mode14_uses_full_activation_and_descriptor_vertical_orde
         assert_eq!(rows[184].control_flags & 0x100,
             if cooldown != 0 { 0x100 } else { 0 });
         assert_eq!(rows[184].pitch, if succeeds {
-            let xy = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+            let xy = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
                 Position { x: 2176, y: 2416, z: 5000 }, target.position));
             crate::pitch_for_delta(xy as i32, i32::from(target.position.z) - 5000)
         } else { 77 }, "first aim uses the pre-correction caster Z");
@@ -2572,7 +2592,7 @@ fn configured_mission18_mode14_uses_full_activation_and_descriptor_vertical_orde
         assert_eq!(rows[184].control_flags & 0x100, 0);
         assert_eq!(ai.common_upkeep.word_0x1a2, burst);
         assert_eq!(rows[184].pitch, if succeeds {
-            let xy = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+            let xy = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
                 rows[184].position, primary.position));
             crate::pitch_for_delta(xy as i32,
                 i32::from(primary.position.z) - i32::from(rows[184].position.z))
@@ -2698,7 +2718,15 @@ fn configured_mission18_mode14_uses_full_activation_and_descriptor_vertical_orde
             assert_eq!((shot.packet.class, shot.packet.model, shot.packet.subspell_index),
                 (9, 3, crate::level_definition::METEOR_PROPERTIES.tiers[0].damage));
             assert_eq!(shot.packet.source_id, rows[184].source_id);
-            assert!(shot.caster_after.mana_regen <= -shot.holder_before.max_mana);
+            let expected_regen = if shot.caster_before.mana_regen >= 0 {
+                shot.holder_before.max_mana.wrapping_neg()
+            } else {
+                shot.caster_before.mana_regen.wrapping_sub(shot.holder_before.max_mana)
+            };
+            assert_eq!(shot.caster_after.mana_regen, expected_regen,
+                "the actual holder queues exactly one source68DE0 charge");
+            assert_eq!(shot.caster_after.mana, shot.caster_before.mana,
+                "the actual holder leaves mana for following upkeep");
             let projectile = shot.projectile;
             let mut advanced = false;
             let mut hidden = false;
@@ -3820,7 +3848,7 @@ fn level_two_nyphur_sub_148e0_selects_authored_model39_from_ordinary_route() {
         let live = &session.session.state.live;
         let source = &live.economy.entities[usize::from(LEVEL2_NYPHUR_ENTITY_INDEX)];
         let mut arena = live.economy.clone();
-        let lists = super::super::area_damage::capture_effect_lists(&mut arena, None);
+        let lists = crate::native_world::area_damage::capture_effect_lists(&mut arena, None);
         let slots = lists.mana_chain().current_slots(&arena, &arena.entities);
         let mut entities = arena.entities.clone();
         for sphere in arena.spheres().iter().filter(|sphere| sphere.active) {
@@ -4763,7 +4791,7 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
         "sub_135C0 must use the decoded one-based source parameter row"
     );
 
-    let prepare_family1 = |candidate: &mut super::super::Mc2Simulation| {
+    let prepare_family1 = |candidate: &mut crate::native_world::Mc2Simulation| {
         let target = candidate.session.state.live.economy.entities[70].clone();
         let source = &mut candidate.session.state.live.economy.entities[112];
         source.set_source_relation(&target);
@@ -4820,7 +4848,7 @@ fn level_two_nyphur_state6_family1_gate_pitch_counter_and_relation_boundaries_ar
     accepted.session.state.live.economy.entities[112].set_source_roll(169);
     let source_before = accepted.session.state.live.economy.entities[112].clone();
     let target = accepted.session.state.live.economy.entities[70].clone();
-    let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+    let horizontal = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
         source_before.position,
         target.position,
     ));
@@ -7696,7 +7724,7 @@ fn ordinary_rival_selects_typed_bee_and_fireball_reaches_damage_and_reclaim() {
             }
             if impact.is_some() {
                 damaged = session.dispatch_events().iter().find_map(|event| match event {
-                    Mc2DispatchEvent::Economy { source_slot, event: super::super::Level2EconomyEvent::DamageApplied {
+                    Mc2DispatchEvent::Economy { source_slot, event: crate::native_world::Level2EconomyEvent::DamageApplied {
                         target_entity_index, attacker_entity_index: 112, damage, ..
                     }, .. } if *source_slot == selected_handle.source_slot
                         && *target_entity_index == selected_handle.source_slot && *damage > 0 => Some(*damage),
@@ -7833,7 +7861,7 @@ fn level_two_nyphur_family0_activation_reaches_projectile_consumer_ordinarily() 
     );
     let source = &session.economy.entities[112];
     let target = &session.economy.entities[usize::from(source.source_word_96())];
-    let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+    let horizontal = crate::legacy_sqrt(crate::native_world::level2_wrapping_xy_distance(
         source.position,
         target.position,
     ));
@@ -8162,7 +8190,7 @@ fn level_two_nyphur_mode7_cadence_gate_and_family0_cast_are_exact() {
         "the phase reflects whether the numeric scan reached the newborn slot"
     );
     let callback_seen = session.dispatch_events().iter().any(|event| matches!(event,
-        Mc2DispatchEvent::DynamicArena { source_slot, kind: super::super::Level2DynamicArenaKind::FireballProjectile, .. }
+        Mc2DispatchEvent::DynamicArena { source_slot, kind: crate::native_world::Level2DynamicArenaKind::FireballProjectile, .. }
             if *source_slot == projectile.source_entity_index));
     assert_eq!(callback_seen, same_pass, "newborn Fireball dispatch follows source slot order");
     assert_eq!(

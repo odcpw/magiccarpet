@@ -656,7 +656,7 @@ impl Mc2Simulation {
                         let pressure = target_owner
                             .type_str_164_auxiliary()
                             .map_or(0, |auxiliary| auxiliary.word_0x242_578);
-                        level2_nyphur::source_mana_pressure_score(attacker_max_mana, pressure)
+                        creatures::rival_wizards::source_mana_pressure_score(attacker_max_mana, pressure)
                     });
                     writes.push(ThreatWrite {
                         target_owner: owner,
@@ -22286,13 +22286,13 @@ impl Mc2Simulation {
                                         player.record[42..44].copy_from_slice(&root.source_entity_index.to_le_bytes());
                                     }
                                 }
-                                level2_nyphur::NyphurCastleSeed {
+                                creatures::rival_wizards::NyphurCastleSeed {
                                     castle: root,
                                     class5_buckets: Some(effect_lists.class5_current_slots(source_arena)),
                                     mana_slots: Some(effect_lists.mana_chain().current_slots(source_arena, &source_arena.entities)),
                                 }
                             },
-                            Some(level2_nyphur::NyphurTargetFrame {
+                            Some(creatures::rival_wizards::NyphurTargetFrame {
                                 rows: &current_targets,
                                 class5_buckets: &class5_buckets,
                                 mana_slots: &mana_slots,
@@ -29501,360 +29501,74 @@ impl Mc2Simulation {
         protected
     }
 
-    /// Release the remote AI player's live spell holders at the grounded
-    /// `sub_5E310` death boundary. The numeric rows and the qualified player
-    /// record are the only authorities for Nyphur's holders; the local-player
-    /// shared-spell projection must remain untouched.
-    fn release_level2_nyphur_spell_holders(
-        &mut self,
-        player_entity_index: u16,
-        player_position: Position,
-    ) -> std::result::Result<(), String> {
-        let Some(player_index) = self
-            .session
-            .state
-            .live
-            .core
-            .players
-            .iter()
-            .position(|player| player.entity_index == player_entity_index && player.is_ai)
-        else {
-            return Ok(());
-        };
-        let enabled = self.session.state.live.core.players[player_index].enabled_spell_holders;
-        let owner_handle = self.session.state.live.economy.handle(player_entity_index);
-        let mut rng =
-            self.session.state.live.economy.entities[usize::from(player_entity_index)].entity_rng;
-
-        for (family, holder_index) in enabled.into_iter().enumerate() {
-            if holder_index == 1 {
-                let live = &mut self.session.state.live;
-                if crate::native_world::creatures::player_lifecycle::scatter_current_sentinel_house(
-                    &mut live.economy, &mut live.ordinary.houses, &mut live.terrain,
-                    player_entity_index, player_position, &mut rng,
-                )? {
-                    continue;
-                }
-                if live.economy.economy.live_arena_kind(1).is_some() {
-                    return Err("released-holder sentinel1 has no current typed scatter owner".to_owned());
-                }
-            }
-            let valid = owner_handle.is_some_and(|handle| {
-                let live = &self.session.state.live;
-                live.nyphur_dispatcher.bound_live_holder(handle, &live.core.players[player_index], &live.economy, family)
-                    .is_some_and(|holder| holder.source_slot == holder_index)
-            });
-            if holder_index != 1 && !valid {
-                assert!(
-                    self.session.state.live.core.players[player_index]
-                        .set_enabled_spell_holder_index(family, u16::from(holder_index != 0)),
-                    "qualified Nyphur player owns every spell-family relation"
-                );
-                continue;
-            }
-            assert!(
-                self.session.state.live.core.players[player_index]
-                    .set_enabled_spell_holder_index(family, 1),
-                "qualified Nyphur player owns every spell-family relation"
-            );
-            {
-                let holder =
-                    &mut self.session.state.live.economy.entities[usize::from(holder_index)];
-                holder.set_control_flags(holder.control_flags & !1);
-                holder.set_source_action(holder.action.wrapping_add(1));
-            }
-
-            rng = level2_next_rng16(rng);
-            let x_offset = i16::try_from(i32::from(rng & 0x01ff) - 256)
-                .expect("nine-bit Nyphur holder x offset fits i16");
-            rng = level2_next_rng16(rng);
-            let y_offset = i16::try_from(i32::from(rng & 0x01ff) - 256)
-                .expect("nine-bit Nyphur holder y offset fits i16");
-            let position = Position {
-                x: player_position.x.wrapping_add_signed(x_offset),
-                y: player_position.y.wrapping_add_signed(y_offset),
-                z: player_position.z,
-            };
-            {
-                let holder =
-                    &mut self.session.state.live.economy.entities[usize::from(holder_index)];
-                holder.set_position(position);
-            }
-            self.session
-                .state
-                .live
-                .economy
-                .map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: holder_index,
-                    active: true,
-                    x: position.x,
-                    y: position.y,
-                })
-                .expect("released Nyphur holder source slot fits map chain");
-            rng = level2_next_rng16(rng);
-            let life = i32::from(rng % 90) + 200;
-            self.session.state.live.economy.entities[usize::from(holder_index)].set_life(life);
-            let live = &mut self.session.state.live;
-            let released = live.economy.entities[usize::from(holder_index)].clone();
-            if let Some(shared) = live.shared_spells.pickup_mut(holder_index) {
-                shared.clone_from(&released);
-            } else {
-                live.shared_spells.dynamic_pickups.push(released);
-            }
-        }
-        self.session.state.live.economy.entities[usize::from(player_entity_index)]
-            .set_entity_rng(rng);
-        let live = &mut self.session.state.live;
-        let player = live.core.players[player_index].clone();
-        if let Some(shared) = live.shared_spells.players.iter_mut().find(|row| row.entity_index == player_entity_index) {
-            *shared = player;
-        }
-        Ok(())
-    }
-
-    /// Continue the ordinary AI player death selected by Nyphur's lethal
-    /// `sub_5EFA0` mailbox result. This is the pinned `sub_5E310` action-2
-    /// transition: fall to terrain, release holders, allocate the death
-    /// marker, redirect owned mana, then select action 3.
+    /// Family action2 owns its flight/fall/allocation/grounded transition.
+    /// The shared adapter retains the journal and world-reclaim barriers.
     fn step_level2_nyphur_dying_action(
         &mut self,
         source_slot: u16,
         mana_chain: &crate::campaign::source_arena::SourceManaChain,
     ) -> std::result::Result<(), String> {
-        let (old_fall_velocity, collision_vertical_offset, flight_profile) = {
-            let player = &self.session.state.live.economy.entities[usize::from(source_slot)];
-            let parameter = player
-                .parameter_relation
-                .and_then(|index| {
-                    self.session
-                        .definition
-                        .presentation
-                        .entity_parameters
-                        .get(usize::from(index))
-                })
-                .expect("qualified Nyphur parameter row remains present");
-            let word = |offset: usize| i16::from_le_bytes([parameter[offset], parameter[offset + 1]]);
-            let mut profile = self.session.definition.profile;
-            profile.terrain_reference_height = word(10);
-            profile.ground_clearance = word(12);
-            profile.passive_vertical_step = word(14);
-            profile.raw_word_0x10 = word(16);
-            profile.raw_word_0x12 = word(18);
-            (
-                player.source_word_2c(),
-                profile.ground_clearance,
-                profile,
-            )
-        };
-        // sub_5E310 runs the full owner flight body before falling.
-        let event_start = self.session.state.live.core.context.events.len();
-        let (position, dying_burst_position) = {
+        use creatures::rival_wizards::lifecycle;
+        let mut flight = {
             let live = &mut self.session.state.live;
-            live.nyphur_dispatcher.step_dying_flight(
-                &mut live.economy, &mut live.shared_spells, &mut live.core.players,
-                &mut live.player_life, live.core.state.entity_index, source_slot,
-                &live.terrain, flight_profile, &mut live.core.context,
-            )?
+            lifecycle::begin_dying(lifecycle::FlightDomains {
+                arena: &mut live.economy, terrain: &live.terrain,
+                shared: &mut live.shared_spells, players: &mut live.core.players,
+                roster: &mut live.nyphur_dispatcher, local_life: &mut live.player_life,
+                local_owner: live.core.state.entity_index, context: &mut live.core.context,
+            }, source_slot, self.session.definition.profile, &self.session.definition.presentation)?
         };
-        let events = self.session.state.live.core.context.events[event_start..].to_vec();
-        self.append_context_effects(events);
-        let altitude = self
-            .session
-            .state
-            .live
-            .terrain
-            .ground_height(position);
-        let fall = crate::native_world::creatures::player_lifecycle::fall(
-            crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES,
-            position, old_fall_velocity, altitude, collision_vertical_offset,
-        );
-        let position = fall.position;
-        self.session.state.live.economy.entities[usize::from(source_slot)]
-            .set_source_word_2c(fall.next_velocity);
-        self.set_level2_entity_position(source_slot, position)
-            .expect("qualified Nyphur map carrier remains valid while dying");
-        {
+        self.append_context_effects(std::mem::take(&mut flight.events));
+        let grounded = {
             let live = &mut self.session.state.live;
-            let actor = live.economy.entities[usize::from(source_slot)].clone();
-            live.shared_spells.sync_player_entity_from_authority(&actor);
-        }
-        let burst = {
-            let live = &mut self.session.state.live;
-            crate::native_world::creatures::player_lifecycle::spawn_dying_burst(
-                &mut live.economy, &mut live.terrain,
-                &self.session.definition.presentation.particles, source_slot, dying_burst_position,
-            )?
+            lifecycle::fall_and_burst(&mut live.economy, &mut live.terrain,
+                &mut live.shared_spells, &self.session.definition.presentation.particles, flight)?
         };
-
-        let grounded = if burst == Some(source_slot) {
-            i32::from(self.session.state.live.economy.entities[usize::from(source_slot)].position.z)
-                == i32::from(altitude) + i32::from(collision_vertical_offset)
-        } else { fall.grounded };
-        if !grounded {
-            return Ok(());
-        }
+        let Some(grounded) = grounded else { return Ok(()) };
         let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
-        {
-            let live = &mut self.session.state.live;
-            live.ordinary
-                .reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)?;
-            live.economy
-                .rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
-            if let Some(owner) = live.economy.handle(source_slot) {
-                live.nyphur_dispatcher.credit_grounded_death(
-                    owner, &live.economy, &mut live.core.players, &mut live.shared_spells,
-                );
-            }
-        }
-        self.session.state.live.economy.entities[usize::from(source_slot)]
-            .clear_source_upkeep_mailbox();
-        {
-            let live = &mut self.session.state.live;
-            let relation = live.economy.entities[usize::from(source_slot)].special_relation;
-            let EntitySpecialRelation::PlayerState(slot) = relation else {
-                return Err(format!("dying rival {source_slot} has no current player A4"));
-            };
-            let color = live.core.players.iter().find(|player| player.slot == slot)
-                .ok_or_else(|| format!("dying rival {source_slot} has no player A4 slot {slot}"))?
-                .player_color_index();
-            live.player_lifecycle_notifications.publish(
-                color, source_slot,
-                crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Died,
-                crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.death_notice_frames,
-            ).map_err(|error| error.to_string())?;
-        }
-        self.release_level2_nyphur_spell_holders(source_slot, position)?;
-        let marker = {
-            let live = &mut self.session.state.live;
-            let current_position = live.economy.entities[usize::from(source_slot)].position;
-            crate::native_world::creatures::player_lifecycle::construct_death_marker(
-                &mut live.economy, &mut live.terrain, source_slot, current_position,
-            )?
-        };
-        if let Some(marker) = marker {
-            let player = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
-            player.set_source_action(3);
-            player.set_source_dword_10(crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.revival_wait_visits);
-            self.session
-                .state
-                .live
-                .economy
-                .redirect_mana_chain_to_marker(
-                    mana_chain,
-                    source_slot,
-                    marker.source_entity_index,
-                );
-        }
-        self.session.state.live.economy.entities[usize::from(source_slot)]
-            .set_player_death_hidden_bit();
-        self.session
-            .state
-            .live
-            .economy
-            .decrement_replacement_cursor_after_player_contact();
-        Ok(())
+        let live = &mut self.session.state.live;
+        live.ordinary.reclaim_for_source_boundary(&mut live.economy, &mut live.terrain)?;
+        live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &reset_free_slots)?;
+        lifecycle::finish_grounded(lifecycle::GroundedDomains {
+            arena: &mut live.economy, terrain: &mut live.terrain,
+            shared: &mut live.shared_spells, players: &mut live.core.players,
+            roster: &mut live.nyphur_dispatcher, houses: &mut live.ordinary.houses,
+            notices: &mut live.player_lifecycle_notifications,
+        }, mana_chain, grounded)
     }
 
-    /// Execute the AI/no-Castle branch of pinned `sub_5E7C0`. The objective
-    /// carrier changes only after the ordinary lethal mailbox and grounded
-    /// action-2 transition selected action 3.
     fn step_level2_nyphur_banished_action(&mut self, source_slot: u16) -> std::result::Result<(), String> {
-        let player_slot = match self.session.state.live.economy.entities[usize::from(source_slot)].special_relation {
-            EntitySpecialRelation::PlayerState(slot) => slot,
-            _ => return Err(format!("banished rival {source_slot} has no current player A4")),
-        };
-        let player_index = self.session.state.live.core.players.iter()
-            .position(|player| player.slot == player_slot)
-            .ok_or_else(|| format!("banished rival {source_slot} has no player A4 slot {player_slot}"))?;
-        {
-            let live = &mut self.session.state.live;
-            let dispatcher = live.nyphur_dispatcher
-                .get_mut_in_arena(&live.economy, source_slot)
-                .ok_or_else(|| format!("banished rival {source_slot} lost its current owner carrier"))?;
-            dispatcher.clear_banished_recoil();
-        }
+        use creatures::rival_wizards::lifecycle;
         let outcome = {
             let live = &mut self.session.state.live;
-            crate::native_world::creatures::player_lifecycle::step_ai_banished(
-                &mut live.economy.entities[usize::from(source_slot)],
-                &live.core.players[player_index],
-            )?
+            lifecycle::step_banished(lifecycle::BanishDomains {
+                arena: &mut live.economy, shared: &mut live.shared_spells,
+                players: &mut live.core.players, roster: &mut live.nyphur_dispatcher,
+                notices: &mut live.player_lifecycle_notifications,
+            }, source_slot)?
         };
-        use crate::native_world::creatures::player_lifecycle::AiBanishment;
-        match outcome {
-            AiBanishment::Waiting => {}
-            AiBanishment::Revive { castle_slot } => {
-                self.revive_level2_rival_at_castle(source_slot, castle_slot).map_err(|error| error.to_string())?;
-            }
-            AiBanishment::Banished { announce } => {
-                let live = &mut self.session.state.live;
-                let player = &mut live.core.players[player_index];
-                if announce {
-                    live.player_lifecycle_notifications.publish(
-                        player.player_color_index(), source_slot,
-                        crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Banished,
-                        crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.banishment_notice_frames,
-                    ).map_err(|error| error.to_string())?;
-                }
-                crate::native_world::creatures::player_lifecycle::finish_ai_banishment(player)?;
-                let slot = player.slot;
-                if let Some(projected) = live.shared_spells.players.iter_mut().find(|row| row.slot == slot) {
-                    if !projected.set_banishment_state(0) {
-                        return Err(format!("banished rival {source_slot} lost its shared participation projection"));
-                    }
-                }
-            }
+        if let lifecycle::Banishment::Revive { castle_slot } = outcome {
+            self.revive_level2_rival_at_castle(source_slot, castle_slot)
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }
 
     fn revive_level2_rival_at_castle(&mut self, owner: u16, castle_slot: u16) -> Result<()> {
+        use creatures::rival_wizards::lifecycle;
         let live = &mut self.session.state.live;
-        let handle = live.economy.handle(owner)
-            .ok_or_else(|| NativeWorldError::new("reviving rival source handle is absent"))?;
-        live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &[])
-            .map_err(NativeWorldError::new)?;
-        let context = source_target::Context {
-            spells: Some(&live.shared_spells),
+        let targets = source_target::Context {
             map_type: Some(live.terrain.map_type()),
             player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
             player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
             particles: Some(&self.session.definition.presentation.particles),
             ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
         };
-        let castle_position = source_target::read(&live.economy, context, castle_slot)
-            .map_err(NativeWorldError::new)?
-            .ok_or_else(|| NativeWorldError::new(format!("reviving rival Castle address {castle_slot} is absent")))?.position;
-        let actor = live.economy.entities.get(usize::from(owner)).cloned()
-            .ok_or_else(|| NativeWorldError::new("reviving rival actor is absent"))?;
-        crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, castle_position, true, false)
-            .map_err(NativeWorldError::new)?;
-        let (mut actor, holders) = live.shared_spells.revive_rival_at_castle(
-            &mut live.economy, &mut live.terrain, castle_slot, actor, castle_position,
-        )?;
-        for holder in holders {
-            let slot = holder.index;
-            let position = holder.position;
-            let active = holder.active;
-            live.economy.entities[usize::from(slot)] = holder;
-            crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, slot, position, active, false)
-                .map_err(NativeWorldError::new)?;
-        }
-        actor.set_map_links(live.economy.map_chains.old_map_entity(owner), live.economy.map_chains.next_entity(owner));
-        live.economy.entities[usize::from(owner)] = actor;
-        if !live.nyphur_dispatcher.publish_revival_player_state(
-            handle, &live.economy, &mut live.core.players, &live.shared_spells,
-        ) {
-            return Err(NativeWorldError::new("revived rival player state could not be published"));
-        }
-        let player = live.core.players.iter().find(|player| player.entity_index == owner)
-            .ok_or_else(|| NativeWorldError::new("revived rival player row is absent"))?;
-        if !live.nyphur_dispatcher.finish_source_revival(handle, player, &live.economy) {
-            return Err(NativeWorldError::new("revived rival source state could not be rebound"));
-        }
-        live.economy.finish_source_group();
-        Ok(())
+        lifecycle::revive(lifecycle::RevivalDomains {
+            arena: &mut live.economy, terrain: &mut live.terrain,
+            shared: &mut live.shared_spells, players: &mut live.core.players,
+            roster: &mut live.nyphur_dispatcher,
+        }, targets, owner, castle_slot).map_err(NativeWorldError::new)
     }
 
     fn release_level2_player_spell_holders(&mut self, player_position: Position) -> std::result::Result<(), String> {
@@ -36570,7 +36284,19 @@ mod tests {
             assert!(live.nyphur_dispatcher.bind_acquired_holder(owner_handle, &player, &live.economy, 4));
         }
         let owner_position = scattered.entities()[usize::from(owner)].position;
-        scattered.release_level2_nyphur_spell_holders(owner, owner_position).unwrap();
+        {
+            use creatures::rival_wizards::lifecycle;
+            let live = &mut scattered.session.state.live;
+            lifecycle::release_holders(&mut lifecycle::GroundedDomains {
+                arena: &mut live.economy,
+                terrain: &mut live.terrain,
+                shared: &mut live.shared_spells,
+                players: &mut live.core.players,
+                roster: &mut live.nyphur_dispatcher,
+                houses: &mut live.ordinary.houses,
+                notices: &mut live.player_lifecycle_notifications,
+            }, owner, owner_position).unwrap();
+        }
         assert_eq!(scattered.entities()[usize::from(slot)].action, 13);
         assert_eq!(scattered.entities()[usize::from(slot)].source_word_96(), body);
         assert_eq!(scattered.creature_kind_for_source_slot(body), Some(CreatureKind::Bee),
