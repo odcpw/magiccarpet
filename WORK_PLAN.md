@@ -300,8 +300,8 @@ Oliver authorized continuing the existing remc2-to-Rust delivery plan on
 corridors `mc-bhq.2` and authored Cave paths/rooms/features `mc-bhq.5` have their
 finite acceptance qualified below and are present in the installed runtime.
 Current family: trees, stones, dolmens and remaining scenery `mc-bhq.13`.
-Paid Tree burning and the Crater/Dolmen grounding/recharge path are installed
-below. Full scenery acceptance remains open.
+Paid Tree burning, Crater/Dolmen grounding/recharge and Castle/scenery burial
+are installed below. Full scenery acceptance remains open.
 Use its existing original acceptance and canonical `world::scenery` owners;
 complete ordinary damage/destruction, real children and lifetime/consumers.
 Root CopperMountain implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
@@ -353,27 +353,64 @@ Launch/load is not native Crater/Dolmen gameplay, human combat, FPS, hardware
 audio, complete missions or old-save proof. No Unity/art rebuild. Evidence:
 `research/private/generated/scenery-20261108-integration/candidate-6`, reused
 C5 production controls, retained C3/C4/C5 negatives and `dolmen-launch-smoke`.
-Full original scenery acceptance/dependencies stay open. Next: pin a real
-source-reachable scenery burial/retirement producer and its reclaim/consumer
-path; the reported stale typed-Dolmen retirement remains a source finding,
-not a reproduced runtime result. Then continue remaining enabled scenery.
+Full original scenery acceptance/dependencies stay open. The following batch
+resolves the specific burial/retirement join; it does not close the family.
 
-The next producer is now source-pinned: ordinary Castle child10/42/action44
-starts with control bit0x10000. Source37BC0 calls57390 for each cell of
-BUILD[1..current stage] before that cell's material work, then performs the
-height pass. Rust `step_castle_build_child` currently uses only the collapsed
-terrain footprint and omits burial. Restore this shared join with actual stage,
-cell and non-square axis order; do not stamp a final bounding rectangle as an
-actor-burial substitute. Real Level2 authored411/Dolmen108 is different-owner
-and lies inside the retained stage-I 8×8 footprint for the proposed landing.
-Its actual public placement/landing admission still needs runtime proof.
-The resulting hidden row and following cleanup must also retire its ordinary
-typed view so it cannot keep scheduling contacts or mask a legitimate new
-occupant. That latter stale-view finding is still unexecuted. Root owns the
-next shared implementation and builds; NavyBadger stays on source/consumer
-verification (its current Mail credential is unavailable, so no worker edits
-without a fresh authenticated lease). Existing `mc-bhq.10`/`mc-k5k.9` and full
-scenery acceptance remain open; reuse delivered casting/mana/tier evidence.
+### Installed Castle/scenery burial — partial `mc-bhq.13` (2026-11-08)
+
+Implemented, committed and pushed `d1e983db`; matching Original native
+`69fcd85cf224` is installed through `build-666g7e_b`. Actual Castle BUILD
+child10/42/action44 now reaches shared57390 through live actor domains at
+every source stage/cell, before material work and the separate height pass.
+Preserves signed linear scratch offsets (including valid non-square overlap),
+repeated material/topology RNG order, timer/hold behavior and all-cell Cave
+clearance/Day closure. A hidden Dolmen still runs its current-pass callback
+and common phase; its typed view retires only at the following raw reclaim
+boundary, leaving one actual map unlink and allocator release.
+
+Verified C9 real whole Level2 authored411/Dolmen108 case PASS0.118s: declared
+carried Castle/funding/player pose, public paid flyer, actual owned root and
+retained BUILD1 child, exact57390 cell/old generation, hidden packet and DTO
+exclusion, numeric callback/phase order, natural following reclaim, cleared
+physical class0 target read, actual free slot/no map discovery, no stale
+Dolmen scheduling, deferred no-cast and raw/typed/DTO reset. No scenery/NPC,
+terrain, RNG, allocator, objective or lifetime forcing. Source-identical C7
+layout/clearance, public Castle tiers/failures, Day3/Cave24/Level9 startup,
+shared Tree burial and numeric-order checks pass; strict Rig workspace/all
+targets passes49.65s. The old model42 clock check fails identically on C6
+and C7 at byte3b0 versus1; source60480 overrides that byte to zero. No assertion
+was weakened or this existing mismatch hidden.
+
+Preserved C7/C8 negatives: C7 stops before casting on House11 site exclusion;
+C8 corrects the fixed site/hidden-flyer read and reaches reclaim, then stops on
+an invalid None expectation for a retained physical pointer. C9 requires the
+source-correct cleared packet plus independent allocation/discovery/DTO
+absence. Bounded debugger controls established only those setup/API facts;
+the final normal executable supplies the positive. Independent production and
+gate review approves the joins. UBS has no added-line critical finding;
+whole-file formatting/scanner debt remains explicit.
+
+During C9, another task edited three canonical Rust/ABI inputs. Its work is
+preserved and excluded from this delivery. The original guard failure remains;
+Root independently verifies all654 inputs in clean committed dispatcher/Rig,
+before/after artifact identity and installed bytes, rather than claiming the
+dirty canonical checkout matches. One normal canonical Original map/loading/
+NightSpire terrain/HUD smoke passes with the matching mapped native, one
+portal and zero retries; owned player/display stopped. No Unity/art rebuild.
+This is not native burial gameplay, human combat, FPS, hardware audio, full
+missions or old-save proof. Evidence: `generated/scenery-20261108-integration/`
+C7/C8/C9 and `castle-burial-launch-smoke` under `research/private/`.
+
+Full `.13`/`.10`/`mc-k5k.9` acceptance/dependencies remain open. Next bounded
+capability is outdoor ballistic scenery models7/8: typed default/property/
+presentation bindings and real Day3 authored245/action21 paid-hit→smoke→
+cleanup consumer. The existing lifecycle control forces actor state and is
+not that positive. Night Level7 group10 has eight model7 rows, but its model4
+exit producer is objective-gated and current ordinary group dispatch remains
+unproved; do not claim it connected yet. Outdoor model7 construction currently
+falls into a Cave-only null adapter; retain genuine Cave7/8 null behavior.
+Root CopperMountain owns shared integration/builds; current family owner is
+NavyBridge (same native worker, fresh authenticated identity).
 
 ### Installed paid Tree burning — partial `mc-bhq.13` (2026-11-08)
 
