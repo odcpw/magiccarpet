@@ -278,7 +278,9 @@ Oliver authorized continuing the existing remc2-to-Rust delivery plan on
 2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1`, Cave
 corridors `mc-bhq.2` and authored Cave paths/rooms/features `mc-bhq.5` have their
 finite acceptance qualified below and are present in the installed runtime.
-Next capability: trees, stones, dolmens and remaining scenery `mc-bhq.13`.
+Current family: trees, stones, dolmens and remaining scenery `mc-bhq.13`.
+Paid Tree burning and the Crater/Dolmen grounding/recharge path are installed
+below. Full scenery acceptance remains open.
 Use its existing original acceptance and canonical `world::scenery` owners;
 complete ordinary damage/destruction, real children and lifetime/consumers.
 Root CopperMountain implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
@@ -286,6 +288,54 @@ installation; keep one accountable family owner through any consumer failure.
 Keep the complete acceptance and dependencies. Then continue existing
 terrain/scenery, activation/objective and progression/flow capabilities, one
 connected runtime result at a time. Do not restart delivered spells/creatures.
+
+### Installed Crater/Dolmen grounding and recharge — partial `mc-bhq.13`
+
+Source `e8e0d408` is committed/pushed; optimized Original native
+`7022c4c8cb2c` is installed through `build-vkj6uua2`. The shared Dolmen action6
+now publishes its reached Z to the current matching raw source row, after
+source65080's old-pose contact test. Its common phase tail also reaches the
+raw row/record66. Only Z and phase are written; other packet fields and current
+occupants are preserved. This fixes the source-visible carrier join for every
+Dolmen routed through that shared handler, rather than changing a mission.
+
+Final C6 passes the whole real Level2 authored411/Dolmen108 path in 0.179 s:
+declared carried CraterI and Castle/player funding, public left-hand activation,
+actual payment and generation-bound projectile/ring, exact ring-callback floor
+change, reached ground write in current targeting and original sprite39,
+raw/typed phase, natural hide/next-boundary reclaim/map unlink, equal-elapsed
+no-cast control, actual contact selecting a max-derived high recharge rate and
+its unsaturated credit at the next player callback, and typed/raw/target/DTO
+reset. No NPC, objective, terrain, RNG, allocator or lifetime is forced.
+The same active holder is allowed to finish its natural countdown; callback
+receipts distinguish the player's rate selection from its later suppression.
+
+C5 production is byte-identical to C6; only the test oracle differs. Reused
+C5 workspace/all-target check (53.730 s), actual source-order control (0.069 s),
+existing contact control (0.025 s) and acquired/all-tier public disaster path
+(1.643 s). Bounded source/gate reviews, diff checks and Rust parsing pass.
+Whole-file formatting debt remains. UBS has no added-line critical finding;
+its four unchanged simulation-file matches confuse secret missions with
+security tokens. Final Crater-only scan has zero critical findings.
+
+The earlier C3/C4 negatives stopped before casting on invalid FOV/hand-timing
+assumptions; they did not reproduce the production gap. C5 reached the real
+grounding/cleanup prefix but its late end-turn recharge expectation ignored a
+possible active-holder writer. C6 uses actual ordered player/holder callbacks.
+No pre-fix runtime counterexample is claimed; the missing writeback was traced
+directly against source and the connected path now passes with the small join.
+
+Root verified all 654 unique inputs and exact Rig/installed bytes, viewed the
+normal canonical map/loading/NightSpire terrain/HUD with the mapped matching
+plugin, one portal and zero retries, then stopped owned smoke processes.
+Launch/load is not native Crater/Dolmen gameplay, human combat, FPS, hardware
+audio, complete missions or old-save proof. No Unity/art rebuild. Evidence:
+`research/private/generated/scenery-20261108-integration/candidate-6`, reused
+C5 production controls, retained C3/C4/C5 negatives and `dolmen-launch-smoke`.
+Full original scenery acceptance/dependencies stay open. Next: pin a real
+source-reachable scenery burial/retirement producer and its reclaim/consumer
+path; the reported stale typed-Dolmen retirement remains a source finding,
+not a reproduced runtime result. Then continue remaining enabled scenery.
 
 ### Installed paid Tree burning — partial `mc-bhq.13` (2026-11-08)
 
@@ -318,12 +368,10 @@ builds took 507.980/200.029 s. Evidence:
 `research/private/generated/scenery-20261108-integration/candidate-1` and
 `original-launch-smoke`.
 
-Next connected discriminator: real authored Level2 Dolmen108 after public
-CraterI lowers its floor must agree across scheduled contact, authoritative
-source-target state and sprite DTO. Current code appears to update only the
-typed Dolmen pose/phase; reproduce before choosing the smallest shared join.
-Preserve source Stone/Dolmen no-destruction behavior. NavyBadger owns the
-connected capability; Root implements shared joins and serializes verification.
+The subsequent Crater/Dolmen checkpoint above qualifies the shared terrain,
+contact, targeting and presentation path. Preserve source Stone/Dolmen
+no-destruction behavior. NavyBadger owns the connected family; Root implements
+shared joins and serializes verification.
 
 ### Qualified installed Cave paths and rooms — `mc-bhq.5` (2026-11-08)
 
