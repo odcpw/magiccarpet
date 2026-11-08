@@ -1200,6 +1200,41 @@ mod tests {
             session.session.state.live.economy.entities[usize::from(slot)].life,
             3
         );
+        let contract = crate::MissionAudioSite::TerrainStrip.contract();
+        assert_eq!((contract.sounds, contract.play_type), ("47", "4"));
+        let prepared_type = crate::prepare_event_sound_command(
+            Position::default(),
+            0,
+            Position::default(),
+            47,
+            0,
+            slot,
+            7,
+        )
+        .expect("source sound 47 has a playback policy")
+        .play_type;
+        assert_eq!(prepared_type.to_string(), contract.play_type);
+        let mut prepared_count = 0;
+        for record in &session.effect_journal().records()[cursor..] {
+            if matches!(record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index, sound_id: 47, audio_site: crate::MissionAudioSite::TerrainStrip, ..
+                }) if entity_index == slot)
+            {
+                assert_eq!(
+                    record
+                        .audio
+                        .expect("scheduled corridor sound is prepared")
+                        .play_type,
+                    prepared_type
+                );
+                prepared_count += 1;
+            }
+        }
+        assert!(
+            prepared_count > 0,
+            "actual source callback prepares sound 47"
+        );
         let sounds = session.effect_journal().records()[cursor..]
             .iter()
             .filter_map(|record| match record.effect {
@@ -1803,28 +1838,202 @@ mod tests {
             &std::fs::read(package.join("authored-level.bin")).unwrap(),
         )
         .expect("actual Level4 source trigger records");
+        // One declared player-only approach to each real proximity switch;
+        // the switch cadence, complete authored group and command lifetime are
+        // all driven by the ordinary source scheduler.
+        for (switch_slot, group, authored_index, corridor_slot) in
+            [(124_u16, 37_u16, 582_u16, 195_u16), (125, 40, 584, 206)]
         {
-            let live = &mut campaign.simulation_mut().session.state.live;
-            for (_, position, _, _) in roots {
+            let (player, switch_handle, corridor_handle, approach, trigger_position) = {
+                let sim = campaign.simulation();
+                let live = &sim.session.state.live;
+                let switch = &live.economy.entities[usize::from(switch_slot)];
+                assert!(switch.active && !switch.drawing_disabled());
+                assert_eq!(
+                    (switch.class, switch.model, switch.action, switch.source_id),
+                    (11, 0, 0, group)
+                );
+                let corridor = &live.economy.entities[usize::from(corridor_slot)];
+                assert!(roots.iter().any(|(slot, _, _, _)| *slot == corridor_slot));
+                assert_eq!(corridor.life, 3);
                 let feature = authored
                     .iter()
-                    .find(|row| {
-                        row.kind == 10
-                            && row.subtype == 63
-                            && row.tile_x == position.x >> 8
-                            && row.tile_y == position.y >> 8
-                    })
-                    .expect("source-authored open trigger addresses this corridor");
-                let position =
+                    .find(|row| row.index == authored_index)
+                    .expect("the actual switch group owns its opening command");
+                assert_eq!(
+                    (feature.kind, feature.subtype, feature.activation_group),
+                    (10, 63, group as i16)
+                );
+                assert_eq!(
+                    (feature.tile_x, feature.tile_y),
+                    (corridor.position.x >> 8, corridor.position.y >> 8)
+                );
+                let trigger_position =
                     feature.world_position(live.terrain.ground_height(feature.world_position(0)));
-                allocate_close_trigger(
-                    &mut live.economy,
-                    &mut live.terrain,
-                    feature.index,
-                    position,
+                let mut approach = switch.position;
+                // The reset switch lies inside the sealed two-cell strip.
+                // Approach perpendicular to it, within the switch's actual
+                // source overlap, without changing the corridor or the switch.
+                if switch_slot == 124 {
+                    approach.y = approach.y.wrapping_sub(768);
+                } else {
+                    approach.x = approach.x.wrapping_sub(768);
+                }
+                let player_row = &live.economy.entities[usize::from(sim.state.entity_index)];
+                let extent = |row: &EntitySnapshot, offset| {
+                    i16::from_le_bytes(row.record_bytes()[offset..offset + 2].try_into().unwrap())
+                };
+                assert!(
+                    crate::level1_mission::source_entities_overlap_xy(
+                        switch.position,
+                        extent(switch, 88),
+                        extent(switch, 90),
+                        approach,
+                        extent(player_row, 88),
+                        extent(player_row, 90),
+                    ),
+                    "the fixed player approach must enter the actual switch bounds"
+                );
+                approach.z = live
+                    .terrain
+                    .ground_height(approach)
+                    .checked_add(sim.profile().ground_clearance)
+                    .expect("source floor clearance fits the player position");
+                assert!(
+                    approach.z
+                        <= live
+                            .terrain
+                            .ceiling_height(approach)
+                            .unwrap()
+                            .checked_sub(sim.profile().ceiling_clearance)
+                            .expect("source ceiling clearance fits the player position"),
+                    "declared player approach must fit the real Cave"
+                );
+                assert!(
+                    !live.terrain.cave_collision_blocked(approach),
+                    "declared player approach must be outside the sealed corridor"
+                );
+                (
+                    sim.state.entity_index,
+                    sim.source_arena().handle(switch_slot).unwrap(),
+                    sim.source_arena().handle(corridor_slot).unwrap(),
+                    approach,
+                    trigger_position,
                 )
-                .expect("ordinary source constructor allocates the authored opening trigger");
+            };
+            campaign
+                .simulation_mut()
+                .set_level2_entity_position(player, approach)
+                .unwrap();
+            let mut produced = false;
+            for _ in 0..16 {
+                let _ = campaign.step(crate::PlayerCommand::default(), 0);
+                let sim = campaign.simulation();
+                assert!(
+                    sim.dispatch_events().iter().all(|event| !matches!(
+                        event,
+                        crate::native_world::Mc2DispatchEvent::Error { .. }
+                    )),
+                    "source switch callback failed: {:?}",
+                    sim.dispatch_events()
+                );
+                assert_eq!(
+                    sim.source_arena().handle(corridor_slot),
+                    Some(corridor_handle)
+                );
+                if sim.dispatch_events().iter().any(|event| {
+                    matches!(event,
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
+                        source_slot, group: actual_group, authored_indices, ..
+                    } if *source_slot == switch_slot && *actual_group == group
+                        && authored_indices.contains(&authored_index))
+                }) {
+                    produced = true;
+                    break;
+                }
+                assert_eq!(sim.source_arena().handle(switch_slot), Some(switch_handle));
             }
+            assert!(
+                produced,
+                "actual switch {switch_slot} must publish group {group}"
+            );
+            let trigger = *campaign
+                .simulation()
+                .economy()
+                .terrain_strip_close_triggers()
+                .iter()
+                .find(|trigger| trigger.authored_index == authored_index)
+                .expect("the authored group constructs its actual model-63 command");
+            assert_eq!(
+                (
+                    trigger.class,
+                    trigger.model,
+                    trigger.action,
+                    trigger.position
+                ),
+                (10, 63, 68, trigger_position)
+            );
+            let trigger_handle = campaign
+                .simulation()
+                .source_arena()
+                .handle(trigger.source_entity_index)
+                .unwrap();
+            if trigger.active {
+                let _ = campaign.step(crate::PlayerCommand::default(), 0);
+                assert!(
+                    campaign.simulation().dispatch_events().iter().all(|event| {
+                        !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
+                    }),
+                    "source opening command must complete without dispatch errors"
+                );
+            }
+            let sim = campaign.simulation();
+            let hidden = sim
+                .economy()
+                .terrain_strip_close_triggers()
+                .iter()
+                .find(|row| row.source_entity_index == trigger.source_entity_index)
+                .expect("command remains through its actual callback epilogue");
+            assert!(!hidden.active && !hidden.drawing_enabled);
+            assert_eq!(
+                sim.source_arena().handle(corridor_slot),
+                Some(corridor_handle)
+            );
+            assert_eq!(
+                sim.session.state.live.economy.entities[usize::from(corridor_slot)].life,
+                2
+            );
+            assert!(sim.cf10_production_schedule_receipts().iter().any(|receipt| matches!(
+                receipt, crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                    slot, selector, ..
+                } if *slot == trigger_handle.source_slot && selector.observed_dynamic_cursor_row()
+                    .is_some_and(|row| row.source_slot == trigger_handle.source_slot
+                        && row.generation == trigger_handle.generation
+                        && row.kind == crate::native_world::Level2DynamicArenaKind::TerrainStripCloseTrigger)
+            )), "the actual command generation must reach its scheduled consumer");
+            let _ = campaign.step(crate::PlayerCommand::default(), 0);
+            assert!(
+                campaign.simulation().dispatch_events().iter().all(|event| {
+                    !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })
+                }),
+                "source command reclaim must complete without dispatch errors"
+            );
+            assert!(
+                campaign
+                    .simulation()
+                    .economy()
+                    .terrain_strip_close_triggers()
+                    .iter()
+                    .all(|row| row.source_entity_index != trigger_handle.source_slot)
+            );
+            assert_ne!(
+                campaign
+                    .simulation()
+                    .source_arena()
+                    .handle(trigger_handle.source_slot),
+                Some(trigger_handle),
+                "the command reclaims on the following source boundary"
+            );
         }
         for _ in 0..256 {
             let _ = campaign.step(crate::PlayerCommand::default(), 0);

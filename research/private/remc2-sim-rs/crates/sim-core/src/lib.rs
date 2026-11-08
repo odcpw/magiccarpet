@@ -1835,7 +1835,7 @@ impl MissionAudioSite {
             Self::TerrainStrip => (
                 "47",
                 "terrain-strip controller",
-                "1",
+                "4",
                 "fixed 0",
                 "EventsFunctions.cpp:41802,42135,42145",
                 true,
