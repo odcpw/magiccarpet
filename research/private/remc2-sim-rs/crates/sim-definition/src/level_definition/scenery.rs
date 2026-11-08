@@ -2,6 +2,29 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The source Dolmen's collision extents; its sprite remains a retained asset binding.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DolmenDefinition {
+    pub horizontal_half_extent: i16,
+    pub vertical_half_extent: i16,
+}
+
+impl Default for DolmenDefinition {
+    fn default() -> Self {
+        Self { horizontal_half_extent: 1024, vertical_half_extent: 1024 }
+    }
+}
+
+impl DolmenDefinition {
+    pub fn validate(self) -> Result<(), String> {
+        if self.horizontal_half_extent <= 0 || self.vertical_half_extent <= 0 {
+            return Err("dolmen collision extents must be positive".into());
+        }
+        Ok(())
+    }
+}
+
 /// Shared life rule for moving scenery; appearance remains an asset binding.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

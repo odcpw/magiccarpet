@@ -9,6 +9,32 @@ namespace MagicCarpet.Native.Tests
     public sealed class VoxelNativeWorldEditModeTests
     {
         [Test]
+        public void SourceLoweringDistinguishesHistoricalHolesFromCurrentBase()
+        {
+            var terrain=new NativeCampaignSession.VoxelVolumeProjection {
+                kind=0,slot=0,dimensions=new[]{1,1,8},terrain_columns=new[]{4}
+            };
+            var hole=new NativeCampaignSession.VoxelRemovedCell {kind=0,slot=0,x=0,y=0,z=3};
+            Assert.That(VoxelModernWorld.RemovedCellIntersectsBase(terrain,hole),Is.True);
+            terrain.terrain_columns[0]=2;
+            Assert.That(VoxelModernWorld.RemovedCellIntersectsBase(terrain,hole),Is.False);
+            terrain.terrain_columns[0]=4;
+            Assert.That(VoxelModernWorld.RemovedCellIntersectsBase(terrain,hole),Is.True,
+                "The old hole remains omitted when source terrain rises again");
+            hole.x=1;
+            Assert.Throws<InvalidOperationException>(()=>VoxelModernWorld.RemovedCellIntersectsBase(terrain,hole));
+            hole.x=0;hole.slot=38;
+            Assert.Throws<InvalidOperationException>(()=>VoxelModernWorld.RemovedCellIntersectsBase(terrain,hole));
+            var house=new NativeCampaignSession.VoxelVolumeProjection {
+                kind=1,slot=38,dimensions=new[]{1,1,8},building_bytes=new[]{8}
+            };
+            hole.kind=1;
+            Assert.That(VoxelModernWorld.RemovedCellIntersectsBase(house,hole),Is.True);
+            hole.z=2;
+            Assert.That(VoxelModernWorld.RemovedCellIntersectsBase(house,hole),Is.False);
+        }
+
+        [Test]
         public void SeedSamplesTheUneditedLatticeInNativeRowOrder()
         {
             var patch = new Bounds(new Vector3(100, 0, 200), new Vector3(32, 1, 40));

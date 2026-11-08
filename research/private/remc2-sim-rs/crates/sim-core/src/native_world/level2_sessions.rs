@@ -1,6 +1,89 @@
 use super::*;
 
 #[cfg(test)]
+mod dolmen_definition_tests {
+    use super::*;
+
+    #[test]
+    fn configured_dolmen_constructor_reaches_current_contact_and_reset() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::level_definition::DolmenDefinition;
+
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level2",
+        );
+        let mut game = CampaignSession::open(package, CampaignSelection::LEVEL2).unwrap();
+        let sim = game.simulation_mut();
+        let player = sim.state.entity_index;
+        let player_view = {
+            let live = &sim.session.state.live;
+            source_target::read(&live.economy,
+                source_target::Context::from_ordinary(&live.goats, &live.ordinary), player)
+                .unwrap().unwrap()
+        };
+        let shape = player_view.collision.unwrap();
+        let definition = DolmenDefinition {
+            horizontal_half_extent: 1536,
+            vertical_half_extent: 768,
+        };
+        let offset = i16::try_from(
+            sim.session.definition.presentation.particles[39].rotation_speed / 2,
+        ).unwrap();
+        // Declared configured-constructor boundary control. This does not
+        // establish that an ordinary authored switch spawned this extra row.
+        let position = Position {
+            x: player_view.position.x.wrapping_add(
+                (shape.half_width + definition.horizontal_half_extent - 1) as u16),
+            y: player_view.position.y,
+            z: player_view.position.z.wrapping_add(shape.vertical_offset).wrapping_sub(offset),
+        };
+        let slot = {
+            let live = &mut sim.session.state.live;
+            live.ordinary.allocate_authored_dolmen(
+                &mut live.economy, &mut live.terrain,
+                &sim.session.definition.presentation.particles, position, definition,
+            ).unwrap().unwrap()
+        };
+        let generation = sim.source_arena().handle(slot).unwrap();
+        {
+            let live = &sim.session.state.live;
+            let typed = live.ordinary.dolmens().iter()
+                .find(|row| row.entity().index == slot).unwrap().entity();
+            let raw = &live.economy.entities[usize::from(slot)];
+            for row in [typed, raw] {
+                assert_eq!((row.array_pitch(), row.array_roll(), row.array_fov()),
+                    (1536, 1536, 768));
+            }
+            let context = source_target::Context::from_ordinary(&live.goats, &live.ordinary);
+            let view = source_target::read(&live.economy, context, slot).unwrap().unwrap();
+            let current_shape = view.collision.unwrap();
+            assert_eq!((current_shape.half_width, current_shape.half_depth, current_shape.half_height),
+                (1536, 1536, 768));
+            let contacts = live.ordinary.dolmen_source_contacts(
+                &live.economy, context, slot, &[player]).unwrap();
+            assert!(contacts.iter().any(|row| row.index == player));
+        }
+        assert!(sim.campaign_entity_presentations(sim.state.yaw).unwrap().iter()
+            .any(|row| row.entity_index == slot && row.render_parameter_index == 39));
+        sim.set_level2_entity_position(player, Position {
+            x: player_view.position.x.wrapping_sub(2),
+            ..player_view.position
+        }).unwrap();
+        let live = &sim.session.state.live;
+        assert!(live.ordinary.dolmen_source_contacts(&live.economy,
+            source_target::Context::from_ordinary(&live.goats, &live.ordinary), slot, &[player])
+            .unwrap().is_empty());
+        game.reset();
+        let sim = game.simulation();
+        assert_ne!(sim.source_arena().handle(slot), Some(generation));
+        assert_eq!(sim.ordinary().dolmens().len(), 3);
+        assert!(sim.ordinary().dolmens().iter().all(|row|
+            (row.entity().array_pitch(), row.entity().array_roll(), row.entity().array_fov())
+                == (1024, 1024, 1024)));
+    }
+}
+
+#[cfg(test)]
 mod settlement_death_tests {
     use super::*;
 
@@ -5083,7 +5166,9 @@ impl Level2OrdinaryResetSession {
         terrain: &mut SessionTerrain,
         particles: &[ParticleParameter],
         position: Position,
+        definition: crate::level_definition::DolmenDefinition,
     ) -> std::result::Result<Option<u16>, String> {
+        definition.validate()?;
         let particle = particles.get(39).ok_or("dolmen requires particle 39")?;
         let animation_limit = campaign_shared_families::particle_animation_limit(particle.render_mode)
             .ok_or("dolmen particle 39 has an invalid animation mode")?;
@@ -5096,9 +5181,9 @@ impl Level2OrdinaryResetSession {
         let pose = campaign_shared_families::ParticlePose {
             animation_limit,
             array_yaw,
-            array_pitch: 1024,
-            array_roll: 1024,
-            array_fov: 1024,
+            array_pitch: definition.horizontal_half_extent,
+            array_roll: definition.horizontal_half_extent,
+            array_fov: definition.vertical_half_extent,
         };
         arena.entities[usize::from(slot)] =
             campaign_shared_families::construct_dolmen_source(slot, rng, position, pose);

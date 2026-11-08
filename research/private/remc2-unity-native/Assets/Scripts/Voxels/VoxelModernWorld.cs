@@ -42,6 +42,7 @@ namespace MagicCarpet.Native.Voxels
         internal int LightingMode => lightingPreset;
         internal int SelectedBuildingSlot => input?.building?.source_slot ?? -1;
         private string output;
+        private string lastBaseHash;
         private bool capture,automatic,nativeCamera;
         private int visualRemoved,visualGroundRemoved,visualHouseRemoved;
         private bool freeFlight,flightPositioned;
@@ -136,13 +137,14 @@ namespace MagicCarpet.Native.Voxels
             int index=checked((z*volume.dimensions[1]+y)*volume.dimensions[0]+x);
             return (volume.building_bytes[index/8] & (1 << (index%8))) != 0;
         }
-        private void ResetProjection()
+        private void ResetProjection(bool clearEffects=true)
         {
             if(editRoutine!=null){StopCoroutine(editRoutine);editRoutine=null;}
             editing=false;pendingEdits.Clear();knownRemoved.Clear();visualRemoved=visualGroundRemoved=visualHouseRemoved=0;
             if(clearedPlants.Count>0){clearedPlants.Clear();clearedPlantTiles.Clear();vegetation?.InvalidateFootprint(patch);}
             if(terrain!=null)terrain.VoxelHeightSampler=null;
-            rubble?.ClearEmissions();ground?.Dispose();house?.Dispose();contact?.Dispose();seam?.Dispose();
+            if(clearEffects)rubble?.ClearEmissions();
+            ground?.Dispose();house?.Dispose();contact?.Dispose();seam?.Dispose();
             ground=null;house=null;contact=null;seam=null;terrainBase=null;houseBase=null;topColumns=null;ready=false;
         }
         internal static bool NeedsRebuild(NativeSim.VoxelState state,ulong tick,ulong previousEpoch,ulong previousTick,ulong revision,ulong contentHash,ulong impactHead)
@@ -169,16 +171,28 @@ namespace MagicCarpet.Native.Voxels
             }
             if(state.revision==lastRevision && state.impactHead==impactCursor){if(outerChanged)LogProjectionState(false);return;}
             var next=session.VoxelWorldProjection(false,impactCursor);
-            var groundCells=new List<Vector3Int>();var houseCells=new List<Vector3Int>();
-            foreach(var cell in next.removed)
+            if(!String.Equals(next.base_hash,lastBaseHash,StringComparison.Ordinal))
             {
-                if(!knownRemoved.Add(CellKey(cell)))continue;
-                if(cell.kind==0 && cell.slot==terrainBase.slot){groundCells.Add(new Vector3Int(cell.x,cell.z,cell.y));UpdateTop(cell.x,cell.y);ClearGroundPlants(cell.x,cell.y);}
-                else if(cell.kind==1 && cell.slot==houseBase.slot)houseCells.Add(new Vector3Int(cell.x,cell.z,cell.y));
-                else throw new InvalidOperationException("Unknown native voxel volume");
+                var refreshed=session.VoxelWorldProjection(true,state.impactHead);
+                if(!String.Equals(refreshed.base_hash,next.base_hash,StringComparison.Ordinal))
+                    throw new InvalidOperationException("Native terrain base changed without a simulation step");
+                ResetProjection(clearEffects:false);
+                InitializeProjection(refreshed);
+                ready=true;
+            }
+            else
+            {
+                var groundCells=new List<Vector3Int>();var houseCells=new List<Vector3Int>();
+                foreach(var cell in next.removed)
+                {
+                    if(!knownRemoved.Add(CellKey(cell)))continue;
+                    if(cell.kind==0 && cell.slot==terrainBase.slot){groundCells.Add(new Vector3Int(cell.x,cell.z,cell.y));UpdateTop(cell.x,cell.y);ClearGroundPlants(cell.x,cell.y);}
+                    else if(cell.kind==1 && cell.slot==houseBase.slot)houseCells.Add(new Vector3Int(cell.x,cell.z,cell.y));
+                    else throw new InvalidOperationException("Unknown native voxel volume");
+                }
+                if(groundCells.Count!=0||houseCells.Count!=0){pendingEdits.Enqueue((groundCells,houseCells));if(editRoutine==null)editRoutine=StartCoroutine(ApplyNativeEdits());}
             }
             if((uint)knownRemoved.Count!=state.removedCount)throw new InvalidOperationException("Native voxel removal count mismatch");
-            if(groundCells.Count!=0||houseCells.Count!=0){pendingEdits.Enqueue((groundCells,houseCells));if(editRoutine==null)editRoutine=StartCoroutine(ApplyNativeEdits());}
             foreach(var impact in next.impacts)
             {
                 if(!ulong.TryParse(impact.sequence,out var sequence) || sequence!=impactCursor+1)throw new InvalidOperationException("Native impact ledger has a gap");
@@ -196,26 +210,44 @@ namespace MagicCarpet.Native.Voxels
         }
         private void InitializeProjection(NativeCampaignSession.VoxelProjection projection)
         {
+            lastBaseHash=projection.base_hash;
             terrainBase=projection.volumes.Single(v=>v.kind==0);
             houseBase=projection.volumes.Single(v=>v.kind==1 && v.slot==input.building.source_slot);
             if(terrainBase.dimensions==null||terrainBase.dimensions.Length!=3||terrainBase.terrain_columns==null||terrainBase.terrain_columns.Length!=terrainBase.dimensions[0]*terrainBase.dimensions[1] || houseBase.dimensions==null||houseBase.dimensions.Length!=3||houseBase.building_bytes==null)
                 throw new InvalidOperationException("Invalid native voxel base projection");
+            int currentlyRemoved=0;
             foreach(var cell in projection.removed)
             {
                 if(cell.kind==0 && cell.slot!=terrainBase.slot || cell.kind==1 && cell.slot!=houseBase.slot || cell.kind<0 || cell.kind>1 || !knownRemoved.Add(CellKey(cell)))
                     throw new InvalidOperationException("Invalid native removed cell identity");
+                if(RemovedCellIntersectsBase(cell.kind==0?terrainBase:houseBase,cell))currentlyRemoved++;
             }
             topColumns=(int[])terrainBase.terrain_columns.Clone();
             foreach(var cell in projection.removed)if(cell.kind==0 && cell.slot==terrainBase.slot){UpdateTop(cell.x,cell.y);ClearGroundPlants(cell.x,cell.y);}
             if(surface==null)surface=new Material(Shader.Find("MagicCarpet/VoxelSurface"));
             if(physical==null){physical=new GameObject("Native fine voxel presentation");physical.layer=8;physical.transform.SetParent(transform,false);rubble=physical.AddComponent<VoxelRubble>();}
             ground=CreateVolume(terrainBase,groundMaterial);house=CreateVolume(houseBase,surface);
-            if(visualRemoved!=knownRemoved.Count)throw new InvalidOperationException("Restored removal did not match native base occupancy");
+            if(visualRemoved!=currentlyRemoved)throw new InvalidOperationException("Restored removal did not match current native base occupancy");
             terrain.VoxelHeightSampler=NativeHeight;
             contact=new VoxelTerrainContact(physical.transform,terrain.SampleHeight);contact.Update(home,patch);
             seam=new VoxelTerrainSeam(physical.transform,patch,terrain.SampleHeight,groundMaterial);
             Physics.SyncTransforms();
         }
+        // Source terrain may fall below a previously carved cell. Keep its
+        // removal intent, but count only cells omitted from the current base.
+        internal static bool RemovedCellIntersectsBase(
+            NativeCampaignSession.VoxelVolumeProjection volume,NativeCampaignSession.VoxelRemovedCell cell)
+        {
+            var dimensions=volume?.dimensions;
+            if(cell==null||dimensions==null||dimensions.Length!=3||cell.kind!=volume.kind||cell.slot!=volume.slot
+                ||cell.x<0||cell.y<0||cell.z<0||cell.x>=dimensions[0]||cell.y>=dimensions[1]||cell.z>=dimensions[2])
+                throw new InvalidOperationException("Native removed cell is outside its current volume");
+            if(volume.kind==0)
+                return cell.z<volume.terrain_columns[checked(cell.y*dimensions[0]+cell.x)];
+            if(volume.kind==1)return BaseBuildingCell(volume,cell.x,cell.y,cell.z);
+            throw new InvalidOperationException("Unknown native voxel volume");
+        }
+
         private VoxelVolume CreateVolume(NativeCampaignSession.VoxelVolumeProjection data,Material material)
         {
             var origin=Origin(data);var size=data.cell_size/64f;var dims=Dimensions(data);

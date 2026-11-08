@@ -1874,11 +1874,11 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
-        // Ballistic runtime properties are independent of position-edit access.
-        // Constructor jitter stays inside the authored tile for this family.
+        // These scenery properties are independent of position-edit access.
+        // Ballistic constructor jitter stays inside the authored tile.
         let mut scenery_property_source_by_entity = BTreeMap::new();
         for (&slot, &kind) in &scenery_by_initial_source_slot {
-            if kind != SceneryKind::BallisticObject {
+            if !matches!(kind, SceneryKind::BallisticObject | SceneryKind::Dolmen) {
                 continue;
             }
             let position = initial_entity_tile(entities, slot)?;
@@ -5333,6 +5333,24 @@ mod tests {
         assert_eq!(published.kind(), ballistic.kind());
         assert_eq!(published.ballistic_scenery(), ballistic.ballistic_scenery());
         assert_eq!(published.position_access(), LevelEntityPositionAccess::ReadOnly);
+
+        let level2 = root.join("ribbon-20261104-integration/group-zero-owner-package-v4/level2");
+        let definition = CampaignDefinition::preflight(
+            &level2, CampaignSelection::LEVEL2, &|_: &super::BehaviorKey| true,
+        ).unwrap();
+        let dolmen = definition.level_definition.entities().iter().find(|entity| {
+            entity.kind() == LevelEntityKind::Scenery(SceneryKind::Dolmen)
+                && entity.position() == TilePosition { x: 148, y: 209 }
+        }).expect("actual Level2 authored Dolmen411");
+        assert_eq!(dolmen.position_access(), LevelEntityPositionAccess::ReadOnly);
+        assert_eq!(dolmen.dolmen(), Some(crate::level_definition::DolmenDefinition::default()));
+        assert_eq!(definition.initial_scenery_property_source(dolmen.id()), Some(108));
+        assert_eq!(definition.initial_scenery_bindings().get(&108), Some(&SceneryKind::Dolmen));
+        let frontend = crate::campaign::backend::load_mc2_campaign(
+            &level2, &crate::game_definition::default_catalog().unwrap(),
+        ).expect("actual Level2 game-definition consumer");
+        let published = frontend.level_definition().unwrap().entity(dolmen.id()).unwrap();
+        assert_eq!((published.kind(), published.dolmen()), (dolmen.kind(), dolmen.dolmen()));
 
         // This is package/schema validation, not Cave21 gameplay proof. These
         // two readonly Mushroom placements legitimately share an authored tile.

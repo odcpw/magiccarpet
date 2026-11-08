@@ -127,6 +127,7 @@ where
     };
     let child = if visit.eruption {
         volcano::finish_eruption(terrain, &controller);
+        terrain.sync_source_voxels().map_err(|error| error.to_string())?;
         let mut position = controller.position;
         position.z = terrain.ground_height(position);
         erupt(

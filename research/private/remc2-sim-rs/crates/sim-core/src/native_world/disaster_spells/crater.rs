@@ -482,6 +482,16 @@ mod tests {
         );
         let mut game = CampaignSession::open(package, CampaignSelection::LEVEL2)
             .expect("the whole source Level2 opens");
+        let dolmen_id = game.simulation().session.definition
+            .scenery_entity_for_authored_record(feature.index)
+            .expect("authored Dolmen has its semantic identity").clone();
+        let semantic = game.simulation().session.definition.semantic_level().unwrap()
+            .entity(&dolmen_id).unwrap();
+        assert_eq!(semantic.kind(), crate::level_definition::LevelEntityKind::Scenery(
+            crate::level_definition::SceneryKind::Dolmen));
+        assert_eq!(semantic.dolmen(), Some(crate::level_definition::DolmenDefinition::default()));
+        assert_eq!(game.simulation().session.definition.scenery_for_initial_source_slot(108),
+            Some(crate::level_definition::SceneryKind::Dolmen));
         let reset_baseline = {
             let sim = game.simulation();
             let live = &sim.session.state.live;
@@ -506,11 +516,21 @@ mod tests {
                 .into_iter()
                 .find(|row| row.entity_index == 108)
                 .expect("reset Dolmen sprite");
+            assert_eq!((typed.array_pitch(), typed.array_roll(), typed.array_fov()),
+                (1024, 1024, 1024));
+            assert_eq!((raw.array_pitch(), raw.array_roll(), raw.array_fov()),
+                (1024, 1024, 1024));
+            let shape = target.collision.expect("current Dolmen collision binding");
+            assert_eq!((shape.half_width, shape.half_depth, shape.half_height),
+                (1024, 1024, 1024));
             (
                 (typed.position, typed.phase),
                 (raw.position, raw.phase),
                 target.position,
                 (dto.position, dto.render_parameter_index),
+                (typed.array_pitch(), typed.array_roll(), typed.array_fov()),
+                (raw.array_pitch(), raw.array_roll(), raw.array_fov()),
+                target.collision,
             )
         };
         // A declared prior CraterI carry and real Castle/player funding are
@@ -1216,7 +1236,10 @@ mod tests {
                 (typed.position, typed.phase),
                 (raw.position, raw.phase),
                 target.position,
-                (dto.position, dto.render_parameter_index)
+                (dto.position, dto.render_parameter_index),
+                (typed.array_pitch(), typed.array_roll(), typed.array_fov()),
+                (raw.array_pitch(), raw.array_roll(), raw.array_fov()),
+                target.collision,
             ),
             reset_baseline,
             "reset restores the actual typed, raw, targeting and presentation carriers"

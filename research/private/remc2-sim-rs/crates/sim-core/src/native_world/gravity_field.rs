@@ -112,6 +112,7 @@ pub(crate) fn step(context: &mut Context<'_>, slot: u16) -> Result<(), String> {
         pull_actors(context, slot)?;
     }
     let outcome = gravity::step(context.arena, slot, context.terrain);
+    context.terrain.sync_source_voxels().map_err(|error| error.to_string())?;
     commit_house_destruction(context, &houses)?;
     if let Some(sound) = outcome.sound_id {
         context.arena.economy.prepare_sound(slot, slot, -1, sound);

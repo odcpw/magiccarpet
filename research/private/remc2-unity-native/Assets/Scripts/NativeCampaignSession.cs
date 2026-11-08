@@ -176,7 +176,7 @@ namespace MagicCarpet.Native
             public bool has_target,geometry_changed;
         }
         [Serializable] internal sealed class VoxelProjection {
-            public string generation,tick,revision,content_hash,impact_head;
+            public string generation,tick,revision,content_hash,base_hash,impact_head;
             public VoxelVolumeProjection[] volumes;
             public VoxelRemovedCell[] removed;
             public VoxelImpact[] impacts;
@@ -229,7 +229,7 @@ namespace MagicCarpet.Native
                 if(written>length)throw new InvalidOperationException("Native voxel snapshot grew without an authoritative step");
                 var bytes=new byte[written];Marshal.Copy(memory,bytes,0,bytes.Length);
                 var value=JsonUtility.FromJson<VoxelProjection>(Encoding.UTF8.GetString(bytes));
-                if(value==null||value.generation!=generation.ToString()||value.tick!=tick.ToString()||value.removed==null||value.volumes==null||value.impacts==null)
+                if(value==null||value.generation!=generation.ToString()||value.tick!=tick.ToString()||!ulong.TryParse(value.base_hash,out _)||value.removed==null||value.volumes==null||value.impacts==null)
                     throw new InvalidOperationException("Native voxel snapshot identity/data mismatch");
                 return value;
             }finally{Marshal.FreeHGlobal(memory);}

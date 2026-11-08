@@ -23,6 +23,7 @@ pub(super) struct SessionVoxels {
     pub(super) deaths:super::voxel_deaths::DeathJournal,
     pub(super) impacts:Arc<Vec<VoxelImpact>>,
     next_impact:u64,
+    source_terrain_sequence:u64,
 }
 
 impl NativeWorldInspection {
@@ -43,7 +44,8 @@ impl Mc2Simulation {
             return Err("voxel geometry is already enabled for this session".to_owned());
         }
         let world=seed.build_world(generation).map_err(str::to_owned)?;
-        self.session.state.terrain_mut().install_voxel_world(world);
+        self.session.state.terrain_mut().install_voxel_world(world)
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 }
@@ -1881,6 +1883,13 @@ pub fn level2_castle_root_positions_with_resolution<W: FlightWorld>(
 }
 
 impl Level2Dolmen {
+    /// Apply the semantic dimensions to both the live and reset carriers.
+    fn bind_definition(&mut self, definition: crate::level_definition::DolmenDefinition) {
+        for entity in [&mut self.entity, &mut self.baseline] {
+            bind_dolmen_extents(entity, definition);
+        }
+    }
+
     /// Adopt one source-valid Dolmen from a campaign reset without assuming a
     /// profile-specific slot list or frozen record hash.
     pub(super) fn from_campaign_entity(
@@ -1979,6 +1988,11 @@ impl Level2Dolmen {
     pub fn reset(&mut self) {
         self.entity = self.baseline.clone();
     }
+}
+
+fn bind_dolmen_extents(entity: &mut EntitySnapshot, definition: crate::level_definition::DolmenDefinition) {
+    entity.set_source_overlap_half_extents(definition.horizontal_half_extent, definition.horizontal_half_extent);
+    entity.record[92..94].copy_from_slice(&definition.vertical_half_extent.to_le_bytes());
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2413,9 +2427,25 @@ impl SessionTerrain {
             world.volumes().iter().any(|volume|volume.id==crate::voxel_world::VolumeId::Building(slot)))
     }
 
-    pub(crate) fn install_voxel_world(&mut self,world:crate::voxel_world::VoxelWorld) {
-        self.voxel=Some(SessionVoxels{world,deaths:Default::default(),impacts:Arc::new(Vec::new()),next_impact:0});
+    pub(crate) fn install_voxel_world(&mut self,mut world:crate::voxel_world::VoxelWorld) -> Result<()> {
+        world.bind_source_terrain(&self.planes.ground_heights).map_err(NativeWorldError::new)?;
         self.mutation_sequence=self.mutation_sequence.wrapping_add(1);
+        self.voxel=Some(SessionVoxels{world,deaths:Default::default(),impacts:Arc::new(Vec::new()),next_impact:0,
+            source_terrain_sequence:self.mutation_sequence});
+        Ok(())
+    }
+
+    /// Publish source height mutations before the next scheduled consumer.
+    /// Ordinary callbacks pay only a sequence comparison when terrain is unchanged.
+    pub(crate) fn sync_source_voxels(&mut self) -> Result<bool> {
+        let Some(session) = self.voxel.as_mut() else { return Ok(false) };
+        if session.source_terrain_sequence == self.mutation_sequence {
+            return Ok(false);
+        }
+        let changed = session.world.sync_source_terrain(&self.planes.ground_heights)
+            .map_err(NativeWorldError::new)?;
+        session.source_terrain_sequence = self.mutation_sequence;
+        Ok(changed)
     }
 
     pub(crate) fn voxel_contact(&self,from:Position,to:Position)->Result<Option<Position>> {
@@ -2621,6 +2651,7 @@ impl SessionTerrain {
         let mut staged = self.clone();
         staged.apply_castle_update_inner(update, footprint)?;
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        staged.sync_source_voxels().map_err(|error| error.to_string())?;
         *self = staged;
         Ok(())
     }
@@ -2637,6 +2668,7 @@ impl SessionTerrain {
         let mut staged = self.clone();
         staged.apply_castle_construction_inner(position, remaining, stages, visit)?;
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        staged.sync_source_voxels().map_err(|error| error.to_string())?;
         *self = staged;
         Ok(())
     }
@@ -2771,6 +2803,7 @@ impl SessionTerrain {
             }
         }
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        staged.sync_source_voxels().map_err(|error| error.to_string())?;
         *self = staged;
         Ok(())
     }
@@ -2889,6 +2922,7 @@ impl SessionTerrain {
             }
         }
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        staged.sync_source_voxels().map_err(|error| error.to_string())?;
         *self = staged;
         Ok(HouseRemovalOutcome {
             final_rng: house_rng,
@@ -2966,6 +3000,7 @@ impl SessionTerrain {
             }
         }
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        staged.sync_source_voxels().map_err(|error| error.to_string())?;
         *self = staged;
         Ok(())
     }
@@ -3038,6 +3073,7 @@ impl SessionTerrain {
             }
         }
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        staged.sync_source_voxels().map_err(|error| error.to_string())?;
         *self = staged;
         Ok(())
     }
@@ -5275,10 +5311,10 @@ impl NativeWorldInspection {
         });
         let mut bound_scenery = false;
         for entity in definition.level_definition().entities() {
-            if entity.mushroom().is_none() && entity.ballistic_scenery().is_none() {
+            if entity.mushroom().is_none() && entity.ballistic_scenery().is_none() && entity.dolmen().is_none() {
                 continue;
             }
-            let initial_source_slot = if entity.ballistic_scenery().is_some() {
+            let initial_source_slot = if entity.ballistic_scenery().is_some() || entity.dolmen().is_some() {
                 definition.initial_scenery_property_source(entity.id())
             } else {
                 match definition.movable_entity_binding(entity.id()) {
@@ -5303,6 +5339,17 @@ impl NativeWorldInspection {
             if let Some(properties) = entity.ballistic_scenery() {
                 crate::world::scenery::ballistic::bind_initial(source, properties)
                     .map_err(NativeWorldError::new)?;
+            }
+            if let Some(properties) = entity.dolmen() {
+                properties.validate().map_err(NativeWorldError::new)?;
+                if !source.active || (source.class, source.model, source.action) != (2, 2, 6) {
+                    return Err(NativeWorldError::new("initial dolmen binding lost its active source carrier"));
+                }
+                bind_dolmen_extents(source, properties);
+                let dolmen = session.session.state.live.ordinary.dolmens.iter_mut()
+                    .find(|dolmen| dolmen.entity.index == initial_source_slot)
+                    .ok_or_else(|| NativeWorldError::new("initial dolmen binding lost its typed carrier"))?;
+                dolmen.bind_definition(properties);
             }
             bound_scenery = true;
         }
@@ -5686,7 +5733,7 @@ mod voxel_contact_tests {
         };
         let mut terrain=SessionTerrain::from_planes(MapType::Day,planes,0);
         let grid=Grid{origin:Point{x:100,y:100,z:100},cell_size:16,dimensions:[1,1,1]};
-        terrain.install_voxel_world(VoxelWorld::new(7,vec![Volume::building(38,grid,[[0,0,0]]).unwrap()]).unwrap());
+        terrain.install_voxel_world(VoxelWorld::new(7,vec![Volume::building(38,grid,[[0,0,0]]).unwrap()]).unwrap()).unwrap();
         assert!(terrain.voxelized_building(38,0,10,45));
         assert!(!terrain.voxelized_building(38,1,10,45));
         assert!(!terrain.voxelized_building(39,0,10,45));

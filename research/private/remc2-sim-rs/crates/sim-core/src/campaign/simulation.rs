@@ -328,6 +328,7 @@ fn validate_semantic_scenery_dispatch(
         (Some(SceneryKind::Tree), ExistingHandler::TreeLifecycle)
         | (Some(SceneryKind::Mushroom), ExistingHandler::Mushrooms)
         | (Some(SceneryKind::BallisticObject), ExistingHandler::BallisticScenery)
+        | (Some(SceneryKind::Dolmen), ExistingHandler::Dolmen)
         | (Some(SceneryKind::Stone), ExistingHandler::Stone | ExistingHandler::BadStone)
         | (Some(SceneryKind::ExitPortal), ExistingHandler::Class14Events) => Ok(()),
         (Some(kind), actual) => Err(format!(
@@ -1244,6 +1245,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
         phase: PassPhase,
     ) -> std::result::Result<(), Self::Error> {
         debug_assert_eq!(pass, SourcePass::UpdateEntities);
+        self.owner.session.state.live.terrain.sync_source_voxels()
+            .map_err(|error| error.to_string())?;
         match phase {
             PassPhase::RngPrepass => {
                 self.owner.flush_shared_effects();
@@ -1804,6 +1807,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 }
                 self.owner.step_level2_projectile_threat_prepass();
                 self.owner.step_cave_ground_feature_prepass()?;
+                self.owner.session.state.live.terrain.sync_source_voxels()
+                    .map_err(|error| error.to_string())?;
                 let begin_events = self
                     .owner
                     .session
@@ -1842,6 +1847,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
                 // Source585D0 observes final terrain before21F60's
                 // registered protection. The family writes only source Z;
                 // publish those same poses to the existing player carriers.
+                self.owner.session.state.live.terrain.sync_source_voxels()
+                    .map_err(|error| error.to_string())?;
                 let clearance = self.owner.session.definition.presentation.entity_parameters
                     .get(66)
                     .map(|row| i16::from_le_bytes([row[12], row[13]]))
@@ -2060,6 +2067,8 @@ impl SourceSchedulerWorld for Level2SourceSchedulerWorld<'_, '_> {
             &self.pass_start_castle_root_slots,
             &mut self.goat_begin_events,
         )?;
+        self.owner.session.state.live.terrain.sync_source_voxels()
+            .map_err(|error| error.to_string())?;
         self.owner.capture_voxel_deaths()?;
         Ok(())
     }
@@ -8157,6 +8166,33 @@ impl Mc2Simulation {
         Ok(())
     }
 
+    /// Declare only local player funding and capacity for focused gameplay
+    /// checks. No objective, NPC, RNG or lifetime state is changed.
+    #[cfg(test)]
+    pub(crate) fn stage_player_mana_for_test(&mut self, mana: i32) -> std::result::Result<(), String> {
+        if mana < 0 {
+            return Err("player mana prerequisite must be nonnegative".into());
+        }
+        let live = &mut self.session.state.live;
+        let player = live.core.state.entity_index;
+        live.economy.economy.owner_base_max_mana.insert(player, mana);
+        live.economy.economy.rebuild_source_owner_max_mana_projection();
+        let capacity = live.economy.economy.owner_max_mana_capacity(player);
+        live.shared_spells.set_local_player_mana_for_test(mana);
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.set_mana(mana);
+        parent.max_mana = capacity;
+        parent.record[144..148].copy_from_slice(&capacity.to_le_bytes());
+        parent.set_mana_regen(0);
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() {
+            fire.caster.mana = mana;
+        }
+        Ok(())
+    }
+
     /// Declared player progression/resources for the focused guardian
     /// encounter. No creature, health, RNG, phase or lifetime is changed.
     #[cfg(test)]
@@ -12820,6 +12856,16 @@ impl Mc2Simulation {
                     let _ = self.allocate_authored_stone_feature(feature);
                 }
                 (2, 2) => {
+                    let properties = self
+                        .session
+                        .definition
+                        .scenery_entity_for_authored_record(feature.index)
+                        .and_then(|id| {
+                            self.session.definition.semantic_level()?.entity(id)?.dolmen()
+                        })
+                        .ok_or_else(|| {
+                            format!("authored Dolmen {} lacks its definition", feature.index)
+                        })?;
                     let live = &mut self.session.state.live;
                     let position = feature.world_position(
                         live.terrain.ground_height(feature.world_position(0)),
@@ -12829,6 +12875,7 @@ impl Mc2Simulation {
                         &mut live.terrain,
                         &self.session.definition.presentation.particles,
                         position,
+                        properties,
                     )? {
                         live.core.runtime.bind_authored_stage_entity(feature.index, slot);
                     }

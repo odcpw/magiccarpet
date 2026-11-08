@@ -336,7 +336,7 @@ pub extern "C" fn mc_game_runtime_voxel_snapshot_json_v1(
             "revision":row.revision.to_string(),"target_slot":row.target.unwrap_or(0),"has_target":row.target.is_some(),"geometry_changed":row.geometry_changed,
             "has_impact_child":row.impact_child.is_some(),"impact_child_slot":row.impact_child.map_or(0,|p|p.0),"impact_child_generation":row.impact_child.map_or(0,|p|p.1)
         })).collect::<Vec<_>>();
-            let value = serde_json::json!({"generation":generation.to_string(),"tick":tick.to_string(),"revision":world.revision().to_string(),"content_hash":world.deterministic_hash().to_string(),"impact_head":terrain.voxel_impact_head().to_string(),"volumes":volumes,"removed":removed,"impacts":impacts});
+            let value = serde_json::json!({"generation":generation.to_string(),"tick":tick.to_string(),"revision":world.revision().to_string(),"content_hash":world.deterministic_hash().to_string(),"base_hash":world.base_hash().to_string(),"impact_head":terrain.voxel_impact_head().to_string(),"volumes":volumes,"removed":removed,"impacts":impacts});
             super::super::game_session_abi::write_json(&value, buffer, capacity, out_length)
         })
     })

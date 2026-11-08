@@ -258,6 +258,114 @@ mod tests {
     }
 
     #[test]
+    fn source_deformation_rebases_terrain_without_moving_holes_or_buildings() {
+        let mut world = fixture(7);
+        let initial_plane = vec![100; 256 * 256];
+        world.bind_source_terrain(&initial_plane).unwrap();
+        world
+            .remove_sphere(
+                Point {
+                    x: 28,
+                    y: 28,
+                    z: 28,
+                },
+                12,
+            )
+            .unwrap();
+        world
+            .remove_sphere(
+                Point {
+                    x: 24,
+                    y: 40,
+                    z: 56,
+                },
+                9,
+            )
+            .unwrap();
+        let removed_poses = |world: &VoxelWorld| {
+            world
+                .removed_cells()
+                .map(|cell| {
+                    let volume = world
+                        .volumes()
+                        .iter()
+                        .find(|v| v.id == cell.volume)
+                        .unwrap();
+                    (cell.volume, volume.grid.center([cell.x, cell.y, cell.z]))
+                })
+                .collect::<Vec<_>>()
+        };
+        let poses = removed_poses(&world);
+        let building = world
+            .volumes()
+            .iter()
+            .find(|v| v.id == VolumeId::Building(38))
+            .unwrap()
+            .clone();
+        let initial_top = world.terrain_height(4, 4).unwrap();
+        let initial_base = world.base_hash();
+        let initial_revision = world.revision();
+        let mut replay = world.clone();
+        for level in [90_u8, 110, 100, 90] {
+            let plane = vec![level; 256 * 256];
+            assert!(world.sync_source_terrain(&plane).unwrap());
+            assert!(replay.sync_source_terrain(&plane).unwrap());
+            assert_eq!(
+                world.terrain_height(4, 4),
+                Some(initial_top + (i32::from(level) - 100) * 32)
+            );
+            assert_eq!(
+                removed_poses(&world),
+                poses,
+                "source height changes retain each hole's world pose"
+            );
+            assert_eq!(
+                world
+                    .volumes()
+                    .iter()
+                    .find(|v| v.id == VolumeId::Building(38)),
+                Some(&building)
+            );
+            assert_eq!(world, replay);
+            assert_eq!(world.deterministic_hash(), replay.deterministic_hash());
+            let unchanged = world.clone();
+            assert!(!world.sync_source_terrain(&plane).unwrap());
+            assert_eq!(world, unchanged, "duplicate source publication is inert");
+        }
+        assert_ne!(world.base_hash(), initial_base);
+        assert_eq!(world.revision(), initial_revision + 4);
+        let unchanged = world.clone();
+        assert!(world.sync_source_terrain(&[]).is_err());
+        assert_eq!(
+            world, unchanged,
+            "bad source extent cannot partially publish a grid"
+        );
+    }
+
+    #[test]
+    fn source_binding_hash_distinguishes_future_deformation_with_equal_geometry() {
+        let mut one = fixture(7);
+        let mut two = one.clone();
+        let unbound_hash = one.deterministic_hash();
+        let plane = vec![100; 256 * 256];
+        let other_plane = vec![101; 256 * 256];
+        one.bind_source_terrain(&plane).unwrap();
+        two.bind_source_terrain(&other_plane).unwrap();
+        assert_eq!(one.volumes(), two.volumes());
+        assert_eq!(one.base_hash(), two.base_hash());
+        assert_eq!(one.revision(), two.revision());
+        assert_ne!(one.deterministic_hash(), unbound_hash);
+        assert_ne!(one.deterministic_hash(), two.deterministic_hash());
+        let bound = one.clone();
+        one.bind_source_terrain(&plane).unwrap();
+        assert_eq!(one, bound, "repeated binding must remain inert");
+        assert!(!one.sync_source_terrain(&plane).unwrap());
+        assert!(two.sync_source_terrain(&plane).unwrap());
+        assert_eq!(one.terrain_height(4, 4), Some(32));
+        assert_eq!(two.terrain_height(4, 4), Some(0));
+    }
+
+    #[test]
     fn building_breach_changes_segment_collision_without_erasing_neighbor() {
         let mut world = fixture(11);
         let start = Point { x: 0, y: 40, z: 56 };
@@ -488,6 +596,20 @@ pub struct VoxelWorld {
     removed: Arc<BTreeSet<CellId>>,
     base_hash: u64,
     content_hash: u64,
+    source_terrain: Option<SourceTerrain>,
+}
+
+/// Keep the authored voxel surface and the source plane at enablement. Source
+/// deformation is measured from this immutable pair, never accumulated from
+/// rounded previous projections. Carved cells retain their world coordinates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceTerrain {
+    initial_plane: Arc<[u8]>,
+    // Current source publication is a derived comparison cache. Only the
+    // immutable binding determines future deformation from an incoming plane.
+    last_plane: Arc<[u8]>,
+    initial_volume: Arc<Volume>,
+    binding_hash: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -529,6 +651,7 @@ impl VoxelWorld {
             removed: Arc::new(BTreeSet::new()),
             base_hash,
             content_hash: 0,
+            source_terrain: None,
         };
         world.content_hash = world.hash_contents();
         Ok(world)
@@ -543,6 +666,138 @@ impl VoxelWorld {
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    /// Changes when source deformation replaces terrain columns or grid bounds.
+    /// Removal-only edits leave this unchanged, allowing the existing observer
+    /// to distinguish a refreshed base projection from additional carved cells.
+    pub fn base_hash(&self) -> u64 {
+        self.base_hash
+    }
+
+    pub fn bind_source_terrain(&mut self, plane: &[u8]) -> Result<(), &'static str> {
+        if plane.len() != 256 * 256 {
+            return Err("voxel source terrain plane has invalid extent");
+        }
+        if let Some(source) = &self.source_terrain {
+            return if source.last_plane.as_ref() == plane {
+                Ok(())
+            } else {
+                Err("voxel source terrain is already bound")
+            };
+        }
+        if let Some(volume) = self.volumes.iter().find(|v| v.id == VolumeId::Terrain) {
+            let mut binding_hash = Self::hash_base(std::slice::from_ref(volume));
+            for byte in b"magiccarpet-voxel-source-binding-v1\0".iter().chain(plane) {
+                binding_hash ^= u64::from(*byte);
+                binding_hash = binding_hash.wrapping_mul(0x100_0000_01b3);
+            }
+            let plane: Arc<[u8]> = Arc::from(plane);
+            self.source_terrain = Some(SourceTerrain {
+                initial_plane: plane.clone(),
+                last_plane: plane,
+                initial_volume: Arc::new(volume.clone()),
+                binding_hash,
+            });
+            self.content_hash = self.hash_contents();
+        }
+        Ok(())
+    }
+
+    /// Commit source height changes before later collision/movement consumers.
+    /// The source uses its own exact triangular interpolation; the composed
+    /// surface retains the voxel grid's existing cell quantization. Expanding
+    /// the terrain grid preserves removed cells at their original world poses
+    /// and never changes Building volumes or their sparse edits.
+    pub fn sync_source_terrain(&mut self, plane: &[u8]) -> Result<bool, &'static str> {
+        if plane.len() != 256 * 256 {
+            return Err("voxel source terrain plane has invalid extent");
+        }
+        let Some(ordinal) = self.volumes.iter().position(|v| v.id == VolumeId::Terrain) else {
+            return Ok(false);
+        };
+        let source = self
+            .source_terrain
+            .as_ref()
+            .ok_or("voxel source terrain is not bound")?;
+        if source.last_plane.as_ref() == plane {
+            return Ok(false);
+        }
+        let initial = &source.initial_volume;
+        let original = initial
+            .terrain_columns()
+            .ok_or("voxel source volume is not terrain")?;
+        let current = &self.volumes[ordinal];
+        let size = i64::from(initial.grid.cell_size);
+        let width = usize::from(initial.grid.dimensions[0]);
+        let mut tops = Vec::with_capacity(original.len());
+        for (index, &count) in original.iter().enumerate() {
+            let x = (i64::from(initial.grid.origin.x) + (index % width) as i64 * size + size / 2)
+                as u16;
+            let y = (i64::from(initial.grid.origin.y) + (index / width) as i64 * size + size / 2)
+                as u16;
+            let delta = crate::legacy_terrain::interpolate_ground(plane, x, y)
+                - crate::legacy_terrain::interpolate_ground(&source.initial_plane, x, y);
+            tops.push(
+                i64::from(initial.grid.origin.z) + i64::from(count) * size + i64::from(delta),
+            );
+        }
+        let minimum = *tops.iter().min().ok_or("voxel source terrain is empty")?;
+        let maximum = *tops.iter().max().ok_or("voxel source terrain is empty")?;
+        let old_grid = current.grid;
+        let downward = (minimum - i64::from(old_grid.origin.z))
+            .div_euclid(size)
+            .min(0);
+        let origin_z = i64::from(old_grid.origin.z) + downward * size;
+        let end_z =
+            (i64::from(old_grid.origin.z) + i64::from(old_grid.dimensions[2]) * size).max(maximum);
+        let depth = u16::try_from((end_z - origin_z + size - 1) / size)
+            .map_err(|_| "source deformation exceeds voxel vertical extent")?;
+        let grid = Grid {
+            origin: Point {
+                z: i32::try_from(origin_z)
+                    .map_err(|_| "source deformation exceeds voxel coordinate bounds")?,
+                ..old_grid.origin
+            },
+            dimensions: [old_grid.dimensions[0], old_grid.dimensions[1], depth],
+            ..old_grid
+        };
+        let columns = tops
+            .into_iter()
+            .map(|height| {
+                u16::try_from((height - origin_z).div_euclid(size))
+                    .map_err(|_| "source deformation exceeds voxel column extent")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let replacement = Volume::terrain(grid, columns)?;
+        if replacement == *current {
+            self.source_terrain.as_mut().unwrap().last_plane = Arc::from(plane);
+            return Ok(false);
+        }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or("voxel revision exhausted")?;
+        let mut removed = BTreeSet::new();
+        for &cell in self.removed.iter() {
+            let mapped = if cell.volume == VolumeId::Terrain {
+                let z = i64::from(cell.z) - downward;
+                CellId {
+                    z: u16::try_from(z)
+                        .map_err(|_| "source deformation exceeds removed-cell extent")?,
+                    ..cell
+                }
+            } else {
+                cell
+            };
+            removed.insert(mapped);
+        }
+        Arc::make_mut(&mut self.volumes)[ordinal] = replacement;
+        self.removed = Arc::new(removed);
+        self.source_terrain.as_mut().unwrap().last_plane = Arc::from(plane);
+        self.revision = revision;
+        self.base_hash = Self::hash_base(&self.volumes);
+        self.content_hash = self.hash_contents();
+        Ok(true)
     }
     pub fn removed_cells(&self) -> impl Iterator<Item = CellId> + '_ {
         self.removed.iter().copied()
@@ -978,6 +1233,10 @@ impl VoxelWorld {
                 hash = hash.wrapping_mul(0x100_0000_01b3);
             }
         };
+        if let Some(source) = &self.source_terrain {
+            feed(b"magiccarpet-voxel-source-binding-v1\0");
+            feed(&source.binding_hash.to_le_bytes());
+        }
         for cell in self.removed.iter() {
             match cell.volume {
                 VolumeId::Terrain => feed(&[0]),
@@ -1337,6 +1596,8 @@ impl VoxelWorldSeed {
             }
         }
         let building = Volume::building(house.slot, house_grid, solids)?;
-        VoxelWorld::new(generation, vec![terrain, building])
+        let mut world = VoxelWorld::new(generation, vec![terrain, building])?;
+        world.bind_source_terrain(&self.height_plane)?;
+        Ok(world)
     }
 }

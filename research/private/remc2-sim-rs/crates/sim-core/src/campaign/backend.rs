@@ -7030,6 +7030,7 @@ pub(crate) mod tests {
             &[
                 (SceneryKind::Tree, 18),
                 (SceneryKind::Stone, 1),
+                (SceneryKind::Dolmen, 3),
                 (SceneryKind::ExitPortal, 1),
             ],
             &[(ItemKind::ExperienceScroll, 5)],
@@ -7245,6 +7246,7 @@ pub(crate) mod tests {
                 // One ordinary Stone and four authored BadStones share the
                 // typed scenery role; their MC2 constructors remain distinct.
                 (SceneryKind::Stone, 5),
+                (SceneryKind::Dolmen, 3),
                 (SceneryKind::ExitPortal, 1),
             ],
             &[(ItemKind::ExperienceScroll, 24)],

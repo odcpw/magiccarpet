@@ -55,7 +55,7 @@ pub use morph::{MORPH_PROPERTIES, MorphProperties, MorphTierProperties};
 mod lightning;
 pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;
-pub use scenery::{BallisticSceneryDefinition, MushroomDefinition};
+pub use scenery::{BallisticSceneryDefinition, DolmenDefinition, MushroomDefinition};
 mod spider;
 pub use spider::{SPIDER_CLASS_PROPERTIES, SpiderClassProperties};
 mod terrain_disasters;
@@ -500,6 +500,7 @@ impl CaveCorridorDefinition {
 pub enum SceneryKind {
     Tree,
     Stone,
+    Dolmen,
     Mushroom,
     BallisticObject,
     ExitPortal,
@@ -511,6 +512,7 @@ impl SceneryKind {
         match self {
             Self::Tree => "tree",
             Self::Stone => "stone",
+            Self::Dolmen => "dolmen",
             Self::Mushroom => "mushroom",
             Self::BallisticObject => "ballistic_object",
             Self::ExitPortal => "exit_portal",
@@ -1139,6 +1141,8 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ballistic_scenery: Option<BallisticSceneryDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    dolmen: Option<DolmenDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -1176,6 +1180,7 @@ impl LevelEntityDefinition {
             field: None,
             mushroom: None,
             ballistic_scenery: None,
+            dolmen: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -1295,6 +1300,16 @@ impl LevelEntityDefinition {
     }
 
     #[must_use]
+    pub const fn dolmen(&self) -> Option<DolmenDefinition> {
+        self.dolmen
+    }
+
+    pub(crate) const fn with_dolmen(mut self, config: DolmenDefinition) -> Self {
+        self.dolmen = Some(config);
+        self
+    }
+
+    #[must_use]
     pub const fn experience_scroll(&self) -> Option<ExperienceScrollDefinition> {
         self.experience_scroll
     }
@@ -1329,6 +1344,12 @@ impl LevelDefinition {
     ) -> Result<Self, String> {
         let mut ids = BTreeSet::new();
         for entity in &entities {
+            match (entity.kind, entity.dolmen) {
+                (LevelEntityKind::Scenery(SceneryKind::Dolmen), Some(config)) => config.validate()?,
+                (LevelEntityKind::Scenery(SceneryKind::Dolmen), None) => return Err(format!("dolmen {} lacks construction properties", entity.id.as_str())),
+                (_, Some(_)) => return Err(format!("non-dolmen {} carries dolmen properties", entity.id.as_str())),
+                (_, None) => {}
+            }
             match (entity.kind, entity.ballistic_scenery) {
                 (LevelEntityKind::Scenery(SceneryKind::BallisticObject), Some(config)) => config.validate()?,
                 (LevelEntityKind::Scenery(SceneryKind::BallisticObject), None) => {
@@ -2094,6 +2115,7 @@ impl LevelDefinition {
                 || candidate.field != original.field
                 || candidate.mushroom != original.mushroom
                 || candidate.ballistic_scenery != original.ballistic_scenery
+                || candidate.dolmen != original.dolmen
                 || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(
@@ -2705,7 +2727,7 @@ mod tests {
     #[test]
     fn retained_field_and_mushroom_rules_survive_serialization_and_reject_rebinding() {
         use super::*;
-        use crate::adapter::{ballistic_scenery_entity_definition, field_entity_definition, mushroom_entity_definition};
+        use crate::adapter::{ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition, mushroom_entity_definition};
         let field = field_entity_definition(
             LevelEntityId::parse("mechanic.transport.test").unwrap(),
             TilePosition { x: 10, y: 20 },
@@ -2728,8 +2750,13 @@ mod tests {
             TilePosition { x: 17, y: 19 }, None,
             LevelEntityPositionAccess::ReadOnly, BallisticSceneryDefinition::default(),
         );
+        let dolmen = dolmen_entity_definition(
+            LevelEntityId::parse("scenery.dolmen.test").unwrap(),
+            TilePosition { x: 17, y: 18 }, None, LevelEntityPositionAccess::ReadOnly,
+            DolmenDefinition::default(),
+        );
         let base = LevelDefinition::new(
-            vec![field.clone(), mushroom.clone(), ballistic.clone()], vec![], vec![],
+            vec![field.clone(), mushroom.clone(), ballistic.clone(), dolmen.clone()], vec![], vec![],
         ).unwrap();
         let decoded: LevelDefinition =
             serde_json::from_slice(&serde_json::to_vec(&base).unwrap()).unwrap();
@@ -2744,9 +2771,22 @@ mod tests {
         let mut rebound = decoded.clone();
         rebound.entities[1].mushroom.as_mut().unwrap().minimum_life += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
-        let mut rebound = decoded;
+        let mut rebound = decoded.clone();
         rebound.entities[2].ballistic_scenery.as_mut().unwrap().minimum_life += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+        let mut rebound = decoded;
+        rebound.entities[3].dolmen.as_mut().unwrap().horizontal_half_extent += 1;
+        assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+
+        let mut invalid = dolmen.clone();
+        invalid.dolmen = None;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = dolmen.clone();
+        invalid.dolmen.as_mut().unwrap().vertical_half_extent = 0;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = dolmen;
+        invalid.kind = LevelEntityKind::Scenery(SceneryKind::Stone);
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
 
         let mut invalid = ballistic.clone();
         invalid.ballistic_scenery = None;
