@@ -339,6 +339,46 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
+### Installed rival Morph steering/full activation — `mc-1pb.17` (2026-11-08)
+
+Source `b4c87923` is committed/pushed; matching optimized Original native
+`68f5cce4` is installed through refresh `build-nioe6r6x`. All653 unique inputs
+match canonical source, the isolated build and Rig. Root viewed the canonical
+map/loading/NightSpire terrain/HUD with that mapped native, one portal click,
+zero retries, then stopped the owned player/display. This is launch/load,
+not native Mission18 combat visuals, human play/FPS/hardware audio/full missions
+or old saves. No Unity/art rebuild was needed.
+
+Both source161A0 calls now use full14E10; steering reads signed A0 descriptor14
+instead of the unrelated A4 movement latch. Source narrowing, roll-write order
+and steering without the Morph holder are preserved. C4's real whole Night18
+selector14 path, all six rivals/111 holders intact and only a declared human
+midpoint position control, PASS2.881s: own Morph189 creates body238/gen2 at38,
+queues the exact7500 current-parent charge, follows its actual callback-time
+parent, presents original DTO/audio, runs the full301 visits, hides and retires
+on the following pass. The semantic receipt validates the real direct or current
+generation-bound fallback; shared0 is not mistaken for failed admission.
+
+The explicitly configured secondary path PASS0.168s includes actual child210's
+clock18 construction, Castle209's state2/action4/owner publication and following
+60F00 capacity79600, then same-pass12910/161A0/Meteor194, real tier-I cost6000,
+queued/next-upkeep debit, flyer motion and natural hide/reclaim. Its controls
+include mode14, actor/human geometry, funds, cooldowns and avoidance byte45e=3.
+It proves the6000 holder price and at-least-cost debit; a fresh independent
+review found that its exact68DE0 before/after assertion must be strengthened.
+RedElk owns that finding in the next canonical-family batch; the existing
+ordinary Meteor exact-charge oracle remains covered. No production defect was
+found in this bounded review. Full `.17` stays OPEN, including canonical family
+ownership/lifecycle composition and all original dependencies.
+
+C3 actual rival-Meteor/source-order/malformed-holder checks remain applicable
+after byte-identical production and other-test-body comparison; C4 changes only
+the configured construction preparation. Earlier negative gates/source snapshots
+are preserved. Package formatting debt remains; changed-source UBS had no critical
+added-line finding. Evidence: `research/private/generated/rival-mode14-20261108-integration/candidate-4`,
+its reuse/closure receipts and Original smoke. Completed build outputs are
+byte-preserved on Rig; current and immediate previous natives remain local.
+
 ### Installed rival-selected spells — `mc-1pb.17` (2026-11-08)
 
 Source `7d9c8399` is committed/pushed; matching optimized Original native
@@ -363,9 +403,9 @@ configured boundaries, roster, dispatch, actual Bee/Fireball, source order and
 full natural Castle1200 revival PASS156.451s are reused. Fresh bounded review at
 the committed revision found no introduced defect in these five files.
 
-Full `.17` remains OPEN with original acceptance/dependencies. Next fix the two
-mode14/sub161A0 calls that bypass full14E10, through actual Morph/selected-spell
-consumers, then finish canonical rival-family ownership and remaining acceptance.
+Full `.17` remains OPEN with original acceptance/dependencies. The subsequent
+mode14 correction is installed above; canonical rival-family ownership and
+remaining acceptance still require implementation and verification.
 Seven adjacent legacy failures reproduce identically on the previous installed
 C7 binary; their later assertions remain unproved. Old Mission18 lacked Castle
 BUILD resources: a new whole package from the qualified current160-input exporter
