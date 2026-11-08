@@ -275,16 +275,44 @@ acceptance open; a working control panel alone does not finish the environment.
 ## Active request: complete the shared world capabilities
 
 Oliver authorized continuing the existing remc2-to-Rust delivery plan on
-2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1` and Cave
-corridors `mc-bhq.2` are installed, with finite acceptance qualified below. Next
-capability: authored Cave paths, rooms and features `mc-bhq.5`, owned through
-integration by NavyBadger. Inspect its existing canonical owner and connected
-generation/collision/reset checks before changing code. CopperMountain
-implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
+2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1`, Cave
+corridors `mc-bhq.2` and authored Cave paths/rooms/features `mc-bhq.5` have their
+finite acceptance qualified below and are present in the installed runtime.
+Next capability: trees, stones, dolmens and remaining scenery `mc-bhq.13`.
+Use its existing original acceptance and canonical `world::scenery` owners;
+complete ordinary damage/destruction, real children and lifetime/consumers.
+Root CopperMountain implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
 installation; keep one accountable family owner through any consumer failure.
 Keep the complete acceptance and dependencies. Then continue existing
 terrain/scenery, activation/objective and progression/flow capabilities, one
 connected runtime result at a time. Do not restart delivered spells/creatures.
+
+### Qualified installed Cave paths and rooms — `mc-bhq.5` (2026-11-08)
+
+The existing implementation is committed at source checkpoint `dfb6eb15` and
+present in installed Original native `74632f319df3`. Root verified seven existing
+focused checks using exact C2 executable `975930593d50`, without another compile
+or source edit. Real generation across Cave missions 4/6/8/12/15/16/21/24 matches
+all five planes, map heads, retained 176-byte rows, exact free-stack order and
+global/terrain RNG against owner boundaries. Reset and all 65,536 floor/ceiling
+samples reach the ordinary LegacyTerrain consumer. Mission 4's 274 allocations and
+real room 13 construction produce usable dual-plane geometry. Existing focused
+controls also pass constructor/default/failure, typed group properties, no-op
+class2/7, linked paths, dynamic80 hide-only and separate shaped phases/RNG.
+
+NavyBadger and the independent bounded source reviewer found no concrete
+remaining finite-family producer or immediate-consumer gap against pinned
+remc2. Root independently inspected the source and exact runtime receipts.
+The installed corridor gate covers the same constructed-Cave movement and
+indexed-renderer boundary; it was reused rather than adding a duplicate test.
+The Mission4 startup check's first ordinary step asserts tick only, so it does
+not prove an error-free first live turn. Configured ambient prerequisites do
+not prove a natural birth. No full-mission, native Cave, human/FPS/hardware-audio
+or old-save claim follows. Matching 654-input native proof and the just-completed
+canonical launch/load smoke are reused unchanged. No duplicate build or smoke
+was needed. Evidence: `cave-corridors-20261108-integration/candidate-2/`
+`cave-features-*` and `cave-feature-*` receipts, plus the installed proof above.
+Original acceptance/dependencies remain intact; broader assembly stays open.
 
 ### Installed Cave corridors — `mc-bhq.2` (2026-11-08)
 
