@@ -72,6 +72,21 @@ namespace MagicCarpet.Native.Tests
             }
             Assert.That(represented, Is.EqualTo(moving.Count));
 
+            var fullCount = VoxelRubble.SampleCount(moving.Count, VoxelRubble.MaxBodies);
+            var sizes = VoxelRubble.CharacterSizes(moving, fullCount);
+            Assert.That(sizes.Length, Is.EqualTo(fullCount));
+            Assert.That(sizes.Any(size => size > moving[0].Size * 1.1f), Is.True,
+                "Sparse pieces should occupy more visible volume than single fine cells");
+            for (var i = 0; i < fullCount; i++) for (var j = i + 1; j < fullCount; j++)
+            {
+                var a = moving[VoxelRubble.SampleIndex(i, moving.Count, fullCount)];
+                var b = moving[VoxelRubble.SampleIndex(j, moving.Count, fullCount)];
+                var delta = a.Position - b.Position;
+                float separation = Mathf.Max(Mathf.Abs(delta.x), Mathf.Max(Mathf.Abs(delta.y), Mathf.Abs(delta.z)));
+                Assert.That(separation, Is.GreaterThanOrEqualTo((sizes[i] + sizes[j]) * .5f),
+                    "Visible cubes and their colliders must start without mutual overlap");
+            }
+
             var beforeMove = moving[0].Position;
             goat.Root.transform.position += Vector3.right * 3;
             var translated = goat.SnapshotFragments();

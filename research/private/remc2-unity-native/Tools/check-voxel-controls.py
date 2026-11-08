@@ -11,6 +11,8 @@ import sys
 import tempfile
 import time
 
+from voxel_capture_support import inject, load_inputs, validate_receipts, validate_replay_save
+
 
 def wait_for(predicate, seconds, message):
     deadline = time.monotonic() + seconds
@@ -29,12 +31,25 @@ def session(args):
     if not isinstance(extra,list) or not all(isinstance(value,str) for value in extra):
         raise ValueError('Launch arguments must be a JSON string array')
     modern=args.modern or '-mc-voxel-modern' in extra
+    save_path=None
+    if args.expect_replay_save:
+        if extra.count('-mc-runtime-replay-save')!=1:raise ValueError('Expected one explicit replay-save path')
+        index=extra.index('-mc-runtime-replay-save')
+        if index+1>=len(extra):raise ValueError('Missing replay-save path')
+        save_path=Path(extra[index+1]).resolve()
+        if save_path.exists():raise ValueError('Replay-save evidence path must be fresh')
+    if modern and '-mc-voxel-receipts' not in extra:extra.append('-mc-voxel-receipts')
     player = subprocess.Popen([str(args.player.resolve()),'-force-vulkan','-screen-fullscreen','0',
                                '-screen-width','1280','-screen-height','960','-logFile',str(log),*extra])
     display = None
     try:
         ready='MC_VOXEL_MODERN_READY' if modern else 'MC_VOXEL_READY'
-        wait_for(lambda: log.exists() and ready in log.read_text(errors='replace'), 120, 'Player not ready')
+        def startup_ready():
+            if not log.exists():return False
+            text=log.read_text(errors='replace')
+            if 'MC_FATAL ' in text or 'MC_RUNTIME_FATAL ' in text:raise RuntimeError('Player reported a fatal startup error; inspect player.log')
+            return ready in text and (not modern or 'MC_GAME_RUNTIME_STARTUP VERIFIED' in text and 'MC_WATER_READY' in text)
+        wait_for(startup_ready, 180, 'Player not ready')
         time.sleep(1)
         x = C.CDLL('libX11.so.6')
         xt = C.CDLL('libXtst.so.6')
@@ -82,6 +97,32 @@ def session(args):
         def screenshot(name):
             subprocess.run(['import','-display',os.environ['DISPLAY'],'-window',str(window),str(output/(name+'.png'))],check=True,timeout=15)
         screenshot('initial')
+        if modern:
+            key('F2');wait_for(lambda:'MC_VOXEL_VIEW game' in log.read_text(errors='replace'),60,'F2 did not restore native game view')
+            events=load_inputs(args.input_script) if args.input_script else [{'key':'w','hold':.7},{'key':'space'}]
+            inject(os.environ['DISPLAY'],events,player.pid)
+            (output/'native-input-events.json').write_text(json.dumps(events,indent=2)+'\n',encoding='utf-8')
+            def evidence_ready():
+                try:
+                    return validate_receipts(log.read_text(errors='replace'),impact=args.expect_native_impact or args.input_script is None,
+                        geometry=args.expect_native_geometry,visible=args.expect_visible_projectile,death=args.expect_native_death,
+                        same_projectile=args.expect_same_projectile,target_slot=args.expect_target_slot,
+                        ground=args.expect_native_ground,house_slot=args.expect_house_slot)
+                except ValueError:
+                    return None
+            evidence=wait_for(evidence_ready,30,'Native voxel receipt or geometry convergence missing')
+            (output/'native-evidence.json').write_text(json.dumps(evidence,indent=2)+'\n',encoding='utf-8')
+            screenshot('native-result')
+            key('F10');player.wait(timeout=10)
+            text=log.read_text(errors='replace')
+            if save_path is not None:validate_replay_save(text,save_path)
+            if player.returncode or 'MC_VOXEL_MODERN_EXIT' not in text:
+                raise RuntimeError('Native player did not exit cleanly')
+            receipt={'schema':'mc-voxel-controls/v2','status':'passed','actual_desktop':False,
+                     'inputs':['F2']+events+['F10'],'player':str(args.player.resolve()),
+                     'native_evidence':str(output/'native-evidence.json')}
+            (output/'controls.json').write_text(json.dumps(receipt,indent=2)+'\n',encoding='utf-8')
+            print(json.dumps(receipt));return
         presets=[] if modern else [('3','0.25'),('1','0.5'),('2','0.3333333'),('r','0.3333333')]
         for i,(name,size) in enumerate(presets,1):
             key(name)
@@ -126,6 +167,16 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--arguments-json',type=Path)
     parser.add_argument('--modern',action='store_true',help='Check Modern controls when the launcher supplies its own native arguments')
+    parser.add_argument('--input-script',type=Path,help='JSON array of native XTest key/relative motion events')
+    parser.add_argument('--expect-replay-save',action='store_true')
+    parser.add_argument('--expect-native-impact',action='store_true')
+    parser.add_argument('--expect-native-geometry',action='store_true')
+    parser.add_argument('--expect-native-ground',action='store_true')
+    parser.add_argument('--expect-house-slot',type=int)
+    parser.add_argument('--expect-visible-projectile',action='store_true')
+    parser.add_argument('--expect-same-projectile',action='store_true')
+    parser.add_argument('--expect-target-slot',type=int)
+    parser.add_argument('--expect-native-death',action='store_true')
     parser.add_argument('--session',action='store_true',help=argparse.SUPPRESS)
     args=parser.parse_args()
     if args.session:
@@ -141,6 +192,15 @@ def main():
     command=[sys.executable,str(Path(__file__).resolve()),'--session','--player',str(args.player.resolve()),'--output',str(args.output)]
     if args.arguments_json:command+=['--arguments-json',str(args.arguments_json.resolve())]
     if args.modern:command+=['--modern']
+    if args.expect_house_slot is not None:
+        if not 0 <= args.expect_house_slot <= 65535:raise ValueError('House slot must be a u16')
+        command+=['--expect-house-slot',str(args.expect_house_slot)]
+    if args.expect_target_slot is not None:
+        if not 0 <= args.expect_target_slot <= 65535:raise ValueError('Target slot must be a u16')
+        command+=['--expect-target-slot',str(args.expect_target_slot)]
+    if args.input_script:command+=['--input-script',str(args.input_script.resolve())]
+    for flag,enabled in (('--expect-replay-save',args.expect_replay_save),('--expect-native-impact',args.expect_native_impact),('--expect-native-geometry',args.expect_native_geometry),('--expect-native-ground',args.expect_native_ground),('--expect-visible-projectile',args.expect_visible_projectile),('--expect-same-projectile',args.expect_same_projectile),('--expect-native-death',args.expect_native_death)):
+        if enabled:command.append(flag)
     read_fd,write_fd=os.pipe();display=None
     try:
         with (args.output/'display.log').open('w',encoding='utf-8') as log:

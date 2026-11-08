@@ -17,9 +17,14 @@ namespace MagicCarpet.Native
         private readonly List<Texture2D> textures = new();
         private readonly Dictionary<ushort, GameObject> objects = new();
         private readonly Dictionary<ushort, NativeSim.CampaignEntityPresentation> rows = new();
+        private readonly HashSet<ushort> voxelImpactChildren = new();
         private readonly byte[] palette;
         private readonly Mesh quad;
         private readonly ModernCharacterActors characters;
+        private readonly Voxels.VoxelManaSpheres voxelMana;
+        private readonly Voxels.VoxelNativeProjectiles voxelProjectiles;
+        private readonly Action<NativeSim.CampaignVoxelDeath> applyVoxelDeath;
+        private NativeCampaignSession deathSession;
         private readonly Shader shader;
         private readonly Shader smokeShader;
         private bool loggedSmoke;
@@ -33,6 +38,7 @@ namespace MagicCarpet.Native
         internal ModernEntityPresenter(Transform parent, OwnerAssetCache cache, ModernTerrainMesh terrain)
         {
             this.cache = cache;
+            applyVoxelDeath=ApplyVoxelDeath;
             if (cache.EnvironmentMaterials == null)
                 throw new InvalidOperationException("Modern entities require the validated environment asset bank");
             assets = cache.EnvironmentMaterials.tmaps.textures.Where(row => !row.source_empty).ToDictionary(row => row.index);
@@ -43,6 +49,11 @@ namespace MagicCarpet.Native
             root = new GameObject("Live campaign actors").transform;
             root.SetParent(parent, false);
             characters = new ModernCharacterActors(root, terrain);
+            if(Voxels.VoxelModernWorld.Requested)
+            {
+                voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight);
+                voxelProjectiles=new Voxels.VoxelNativeProjectiles(root);
+            }
             quad = new Mesh { name = "Modern actor billboard" };
             quad.vertices = new[] { new Vector3(-.5f, 0, 0), new Vector3(.5f, 0, 0), new Vector3(-.5f, 1, 0), new Vector3(.5f, 1, 0) };
             quad.uv = new[] { new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, 0), new Vector2(1, 0) };
@@ -55,11 +66,17 @@ namespace MagicCarpet.Native
         {
             rows.Clear();
             var presentations = session.EntityPresentations(yaw);
+            if(voxelProjectiles!=null)RefreshVoxelImpactChildren(voxelImpactChildren,session.VoxelImpactChildren());
+            else voxelImpactChildren.Clear();
+            if(voxelProjectiles!=null){deathSession=session;session.DrainVoxelDeaths(applyVoxelDeath);}
             characters.Observe(session, presentations);
+            if(voxelMana!=null)
+                voxelMana.Present(session.ManaSpheres(),session.EntityPresentations(yaw,worldView:true),session.Generation,session.Tick);
+            voxelProjectiles?.Present(session.CharacterStates(),presentations,session.Generation,session.VoxelWorldEpoch);
             foreach (var row in presentations)
             {
                 rows.Add(row.entityIndex, row);
-                if (characters.Replaces(row.entityIndex)) continue;
+                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
                 if (!assets.TryGetValue(row.selectedTmap, out var texture))
                     throw new InvalidOperationException($"Live entity {row.entityIndex} has absent sprite {row.selectedTmap}");
                 if (!objects.TryGetValue(row.entityIndex, out var node))
@@ -89,7 +106,7 @@ namespace MagicCarpet.Native
                 var height = row.logicalHeight / 64f;
                 node.transform.localScale = new Vector3(height * texture.width / texture.height * (row.mirrored == 0 ? 1 : -1), height, 1);
             }
-            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || characters.Replaces(key)).ToArray())
+            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
             {
                 UnityEngine.Object.Destroy(objects[key]);
                 objects.Remove(key);
@@ -103,6 +120,19 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void ApplyVoxelDeath(NativeSim.CampaignVoxelDeath row)
+        {
+            var applied=characters.ApplyDeath(row.generation,row.entityIndex,row.slotGeneration,row.sourceId);
+            if(Voxels.VoxelModernWorld.ReceiptLogging)Debug.Log($"MC_VOXEL_RECEIPT kind=death generation={row.generation} outer_generation={deathSession.Generation} tick={deathSession.Tick} sequence={row.sequence} slot={row.entityIndex} slot_generation={row.slotGeneration} source={row.sourceId} applied={(applied?1:0)}");
+        }
+
+        // Native has already checked each lifetime at this exact session tick.
+        // Replace the entire set so reclaimed/reused slots are never retained.
+        internal static void RefreshVoxelImpactChildren(HashSet<ushort> slots,IReadOnlyList<NativeSim.VoxelImpactChild> current)
+        {
+            slots.Clear();for(int i=0;i<current.Count;i++)slots.Add(current[i].slot);
+        }
+
         internal void Render(Camera camera)
         {
             var position = camera.transform.position;
@@ -110,7 +140,7 @@ namespace MagicCarpet.Native
             var logDiagnostic = ModernCapture.VisualDebug && loggedDebug != ModernCapture.SmokeDebug;
             foreach (var pair in rows)
             {
-                if (characters.Replaces(pair.Key)) continue;
+                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
                 var row = pair.Value;
                 var x = position.x + Mathf.Repeat(row.x / 64f - position.x + 512f, 1024f) - 512f;
                 var z = position.z + Mathf.Repeat(row.y / 64f - position.z + 512f, 1024f) - 512f;
@@ -138,6 +168,8 @@ namespace MagicCarpet.Native
             loggedGeometry = true;
             loggedDebug = ModernCapture.SmokeDebug;
             characters.Render(camera);
+            voxelMana?.Render(camera,ModernCapture.EntityVisibility!=1);
+            voxelProjectiles?.Render(camera,ModernCapture.EntityVisibility!=1);
         }
 
         internal bool ReviewCamera(Camera camera) => characters.ReviewCamera(camera);
@@ -176,6 +208,8 @@ namespace MagicCarpet.Native
 
         public void Dispose()
         {
+            voxelProjectiles?.Dispose();
+            voxelMana?.Dispose();
             characters.Dispose();
             UnityEngine.Object.Destroy(root.gameObject);
             UnityEngine.Object.Destroy(quad);

@@ -5,7 +5,12 @@ if [ "${1:-}" = "--classic" ]; then
     shift
     exec "$script_dir/Builds/Voxels/MagicCarpetVoxels.x86_64" -force-vulkan -screen-fullscreen 0 "$@"
 fi
-exec python3 - "$script_dir/Builds/VoxelsModern" "$@" <<'PY'
+player_dir="$script_dir/Builds/VoxelsModern"
+if [ "${1:-}" = "--connected" ]; then
+    shift
+    player_dir="$script_dir/Builds/VoxelsConnected"
+fi
+exec python3 - "$player_dir" "$@" <<'PY'
 import hashlib
 import json
 import os
@@ -30,6 +35,8 @@ try:
         raise ValueError('Invalid installed launch arguments')
     if os.environ.get('MC_VOXEL_SAVE'):
         arguments[arguments.index('-mc-runtime-replay-save')+1]=str(Path(os.environ['MC_VOXEL_SAVE']).absolute())
+    if os.environ.get('MC_VOXEL_LOAD'):
+        arguments[arguments.index('-mc-runtime-replay-load')+1]=str(Path(os.environ['MC_VOXEL_LOAD']).resolve(strict=True))
     options=['-force-vulkan','-screen-fullscreen','0']
     if os.environ.get('WAYLAND_DISPLAY'):
         options+=['-force-wayland']

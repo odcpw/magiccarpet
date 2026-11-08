@@ -18,10 +18,11 @@ namespace MagicCarpet.Native.Editor
             var output = Environment.GetEnvironmentVariable("MC_VOXEL_PLAYER_OUTPUT");
             if (string.IsNullOrEmpty(output) || File.Exists(output)) throw new ArgumentException("Set a new MC_VOXEL_PLAYER_OUTPUT");
             if (Resources.Load<TextAsset>("ModernCharacters/VoxelSandbox/Level1") == null) throw new BuildFailedException("Run prepare-voxel-inputs.py first");
-            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            new GameObject("Level 1 voxel sandbox").AddComponent<VoxelSandbox>();
             const string path = "Assets/Scenes/VoxelSandbox.unity";
-            EditorSceneManager.SaveScene(scene, path);
+            var scene = EditorSceneManager.OpenScene(path, OpenSceneMode.Single);
+            var roots = scene.GetRootGameObjects();
+            if (roots.Length != 1 || roots[0].GetComponent<VoxelSandbox>() == null)
+                throw new BuildFailedException("VoxelSandbox scene must contain its single sandbox entry point");
             var previous = GraphicsSettings.defaultRenderPipeline;
             var previousDeformation = PlayerSettings.meshDeformation;
             try {

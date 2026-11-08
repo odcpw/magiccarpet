@@ -11,6 +11,7 @@ namespace MagicCarpet.Native.Voxels
     // rendered cube count is intentionally not the number of source cells.
     internal sealed class VoxelRubble : MonoBehaviour
     {
+        internal enum RubbleKind { All, Impact, Character, Other }
         internal const int MaxBodies = 768;
         internal const int MaxPiecesPerEmission = 192;
         internal const int MaxActivationsPerFrame = 64;
@@ -29,13 +30,23 @@ namespace MagicCarpet.Native.Voxels
         private Material material;
         private PhysicsMaterial contactMaterial;
         private int reserved, budgetFrame = -1, frameActivations;
+        private ulong emissionGeneration;
         private static readonly int AlphaId = Shader.PropertyToID("_Alpha");
         private static readonly int ColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int EmissionId = Shader.PropertyToID("_Emission");
 
         internal int ActiveBodies => active.Count;
         internal IReadOnlyList<Vector3> ActivePositions {
-            get {activePositions.Clear();foreach(var p in active)activePositions.Add(p.Body.position);return activePositions;}
+            get {
+                activePositions.Clear();
+                foreach(var p in active)activePositions.Add(p.Body.position);
+                // A queued group can span many terrain tiles. Retain every
+                // still-pending sampled position, not just its impact origin.
+                foreach(var e in pending)
+                    for(var i=e.Next;i<e.Count;i++)
+                        activePositions.Add(e.Cells[SampleIndex(i,e.Cells.Length,e.Count)].Position + e.Offset);
+                return activePositions;
+            }
         }
         internal int PeakBodies { get; private set; }
         internal int PendingEmissions => pending.Count;
@@ -44,12 +55,12 @@ namespace MagicCarpet.Native.Voxels
         internal int FallingBodies { get { int n = 0; foreach (var p in active) if (p.Body.linearVelocity.y < -1f) n++; return n; } }
         internal float LowestBodyY { get { float v = float.PositiveInfinity; foreach (var p in active) v = Mathf.Min(v, p.Body.position.y); return float.IsPositiveInfinity(v) ? 0f : v; } }
         internal float FastestBodySpeed { get { float v = 0f; foreach (var p in active) v = Mathf.Max(v, p.Body.linearVelocity.magnitude); return v; } }
-        internal int CountBelowSurface(Func<float,float,float> height)
+        internal int CountBelowSurface(Func<float,float,float> height, RubbleKind kind = RubbleKind.All)
         {
             int count=0;
-            foreach(var p in active){var at=p.Body.position;if(at.y<height(at.x,at.z)-.25f){
+            foreach(var p in active){if(kind!=RubbleKind.All && p.Kind!=kind)continue;var at=p.Body.position;if(at.y<height(at.x,at.z)-.25f){
                 if(count<5){bool hit=Physics.Raycast(new Vector3(at.x,height(at.x,at.z)+30,at.z),Vector3.down,out var contact,1000,1<<8);
-                    UnityEngine.Debug.Log($"MC_VOXEL_BELOW at={at.ToString("F3")} surface={height(at.x,at.z):F3} velocity={p.Body.linearVelocity.ToString("F3")} ray={hit} contact={(hit?contact.point.y:float.NaN):F3} born={p.Born:F3} spawn={p.SpawnPosition.ToString("F3")} size={p.Object.transform.localScale.x:F3} last_contact={p.Probe.LastContact}");}
+                    UnityEngine.Debug.Log($"MC_VOXEL_BELOW kind={p.Kind} at={at.ToString("F3")} surface={height(at.x,at.z):F3} velocity={p.Body.linearVelocity.ToString("F3")} ray={hit} contact={(hit?contact.point.y:float.NaN):F3} born={p.Born:F3} spawn={p.SpawnPosition.ToString("F3")} size={p.Object.transform.localScale.x:F3} last_contact={p.Probe.LastContact}");}
                 count++;}}
             return count;
         }
@@ -85,10 +96,14 @@ namespace MagicCarpet.Native.Voxels
         internal sealed class Emission
         {
             internal VoxelFragment[] Cells;
+            internal float[] Sizes;
             internal Vector3 Velocity, Origin, Offset;
             internal float Energy, TotalMass;
             internal int Count, Next;
-            internal bool Impact, Spawned;
+            internal bool Impact, Character, Spawned;
+            internal VoxelRubble Owner;
+            internal ulong Generation;
+            internal bool Cancelled => Owner != null && Owner.emissionGeneration != Generation;
             internal long SpawnTicks;
         }
         private sealed class Piece
@@ -101,6 +116,7 @@ namespace MagicCarpet.Native.Voxels
             internal float Born, FadeStart;
             internal Vector3 SpawnPosition;
             internal int RepresentedCells;
+            internal RubbleKind Kind;
         }
         private sealed class ContactProbe : MonoBehaviour
         {
@@ -159,11 +175,32 @@ namespace MagicCarpet.Native.Voxels
         }
 
         internal void Emit(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy)
-        { EmitInternal(cells, velocity, origin, energy, false, Vector3.zero); }
+        { EmitInternal(cells, velocity, origin, energy, false, Vector3.zero, false); }
         internal void EmitConnected(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy)
-        { EmitInternal(cells, velocity, origin, energy, false, Vector3.zero); }
+        { EmitInternal(cells, velocity, origin, energy, false, Vector3.zero, false); }
+        internal bool EmitCharacter(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy,
+            Func<float, float, float> groundHeight = null)
+        {
+            if (cells == null || cells.Count == 0 || available.Count - reserved < Mathf.Min(MaxActivationsPerFrame, cells.Count)) return false;
+            EmitInternal(cells, velocity, origin, energy, false, Vector3.zero, true, groundHeight);
+            return true;
+        }
+
+        // World reset must cancel both visible and not-yet-activated pieces.
+        // Pool objects remain prewarmed for the next session.
+        internal void ClearEmissions()
+        {
+            unchecked { emissionGeneration++; }
+            pending.Clear(); reserved = 0;
+            foreach (var piece in active)
+            {
+                piece.Object.SetActive(false);
+                available.Push(piece);
+            }
+            active.Clear();
+        }
         internal Emission EmitImpact(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, Vector3 normal)
-        { return EmitInternal(cells, velocity, origin, 0f, true, normal); }
+        { return EmitInternal(cells, velocity, origin, 0f, true, normal, false); }
 
         internal static int SampleCount(int cellCount, int freeSlots)
         { return Mathf.Min(Mathf.Max(0, cellCount), Mathf.Min(MaxPiecesPerEmission, Mathf.Max(0, freeSlots))); }
@@ -185,7 +222,8 @@ namespace MagicCarpet.Native.Voxels
         { return age >= MinimumVisibleSeconds && (sleeping || age >= MaximumActiveSeconds); }
         private static double Milliseconds(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
-        private Emission EmitInternal(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy, bool impact, Vector3 normal)
+        private Emission EmitInternal(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy, bool impact, Vector3 normal, bool character,
+            Func<float, float, float> groundHeight = null)
         {
             if (cells == null || cells.Count == 0) return null;
             long start = Stopwatch.GetTimestamp();
@@ -198,13 +236,18 @@ namespace MagicCarpet.Native.Voxels
             {
                 DroppedEmissions++;
                 LastSpawnMilliseconds = 0; LastEmissionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - start);
-                return new Emission { Spawned = true };
+                return new Emission { Spawned = true, Owner = this, Generation = emissionGeneration };
             }
             var copy = new VoxelFragment[cells.Count];
             float mass = 0;
             for (int i = 0; i < cells.Count; i++) { copy[i] = cells[i]; mass += Density * cells[i].Size * cells[i].Size * cells[i].Size; }
             var emission = new Emission { Cells = copy, Velocity = velocity, Origin = origin, Energy = Mathf.Max(0, energy),
-                TotalMass = mass, Count = count, Impact = impact };
+                TotalMass = mass, Count = count, Impact = impact, Character = character, Owner = this, Generation = emissionGeneration };
+            if (character)
+            {
+                emission.Sizes = CharacterSizes(copy, count);
+                if (groundHeight != null) emission.Offset = Vector3.up * CharacterGroundClearance(copy, count, emission.Sizes, groundHeight);
+            }
             if (impact && normal.sqrMagnitude > .000001f)
                 emission.Offset = ImpactClearance(copy, count, origin, normal.normalized);
             reserved += count;
@@ -212,6 +255,56 @@ namespace MagicCarpet.Native.Voxels
             Drain();
             LastEmissionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - start);
             return emission;
+        }
+
+        internal static float CharacterGroundClearance(IReadOnlyList<VoxelFragment> cells, int count, IReadOnlyList<float> sizes,
+            Func<float, float, float> groundHeight)
+        {
+            float clearance = 0f;
+            for (var i = 0; i < count; i++)
+            {
+                var cell = cells[SampleIndex(i, cells.Count, count)];
+                float half = sizes[i] * .92f * .5f;
+                // Sampling center and collider footprint corners avoids simply
+                // clearing the center of a cube placed on sloped terrain.
+                for (var z = -1; z <= 1; z++) for (var x = -1; x <= 1; x++)
+                {
+                    var height = groundHeight(cell.Position.x + x * half, cell.Position.z + z * half);
+                    if (!float.IsFinite(height)) throw new InvalidOperationException("Non-finite character rubble terrain height");
+                    clearance = Mathf.Max(clearance, height + half + .005f - cell.Position.y);
+                }
+            }
+            return clearance;
+        }
+
+        // Enlarge sparse character samples while keeping physical and visible
+        // cubes identical and avoiding overlap between their initial AABBs.
+        internal static float[] CharacterSizes(IReadOnlyList<VoxelFragment> cells, int count)
+        {
+            var sizes = new float[count];
+            for (var i = 0; i < count; i++)
+            {
+                var cell = cells[SampleIndex(i, cells.Count, count)];
+                float size = BlockSize(cell.Size * 1.75f);
+                for (var j = 0; j < count; j++)
+                {
+                    if (i == j) continue;
+                    var delta = cell.Position - cells[SampleIndex(j, cells.Count, count)].Position;
+                    size = Mathf.Min(size, Mathf.Max(Mathf.Abs(delta.x), Mathf.Max(Mathf.Abs(delta.y), Mathf.Abs(delta.z))) * .98f);
+                }
+                sizes[i] = size;
+            }
+            return sizes;
+        }
+
+        internal static Vector3 CharacterSpin(int index)
+        {
+            // Stable, varied axes; no dependency on Unity's global RNG state.
+            float x = ((index * 73 + 19) % 101) / 50f - 1f;
+            float y = ((index * 47 + 61) % 103) / 51f - 1f;
+            float z = ((index * 29 + 37) % 107) / 53f - 1f;
+            var axis = new Vector3(x, y, z);
+            return (axis.sqrMagnitude > .0001f ? axis.normalized : Vector3.right) * 9f;
         }
 
         internal static Vector3 ImpactClearance(IReadOnlyList<VoxelFragment> cells, int count, Vector3 point, Vector3 normal)
@@ -252,7 +345,7 @@ namespace MagicCarpet.Native.Voxels
 
         private void Activate(Piece p, VoxelFragment cell, Emission e, int represented)
         {
-            float size = BlockSize(cell.Size);
+            float size = e.Character ? e.Sizes[e.Next] : BlockSize(cell.Size);
             p.Object.transform.SetPositionAndRotation(cell.Position + e.Offset, Quaternion.identity);
             p.SpawnPosition=cell.Position+e.Offset;
             p.Object.transform.localScale = Vector3.one * size;
@@ -268,7 +361,7 @@ namespace MagicCarpet.Native.Voxels
             // Fine character pieces can move farther than their diameter in
             // one 120Hz step even at ordinary falling speed.
             p.Body.collisionDetectionMode = CollisionDetectionMode.Continuous;
-            p.Body.linearVelocity = e.Velocity; p.Body.angularVelocity = Vector3.zero;
+            p.Body.linearVelocity = e.Velocity; p.Body.angularVelocity = e.Character ? CharacterSpin(e.Next) : Vector3.zero;
             if (e.Energy > 0f)
             {
                 var direction = cell.Position - e.Origin;
@@ -276,6 +369,7 @@ namespace MagicCarpet.Native.Voxels
                     p.Body.linearVelocity += direction.normalized * Mathf.Min(5f, Mathf.Sqrt(2f * e.Energy / Mathf.Max(MinimumMass, e.TotalMass)));
             }
             p.Probe.ResetProbe(p.Body.linearVelocity); p.Born = Time.time; p.FadeStart = -1f; p.RepresentedCells = represented;
+            p.Kind = e.Character ? RubbleKind.Character : e.Impact ? RubbleKind.Impact : RubbleKind.Other;
             active.Add(p); PeakBodies = Mathf.Max(PeakBodies, active.Count);
         }
         internal static Mesh BuildMesh(IReadOnlyList<VoxelFragment> cells, Vector3 center)

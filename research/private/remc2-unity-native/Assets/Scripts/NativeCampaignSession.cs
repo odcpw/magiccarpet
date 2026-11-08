@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -53,6 +54,14 @@ namespace MagicCarpet.Native
         private ulong generation;
         private ulong tick;
         private ulong effectCursor;
+        private ulong voxelDeathCursor, voxelDeathGeneration = ulong.MaxValue;
+        private readonly NativeSim.CampaignVoxelDeath[] voxelDeathBuffer = new NativeSim.CampaignVoxelDeath[1024];
+        private readonly NativeSim.VoxelImpactChild[] voxelImpactChildBuffer = new NativeSim.VoxelImpactChild[1024];
+        private readonly NativeSim.CampaignEntityPresentation[] entityPresentationBuffer = new NativeSim.CampaignEntityPresentation[1000];
+        private readonly HashSet<ushort> entityPresentationSlots = new HashSet<ushort>();
+        private readonly List<NativeSim.VoxelImpactChild> voxelImpactChildren = new List<NativeSim.VoxelImpactChild>();
+        private NativeSim.CampaignCharacterState[] cachedCharacterStates;
+        private ulong characterStateGeneration, characterStateTick;
         private readonly bool ownsHandle;
         private readonly bool dayMusicAvailable;
         private readonly CampaignPackageIdentity packageIdentity;
@@ -111,6 +120,82 @@ namespace MagicCarpet.Native
         internal ulong Generation => generation;
 
         internal ulong Tick => tick;
+
+        // Stable for a voxel world's lifetime; the outer session generation
+        // may change during a pause/preferences rebind without a world reset.
+        internal ulong VoxelWorldEpoch { get; private set; }
+
+        [Serializable] private sealed class VoxelEnableRequest {public ushort selected_slot;public uint[] modern_heights;}
+        [Serializable] internal sealed class VoxelVolumeProjection {
+            public int kind,slot,origin_x,origin_y,origin_z,cell_size;
+            public int[] dimensions,terrain_columns,building_bytes;
+        }
+        [Serializable] internal sealed class VoxelRemovedCell {public int kind,slot,x,y,z;}
+        [Serializable] internal sealed class VoxelImpact {
+            public string sequence,revision;
+            public int projectile_slot,slot_generation,model,from_x,from_y,from_z,x,y,z,target_slot;
+            public int velocity_x,velocity_y,velocity_z,normal_x,normal_y,normal_z;
+            public bool has_target,geometry_changed;
+        }
+        [Serializable] internal sealed class VoxelProjection {
+            public string generation,tick,revision,content_hash,impact_head;
+            public VoxelVolumeProjection[] volumes;
+            public VoxelRemovedCell[] removed;
+            public VoxelImpact[] impacts;
+        }
+
+        internal void EnableVoxelWorld(ushort selectedSlot,float[] modernHeights) {
+            if(modernHeights==null||modernHeights.Length!=17*21+256*320)throw new ArgumentException("Invalid voxel seam samples");
+            var bits=new uint[modernHeights.Length];
+            for(int i=0;i<bits.Length;i++){
+                if(!float.IsFinite(modernHeights[i]))throw new ArgumentException("Nonfinite voxel seam sample");
+                bits[i]=unchecked((uint)BitConverter.SingleToInt32Bits(modernHeights[i]));
+            }
+            var bytes=Encoding.UTF8.GetBytes(JsonUtility.ToJson(new VoxelEnableRequest{selected_slot=selectedSlot,modern_heights=bits}));
+            NativeSession.Check(NativeSim.mc_game_runtime_voxel_enable_json_v1(Handle,generation,tick,bytes,(uint)bytes.Length),"enable native voxel geometry");
+        }
+
+        internal NativeSim.VoxelState VoxelWorldState() {
+            NativeSession.Check(NativeSim.mc_game_runtime_voxel_state_v1(Handle,generation,tick,out var state,(uint)Marshal.SizeOf<NativeSim.VoxelState>()),"read native voxel state");
+            if(state.abiVersion!=NativeSim.AbiVersion||state.structSize!=64||state.generation!=generation||state.tick!=tick||state.enabled>1)
+                throw new InvalidOperationException("Native voxel state identity/layout mismatch");
+            VoxelWorldEpoch=state.worldGeneration;
+            return state;
+        }
+
+        // Native checks each impact child's current active lifetime and model
+        // for this exact tick; consumers must not retain these slots across ticks.
+        internal IReadOnlyList<NativeSim.VoxelImpactChild> VoxelImpactChildren()
+        {
+            NativeSession.Check(NativeSim.mc_game_runtime_voxel_impact_children_copy(Handle,generation,tick,voxelImpactChildBuffer,
+                (uint)voxelImpactChildBuffer.Length,32,out var written),"read live voxel impact children");
+            if(written>voxelImpactChildBuffer.Length)throw new InvalidOperationException("Native voxel impact child count exceeds buffer");
+            voxelImpactChildren.Clear();
+            for(var i=0;i<written;i++)
+            {
+                var row=voxelImpactChildBuffer[i];
+                if(row.abiVersion!=NativeSim.AbiVersion||row.structSize!=32||row.generation!=generation||row.sequence==0||row.reserved!=0)
+                    throw new InvalidOperationException("Native voxel impact child identity/layout mismatch");
+                voxelImpactChildren.Add(row);
+            }
+            return voxelImpactChildren;
+        }
+
+        internal VoxelProjection VoxelWorldProjection(bool includeBase,ulong afterImpact=0) {
+            int status=NativeSim.mc_game_runtime_voxel_snapshot_json_v1(Handle,generation,tick,includeBase?1u:0u,afterImpact,IntPtr.Zero,0,out var length);
+            if(status!=NativeSim.BufferTooSmall&&!(status==NativeSim.Bounds&&length>0))NativeSession.Check(status,"size native voxel snapshot");
+            if(length==0||length>16*1024*1024)throw new InvalidOperationException("Native voxel snapshot exceeds bound");
+            var memory=Marshal.AllocHGlobal(checked((int)length));
+            try{
+                NativeSession.Check(NativeSim.mc_game_runtime_voxel_snapshot_json_v1(Handle,generation,tick,includeBase?1u:0u,afterImpact,memory,length,out var written),"read native voxel snapshot");
+                if(written>length)throw new InvalidOperationException("Native voxel snapshot grew without an authoritative step");
+                var bytes=new byte[written];Marshal.Copy(memory,bytes,0,bytes.Length);
+                var value=JsonUtility.FromJson<VoxelProjection>(Encoding.UTF8.GetString(bytes));
+                if(value==null||value.generation!=generation.ToString()||value.tick!=tick.ToString()||value.removed==null||value.volumes==null||value.impacts==null)
+                    throw new InvalidOperationException("Native voxel snapshot identity/data mismatch");
+                return value;
+            }finally{Marshal.FreeHGlobal(memory);}
+        }
 
         internal ulong EffectCursor => effectCursor;
 
@@ -1356,26 +1441,25 @@ namespace MagicCarpet.Native
             return entities;
         }
 
-        internal NativeSim.CampaignEntityPresentation[] EntityPresentations(short cameraYaw)
+        internal NativeSim.CampaignEntityPresentation[] EntityPresentations(short cameraYaw, bool worldView = false)
         {
-            var rows = new NativeSim.CampaignEntityPresentation[1000];
-            var status = NativeSim.mc_native_campaign_entity_presentations_copy(
-                Handle,
-                generation,
-                tick,
-                cameraYaw,
-                rows,
-                checked((uint)rows.Length),
-                64,
-                out var written);
+            uint written;
+            var status = worldView
+                ? NativeSim.mc_native_campaign_world_entity_presentations_copy(Handle,generation,tick,cameraYaw,
+                    entityPresentationBuffer,checked((uint)entityPresentationBuffer.Length),64,out written)
+                : NativeSim.mc_native_campaign_entity_presentations_copy(Handle,generation,tick,cameraYaw,
+                    entityPresentationBuffer,checked((uint)entityPresentationBuffer.Length),64,out written);
             NativeSession.Check(status, "read campaign entity presentation");
-            Array.Resize(ref rows, checked((int)written));
-            var seen = new HashSet<ushort>();
+            if (written > entityPresentationBuffer.Length)
+                throw new InvalidOperationException("Campaign entity presentation batch exceeds capacity");
+            var rows = new NativeSim.CampaignEntityPresentation[checked((int)written)];
+            Array.Copy(entityPresentationBuffer, rows, rows.Length);
+            entityPresentationSlots.Clear();
             foreach (var row in rows)
             {
                 if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 64 ||
                     row.generation != generation || row.tick != tick ||
-                    !seen.Add(row.entityIndex) || row.selectedTmap < row.baseTmap ||
+                    !entityPresentationSlots.Add(row.entityIndex) || row.selectedTmap < row.baseTmap ||
                     row.orientationSector > 15 || row.mirrored > 1 ||
                     row.reserved0 != 0 || row.reserved != 0 ||
                     row.pixelMode > 7 || row.brightness > 0x2000)
@@ -1385,8 +1469,34 @@ namespace MagicCarpet.Native
             return rows;
         }
 
+        // The caller applies deaths before CharacterStates removes/reuses a slot.
+        // Advance each cursor only after its callback returns successfully.
+        internal void DrainVoxelDeaths(Action<NativeSim.CampaignVoxelDeath> apply)
+        {
+            if (apply == null) throw new ArgumentNullException(nameof(apply));
+            if (voxelDeathGeneration != VoxelWorldEpoch)
+            {
+                voxelDeathGeneration = VoxelWorldEpoch;
+                voxelDeathCursor = 0;
+            }
+            var status = NativeSim.mc_native_campaign_voxel_deaths_copy(Handle, generation, tick,
+                voxelDeathCursor, voxelDeathBuffer, (uint)voxelDeathBuffer.Length, 32, out var written);
+            NativeSession.Check(status, "read voxel death journal");
+            if (written > voxelDeathBuffer.Length) throw new InvalidOperationException("Voxel death count exceeds buffer");
+            for (var i = 0; i < written; i++)
+            {
+                var row = voxelDeathBuffer[i];
+                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 32 || row.generation != VoxelWorldEpoch ||
+                    row.sequence <= voxelDeathCursor || (voxelDeathCursor != 0 && row.sequence != voxelDeathCursor + 1))
+                    throw new InvalidOperationException("Invalid or noncontiguous voxel death row");
+                apply(row);
+                voxelDeathCursor = row.sequence;
+            }
+        }
+
         internal NativeSim.CampaignCharacterState[] CharacterStates()
         {
+            if(cachedCharacterStates!=null && characterStateGeneration==generation && characterStateTick==tick)return cachedCharacterStates;
             var rows = new NativeSim.CampaignCharacterState[1000];
             var status = NativeSim.mc_native_campaign_character_states_copy(Handle, generation, tick,
                 rows, (uint)rows.Length, 80, out var written);
@@ -1398,8 +1508,9 @@ namespace MagicCarpet.Native
                 if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 80 ||
                     row.generation != generation || row.tick != tick || !seen.Add(row.entityIndex) ||
                     row.stance > 1 || row.reserved1 != 0 || row.active > 1 || row.hasTarget > 1 || row.hasParent > 1 ||
-                    !(row.classId == 5 && (row.model == 1 || row.model == 4) || row.classId == 9 && row.model == 13))
+                    !(row.classId == 5 && (row.model == 1 || row.model == 4) || row.classId == 9 && (row.model == 0 || row.model == 13 || row.model == 28)))
                     throw new InvalidOperationException("Invalid source-backed character state");
+            cachedCharacterStates=rows;characterStateGeneration=generation;characterStateTick=tick;
             return rows;
         }
 

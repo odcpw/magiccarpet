@@ -58,7 +58,7 @@ namespace MagicCarpet.Native.Tests
             {
                 var camera = cameraObject.AddComponent<Camera>();
                 camera.transform.position = new Vector3(1023, 0, 1023);
-                using var presenter = new VoxelManaSpheres(parent.transform, Colors());
+                using var presenter = new VoxelManaSpheres(parent.transform, Colors(), (_,_)=>0);
                 var neutral = Sphere(7, 58, 100, 64, 128, 192);
                 presenter.Present(new[] { neutral }, new[] { Visible(7) }, 1);
                 presenter.Render(camera);
@@ -99,6 +99,61 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(presenter.ActiveCount, Is.Zero);
             }
             finally { UnityEngine.Object.DestroyImmediate(cameraObject); UnityEngine.Object.DestroyImmediate(parent); }
+        }
+
+        [Test]
+        public void WorldCensusPresentsOffSourceCameraManaButHonorsNativeHide()
+        {
+            var parent=new GameObject("World-view mana test");
+            var cameraObject=new GameObject("Observer camera");
+            try
+            {
+                var camera=cameraObject.AddComponent<Camera>();
+                using var presenter=new VoxelManaSpheres(parent.transform,Colors(),(_,_)=>0);
+                var sphere=Sphere(364,58,100,64,128,0);
+                // The source camera census may omit a valid sphere even when
+                // the independent 3D observer is looking at it.
+                presenter.Present(new[]{sphere},Array.Empty<NativeSim.CampaignEntityPresentation>(),1);
+                Assert.That(presenter.Replaces(364),Is.False);
+                presenter.Present(new[]{sphere},new[]{Visible(364)},1);
+                presenter.Render(camera);
+                var renderer=parent.GetComponentInChildren<MeshRenderer>(true);
+                Assert.That(renderer.enabled && renderer.gameObject.activeInHierarchy,Is.True);
+                // World census remains authoritative for hide/pending-delete.
+                presenter.Present(new[]{sphere},Array.Empty<NativeSim.CampaignEntityPresentation>(),1);
+                Assert.That(renderer.gameObject.activeInHierarchy,Is.False);
+                Assert.That(presenter.Replaces(364),Is.False);
+            }
+            finally {UnityEngine.Object.DestroyImmediate(cameraObject);UnityEngine.Object.DestroyImmediate(parent);}
+        }
+
+        [Test]
+        public void VisualBottomClearsModernGroundWithoutChangingNativeAltitudeAboveIt()
+        {
+            var parent=new GameObject("Mana terrain test");
+            var cameraObject=new GameObject("Camera");
+            try
+            {
+                var camera=cameraObject.AddComponent<Camera>();
+                camera.transform.position=new Vector3(1023,0,1023);
+                var sampleX=0f;var sampleZ=0f;
+                using var presenter=new VoxelManaSpheres(parent.transform,Colors(),(x,z)=>{sampleX=x;sampleZ=z;return 5;});
+                var row=Sphere(7,58,100,64,128,0);
+                presenter.Present(new[]{row},new[]{Visible(7)},1);
+                presenter.Render(camera);
+                var node=parent.transform.GetChild(0).GetChild(0);
+                Assert.That(sampleX,Is.EqualTo(1025).Within(.001),"Sample the same wrapped X used to render");
+                Assert.That(sampleZ,Is.EqualTo(1026).Within(.001),"Sample the same wrapped Z used to render");
+                Assert.That(node.position.y,Is.EqualTo(5+100/128f).Within(.001),"A buried native bottom is raised to the visible surface");
+
+                row.z=640;
+                presenter.Present(new[]{row},new[]{Visible(7)},1);
+                presenter.Render(camera);
+                Assert.That(node.position.y,Is.EqualTo(10+100/128f).Within(.001),"An airborne native bottom stays at its native altitude");
+                presenter.Present(new[]{row},Array.Empty<NativeSim.CampaignEntityPresentation>(),1);
+                Assert.That(presenter.Replaces(7),Is.False,"Ground correction cannot bypass native visibility");
+            }
+            finally {UnityEngine.Object.DestroyImmediate(cameraObject);UnityEngine.Object.DestroyImmediate(parent);}
         }
     }
 }

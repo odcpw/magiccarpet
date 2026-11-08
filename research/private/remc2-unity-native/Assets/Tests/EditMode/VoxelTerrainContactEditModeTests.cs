@@ -10,6 +10,48 @@ namespace MagicCarpet.Native.Tests
     {
         private static bool Ray(Ray ray,out RaycastHit hit,float length=200)=>Physics.Raycast(ray,out hit,length,1<<8);
         [Test]
+        public void FirstNativeImpactHasContactBeforeItsFragmentsAreEmitted()
+        {
+            var parent=new GameObject("First native impact contact");
+            var previousSimulation=Physics.simulationMode;
+            try
+            {
+                Physics.simulationMode=SimulationMode.Script;
+                using(var contact=new VoxelTerrainContact(parent.transform,(_,_)=>0))
+                {
+                    var camera=Vector3.zero;
+                    var existing=new[]{new Vector3(1024,1,1024)};
+                    var impact=new Vector3(4096,1,4096);
+                    contact.Update(camera,default,existing);
+                    Physics.SyncTransforms();
+                    Assert.That(Ray(new Ray(impact+Vector3.up*10,Vector3.down),out _,20),Is.False);
+
+                    // This is the same call made immediately before EmitImpact, without a Render in between.
+                    VoxelModernWorld.PrepareEmissionContact(contact,camera,default,existing,0,impact);
+                    Assert.That(Ray(new Ray(impact+Vector3.up*10,Vector3.down),out var hit,20),Is.True);
+                    Assert.That(hit.point.y,Is.EqualTo(0).Within(.001f));
+                    Assert.That(Ray(new Ray(camera+Vector3.up*10,Vector3.down),out _,20),Is.True);
+                    Assert.That(Ray(new Ray(existing[0]+Vector3.up*10,Vector3.down),out _,20),Is.True);
+                    Assert.That(contact.TileCount,Is.EqualTo(34),"Coverage remains sparse across distant locations");
+
+                    var piece=new GameObject("First impact fragment");
+                    piece.transform.SetParent(parent.transform);
+                    piece.transform.position=new Vector3(impact.x,.8f,impact.z);
+                    var collider=piece.AddComponent<BoxCollider>();
+                    collider.size=Vector3.one*.0644f;
+                    collider.contactOffset=VoxelRubble.ContactOffset(.07f);
+                    var body=piece.AddComponent<Rigidbody>();
+                    body.collisionDetectionMode=CollisionDetectionMode.Continuous;
+                    body.linearVelocity=new Vector3(173,-117,-28);
+                    Physics.SyncTransforms();
+                    Physics.Simulate(1f/120);
+                    Assert.That(body.position.y,Is.GreaterThan(0),"The first fast step must hit terrain before it can pass below");
+                    Assert.That(body.linearVelocity.y,Is.GreaterThan(-117),"Contact must change the incoming vertical motion");
+                }
+            }
+            finally { Physics.simulationMode=previousSimulation;UnityEngine.Object.DestroyImmediate(parent); }
+        }
+        [Test]
         public void SourceTerrainRevisionRefreshesOnlyChangedContactTiles()
         {
             var parent=new GameObject("Source terrain update regression");float elevation=0;

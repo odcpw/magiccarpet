@@ -110,9 +110,14 @@ namespace MagicCarpet.Native.Voxels
             private IEnumerator FinishImpact(VoxelRubble.Emission emission, Vector3 point, Vector3 normal, float energy)
             {
                 // If the body budget is full, keep the wall until queued fragments exist.
-                while (emission != null && !emission.Spawned) yield return new WaitForFixedUpdate();
+                while (emission != null && !emission.Spawned && !emission.Cancelled) yield return new WaitForFixedUpdate();
+                if (emission != null && emission.Cancelled) { Destroy(gameObject); yield break; }
                 // Preserve colliders for several physics passes before destructive edits.
-                for (int i = 0; i < 3; i++) yield return new WaitForFixedUpdate();
+                for (int i = 0; i < 3; i++)
+                {
+                    yield return new WaitForFixedUpdate();
+                    if (emission != null && emission.Cancelled) { Destroy(gameObject); yield break; }
+                }
                 callback?.Invoke(point, normal, energy);
                 Destroy(gameObject);
             }

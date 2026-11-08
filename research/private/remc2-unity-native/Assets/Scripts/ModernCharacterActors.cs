@@ -5,6 +5,19 @@ using UnityEngine;
 
 namespace MagicCarpet.Native
 {
+    // One instance belongs to one native slot generation, never to the slot itself.
+    internal sealed class VoxelDeathLifecycle
+    {
+        internal bool Exploded { get; private set; }
+        internal bool RetainAfterRemoval(bool dying) => dying && !Exploded;
+        internal bool TryExplode(bool dying, Func<bool> emit)
+        {
+            if (!dying || Exploded) return Exploded;
+            Exploded = emit();
+            return Exploded;
+        }
+    }
+
     // Joins native occupants to the two reviewed rigs. No gameplay is simulated here.
     internal sealed class ModernCharacterActors : IDisposable
     {
@@ -22,8 +35,12 @@ namespace MagicCarpet.Native
             internal float TerrainSlope;
             internal Renderer[] Renderers;
             internal int RenderedFrame = -1;
-            internal bool VoxelExploded;
-            internal bool IsDying => Goat != null ? Goat.IsDying : Archer.IsDying;
+            internal readonly VoxelDeathLifecycle VoxelDeath = new();
+            internal bool AuthoritativeDeath;
+            internal List<Voxels.VoxelFragment> DeathFragments;
+            internal Vector3 DeathVelocity, DeathOrigin;
+            internal bool IsDying => AuthoritativeDeath || (Goat != null ? Goat.IsDying : Archer.IsDying);
+            internal bool VoxelIsDying => AuthoritativeDeath || SourceVoxelDeath(State.model, State.action, State.life);
             internal GameObject Root => Goat != null ? Goat.Root : Archer.Root;
             internal bool Finished => Goat != null ? Goat.DeathFinished : Archer.DeathFinished;
             internal void Render(float dt)
@@ -91,8 +108,8 @@ namespace MagicCarpet.Native
         private Actor Followed()
         {
             if (follow == null) return null;
-            if (ushort.TryParse(follow, out var slot)) return actors.TryGetValue(slot, out var value) ? value : dying.FirstOrDefault(a => a.State.entityIndex == slot);
-            return actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => follow == "Goat" ? a.Goat != null : a.Archer != null);
+            if (ushort.TryParse(follow, out var slot)) return actors.TryGetValue(slot, out var value) && !value.VoxelDeath.Exploded ? value : dying.FirstOrDefault(a => a.State.entityIndex == slot && !a.VoxelDeath.Exploded);
+            return actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => !a.VoxelDeath.Exploded && (follow == "Goat" ? a.Goat != null : a.Archer != null));
         }
 
         internal bool ReviewCamera(Camera camera)
@@ -101,6 +118,13 @@ namespace MagicCarpet.Native
             if (actor == null)
             {
                 if (follow == null || !reviewPositioned) return false;
+                camera.transform.SetPositionAndRotation(lastReviewPosition, lastReviewRotation);
+                return true;
+            }
+            // Preserve the last rendered live pose for the imminent breakup.
+            if (Voxels.VoxelModernWorld.Requested && actor.VoxelIsDying)
+            {
+                if (!reviewPositioned) return false;
                 camera.transform.SetPositionAndRotation(lastReviewPosition, lastReviewRotation);
                 return true;
             }
@@ -184,20 +208,52 @@ namespace MagicCarpet.Native
             return true;
         }
 
+        internal static bool IsArcherArrow(NativeSim.CampaignCharacterState state) => state.classId == 9 && state.model == 13;
         internal bool Replaces(ushort sourceSlot) => observed.TryGetValue(sourceSlot, out var state) &&
-            (state.classId == 5 && (state.model == 1 || state.model == 4) || state.classId == 9 && state.model == 13);
+            (state.classId == 5 && (state.model == 1 || state.model == 4) || IsArcherArrow(state));
+
+        internal static bool SourceVoxelDeath(byte model, byte action, int life) => life < 0 ||
+            (model == 1 && (action == 12 || action == 13)) || (model == 4 && action == 37);
+
+        // The integration delivers lifetime-qualified native death evidence
+        // before observing removal or reuse. A slot alone is never sufficient.
+        internal bool ApplyDeath(ulong worldEpoch, ushort slot, uint slotGeneration, ushort sourceId)
+        {
+            if (worldEpoch != generation) return false;
+            Actor actor = null;
+            if (actors.TryGetValue(slot, out var current) && current.State.slotGeneration == slotGeneration && current.State.sourceId == sourceId)
+                actor = current;
+            else
+                actor = dying.FirstOrDefault(a => a.State.entityIndex == slot && a.State.slotGeneration == slotGeneration && a.State.sourceId == sourceId);
+            if (actor == null) return false;
+            actor.AuthoritativeDeath = true;
+            return true;
+        }
+
+        internal static bool MustClearActors(ulong previousEpoch,ulong previousTick,ulong epoch,ulong currentTick)
+            => previousEpoch!=epoch || currentTick<previousTick;
+
+        internal static void ApplyActorVisibility(GameObject root, NativeSim.CampaignCharacterState state,
+            bool eligible, bool voxelMode)
+        {
+            // The voxel camera uses its own spatial admission, but it cannot
+            // override native lifecycle/drawing hide flags on a live occupant.
+            if (voxelMode && (state.active == 0 || (state.controlFlags & 0x421u) != 0)) eligible = false;
+            root.SetActive(eligible);
+        }
 
         internal void Observe(NativeCampaignSession session, NativeSim.CampaignEntityPresentation[] visible)
         {
-            if (generation == session.Generation && tick == session.Tick) return;
-            if (generation != session.Generation || session.Tick < tick) Clear();
-            generation = session.Generation; tick = session.Tick;
+            var epoch=Voxels.VoxelModernWorld.Requested?session.VoxelWorldEpoch:session.Generation;
+            if (generation == epoch && tick == session.Tick) return;
+            if (MustClearActors(generation,tick,epoch,session.Tick)) Clear();
+            generation = epoch; tick = session.Tick;
             observed.Clear();
             foreach (var row in session.CharacterStates()) observed.Add(row.entityIndex, row);
             var presentations = visible.ToDictionary(s => s.entityIndex);
             var births = new Dictionary<ushort, NativeSim.CampaignCharacterState>();
             var confirmedBirths = new HashSet<ushort>();
-            foreach (var state in observed.Values.Where(s => s.classId == 9 && s.ageTicks <= 1 && s.hasParent != 0))
+            foreach (var state in observed.Values.Where(s => IsArcherArrow(s) && s.ageTicks <= 1 && s.hasParent != 0))
             {
                 if (!arrows.TryGetValue(state.entityIndex, out var prior) || prior.State.slotGeneration != state.slotGeneration)
                     births[state.parentIndex] = state;
@@ -206,7 +262,7 @@ namespace MagicCarpet.Native
             {
                 if (actors.TryGetValue(state.entityIndex, out var prior) &&
                     (prior.State.sourceId != state.sourceId || prior.State.slotGeneration != state.slotGeneration || prior.State.model != state.model))
-                { prior.Dispose(); actors.Remove(state.entityIndex); }
+                { Retire(prior); actors.Remove(state.entityIndex); }
                 var position = Position(state);
                 var yaw = 180f - state.yaw * 360f / 2048f;
                 var hadPriorObservation = actors.ContainsKey(state.entityIndex);
@@ -254,9 +310,9 @@ namespace MagicCarpet.Native
             foreach (var key in actors.Keys.Where(key => !observed.TryGetValue(key, out var s) || s.classId != 5).ToArray())
             {
                 var actor = actors[key]; actors.Remove(key);
-                actor.Remove(); dying.Add(actor);
+                Retire(actor);
             }
-            foreach (var state in observed.Values.Where(s => s.classId == 9))
+            foreach (var state in observed.Values.Where(IsArcherArrow))
             {
                 var position = Position(state);
                 if (!arrows.TryGetValue(state.entityIndex, out var arrow) || arrow.State.slotGeneration != state.slotGeneration)
@@ -285,7 +341,7 @@ namespace MagicCarpet.Native
                 arrow.ObservedAt = Time.timeAsDouble;
                 arrow.Root.SetActive(state.active != 0);
             }
-            foreach (var key in arrows.Keys.Where(key => !observed.TryGetValue(key, out var s) || s.classId != 9).ToArray())
+            foreach (var key in arrows.Keys.Where(key => !observed.TryGetValue(key, out var s) || !IsArcherArrow(s)).ToArray())
             { UnityEngine.Object.Destroy(arrows[key].Root); arrows.Remove(key); }
             if (!logged)
             {
@@ -302,21 +358,27 @@ namespace MagicCarpet.Native
             if(Voxels.VoxelModernWorld.Requested)GeometryUtility.CalculateFrustumPlanes(camera,voxelViewPlanes);
             foreach (var actor in actors.Values)
             {
+                if (Voxels.VoxelModernWorld.Requested && actor.VoxelDeath.Exploded)
+                { actor.Root.SetActive(false); continue; }
                 var sampled = actor.RenderedFrame == Time.frameCount;
                 var position = Interpolated(actor);
                 // The voxel workbench camera can be far from the native player.
                 // Continue observing every native actor, but don't evaluate/IK
                 // distant presentation rigs that cannot contribute to this view.
-                if(Voxels.VoxelModernWorld.Requested && actor!=followed &&
+                if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying && actor!=followed &&
                     (Delta(camera.transform.position,position).sqrMagnitude>14400 ||
                      !GeometryUtility.TestPlanesAABB(voxelViewPlanes,new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,new Vector3(12,16,12)))))
                 { actor.Root.SetActive(false); continue; }
-                if(Voxels.VoxelModernWorld.Requested)SetVoxelDetail(actor,actor==followed?0:Delta(camera.transform.position,position).magnitude);
+                if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying)SetVoxelDetail(actor,actor==followed?0:Delta(camera.transform.position,position).magnitude);
                 Place(actor, position, InterpolatedYaw(actor), camera);
-                // The diagnostic camera may be outside the native player's
-                // admission list. Admit only its selected source actor here;
-                // normal play and native visibility rules are unchanged.
-                actor.Root.SetActive((actor.Visible || actor == followed || actor.IsDying && actor.WasVisible || Voxels.VoxelModernWorld.Requested&&actor.State.active!=0) && ModernCapture.EntityVisibility != 1);
+                // Capture the last live pose before advancing a death animation.
+                if (Voxels.VoxelModernWorld.Requested && actor.VoxelIsDying)
+                { FractureIfDead(actor); actor.Root.SetActive(false); continue; }
+                // A voxel observer uses its own spatial admission. Native
+                // liveness and hide flags still control the actual renderer.
+                ApplyActorVisibility(actor.Root,actor.State,
+                    (actor.Visible || actor == followed || actor.IsDying && actor.WasVisible || Voxels.VoxelModernWorld.Requested&&actor.State.active!=0) && ModernCapture.EntityVisibility != 1,
+                    Voxels.VoxelModernWorld.Requested);
                 actor.Render(dt);
                 if (!sampled && actor.Goat != null && actor.Root.activeSelf)
                     actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleHeight);
@@ -325,6 +387,12 @@ namespace MagicCarpet.Native
             for (var i = dying.Count - 1; i >= 0; i--)
             {
                 var actor = dying[i]; Place(actor, actor.To, actor.ToYaw, camera);
+                if (Voxels.VoxelModernWorld.Requested)
+                {
+                    FractureIfDead(actor); actor.Root.SetActive(false);
+                    if (actor.VoxelDeath.Exploded) { actor.Dispose(); dying.RemoveAt(i); }
+                    continue;
+                }
                 actor.Root.SetActive((actor.WasVisible || actor == followed) && ModernCapture.EntityVisibility != 1); actor.Render(dt);
                 FractureIfDead(actor);
                 if (actor.Finished) { actor.Dispose(); dying.RemoveAt(i); }
@@ -349,12 +417,31 @@ namespace MagicCarpet.Native
         private static void FractureIfDead(Actor actor)
         {
             if(!Voxels.VoxelModernWorld.Requested)return;
-            if(actor.IsDying&&!actor.VoxelExploded&&actor.Root.activeSelf&&Voxels.VoxelModernWorld.Active!=null)
+            actor.VoxelDeath.TryExplode(actor.VoxelIsDying, () => {
+                if (Voxels.VoxelModernWorld.Active == null) return false;
+                if (actor.DeathFragments == null)
+                {
+                    actor.DeathFragments = actor.Goat != null ? actor.Goat.SnapshotVoxelFragments() : actor.Archer.SnapshotVoxelFragments();
+                    actor.DeathVelocity = Delta(actor.From, actor.To) / Mathf.Max(actor.Interval, .0333f);
+                    actor.DeathOrigin = actor.Root.transform.position;
+                }
+                var emitted = Voxels.VoxelModernWorld.Active.Explode(actor.DeathFragments, actor.DeathVelocity, actor.DeathOrigin,
+                    actor.State.entityIndex, actor.State.model, actor.State.slotGeneration, actor.State.sourceId);
+                if (emitted) actor.DeathFragments = null;
+                return emitted;
+            });
+        }
+
+        private void Retire(Actor actor)
+        {
+            if (Voxels.VoxelModernWorld.Requested)
             {
-                var cells=actor.Goat!=null?actor.Goat.SnapshotVoxelFragments():actor.Archer.SnapshotVoxelFragments();
-                actor.VoxelExploded=Voxels.VoxelModernWorld.Active.Explode(cells,Delta(actor.From,actor.To)/Mathf.Max(actor.Interval,.0333f),actor.Root.transform.position,actor.State.entityIndex,actor.State.model);
+                // Disappearance alone is not an authoritative death signal.
+                if (actor.VoxelDeath.RetainAfterRemoval(actor.VoxelIsDying)) dying.Add(actor);
+                else actor.Dispose();
+                return;
             }
-            if(actor.VoxelExploded)actor.Root.SetActive(false);
+            actor.Remove(); dying.Add(actor);
         }
 
         private void PrepareVoxelDetails()

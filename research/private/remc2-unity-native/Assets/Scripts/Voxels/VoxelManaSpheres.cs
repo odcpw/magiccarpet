@@ -15,12 +15,17 @@ namespace MagicCarpet.Native.Voxels
             internal GameObject Object;
             internal MeshRenderer Renderer;
             internal NativeSim.ManaSphereSnapshot Row;
+            internal bool ReceiptWritten, ReceiptGrounded, ReceiptInView;
+            internal uint ReceiptSphere;
+            internal ushort ReceiptOwner;
+            internal int ReceiptMana;
         }
 
         private readonly GameObject root;
         private readonly Mesh mesh;
         private readonly Material material;
         private readonly Dictionary<int, Color> colors;
+        private readonly Func<float, float, float> terrainHeight;
         private readonly Dictionary<ushort, Visual> active = new();
         private readonly Stack<Visual> pool = new();
         private readonly HashSet<ushort> visible = new();
@@ -28,17 +33,19 @@ namespace MagicCarpet.Native.Voxels
         private readonly List<ushort> removed = new();
         private readonly MaterialPropertyBlock properties = new();
         private ulong generation = ulong.MaxValue;
+        private ulong observationTick;
         private bool disposed;
         internal int ActiveCount => active.Count;
         internal int PoolCount => pool.Count;
 
-        internal VoxelManaSpheres(Transform parent, OwnerAssetCache cache)
-            : this(parent, ReadColors(cache)) { }
+        internal VoxelManaSpheres(Transform parent, OwnerAssetCache cache, Func<float,float,float> terrainHeight)
+            : this(parent, ReadColors(cache), terrainHeight) { }
 
         // This overload permits deterministic rendering/lifecycle checks without an owner package.
-        internal VoxelManaSpheres(Transform parent, Dictionary<int, Color> sourceColors)
+        internal VoxelManaSpheres(Transform parent, Dictionary<int, Color> sourceColors, Func<float,float,float> terrainHeight)
         {
             colors = sourceColors ?? throw new ArgumentNullException(nameof(sourceColors));
+            this.terrainHeight = terrainHeight ?? throw new ArgumentNullException(nameof(terrainHeight));
             var shader = Resources.Load<Shader>("VoxelSurface");
             if (shader == null) throw new InvalidOperationException("Missing VoxelSurface shader");
             root = new GameObject("Native voxel mana spheres");
@@ -49,9 +56,10 @@ namespace MagicCarpet.Native.Voxels
         }
 
         internal void Present(NativeSim.ManaSphereSnapshot[] spheres,
-            NativeSim.CampaignEntityPresentation[] presentations, ulong worldGeneration)
+            NativeSim.CampaignEntityPresentation[] presentations, ulong worldGeneration, ulong tick = 0)
         {
             if (disposed) throw new ObjectDisposedException(nameof(VoxelManaSpheres));
+            observationTick = tick;
             if (generation != worldGeneration)
             {
                 foreach (var visual in active.Values) Return(visual);
@@ -71,6 +79,7 @@ namespace MagicCarpet.Native.Voxels
                     visual = pool.Count == 0 ? CreateVisual() : pool.Pop();
                     active.Add(slot, visual);
                     visual.Object.SetActive(true);
+                    visual.ReceiptWritten = false;
                     acquired = true;
                 }
                 if (acquired || visual.Row.logicalHeight != row.logicalHeight)
@@ -90,6 +99,8 @@ namespace MagicCarpet.Native.Voxels
                 if (!seen.Contains(pair.Key)) removed.Add(pair.Key);
             foreach (var slot in removed)
             {
+                if (VoxelModernWorld.ReceiptLogging)
+                    Debug.Log($"MC_VOXEL_RECEIPT kind=mana_hidden generation={generation} tick={observationTick} slot={slot} sphere={active[slot].Row.sphereId}");
                 Return(active[slot]);
                 active.Remove(slot);
             }
@@ -106,8 +117,23 @@ namespace MagicCarpet.Native.Voxels
                 var x = origin.x + Mathf.Repeat(row.x / 64f - origin.x + 512f, 1024f) - 512f;
                 var z = origin.z + Mathf.Repeat(row.y / 64f - origin.z + 512f, 1024f) - 512f;
                 // Sprite coordinates describe the bottom edge, not the centre.
-                visual.Object.transform.position = new Vector3(x, row.z / 64f + row.logicalHeight / 128f, z);
+                var floor = terrainHeight(x, z);
+                var bottom = row.z / 64f;
+                var grounded = bottom < floor;
+                visual.Object.transform.position = new Vector3(x, Mathf.Max(bottom, floor) + row.logicalHeight / 128f, z);
                 visual.Renderer.enabled = visible;
+                if (VoxelModernWorld.ReceiptLogging)
+                {
+                    var viewport = camera.WorldToViewportPoint(visual.Object.transform.position);
+                    var inView = visible && viewport.z > 0 && viewport.x >= 0 && viewport.x <= 1 && viewport.y >= 0 && viewport.y <= 1;
+                    if (!visual.ReceiptWritten || visual.ReceiptGrounded != grounded || visual.ReceiptInView != inView ||
+                        visual.ReceiptSphere != row.sphereId || visual.ReceiptOwner != row.ownerEntityIndex || visual.ReceiptMana != row.mana)
+                    {
+                        Debug.Log(FormattableString.Invariant($"MC_VOXEL_RECEIPT kind=mana generation={generation} tick={observationTick} slot={row.sourceEntityIndex} sphere={row.sphereId} owner={row.ownerEntityIndex} value={row.mana} native_x={row.x} native_y={row.y} native_z={row.z} floor={floor:F3} visual_x={x:F3} visual_y={visual.Object.transform.position.y:F3} visual_z={z:F3} viewport_x={viewport.x:F3} viewport_y={viewport.y:F3} viewport_depth={viewport.z:F3} center_in_view={(inView?1:0)} grounded={(grounded?1:0)}"));
+                        visual.ReceiptWritten = true; visual.ReceiptGrounded = grounded; visual.ReceiptInView = inView;
+                        visual.ReceiptSphere = row.sphereId; visual.ReceiptOwner = row.ownerEntityIndex; visual.ReceiptMana = row.mana;
+                    }
+                }
             }
         }
 

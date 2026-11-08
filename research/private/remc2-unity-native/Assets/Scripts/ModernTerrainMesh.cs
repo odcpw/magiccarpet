@@ -69,6 +69,7 @@ namespace MagicCarpet.Native
         internal float ViewDistance { get; set; } = 320f;
         // Set before the first Update; local voxel physics replaces this aligned patch.
         internal Bounds? VoxelPatch { get; set; }
+        internal Func<float,float,float?> VoxelHeightSampler { get; set; }
 
         internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null)
         {
@@ -255,6 +256,7 @@ namespace MagicCarpet.Native
         // The source collision sampler has a distinct 255 rule.
         internal float SampleHeight(float x, float z)
         {
+            if(VoxelHeightSampler!=null&&VoxelHeightSampler(x,z) is float local)return local;
             if (!initialized) return 0f;
             var wx = Mathf.Repeat(x, Period) / DetailSize;
             var wz = Mathf.Repeat(z, Period) / DetailSize;

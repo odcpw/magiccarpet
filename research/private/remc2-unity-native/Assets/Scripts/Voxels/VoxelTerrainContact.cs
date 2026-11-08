@@ -35,7 +35,7 @@ namespace MagicCarpet.Native.Voxels
         }
 
         // Returns true only when the collision mesh was rebuilt.
-        internal bool Update(Vector3 camera, Bounds excluded, IReadOnlyList<Vector3> debris = null, ulong revision = 0)
+        internal bool Update(Vector3 camera, Bounds excluded, IReadOnlyList<Vector3> debris = null, ulong revision = 0, Vector3? incoming = null)
         {
             if (disposed) throw new ObjectDisposedException(nameof(VoxelTerrainContact));
             required.Clear();
@@ -45,6 +45,7 @@ namespace MagicCarpet.Native.Voxels
             }
             Include(camera,-2,1);
             if(debris!=null)foreach(var position in debris)Include(position,-1,1);
+            if(incoming.HasValue)Include(incoming.Value,-1,1);
             bool changed=false,exclusionChanged=built&&previousExclusion!=excluded;
             obsolete.Clear();
             foreach(var tile in tiles)if(exclusionChanged||!required.Contains(tile.Key)||

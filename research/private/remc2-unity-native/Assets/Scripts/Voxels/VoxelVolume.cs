@@ -87,6 +87,42 @@ namespace MagicCarpet.Native.Voxels
             dirty.Clear();
         }
 
+        // The collider may still reflect an earlier bounded edit chunk while
+        // native column heights already describe the completed crater.
+        internal bool RaycastSurface(Vector3 from, Vector3 to, out RaycastHit closest)
+        {
+            ThrowIfDisposed();
+            closest=default;
+            var segment=to-from;
+            var distance=segment.magnitude;
+            if(distance<=.00001f)return false;
+            var found=false;
+            foreach(var hit in Physics.RaycastAll(from,segment/distance,distance,1<<root.layer,QueryTriggerInteraction.Ignore))
+            {
+                if(hit.collider==null || !hit.collider.transform.IsChildOf(root.transform))continue;
+                if(!found || hit.distance<closest.distance){closest=hit;found=true;}
+            }
+            return found;
+        }
+
+        internal bool TryColumn(float x,float z,out Vector2Int column)
+        {
+            ThrowIfDisposed();
+            column=new Vector2Int(Mathf.FloorToInt((x-origin.x)/cellSize),Mathf.FloorToInt((z-origin.z)/cellSize));
+            return column.x>=0 && column.y>=0 && column.x<dimensions.x && column.y<dimensions.z;
+        }
+
+        // Edits update occupied cells and rebuild their colliders together in
+        // SphereEdit.Step, so this is the currently committed physical top.
+        internal bool TryColumnTop(Vector2Int column,out float top)
+        {
+            ThrowIfDisposed();top=0;
+            if(column.x<0||column.y<0||column.x>=dimensions.x||column.y>=dimensions.z)return false;
+            for(int y=dimensions.y-1;y>=0;y--)
+                if(occupied[Index(column.x,y,column.y)]){top=origin.y+(y+1)*cellSize;return true;}
+            return false;
+        }
+
         internal List<VoxelFragment> RemoveSphere(Vector3 worldCenter, float radius)
         {
             SphereEdit edit = BeginRemoveSphere(worldCenter, radius);
@@ -112,12 +148,25 @@ namespace MagicCarpet.Native.Voxels
             return edit;
         }
 
+        // Native authority supplies exact local cell indices. Presentation
+        // commits those cells in bounded chunks without recomputing the blast.
+        internal SphereEdit BeginRemoveCells(IReadOnlyList<Vector3Int> cells)
+        {
+            ThrowIfDisposed();ThrowIfEditing();
+            var edit=new SphereEdit(this,cells);
+            if(dirty.Count!=0)Build();
+            affected.Clear();
+            if(!edit.Complete)activeEdit=edit;
+            return edit;
+        }
+
         internal sealed class SphereEdit
         {
             private readonly VoxelVolume volume;
             private readonly Vector3 center;
             private readonly float radiusSquared;
             private readonly Vector3Int min, max, firstChunk, lastChunk;
+            private readonly HashSet<int> selected;
             private int chunkX, chunkY, chunkZ;
             internal readonly List<VoxelFragment> Removed = new List<VoxelFragment>();
             internal bool Complete { get; private set; }
@@ -140,6 +189,20 @@ namespace MagicCarpet.Native.Voxels
                 firstChunk = new Vector3Int(min.x / ChunkSize, min.y / ChunkSize, min.z / ChunkSize);
                 lastChunk = new Vector3Int(max.x / ChunkSize, max.y / ChunkSize, max.z / ChunkSize);
                 chunkX = firstChunk.x; chunkY = firstChunk.y; chunkZ = firstChunk.z;
+            }
+
+            internal SphereEdit(VoxelVolume volume,IReadOnlyList<Vector3Int> cells):this(volume,Vector3.zero,0)
+            {
+                if(cells==null)throw new ArgumentNullException(nameof(cells));
+                selected=new HashSet<int>();min=volume.dimensions;max=new Vector3Int(-1,-1,-1);
+                foreach(var cell in cells){
+                    if(!volume.Inside(cell.x,cell.y,cell.z))throw new ArgumentOutOfRangeException(nameof(cells),"Native cell is outside volume");
+                    selected.Add(volume.Index(cell.x,cell.y,cell.z));min=Vector3Int.Min(min,cell);max=Vector3Int.Max(max,cell);
+                }
+                Complete=selected.Count==0;
+                firstChunk=new Vector3Int(min.x/ChunkSize,min.y/ChunkSize,min.z/ChunkSize);
+                lastChunk=new Vector3Int(max.x/ChunkSize,max.y/ChunkSize,max.z/ChunkSize);
+                chunkX=firstChunk.x;chunkY=firstChunk.y;chunkZ=firstChunk.z;
             }
 
             internal void Step(int maxChunks)
@@ -186,7 +249,7 @@ namespace MagicCarpet.Native.Voxels
                     int index = volume.Index(x, y, z);
                     if (!volume.occupied[index]) continue;
                     Vector3 position = volume.Center(x, y, z);
-                    if ((position - center).sqrMagnitude > radiusSquared) continue;
+                    if (selected!=null?!selected.Contains(index):(position - center).sqrMagnitude > radiusSquared) continue;
                     Removed.Add(new VoxelFragment(position, volume.cellSize, volume.colors[index]));
                     volume.occupied[index] = false;
                     changed.Add(new Vector3Int(x, y, z));

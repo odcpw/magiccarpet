@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 import select
 import signal
@@ -12,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+from voxel_capture_support import load_inputs, validate_receipts, validate_replay_save, wait_and_inject
 
 
 def stop(process):
@@ -32,7 +33,17 @@ def main():
     parser.add_argument('--size', type=float, default=.25)
     parser.add_argument('--goat-target', type=int, choices=(0,1,2), default=1)
     parser.add_argument('--arguments-json', type=Path, help='Verified native launch argument array for the Modern voxel mode')
-    parser.add_argument('--expect-native-death', action='store_true', help='Require a native-driven character death and nonempty physical debris')
+    parser.add_argument('--expect-replay-save', action='store_true', help='Require F5 acknowledgement and a new replay file')
+    parser.add_argument('--expect-native-death', action='store_true', help='Require an applied native death and fragments for the same lifetime')
+    parser.add_argument('--expect-native-impact', action='store_true', help='Require an actual native impact receipt')
+    parser.add_argument('--expect-native-geometry', action='store_true', help='Require a native impact to change and converge displayed geometry')
+    parser.add_argument('--expect-native-ground', action='store_true', help='Require new native terrain cell removals')
+    parser.add_argument('--expect-house-slot', type=int, help='Require new native removed cells from this house slot')
+    parser.add_argument('--expect-visible-projectile', action='store_true', help='Require a native visible Fireball presentation')
+    parser.add_argument('--expect-same-projectile', action='store_true', help='Require a rendered projectile lifetime to match a native impact')
+    parser.add_argument('--expect-target-slot', type=int, help='Require a native impact receipt for this target slot (does not identify a lifetime)')
+    parser.add_argument('--native-input-script', type=Path, help='JSON array of ordinary XTest events on the native game view')
+    parser.add_argument('--native-input-early', action='store_true', help='Send input immediately after startup, before waiting for first render')
     parser.add_argument('--diagnostic', choices=('no-goats','no-shadows','no-render'))
     parser.add_argument('--graphics-api', choices=('vulkan','glcore'), default='vulkan')
     parser.add_argument('--backend', choices=('xvfb','compositor'), default='xvfb')
@@ -43,6 +54,24 @@ def main():
         raise ValueError('Player must be an executable file')
     if not .2 <= args.size <= 1 or not all(320 <= v <= 3840 for v in (args.width, args.height)):
         raise ValueError('Invalid cell size or screen dimensions')
+    if (args.expect_replay_save or args.expect_native_death or args.expect_native_impact or args.expect_native_geometry or args.expect_native_ground or args.expect_house_slot is not None or args.expect_visible_projectile or args.expect_same_projectile or args.expect_target_slot is not None or args.native_input_script) and not args.arguments_json:
+        raise ValueError('Native evidence options require --arguments-json')
+    if args.expect_house_slot is not None and not 0 <= args.expect_house_slot <= 65535:
+        raise ValueError('House slot must be a u16')
+    if args.expect_target_slot is not None and not 0 <= args.expect_target_slot <= 65535:
+        raise ValueError('Target slot must be a u16')
+    native_inputs = load_inputs(args.native_input_script) if args.native_input_script else None
+    if args.native_input_early and native_inputs is None:raise ValueError('--native-input-early requires --native-input-script')
+    save_path = None
+    if args.expect_replay_save:
+        extra = json.loads(args.arguments_json.read_text(encoding='utf-8'))
+        if not isinstance(extra,list) or extra.count('-mc-runtime-replay-save') != 1:
+            raise ValueError('Expected one explicit replay-save path')
+        index = extra.index('-mc-runtime-replay-save')
+        if index+1>=len(extra) or not isinstance(extra[index+1],str):
+            raise ValueError('Missing replay-save path')
+        save_path=Path(extra[index+1]).resolve()
+        if save_path.exists():raise ValueError('Replay-save evidence path must be fresh')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     runtime = Path(tempfile.mkdtemp(prefix='mc-voxel-',dir=f'/run/user/{os.getuid()}'))
@@ -94,6 +123,10 @@ def main():
             if not isinstance(extra,list) or not all(isinstance(x,str) for x in extra):
                 raise ValueError('Native arguments must be a string array')
             command += extra
+            command += ['-mc-voxel-receipts']
+            if native_inputs is not None:
+                if '-force-wayland' in command:raise ValueError('Native XTest input requires the X11 player backend')
+                command += ['-mc-voxel-native-camera']
         if args.diagnostic:
             command += ['-mc-voxel-diagnostic', args.diagnostic]
         launch = command
@@ -101,9 +134,27 @@ def main():
             command_file=output/'player-command.json'
             command_file.write_text(json.dumps(command),encoding='utf-8')
             session=runtime/'session.py'
-            session.write_text('#!'+sys.executable+'\nimport json,subprocess,sys\nfrom pathlib import Path\n'
-                +'command=json.loads(Path('+repr(str(command_file))+').read_text())\n'
-                +'sys.exit(subprocess.run(command).returncode)\n',encoding='utf-8')
+            if native_inputs is None:
+                session.write_text('#!'+sys.executable+'\nimport json,subprocess,sys\nfrom pathlib import Path\n'
+                    +'command=json.loads(Path('+repr(str(command_file))+').read_text())\n'
+                    +'sys.exit(subprocess.run(command).returncode)\n',encoding='utf-8')
+            else:
+                events_file=output/'native-input-plan.json'
+                events_file.write_text(json.dumps(native_inputs,indent=2)+'\n',encoding='utf-8')
+                session.write_text('#!'+sys.executable+'\nimport json,os,subprocess,sys\nfrom pathlib import Path\n'
+                    +'sys.path.insert(0,'+repr(str(Path(__file__).resolve().parent))+')\n'
+                    +'from voxel_capture_support import wait_and_inject\n'
+                    +'command=json.loads(Path('+repr(str(command_file))+').read_text())\n'
+                    +'events=json.loads(Path('+repr(str(events_file))+').read_text())\n'
+                    +'player=subprocess.Popen(command)\n'
+                    +'try:\n'
+                    +'    wait_and_inject(player,Path('+repr(str(output/'player.log'))+'),os.environ.get("DISPLAY"),events,Path('+repr(str(output/'native-input-events.json'))+'),early='+repr(args.native_input_early)+')\n'
+                    +'    status=player.wait()\n'
+                    +'finally:\n'
+                    +'    if player.poll() is None:\n'
+                    +'        player.terminate()\n'
+                    +'        player.wait(timeout=10)\n'
+                    +'sys.exit(status)\n',encoding='utf-8')
             session.chmod(0o700)
             env.update(QT_QPA_PLATFORM='offscreen',XDG_SESSION_TYPE='wayland')
             launch=['dbus-run-session','--','kwin_wayland','--virtual','--width',str(args.width),'--height',str(args.height),
@@ -111,6 +162,8 @@ def main():
         with (output/'stdout.log').open('w', encoding='utf-8') as log:
             player = subprocess.Popen(launch, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env)
         deadline = time.monotonic() + 900
+        if native_inputs is not None and args.backend == 'xvfb':
+            wait_and_inject(player,output/'player.log',env['DISPLAY'],native_inputs,output/'native-input-events.json',early=args.native_input_early)
         while player.poll() is None:
             if time.monotonic() > deadline:
                 raise TimeoutError('Player exceeded 900 seconds')
@@ -120,22 +173,22 @@ def main():
         report_path = output/'result/report.json'
         report = json.loads(report_path.read_text(encoding='utf-8'))
         character_scene=args.arguments_json and '-mc-character-follow' in command
-        expected_impacts=3 if args.arguments_json else 4
-        if args.arguments_json and report['nativeTick'] <= report['firstNativeTick']:
-            raise RuntimeError('Native gameplay did not advance; inspect report.json')
-        if args.arguments_json and report.get('belowTerrain',-1) != 0:
-            raise RuntimeError('Active debris passed below its terrain contact surface')
-        if not args.diagnostic and not character_scene and (report['impacts'] != expected_impacts or (not args.arguments_json and report['goatDeaths'] != 1) or report['removedCells'] <= 0):
-            raise RuntimeError('Runtime did not complete its expected impacts and destruction; inspect report.json')
-        if args.arguments_json and not character_scene and not args.diagnostic:
-            if report.get('completedEdits') != 3 or report.get('editing', True) or report.get('groundRemoved', 0) <= 0 or report.get('houseRemoved', 0) <= 0 or report.get('craterDepth', 0) < .5:
-                raise RuntimeError('House/ground edits or physical crater check failed; inspect report.json')
-        if args.expect_native_death:
-            log=(output/'player.log').read_text(errors='replace')
-            slot=command[command.index('-mc-character-follow')+1] if character_scene else None
-            deaths=re.findall(r'MC_VOXEL_NATIVE_DEATH tick=\d+ slot=(\d+) model=\d+ cells=([1-9]\d*)',log)
-            if report['goatDeaths'] < 1 or report['sampled'] < 1 or not any(slot is None or found==slot for found,_ in deaths):
-                raise RuntimeError('Expected native character death did not emit physical voxels')
+        if args.arguments_json:
+            if report['nativeTick'] <= report['firstNativeTick']:
+                raise RuntimeError('Native gameplay did not advance; inspect report.json')
+            if report.get('belowTerrain',-1) != 0:
+                raise RuntimeError('Active debris passed below its terrain contact surface')
+            player_log=(output/'player.log').read_text(errors='replace')
+            if save_path is not None:validate_replay_save(player_log,save_path)
+            evidence=validate_receipts(player_log,
+                impact=args.expect_native_impact,geometry=args.expect_native_geometry,
+                visible=args.expect_visible_projectile,death=args.expect_native_death,
+                same_projectile=args.expect_same_projectile,target_slot=args.expect_target_slot,
+                ground=args.expect_native_ground,house_slot=args.expect_house_slot)
+            (output/'native-evidence.json').write_text(json.dumps(evidence,indent=2)+'\n',encoding='utf-8')
+            receipt['native_evidence']=str(output/'native-evidence.json')
+        elif not args.diagnostic and not character_scene and (report['impacts'] != 4 or report['goatDeaths'] != 1 or report['removedCells'] <= 0):
+            raise RuntimeError('Classic runtime did not complete its expected impacts and destruction; inspect report.json')
         if receipt['artifacts'] != hashes():
             raise RuntimeError('Player changed during run')
         if not args.benchmark:

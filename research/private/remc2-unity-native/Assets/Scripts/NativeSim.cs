@@ -6,6 +6,34 @@ namespace MagicCarpet.Native
     internal static class NativeSim
     {
         internal const uint AbiVersion = 2;
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_world_entity_presentations_copy(
+            ulong handle, ulong generation, ulong tick, short cameraYaw,
+            [Out] CampaignEntityPresentation[] buffer, uint capacity, uint elementSize, out uint written);
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct VoxelState {
+            internal uint abiVersion,structSize;
+            internal ulong generation,tick,revision,contentHash;
+            internal uint enabled,removedCount;
+            internal ulong impactHead,worldGeneration;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct VoxelImpactChild
+        {
+            internal uint abiVersion,structSize;
+            internal ulong generation,sequence;
+            internal uint slotGeneration;
+            internal ushort slot,reserved;
+        }
+        [DllImport(Library,CallingConvention=CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_voxel_impact_children_copy(ulong handle,ulong generation,ulong tick,
+            [Out] VoxelImpactChild[] buffer,uint capacity,uint elementSize,out uint written);
+        [DllImport(Library,CallingConvention=CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_voxel_enable_json_v1(ulong handle,ulong generation,ulong tick,byte[] request,uint length);
+        [DllImport(Library,CallingConvention=CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_voxel_state_v1(ulong handle,ulong generation,ulong tick,out VoxelState state,uint size);
+        [DllImport(Library,CallingConvention=CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_voxel_snapshot_json_v1(ulong handle,ulong generation,ulong tick,uint includeBase,ulong afterImpact,IntPtr buffer,uint capacity,out uint length);
         internal const int Ok = 0;
         internal const int InvalidArgument = 3;
         internal const int ValidationFailed = 8;
@@ -517,6 +545,20 @@ namespace MagicCarpet.Native
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignVoxelDeath
+        {
+            internal uint abiVersion, structSize;
+            internal ulong generation, sequence;
+            internal uint slotGeneration;
+            internal ushort entityIndex, sourceId;
+        }
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_voxel_deaths_copy(
+            ulong handle, ulong generation, ulong tick, ulong afterSequence,
+            [Out] CampaignVoxelDeath[] buffer, uint capacity, uint elementSize, out uint written);
 
         [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignCharacterState
@@ -3317,6 +3359,14 @@ namespace MagicCarpet.Native
             RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<CampaignEntityPresentation>(64);
             RequireSize<CampaignCharacterState>(80);
+            RequireSize<VoxelState>(64);
+            RequireOffset<VoxelState>(nameof(VoxelState.worldGeneration), 56);
+            RequireSize<VoxelImpactChild>(32);
+            RequireOffset<VoxelImpactChild>(nameof(VoxelImpactChild.sequence), 16);
+            RequireOffset<VoxelImpactChild>(nameof(VoxelImpactChild.slotGeneration), 24);
+            RequireOffset<VoxelImpactChild>(nameof(VoxelImpactChild.slot), 28);
+            RequireSize<CampaignVoxelDeath>(32);
+            RequireOffset<CampaignVoxelDeath>(nameof(CampaignVoxelDeath.sequence), 16);
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.x), 48);
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.life), 60);
             RequireSize<CampaignShieldSnapshot>(72);
