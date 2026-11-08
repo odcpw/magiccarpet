@@ -20,6 +20,7 @@ mod secret_transition_abi;
 mod session_record;
 mod shared_types;
 mod validation;
+mod world_presentation_abi;
 use campaign_abi::*;
 pub(crate) use events_audio_abi::*;
 pub(crate) use level1_abi::*;

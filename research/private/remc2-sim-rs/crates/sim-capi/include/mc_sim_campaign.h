@@ -285,6 +285,15 @@ int32_t mc_native_campaign_entity_presentations_copy(
     McCampaignEntityPresentationV2 *buffer, uint32_t capacity,
     uint32_t element_size, uint32_t *out_written);
 
+/* Same selector/lifecycle census and row layout, without the indexed renderer's
+ * player-camera near/range admission. The caller supplies 3D spatial culling.
+ * camera_yaw still selects directional sprite metadata; this is not an
+ * arbitrary-position billboard projection API. */
+int32_t mc_native_campaign_world_entity_presentations_copy(
+    uint64_t handle, uint64_t generation, uint64_t tick, int16_t camera_yaw,
+    McCampaignEntityPresentationV2 *buffer, uint32_t capacity,
+    uint32_t element_size, uint32_t *out_written);
+
 /* Additive Level 2 Goat row.  The sealed McGoatSnapshotV2 remains the
  * Level-1 contract; this same-size campaign row exposes the authored
  * action-11 partner relation in the first reserved slot. */
