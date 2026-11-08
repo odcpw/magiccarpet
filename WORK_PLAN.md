@@ -301,8 +301,9 @@ AmberDune and CalmLynx delivered creatures23–25 through their actual producers
 combat, consequences, cleanup and original presentation. CopperMountain
 serialized checks and delivery. FrostyPond (previously AmberDune) and RusticGrove
 have now completed creature26's finite runtime, Deep One28, Worm3, Spider20,
-the shared-field prerequisite, Hydra27 and shared combat. Continue player
-lifecycle, rival wizards and final boss through their original dependencies. Read each
+the shared-field prerequisite, Hydra27 and shared combat. Player lifecycle,
+rival wizards and final boss now also have installed runtime checkpoints below;
+retain their original open shared-system dependencies. Read each
 original acceptance and current source; extend its existing family.
 `mc-1pb.10` remains open while its original
 `mc-bhq.10` shared-system dependency is open; move the actual required joins forward
@@ -330,7 +331,7 @@ without bypassing or rewriting those dependencies.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
 - [x] Single-player rival-wizard runtime — `mc-1pb.17` (original shared-system dependencies remain open).
 - [x] Player death, banishment and revival — `mc-1pb.18`.
-- [ ] Final boss10 — `mc-1pb.3`.
+- [x] Final boss10 runtime — `mc-1pb.3` (bead retains open Meteor dependency).
 - [x] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`.
 
 Goat (`mc-1pb.1`, already closed) and the delivered Spider20 family are inputs. Existing
@@ -377,6 +378,56 @@ and its Original smoke. Rename-aware UBS found no changed-hunk critical; legacy
 formatting/whole-file findings remain. Failed C1 compile and its exact source
 are preserved; the retained scatter test now calls the canonical helper with
 its original assertions. Completed return artifacts are verified on Rig.
+
+### Installed final boss paid combat and natural death — `mc-1pb.3` (2026-11-08)
+
+Source `e013f088` is committed/pushed; matching Original native `f0c2dee3` is
+installed through `build-fyccf0jm`. All654 unique canonical/isolated/Rig inputs
+match. Root viewed canonical map/loading/NightSpire terrain/HUD with the mapped
+matching native, one portal and zero retries, then stopped both owned processes.
+This is launch/load, not installed-client boss combat, human play/FPS/hardware
+audio, whole missions, reward91 collection or old-save proof. No Unity/art change.
+
+The actual whole-Level25 boss120/g1 retains its default300000 life. Paid Meteor
+first hits and the continuous remaining996 consumptions/250 paid launches reach
+the exact source300 cap and terminal300→8. Natural phases13/14/15, resident345
+timer, original sprite/audio, nonliving/absence membership, hide, following
+reclaim and active-counter0 pass. Death Meteor326/g282 and Volcano180/g259 reach
+the real scheduled reward91 product926/g3. Byte36E03 is Volcano mode, not mission
+victory. The separate BUILD68→69→72→73→group29→record379 producer check passes;
+its ordinary damage-mailbox controls do not prove public spell demolition or
+the preceding mission route.
+
+Source fixes complete phase0 progress60/38×38 burial before approach, signed16 XY
+proximity, success-only projectile A4 feedback before sound, and success-only
+Volcano mode clear before its current-owner read. The real fight exposed an
+ordinary Eruption→Fire Spheres sector77 collision: its typed constructor axes
+were dropped by the shared target reader. The canonical projection now preserves
+those stored particle340 axes independently of visual42/orbit angles/raw shadow.
+C8's failing full-fight gate is byte-identical to passing C9; no admission,
+payment, HP, timer or failure assertion was weakened.
+
+C9 full defeat PASS27.835s, real BUILD/burial/A4 consumers1.086s, natural Firefly
+production/parent-loss2.702s; current-sector, outgoing mailbox, acquired Fireball
+and source-order checks pass. Release workspace all-targets PASS39.770s. C6's
+affected approach/phase0/four-projectile/exhaustion/death-owner controls passed
+against the same boss/integration production code; C9 adds the shared collision
+projection and diagnostic. Fresh bounded source/gate/acceptance reviews
+found no additional concrete defect; changed-line UBS critical0, legacy whole-file
+and formatting debt retained. Core ELF SHA028f060d independently matches Rig.
+
+Controls are disclosed: prior group29 progression, carried MeteorII, real Castle
+funding, equal current/max200000 player life, initial placements/aim, natural
+quiet waits, one westward placement and unchanged held input. No NPC life, RNG,
+action or lifetime is forced in the defeat run. C4's end-turn mailbox-owner gate
+was corrected to the actual store boundary plus same-generation refill evidence;
+C6's blocked east firing point and C7/C8 negatives remain preserved. These are
+fixed-input runtime checks, not an AI playthrough. Four summons and exceptional
+branches retain separately configured coverage. Evidence: generated/
+boss-audio-20261108-integration/candidate-9 and original-launch-smoke-9 under
+research/private. The creature runtime checklist is covered; original bead
+acceptance/dependencies stay unchanged and OPEN, including `mc-bhq.4` and whole
+campaign-ending assembly. Do not restart these delivered creature checkpoints.
 
 ### Installed final boss audio, source tails and death ownership — `mc-1pb.3` (2026-11-08)
 
