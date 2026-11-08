@@ -339,6 +339,41 @@ long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
 
+### Installed rival-selected spells — `mc-1pb.17` (2026-11-08)
+
+Source `7d9c8399` is committed/pushed; matching optimized Original native
+`1ba22da8` is installed through refresh `build-swuv2zwb`. All653 unique build
+inputs match canonical source, the isolated build and Rig. Root viewed the
+canonical map/loading/NightSpire terrain/HUD with that mapped native, one portal
+click and zero retries, then stopped the owned smoke. This is launch/load,
+not native Mission18 combat visuals, human play, FPS, hardware audio, full
+missions or old saves. No Unity/art rebuild was needed.
+
+The corrected source15170/15F20 resource, applied-tier and admission rules,
+14E10 selected-family aim/direct branches and5F660 active-holder rules now reach
+ordinary rival casting. The whole unfiltered Night18 path retains all six
+rivals,111 holders, original resources/health and neutral input. It observes
+natural Castle accounting, selected Meteor payment, exact accepted-writer and
+target-generation damage, real raw0 explosion-child DTOs and natural hide/reclaim.
+Earlier misses must pay and finish cleanup; the invisible17 controller is not
+invented as a sprite. C3 PASS0.652s. Its only delta from C2 removes an unrelated
+optional raw/legacy snapshot filter; actual scoped writer sequence and full
+impact generation still bind exact HP consumption. C2's source-identical
+configured boundaries, roster, dispatch, actual Bee/Fireball, source order and
+full natural Castle1200 revival PASS156.451s are reused. Fresh bounded review at
+the committed revision found no introduced defect in these five files.
+
+Full `.17` remains OPEN with original acceptance/dependencies. Next fix the two
+mode14/sub161A0 calls that bypass full14E10, through actual Morph/selected-spell
+consumers, then finish canonical rival-family ownership and remaining acceptance.
+Seven adjacent legacy failures reproduce identically on the previous installed
+C7 binary; their later assertions remain unproved. Old Mission18 lacked Castle
+BUILD resources: a new whole package from the qualified current160-input exporter
+is used read-only, preserving old data. Evidence:
+`research/private/generated/rival-spells-20261108-integration/candidate-3`,
+with C2 regression reuse and the saved baseline comparison. Completed outputs
+are byte-preserved on Rig; derived scanner caches are losslessly archived.
+
 ### Installed player lifecycle — `mc-1pb.18` (2026-11-08)
 
 Source `7487708b` is committed/pushed; optimized native `3965057f` is installed
