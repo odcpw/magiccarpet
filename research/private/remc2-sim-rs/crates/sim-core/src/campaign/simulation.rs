@@ -1065,6 +1065,8 @@ pub(crate) struct BossSoundBoundaryReceipt {
     pub(crate) rng_before: u32,
     pub(crate) rng_after: u32,
     pub(crate) journal_sequence: u64,
+    /// Call-time local body, shared A4 and core A4 music countdowns.
+    pub(crate) player_music: (i16, Option<i16>, Option<i16>),
 }
 
 #[cfg(test)]
@@ -17573,14 +17575,38 @@ impl Mc2Simulation {
                     let profile = self.session.definition.profile;
                     let player_life = live.player_life;
                     let state = &mut live.core.state;
+                    let core_players = &mut live.core.players;
                     let flight_effects = &mut live.core.context.effects;
                     let level_exit = &mut live.level_exit;
                     let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
                         .with_particles(particles);
                     let mut apply_world = |arena: &mut SourceArena, terrain: &mut SessionTerrain,
-                                           runtime: &mut RuntimeSnapshot, action| {
+                                           runtime: &mut RuntimeSnapshot,
+                                           player_spells: &mut Level2SharedSpellResetSession, action| {
                         use creatures::creature_10::mc2::{EncounterAction, EncounterResponse, SoundEmitter, SoundSite};
                         match action {
+                            EncounterAction::ClearFootprint { position, width, height, owner } => {
+                                crate::world::terrain::disasters::mc2::burial::footprint(
+                                    arena, Some(actors.reborrow()), position, width, height, owner,
+                                )?;
+                                Ok(EncounterResponse::Done)
+                            }
+                            EncounterAction::PlayerFeedback { slot } => {
+                                let targets = source_target::Context {
+                                    map_type: Some(terrain.map_type()),
+                                    player: Some((player_entity_index, state.position, player_life)),
+                                    player_orientation: Some((state.yaw, state.roll_accumulator)),
+                                    ..source_target::Context::default()
+                                };
+                                let mut feedback = source_target::Creature23PlayerFeedback {
+                                    shared: player_spells,
+                                    core_players: &mut *core_players,
+                                    local_state: &mut *state,
+                                    domains: Some(actors.reborrow()),
+                                };
+                                feedback.apply(arena, targets, slot)?;
+                                Ok(EncounterResponse::Done)
+                            }
                             EncounterAction::Approach(mode) => area_damage::apply_encounter_world_action(
                                 arena, effect_lists, area_damage::EncounterManaAction::Approach(mode), particles,
                             ).map(|()| EncounterResponse::Done),
@@ -17709,6 +17735,13 @@ impl Mc2Simulation {
                                     caller: arena.handle(source_slot), site, emitter, sample: sound_id,
                                     source: boundary_source, listener: boundary_listener,
                                     rng_before, rng_after: arena.economy.global_rng, journal_sequence: 0,
+                                    player_music: (
+                                        state.music_countdown,
+                                        player_spells.players.get(usize::from(player_spells.local_player().slot))
+                                            .and_then(|player| player.source_music_countdown),
+                                        core_players.iter().find(|player| player.slot == player_spells.local_player().slot)
+                                            .and_then(|player| player.source_music_countdown),
+                                    ),
                                 });
                                 let event = FlightEvent::PrepareSound {
                                     #[cfg(test)]
@@ -34345,6 +34378,41 @@ mod tests {
         assert!(!target_stages.is_empty());
         assert!(target_stages.iter().any(|&(_, kind)| kind == 1));
 
+        // A declared scenery-position control on this whole owner package:
+        // the actual boss callback must reach the shared burial consumer.
+        let mut emergence = campaign.clone();
+        emergence.step(PlayerCommand::default(), 0);
+        emergence.simulation_mut().activate_authored_group_prerequisite_for_test(29).unwrap();
+        let arena = emergence.simulation().source_arena();
+        let boss_row = arena.entities.iter().find(|row| row.active && row.class == 5
+            && row.model == 10 && !row.drawing_disabled()).unwrap().clone();
+        assert_eq!(boss_row.record[74], 0);
+        let scenery = arena.entities.iter().find(|row| row.active && row.class == 2
+            && !row.drawing_disabled() && row.source_id != boss_row.source_id
+            && arena.economy.live_arena_kind(row.index).is_none())
+            .expect("actual imported foreign scenery for the boss footprint").clone();
+        let scenery_handle = arena.handle(scenery.index).unwrap();
+        emergence.simulation_mut().set_level2_entity_position(scenery.index, boss_row.position).unwrap();
+        let mut outside = emergence.clone();
+        let outside_position = Position { x: boss_row.position.x.wrapping_add(40 * 256), ..boss_row.position };
+        outside.simulation_mut().set_level2_entity_position(scenery.index, outside_position).unwrap();
+        emergence.step(PlayerCommand::default(), 0);
+        outside.step(PlayerCommand::default(), 0);
+        for case in [&emergence, &outside] {
+            assert!(!case.simulation().dispatch_events().iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })));
+        }
+        assert_eq!(emergence.simulation().source_arena().handle(scenery.index), Some(scenery_handle));
+        assert!(emergence.simulation().entities()[usize::from(scenery.index)].drawing_disabled(),
+            "the actual phase0 callback buries foreign scenery inside its footprint");
+        assert!(!outside.simulation().entities()[usize::from(scenery.index)].drawing_disabled(),
+            "equal-elapsed scenery outside the same boss footprint stays visible");
+        assert_eq!(&emergence.simulation().session.state.live.core.runtime.bytes()[0x87a..0x87c],
+            &60_i16.to_le_bytes(), "the source initial progress write reaches retained state");
+        emergence.step(PlayerCommand::default(), 0);
+        assert!(emergence.simulation().source_arena().resolve(scenery_handle).is_none(),
+            "buried scenery reclaims on the following ordinary pass");
+
         // Corrupt only the live relation in cloned runs. A declared target
         // must fail before NewEvent allocation rather than publish a false
         // target or mark the authored feature activated.
@@ -34478,6 +34546,36 @@ mod tests {
         // Configured source-call exceptions on that same genuinely produced
         // boss. These isolate addressed-ID/null/silence policy, not ordinary
         // attack selection or a claimed boss victory. RNG is never seeded.
+        for (mode, sample) in [(1_u8, 15_u16), (2, 23), (8, 15), (9, 15)] {
+            let mut projectile_control = production.clone();
+            {
+                let live = &mut projectile_control.simulation_mut().session.state.live;
+                let local_index = live.shared_spells.local_player().slot;
+                live.core.state.music_countdown = 0;
+                live.shared_spells.local_player.source_music_countdown = Some(0);
+                live.shared_spells.players[usize::from(local_index)].source_music_countdown = Some(0);
+                for player in live.core.players.iter_mut().filter(|player| player.slot == local_index) {
+                    player.source_music_countdown = Some(0);
+                }
+                let row = &mut live.economy.entities[usize::from(boss)];
+                row.set_source_byte_46(9);
+                row.record[71] = mode;
+                row.record[40..42].copy_from_slice(&1_u16.to_le_bytes());
+                row.set_source_dword_10(1);
+            }
+            projectile_control.simulation().start_creature17_trace();
+            projectile_control.step(PlayerCommand::default(), 0);
+            assert!(!projectile_control.simulation().dispatch_events().iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "actual projectile feedback mode{mode}: {:?}", projectile_control.simulation().dispatch_events());
+            let trace = projectile_control.simulation().take_creature17_trace();
+            let call = trace.boss_sound_calls.iter().find(|call|
+                call.caller == Some(boss_handle) && call.sample == sample
+                    && call.site == creatures::creature_10::mc2::SoundSite::Attack)
+                .expect("successful actual boss projectile reaches its source-time sound");
+            assert_eq!(call.player_music, (100, Some(100), Some(100)),
+                "source5EF70 commits current local/shared/core A4 before the projectile's success sound");
+        }
         for (mode, sample) in [(4_u8, 42_u16), (6, 44)] {
             for emitter in [owner, 0, boss] {
                 let mut audio_control = production.clone();

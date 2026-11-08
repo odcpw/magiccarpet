@@ -130,6 +130,8 @@ pub(crate) struct PlayerPressureEffect {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Effects {
+    #[cfg(test)]
+    pub damage_receipt: Option<crate::native_world::area_damage::PlayerDamageConsumptionReceipt>,
     pub animation: Option<u16>,
     pub sounds: Vec<u8>,
     pub summons: Vec<SummonRequest>,
@@ -178,6 +180,8 @@ pub(crate) struct Frame {
     pub source_setting: u16,
     /// Source FrameTimingIndex_26, not the entity's callback counter.
     pub source_frame_timing: u8,
+    #[cfg(test)]
+    pub damage_trace: Option<(crate::campaign::source_arena::SourceEntityHandle, usize)>,
     /// The optional literal source animation-table read for this callback.
     /// Unloaded assets leave the source's already assigned timer intact.
     pub source_animation_timer: Option<u16>,
@@ -296,7 +300,20 @@ pub(crate) fn step(
         actor.subspell_index |= 1;
     }
     if (2..12).contains(&actor.phase) && actor.life >= 10 {
-        let _ = consume_damage(actor);
+        #[cfg(test)]
+        let (mailbox, life_before) = ((actor.pending_damage, actor.pending_attacker), actor.life);
+        let result = consume_damage(actor);
+        #[cfg(test)]
+        if matches!(result, DamageResult::Hit { .. })
+            && let Some((target, event_cursor)) = frame.damage_trace
+        {
+            let writer = crate::native_world::area_damage::take_player_mailbox_writer(target, mailbox);
+            effects.damage_receipt = Some(crate::native_world::area_damage::PlayerDamageConsumptionReceipt {
+                target, mailbox, writer, life_before, life_after: actor.life, event_cursor,
+            });
+        }
+        #[cfg(not(test))]
+        let _ = result;
     }
 
     match actor.phase {
@@ -765,6 +782,8 @@ impl Default for Frame {
             model25_count: 0,
             source_setting: 0,
             source_frame_timing: 0,
+            #[cfg(test)]
+            damage_trace: None,
             source_animation_timer: None,
             pressure_speed: 0,
             player_class: 0,

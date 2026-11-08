@@ -2781,15 +2781,34 @@ fn dynamic(
             row.life,
             row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
         ),
-        Kind::Model76Child => carrier!(
-            economy.model76_children,
-            row,
-            row.source_class,
-            row.model,
-            row.entity_id,
-            row.life,
-            row.control_flags | if row.drawing_enabled { 0 } else { 0x400 }
-        ),
+        Kind::Model76Child => {
+            let row = economy
+                .model76_children
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or_else(|| format!("target slot {slot} lost its Fire Spheres sector"))?;
+            View {
+                slot,
+                source_id: row.entity_id,
+                active: row.active,
+                class: row.source_class,
+                model: row.model,
+                position: row.position,
+                life: i32::from(row.life),
+                control_flags: row.control_flags | if row.drawing_enabled { 0 } else { 0x400 },
+                yaw: None,
+                roll: None,
+                relations: Relations::default(),
+                // 4F440 copies particle340's axes before the orbit callback.
+                // 65B50 may select visual42 without replacing those axes.
+                collision: Some(Shape {
+                    vertical_offset: row.collision_yaw,
+                    half_width: row.collision_pitch,
+                    half_depth: row.collision_roll,
+                    half_height: row.collision_fov,
+                }),
+            }
+        }
         Kind::Model76TailSpawn => carrier!(
             economy.model76_tail_spawns,
             row,
@@ -3240,6 +3259,40 @@ fn orientation(arena: &SourceArena, kind: Kind, slot: u16) -> (Option<i16>, Opti
 mod tests {
     use super::*;
     use sha2::Digest;
+
+    #[test]
+    fn fire_spheres_sector_exposes_current_constructor_axes_after_visual_change() {
+        let mut session = super::super::tests::level_two_campaign_session();
+        let root = session
+            .allocate_level2_authored_model76(112)
+            .expect("real authored Fire Spheres constructor");
+        let mut arena = session.source_arena().clone();
+        let child = arena
+            .economy
+            .model76_children
+            .iter_mut()
+            .find(|row| row.parent_entity_index == root.source_entity_index
+                && row.column_index == 0)
+            .expect("real collidable source sector");
+        assert_eq!((child.collision_yaw, child.collision_pitch,
+            child.collision_roll, child.collision_fov), (50, 48, 48, 50));
+        let slot = child.source_entity_index;
+        // Declared current-carrier control: 65B50's visual42 selection and
+        // changing orbit angles must not replace the constructor's axes.
+        child.visual_index = 42;
+        (child.yaw, child.pitch, child.roll, child.fov) = (11, 12, 13, 14);
+        let raw = &mut arena.entities[usize::from(slot)];
+        for (offset, value) in [(86, 1_i16), (88, 2), (90, 3), (92, 4)] {
+            raw.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        let view = read(&arena, Context::default(), slot).unwrap().unwrap();
+        assert_eq!((view.class, view.model, view.source_id), (10, 77, root.entity_id));
+        assert_ne!(view.control_flags & 8, 0);
+        assert_eq!((view.yaw, view.roll), (Some(11), Some(13)));
+        assert_eq!(view.collision, Some(Shape {
+            vertical_offset: 50, half_width: 48, half_depth: 48, half_height: 50,
+        }));
+    }
 
     #[test]
     fn spider_status_reads_current_a4_and_local_flight_authority() {

@@ -2071,7 +2071,17 @@ impl Level2EconomyState {
                     continue;
                 }
                 let shape = target.collision.ok_or_else(|| {
-                    format!("Fireball collision target {candidate_slot} lacks current source axes")
+                    format!(
+                        "Fireball collision target {candidate_slot} lacks current source axes: \
+                         target={target:?}, current={:?}, projectile={source_slot}/{} \
+                         origin={:?} selector={}/{} owner={}",
+                        self.live_arena_cursor_row(candidate_slot),
+                        self.slot_generation(source_slot),
+                        projectile.origin,
+                        projectile.target_class,
+                        projectile.target_model,
+                        projectile.owner_entity_index,
+                    )
                 })?;
                 let dx =
                     i32::from(target.position.x.wrapping_sub(projectile.position.x) as i16).abs();

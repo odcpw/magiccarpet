@@ -18,6 +18,8 @@ pub(crate) enum EncounterAction {
     Sound { site: SoundSite, emitter: SoundEmitter, sample: u8 },
     ReadPlayer { slot: u16 },
     ReadPlayerId { slot: u16 },
+    ClearFootprint { position: Position, width: u8, height: u8, owner: u16 },
+    PlayerFeedback { slot: u16 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +34,11 @@ pub(crate) enum EncounterResponse { Done, PlayerPose { position: Position, yaw: 
 
 type ApplyEncounterAction<'a> =
     dyn FnMut(&mut SourceArena, &mut SessionTerrain, &mut RuntimeSnapshot, EncounterAction)
+        -> Result<EncounterResponse, String> + 'a;
+
+type ApplyScheduledEncounterAction<'a> =
+    dyn FnMut(&mut SourceArena, &mut SessionTerrain, &mut RuntimeSnapshot,
+        &mut crate::native_world::Level2SharedSpellResetSession, EncounterAction)
         -> Result<EncounterResponse, String> + 'a;
 
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
@@ -476,10 +483,12 @@ fn materialize_summons(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     boss_slot: u16,
+    player_slot: u16,
     effects: &mut Effects,
     apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<(), String> {
     for request in effects.summons.drain(..) {
+        let mut projectile_succeeded = false;
         let sound = match request.kind {
             SummonKind::Model21 => {
                 materialize_model21_summon(arena, runtime, terrain, particles, request)?
@@ -521,7 +530,7 @@ fn materialize_summons(
                         ));
                     }
                 };
-                boss::construct(
+                let projectile = boss::construct(
                     arena,
                     terrain,
                     particles,
@@ -538,10 +547,14 @@ fn materialize_summons(
                         effect_life: request.action,
                         descriptor: request.descriptor,
                     },
-                )?
-                .and(request.success_sound)
+                )?;
+                projectile_succeeded = projectile.is_some();
+                projectile.and(request.success_sound)
             }
         };
+        if projectile_succeeded {
+            apply_world(arena, terrain, runtime, EncounterAction::PlayerFeedback { slot: player_slot })?;
+        }
         if let Some(sound) = sound {
             // 21AB0 reads the current caller's ID only after successful
             // allocation and post-constructor writes, before the next birth.
@@ -680,10 +693,10 @@ fn approach_step(
             actor.timer = 0;
             actor.subspell_index &= !0x40;
         } else if flags & 0x40 != 0 {
-            if crate::legacy_sqrt(crate::native_world::level2_wrapping_source_distance_3d(
+            if crate::native_world::level2_wrapping_target_distance(
                 frame.player_position,
                 actor.position,
-            )) >= 0x0a00
+            ) >= 0x0a00
             {
                 actor.subspell_index &= !0x40;
             } else {
@@ -974,6 +987,7 @@ pub(crate) fn step_row(
         _ => {}
     }
     let source_callback = actor.action == SOURCE_INITIAL_ACTION;
+    let phase_zero = source_callback && actor.phase == 0;
     let death_tail = source_callback && (12..=15).contains(&actor.phase);
     if actor.action == SOURCE_INITIAL_ACTION && actor.phase == 14 {
         // 21030 plays this before the phase-14 decrement and world effects.
@@ -983,7 +997,26 @@ pub(crate) fn step_row(
             sample: 10,
         })?;
     }
+    #[cfg(test)]
+    let frame = Frame {
+        damage_trace: arena.handle(slot).map(|handle| (handle, arena.economy.events().len())),
+        ..frame
+    };
     let mut effects = super::step(&mut actor, frame, particles)?;
+    if phase_zero {
+        if !runtime.set_final_boss_active_counter(1) {
+            return Err("final encounter source active-counter word is absent".to_owned());
+        }
+        runtime.bytes.get_mut(0x87a..0x87c)
+            .ok_or("final encounter progress word0x87a is absent")?
+            .copy_from_slice(&60_i16.to_le_bytes());
+        // Source phase0 publishes its own fields before the burial walk.
+        store(&mut row, actor);
+        arena.entities[usize::from(slot)] = row.clone();
+        apply_world(arena, terrain, runtime, EncounterAction::ClearFootprint {
+            position: actor.position, width: 38, height: 38, owner: actor.source_id,
+        })?;
+    }
     if let Some(pressure) = effects.player_pressure {
         // 21AB0 clears the start bit before the world move; its phase timer
         // is written only after the movement and sound have returned.
@@ -1030,13 +1063,22 @@ pub(crate) fn step_row(
     store(&mut row, actor);
     arena.economy.source_rng.insert(slot, rng);
     arena.entities[usize::from(slot)] = row;
+    #[cfg(test)]
+    if let Some(receipt) = effects.damage_receipt.take() {
+        let current = &arena.entities[usize::from(slot)];
+        assert_eq!(arena.handle(slot), Some(receipt.target), "boss damage commits to the same current generation");
+        assert_eq!((current.life, current.word_26(), current.source_upkeep_word_62()),
+            (receipt.life_after, receipt.mailbox.1, 0),
+            "actual sub22190 actor store publishes life/attacker and clears the mailbox owner");
+        crate::native_world::area_damage::trace_player_damage_consumption(receipt);
+    }
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    materialize_summons(arena, runtime, terrain, particles, slot, &mut effects, apply_world)?;
+    materialize_summons(arena, runtime, terrain, particles, slot, frame.player_slot, &mut effects, apply_world)?;
     materialize_source_effects(arena, runtime, terrain, &mut effects, frame.player_slot, apply_world)?;
     if effects.clear_stage_variable_count && !runtime.clear_active_stage_variable_count() {
         return Err("final encounter could not clear the active StageVar count".to_owned());
     }
-    if let Some(counter) = effects.final_boss_active_counter
+    if !phase_zero && let Some(counter) = effects.final_boss_active_counter
         && !runtime.set_final_boss_active_counter(counter)
     {
         return Err("final encounter source active-counter word is absent".to_owned());
@@ -1098,7 +1140,7 @@ pub(crate) fn scheduled_step(
     class9: &[u16],
     setting_30: u8,
     source_frame_timing: u8,
-    apply_world: &mut ApplyEncounterAction<'_>,
+    apply_world: &mut ApplyScheduledEncounterAction<'_>,
 ) -> Result<Effects, String> {
     let player = arena
         .entities
@@ -1170,7 +1212,11 @@ pub(crate) fn scheduled_step(
             .ok_or_else(|| format!("final encounter particle{index} has invalid animation mode"))?;
         frame.source_animation_timer = animations.boss_timer_read(particle.base_tmap)?;
     }
-    step_row(arena, runtime, terrain, particles, entity_parameters, slot, frame, apply_world)
+    let mut scoped = |arena: &mut SourceArena, terrain: &mut SessionTerrain,
+                      runtime: &mut RuntimeSnapshot, action| {
+        apply_world(arena, terrain, runtime, shared_spells, action)
+    };
+    step_row(arena, runtime, terrain, particles, entity_parameters, slot, frame, &mut scoped)
 }
 
 #[cfg(test)]
@@ -1720,6 +1766,632 @@ mod tests {
             }
         }
         panic!("ordinary boss model21 path incomplete: boss={last_boss:?} child={child:?} launch={saw_launch} follow={saw_follow} air={airborne} land={landed} shot={shot} player_life={} selections={selections:?}", campaign.simulation().session.state.live.player_life);
+    }
+
+    #[test]
+    fn level25_paid_meteor_reaches_original_boss_damage_and_cleanup() {
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::{area_damage, Mc2DispatchEvent};
+        use std::path::PathBuf;
+
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || generated.join("mc-bhq10-owner-v3-level25-20261029"), PathBuf::from);
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || generated.join("dragon-bee-20261105-integration/current-level25-environment"), PathBuf::from);
+        let assets = crate::day_indexed_frame::DayIndexedFrameAssets::load(&cache)
+            .expect("qualified Level25 environment assets");
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            &package, &cache, CampaignSelection::ordinary(25).unwrap(),
+        ).expect("actual Level25 owner package and environment");
+        campaign.step(crate::PlayerCommand::default(), 0);
+        let player = campaign.simulation().state.entity_index;
+        {
+            // Declared prior carry and resources. The player pays the real
+            // holder; no boss state, phase, life, RNG or timer is changed.
+            let sim = campaign.simulation_mut();
+            sim.apply_carried_spell_families(&[9], Some(9)).unwrap();
+            sim.apply_carried_spell_progression(&[crate::native_world::CarriedSpellProgress {
+                family: 9,
+                persistent_experience: crate::native_world::LEVEL2_SPELL_TIER_THRESHOLDS[9][1],
+                runtime_experience: 0, unlocked_tier: 1, selected_tier: 1,
+            }]).unwrap();
+            for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+                sim.economy_mut().set_castle_stage_footprint(stage, footprint);
+            }
+            let site = (1_u16..32).flat_map(|y| (1_u16..32).map(move |x|
+                Position { x: x * 2048, y: y * 2048, z: 0 }))
+                .find(|position| !sim.economy().castle_projectile_site_blocked(
+                    *position, sim.entities(), sim.canonical_terrain()))
+                .expect("source-valid declared Castle site");
+            let castle = sim.economy_mut().build_castle(site, player).unwrap();
+            assert!(sim.economy_mut().set_castle_mana_prerequisite_for_test(castle, 200_000));
+            let live = &mut sim.session.state.live;
+            let row = &mut live.economy.entities[usize::from(player)];
+            row.set_max_life(200_000);
+            row.set_life(200_000);
+            row.max_mana = 200_000;
+            row.record[144..148].copy_from_slice(&200_000_i32.to_le_bytes());
+            row.set_mana(200_000);
+            row.set_mana_regen(0);
+            let row = row.clone();
+            live.player_life = row.life;
+            live.shared_spells.sync_player_entity_from_authority(&row);
+            live.shared_spells.player_mana = row.mana;
+            live.shared_spells.caster.mana = row.mana;
+            live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = row.mana; }
+        }
+        let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 9).unwrap() as i8;
+        campaign.step(crate::PlayerCommand { opcode: 31, argument_1: ui, argument_2: 1,
+            ..Default::default() }, 0);
+        assert!(campaign.simulation().dispatch_events().iter().all(|event|
+            !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let sim = campaign.simulation();
+        let holder = sim.shared_spells().local_player().enabled_spell_holders[9];
+        assert_ne!(holder, 0);
+        assert_eq!(sim.shared_spells().pickup(holder).unwrap().level_gate, 1);
+        assert!(!sim.shared_spells().free_spell_usage);
+        let holder_handle = sim.source_arena().handle(holder).unwrap();
+        let caster_handle = sim.source_arena().handle(player).unwrap();
+        // As in the existing natural Firefly encounter, this declared prior
+        // boundary activates the original group29, not a claimed BUILD kill.
+        campaign.simulation_mut().activate_authored_group_prerequisite_for_test(29)
+            .expect("source group29 admits the actual authored boss");
+        let sim = campaign.simulation();
+        let boss_slot = sim.entities().iter().find(|row| row.active && row.class == 5 && row.model == 10
+            && !row.drawing_disabled()).expect("original source24 boss").index;
+        let boss = sim.source_arena().handle(boss_slot).unwrap();
+        assert_eq!((sim.entities()[usize::from(boss_slot)].life,
+            sim.entities()[usize::from(boss_slot)].max_life), (300_000, 300_000));
+        // Real sub21490 approach and primary-visibility feedback are needed
+        // to reach the ordinary damageable phase. This is the same single
+        // declared player-only lure as the natural Firefly encounter.
+        let mut approach = sim.entities()[usize::from(boss_slot)].position;
+        crate::move_entity(&mut approach, sim.state.yaw.wrapping_add(1024) & 2047, 0, 2048);
+        approach.z = sim.canonical_terrain().ground_height(approach).wrapping_add(768);
+        let sim = campaign.simulation_mut();
+        sim.set_level2_entity_position(player, approach).unwrap();
+        sim.state.actual_speed = 0;
+        sim.state.target_speed = 0;
+        let mut ready = false;
+        for turn in 0..320 {
+            campaign.step(crate::PlayerCommand::default(), 0);
+            let generation = campaign.generation();
+            let frame = crate::day_indexed_frame::render_level2_day_indexed_frame(
+                campaign.inspection(), campaign.simulation(), &assets, generation,
+            ).expect("actual Level25 approach frame");
+            frame.apply_primary_visibility(campaign.simulation_mut(), generation)
+                .expect("actual primary visibility feeds the source boss");
+            let sim = campaign.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "natural boss entry turn{turn}: {:?}", sim.dispatch_events());
+            assert_eq!(sim.source_arena().handle(boss_slot), Some(boss));
+            let row = &sim.entities()[usize::from(boss_slot)];
+            assert_eq!(row.life, 300_000, "preparation does not damage the boss");
+            if row.action == 80 && (2..12).contains(&row.record[74]) && row.record[61] != 0 {
+                ready = true; break;
+            }
+        }
+        assert!(ready, "the original unmodified boss must naturally reach a damage-consuming phase");
+        let target = campaign.simulation().entities()[usize::from(boss_slot)].clone();
+        // One disclosed player placement, immediately above the real current
+        // boss; no later tracking or command depends on its pose or health.
+        let origin = Position { z: target.position.z.wrapping_add(1024), ..target.position };
+        let sim = campaign.simulation_mut();
+        sim.set_level2_entity_position(player, origin).unwrap();
+        sim.state.actual_speed = 0;
+        sim.state.target_speed = 0;
+        let caster = &sim.entities()[usize::from(player)];
+        let aim = crate::level1_mission::projectile_guidance_angles(
+            Position { z: caster.position.z.wrapping_add(caster.array_fov()), ..caster.position },
+            Position { z: target.position.z.wrapping_add(target.array_yaw()), ..target.position },
+        );
+        assert_eq!(aim.1, 512, "the fixed shot points down at the actual boss");
+        let mut no_cast = campaign.clone();
+        area_damage::start_actor_damage_trace(&[boss]);
+        area_damage::start_effect_damage_trace(boss_slot);
+        let mut launches = Vec::new();
+        let mut payments = Vec::new();
+        let mut impacts = Vec::new();
+        let mut consumed = Vec::new();
+        let mut published_hit = None;
+        let mut payment_visits = Vec::new();
+        let mut projectile_hidden = false;
+        let mut turns = 0;
+        for turn in 0..160 {
+            if turn == 0 { campaign.simulation_mut().set_level2_player_aim_for_test(aim.0, aim.1); }
+            campaign.simulation().start_creature17_trace();
+            campaign.step(crate::PlayerCommand { flags: if turn == 0 { 0x10 } else { 0 },
+                ..Default::default() }, 0);
+            turns += 1;
+            let trace = campaign.simulation().take_creature17_trace();
+            launches.extend(trace.meteor_launches.into_iter().filter(|row|
+                row.holder == holder_handle && row.caster == caster_handle));
+            payments.extend(trace.spell_launches.into_iter().filter(|row|
+                row.holder == holder_handle && row.caster == caster_handle));
+            impacts.extend(trace.meteor_impacts);
+            let fresh = area_damage::take_player_damage_consumptions();
+            let sim = campaign.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "paid Meteor turn{turn}: {:?}", sim.dispatch_events());
+            assert_eq!(sim.source_arena().handle(boss_slot), Some(boss));
+            if published_hit.is_none() {
+                if let Some(visit) = fresh.iter().find(|visit| visit.target == boss
+                    && visit.mailbox == (1600, player)
+                    && visit.writer.is_some_and(|writer| impacts.iter().any(|impact|
+                        writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                            && launches.iter().any(|launch| launch.projectile == impact.projectile))))
+                {
+                    let row = &sim.entities()[usize::from(boss_slot)];
+                    // The receipt is published only after the real actor
+                    // store verified life/attacker/cleared owner. A later
+                    // numeric callback may write a new mailbox this turn.
+                    let pending_owner = row.source_upkeep_word_62();
+                    let refill = if pending_owner == 0 { None } else {
+                        let mailbox = (row.source_upkeep_payload(), pending_owner);
+                        let writer = area_damage::current_actor_mailbox_writer(boss, mailbox)
+                            .expect("a later nonempty boss mailbox must have its actual watched writer");
+                        assert!(writer.sequence > visit.writer.unwrap().sequence,
+                            "a later writer, not the consumed mailbox, explains the current owner");
+                        Some(writer)
+                    };
+                    published_hit = Some((*visit, refill));
+                }
+            }
+            consumed.extend(fresh);
+            payment_visits.extend(sim.cf10_production_schedule_receipts().into_iter().filter_map(|receipt|
+                match receipt {
+                    crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted {
+                        slot, original,
+                        current: crate::campaign::schedule::CurrentOccupant::Known { selector, .. }, ..
+                    } if slot == player => Some((original.observed_player_resources()?,
+                        selector.observed_player_resources()?)),
+                    _ => None,
+                }));
+            for launch in &launches {
+                if sim.source_arena().handle(launch.projectile.source_slot) == Some(launch.projectile) {
+                    projectile_hidden |= sim.entities()[usize::from(launch.projectile.source_slot)].drawing_disabled();
+                }
+            }
+            let cleanup = matches!(launches.as_slice(), [launch] if projectile_hidden
+                && sim.source_arena().resolve(launch.projectile).is_none())
+                && impacts.iter().any(|impact| launches.iter().any(|launch| launch.projectile == impact.projectile)
+                    && sim.source_arena().resolve(impact.impact).is_none());
+            if cleanup && !consumed.is_empty()
+                && sim.entities()[usize::from(boss_slot)].source_upkeep_word_62() == 0 { break; }
+        }
+        let receipts = area_damage::take_effect_damage_trace();
+        let mut first_segment_life = 300_000_i32;
+        for visit in &consumed {
+            assert_eq!((visit.target, visit.life_before, visit.mailbox.1), (boss, first_segment_life, player));
+            let writer = visit.writer.expect("every first-segment boss hit has its actual mailbox writer");
+            assert_eq!((writer.target, writer.mailbox), (boss, visit.mailbox));
+            assert!(impacts.iter().any(|impact|
+                writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                    && launches.iter().any(|launch| launch.projectile == impact.projectile)
+                    && receipts.iter().any(|receipt| receipt.source_scoped
+                        && receipt.source_slot == Some(impact.impact.source_slot)
+                        && receipt.target_slot == boss_slot && receipt.target_generation == boss.generation
+                        && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                        && receipt.writer_sequence == Some(writer.sequence))),
+                "every first-segment subtraction must join the paid Meteor impact");
+            let raw = first_segment_life.wrapping_sub(visit.mailbox.0.clamp(1, 300));
+            first_segment_life = if raw < 10 { 8 } else { raw };
+            assert_eq!(visit.life_after, first_segment_life);
+        }
+        assert_eq!((campaign.simulation().entities()[usize::from(boss_slot)].life,
+            campaign.simulation().entities()[usize::from(boss_slot)].source_upkeep_word_62()),
+            (first_segment_life, 0), "the completed field leaves no unaccounted boss hit or pending owner");
+        // The no-cast clone shares this thread, not this arena. Stop watching
+        // the original handle until that separate replay has finished.
+        area_damage::start_actor_damage_trace(&[]);
+        for turn in 0..turns {
+            if turn == 0 { no_cast.simulation_mut().set_level2_player_aim_for_test(aim.0, aim.1); }
+            no_cast.step(crate::PlayerCommand::default(), 0);
+            assert!(no_cast.simulation().dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })), "no-cast turn{turn}");
+        }
+        let hit = consumed.iter().find(|visit| visit.target == boss && visit.mailbox == (1600, player)
+            && visit.life_before >= 10 && visit.life_after == visit.life_before - 300
+            && visit.writer.is_some_and(|writer| writer.target == boss && writer.mailbox == visit.mailbox
+                && impacts.iter().any(|impact| writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                    && impact.state.subspell_index == 8000 && launches.iter().any(|launch|
+                        launch.projectile == impact.projectile && launch.packet.class == 9
+                            && launch.packet.model == 3 && launch.packet.subspell_index == 8000)
+                    && receipts.iter().any(|receipt| receipt.source_scoped
+                        && receipt.source_slot == Some(impact.impact.source_slot)
+                        && receipt.target_slot == boss_slot && receipt.target_generation == boss.generation
+                        && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                        && receipt.writer_sequence == Some(writer.sequence)))))
+            .unwrap_or_else(|| panic!("one paid MeteorII must reach the original boss mailbox: origin={origin:?} aim={aim:?} launches={launches:?} impacts={impacts:?} consumed={consumed:?} receipts={receipts:?}"));
+        assert_eq!(hit.life_before, 300_000, "first attributed hit reaches the unchanged boss");
+        let (published, refill) = published_hit.expect("actual boss store publishes the attributed consumption");
+        assert_eq!(published, *hit, "the attributed consumption is the observed published boss state");
+        if let Some(refill) = refill {
+            assert_eq!(refill.source, hit.writer.unwrap().source,
+                "the refill must come from the same actual impact generation");
+            assert!(receipts.iter().any(|receipt| receipt.writer_sequence == Some(refill.sequence)
+                && receipt.target_slot == boss_slot && receipt.target_generation == boss.generation
+                && receipt.source_scoped && impacts.iter().any(|impact|
+                    refill.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                        && receipt.source_slot == Some(impact.impact.source_slot)
+                        && launches.iter().any(|launch| launch.projectile == impact.projectile))),
+                "the later accepted write belongs to the same actual Meteor impact generation");
+        }
+        assert_eq!(launches.len(), 1);
+        let payment = payments.iter().find(|row| row.projectile == launches[0].projectile)
+            .expect("actual holder and parent around the successful launch");
+        let cost = crate::level_definition::METEOR_PROPERTIES.tiers[1].mana_cost;
+        let before = payment.caster_before.mana_regen;
+        let expected = if before >= 0 { -cost } else { before.wrapping_sub(cost) };
+        assert_eq!((payment.holder_before.level_gate, payment.holder_before.max_mana), (1, cost));
+        assert_eq!(payment.caster_after.mana_regen, expected, "real current parent queues the exact paid cost");
+        let (before_debit, after_debit) = payment_visits.iter().find(|(before, after)|
+            before.0 == caster_handle && after.0 == caster_handle && before.2 <= -cost
+                && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3))
+            .unwrap_or_else(|| panic!("actual player upkeep must consume the queued Meteor cost: {payment_visits:?}"));
+        assert!(before_debit.1 - after_debit.1 >= cost, "actual source upkeep debits the paid cost");
+        assert!(projectile_hidden && campaign.simulation().source_arena().resolve(launches[0].projectile).is_none());
+        assert!(impacts.iter().any(|impact| impact.projectile == launches[0].projectile
+            && campaign.simulation().source_arena().resolve(impact.impact).is_none()));
+        assert_eq!(no_cast.simulation().source_arena().handle(boss_slot), Some(boss));
+        assert_eq!(no_cast.simulation().entities()[usize::from(boss_slot)].life, 300_000,
+            "equal-elapsed no-cast original boss stays undamaged");
+        eprintln!("Level25 paid Meteor first hit: boss={boss:?} mailbox={:?} life={}→{} impact(s)={} turns={turns}",
+            hit.mailbox, hit.life_before, hit.life_after, impacts.len());
+
+        // Continue this same real encounter. Send the public full-stop once,
+        // then let recoil and impulses settle naturally while waiting for the
+        // actual phase3 with no pending mailbox or close-projectile latch.
+        let mut stable_entry = false;
+        for turn in 0..1024 {
+            let sim = campaign.simulation();
+            assert_eq!(sim.source_arena().handle(boss_slot), Some(boss));
+            let row = &sim.entities()[usize::from(boss_slot)];
+            assert_eq!(row.life, first_segment_life,
+                "the natural corridor-entry wait cannot hide an unobserved boss subtraction");
+            let flight = &sim.state;
+            let quiet = flight.actual_speed == 0 && flight.target_speed == 0
+                && flight.strafe_speed == 0 && flight.recoil_speed == 0
+                && flight.impulse_x == 0 && flight.impulse_y == 0 && flight.impulse_z == 0;
+            if turn != 0 && quiet && row.action == 80 && row.record[74] == 3 && row.subspell_index & 1 == 0
+                && row.source_upkeep_word_62() == 0
+            {
+                stable_entry = true;
+                break;
+            }
+            let command = if turn == 0 {
+                crate::PlayerCommand { opcode: 0x27, argument_1: 1, ..Default::default() }
+            } else { crate::PlayerCommand::default() };
+            campaign.step(command, 0);
+            assert!(campaign.simulation().dispatch_events().iter().all(|event|
+                !matches!(event, Mc2DispatchEvent::Error { .. })), "natural corridor entry turn{turn}");
+        }
+        assert!(stable_entry, "the same original boss must naturally reach phase3 with its source latch and mailbox clear while the real player comes to rest: flight={:?}", campaign.simulation().state);
+
+        // One source-derived player-only retreat, then one unchanged held-fire
+        // command. The -8256 offset is outside phase3's strict8192 radius and
+        // still within the 22*384 expiry field's reach. Test the CURRENT
+        // post-feature terrain and source axes, not the reset terrain.
+        let sim = campaign.simulation();
+        let target = sim.entities()[usize::from(boss_slot)].clone();
+        let parent = sim.entities()[usize::from(player)].clone();
+        let mut retreat = Position { x: target.position.x.wrapping_sub(8256),
+            y: target.position.y, z: 0 };
+        let terrain = sim.canonical_terrain();
+        let old_east = Position { x: target.position.x.wrapping_add(8256),
+            y: target.position.y, z: 0 };
+        let east_material = (terrain.terrain_type(old_east), terrain.material_mask(old_east));
+        let west_material = (terrain.terrain_type(retreat), terrain.material_mask(retreat));
+        assert_ne!(west_material.1, crate::MOVEMENT_REDIRECT_MASK,
+            "the fixed player position must admit ordinary stationary movement: west={retreat:?} material={west_material:?}; old east={old_east:?} material={east_material:?}");
+        let player_floor = terrain.ground_height(retreat);
+        let descriptor_clearance = parent.parameter_relation
+            .and_then(|index| sim.session.definition.presentation.entity_parameters.get(usize::from(index)))
+            .map_or(0, |row| i16::from_le_bytes([row[12], row[13]]));
+        let clearance = sim.profile().ground_clearance.max(descriptor_clearance);
+        retreat.z = player_floor.checked_add(clearance).expect("legal source player altitude");
+        assert!(crate::native_world::level2_wrapping_target_distance(retreat, target.position) >= 8192,
+            "fixed retreat must stay outside the source phase3 trigger");
+        let mut muzzle = retreat;
+        crate::move_entity(&mut muzzle, 0, 0, 256); // source left hand at yaw512
+        assert!(terrain.ground_height(muzzle) <= retreat.z,
+            "the source left-hand muzzle must not fall back to the player's position");
+        muzzle.z = muzzle.z.checked_add(parent.array_fov()).expect("source muzzle height");
+        let field_center = i32::from(target.position.z) + i32::from(target.array_yaw());
+        assert!((i32::from(muzzle.z) - field_center).abs() < 512 + i32::from(target.array_fov()),
+            "the eventual source Meteor field must overlap the real boss vertical extent");
+        let mut ray = muzzle;
+        let mut sampled_ground = Vec::new();
+        for _ in 0..22 {
+            crate::move_entity(&mut ray, 512, 0, crate::level_definition::METEOR_PROPERTIES.projectile_speed);
+            let floor = terrain.ground_height(ray);
+            sampled_ground.push(floor);
+            assert!(floor <= ray.z, "the fixed source ray hits current terrain before its terminal endpoint: ray={ray:?} floor={floor} retreat={retreat:?}");
+        }
+        assert!(i32::from(target.position.x.wrapping_sub(ray.x) as i16).abs() < i32::from(target.array_pitch())
+            && i32::from(target.position.y.wrapping_sub(ray.y) as i16).abs() < i32::from(target.array_roll()),
+            "the fixed expiry field endpoint overlaps the current boss XY axes");
+        let stage_life = target.life;
+        assert!(!sim.session.state.live.core.runtime.alternate_volcano(),
+            "the original alternate Volcano flag is clear before the actual boss death");
+        let sim = campaign.simulation_mut();
+        sim.set_level2_entity_position(player, retreat).unwrap();
+        sim.set_level2_player_aim_for_test(512, 0);
+        area_damage::start_actor_damage_trace(&[boss]);
+
+        // Budget a full source recharge/active/flight/field interval for EACH
+        // remaining 300-cap callback. Even one accepted hit per field has
+        // enough time; success is actual death, not any cast or hit count.
+        let remaining_hits = (i64::from(stage_life) - 9 + 299) / 300;
+        let animation = campaign.simulation().session.definition.presentation.particles[345];
+        let death_animation = campaign.simulation().session.state.live.source_animations
+            .boss_timer_read(animation.base_tmap).expect("real boss death animation")
+            .unwrap_or(32);
+        let interval_bound = usize::try_from(remaining_hits).unwrap()
+            .saturating_mul(100 + 7 + 22 + 5 + 1)
+            .saturating_add(usize::from(death_animation) + 93 + 1024);
+        let mut fight_launches = Vec::new();
+        let mut fight_payments = Vec::new();
+        let mut fight_impacts = Vec::new();
+        let mut fight_effects = Vec::new();
+        let mut fight_consumed = Vec::new();
+        let mut life_chain = stage_life;
+        let mut phase13 = false;
+        let mut phase14 = false;
+        let mut phase15 = false;
+        let mut visible13 = false;
+        let mut visible14 = false;
+        let mut negative_retained = false;
+        let mut death_sound10 = false;
+        let mut death_sound63 = false;
+        let mut death_meteor = None;
+        let mut reward: Option<(crate::campaign::source_arena::SourceEntityHandle, i32, usize)> = None;
+        let mut reward_consumed = false;
+        let mut reward_product = None;
+        let mut hidden = false;
+        let mut reclaimed = false;
+        let mut first_drift = None;
+        let mut first_acquisition = None;
+        let mut first_impact_reclaim = None;
+        let mut initial_flight = Vec::new();
+        // (phase, remaining timer at first observation, real later callbacks).
+        let mut death_timer_watch: Option<(u8, i32, usize)> = None;
+        let mut completed_timers = Vec::new();
+        for turn in 0..interval_bound {
+            let prior_boss = campaign.simulation().source_arena().handle(boss_slot) == Some(boss);
+            let boss_before = prior_boss.then(|| &campaign.simulation().entities()[usize::from(boss_slot)]);
+            let constructing_death_meteor = boss_before.is_some_and(|row| row.record[74] == 12);
+            let constructing_reward = boss_before.is_some_and(|row|
+                row.record[74] == 15 && row.source_dword_10() <= 1);
+            let pre_meteors = if constructing_death_meteor {
+                campaign.simulation().economy().authored_model17().iter().filter(|row| row.active)
+                    .filter_map(|row| campaign.simulation().source_arena().handle(row.source_entity_index))
+                    .collect::<Vec<_>>()
+            } else { Vec::new() };
+            let pre_volcanoes = if constructing_reward {
+                campaign.simulation().entities().iter().filter(|row|
+                    row.active && row.class == 10 && row.model == 9)
+                    .filter_map(|row| campaign.simulation().source_arena().handle(row.index))
+                    .collect::<Vec<_>>()
+            } else { Vec::new() };
+            let reward_before = reward.and_then(|(handle, _, _)| {
+                let sim = campaign.simulation();
+                (sim.source_arena().handle(handle.source_slot) == Some(handle))
+                    .then(|| sim.entities()[usize::from(handle.source_slot)].clone())
+            });
+            let pre_reward_products = if reward_before.as_ref().is_some_and(|row| row.life == 4) {
+                campaign.simulation().entities().iter().filter(|row|
+                    row.active && row.class == 10 && row.model == 91)
+                    .filter_map(|row| campaign.simulation().source_arena().handle(row.index))
+                    .collect::<Vec<_>>()
+            } else { Vec::new() };
+            area_damage::start_effect_damage_trace(boss_slot);
+            campaign.simulation().start_creature17_trace();
+            campaign.step(crate::PlayerCommand { flags: 0x10, ..Default::default() }, 0);
+            let trace = campaign.simulation().take_creature17_trace();
+            if turn < 2 {
+                initial_flight.extend(trace.flight.iter().filter(|visit| visit.target == caster_handle)
+                    .cloned().map(|visit| (turn, visit,
+                        campaign.simulation().state.position)));
+                if turn == 1 {
+                    eprintln!("Level25 fixed west setup: old_east={old_east:?} material={east_material:?} west={retreat:?} material={west_material:?} first_flight={initial_flight:?}");
+                }
+            }
+            let sound_calls = trace.boss_sound_calls;
+            let new_launches = trace.meteor_launches.into_iter().filter(|row|
+                row.holder == holder_handle && row.caster == caster_handle).collect::<Vec<_>>();
+            fight_launches.extend(new_launches);
+            if first_acquisition.is_none() {
+                first_acquisition = trace.meteor_acquisitions.into_iter().find(|observation|
+                    fight_launches.first().is_some_and(|launch| launch.projectile == observation.projectile));
+            }
+            fight_payments.extend(trace.spell_launches.into_iter().filter(|row|
+                row.holder == holder_handle && row.caster == caster_handle));
+            fight_impacts.extend(trace.meteor_impacts);
+            fight_effects.extend(area_damage::take_effect_damage_trace());
+            let visits = area_damage::take_player_damage_consumptions();
+            for visit in &visits {
+                assert_eq!(visit.target, boss);
+                assert_eq!(visit.life_before, life_chain,
+                    "every source damage callback must follow the original boss life chain");
+                assert_ne!(visit.mailbox.1, 0);
+                let raw_after = life_chain.wrapping_sub(visit.mailbox.0.clamp(1, 300));
+                let expected = if raw_after < 10 { 8 } else { raw_after };
+                assert_eq!(visit.life_after, expected, "source22190 clamps damage and terminal life");
+                let writer = visit.writer.expect("actual current owner must have a generation-bound writer");
+                assert_eq!((writer.target, writer.mailbox), (boss, visit.mailbox));
+                assert!(fight_impacts.iter().any(|impact|
+                    writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                        && fight_launches.iter().any(|launch| launch.projectile == impact.projectile)
+                        && fight_payments.iter().any(|payment| payment.projectile == impact.projectile
+                            && payment.holder_before.max_mana == cost
+                            && payment.caster_after.mana_regen == if payment.caster_before.mana_regen >= 0 {
+                                -cost
+                            } else { payment.caster_before.mana_regen.wrapping_sub(cost) })
+                        && fight_effects.iter().any(|receipt| receipt.source_scoped
+                            && receipt.source_slot == Some(impact.impact.source_slot)
+                            && receipt.target_slot == boss_slot && receipt.target_generation == boss.generation
+                            && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                            && receipt.writer_sequence == Some(writer.sequence))),
+                    "every actual boss subtraction must join the current player's paid Meteor generation");
+                life_chain = expected;
+            }
+            fight_consumed.extend(visits);
+            let sim = campaign.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "held Meteor turn{turn}: {:?}", sim.dispatch_events());
+            let actual_player = &sim.entities()[usize::from(player)];
+            if actual_player.position != retreat && first_drift.is_none() {
+                first_drift = Some((turn, actual_player.position, actual_player.life));
+            }
+            for call in sound_calls.iter().filter(|call| call.caller == Some(boss)
+                && call.emitter == boss_slot && matches!(call.site, SoundSite::DeathRumble | SoundSite::DeathPeriodic))
+            {
+                let (site, sample) = match call.site {
+                    SoundSite::DeathRumble => (crate::MissionAudioSite::BossDeathRumble, 10),
+                    SoundSite::DeathPeriodic => (crate::MissionAudioSite::BossDeathPeriodic, 63),
+                    _ => unreachable!(),
+                };
+                assert_eq!(call.sample, sample);
+                let record = sim.effect_journal().records().iter().find(|record|
+                    record.sequence == call.journal_sequence).expect("actual death sound journal sequence");
+                assert!(matches!(record.effect, crate::campaign::journal::CampaignEffect::Flight(
+                    crate::FlightEvent::PrepareSound { audio_site, entity_index, player_index: -1, sound_id }
+                ) if audio_site == site && entity_index == boss_slot && sound_id == sample));
+                assert_eq!(record.audio.expect("unmuted source death sound is prepared").play_type, 1);
+                death_sound10 |= call.site == SoundSite::DeathRumble;
+                death_sound63 |= call.site == SoundSite::DeathPeriodic;
+            }
+            if sim.source_arena().handle(boss_slot) == Some(boss) {
+                let row = &sim.entities()[usize::from(boss_slot)];
+                assert_eq!(row.life, if row.life < 0 { -1 } else { life_chain },
+                    "no unobserved source may alter the original boss life chain");
+                phase13 |= row.record[74] == 13;
+                if row.record[74] == 14 && !phase14 {
+                    assert_eq!(row.source_dword_10(), i32::from(death_animation),
+                        "the real phase13→14 callback installs the resident particle345 timer");
+                }
+                phase14 |= row.record[74] == 14;
+                phase15 |= row.record[74] == 15;
+                hidden |= row.drawing_disabled();
+                if life_chain == 8 {
+                    let callbacks = sim.cf10_production_schedule_receipts().iter().filter(|receipt|
+                        matches!(receipt, crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                            if *slot == boss_slot)).count();
+                    if let Some((phase, remaining, ref mut seen)) = death_timer_watch {
+                        *seen += callbacks;
+                        if row.record[74] != phase || row.drawing_disabled() {
+                            assert!(*seen >= usize::try_from(remaining.max(0)).unwrap(),
+                                "natural death phase{phase} must consume its observed remaining timer{remaining}, saw{seen} source callbacks");
+                            completed_timers.push(phase);
+                            death_timer_watch = None;
+                        }
+                    }
+                    if death_timer_watch.is_none() && matches!(row.record[74], 13..=15)
+                        && !row.drawing_disabled()
+                    {
+                        death_timer_watch = Some((row.record[74], row.source_dword_10(), 0));
+                    }
+                }
+                if matches!(row.record[74], 13 | 14) && row.life == 8 && !row.drawing_disabled() {
+                    let views = sim.campaign_entity_presentations(0).expect("actual boss death presentation");
+                    assert!(views.iter().any(|view| view.entity_index == boss_slot
+                        && Some(view.render_parameter_index) == row.particle_parameter_index),
+                        "the living life8 death phase keeps its actual descriptor-backed sprite");
+                    visible13 |= row.record[74] == 13;
+                    visible14 |= row.record[74] == 14;
+                }
+                if row.record[74] == 15 && row.life == -1 && !row.drawing_disabled() {
+                    assert_ne!(row.control_flags & 1, 0, "source phase14 sets the separate sprite-exclusion bit");
+                    assert!(!sim.campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == boss_slot));
+                    let identity = sim.creature_runtime_census().entries().iter()
+                        .find(|entry| entry.handle == boss).copied()
+                        .expect("the negative-life original remains a retained creature identity");
+                    assert!(!identity.living);
+                    assert!(!sim.source_arena().rebuilt_class5_model_slots()[10].contains(&boss_slot),
+                        "source absence/target lists exclude the negative-life original before reclaim");
+                    negative_retained = true;
+                }
+                if constructing_death_meteor && row.record[74] == 13 && death_meteor.is_none() {
+                    death_meteor = sim.economy().authored_model17().iter()
+                        .find(|source| source.active && source.max_life == 70
+                            && source.entity_id == actual_player.source_id
+                            && sim.source_arena().handle(source.source_entity_index)
+                                .is_some_and(|handle| !pre_meteors.contains(&handle)))
+                        .and_then(|source| sim.source_arena().handle(source.source_entity_index));
+                }
+            } else if hidden {
+                reclaimed = true;
+            }
+            if first_impact_reclaim.is_none() && let Some(first) = fight_impacts.iter().find(|impact|
+                fight_launches.first().is_some_and(|launch| launch.projectile == impact.projectile))
+                && sim.source_arena().resolve(first.impact).is_none()
+            {
+                first_impact_reclaim = Some((
+                    turn,
+                    first.clone(),
+                    fight_consumed.iter().any(|visit| visit.writer.is_some_and(|writer|
+                        writer.source == area_damage::PlayerMailboxSource::Effect(first.impact))),
+                ));
+            }
+            if constructing_reward && sim.session.state.live.core.runtime.alternate_volcano() && reward.is_none() {
+                reward = sim.entities().iter().filter(|row| row.active && row.class == 10
+                    && row.model == 9 && row.action == 9 && row.max_life == 11
+                    && row.source_id == actual_player.source_id)
+                    .filter_map(|row| sim.source_arena().handle(row.index).map(|handle| (handle, row.life, turn)))
+                    .find(|(handle, _, _)| !pre_volcanoes.contains(handle));
+            }
+            if let Some((handle, initial_life, born_turn)) = reward
+                && turn > born_turn && sim.source_arena().handle(handle.source_slot) == Some(handle)
+            {
+                reward_consumed |= sim.entities()[usize::from(handle.source_slot)].life < initial_life;
+            }
+            if let Some(before) = &reward_before && before.life == 4 {
+                assert!(sim.session.state.live.core.runtime.alternate_volcano(),
+                    "actual reward Volcano callback consumes the source alternate-mode flag");
+                reward_product = sim.entities().iter().filter(|row|
+                    row.active && row.class == 10 && row.model == 91
+                        && row.source_id == actual_player.source_id
+                        && (row.position.x, row.position.y) == (before.position.x, before.position.y))
+                    .filter_map(|row| sim.source_arena().handle(row.index))
+                    .find(|handle| !pre_reward_products.contains(handle));
+            }
+            if reclaimed && reward_consumed && reward_product.is_some() && death_meteor.is_some() { break; }
+        }
+        let terminal = fight_consumed.last().unwrap_or_else(|| panic!(
+            "held public Meteor produced no boss consumption: retreat={retreat:?} muzzle={muzzle:?} sampled_ground={sampled_ground:?} launches={} impacts={} first_acquisition={first_acquisition:?} first_impact_reclaim={first_impact_reclaim:?} drift={first_drift:?}",
+            fight_launches.len(), fight_impacts.len()));
+        assert_eq!((terminal.life_before, terminal.life_after), (300, 8),
+            "the final actual source hit must clamp the original boss to life8: interval={interval_bound} retreat={retreat:?} muzzle={muzzle:?} sampled_ground={sampled_ground:?} first_acquisition={first_acquisition:?} first_impact_reclaim={first_impact_reclaim:?} drift={first_drift:?} launches={} impacts={} consumed={}",
+            fight_launches.len(), fight_impacts.len(), fight_consumed.len());
+        let terminal_writer = terminal.writer.expect("terminal source mailbox writer");
+        assert_eq!(terminal.mailbox.1, player);
+        assert!(fight_impacts.iter().any(|impact| terminal_writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+            && fight_launches.iter().any(|launch| launch.projectile == impact.projectile)
+            && fight_effects.iter().any(|receipt| receipt.source_scoped
+                && receipt.source_slot == Some(impact.impact.source_slot)
+                && receipt.target_slot == boss_slot && receipt.target_generation == boss.generation
+                && receipt.pulse.owner == player && receipt.pulse.payload == 1600
+                && receipt.writer_sequence == Some(terminal_writer.sequence))),
+            "the terminal actual writer must be the current player's paid Meteor impact");
+        assert!(fight_launches.iter().all(|launch| fight_payments.iter().any(|payment|
+            payment.projectile == launch.projectile && payment.holder_before.max_mana == cost
+                && payment.caster_after.mana_regen == if payment.caster_before.mana_regen >= 0 {
+                    -cost
+                } else { payment.caster_before.mana_regen.wrapping_sub(cost) })),
+            "every recorded player Meteor launch must queue the real source cost");
+        assert_eq!(life_chain, 8);
+        assert!(phase13 && phase14 && phase15 && visible13 && visible14 && negative_retained
+            && death_sound10 && death_sound63 && hidden && reclaimed
+            && death_meteor.is_some() && reward.is_some() && reward_consumed && reward_product.is_some()
+            && [13, 14, 15].iter().all(|phase| completed_timers.contains(phase)),
+            "natural death must visit/present phases13/14, prepare source10/63, drop living membership, schedule its Meteor/Volcano and reclaim the original boss: phases={phase13}/{phase14}/{phase15} visible={visible13}/{visible14} nonliving={negative_retained} audio={death_sound10}/{death_sound63} hidden={hidden} reclaimed={reclaimed} death_meteor={death_meteor:?} reward={reward:?} reward_consumed={reward_consumed} reward_product={reward_product:?} timers={completed_timers:?} remaining={life_chain} interval={interval_bound} first_acquisition={first_acquisition:?} first_impact_reclaim={first_impact_reclaim:?} drift={first_drift:?}");
+        assert_eq!(campaign.simulation().session.state.live.core.runtime.final_boss_active_counter(), Some(0));
+        eprintln!("Level25 natural boss defeat: start_life={stage_life} consumed={} paid_launches={} terminal={terminal:?} death_meteor={death_meteor:?} reward={reward:?} reward_product={reward_product:?} timers={completed_timers:?} first_drift={first_drift:?}",
+            fight_consumed.len(), fight_launches.len());
     }
 
     #[test]
@@ -2319,8 +2991,26 @@ mod tests {
         boss.set_source_dword_10(0);
 
         let frame = boss_frame(&fixture);
-        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
+        let boss_owner = fixture.arena.entities[usize::from(boss_slot)].source_id;
+        let mut reached = Vec::new();
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, runtime, action| {
+            if let EncounterAction::ClearFootprint { position, width, height, owner } = action {
+                let row = &arena.entities[usize::from(boss_slot)];
+                assert_eq!((position, width, height, owner), (boss_position, 38, 38, boss_owner));
+                assert_eq!((row.record[74], row.subspell_index, row.source_dword_10(), word(row, 48), word(row, 154)),
+                    (1, 8, 15, 22, frame.player_slot), "source actor prefix is current before burial");
+                assert_eq!(runtime.final_boss_active_counter(), Some(1));
+                assert_eq!(i16::from_le_bytes([runtime.bytes[0x87a], runtime.bytes[0x87b]]), 60);
+            }
+            if !matches!(action, EncounterAction::ReadPlayer { .. }) { reached.push(action); }
+            Ok(test_world_response(arena, action))
+        })
         .unwrap();
+        assert_eq!(reached.first(), Some(&EncounterAction::ClearFootprint {
+            position: boss_position, width: 38, height: 38, owner: boss_owner,
+        }));
+        assert!(matches!(reached.get(1), Some(EncounterAction::Sound { site: SoundSite::Approach, sample: 10, .. })),
+            "burial precedes the first source approach callback");
 
         let boss = &fixture.arena.entities[usize::from(boss_slot)];
         assert_eq!(
@@ -2360,6 +3050,32 @@ mod tests {
                 .iter()
                 .all(|child| (8..=15).contains(&child.life))
         );
+    }
+
+    #[test]
+    fn source_approach_player_band_uses_xy_and_strict_2560_boundary() {
+        for (dx, dz, close) in [(0_u16, 16_000_i16, true), (2_560, 0, false)] {
+            let (mut fixture, boss_slot) = boss_fixture();
+            let mut actor = load(&fixture.arena.entities[usize::from(boss_slot)]).unwrap();
+            actor.subspell_index = 0x50;
+            actor.timer = 0;
+            let mut frame = boss_frame(&fixture);
+            frame.player_position = Position {
+                x: actor.position.x.wrapping_add(dx),
+                z: actor.position.z.wrapping_add(dz),
+                ..actor.position
+            };
+            let mut effects = Effects::default();
+            approach_step(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain,
+                &mut actor, frame, &mut effects, &mut ignore_world_action).unwrap();
+            if close {
+                assert_eq!((actor.subspell_index & 0x70, actor.timer), (0x60, 30),
+                    "same-XY player remains close despite large Z difference");
+            } else {
+                assert_eq!((actor.subspell_index & 0x70, actor.timer), (0x10, 0),
+                    "the source2560 boundary is not inside the close band");
+            }
+        }
     }
 
     #[test]
@@ -2611,21 +3327,37 @@ mod tests {
                     exhaust(&mut fixture.arena);
                 }
                 let frame = boss_frame(&fixture);
-                let mut sounds = Vec::new();
+                let mut reached = Vec::new();
                 let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
-                    if matches!(action, EncounterAction::Sound { .. }) {
-                        sounds.push(action);
+                    if let EncounterAction::PlayerFeedback { slot } = action {
+                        assert_eq!(slot, frame.player_slot);
+                        let owner = arena.entities[usize::from(boss_slot)].source_id;
+                        if model == 0 {
+                            assert!(arena.economy.fireball_projectiles.iter().any(|row|
+                                row.active && row.origin == crate::native_world::FireballProjectileOrigin::FinalBoss
+                                    && row.owner_entity_index == owner && row.source_subspell_index == 800));
+                        } else {
+                            assert!(arena.entities.iter().any(|row| row.active && row.class == 9
+                                && row.model == model && row.source_id == owner
+                                && (row.record[71], row.record[72], row.record[74]) == (10, impact, lifetime)),
+                                "feedback observes the real initialized projectile and postwrites");
+                        }
+                    }
+                    if matches!(action, EncounterAction::PlayerFeedback { .. } | EncounterAction::Sound { .. }) {
+                        reached.push(action);
                     }
                         Ok(test_world_response(arena, action))
                 })
                 .unwrap();
                 assert!(effects.summons.is_empty());
                 assert_eq!(effects.sounds.contains(&sound), !full);
-                assert_eq!(sounds.contains(&EncounterAction::Sound {
-                    site: SoundSite::Attack,
-                    emitter: SoundEmitter::CurrentSourceId(boss_slot),
-                    sample: sound,
-                }), !full, "only a successful source constructor reaches the sound call");
+                let expected = if full { Vec::new() } else { vec![
+                    EncounterAction::PlayerFeedback { slot: frame.player_slot },
+                    EncounterAction::Sound { site: SoundSite::Attack,
+                        emitter: SoundEmitter::CurrentSourceId(boss_slot), sample: sound },
+                ] };
+                assert_eq!(reached, expected,
+                    "successful projectile postwrites precede feedback and sound; failure performs neither");
                 let owner = fixture.arena.entities[usize::from(boss_slot)].source_id;
                 if model == 0 {
                     let children = fixture
@@ -2729,15 +3461,16 @@ mod tests {
         let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
         boss.set_source_byte_46(FINAL_REWARD_PHASE);
         boss.set_source_dword_10(1);
-        fixture.runtime.bytes[68] = 0;
+        fixture.runtime.bytes[68] = 0x5a;
         let frame = boss_frame(&fixture);
         let mut current_player_id = frame.player_source_id.wrapping_add(1);
         if current_player_id == boss_owner { current_player_id = current_player_id.wrapping_add(1); }
         fixture.arena.entities[usize::from(frame.player_slot)].source_id = current_player_id;
         let mut read_after_birth = false;
 
-        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, runtime, action| {
             if let EncounterAction::ReadPlayerId { slot } = action {
+                assert_eq!(runtime.bytes[68], 0, "successful constructor clears alternate Volcano mode before the player-ID read");
                 let newborn = arena.entities.iter().find(|row|
                     row.active && (row.class, row.model, row.action) == (10, 9, 9))
                     .expect("real Volcano constructor has returned before the player-ID read");

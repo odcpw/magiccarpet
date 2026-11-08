@@ -34,6 +34,9 @@ where
         return Ok(None);
     };
 
+    // NewAdd0A09_4E760 clears the alternate Volcano mode on success, before
+    // its caller reads the current player and performs the reward writes.
+    runtime.clear_alternate_volcano();
     // Source reads the current player at its fixed address only after the
     // successful Volcano constructor, before the reward postwrites.
     let owner = current_player_id(arena, terrain, runtime)?;
