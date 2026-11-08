@@ -287,6 +287,44 @@ Keep the complete acceptance and dependencies. Then continue existing
 terrain/scenery, activation/objective and progression/flow capabilities, one
 connected runtime result at a time. Do not restart delivered spells/creatures.
 
+### Installed paid Tree burning — partial `mc-bhq.13` (2026-11-08)
+
+Source checkpoint `8eae0efe` is committed/pushed; matching optimized Original
+native `e36c2c64a7d9` is installed through `build-gqmv2iqa`. The new source is
+verification-only (`cfg(test)`); it qualifies existing gameplay rather than
+claiming a new production behavior. Real Level3 authored row14/Tree95 receives
+two distinct public, paid FireballI impacts: actual mailbox subtraction
+300→50→−200, attributed GroundFire254/generation3 construction at turn10 and
+its same-pass callback, original sprite descriptors, natural fire hide and
+following-turn160 reclaim/map unlink, and the persistent stump. The deferred
+no-cast world uses the same declared player pose/aim and leaves the tree intact.
+No target health, actor RNG, lifetime, allocator or objective state is forced.
+
+The connected check passes in 0.477 s; affected imported damage, constructor and
+lifecycle/RNG controls pass in 0.095/0.078/0.169 s. Package all-target typecheck,
+format/diff checks and independent bounded gate review pass. UBS reports no
+critical finding; added-line warnings are deliberate test assertions/access.
+An extra Level7 self-alias control cannot open its old MCI3v1 package because
+ordinary BUILD39 is absent. It stops before the Tree callback; that rare coverage
+is not claimed or weakened. Full scenery acceptance and dependencies stay open.
+
+Root verified all 654 unique inputs and the exact worker/installed artifact,
+viewed canonical map/loading/NightSpire terrain/HUD with the mapped matching
+plugin (one portal, zero retries), then stopped owned smoke processes. This is
+launch/load, not native Tree combat, human play, FPS, hardware audio, full missions
+or old saves. No Unity/art rebuild. The same bounded direct-Rig recovery used
+the existing warm target without changing compiler/profile/guards; core/native
+builds took 507.980/200.029 s. Evidence:
+`research/private/generated/scenery-20261108-integration/candidate-1` and
+`original-launch-smoke`.
+
+Next connected discriminator: real authored Level2 Dolmen108 after public
+CraterI lowers its floor must agree across scheduled contact, authoritative
+source-target state and sprite DTO. Current code appears to update only the
+typed Dolmen pose/phase; reproduce before choosing the smallest shared join.
+Preserve source Stone/Dolmen no-destruction behavior. NavyBadger owns the
+connected capability; Root implements shared joins and serializes verification.
+
 ### Qualified installed Cave paths and rooms — `mc-bhq.5` (2026-11-08)
 
 The existing implementation is committed at source checkpoint `dfb6eb15` and
