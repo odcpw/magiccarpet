@@ -12,25 +12,31 @@ use crate::native_world::{RuntimeSnapshot, SessionTerrain};
 /// The returned slot is the constructed arena row for downstream consumers,
 /// not a mission-victory signal. The caller must continue the ordinary
 /// objective/result path for either allocation outcome.
-pub(crate) fn materialize_boss_death_reward(
+pub(crate) fn materialize_boss_death_reward<F>(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     runtime: &mut RuntimeSnapshot,
     pending: &mut bool,
     position: Position,
-    owner: u16,
-) -> Result<Option<u16>, String> {
+    mut current_player_id: F,
+) -> Result<Option<u16>, String>
+where
+    F: FnMut(&mut SourceArena, &mut SessionTerrain, &mut RuntimeSnapshot) -> Result<u16, String>,
+{
     if !*pending {
         return Ok(None);
     }
 
-    let Some(slot) = crate::world::terrain::disasters::mc2::volcano::construct_owned(
-        arena, terrain, position, owner,
+    let Some(slot) = crate::world::terrain::disasters::mc2::volcano::construct(
+        arena, terrain, position,
     ) else {
         *pending = false;
         return Ok(None);
     };
 
+    // Source reads the current player at its fixed address only after the
+    // successful Volcano constructor, before the reward postwrites.
+    let owner = current_player_id(arena, terrain, runtime)?;
     {
         let source = arena
             .entities

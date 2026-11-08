@@ -568,7 +568,6 @@ pub(crate) mod magic_mine_spell;
 pub(crate) mod magic_mine_discharge;
 pub(crate) mod alliance_spell;
 pub(crate) mod directional_spells;
-pub(crate) mod final_volcano;
 mod countdown_switch;
 pub(crate) mod creatures;
 mod effects;

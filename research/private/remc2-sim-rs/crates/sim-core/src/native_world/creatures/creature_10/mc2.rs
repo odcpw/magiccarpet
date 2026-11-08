@@ -2,7 +2,8 @@
 
 use super::{
     Actor, Effects, Frame, SOURCE_DESCRIPTOR, SOURCE_FEATURE_MASK, SOURCE_INITIAL_ACTION,
-    SOURCE_INITIAL_LIFE, SOURCE_INITIAL_MANA, SOURCE_MODEL, SOURCE_PARTICLE, SummonKind,
+    PlayerPressureEffect, SOURCE_INITIAL_LIFE, SOURCE_INITIAL_MANA, SOURCE_MODEL, SOURCE_PARTICLE,
+    SummonKind,
 };
 use crate::campaign::source_arena::SourceArena;
 use crate::native_world::{EntitySnapshot, ParticleParameter, RuntimeSnapshot, SessionTerrain};
@@ -13,10 +14,25 @@ pub(crate) enum EncounterAction {
     Approach(u8),
     Refresh,
     KillCreatures { player: u16 },
+    Pressure(PlayerPressureEffect),
+    Sound { site: SoundSite, emitter: SoundEmitter, sample: u8 },
+    ReadPlayer { slot: u16 },
+    ReadPlayerId { slot: u16 },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SoundSite { Attack, Pressure, Approach, DeathRumble, DeathPeriodic }
+
+/// Resolve the addressed source at the call, including source ID zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SoundEmitter { Slot(u16), CurrentSourceId(u16) }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EncounterResponse { Done, PlayerPose { position: Position, yaw: i16 }, PlayerId(u16) }
+
 type ApplyEncounterAction<'a> =
-    dyn FnMut(&mut SourceArena, EncounterAction) -> Result<(), String> + 'a;
+    dyn FnMut(&mut SourceArena, &mut SessionTerrain, &mut RuntimeSnapshot, EncounterAction)
+        -> Result<EncounterResponse, String> + 'a;
 
 fn word(row: &EntitySnapshot, offset: usize) -> u16 {
     u16::from_le_bytes([row.record[offset], row.record[offset + 1]])
@@ -103,6 +119,8 @@ fn materialize_source_effects(
     runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     effects: &mut Effects,
+    player_slot: u16,
+    apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<(), String> {
     for request in effects.source_effects.drain(..) {
         match (request.source_type, request.source_subtype) {
@@ -110,29 +128,45 @@ fn materialize_source_effects(
                 let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
                     continue;
                 };
-                let source = arena.economy.initialize_boss_meteor(
-                    slot,
-                    request.position,
-                    request.owner_source_id,
-                );
+                arena.economy.initialize_authored_model17(slot, u16::MAX, request.position);
+                let EncounterResponse::PlayerId(owner) = apply_world(
+                    arena, terrain, runtime, EncounterAction::ReadPlayerId { slot: player_slot },
+                )? else {
+                    return Err("final encounter death Meteor lost its current player ID".to_owned());
+                };
+                let source = arena.economy.authored_model17.iter_mut()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                    .ok_or("final encounter death Meteor lost its current carrier")?;
+                source.position.z = 0;
+                source.max_life = 70;
+                source.entity_id = owner;
+                source.life = 70;
+                let position = source.position;
+                arena.economy.source_owner.insert(slot, owner);
                 crate::world::effects::sync_position(
                     arena,
                     terrain,
                     slot,
-                    source.position,
+                    position,
                     true,
                     false,
                 )?;
             }
             (10, 9) => {
                 effects.final_death_reward_slot =
-                    crate::native_world::final_volcano::materialize_boss_death_reward(
+                    super::death_reward::materialize_boss_death_reward(
                         arena,
                         terrain,
                         runtime,
                         &mut effects.final_death_reward_pending,
                         request.position,
-                        request.owner_source_id,
+                        |arena, terrain, runtime| {
+                            match apply_world(arena, terrain, runtime,
+                                EncounterAction::ReadPlayerId { slot: player_slot })? {
+                                EncounterResponse::PlayerId(owner) => Ok(owner),
+                                _ => Err("final encounter death Volcano lost its current player ID".to_owned()),
+                            }
+                        },
                     )?;
                 // Source phase15 consumes its single constructor attempt even
                 // when the arena returns None; it clears word36548 and hides
@@ -442,8 +476,8 @@ fn materialize_summons(
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
     boss_slot: u16,
-    player_slot: u16,
     effects: &mut Effects,
+    apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<(), String> {
     for request in effects.summons.drain(..) {
         let sound = match request.kind {
@@ -509,32 +543,13 @@ fn materialize_summons(
             }
         };
         if let Some(sound) = sound {
-            if request.kind == SummonKind::Model25 {
-                use crate::native_world::source_target::{self, Context};
-                // 21AB0 reads a1.id AFTER the successful constructor and
-                // child writes, then uses that ID as the sound source address.
-                let emitter = source_target::read(arena, Context::default(), boss_slot)?
-                    .ok_or("boss summon sound lost its current caller")?
-                    .source_id;
-                let source = if emitter == 0 {
-                    None
-                } else {
-                    let current = source_target::read(arena, Context::default(), emitter)?
-                        .ok_or("boss summon sound emitter is outside the source arena")?;
-                    Some((current.position, current.source_id, current.control_flags))
-                };
-                let listener = source_target::read(arena, Context::default(), player_slot)?
-                    .ok_or("boss summon sound lost its current listener")?;
-                effects.cymmerian_summon_sound = Some(super::CallSound {
-                    sample: sound,
-                    emitter,
-                    source,
-                    listener: listener.position,
-                    listener_yaw: listener
-                        .yaw
-                        .ok_or("boss summon sound listener has no current yaw")?,
-                });
-            }
+            // 21AB0 reads the current caller's ID only after successful
+            // allocation and post-constructor writes, before the next birth.
+            apply_world(arena, terrain, runtime, EncounterAction::Sound {
+                site: SoundSite::Attack,
+                emitter: SoundEmitter::CurrentSourceId(boss_slot),
+                sample: sound,
+            })?;
             effects.sounds.push(sound);
         }
     }
@@ -612,6 +627,11 @@ fn approach_step(
             }
         } else {
             effects.sounds.push(10);
+            apply_world(arena, terrain, runtime, EncounterAction::Sound {
+                site: SoundSite::Approach,
+                emitter: SoundEmitter::Slot(actor.slot),
+                sample: 10,
+            })?;
             let class = u8::try_from(15_i32.wrapping_sub(actor.timer))
                 .ok()
                 .filter(|class| *class <= 15)
@@ -632,6 +652,8 @@ fn approach_step(
         effects.kill_all_creatures = true;
         apply_world(
             arena,
+            terrain,
+            runtime,
             EncounterAction::KillCreatures {
                 player: frame.player_slot,
             },
@@ -696,7 +718,7 @@ fn approach_step(
         // models39/40/57). The world owner consumes this exact-list intent;
         // neither the player nor the boss is part of that chain.
         effects.approach_creature_mode = Some(creature_mode);
-        apply_world(arena, EncounterAction::Approach(creature_mode))?;
+        apply_world(arena, terrain, runtime, EncounterAction::Approach(creature_mode))?;
     }
 
     if continue_mana_effects {
@@ -835,6 +857,79 @@ pub(crate) fn write(arena: &mut SourceArena, actor: Actor) -> bool {
     true
 }
 
+/// Source 22270/222B0 runs after the reached sound call. It grounds the
+/// current fixed-address occupant before reading the current player pose.
+fn finish_source_tail(
+    arena: &mut SourceArena,
+    terrain: &mut SessionTerrain,
+    runtime: &mut RuntimeSnapshot,
+    parameters: &[[u8; 34]],
+    slot: u16,
+    frame: Frame,
+    apply_world: &mut ApplyEncounterAction<'_>,
+) -> Result<(), String> {
+    if let Some(kind) = arena.economy.live_arena_kind(slot) {
+        if kind == crate::native_world::Level2DynamicArenaKind::AuthoredModel17 {
+            let current = arena.economy.authored_model17.iter_mut()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .ok_or("final encounter tail lost its current model17")?;
+            current.position.z = terrain.ground_height(current.position);
+            if current.life < 10 { return Ok(()); }
+            return Err("final encounter tail current model17 lacks the source facing carrier".to_owned());
+        }
+        return Err(format!("final encounter tail slot{slot} has unsupported current {kind:?}"));
+    }
+    let row = arena.entities.get_mut(usize::from(slot))
+        .ok_or_else(|| format!("final encounter tail source address {slot} is absent"))?;
+    let mut position = row.position;
+    position.z = terrain.ground_height(position);
+    row.set_position(position);
+    if row.life < 10 { return Ok(()); }
+
+    let EncounterResponse::PlayerPose { position: player, yaw: player_yaw } = apply_world(
+        arena, terrain, runtime, EncounterAction::ReadPlayer { slot: frame.player_slot },
+    )? else {
+        return Err("final encounter tail lost its current player pose".to_owned());
+    };
+    let row = &mut arena.entities[usize::from(slot)];
+    let bucket = (((i32::from(row.yaw) - i32::from(player_yaw)) >> 3) & 0xf0) >> 4;
+    if bucket <= 2 {
+        row.set_yaw(player_yaw.wrapping_add(384) & 0x07ff);
+    } else if (13..=15).contains(&bucket) {
+        // This is the literal decompiled +6, not an inferred +1536.
+        row.set_yaw(player_yaw.wrapping_add(6) & 0x07ff);
+    } else {
+        let turn = match row.record[72] {
+            0 => {
+                row.set_source_roll(crate::heading_for_positions(row.position, player) as i16);
+                true
+            }
+            1 => true,
+            2 => {
+                let side = if frame.source_frame_timing & 1 != 0 { 512_i16 } else { -512_i16 };
+                row.set_source_roll(player_yaw.wrapping_add(1024).wrapping_add(side) & 0x07ff);
+                row.record[72] = 1;
+                true
+            }
+            3 => { row.set_source_roll(row.yaw); false }
+            _ => false,
+        };
+        if turn {
+            let index = row.parameter_relation
+                .ok_or("final encounter facing descriptor is absent")?;
+            let parameter = parameters.get(usize::from(index))
+                .ok_or("final encounter facing descriptor is out of bounds")?;
+            let _nominal = u16::from_le_bytes([parameter[4], parameter[5]]);
+            // 58350 ignores that nominal word and clamps by unsigned word2C.
+            let maximum = i16::try_from(word(row, 48).min(1024)).expect("source angle cap fits i16");
+            row.set_yaw(row.yaw.wrapping_add(crate::turn_toward(row.yaw, row.source_roll(), maximum)) & 0x07ff);
+        } else {
+            row.set_yaw(row.yaw & 0x07ff);
+        }
+    }
+    Ok(())
+}
+
 /// Integrator seam for the actual UpdateEntities source row. Typed state is
 /// decoded for one callback and committed before returned producers enter the
 /// shared same-pass tail.
@@ -843,6 +938,7 @@ pub(crate) fn step_row(
     runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
+    entity_parameters: &[[u8; 34]],
     slot: u16,
     frame: Frame,
     apply_world: &mut ApplyEncounterAction<'_>,
@@ -877,17 +973,42 @@ pub(crate) fn step_row(
         }
         _ => {}
     }
+    let source_callback = actor.action == SOURCE_INITIAL_ACTION;
+    let death_tail = source_callback && (12..=15).contains(&actor.phase);
+    if actor.action == SOURCE_INITIAL_ACTION && actor.phase == 14 {
+        // 21030 plays this before the phase-14 decrement and world effects.
+        apply_world(arena, terrain, runtime, EncounterAction::Sound {
+            site: SoundSite::DeathRumble,
+            emitter: SoundEmitter::Slot(slot),
+            sample: 10,
+        })?;
+    }
     let mut effects = super::step(&mut actor, frame, particles)?;
+    if let Some(pressure) = effects.player_pressure {
+        // 21AB0 clears the start bit before the world move; its phase timer
+        // is written only after the movement and sound have returned.
+        arena.entities[usize::from(slot)].set_subspell_index(actor.subspell_index);
+        apply_world(arena, terrain, runtime, EncounterAction::Pressure(pressure))?;
+        if pressure.palette_submod.is_some() {
+            apply_world(arena, terrain, runtime, EncounterAction::Sound {
+                site: SoundSite::Pressure,
+                emitter: SoundEmitter::CurrentSourceId(slot),
+                sample: 19,
+            })?;
+        }
+    }
     if effects.kill_all_creatures {
         apply_world(
             arena,
+            terrain,
+            runtime,
             EncounterAction::KillCreatures {
                 player: frame.player_slot,
             },
         )?;
     }
     if effects.refresh_creatures {
-        apply_world(arena, EncounterAction::Refresh)?;
+        apply_world(arena, terrain, runtime, EncounterAction::Refresh)?;
     }
     if effects.request_approach_step {
         effects.request_approach_step = false;
@@ -910,8 +1031,8 @@ pub(crate) fn step_row(
     arena.economy.source_rng.insert(slot, rng);
     arena.entities[usize::from(slot)] = row;
     crate::world::effects::sync_position(arena, terrain, slot, position, true, false)?;
-    materialize_summons(arena, runtime, terrain, particles, slot, frame.player_slot, &mut effects)?;
-    materialize_source_effects(arena, runtime, terrain, &mut effects)?;
+    materialize_summons(arena, runtime, terrain, particles, slot, &mut effects, apply_world)?;
+    materialize_source_effects(arena, runtime, terrain, &mut effects, frame.player_slot, apply_world)?;
     if effects.clear_stage_variable_count && !runtime.clear_active_stage_variable_count() {
         return Err("final encounter could not clear the active StageVar count".to_owned());
     }
@@ -920,24 +1041,63 @@ pub(crate) fn step_row(
     {
         return Err("final encounter source active-counter word is absent".to_owned());
     }
+    // Phase12 can allocate a typed model17 at the executing fixed address;
+    // phase15 can allocate raw Volcano9 there. Read the current occupant's
+    // byte3E after NewEvent, never the predecessor's captured counter.
+    let current_counter = if death_tail {
+        match arena.economy.live_arena_kind(slot) {
+            Some(crate::native_world::Level2DynamicArenaKind::AuthoredModel17) => Some(
+                arena.economy.authored_model17().iter()
+                    .find(|row| row.active && row.source_entity_index == slot)
+                    .ok_or("final encounter death-tail model17 lost its current carrier")?
+                    .phase,
+            ),
+            None => Some(arena.entities[usize::from(slot)].phase),
+            Some(kind) => return Err(format!(
+                "final encounter death-tail slot{slot} has no current counter for {kind:?}"
+            )),
+        }
+    } else {
+        None
+    };
+    if current_counter.is_some_and(|counter| counter & 3 == 0) {
+        // LABEL48 is after death/reward allocation and its current-address
+        // writes, immediately before the source animation tail.
+        apply_world(arena, terrain, runtime, EncounterAction::Sound {
+            site: SoundSite::DeathPeriodic,
+            emitter: SoundEmitter::Slot(slot),
+            sample: 63,
+        })?;
+        effects.sounds.push(63);
+    }
+    if source_callback {
+        finish_source_tail(arena, terrain, runtime, entity_parameters, slot, frame, apply_world)?;
+    }
     Ok(effects)
 }
 
 /// Source sub_223E0 and sub_21F60 run immediately before action80. The
 /// population lists are frozen at pass start; callbacks still use the live
 /// numeric arena scan, so a higher newly allocated slot can run this pass.
+fn source_player_attack_eligible(player: &EntitySnapshot) -> bool {
+    // 21AB0 rejects the source null address and byte1 bit4 (0x400).
+    player.index != 0 && player.life >= 0 && !player.drawing_disabled()
+}
+
 pub(crate) fn scheduled_step(
     arena: &mut SourceArena,
     runtime: &mut RuntimeSnapshot,
     terrain: &mut SessionTerrain,
     shared_spells: &mut crate::native_world::Level2SharedSpellResetSession,
     particles: &[ParticleParameter],
+    entity_parameters: &[[u8; 34]],
     animations: &crate::source_animation::SourceAnimationResidency,
     slot: u16,
     player_slot: u16,
     families: &[Vec<u16>; 29],
     class9: &[u16],
     setting_30: u8,
+    source_frame_timing: u8,
     apply_world: &mut ApplyEncounterAction<'_>,
 ) -> Result<Effects, String> {
     let player = arena
@@ -949,10 +1109,11 @@ pub(crate) fn scheduled_step(
         player_slot,
         player_source_id: player.source_id,
         player_position: player.position,
-        player_alive: player.life >= 0 && !player.drawing_disabled(),
+        player_alive: source_player_attack_eligible(player),
         player_class: player.class,
         player_model: player.model,
         source_setting: u16::from(setting_30),
+        source_frame_timing,
         pressure_speed: runtime
             .final_boss_pressure_speed()
             .ok_or("final encounter pressure-speed word is absent")?,
@@ -1009,13 +1170,7 @@ pub(crate) fn scheduled_step(
             .ok_or_else(|| format!("final encounter particle{index} has invalid animation mode"))?;
         frame.source_animation_timer = animations.boss_timer_read(particle.base_tmap)?;
     }
-    let effects = step_row(arena, runtime, terrain, particles, slot, frame, apply_world)?;
-    if let Some(pressure) = effects.player_pressure
-        && !runtime.set_final_boss_pressure_speed(pressure.speed)
-    {
-        return Err("final encounter could not store its pressure speed".to_owned());
-    }
-    Ok(effects)
+    step_row(arena, runtime, terrain, particles, entity_parameters, slot, frame, apply_world)
 }
 
 #[cfg(test)]
@@ -1609,16 +1764,39 @@ mod tests {
             // Declared player-only survival resource, allowing natural boss
             // selection and flight to proceed without scripted combat.
             let live = &mut campaign.simulation_mut().session.state.live;
-            live.player_life = 200_000;
-            live.shared_spells.set_player_entity_life(200_000);
-            live.economy.entities[usize::from(player)].set_life(200_000);
+            let player_row = &mut live.economy.entities[usize::from(player)];
+            player_row.set_max_life(200_000);
+            player_row.set_life(200_000);
+            let player_row = player_row.clone();
+            live.player_life = player_row.life;
+            live.shared_spells.sync_player_entity_from_authority(&player_row);
         }
 
+        let player_snapshot = |simulation: &crate::native_world::Mc2Simulation| {
+            let row = &simulation.entities()[usize::from(player)];
+            (row.life, row.max_life, row.control_flags, row.position, simulation.state.position)
+        };
+        let initial_player = player_snapshot(campaign.simulation());
         let mut child = None;
         let mut first_position = None;
         let mut last_boss = None;
+        let mut first_wait = None;
+        let mut last_wait = None;
+        let mut first_attack = None;
+        let mut final_player = initial_player;
+        let mut mode6_ready_visits = 0_u32;
+        let mut attack44_calls = 0_usize;
         for turn in 0..4096 {
+            if load(&campaign.simulation().entities()[usize::from(boss)])
+                .is_some_and(|actor| actor.phase == 9 && actor.summon_mode == 6 && actor.attack_remaining != 0)
+            {
+                mode6_ready_visits += 1;
+            }
+            campaign.simulation().start_creature17_trace();
             campaign.step(crate::PlayerCommand::default(), 0);
+            let trace = campaign.simulation().take_creature17_trace();
+            attack44_calls += trace.boss_sound_calls.iter().filter(|call|
+                call.caller == Some(parent) && call.site == SoundSite::Attack && call.sample == 44).count();
             assert!(!campaign.simulation().dispatch_events().iter().any(|event|
                 matches!(event, Mc2DispatchEvent::Error { .. })),
                 "boss Firefly turn {turn}: {:?}", campaign.simulation().dispatch_events());
@@ -1632,6 +1810,19 @@ mod tests {
             let arena = simulation.source_arena();
             last_boss = load(&simulation.entities()[usize::from(boss)])
                 .map(|actor| (actor.phase, actor.summon_mode, actor.timer, actor.rng, actor.life));
+            final_player = player_snapshot(simulation);
+            if last_boss.is_some_and(|(phase, _, _, _, _)| phase == 9) {
+                first_attack.get_or_insert((turn, last_boss, final_player));
+            }
+            if last_boss.is_some_and(|(phase, _, timer, _, _)| phase == 3 && timer <= 0) {
+                let source_boss = &simulation.entities()[usize::from(boss)];
+                let source_player = &simulation.entities()[usize::from(player)];
+                let snapshot = (turn, source_boss.position, source_player.position,
+                    source_player.life, source_player.control_flags, source_player.action,
+                    simulation.state.position, super::super::distance(source_boss.position, source_player.position));
+                first_wait.get_or_insert(snapshot);
+                last_wait = Some(snapshot);
+            }
             if child.is_none() {
                 let census = arena.creature_runtime_census(&BTreeMap::new(), &BTreeMap::new());
                 child = census.entries().iter().find(|entry|
@@ -1641,6 +1832,42 @@ mod tests {
                         && arena.creature_parent_binding(entry.handle) == Some(parent))
                     .map(|entry| entry.handle);
                 if let Some(handle) = child {
+                    let call = trace.boss_sound_calls.iter().find(|call|
+                        call.caller == Some(parent)
+                            && call.site == SoundSite::Attack
+                            && call.emitter == boss_owner
+                            && call.sample == 44)
+                        .expect("the original boss's real Firefly birth reaches source sound44");
+                    assert_eq!(call.rng_before, call.rng_after,
+                        "source sound preparation reads but does not advance RNG");
+                    let record = simulation.effect_journal().records().iter()
+                        .find(|record| record.sequence == call.journal_sequence)
+                        .expect("the actual sound call reaches the prepared Flight journal");
+                    assert!(matches!(record.effect, crate::campaign::journal::CampaignEffect::Flight(
+                        crate::FlightEvent::PrepareSound {
+                            audio_site: crate::MissionAudioSite::BossAttack,
+                            entity_index, player_index: -1, sound_id: 44,
+                        }) if entity_index == boss_owner));
+                    let audio = record.audio.expect("the actual Firefly attack prepares native audio");
+                    assert!(audio.command.audible, "the real nearby listener hears the attack");
+                    assert_eq!(audio.play_type, 3);
+                    if boss_owner == 0 {
+                        assert!(call.source.is_none() && call.listener.is_none());
+                        assert_eq!(audio.command.rate_delta_percent, 0);
+                    } else {
+                        let (emitter, source_position, _, flags) = call.source
+                            .expect("non-null source resolves at the actual sound call");
+                        let (listener, listener_position, _) = call.listener
+                            .expect("non-muted source reads the actual listener");
+                        assert_eq!((emitter.source_slot, listener.source_slot), (boss_owner, player));
+                        assert_eq!(flags & 0x80, 0);
+                        assert_eq!((audio.command.relative_x, audio.command.relative_y, audio.command.relative_z),
+                            (i32::from(source_position.x) - i32::from(listener_position.x),
+                             i32::from(source_position.y) - i32::from(listener_position.y),
+                             i32::from(source_position.z) - i32::from(listener_position.z)));
+                        let rate = (call.rng_before.wrapping_mul(9_377).wrapping_add(9_439) % 30) as i16 - 15;
+                        assert_eq!(audio.command.rate_delta_percent, rate);
+                    }
                     let root = arena.economy.authored_class5().iter().find(|row|
                         row.source_entity_index == handle.source_slot).unwrap();
                     let state = arena.economy.authored_fireflies().iter().find(|row|
@@ -1687,14 +1914,31 @@ mod tests {
                 }
             }
         }
-        panic!("unaltered Level25 boss did not produce and launch Firefly: boss={last_boss:?} child={child:?}");
+        panic!("unaltered Level25 boss did not produce and launch Firefly: boss={last_boss:?} child={child:?} initial_player={initial_player:?} first_attack={first_attack:?} final_player={final_player:?} mode6_ready_visits={mode6_ready_visits} attack44_calls={attack44_calls} first_postturn_wait={first_wait:?} last_postturn_wait={last_wait:?}");
     }
 
     // These existing checks isolate boss phase/constructor behavior. The
     // source-time callback/order and actual carrier mutations have separate
     // regressions; they are not inferred from this phase-only observer.
-    fn ignore_world_action(_: &mut SourceArena, _: EncounterAction) -> Result<(), String> {
-        Ok(())
+    fn ignore_world_action(
+        arena: &mut SourceArena,
+        _: &mut SessionTerrain,
+        _: &mut RuntimeSnapshot,
+        action: EncounterAction,
+    ) -> Result<EncounterResponse, String> {
+        Ok(test_world_response(arena, action))
+    }
+
+    fn test_world_response(arena: &SourceArena, action: EncounterAction) -> EncounterResponse {
+        match action {
+            EncounterAction::ReadPlayer { slot } => {
+                let row = &arena.entities[usize::from(slot)];
+                EncounterResponse::PlayerPose { position: row.position, yaw: row.yaw }
+            }
+            EncounterAction::ReadPlayerId { slot } =>
+                EncounterResponse::PlayerId(arena.entities[usize::from(slot)].source_id),
+            _ => EncounterResponse::Done,
+        }
     }
 
     struct Source24Fixture {
@@ -1702,6 +1946,7 @@ mod tests {
         runtime: RuntimeSnapshot,
         terrain: SessionTerrain,
         particles: Vec<ParticleParameter>,
+        entity_parameters: Vec<[u8; 34]>,
         player_slot: u16,
         player_source_id: u16,
         player_position: Position,
@@ -1735,6 +1980,7 @@ mod tests {
             crate::native_world::parse_presentation(package.member("presentation.bin").unwrap())
                 .unwrap();
         let particles = presentation.particles.to_vec();
+        let entity_parameters = presentation.entity_parameters.to_vec();
         let mut terrain = SessionTerrain::from_planes(
             crate::native_world::MapType::Night,
             crate::native_world::parse_terrain(package.member("terrain.bin").unwrap()).unwrap(),
@@ -1792,6 +2038,7 @@ mod tests {
             runtime,
             terrain,
             particles,
+            entity_parameters,
             player_slot,
             player_source_id,
             player_position,
@@ -1830,6 +2077,25 @@ mod tests {
             player_model: 0,
             ..Frame::default()
         }
+    }
+
+    #[test]
+    fn source_summon_rejects_null_dead_and_byte1_bit4_player() {
+        let fixture = source24_fixture();
+        let mut player = fixture.arena.entities[usize::from(fixture.player_slot)].clone();
+        assert_ne!(player.index, 0);
+        player.set_life(1);
+        player.set_control_flags(4);
+        assert!(source_player_attack_eligible(&player), "low-byte 0x04 is not source byte1 0x04");
+        player.set_control_flags(0x400);
+        assert!(!source_player_attack_eligible(&player));
+        player.set_control_flags(0);
+        player.set_life(-1);
+        assert!(!source_player_attack_eligible(&player));
+        player.set_life(0);
+        assert!(source_player_attack_eligible(&player));
+        player.index = 0;
+        assert!(!source_player_attack_eligible(&player));
     }
 
     fn exhaust(arena: &mut SourceArena) {
@@ -1872,19 +2138,14 @@ mod tests {
             let before = fixture.arena.economy.model13_spawned_children().len();
             let frame = boss_frame(&fixture);
             let mut observed = Vec::new();
-            step_row(
-                &mut fixture.arena,
-                &mut fixture.runtime,
-                &mut fixture.terrain,
-                &fixture.particles,
-                boss_slot,
-                frame,
-                &mut |arena, action| {
-                    assert_eq!(arena.economy.model13_spawned_children().len(), before);
-                    observed.push(action);
-                    Ok(())
-                },
-            )
+            step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+                if matches!(action, EncounterAction::ReadPlayer { .. }) {
+                    return Ok(test_world_response(arena, action));
+                }
+                assert_eq!(arena.economy.model13_spawned_children().len(), before);
+                observed.push(action);
+                Ok(EncounterResponse::Done)
+            })
             .unwrap();
             let mut expected = vec![EncounterAction::KillCreatures {
                 player: frame.player_slot,
@@ -1912,9 +2173,10 @@ mod tests {
                 &mut fixture.runtime,
                 &mut fixture.terrain,
                 &fixture.particles,
+                &fixture.entity_parameters,
                 boss_slot,
                 frame,
-                &mut |_, _| Err("world action failed".to_owned()),
+                &mut |_, _, _, _| Err("world action failed".to_owned()),
             )
             .is_err()
         );
@@ -1922,6 +2184,110 @@ mod tests {
             fixture.arena.economy.model13_spawned_children().len(),
             before
         );
+    }
+
+    #[test]
+    fn configured_death_sounds_follow_source_phase_and_counter_order() {
+        for (counter, expected_periodic) in [(0_u8, true), (1, false)] {
+            let (mut fixture, boss_slot) = boss_fixture();
+            let ground = fixture.terrain.ground_height(fixture.boss_position);
+            let sound_z = ground.wrapping_add(384);
+            let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
+            boss.set_position(Position { z: sound_z, ..boss.position });
+            boss.set_source_byte_46(14);
+            boss.set_source_dword_10(1);
+            boss.set_phase(counter);
+            let frame = boss_frame(&fixture);
+            let mut observed = Vec::new();
+            let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+                let row = &arena.entities[usize::from(boss_slot)];
+                observed.push((action, row.record[74], row.source_dword_10(), row.life, row.position.z));
+                Ok(test_world_response(arena, action))
+            }).unwrap();
+            assert_eq!(observed[0].0, EncounterAction::Sound {
+                site: SoundSite::DeathRumble, emitter: SoundEmitter::Slot(boss_slot), sample: 10,
+            });
+            assert_eq!((observed[0].1, observed[0].2), (14, 1),
+                "the source rumble precedes the phase-14 decrement");
+            let periodic = observed.iter().find(|entry| matches!(entry.0,
+                EncounterAction::Sound { site: SoundSite::DeathPeriodic, .. }));
+            assert_eq!(periodic.is_some(), expected_periodic);
+            if let Some(entry) = periodic {
+                assert_eq!(entry.0, EncounterAction::Sound {
+                    site: SoundSite::DeathPeriodic, emitter: SoundEmitter::Slot(boss_slot), sample: 63,
+                });
+                assert_eq!((entry.1, entry.2, entry.3), (15, 60, -1),
+                    "the periodic source tail sees the post-transition actor");
+                assert_eq!(entry.4, sound_z, "sound63 precedes source22270 grounding");
+            }
+            assert_eq!(fixture.arena.entities[usize::from(boss_slot)].position.z, ground);
+            assert_eq!(effects.sounds.contains(&10), true);
+            assert_eq!(effects.sounds.contains(&63), expected_periodic);
+        }
+    }
+
+    #[test]
+    fn configured_pressure_sound_follows_actual_world_movement() {
+        let (mut fixture, boss_slot) = boss_fixture();
+        let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
+        boss.record[71] = 7;
+        boss.set_subspell_index(2);
+        let frame = boss_frame(&fixture);
+        let mut observed = Vec::new();
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+            if matches!(action, EncounterAction::ReadPlayer { .. }) {
+                return Ok(test_world_response(arena, action));
+            }
+            if let EncounterAction::Pressure(pressure) = action {
+                assert_eq!(arena.entities[usize::from(boss_slot)].subspell_index & 2, 0);
+                arena.entities[usize::from(pressure.player_slot)].set_position(pressure.proposed_position);
+            }
+            observed.push((action, arena.entities[usize::from(frame.player_slot)].position));
+            Ok(EncounterResponse::Done)
+        }).unwrap();
+        let pressure = effects.player_pressure.unwrap();
+        assert_eq!(observed, vec![
+            (EncounterAction::Pressure(pressure), pressure.proposed_position),
+            (EncounterAction::Sound {
+                site: SoundSite::Pressure, emitter: SoundEmitter::CurrentSourceId(boss_slot), sample: 19,
+            }, pressure.proposed_position),
+        ]);
+        assert_eq!(effects.sounds, vec![19]);
+    }
+
+    #[test]
+    fn configured_source_tail_grounds_then_uses_current_player_and_frame_timing() {
+        for (yaw, variant, timing, expected_yaw, expected_roll, expected_variant) in [
+            (256_i16, 0_u8, 0_u8, 384_i16, 0_i16, 0_u8),
+            (1664, 0, 0, 6, 0, 0),
+            (1024, 2, 0, 1002, 512, 1),
+            (1024, 2, 1, 1046, 1536, 1),
+            (1024, 3, 0, 1024, 1024, 3),
+        ] {
+            let (mut fixture, boss_slot) = boss_fixture();
+            let ground = fixture.terrain.ground_height(fixture.boss_position);
+            let boss = &mut fixture.arena.entities[usize::from(boss_slot)];
+            boss.set_position(Position { z: ground.wrapping_add(384), ..boss.position });
+            boss.set_yaw(yaw);
+            boss.set_source_roll(0);
+            boss.record[72] = variant;
+            boss.record[48..50].copy_from_slice(&22_u16.to_le_bytes());
+            let mut frame = boss_frame(&fixture);
+            frame.source_frame_timing = timing;
+            finish_source_tail(
+                &mut fixture.arena, &mut fixture.terrain, &mut fixture.runtime,
+                &fixture.entity_parameters, boss_slot, frame,
+                &mut |arena, _, _, action| {
+                    assert_eq!(arena.entities[usize::from(boss_slot)].position.z, ground,
+                        "source22270 grounds before reading the current player");
+                    assert_eq!(action, EncounterAction::ReadPlayer { slot: frame.player_slot });
+                    Ok(EncounterResponse::PlayerPose { position: frame.player_position, yaw: 0 })
+                },
+            ).unwrap();
+            let boss = &fixture.arena.entities[usize::from(boss_slot)];
+            assert_eq!((boss.yaw, boss.source_roll(), boss.record[72]),
+                (expected_yaw, expected_roll, expected_variant));
+        }
     }
 
     #[test]
@@ -1953,15 +2319,7 @@ mod tests {
         boss.set_source_dword_10(0);
 
         let frame = boss_frame(&fixture);
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        )
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
         .unwrap();
 
         let boss = &fixture.arena.entities[usize::from(boss_slot)];
@@ -2032,15 +2390,7 @@ mod tests {
             boss.set_subspell_index(8);
             boss.set_source_dword_10(-1);
             let frame = boss_frame(&fixture);
-            let effects = step_row(
-                &mut fixture.arena,
-                &mut fixture.runtime,
-                &mut fixture.terrain,
-                &fixture.particles,
-                boss_slot,
-                frame,
-                &mut ignore_world_action,
-            )
+            let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
             .unwrap();
             let boss = &fixture.arena.entities[usize::from(boss_slot)];
             assert_eq!(boss.record[74], 1);
@@ -2054,15 +2404,7 @@ mod tests {
             assert!(effects.sounds.is_empty());
             if !blocked {
                 let retained_rows = fixture.runtime.stage_variables.clone();
-                let effects = step_row(
-                    &mut fixture.arena,
-                    &mut fixture.runtime,
-                    &mut fixture.terrain,
-                    &fixture.particles,
-                    boss_slot,
-                    frame,
-                    &mut ignore_world_action,
-                )
+                let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
                 .unwrap();
                 assert!(effects.kill_all_creatures);
                 assert!(effects.clear_stage_variable_count);
@@ -2085,15 +2427,7 @@ mod tests {
         boss.set_source_dword_10(0);
 
         let frame = boss_frame(&fixture);
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        )
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
         .unwrap();
 
         let boss = &fixture.arena.entities[usize::from(boss_slot)];
@@ -2153,15 +2487,7 @@ mod tests {
     fn boss_model21_stagevar_summon_constructs_real_child_and_only_then_plays_sound() {
         let (mut fixture, boss_slot) = boss_fixture();
         let frame = boss_frame(&fixture);
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        )
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
         .unwrap();
 
         assert!(
@@ -2210,15 +2536,7 @@ mod tests {
         let (mut fixture, boss_slot) = boss_fixture();
         fixture.arena.entities[usize::from(boss_slot)].record[71] = 6;
         let frame = boss_frame(&fixture);
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        ).unwrap();
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action).unwrap();
         assert!(effects.summons.is_empty());
         assert!(effects.sounds.contains(&44));
         let child = fixture.arena.economy.authored_class5.iter()
@@ -2258,15 +2576,7 @@ mod tests {
         let (mut fixture, boss_slot) = boss_fixture();
         exhaust(&mut fixture.arena);
         let frame = boss_frame(&fixture);
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        )
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut ignore_world_action)
         .unwrap();
 
         assert!(
@@ -2301,18 +2611,21 @@ mod tests {
                     exhaust(&mut fixture.arena);
                 }
                 let frame = boss_frame(&fixture);
-                let effects = step_row(
-                    &mut fixture.arena,
-                    &mut fixture.runtime,
-                    &mut fixture.terrain,
-                    &fixture.particles,
-                    boss_slot,
-                    frame,
-                    &mut ignore_world_action,
-                )
+                let mut sounds = Vec::new();
+                let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+                    if matches!(action, EncounterAction::Sound { .. }) {
+                        sounds.push(action);
+                    }
+                        Ok(test_world_response(arena, action))
+                })
                 .unwrap();
                 assert!(effects.summons.is_empty());
                 assert_eq!(effects.sounds.contains(&sound), !full);
+                assert_eq!(sounds.contains(&EncounterAction::Sound {
+                    site: SoundSite::Attack,
+                    emitter: SoundEmitter::CurrentSourceId(boss_slot),
+                    sample: sound,
+                }), !full, "only a successful source constructor reaches the sound call");
                 let owner = fixture.arena.entities[usize::from(boss_slot)].source_id;
                 if model == 0 {
                     let children = fixture
@@ -2370,6 +2683,46 @@ mod tests {
     }
 
     #[test]
+    fn phase12_reads_current_player_id_after_real_meteor_constructor() {
+        let (mut fixture, boss_slot) = boss_fixture();
+        fixture.arena.entities[usize::from(boss_slot)].set_source_byte_46(12);
+        let frame = boss_frame(&fixture);
+        let current_player_id = frame.player_source_id.wrapping_add(1);
+        fixture.arena.entities[usize::from(frame.player_slot)].source_id = current_player_id;
+        let previous_count = fixture.arena.economy.authored_model17.len();
+        let mut read_after_birth = false;
+        step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles,
+            &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+                if let EncounterAction::ReadPlayerId { slot } = action {
+                    assert_eq!(slot, frame.player_slot);
+                    assert_eq!(arena.economy.authored_model17.len(), previous_count + 1);
+                    let newborn = arena.economy.authored_model17.last().unwrap();
+                    assert_eq!((newborn.life, newborn.max_life), (10, 10),
+                        "the actual Meteor constructor precedes the player-ID read and postwrites");
+                    read_after_birth = true;
+                }
+                Ok(test_world_response(arena, action))
+            }).unwrap();
+        assert!(read_after_birth);
+        let meteor = fixture.arena.economy.authored_model17.last().unwrap();
+        assert_eq!((meteor.life, meteor.max_life, meteor.position.z, meteor.entity_id),
+            (70, 70, 0, current_player_id));
+        assert_eq!(fixture.arena.economy.source_owner(meteor.source_entity_index), current_player_id);
+
+        let (mut fixture, boss_slot) = boss_fixture();
+        fixture.arena.entities[usize::from(boss_slot)].set_source_byte_46(12);
+        exhaust(&mut fixture.arena);
+        let frame = boss_frame(&fixture);
+        let mut owner_reads = 0;
+        step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles,
+            &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+                if matches!(action, EncounterAction::ReadPlayerId { .. }) { owner_reads += 1; }
+                Ok(test_world_response(arena, action))
+            }).unwrap();
+        assert_eq!(owner_reads, 0, "failed Meteor NewEvent does not read the player ID");
+    }
+
+    #[test]
     fn phase15_materializes_the_owned_volcano_and_sets_success_flag() {
         let (mut fixture, boss_slot) = boss_fixture();
         let boss_owner = fixture.arena.entities[usize::from(boss_slot)].source_id;
@@ -2378,16 +2731,22 @@ mod tests {
         boss.set_source_dword_10(1);
         fixture.runtime.bytes[68] = 0;
         let frame = boss_frame(&fixture);
+        let mut current_player_id = frame.player_source_id.wrapping_add(1);
+        if current_player_id == boss_owner { current_player_id = current_player_id.wrapping_add(1); }
+        fixture.arena.entities[usize::from(frame.player_slot)].source_id = current_player_id;
+        let mut read_after_birth = false;
 
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        )
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+            if let EncounterAction::ReadPlayerId { slot } = action {
+                let newborn = arena.entities.iter().find(|row|
+                    row.active && (row.class, row.model, row.action) == (10, 9, 9))
+                    .expect("real Volcano constructor has returned before the player-ID read");
+                assert_eq!((newborn.life, newborn.max_life), (17, 11));
+                assert_eq!(slot, frame.player_slot);
+                read_after_birth = true;
+            }
+            Ok(test_world_response(arena, action))
+        })
         .unwrap();
 
         let reward_slot = effects
@@ -2399,7 +2758,9 @@ mod tests {
         assert_eq!(fixture.runtime.bytes[68], 1);
         assert_eq!((reward.class, reward.model, reward.action), (10, 9, 9));
         assert_eq!((reward.life, reward.max_life), (32, 11));
-        assert_eq!(reward.source_id, boss_owner);
+        assert!(read_after_birth);
+        assert_ne!(frame.player_source_id, current_player_id);
+        assert_eq!(reward.source_id, current_player_id);
         assert!(effects.hide);
         assert_eq!(effects.final_boss_active_counter, Some(0));
         assert!(fixture.arena.entities[usize::from(boss_slot)].drawing_disabled());
@@ -2414,19 +2775,16 @@ mod tests {
         fixture.runtime.bytes[68] = 0x5a;
         exhaust(&mut fixture.arena);
         let frame = boss_frame(&fixture);
+        let mut owner_reads = 0;
 
-        let effects = step_row(
-            &mut fixture.arena,
-            &mut fixture.runtime,
-            &mut fixture.terrain,
-            &fixture.particles,
-            boss_slot,
-            frame,
-            &mut ignore_world_action,
-        )
+        let effects = step_row(&mut fixture.arena, &mut fixture.runtime, &mut fixture.terrain, &fixture.particles, &fixture.entity_parameters, boss_slot, frame, &mut |arena, _, _, action| {
+            if matches!(action, EncounterAction::ReadPlayerId { .. }) { owner_reads += 1; }
+            Ok(test_world_response(arena, action))
+        })
         .unwrap();
 
         assert_eq!(effects.final_death_reward_slot, None);
+        assert_eq!(owner_reads, 0, "failed NewEvent does not read the player ID");
         assert!(effects.final_death_reward_attempted);
         assert!(!effects.final_death_reward_pending);
         assert_eq!(fixture.runtime.bytes[68], 0x5a);

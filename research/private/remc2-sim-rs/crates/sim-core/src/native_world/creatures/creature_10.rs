@@ -8,6 +8,7 @@ use crate::Position;
 
 pub(crate) mod mc2;
 pub(crate) mod protection;
+pub(crate) mod death_reward;
 
 pub(crate) const SOURCE_CLASS: u8 = 5;
 pub(crate) const SOURCE_MODEL: u8 = 10;
@@ -109,7 +110,6 @@ pub(crate) struct SourceEffectRequest {
     pub source_subtype: u8,
     pub position: Position,
     pub post_position: Option<Position>,
-    pub owner_source_id: u16,
     pub life: Option<i32>,
     pub max_life: Option<i32>,
 }
@@ -132,9 +132,6 @@ pub(crate) struct PlayerPressureEffect {
 pub(crate) struct Effects {
     pub animation: Option<u16>,
     pub sounds: Vec<u8>,
-    /// Source21AB0's successful model25 sound37, captured after NewEvent.
-    /// The numeric sound also remains in the existing outcome observation.
-    pub cymmerian_summon_sound: Option<CallSound>,
     pub summons: Vec<SummonRequest>,
     pub source_effects: Vec<SourceEffectRequest>,
     pub player_pressure: Option<PlayerPressureEffect>,
@@ -164,16 +161,6 @@ pub(crate) struct Effects {
     pub hide: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CallSound {
-    pub sample: u8,
-    pub emitter: u16,
-    /// None is source PrepareEventSound's null/full-centred branch.
-    pub source: Option<(Position, u16, u32)>,
-    pub listener: Position,
-    pub listener_yaw: i16,
-}
-
 /// Per-pass world facts consumed by the source boss callback. Population
 /// limits come from the live shared source arena, so summon decisions cannot
 /// drift into a family-owned counter.
@@ -189,6 +176,8 @@ pub(crate) struct Frame {
     pub model21_count: u16,
     pub model25_count: u16,
     pub source_setting: u16,
+    /// Source FrameTimingIndex_26, not the entity's callback counter.
+    pub source_frame_timing: u8,
     /// The optional literal source animation-table read for this callback.
     /// Unloaded assets leave the source's already assigned timer intact.
     pub source_animation_timer: Option<u16>,
@@ -238,7 +227,6 @@ fn request_source_effect(
     effects: &mut Effects,
     source_subtype: u8,
     position: Position,
-    owner_source_id: u16,
     post_position: Option<Position>,
     life: Option<i32>,
     max_life: Option<i32>,
@@ -248,7 +236,6 @@ fn request_source_effect(
         source_subtype,
         position,
         post_position,
-        owner_source_id,
         life,
         max_life,
     });
@@ -264,8 +251,7 @@ fn step_phase_three(actor: &mut Actor, frame: Frame) {
         actor.phase = 6;
     } else {
         actor.timer = actor.timer.wrapping_sub(1);
-        if frame.player_alive
-            && distance(actor.position, frame.player_position) < 0x2000
+        if distance(actor.position, frame.player_position) < 0x2000
             && actor.timer <= 0
         {
             actor.phase = if next_rng(actor) % 12 < 9 { 4 } else { 6 };
@@ -405,7 +391,6 @@ pub(crate) fn step(
                 &mut effects,
                 17,
                 actor.position,
-                actor.source_id,
                 Some(Position {
                     z: 0,
                     ..actor.position
@@ -446,7 +431,6 @@ pub(crate) fn step(
                     &mut effects,
                     9,
                     actor.position,
-                    actor.source_id,
                     None,
                     Some(32),
                     Some(11),
@@ -462,9 +446,8 @@ pub(crate) fn step(
 }
 
 fn distance(a: Position, b: Position) -> u32 {
-    crate::legacy_sqrt(crate::native_world::level2_wrapping_source_distance_3d(
-        a, b,
-    ))
+    // Despite its name, source EuclideanDistXYZ_58490 uses only X and Y.
+    crate::native_world::level2_wrapping_target_distance(a, b)
 }
 
 fn set_animation(
@@ -781,6 +764,7 @@ impl Default for Frame {
             model21_count: 0,
             model25_count: 0,
             source_setting: 0,
+            source_frame_timing: 0,
             source_animation_timer: None,
             pressure_speed: 0,
             player_class: 0,
@@ -833,6 +817,37 @@ mod tests {
             pending_attacker: 0,
             source_counter: 0,
         }
+    }
+
+    #[test]
+    fn phase_three_uses_source_xy_distance_without_player_status_gate() {
+        let mut near = pressure_actor();
+        near.phase = 3;
+        near.timer = 1;
+        near.subspell_index = 0;
+        let before_rng = near.rng;
+        let frame = Frame {
+            player_position: Position { z: -20_000, ..near.position },
+            player_alive: false,
+            ..Frame::default()
+        };
+        step_phase_three(&mut near, frame);
+        assert!(matches!(near.phase, 4 | 6), "source58490 ignores Z and player status");
+        assert_eq!(near.rng, before_rng.wrapping_mul(9_377).wrapping_add(9_439));
+
+        let mut far = pressure_actor();
+        far.phase = 3;
+        far.timer = 1;
+        far.subspell_index = 0;
+        let before_rng = far.rng;
+        let frame = Frame {
+            player_position: Position { x: far.position.x.wrapping_add(8_192), ..far.position },
+            player_alive: true,
+            ..Frame::default()
+        };
+        step_phase_three(&mut far, frame);
+        assert_eq!((far.phase, far.timer, far.rng), (3, 0, before_rng),
+            "source58490's 8192 boundary is strict and consumes no RNG");
     }
 
     #[test]
@@ -1208,7 +1223,6 @@ mod tests {
     #[test]
     fn phase15_death_reward_is_requested_only_after_terminal_delay() {
         let mut actor = pressure_actor();
-        let actor_source_id = actor.source_id;
         actor.phase = 14;
         actor.timer = 1;
         actor.life = 8;
@@ -1231,7 +1245,6 @@ mod tests {
             .first()
             .expect("expiry requests the source Volcano constructor");
         assert_eq!((reward.source_type, reward.source_subtype), (10, 9));
-        assert_eq!(reward.owner_source_id, actor_source_id);
         assert_eq!(reward.life, Some(32));
         assert_eq!(reward.max_life, Some(11));
         assert!(effects.final_death_reward_pending);

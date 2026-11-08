@@ -736,6 +736,11 @@ pub enum MissionAudioSite {
     HydraAfterAttack,
     HydraProjectile,
     HydraRelocation,
+    BossAttack,
+    BossPressure,
+    BossApproach,
+    BossDeathRumble,
+    BossDeathPeriodic,
     Count,
 }
 
@@ -1225,6 +1230,11 @@ impl MissionAudioSite {
         Self::HydraAfterAttack,
         Self::HydraProjectile,
         Self::HydraRelocation,
+        Self::BossAttack,
+        Self::BossPressure,
+        Self::BossApproach,
+        Self::BossDeathRumble,
+        Self::BossDeathPeriodic,
     ];
 
     #[must_use]
@@ -1588,6 +1598,46 @@ impl MissionAudioSite {
                 "3",
                 "fixed 0",
                 "EventsFunctions.cpp:13509 sub_21AB0 successful mode5",
+                true,
+            ),
+            Self::BossAttack => (
+                "8/15/23/42/44",
+                "current record addressed by boss source ID after successful child construction",
+                "1/3",
+                "read-only source RNG for42/44; others fixed0",
+                "EventsFunctions.cpp sub_21AB0 successful projectile and minion branches",
+                true,
+            ),
+            Self::BossPressure => (
+                "19",
+                "current record addressed by boss source ID after player displacement",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp sub_21AB0 mode7 after sub_102D0 and terrain clearance",
+                true,
+            ),
+            Self::BossApproach => (
+                "10",
+                "boss physical slot before approach phase transition",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp sub_21490 reached approach branch",
+                true,
+            ),
+            Self::BossDeathRumble => (
+                "10",
+                "boss physical slot before phase14 timer and world mutations",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp sub_21030 phase14 entry",
+                true,
+            ),
+            Self::BossDeathPeriodic => (
+                "63",
+                "boss physical slot after phase12..15 allocation, world and hide work",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp sub_21030 LABEL_48 counter divisible by4",
                 true,
             ),
             Self::WyvernAttack => (

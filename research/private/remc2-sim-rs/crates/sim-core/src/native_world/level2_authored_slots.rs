@@ -3475,27 +3475,6 @@ impl Level2EconomyState {
         source
     }
 
-    /// Final encounter phase12 calls AddMeteor_4ED70 and then overwrites the
-    /// same typed source carrier. The caller owns NewEvent and map publication.
-    pub(crate) fn initialize_boss_meteor(
-        &mut self,
-        source_entity_index: u16,
-        position: Position,
-        owner: u16,
-    ) -> Level2AuthoredModel17Source {
-        self.initialize_authored_model17(source_entity_index, u16::MAX, position);
-        let source = self
-            .authored_model17
-            .last_mut()
-            .expect("model17 initializer publishes its new source row");
-        source.position.z = 0;
-        source.life = 70;
-        source.max_life = 70;
-        source.entity_id = owner;
-        self.source_owner.insert(source_entity_index, owner);
-        *source
-    }
-
     /// Advance one authored Meteor through pinned `sub_32880`.  SEARCH.DAT
     /// shape 0 is the four-cell 2x2 kernel centered at (15,15); the source's
     /// iterator executes the first three cells because its return value is

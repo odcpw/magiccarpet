@@ -1050,6 +1050,21 @@ pub(crate) struct Creature17Trace {
     pub(crate) flight: Vec<Creature17FlightReceipt>,
     /// Actual web impact, player and prepared sound journal sequence.
     pub(crate) web_first_hit_sounds: Vec<(SourceEntityHandle, SourceEntityHandle, u64)>,
+    pub(crate) boss_sound_calls: Vec<BossSoundBoundaryReceipt>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BossSoundBoundaryReceipt {
+    pub(crate) caller: Option<SourceEntityHandle>,
+    pub(crate) site: creatures::creature_10::mc2::SoundSite,
+    pub(crate) emitter: u16,
+    pub(crate) sample: u16,
+    pub(crate) source: Option<(SourceEntityHandle, Position, u16, u32)>,
+    pub(crate) listener: Option<(SourceEntityHandle, Position, i16)>,
+    pub(crate) rng_before: u32,
+    pub(crate) rng_after: u32,
+    pub(crate) journal_sequence: u64,
 }
 
 #[cfg(test)]
@@ -17540,7 +17555,12 @@ impl Mc2Simulation {
         }
         match (visit.handler, visit.route) {
             (ExistingHandler::FinalBoss, SourceRoute::Imported) => {
-                let outcome = {
+                self.flush_shared_effects();
+                let mut sounds = Vec::new();
+                #[cfg(test)]
+                let mut sound_boundaries = Vec::new();
+                let mut pressure_position = None;
+                let result = {
                     let live = &mut self.session.state.live;
                     let empty_models = std::array::from_fn(|_| Vec::new());
                     let (families, class9) = if effect_lists.is_current(&live.economy) {
@@ -17548,149 +17568,201 @@ impl Mc2Simulation {
                     } else {
                         (&empty_models, &[][..])
                     };
-                    let particles = &self.session.definition.presentation.particles;
-                    let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
-                    let mut apply_world = |arena: &mut SourceArena, action| {
-                        use creatures::creature_10::mc2::EncounterAction;
+                    let presentation = &self.session.definition.presentation;
+                    let particles = &presentation.particles;
+                    let profile = self.session.definition.profile;
+                    let player_life = live.player_life;
+                    let state = &mut live.core.state;
+                    let flight_effects = &mut live.core.context.effects;
+                    let level_exit = &mut live.level_exit;
+                    let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
+                        .with_particles(particles);
+                    let mut apply_world = |arena: &mut SourceArena, terrain: &mut SessionTerrain,
+                                           runtime: &mut RuntimeSnapshot, action| {
+                        use creatures::creature_10::mc2::{EncounterAction, EncounterResponse, SoundEmitter, SoundSite};
                         match action {
                             EncounterAction::Approach(mode) => area_damage::apply_encounter_world_action(
                                 arena, effect_lists, area_damage::EncounterManaAction::Approach(mode), particles,
-                            ),
+                            ).map(|()| EncounterResponse::Done),
                             EncounterAction::Refresh => area_damage::apply_encounter_world_action(
                                 arena, effect_lists, area_damage::EncounterManaAction::Refresh, particles,
-                            ),
+                            ).map(|()| EncounterResponse::Done),
                             EncounterAction::KillCreatures { player } => area_damage::apply_encounter_creature_kills(
                                 arena, Some(actors.reborrow()), effect_lists, families, player,
-                            ),
+                            ).map(|()| EncounterResponse::Done),
+                            EncounterAction::ReadPlayer { slot } => {
+                                let targets = source_target::Context {
+                                    map_type: Some(terrain.map_type()),
+                                    player: Some((player_entity_index, state.position, player_life)),
+                                    player_orientation: Some((state.yaw, state.roll_accumulator)),
+                                    ..actors.source_target_context()
+                                };
+                                let player = source_target::read(arena, targets, slot)?
+                                    .ok_or_else(|| format!("boss facing lost current player{slot}"))?;
+                                Ok(EncounterResponse::PlayerPose {
+                                    position: player.position,
+                                    yaw: player.yaw.ok_or("boss facing current player has no yaw")?,
+                                })
+                            }
+                            EncounterAction::ReadPlayerId { slot } => {
+                                if slot == 0 {
+                                    // Entities[0] is the authoritative source sentinel,
+                                    // not an absent player or a predecessor's shadow.
+                                    return arena.entities.first()
+                                        .map(|sentinel| EncounterResponse::PlayerId(sentinel.source_id))
+                                        .ok_or_else(|| "boss death lost the source sentinel".to_owned());
+                                }
+                                let targets = source_target::Context {
+                                    map_type: Some(terrain.map_type()),
+                                    player: Some((player_entity_index, state.position, player_life)),
+                                    player_orientation: Some((state.yaw, state.roll_accumulator)),
+                                    ..actors.source_target_context()
+                                };
+                                let player = source_target::read(arena, targets, slot)?
+                                    .ok_or_else(|| format!("boss death lost current player address{slot}"))?;
+                                Ok(EncounterResponse::PlayerId(player.source_id))
+                            }
+                            EncounterAction::Pressure(pressure) => {
+                                if let Some(mode) = pressure.palette_submod {
+                                    level_exit.palette_submode = mode;
+                                    if let Some(effects) = flight_effects.as_mut() {
+                                        effects.palette_submode = mode;
+                                    }
+                                }
+                                if !runtime.set_final_boss_pressure_speed(pressure.speed) {
+                                    return Err("final encounter pressure-speed word is absent".to_owned());
+                                }
+                                let from = state.position;
+                                terrain.set_source_predicted_position(pressure.proposed_position);
+                                let movement = crate::resolve_legacy_movement(
+                                    state, from, pressure.proposed_position, profile, terrain,
+                                );
+                                if let crate::MovementResolution::Accept(position)
+                                | crate::MovementResolution::Redirect(position) = movement {
+                                    let mut position = position;
+                                    let clearance = arena.entities[usize::from(player_entity_index)]
+                                        .parameter_relation
+                                        .and_then(|index| presentation.entity_parameters.get(usize::from(index)))
+                                        .map_or(0, |row| i16::from_le_bytes([row[12], row[13]]));
+                                    position.z = position.z
+                                        .max(terrain.ground_height(position).wrapping_add(clearance));
+                                    terrain.set_source_predicted_position(position);
+                                    state.position = position;
+                                    arena.entities[usize::from(player_entity_index)].set_position(position);
+                                    crate::world::effects::sync_position(
+                                        arena, terrain, player_entity_index, position, true, false,
+                                    )?;
+                                    *player_position = position;
+                                    pressure_position = Some(position);
+                                }
+                                Ok(EncounterResponse::Done)
+                            }
+                            EncounterAction::Sound { site, emitter, sample } => {
+                                #[cfg(test)]
+                                let rng_before = arena.economy.global_rng;
+                                #[cfg(test)]
+                                let mut boundary_source = None;
+                                #[cfg(test)]
+                                let mut boundary_listener = None;
+                                let targets = source_target::Context {
+                                    map_type: Some(terrain.map_type()),
+                                    player: Some((player_entity_index, state.position, player_life)),
+                                    player_orientation: Some((state.yaw, state.roll_accumulator)),
+                                    ..actors.source_target_context()
+                                };
+                                let emitter = match emitter {
+                                    SoundEmitter::Slot(slot) => slot,
+                                    SoundEmitter::CurrentSourceId(slot) => source_target::read(arena, targets, slot)?
+                                        .ok_or_else(|| format!("boss sound lost current caller{slot}"))?.source_id,
+                                };
+                                let sound_id = u16::from(sample);
+                                let audio = if emitter == 0 {
+                                    // Source's null call bypasses emitter silence and listener reads.
+                                    crate::prepare_event_sound_command(
+                                        Position::default(), 0, Position::default(), sound_id, 0, 0, 0,
+                                    ).map(|mut prepared| {
+                                        prepared.command.rate_delta_percent = 0;
+                                        prepared
+                                    })
+                                } else {
+                                    let source = source_target::read(arena, targets, emitter)?
+                                        .ok_or_else(|| format!("boss sound lost current emitter{emitter}"))?;
+                                    #[cfg(test)]
+                                    { boundary_source = arena.handle(emitter)
+                                        .map(|handle| (handle, source.position, source.source_id, source.control_flags)); }
+                                    if source.control_flags & 0x80 != 0 { None } else {
+                                        let listener = source_target::read(arena, targets, player_entity_index)?
+                                            .ok_or("boss sound lost the current local listener")?;
+                                        let yaw = listener.yaw.ok_or("boss listener yaw is unavailable")?;
+                                        #[cfg(test)]
+                                        { boundary_listener = arena.handle(player_entity_index)
+                                            .map(|handle| (handle, listener.position, yaw)); }
+                                        crate::prepare_event_sound_command(
+                                            listener.position, yaw, source.position, sound_id,
+                                            arena.economy.global_rng, source.source_id, 0,
+                                        )
+                                    }
+                                };
+                                arena.economy.prepare_sound(source_slot, emitter, -1, sound_id);
+                                #[cfg(test)]
+                                sound_boundaries.push(BossSoundBoundaryReceipt {
+                                    caller: arena.handle(source_slot), site, emitter, sample: sound_id,
+                                    source: boundary_source, listener: boundary_listener,
+                                    rng_before, rng_after: arena.economy.global_rng, journal_sequence: 0,
+                                });
+                                let event = FlightEvent::PrepareSound {
+                                    #[cfg(test)]
+                                    audio_site: match site {
+                                        SoundSite::Attack if sample == 37 => crate::MissionAudioSite::BossCymmerianSummon,
+                                        SoundSite::Attack => crate::MissionAudioSite::BossAttack,
+                                        SoundSite::Pressure => crate::MissionAudioSite::BossPressure,
+                                        SoundSite::Approach => crate::MissionAudioSite::BossApproach,
+                                        SoundSite::DeathRumble => crate::MissionAudioSite::BossDeathRumble,
+                                        SoundSite::DeathPeriodic => crate::MissionAudioSite::BossDeathPeriodic,
+                                    },
+                                    entity_index: emitter, player_index: -1, sound_id,
+                                };
+                                #[cfg(not(test))]
+                                let _ = site;
+                                // Freeze at the source call, before any later NewEvent or player move.
+                                sounds.push((event, audio));
+                                Ok(EncounterResponse::Done)
+                            }
                         }
                     };
                     creatures::creature_10::mc2::scheduled_step(
-                        &mut live.economy,
-                        &mut live.core.runtime,
-                        &mut live.terrain,
-                        &mut live.shared_spells,
-                        &self.session.definition.presentation.particles,
-                        &live.source_animations,
-                        source_slot,
-                        player_entity_index,
-                        families,
-                        class9,
-                        live.source_setting_30.value(),
-                        &mut apply_world,
-                    )?
+                        &mut live.economy, &mut live.core.runtime, &mut live.terrain,
+                        &mut live.shared_spells, particles, &presentation.entity_parameters, &live.source_animations,
+                        source_slot, player_entity_index, families, class9,
+                        live.source_setting_30.value(), live.source_frame_timing_index, &mut apply_world,
+                    )
                 };
-                if let Some(killer) = outcome.kill_credit {
-                    self.session
-                        .state
-                        .live
-                        .economy
-                        .record_authored_creature_kill(killer);
+                if let Some(position) = pressure_position {
+                    self.session.state.live.shared_spells.player_entity.set_position(position);
                 }
-                for sound in outcome.sounds {
-                    let sound_id = u16::from(sound);
-                    if let Some(call) = outcome
-                        .cymmerian_summon_sound
-                        .filter(|call| call.sample == sound)
+                for (sound_index, (event, audio)) in sounds.into_iter().enumerate() {
+                    let turn = self.session.state.live.core.runtime.global_turn;
+                    self.effect_journal_mut().append_prepared_flight(turn, event, audio);
+                    self.session.state.live.shared_spells.events.push(event);
+                    #[cfg(test)]
                     {
-                        self.session
-                            .state
-                            .live
-                            .economy
-                            .prepare_sound(source_slot, call.emitter, -1, sound_id);
-                        let audio = match call.source {
-                            Some((position, source_id, flags)) if flags & 0x80 == 0 => {
-                                crate::prepare_event_sound_command(
-                                    call.listener,
-                                    call.listener_yaw,
-                                    position,
-                                    sound_id,
-                                    0,
-                                    source_id,
-                                    0,
-                                )
+                        let mut boundary = sound_boundaries[sound_index];
+                        boundary.journal_sequence = self.effect_journal().records().last()
+                            .expect("the prepared boss sound was just appended").sequence;
+                        CREATURE17_TRACE.with(|trace| {
+                            if let Some(trace) = trace.borrow_mut().as_mut()
+                                && trace.boss_sound_calls.len() < 64 {
+                                trace.boss_sound_calls.push(boundary);
                             }
-                            Some(_) => None,
-                            // Source37 has fixed pitch/play type3; null uses
-                            // full centred volume and bypasses source silence.
-                            None => crate::prepare_event_sound_command(
-                                call.listener,
-                                call.listener_yaw,
-                                call.listener,
-                                sound_id,
-                                0,
-                                0,
-                                0,
-                            ),
-                        };
-                        let event = FlightEvent::PrepareSound {
-                            #[cfg(test)]
-                            audio_site: crate::MissionAudioSite::BossCymmerianSummon,
-                            entity_index: call.emitter,
-                            player_index: -1,
-                            sound_id,
-                        };
-                        self.flush_shared_effects();
-                        let turn = self.session.state.live.core.runtime.global_turn;
-                        self.effect_journal_mut()
-                            .append_prepared_flight(turn, event, audio);
-                        self.session.state.live.shared_spells.events.push(event);
-                        continue;
+                        });
                     }
-                    self.session
-                        .state
-                        .live
-                        .economy
-                        .prepare_sound(source_slot, source_slot, -1, sound_id);
+                    #[cfg(not(test))]
+                    let _ = sound_index;
                 }
-                if let Some(pressure) = outcome.player_pressure {
-                    let live = &mut self.session.state.live;
-                    let from = live.core.state.position;
-                    live.terrain.set_source_predicted_position(pressure.proposed_position);
-                    let movement = crate::resolve_legacy_movement(
-                        &mut live.core.state,
-                        from,
-                        pressure.proposed_position,
-                        self.session.definition.profile,
-                        &live.terrain,
-                    );
-                    if let crate::MovementResolution::Accept(position)
-                    | crate::MovementResolution::Redirect(position) = movement
-                    {
-                        let mut position = position;
-                        let clearance = live.economy.entities[usize::from(player_entity_index)]
-                            .parameter_relation
-                            .and_then(|index| {
-                                self.session
-                                    .definition
-                                    .presentation
-                                    .entity_parameters
-                                    .get(usize::from(index))
-                            })
-                            .map_or(0, |row| i16::from_le_bytes([row[12], row[13]]));
-                        position.z = position
-                            .z
-                            .max(live.terrain.ground_height(position).wrapping_add(clearance));
-                        live.terrain.set_source_predicted_position(position);
-                        live.core.state.position = position;
-                        live.shared_spells.player_entity.set_position(position);
-                        live.economy.entities[usize::from(player_entity_index)]
-                            .set_position(position);
-                        crate::world::effects::sync_position(
-                            &mut live.economy,
-                            &mut live.terrain,
-                            player_entity_index,
-                            position,
-                            true,
-                            false,
-                        )?;
-                        *player_position = position;
-                    }
-                    if let Some(mode) = pressure.palette_submod {
-                        live.level_exit.palette_submode = mode;
-                        if let Some(effects) = live.core.context.effects.as_mut() {
-                            effects.palette_submode = mode;
-                        }
-                    }
+                // Reached source sound prefixes survive a later callback error.
+                let outcome = result?;
+                if let Some(killer) = outcome.kill_credit {
+                    self.session.state.live.economy.record_authored_creature_kill(killer);
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -34177,6 +34249,65 @@ mod tests {
             }) if entity_index == controllers[0])));
     }
 
+    fn assert_prepared_boss_sound(
+        simulation: &Mc2Simulation,
+        call: &BossSoundBoundaryReceipt,
+        caller: SourceEntityHandle,
+        emitter: u16,
+        sample: u16,
+        site: creatures::creature_10::mc2::SoundSite,
+        audible: bool,
+    ) {
+        assert_eq!((call.caller, call.emitter, call.sample, call.site),
+            (Some(caller), emitter, sample, site));
+        assert_eq!(call.rng_before, call.rng_after, "sound preparation only reads source RNG");
+        let record = simulation.effect_journal().records().iter()
+            .find(|record| record.sequence == call.journal_sequence)
+            .expect("actual source call has its prepared journal record");
+        let expected_site = match site {
+            creatures::creature_10::mc2::SoundSite::Attack if sample == 37 => crate::MissionAudioSite::BossCymmerianSummon,
+            creatures::creature_10::mc2::SoundSite::Attack => crate::MissionAudioSite::BossAttack,
+            creatures::creature_10::mc2::SoundSite::Pressure => crate::MissionAudioSite::BossPressure,
+            creatures::creature_10::mc2::SoundSite::Approach => crate::MissionAudioSite::BossApproach,
+            creatures::creature_10::mc2::SoundSite::DeathRumble => crate::MissionAudioSite::BossDeathRumble,
+            creatures::creature_10::mc2::SoundSite::DeathPeriodic => crate::MissionAudioSite::BossDeathPeriodic,
+        };
+        assert!(matches!(record.effect, crate::campaign::journal::CampaignEffect::Flight(
+            FlightEvent::PrepareSound { audio_site, entity_index, player_index: -1, sound_id }
+        ) if audio_site == expected_site && entity_index == emitter && sound_id == sample));
+        if let Some((source, position, source_id, flags)) = call.source {
+            assert_eq!(source.source_slot, emitter);
+            if flags & 0x80 != 0 {
+                assert!(record.audio.is_none(), "muted current emitter cannot create a native voice");
+                assert!(call.listener.is_none(), "source silence precedes listener access");
+                return;
+            }
+            let (listener, listener_position, _) = call.listener.expect("nonnull audible policy reads its listener");
+            assert_eq!(listener.source_slot, simulation.state.entity_index);
+            let audio = record.audio.expect("actual non-muted boss source has a prepared native command");
+            assert_eq!((audio.command.relative_x, audio.command.relative_y, audio.command.relative_z),
+                (i32::from(position.x) - i32::from(listener_position.x),
+                 i32::from(position.y) - i32::from(listener_position.y),
+                 i32::from(position.z) - i32::from(listener_position.z)));
+            assert_eq!(audio.command.sound_flags,
+                if matches!(sample, 42..=44) { 0 } else { source_id.cast_signed() });
+            let pitch = if matches!(sample, 42..=44) && audio.command.audible {
+                (call.rng_before.wrapping_mul(9_377).wrapping_add(9_439) % 30) as i16 - 15
+            } else { 0 };
+            assert_eq!(audio.command.rate_delta_percent, pitch,
+                "source42/44 uses the actual call-time RNG without advancing it");
+            if audible { assert!(audio.command.audible, "declared nearby listener must reach native playback"); }
+            assert_eq!(audio.play_type, if matches!(sample, 8 | 37 | 42 | 44) { 3 } else { 1 });
+        } else {
+            assert_eq!(emitter, 0, "only the source null address bypasses emitter reads");
+            assert!(call.listener.is_none());
+            let audio = record.audio.expect("source null is centred full-volume playback");
+            assert_eq!((audio.command.volume_q15, audio.command.pan_q16,
+                audio.command.rate_delta_percent, audio.command.sound_flags, audio.command.audible),
+                (0x7fff, 0x7fff, 0, 0, true), "null42/44 must reject the spurious +4 rate from RNG0");
+        }
+    }
+
     #[test]
     fn source24_boss_constructor_requires_its_declared_target_stage() {
         let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
@@ -34327,7 +34458,10 @@ mod tests {
             row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
             .expect("group29 produced its actual live boss").index;
         let phase = live.economy.entities[usize::from(boss)].phase;
+        let boss_handle = live.economy.handle(boss).unwrap();
+        production.simulation().start_creature17_trace();
         production.step(PlayerCommand::default(), 0);
+        let ordinary_audio = production.simulation().take_creature17_trace().boss_sound_calls;
         let errors = production.simulation().dispatch_events().iter()
             .filter(|event| matches!(event, Mc2DispatchEvent::Error { .. }))
             .collect::<Vec<_>>();
@@ -34335,6 +34469,96 @@ mod tests {
         let live = &production.simulation().session.state.live;
         assert_eq!(live.economy.entities[usize::from(boss)].phase, phase.wrapping_add(1));
         assert_eq!(live.core.runtime.final_boss_active_counter(), Some(1));
+        let approach = ordinary_audio.iter().find(|call| call.caller == Some(boss_handle)
+            && call.site == creatures::creature_10::mc2::SoundSite::Approach)
+            .expect("real group29 boss reaches source-time approach10 and its prepared consumer");
+        assert_prepared_boss_sound(production.simulation(), approach, boss_handle, boss, 10,
+            creatures::creature_10::mc2::SoundSite::Approach, false);
+
+        // Configured source-call exceptions on that same genuinely produced
+        // boss. These isolate addressed-ID/null/silence policy, not ordinary
+        // attack selection or a claimed boss victory. RNG is never seeded.
+        for (mode, sample) in [(4_u8, 42_u16), (6, 44)] {
+            for emitter in [owner, 0, boss] {
+                let mut audio_control = production.clone();
+                {
+                    let row = &mut audio_control.simulation_mut().session.state.live.economy
+                        .entities[usize::from(boss)];
+                    row.set_source_byte_46(9);
+                    row.record[71] = mode;
+                    row.record[40..42].copy_from_slice(&1_u16.to_le_bytes());
+                    row.set_source_dword_10(1);
+                    row.source_id = emitter;
+                    row.record[30..32].copy_from_slice(&emitter.to_le_bytes());
+                    // Null bypasses even a silent caller; nonnull boss tests
+                    // the addressed emitter's real mute branch.
+                    row.set_control_flags(row.control_flags | 0x80);
+                }
+                audio_control.simulation().start_creature17_trace();
+                audio_control.step(PlayerCommand::default(), 0);
+                assert!(!audio_control.simulation().dispatch_events().iter()
+                    .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "configured source audio must retain ordinary dispatch: {:?}",
+                    audio_control.simulation().dispatch_events());
+                let trace = audio_control.simulation().take_creature17_trace();
+                let call = trace.boss_sound_calls.iter().find(|call|
+                    call.caller == Some(boss_handle) && call.sample == sample
+                        && call.site == creatures::creature_10::mc2::SoundSite::Attack)
+                    .expect("actual successful configured constructor reaches its source sound");
+                assert_prepared_boss_sound(audio_control.simulation(), call, boss_handle,
+                    emitter, sample, creatures::creature_10::mc2::SoundSite::Attack, emitter != boss);
+                if emitter == owner {
+                    let source = call.source.expect("source-ID address resolves the real local player");
+                    assert_eq!(source.0.source_slot, owner);
+                    assert_ne!(source.0.source_slot, boss);
+                }
+            }
+        }
+
+        // Configured late-death callback, with a raised source pose solely to
+        // discriminate sound-before22270 grounding. Preserve the real boss
+        // generation; do not describe this branch entry as earned combat.
+        for (counter, muted) in [(0_u8, false), (1, false), (0, true)] {
+            let mut death = production.clone();
+            let mut position = death.simulation().entities()[usize::from(boss)].position;
+            let ground = death.simulation().session.state.live.terrain.ground_height(position);
+            position.z = ground.checked_add(768).unwrap();
+            {
+                let row = &mut death.simulation_mut().session.state.live.economy.entities[usize::from(boss)];
+                row.set_source_byte_46(14);
+                row.set_source_dword_10(2);
+                row.set_life(8);
+                row.set_phase(counter);
+                row.source_id = owner;
+                row.record[30..32].copy_from_slice(&owner.to_le_bytes());
+                row.set_control_flags((row.control_flags & !0x80) | if muted { 0x80 } else { 0 });
+            }
+            death.simulation_mut().set_level2_entity_position(boss, position).unwrap();
+            death.simulation().start_creature17_trace();
+            death.step(PlayerCommand::default(), 0);
+            assert!(!death.simulation().dispatch_events().iter()
+                .any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
+                "configured death sound/tail must retain source dispatch: {:?}", death.simulation().dispatch_events());
+            let trace = death.simulation().take_creature17_trace();
+            let rumble = trace.boss_sound_calls.iter().find(|call| call.caller == Some(boss_handle)
+                && call.site == creatures::creature_10::mc2::SoundSite::DeathRumble)
+                .expect("phase14 reaches its physical boss-slot sound10");
+            assert_prepared_boss_sound(death.simulation(), rumble, boss_handle, boss, 10,
+                creatures::creature_10::mc2::SoundSite::DeathRumble, false);
+            assert_eq!(rumble.source.unwrap().1, position);
+            let periodic = trace.boss_sound_calls.iter().find(|call| call.caller == Some(boss_handle)
+                && call.site == creatures::creature_10::mc2::SoundSite::DeathPeriodic);
+            assert_eq!(periodic.is_some(), counter & 3 == 0, "source63 cadence reads the entry byte3E");
+            if let Some(periodic) = periodic {
+                assert_prepared_boss_sound(death.simulation(), periodic, boss_handle, boss, 63,
+                    creatures::creature_10::mc2::SoundSite::DeathPeriodic, false);
+                assert_eq!(periodic.source.unwrap().1, position,
+                    "sound63 freezes the current source before the grounding tail");
+                assert!(rumble.journal_sequence < periodic.journal_sequence);
+            }
+            assert_eq!(death.simulation().entities()[usize::from(boss)].position,
+                Position { z: ground, ..position }, "source22270 grounds only after both sound calls");
+        }
 
         // Keep the actual BUILD/group29 producer and source scheduler. Seed
         // its phase-eight source selection in cloned bounded controls so each
@@ -34349,7 +34573,9 @@ mod tests {
                 row.set_subspell_index(0);
                 row.set_entity_rng(rng);
             }
+            branch.simulation().start_creature17_trace();
             branch.step(PlayerCommand::default(), 0);
+            let attack_audio = branch.simulation().take_creature17_trace().boss_sound_calls;
             assert!(!branch.simulation().dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })),
                 "boss model{model} birth: {:?}", branch.simulation().dispatch_events());
             let arena = &branch.simulation().session.state.live.economy;
@@ -34360,6 +34586,14 @@ mod tests {
                 .unwrap_or_else(|| panic!("normal boss action did not construct model{model}"))
                 .handle;
             assert_eq!(arena.creature_parent_binding(child), Some(parent_handle));
+            let sample = match model { 19 => 44, 0 => 8, 21 => 42, 25 => 37, _ => unreachable!() };
+            let call = attack_audio.iter().find(|call| call.caller == Some(parent_handle)
+                && call.site == creatures::creature_10::mc2::SoundSite::Attack && call.sample == sample)
+                .expect("successful actual child construction must reach its prepared source sound");
+            assert_prepared_boss_sound(branch.simulation(), call, parent_handle,
+                call.emitter, sample, creatures::creature_10::mc2::SoundSite::Attack, false);
+            assert_eq!(call.emitter, branch.simulation().entities()[usize::from(boss)].source_id,
+                "attack addresses current boss source ID, not the boss physical slot");
             let initial_target = match model {
                 19 | 0 => arena.economy.authored_class5().iter()
                     .find(|row| row.source_entity_index == child.source_slot)

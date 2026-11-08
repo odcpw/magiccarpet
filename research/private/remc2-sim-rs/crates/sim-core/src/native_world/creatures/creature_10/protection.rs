@@ -94,7 +94,7 @@ pub(crate) fn apply(
                 boss,
             )
         } else if boss {
-            let overlap = crate::distance_3d_wrapped(protected.position, candidate.position)
+            let overlap = crate::native_world::level2_wrapping_target_distance(protected.position, candidate.position)
                 <= BOSS_PROJECTILE_RADIUS;
             // Both the boss distance branch and its Castle-projectile axis
             // branch set v19; special-building protection ignores the flag.
@@ -325,7 +325,7 @@ mod tests {
             assert_eq!(row.subspell_index, 93, "source word2A is a separate field");
         }
         for model in [2_u8, 4, 5, 22, 23, 25, 30] {
-            for distance in [3_072_u16, 3_073] {
+            for (distance, altitude_delta) in [(3_072_u16, 0_i16), (3_073, 0), (3_072, 16_000), (3_073, 16_000)] {
                 let mut arena = live.economy.clone();
                 let mut terrain = live.terrain.clone();
                 let mut runtime = live.core.runtime.clone();
@@ -342,6 +342,7 @@ mod tests {
                 .unwrap();
                 let mut position = arena.entities[usize::from(boss)].position;
                 position.x = position.x.wrapping_add(distance);
+                position.z = position.z.wrapping_add(altitude_delta);
                 // A diagnostic raw class9 row isolates sub_21F60's model
                 // selection; this does not claim an ordinary spell producer.
                 let projectile = arena
@@ -368,7 +369,7 @@ mod tests {
                 )
                 .unwrap();
 
-                let alias = (model == 2 && distance == 3_072)
+                let alias = (model == 2 && distance == 3_072 && altitude_delta == 0)
                     .then(|| (arena.clone(), terrain.clone(), spells.clone()));
                 apply(
                     &mut arena,
@@ -382,7 +383,7 @@ mod tests {
                 assert_eq!(
                     arena.entities[usize::from(projectile)].drawing_disabled(),
                     distance == 3_072,
-                    "model{model} at distance{distance} uses its own position",
+                    "model{model} at XY distance{distance}, Z delta{altitude_delta} uses source58490",
                 );
                 if let Some((mut arena, mut terrain, mut spells)) = alias {
                     for row in &mut arena.entities {
