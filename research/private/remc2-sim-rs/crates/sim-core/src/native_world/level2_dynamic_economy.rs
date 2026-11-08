@@ -1,6 +1,35 @@
 use super::*;
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CastleBurialReceipt {
+    pub(crate) child: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) watched: crate::campaign::source_arena::SourceEntityHandle,
+    pub(crate) stage: u8,
+    pub(crate) cell: (u8, u8),
+    pub(crate) owner: u16,
+    pub(crate) flags_before: u32,
+    pub(crate) flags_after: u32,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CASTLE_BURIAL_TRACE: std::cell::RefCell<Option<(
+        crate::campaign::source_arena::SourceEntityHandle, Vec<CastleBurialReceipt>,
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn watch_castle_burial(target: crate::campaign::source_arena::SourceEntityHandle) {
+    CASTLE_BURIAL_TRACE.with(|trace| *trace.borrow_mut() = Some((target, Vec::new())));
+}
+
+#[cfg(test)]
+pub(crate) fn take_castle_burial() -> Vec<CastleBurialReceipt> {
+    CASTLE_BURIAL_TRACE.with(|trace| trace.borrow_mut().take().map_or_else(Vec::new, |(_, rows)| rows))
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CastleDamageReceipt {
     pub(crate) target: crate::campaign::source_arena::SourceEntityHandle,
@@ -257,6 +286,99 @@ impl Level2OrdinaryResetSession {
 }
 
 impl crate::campaign::source_arena::SourceArena {
+    /// The actual 37BC0 owner needs both fixed source rows and the actor
+    /// domains: every BUILD cell can bury an actor before changing terrain.
+    pub(crate) fn step_castle_build_source(
+        &mut self,
+        source_slot: u16,
+        terrain: &mut SessionTerrain,
+        mut actors: Option<area_damage::ActorDomains<'_>>,
+    ) -> std::result::Result<Option<bool>, String> {
+        let Some(child_index) = self.economy.castle_children.iter().position(|child| {
+            child.active && child.source_entity_index == source_slot
+                && (child.source_class, child.model, child.action) == (10, 42, 44)
+        }) else {
+            return Ok(None);
+        };
+        let child = self.economy.castle_children[child_index];
+        if child.control_flags & ENTITY_DRAW_DISABLED_BIT != 0 {
+            return Ok(Some(true));
+        }
+        let Some(parent) = self.economy.castle_at(child.parent_entity_index).copied() else {
+            self.economy.castle_children[child_index].source_byte_3e = child.source_byte_3e.wrapping_add(1);
+            return Ok(Some(true));
+        };
+        let Some(stages) = (1..=child.cave_collision_cooldown)
+            .map(|stage| self.economy.castle_stage_footprints.get(&stage).cloned())
+            .collect::<Option<Vec<_>>>()
+            .filter(|stages| !stages.is_empty())
+        else {
+            self.economy.castle_children[child_index].source_byte_3e = child.source_byte_3e.wrapping_add(1);
+            return Ok(Some(true));
+        };
+        let mut clock = child.source_dword_10;
+        if child.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT == 0 {
+            clock = 19;
+            self.economy.castle_children[child_index].control_flags |=
+                LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT;
+        }
+        let live = if clock <= 0 {
+            clock = clock.wrapping_add(1);
+            self.economy.castle_children[child_index].source_dword_10 = clock;
+            clock != 0 || self.economy.complete_castle_construction(parent.source_entity_index, terrain)
+        } else {
+            clock = clock.wrapping_sub(1);
+            if clock == 0 {
+                clock = if child.source_byte_3b != 0 { -25 } else { -1 };
+            } else if parent.source_word_30 == 0 {
+                terrain.apply_castle_construction(
+                    child.position,
+                    i16::try_from(clock).map_err(|_| "37BC0 BUILD timer exceeds i16")?,
+                    &stages,
+                    |_stage, x, y| {
+                        if child.control_flags & 0x0001_0000 != 0 {
+                            #[cfg(test)]
+                            let watched = CASTLE_BURIAL_TRACE.with(|trace| {
+                                let trace = trace.borrow();
+                                let (handle, _) = trace.as_ref()?;
+                                let raw = self.entities.get(usize::from(handle.source_slot))?;
+                                (self.handle(handle.source_slot) == Some(*handle)
+                                    && self.economy.map_chains.tile_of(handle.source_slot)
+                                        == (u16::from(y) << 8 | u16::from(x)))
+                                    .then_some((*handle, raw.control_flags))
+                            });
+                            crate::world::terrain::disasters::mc2::burial::cell(
+                                self, actors.as_mut().map(area_damage::ActorDomains::reborrow),
+                                x, y, child.id_entity_index,
+                            )?;
+                            #[cfg(test)]
+                            if let Some((watched, flags_before)) = watched
+                                && let Some(handle) = self.handle(source_slot)
+                            {
+                                let flags_after = self.entities[usize::from(watched.source_slot)].control_flags;
+                                CASTLE_BURIAL_TRACE.with(|trace| {
+                                    if let Some((_, rows)) = trace.borrow_mut().as_mut() {
+                                        rows.push(CastleBurialReceipt {
+                                            child: handle, watched, stage: _stage, cell: (x, y),
+                                            owner: child.id_entity_index, flags_before, flags_after,
+                                        });
+                                    }
+                                });
+                            }
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            self.economy.castle_children[child_index].source_dword_10 = clock;
+            true
+        };
+        if let Some(child) = self.economy.castle_children.get_mut(child_index) {
+            child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
+        }
+        Ok(Some(live))
+    }
+
     /// `sub_14E10` constructs through NewEvent's fixed raw/typed replacement
     /// cursor. Retirement and old-cell publication precede the rival's tail.
     pub(crate) fn allocate_ai_castle_root_seed(
@@ -4078,8 +4200,8 @@ impl Level2EconomyState {
 
     /// Advance one dynamic Castle child through its source callback or the
     /// terminal no-callback branch. Model 79/action 0x56 is owned by
-    /// castle_defense over the real SourceArena; model 42/action 44 is the
-    /// BUILD-backed 37BC0 callback; model 41/action 43 remains the separate
+    /// castle_defense over the real SourceArena; model 42/action 44 is owned
+    /// by SourceArena::step_castle_build_source; model 41/action 43 is the
     /// MSPRD-backed 377F0 callback. Other terminal rows retain source
     /// disable/reclaim.
     pub(crate) fn step_castle_child_terminal_slot(
@@ -4120,15 +4242,6 @@ impl Level2EconomyState {
         }
         if child.source_class == 10 && child.model == 43 && child.action == 45 {
             return self.step_castle_upgrade_product(child_index);
-        }
-        if child.source_class == 10 && child.model == 42 && child.action == 44 {
-            let live = self.step_castle_build_child(child_index, terrain);
-            // `UpdateEntities_57730` performs the ordinary callback epilogue
-            // after 37BC0 returns, including the byte_0x3E_62 increment.
-            if let Some(child) = self.castle_children.get_mut(child_index) {
-                child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
-            }
-            return live;
         }
         if child.source_class == 10 && child.model == 41 && child.action == 43 {
             if level2_castle_model41_msprd_rect(child.cave_collision_cooldown).is_some() {
@@ -4307,9 +4420,7 @@ impl Level2EconomyState {
         }
     }
 
-    /// Source `AddTerrainMod0A_2A_37BC0` for model 42/action 44.  The
-    /// callback owns only the BUILD timer and delegates every terrain write
-    /// to `SessionTerrain::apply_castle_update`.
+    #[cfg(test)]
     fn composite_castle_construction_footprint(&self, stage: u8) -> Option<CastleBuildFootprint> {
         let current = self.castle_stage_footprints.get(&stage)?;
         let current_width = i32::from(current.width);
@@ -4363,56 +4474,6 @@ impl Level2EconomyState {
             &payload,
         )
         .ok()
-    }
-
-    fn step_castle_build_child(
-        &mut self,
-        child_index: usize,
-        terrain: &mut SessionTerrain,
-    ) -> bool {
-        let child = self.castle_children[child_index];
-        let Some(parent) = self.castle_at(child.parent_entity_index).copied() else {
-            return true;
-        };
-        let Some(footprint) =
-            self.composite_castle_construction_footprint(child.cave_collision_cooldown)
-        else {
-            return true;
-        };
-
-        let mut clock = child.source_dword_10;
-        if child.control_flags & LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT == 0 {
-            clock = 19;
-            self.castle_children[child_index].control_flags |=
-                LEVEL2_CASTLE_CONSTRUCTION_INITIALIZED_BIT;
-        }
-
-        if clock <= 0 {
-            clock = clock.wrapping_add(1);
-            self.castle_children[child_index].source_dword_10 = clock;
-            if clock == 0 {
-                return self.complete_castle_construction(parent.source_entity_index, terrain);
-            }
-            return true;
-        }
-
-        clock = clock.wrapping_sub(1);
-        if clock == 0 {
-            clock = if child.source_byte_3b != 0 { -25 } else { -1 };
-        } else if parent.source_word_30 == 0 {
-            let remaining = i16::try_from(clock).expect("37BC0 BUILD timer fits i16");
-            terrain
-                .apply_castle_update(
-                    CastleTerrainUpdate::ConstructionPass {
-                        position: child.position,
-                        remaining,
-                    },
-                    &footprint,
-                )
-                .expect("validated Castle BUILD footprint accepts construction pass");
-        }
-        self.castle_children[child_index].source_dword_10 = clock;
-        true
     }
 
     /// Source `sub_377F0` for model 41/action 43.  This is intentionally kept

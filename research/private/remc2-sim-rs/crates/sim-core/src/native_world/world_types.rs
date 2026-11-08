@@ -2625,6 +2625,115 @@ impl SessionTerrain {
         Ok(())
     }
 
+    /// 37BC0 visits every retained stage cell before the separate current
+    /// stage height pass. The callback supplies source57390's actor domain.
+    pub(crate) fn apply_castle_construction(
+        &mut self,
+        position: Position,
+        remaining: i16,
+        stages: &[CastleBuildFootprint],
+        visit: impl FnMut(u8, u8, u8) -> std::result::Result<(), String>,
+    ) -> std::result::Result<(), String> {
+        let mut staged = self.clone();
+        staged.apply_castle_construction_inner(position, remaining, stages, visit)?;
+        staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        *self = staged;
+        Ok(())
+    }
+
+    fn apply_castle_construction_inner(
+        &mut self,
+        position: Position,
+        remaining: i16,
+        stages: &[CastleBuildFootprint],
+        mut visit: impl FnMut(u8, u8, u8) -> std::result::Result<(), String>,
+    ) -> std::result::Result<(), String> {
+        if !(1..=18).contains(&remaining) {
+            return Err(format!("Castle construction remaining count {remaining} is outside 1..=18"));
+        }
+        let current = stages.last().ok_or("Castle construction has no BUILD stages")?;
+        let width = usize::from(current.width);
+        let height = usize::from(current.height);
+        // Validate the source scratch addresses before any actor callback.
+        // Source swaps the prior width/height axes, including tuple stride.
+        for prior in stages {
+            let first = i32::from(current.width)
+                * (i32::from(current.height >> 1) - i32::from(prior.width >> 1))
+                + i32::from(current.width >> 1) - i32::from(prior.height >> 1);
+            let last = first + (i32::from(prior.width) - 1) * i32::from(current.width)
+                + i32::from(prior.height) - 1;
+            if prior.width == 0 || prior.height == 0 || first < 0 || last >= (width * height) as i32 {
+                return Err(format!("BUILD{} exceeds BUILD{} source scratch geometry", prior.index, current.index));
+            }
+        }
+        let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
+        let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
+        let base = i16::from(position.z >> 5);
+        let mut deltas = vec![0_i16; width * height];
+        for prior in stages {
+            let start_x = center_x.wrapping_sub(prior.height >> 1);
+            let start_y = center_y.wrapping_sub(prior.width >> 1);
+            let scratch_start = i32::from(current.width)
+                * (i32::from(current.height >> 1) - i32::from(prior.width >> 1))
+                + i32::from(current.width >> 1) - i32::from(prior.height >> 1);
+            for row in 0..prior.width {
+                for column in 0..prior.height {
+                    let x = start_x.wrapping_add(column);
+                    let y = start_y.wrapping_add(row);
+                    visit(prior.index, x, y)?;
+                    let cell = prior.cells()[usize::from(row) * usize::from(prior.height) + usize::from(column)];
+                    if cell[1] != 0xff {
+                        let target = base + i16::from(cell[1]);
+                        let scratch = scratch_start + i32::from(row) * i32::from(current.width) + i32::from(column);
+                        deltas[usize::try_from(scratch).expect("prevalidated source scratch address")] =
+                            target - i16::from(self.planes.ground_heights[terrain_index(x, y)]);
+                    }
+                    if (remaining % 7 == 0 || remaining == 1) && cell[0] != 0xff {
+                        apply_castle_material(&mut self.planes, x, y, cell[0], self.map_type);
+                    }
+                }
+            }
+        }
+        let start_x = center_x.wrapping_sub(current.width >> 1);
+        let start_y = center_y.wrapping_sub(current.height >> 1);
+        for row in 0..current.height {
+            for column in 0..current.width {
+                let x = start_x.wrapping_add(column);
+                let y = start_y.wrapping_add(row);
+                let index = terrain_index(x, y);
+                let delta = deltas[usize::from(row) * width + usize::from(column)];
+                if delta != 0 {
+                    let ground = i16::from(self.planes.ground_heights[index]);
+                    if ground == 0 || building_topology_rebuild_required(self.planes.terrain_types[index]) {
+                        self.planes.angles[index] = (self.planes.angles[index] & 0xf8) | 1;
+                        add_building_to_terrain(&mut self.planes, x, y, self.map_type, &mut self.terrain_rng);
+                    }
+                    self.planes.ground_heights[index] = ground.wrapping_add(delta / remaining) as u8;
+                    if remaining == 1 && self.planes.angles[index].cast_signed() < 0 {
+                        self.planes.angles[index] &= 0x7f;
+                        if self.map_type != MapType::Cave {
+                            self.planes.angles[index] |= 0x08;
+                        }
+                    }
+                }
+                // Source applies clearance even to ff/ff and zero-delta cells.
+                if self.map_type == MapType::Cave {
+                    let desired = base.max(i16::from(self.planes.ground_heights[index]))
+                        .saturating_add(100).min(255);
+                    let secondary = i16::from(self.planes.secondary_heights[index]);
+                    if desired > secondary {
+                        self.planes.secondary_heights[index] =
+                            secondary.wrapping_add((desired - secondary) / remaining) as u8;
+                    }
+                    normalize_cave_clearance(&mut self.planes, index);
+                } else if remaining == 2 {
+                    self.planes.angles[index] &= 0xf7;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn apply_ambient_update(
         &mut self,
         update: CastleTerrainUpdate,
@@ -2979,66 +3088,9 @@ impl SessionTerrain {
 
         match update {
             CastleTerrainUpdate::ConstructionPass { remaining, .. } => {
-                if !(1..=18).contains(&remaining) {
-                    return Err(format!(
-                        "Castle construction remaining count {remaining} is outside 1..=18"
-                    ));
-                }
-                let construction_base = i16::from(position.z >> 5);
-                for row in 0..footprint.height {
-                    for column in 0..footprint.width {
-                        let cell = footprint.cells()
-                            [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
-                        let x = start_x.wrapping_add(column);
-                        let y = start_y.wrapping_add(row);
-                        let index = terrain_index(x, y);
-                        if (remaining % 7 == 0 || remaining == 1) && cell[0] != 0xff {
-                            apply_castle_material(&mut self.planes, x, y, cell[0], self.map_type);
-                        }
-                        if cell[1] == 0xff {
-                            continue;
-                        }
-                        let current = i16::from(self.planes.ground_heights[index]);
-                        let target = construction_base + i16::from(cell[1]);
-                        let delta = target - current;
-                        if delta == 0 {
-                            continue;
-                        }
-                        if current == 0
-                            || building_topology_rebuild_required(self.planes.terrain_types[index])
-                        {
-                            self.planes.angles[index] = (self.planes.angles[index] & 0xf8) | 1;
-                            add_building_to_terrain(
-                                &mut self.planes,
-                                x,
-                                y,
-                                self.map_type,
-                                &mut self.terrain_rng,
-                            );
-                        }
-                        let step = delta / remaining;
-                        self.planes.ground_heights[index] = current.wrapping_add(step) as u8;
-                        if remaining == 1 && self.planes.angles[index].cast_signed() < 0 {
-                            self.planes.angles[index] &= 0x7f;
-                            if self.map_type != MapType::Cave {
-                                self.planes.angles[index] |= 0x08;
-                            }
-                        }
-                        if self.map_type == MapType::Cave {
-                            let desired =
-                                target.max(i16::from(self.planes.ground_heights[index])) + 100;
-                            let desired = desired.min(255);
-                            let secondary = i16::from(self.planes.secondary_heights[index]);
-                            if desired > secondary {
-                                self.planes.secondary_heights[index] =
-                                    secondary.wrapping_add((desired - secondary) / remaining) as u8;
-                            }
-                            normalize_cave_clearance(&mut self.planes, index);
-                        } else if remaining == 2 {
-                            self.planes.angles[index] &= 0xf7;
-                        }
-                    }
-                }
+                self.apply_castle_construction_inner(
+                    position, remaining, std::slice::from_ref(footprint), |_, _, _| Ok(()),
+                )?;
             }
             CastleTerrainUpdate::ConstructionCompleted { .. } => {
                 if self.map_type != MapType::Cave {

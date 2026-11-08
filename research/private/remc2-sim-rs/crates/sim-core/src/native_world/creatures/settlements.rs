@@ -2877,6 +2877,18 @@ impl crate::native_world::Level2OrdinaryResetSession {
         arena: &mut crate::campaign::source_arena::SourceArena,
         terrain: &mut crate::native_world::SessionTerrain,
     ) -> Result<(), String> {
+        // A hidden Dolmen still owns its callback and common tail in the
+        // current pass. Retire only its typed view here; the generic raw-row
+        // prepass below owns map unlinking and the one allocator release.
+        for dolmen in &mut self.dolmens {
+            let raw = arena.entities.get(usize::from(dolmen.entity.index));
+            if dolmen.entity.active && raw.is_some_and(|raw| {
+                raw.active && (raw.class, raw.model, raw.action) == (2, 2, 6)
+                    && raw.drawing_disabled()
+            }) {
+                dolmen.entity.active = false;
+            }
+        }
         let mut retired = self
             .houses
             .reclaim_inactive()

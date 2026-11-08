@@ -1,4 +1,72 @@
 #[test]
+fn castle_build_source_cells_preserve_stage_axes_and_zero_delta_clearance() {
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut terrain = SessionTerrain::from_inspection(&inspection);
+    terrain.map_type = MapType::Day;
+    terrain.planes.ground_heights.fill(100);
+    terrain.planes.terrain_types.fill(1);
+    let position = Position { x: 20 << 8, y: 30 << 8, z: 100 << 5 };
+    let prior = CastleBuildFootprint::from_owner_cells(1, 2, 4, &[0xff, 1].repeat(8)).unwrap();
+    let current = CastleBuildFootprint::from_owner_cells(2, 8, 8, &[0xff, 0xff].repeat(64)).unwrap();
+    let mut visits = Vec::new();
+    terrain.apply_castle_construction(position, 1, &[prior, current.clone()], |stage, x, y| {
+        visits.push((stage, x, y));
+        Ok(())
+    }).unwrap();
+    let expected = (0..2).flat_map(|row| (0..4).map(move |column| (1, 18 + column, 29 + row)))
+        .chain((0..8).flat_map(|row| (0..8).map(move |column| (2, 16 + column, 26 + row))))
+        .collect::<Vec<_>>();
+    assert_eq!(visits, expected, "all prior ff-material cells are still visited in source axes/order");
+    for y in 26..34 {
+        for x in 16..24 {
+            assert_eq!(terrain.planes.ground_heights[terrain_index(x, y)],
+                if (18..22).contains(&x) && (29..31).contains(&y) { 101 } else { 100 });
+        }
+    }
+    let mut cave = terrain.clone();
+    cave.map_type = MapType::Cave;
+    cave.planes.ground_heights.fill(20);
+    cave.planes.secondary_heights.fill(100);
+    cave.planes.angles.fill(8);
+    let rng = cave.terrain_rng;
+    cave.apply_castle_construction(Position { z: 50 << 5, ..position }, 1,
+        std::slice::from_ref(&current), |_, _, _| Ok(())).unwrap();
+    for y in 26..34 {
+        for x in 16..24 {
+            let index = terrain_index(x, y);
+            assert_eq!(cave.planes.ground_heights[index], 20);
+            assert_eq!(cave.planes.secondary_heights[index], 150, "Cave ff cell uses construction base");
+            assert_eq!(cave.planes.angles[index] & 8, 0);
+        }
+    }
+    assert_eq!(cave.terrain_rng, rng, "zero deltas do not run topology RNG");
+    terrain.planes.angles.fill(8);
+    terrain.apply_castle_construction(position, 2, std::slice::from_ref(&current), |_, _, _| Ok(())).unwrap();
+    assert!((26..34).all(|y| (16..24).all(|x| terrain.planes.angles[terrain_index(x, y)] & 8 == 0)));
+    let before = terrain.clone();
+    let oversized = CastleBuildFootprint::from_owner_cells(1, 10, 10, &[0xff, 0xff].repeat(100)).unwrap();
+    let mut callbacks = 0;
+    assert!(terrain.apply_castle_construction(position, 1, &[oversized, current], |_, _, _| {
+        callbacks += 1; Ok(())
+    }).is_err());
+    assert_eq!(callbacks, 0, "invalid geometry is rejected before actor writes");
+    assert_eq!(terrain, before);
+    // Source scratch offsets are linear: a 4x6 current BUILD overlaps its
+    // adjacent scratch rows while every address still lies inside 24 words.
+    let narrow = CastleBuildFootprint::from_owner_cells(1, 4, 6, &[0xff, 1].repeat(24)).unwrap();
+    terrain.planes.ground_heights.fill(100);
+    let mut visits = Vec::new();
+    terrain.apply_castle_construction(position, 1, &[narrow], |stage, x, y| {
+        visits.push((stage, x, y)); Ok(())
+    }).unwrap();
+    assert_eq!(visits, (0..4).flat_map(|row| (0..6).map(move |column| (1, 17 + column, 28 + row))).collect::<Vec<_>>());
+    for index in 0..24 {
+        let tile = terrain_index(18 + (index % 4) as u8, 27 + (index / 4) as u8);
+        assert_eq!(terrain.planes.ground_heights[tile], if (3..=20).contains(&index) { 101 } else { 100 });
+    }
+}
+
+#[test]
 fn level_two_direct_arena_cursor_matches_census_through_reclaim_and_reuse() {
     fn assert_matches_census(economy: &Level2EconomyState) {
         let before = economy.clone();

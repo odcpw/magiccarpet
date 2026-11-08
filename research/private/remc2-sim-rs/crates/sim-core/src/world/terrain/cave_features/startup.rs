@@ -358,12 +358,7 @@ impl TerrainStartupWorld {
                     && child.source_entity_index == slot
                     && (child.source_class, child.model, child.action) == (10, 42, 44)
             }) {
-                arena.economy.step_castle_child_terminal_slot(
-                    slot,
-                    &mut arena.entities,
-                    &Default::default(),
-                    &mut terrain,
-                );
+                arena.step_castle_build_source(slot, &mut terrain, None)?;
                 continue;
             }
             let slot = usize::from(slot);

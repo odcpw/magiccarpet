@@ -11373,6 +11373,12 @@ impl Level2EconomyTestView<'_> {
             .economy
             .economy
             .castle_auxiliary_membership(&live.economy.entities);
+        if let Some(result) = live.economy.step_castle_build_source(
+            source_slot, &mut live.terrain,
+            Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+        ).expect("actual Castle BUILD callback") {
+            return result;
+        }
         live.economy.economy.step_castle_child_terminal_slot(
             source_slot,
             &mut live.economy.entities,
@@ -28578,12 +28584,19 @@ impl Mc2Simulation {
                         &current_membership
                     }
                 };
-                live.economy.economy.step_castle_child_terminal_slot(
-                    source_slot,
-                    &mut live.economy.entities,
-                    auxiliary_membership,
-                    &mut live.terrain,
-                )
+                match live.economy.step_castle_build_source(
+                    source_slot, &mut live.terrain,
+                    Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                ) {
+                    Ok(Some(result)) => result,
+                    Ok(None) => live.economy.economy.step_castle_child_terminal_slot(
+                        source_slot, &mut live.economy.entities, auxiliary_membership, &mut live.terrain,
+                    ),
+                    Err(message) => {
+                        self.push_dispatch_effect(Mc2DispatchEvent::Error { pass, source_slot, message });
+                        false
+                    }
+                }
                 }
                 }
             }

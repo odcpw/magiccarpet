@@ -2926,6 +2926,250 @@ fn level_two_castle_public_route_consumes_configured_build_footprint() {
 }
 
 #[test]
+fn public_castle_build_buries_authored_dolmen_and_reclaims_its_consumers() {
+    use crate::campaign::{
+        CampaignSession,
+        schedule::{CurrentOccupant, ScheduleReceipt},
+        spec::CampaignSelection,
+    };
+    use crate::native_world::source_target;
+
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level2");
+    let features = crate::level1_mission::parse_authored_features(
+        &std::fs::read(package.join("authored-level.bin")).unwrap(),
+    ).unwrap();
+    let feature = features[411];
+    assert_eq!((feature.kind, feature.subtype, feature.activation_group, feature.tile_x, feature.tile_y),
+        (2, 2, 0, 148, 209));
+    let mut game = CampaignSession::open(package, CampaignSelection::LEVEL2)
+        .expect("the unchanged whole Level2 campaign opens");
+    let original = game.simulation().source_arena().handle(108).unwrap();
+    let baseline = game.simulation().ordinary().dolmens().iter()
+        .find(|row| row.entity().index == 108).unwrap().entity().clone();
+    assert_eq!((baseline.class, baseline.model, baseline.action), (2, 2, 6));
+    let player = game.simulation().state.entity_index;
+    assert_ne!(baseline.source_id, player, "57390 preserves same-ID scenery");
+    assert!(game.simulation().source_arena().map_chains.is_linked(108));
+    assert!(game.simulation().campaign_entity_presentations(game.simulation().state.yaw)
+        .unwrap().iter().any(|dto| dto.entity_index == 108 && dto.position == baseline.position));
+
+    // Declared carried Castle and player funding; all scenery, terrain,
+    // source allocator, NPCs and construction timers retain their defaults.
+    assert_eq!(game.rebuild_for_spell_carry(&[2], Some(2)).unwrap(), Some(2));
+    let sim = game.simulation_mut();
+    assert_eq!(sim.source_arena().handle(108), Some(original));
+    assert!(sim.economy().castle_for_owner(player).is_none());
+    let player_handle = sim.source_arena().handle(player).unwrap();
+    let footprint = sim.economy().castle_stage_footprints.get(&1)
+        .expect("the live campaign binds its actual retained BUILD1").clone();
+    assert_eq!((footprint.width, footprint.height), (8, 8));
+    {
+        let live = &mut sim.session.state.live;
+        let parent = &mut live.economy.entities[usize::from(player)];
+        parent.max_mana = 20_000;
+        parent.record[144..148].copy_from_slice(&20_000_i32.to_le_bytes());
+        parent.set_mana(20_000);
+        parent.set_mana_regen(0);
+        let parent = parent.clone();
+        live.shared_spells.sync_player_entity_from_authority(&parent);
+        live.shared_spells.player_mana = parent.mana;
+        live.shared_spells.caster.mana = parent.mana;
+        live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+        if let Some(fire) = live.core.context.spell_fire.as_mut() { fire.caster.mana = parent.mana; }
+    }
+    let ui = crate::SOURCE_SPELL_INDEX_MAP.iter().position(|family| *family == 2).unwrap() as i8;
+    game.step(PlayerCommand { opcode: 31, argument_1: ui, argument_2: 0, ..Default::default() }, 0);
+    let sim = game.simulation();
+    assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    let holder = sim.shared_spells().local_player().enabled_spell_holders[2];
+    let holder_handle = sim.source_arena().handle(holder).unwrap();
+    let holder_row = sim.shared_spells().pickup(holder).unwrap();
+    let price = holder_row.max_mana;
+    assert!(price > 0 && sim.entities()[usize::from(player)].mana >= price);
+    assert_eq!(sim.session.state.live.core.context.spell_fire.as_ref().unwrap().left_holder_index, holder);
+    assert_eq!((sim.entities()[usize::from(player)].class, sim.entities()[usize::from(player)].model), (3, 0));
+
+    // One fixed near-vertical public shot. The left-hand offset is selected
+    // by the actual 0x10 activation; do not pre-stage the direction bits.
+    let hand_yaw = (0_i16.wrapping_sub(sim.shared_spells().beyond_sight_auxiliary().next_entity)
+        .wrapping_sub(512)) & 2047;
+    // House11's source extents reject the Dolmen center. Two tiles north
+    // clears its inclusive 5,248-unit site radius while BUILD1 still spans
+    // the Dolmen's unmodified map cell.
+    let mut target = baseline.position;
+    target.y = target.y.wrapping_sub(512);
+    let mut origin = target;
+    crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+    let ground = sim.canonical_terrain().ground_height(origin)
+        .max(sim.canonical_terrain().ground_height(target));
+    origin.z = ground.wrapping_add(sim.profile().ground_clearance);
+    let mut muzzle = origin;
+    crate::move_entity(&mut muzzle, hand_yaw, 0, 256);
+    assert!(sim.canonical_terrain().ground_height(muzzle) <= origin.z);
+    assert!(!sim.economy().castle_projectile_site_blocked(muzzle, sim.entities(), sim.canonical_terrain()),
+        "the real first-visit Castle site admits this declared shot");
+    assert_eq!(crate::resolve_legacy_movement(&mut crate::FlightState::default(), origin, origin,
+        sim.profile(), sim.canonical_terrain()), crate::MovementResolution::Accept(origin));
+    game.simulation_mut().set_level2_entity_position(player, origin).unwrap();
+    let mut no_cast = game.clone();
+
+    let (mut flyer, mut root, mut child) = (None, None, None);
+    let (mut paid, mut hidden_turn, mut landed_root) = (false, None, false);
+    let mut burial = Vec::new();
+    let mut elapsed = 0;
+    for turn in 0..128 {
+        if turn == 0 { game.simulation_mut().set_level2_player_aim_for_test(0, 512); }
+        crate::native_world::level2_dynamic_economy::watch_castle_burial(original);
+        game.step(PlayerCommand { flags: if turn == 0 { 0x10 } else { 0 }, ..Default::default() }, 0);
+        burial.extend(crate::native_world::level2_dynamic_economy::take_castle_burial());
+        elapsed += 1;
+        let sim = game.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "ordinary Castle source turn {turn}: {:?}", sim.dispatch_events());
+        for row in sim.economy().castle_projectiles().iter().filter(|row|
+            row.active && row.owner_entity_index == player && row.holder_entity_index == holder) {
+            let handle = sim.source_arena().handle(row.source_entity_index).unwrap();
+            if let Some((old, _)) = flyer { assert_eq!(old, handle); }
+            else { flyer = Some((handle, *row)); }
+        }
+        if let Some(castle) = sim.economy().castle().filter(|row| row.active && row.owner_entity_index == player) {
+            let handle = sim.source_arena().handle(castle.source_entity_index).unwrap();
+            if let Some(old) = root { assert_eq!(old, handle); } else { root = Some(handle); }
+            if let Some((flyer_handle, _)) = flyer
+                && sim.economy().slot_generation(flyer_handle.source_slot) == flyer_handle.generation
+                && let Some(row) = sim.economy().castle_projectiles().iter().find(|row|
+                    row.source_entity_index == flyer_handle.source_slot && row.drawing_disabled)
+            {
+                let (expected_root, _) = crate::native_world::level2_castle_root_positions(
+                    sim.canonical_terrain(), &footprint, row.position);
+                assert_eq!((castle.position.x, castle.position.y), (expected_root.x, expected_root.y),
+                    "the real flyer landing produces this root address");
+                landed_root = true;
+            }
+            for row in sim.economy().castle_children().iter().filter(|row|
+                row.active && row.source_class == 10 && row.model == 42 && row.action == 44
+                    && row.parent_entity_index == castle.source_entity_index) {
+                let handle = sim.source_arena().handle(row.source_entity_index).unwrap();
+                if let Some((old, _)) = child { assert_eq!(old, handle); }
+                else { child = Some((handle, *row)); }
+            }
+        }
+        for receipt in sim.cf10_production_schedule_receipts() {
+            let ScheduleReceipt::EpilogueCompleted { slot, original: before,
+                current: CurrentOccupant::Known { selector: after, .. }, .. } = receipt else { continue };
+            if slot != player { continue; }
+            if let (Some(before), Some(after)) = (before.observed_player_resources(), after.observed_player_resources()) {
+                paid |= before.0 == player_handle && after.0 == player_handle && before.2 <= -price
+                    && after.1 == before.1.wrapping_add(before.2).clamp(0, after.3)
+                    && before.1 - after.1 >= price;
+            }
+        }
+        if sim.source_arena().handle(108) == Some(original) && sim.entities()[108].drawing_disabled() {
+            hidden_turn = Some(turn);
+            break;
+        }
+    }
+    let (flyer_handle, flyer_row) = flyer.expect("the paid public hand produced the real Castle flyer");
+    let root = root.expect("the real flyer landed into an owned Castle root");
+    let (child_handle, child_row) = child.expect("the same root produced the 10/42 BUILD child");
+    assert_eq!((flyer_row.source_class, flyer_row.source_model, flyer_row.source_word_96), (9, 10, 0));
+    assert_eq!((child_row.parent_entity_index, child_row.id_entity_index, child_row.cave_collision_cooldown),
+        (root.source_slot, player, 1));
+    assert_ne!(child_row.control_flags & 0x10000, 0);
+    assert!(burial.iter().any(|receipt| receipt.child == child_handle
+        && receipt.watched == original && receipt.stage == 1
+        && receipt.cell == (feature.tile_x as u8, feature.tile_y as u8)
+        && receipt.owner == player && receipt.flags_before & 0x400 == 0
+        && receipt.flags_after & 0x400 != 0),
+        "the actual BUILD cell hides this exact original generation: {burial:?}");
+    let cx = (child_row.position.x.wrapping_add(128) >> 8) as u8;
+    let cy = (child_row.position.y.wrapping_add(128) >> 8) as u8;
+    assert!((0..footprint.width).any(|n| cx.wrapping_sub(footprint.width / 2).wrapping_add(n) == feature.tile_x as u8)
+        && (0..footprint.height).any(|n| cy.wrapping_sub(footprint.height / 2).wrapping_add(n) == feature.tile_y as u8),
+        "the actual child BUILD1 footprint contains the original Dolmen");
+    assert!(paid && landed_root && hidden_turn.is_some(), "real payment, flyer landing and BUILD hide: flyer={flyer_handle:?} root={root:?} child={child_handle:?}");
+    let sim = game.simulation();
+    assert!(sim.source_arena().map_chains.is_linked(108), "hidden source remains linked until the following pass");
+    let receipts = sim.cf10_production_schedule_receipts();
+    let child_callback = receipts.iter().position(|receipt| matches!(receipt,
+        ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == child_handle.source_slot))
+        .expect("the actual BUILD child ran on the hiding turn");
+    let dolmen_callback = receipts.iter().position(|receipt| matches!(receipt,
+        ScheduleReceipt::CallbackCompleted { slot: 108, .. }))
+        .expect("the original Dolmen still receives its ordinary source callback");
+    let (dolmen_tail, previous_phase) = receipts.iter().enumerate().find_map(|(index, receipt)| {
+        let ScheduleReceipt::EpilogueCompleted { slot: 108, original, .. } = receipt else { return None };
+        original.observed_phase().map(|phase| (index, phase))
+    }).expect("the original Dolmen receives its common phase tail");
+    assert_ne!(child_handle.source_slot, 108);
+    if child_handle.source_slot < 108 {
+        assert!(child_callback < dolmen_callback && dolmen_callback < dolmen_tail,
+            "a same-pass hidden Dolmen still runs its later callback and tail");
+    } else {
+        assert!(dolmen_callback < dolmen_tail && dolmen_tail < child_callback,
+            "an earlier Dolmen runs its callback and tail before the BUILD child");
+    }
+    let typed = sim.ordinary().dolmens().iter().find(|row| row.entity().index == 108).unwrap().entity();
+    let raw = &sim.entities()[108];
+    assert_eq!((typed.phase, raw.phase, raw.record_bytes()[66]),
+        (previous_phase.wrapping_add(1), previous_phase.wrapping_add(1), previous_phase.wrapping_add(1)),
+        "the reached callback advances the same typed and raw source phase once");
+    assert!(!sim.campaign_entity_presentations(sim.state.yaw).unwrap().iter().any(|dto| dto.entity_index == 108));
+
+    game.step(PlayerCommand::default(), 0);
+    elapsed += 1;
+    let sim = game.simulation();
+    assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    assert_ne!(sim.source_arena().handle(108), Some(original), "following pass reclaims the original incarnation");
+    assert!(sim.source_arena().resolve(original).is_none());
+    assert!(!sim.ordinary().dolmens().iter().any(|row| row.entity().index == 108 && row.entity().active),
+        "no retired typed Dolmen may schedule old contact");
+    assert!(!sim.dispatch_events().iter().any(|event| matches!(event,
+        Mc2DispatchEvent::Dolmen { step, .. } if step.source_slot == 108)));
+    if sim.source_arena().handle(108).is_none() {
+        assert!(!sim.source_arena().map_chains.is_linked(108));
+        assert!(!sim.source_arena().map_chains.entity_chain(feature.tile_x as u8, feature.tile_y as u8)
+            .contains(&108), "ordinary map discovery cannot find the retired Dolmen");
+        let live = &sim.session.state.live;
+        // A nonzero fixed source address remains readable after 57F20.
+        // It must now expose the cleared physical packet, never the old
+        // allocated Dolmen identity or an obsolete typed carrier.
+        let raw = &sim.entities()[108];
+        let current = source_target::read(sim.source_arena(),
+            source_target::Context::from_ordinary(&live.goats, &live.ordinary), 108)
+            .unwrap().expect("the retained physical source packet remains readable");
+        assert_eq!((raw.active, raw.class, raw.record_bytes()[67]), (false, 0, 0));
+        assert_eq!((current.slot, current.source_id, current.active, current.class,
+            current.model, current.position, current.life, current.control_flags),
+            (raw.index, raw.source_id, raw.active, raw.class, raw.model,
+                raw.position, raw.life, raw.control_flags));
+        assert!(sim.source_arena().economy.free_source_slots().contains(&108),
+            "the actual allocator owns the reclaimed address");
+        assert!(!sim.campaign_entity_presentations(sim.state.yaw).unwrap().iter().any(|dto| dto.entity_index == 108));
+    }
+    for turn in 0..elapsed {
+        if turn == 0 { no_cast.simulation_mut().set_level2_player_aim_for_test(0, 512); }
+        no_cast.step(PlayerCommand::default(), 0);
+        assert!(no_cast.simulation().dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+    assert_eq!(no_cast.simulation().source_arena().handle(108), Some(original));
+    assert!(!no_cast.simulation().entities()[108].drawing_disabled());
+    game.reset();
+    let sim = game.simulation();
+    let restored = sim.ordinary().dolmens().iter().find(|row| row.entity().index == 108).unwrap().entity();
+    assert_eq!((restored.position, restored.phase, restored.control_flags),
+        (baseline.position, baseline.phase, baseline.control_flags));
+    let raw = &sim.entities()[108];
+    assert_eq!((raw.position, raw.phase, raw.control_flags),
+        (baseline.position, baseline.phase, baseline.control_flags));
+    let live = &sim.session.state.live;
+    assert_eq!(source_target::read(sim.source_arena(), source_target::Context::from_ordinary(
+        &live.goats, &live.ordinary), 108).unwrap().unwrap().position, baseline.position);
+    assert!(sim.campaign_entity_presentations(sim.state.yaw).unwrap().iter().any(|dto| dto.entity_index == 108 && dto.position == baseline.position));
+}
+
+#[test]
 fn level_two_castle_controller_exhaustion_keeps_constructed_prefix() {
     let gameplay_cache = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../generated/level2-day-owner-cache/components/gameplay");
