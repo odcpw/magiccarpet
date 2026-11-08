@@ -275,21 +275,58 @@ acceptance open; a working control panel alone does not finish the environment.
 ## Active request: complete the shared world capabilities
 
 Oliver authorized continuing the existing remc2-to-Rust delivery plan on
-2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1` are now
-installed, with the finite acceptance qualified below. Next capability: Cave
-corridors `mc-bhq.2`, through real authored production, opening/closing in both
-planes, subsequent collision, source sound and reset/removal. Inspect its current
-owner and existing connected checks before changing code. CopperMountain
+2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1` and Cave
+corridors `mc-bhq.2` are installed, with finite acceptance qualified below. Next
+capability: authored Cave paths, rooms and features `mc-bhq.5`, owned through
+integration by NavyBadger. Inspect its existing canonical owner and connected
+generation/collision/reset checks before changing code. CopperMountain
 implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
 installation; keep one accountable family owner through any consumer failure.
 Keep the complete acceptance and dependencies. Then continue existing
 terrain/scenery, activation/objective and progression/flow capabilities, one
 connected runtime result at a time. Do not restart delivered spells/creatures.
 
+### Installed Cave corridors — `mc-bhq.2` (2026-11-08)
+
+Source `dfb6eb15` is committed/pushed; matching optimized Original native
+`74632f319df3` is installed through `build-393_ge8i`. All 654 unique inputs and
+the worker/installed artifact match. Root viewed canonical map/loading/NightSpire
+terrain/HUD with that mapped plugin, one portal and zero retries, then stopped
+the owned player/display. This proves launch/load, not native Cave traversal,
+human play, FPS, hardware audio, complete missions or old saves. No Unity/art
+rebuild was needed.
+
+The finite runtime was already implemented in `world::terrain::cave_corridors`.
+Fresh source review found no production mismatch. NavyBadger replaced the
+connected check's direct opening-command allocation with actual Mission4
+switch124/group37/command582 and switch125/group40/command584. Declared player
+approaches remain within real source bounds and legal live Cave geometry;
+no controller, switch, group, RNG or terrain is forced. Actual activation,
+generation-bound scheduled command consumption, hide/following reclaim, both
+floor/ceiling orientations, collision, Cave pixels, settlement, reset and invalid
+initialization removal pass. The two connected checks pass in 0.840 s and the
+constructor/removal check in 0.028 s on final C2. Sound47 preparation already
+used source play type4; Root corrected stale census metadata1 to4 and the actual
+scheduled prepared-audio gate passes. The unrelated global audio census limit
+remains recorded; this is not a hardware-audio claim.
+
+C1's first player pose was rejected inside the sealed strip before activation.
+C2 changes only that declared pose and strengthens overlap/collision admission;
+all prior predicates remain. Independent gate reviews found no remaining concrete
+gap. Changed-line UBS has no critical finding; existing production formatting
+debt is retained. RCH cancelled its initial compile via `stuck_detector` at
+201.571 s. Root kept its guards unchanged and used the configured Rig's existing
+target for this bounded batch, with unchanged compiler/profile and all 654 input
+hashes checked before/after: final core compile 477.170 s, native 200.424 s.
+This is documented direct-SSH recovery, not a successful RCH claim or watchdog
+fix. Evidence: `research/private/generated/cave-corridors-20261108-integration/`
+(`candidate-2`, preserved C1 negative and `original-launch-smoke`). Original
+acceptance/dependencies are retained; broader campaign assembly stays open.
+
 ### Installed Cave mushrooms — `mc-bhq.1` (2026-11-08)
 
 Implemented, committed and pushed at `25b13176`; optimized Original native
-`e666b72d57db` is installed through refresh `build-n3sma5cg`. All654 unique inputs
+`e666b72d57db` is installed through refresh `build-n3sma5cg`. All 654 unique inputs
 match canonical source, isolated checkout and Rig. Root viewed the canonical
 map/loading/NightSpire terrain/HUD with the matching mapped plugin: one portal,
 zero retries, then stopped the owned player/display. This is launch/load, not
@@ -297,17 +334,17 @@ native Cave combat, human play/FPS/hardware audio, full missions or old saves.
 No Unity/art rebuild was needed.
 
 NavyBadger completed the owned mushroom callback; CopperMountain integrated its
-shared Smoke constructor/current-address seam. Source651B0 now allocates Smoke13
+shared Smoke constructor/current-address seam. Source `651B0` now allocates Smoke13
 before grounding/water, clears ownership through the current occupant and keeps
 the persistent dry stalk. Canonical constructor draws, failed allocation RNG,
 admissible replacement, current-position aliasing, hidden packets and following
 reclaim stay source-correct. No gameplay moved into the client or scheduler.
 
 C1's four focused checks pass, including non-Cave/exhaustion, damage boundaries
-and actual replacement/failure controls. C2 adds only a64-line test continuation;
-production is byte-identical. Its real unfiltered56-mushroom Cave12 path passes
-in0.219s: ordinary open/step/reset, declared carried FireballI and player pose,
-public paid cast against original30, exact250 accepted damage, stalk/smoke DTOs,
+and actual replacement/failure controls. C2 adds only a 64-line test continuation;
+production is byte-identical. Its real unfiltered 56-mushroom Cave12 path passes
+in 0.219 s: ordinary open/step/reset, declared carried FireballI and player pose,
+public paid cast against original slot30, exact 250 accepted damage, stalk/smoke DTOs,
 natural smoke hide/reclaim, then declared water material on that same stalk and
 ordinary hide/following-pass unlink/reclaim. The water/pressure controls are
 explicit configurations, not natural terrain-change or exhausted-owner proof.
