@@ -601,11 +601,11 @@ impl EntitySnapshot {
         crate::combat::actors::PlayerEffectMailboxesMut::new(bytes).take(lane, self.life)
     }
 
-    pub(super) fn source_upkeep_word_62(&self) -> u16 {
+    pub(crate) fn source_upkeep_word_62(&self) -> u16 {
         u16::from_le_bytes([self.record[102], self.record[103]])
     }
 
-    pub(super) fn source_upkeep_payload(&self) -> i32 {
+    pub(crate) fn source_upkeep_payload(&self) -> i32 {
         i32::from_le_bytes([
             self.record[98],
             self.record[99],
@@ -618,7 +618,7 @@ impl EntitySnapshot {
         self.record[98..102].copy_from_slice(&value.to_le_bytes());
     }
 
-    pub(super) fn clear_source_upkeep_owner(&mut self) {
+    pub(crate) fn clear_source_upkeep_owner(&mut self) {
         self.record[102..104].fill(0);
     }
 

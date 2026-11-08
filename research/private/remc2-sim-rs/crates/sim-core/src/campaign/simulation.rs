@@ -19204,29 +19204,12 @@ impl Mc2Simulation {
             }
             (ExistingHandler::Mushrooms, SourceRoute::Imported) => {
                 let live = &mut self.session.state.live;
-                let source = &mut live.economy.entities[usize::from(source_slot)];
-                let damage =
-                    (source.source_upkeep_word_62() != 0).then(|| source.source_upkeep_payload());
-                let outcome = crate::world::scenery::mushrooms::step(
-                    source,
-                    &live.terrain,
-                    damage,
+                crate::world::scenery::mushrooms::step_slot(
+                    &mut live.economy,
+                    &mut live.terrain,
+                    source_slot,
                     &self.session.definition.presentation.particles,
                 )?;
-                if outcome.damage_consumed {
-                    source.clear_source_upkeep_owner();
-                }
-                if let Some(position) = outcome.smoke_position {
-                    crate::world::effects::allocate(
-                        &mut live.economy,
-                        &mut live.terrain,
-                        sim_definition::adapter::mc2_effect_definition(
-                            crate::level_definition::EffectKind::Smoke,
-                        ),
-                        position,
-                        &self.session.definition.presentation.particles,
-                    )?;
-                }
             }
             (ExistingHandler::Fields, SourceRoute::Imported)
                 if self.session.state.live.economy.entities[usize::from(source_slot)].model

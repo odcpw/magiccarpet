@@ -527,6 +527,7 @@ pub(crate) fn allocate_from_source_position(
             | EffectKind::GroundFire
             | EffectKind::FireSpheres
             | EffectKind::FadingSmoke
+            | EffectKind::Smoke
             | EffectKind::DarkSmoke
     ) {
         return Err(
