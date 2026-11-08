@@ -453,6 +453,783 @@ mod tests {
     }
 
     #[test]
+    fn paid_crater_floor_change_reaches_original_dolmen_contact_and_presentation() {
+        use crate::PlayerCommand;
+        use crate::campaign::{
+            CampaignSession,
+            schedule::{CurrentOccupant, ScheduleReceipt},
+            spec::CampaignSelection,
+        };
+        use crate::native_world::{Mc2DispatchEvent, source_target};
+
+        let package = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level2",
+        );
+        let authored = crate::level1_mission::parse_authored_features(
+            &std::fs::read(package.join("authored-level.bin")).unwrap(),
+        )
+        .unwrap();
+        let feature = &authored[411];
+        assert_eq!(
+            (
+                feature.kind,
+                feature.subtype,
+                feature.activation_group,
+                feature.tile_x,
+                feature.tile_y
+            ),
+            (2, 2, 0, 148, 209)
+        );
+        let mut game = CampaignSession::open(package, CampaignSelection::LEVEL2)
+            .expect("the whole source Level2 opens");
+        let reset_baseline = {
+            let sim = game.simulation();
+            let live = &sim.session.state.live;
+            let typed = live
+                .ordinary
+                .dolmens()
+                .iter()
+                .find(|row| row.entity().index == 108)
+                .expect("the authored reset Dolmen")
+                .entity();
+            let raw = &sim.entities()[108];
+            let target = source_target::read(
+                sim.source_arena(),
+                source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+                108,
+            )
+            .unwrap()
+            .unwrap();
+            let dto = sim
+                .campaign_entity_presentations(sim.state.yaw)
+                .unwrap()
+                .into_iter()
+                .find(|row| row.entity_index == 108)
+                .expect("reset Dolmen sprite");
+            (
+                (typed.position, typed.phase),
+                (raw.position, raw.phase),
+                target.position,
+                (dto.position, dto.render_parameter_index),
+            )
+        };
+        // A declared prior CraterI carry and real Castle/player funding are
+        // the source spell prerequisites. No Dolmen, other actor or terrain
+        // state is staged or filtered.
+        assert_eq!(
+            game.rebuild_for_spell_carry(&[16], Some(16)).unwrap(),
+            Some(16)
+        );
+        let rule = RULES.tiers[0];
+        let sim = game.simulation_mut();
+        let player = sim.state.entity_index;
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            sim.economy_mut()
+                .set_castle_stage_footprint(stage, footprint);
+        }
+        let castle_site = (1_u16..32)
+            .flat_map(|y| {
+                (1_u16..32).map(move |x| Position {
+                    x: x * 2048,
+                    y: y * 2048,
+                    z: 0,
+                })
+            })
+            .find(|position| {
+                !sim.economy().castle_projectile_site_blocked(
+                    *position,
+                    sim.entities(),
+                    sim.canonical_terrain(),
+                )
+            })
+            .expect("source-valid Castle site");
+        let castle = sim
+            .economy_mut()
+            .build_castle(castle_site, player)
+            .expect("real Castle constructor");
+        assert!(
+            sim.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, rule.castle_mana_required + 50_000)
+        );
+        {
+            let live = &mut sim.session.state.live;
+            let parent = &mut live.economy.entities[usize::from(player)];
+            parent.max_mana = rule.mana_cost + 10_000;
+            parent.record[144..148].copy_from_slice(&parent.max_mana.to_le_bytes());
+            parent.set_mana(parent.max_mana);
+            parent.set_mana_regen(0);
+            let parent = parent.clone();
+            live.shared_spells
+                .sync_player_entity_from_authority(&parent);
+            live.shared_spells.player_mana = parent.mana;
+            live.shared_spells.caster.mana = parent.mana;
+            live.shared_spells
+                .sync_typed_spell_parent_caches_from_player_entity();
+            if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                fire.caster.mana = parent.mana;
+            }
+        }
+        let ui = crate::SOURCE_SPELL_INDEX_MAP
+            .iter()
+            .position(|family| *family == 16)
+            .unwrap() as i8;
+        game.step(
+            PlayerCommand {
+                opcode: 31,
+                argument_1: ui,
+                argument_2: 0,
+                ..Default::default()
+            },
+            0,
+        );
+        assert!(
+            game.simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let sim = game.simulation();
+        let dolmen_slot = 108_u16;
+        let dolmen = sim
+            .ordinary()
+            .dolmens()
+            .iter()
+            .find(|row| row.entity().index == dolmen_slot)
+            .expect("original authored Dolmen108")
+            .entity()
+            .clone();
+        assert_eq!(
+            (
+                dolmen.class,
+                dolmen.model,
+                dolmen.action,
+                dolmen.particle_parameter_index
+            ),
+            (2, 2, 6, Some(39))
+        );
+        assert_eq!(
+            (dolmen.position.x >> 8, dolmen.position.y >> 8),
+            (feature.tile_x, feature.tile_y)
+        );
+        let original = sim.source_arena().handle(dolmen_slot).unwrap();
+        let player_handle = sim.source_arena().handle(player).unwrap();
+        let holder = sim.shared_spells().local_player().enabled_spell_holders[16];
+        let holder_handle = sim.source_arena().handle(holder).unwrap();
+        assert_eq!(
+            sim.session.state.live.core.context.spell_fire.as_ref()
+                .expect("the public hand context is present").left_holder_index,
+            holder,
+            "toolbar assignment selects the enabled Crater holder in the left hand"
+        );
+        let holder_row = sim.shared_spells().pickup(holder).unwrap();
+        assert_eq!(
+            (
+                holder_row.level_gate,
+                holder_row.max_mana,
+                holder_row.mana_regen
+            ),
+            (0, rule.mana_cost, rule.castle_mana_required)
+        );
+        let old_floor = sim.canonical_terrain().ground_height(dolmen.position);
+        assert_eq!(dolmen.position.z, old_floor);
+        assert_ne!(
+            sim.canonical_terrain().material_mask(dolmen.position),
+            crate::WATER_AMBIENCE_MASK
+        );
+        assert_ne!(
+            sim.canonical_terrain().planes().angles
+                [usize::from(feature.tile_x) + 256 * usize::from(feature.tile_y)]
+                & 15,
+            0,
+            "source ring admission"
+        );
+        assert!(
+            sim.campaign_entity_presentations(sim.state.yaw)
+                .unwrap()
+                .iter()
+                .any(|view| view.entity_index == dolmen_slot
+                    && view.position == dolmen.position
+                    && view.render_parameter_index == 39)
+        );
+
+        // One fixed overhead shot aimed at the original Dolmen's terrain.
+        let impact_point = Position {
+            z: old_floor,
+            ..dolmen.position
+        };
+        let hand = Position {
+            z: old_floor.wrapping_add(1024),
+            ..impact_point
+        };
+        let aim = crate::level1_mission::projectile_guidance_angles(hand, impact_point);
+        let parent = &sim.entities()[usize::from(player)];
+        assert_eq!((parent.class, parent.model), (3, 0));
+        let source_parent_fov = parent.array_fov();
+        let mut origin = Position {
+            z: hand.z.wrapping_sub(source_parent_fov),
+            ..hand
+        };
+        let player_yaw = aim
+            .0
+            .wrapping_sub(sim.shared_spells().beyond_sight_auxiliary().next_entity)
+            & 2047;
+        // flags0x10 requests the left hand. Successful 5F660 activation sets
+        // its direction bit later, before 6BAB0 reads the current parent.
+        let hand_yaw = player_yaw.wrapping_sub(512);
+        crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+        let mut expected_launch_position = origin;
+        crate::move_entity(&mut expected_launch_position, hand_yaw, 0, 256);
+        assert!(
+            sim.canonical_terrain()
+                .ground_height(expected_launch_position)
+                <= origin.z,
+            "the source hand offset is not rejected by the actual ground"
+        );
+        expected_launch_position.z = expected_launch_position.z.wrapping_add(source_parent_fov);
+        assert!(
+            origin.z
+                >= sim
+                    .canonical_terrain()
+                    .ground_height(origin)
+                    .wrapping_add(sim.profile().ground_clearance)
+        );
+        assert_eq!(
+            crate::resolve_legacy_movement(
+                &mut crate::FlightState::default(),
+                origin,
+                origin,
+                sim.profile(),
+                sim.canonical_terrain()
+            ),
+            crate::MovementResolution::Accept(origin)
+        );
+        game.simulation_mut()
+            .set_level2_entity_position(player, origin)
+            .unwrap();
+        let mut no_cast = game.clone();
+        let (mut launches, mut impacts, mut samples) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut paid, mut ring_hidden, mut ring_reclaimed, mut next_boundary_reclaimed) =
+            (false, false, false, false);
+        let mut hidden_turn = None;
+        let mut previous_dolmen_pose = dolmen.position;
+        let mut first_reground = None;
+        let mut elapsed = 0;
+        for turn in 0..96 {
+            if turn == 0 {
+                game.simulation_mut()
+                    .set_level2_player_aim_for_test(aim.0, aim.1);
+            }
+            game.simulation().start_creature17_trace();
+            game.simulation().watch_dolmen_terrain_for_test(original);
+            game.step(
+                PlayerCommand {
+                    flags: if turn == 0 { 0x10 } else { 0 },
+                    ..Default::default()
+                },
+                0,
+            );
+            elapsed += 1;
+            let trace = game.simulation().take_creature17_trace();
+            launches.extend(trace.spell_launches);
+            impacts.extend(trace.spell_impacts);
+            samples.extend(trace.dolmen_terrain);
+            let sim = game.simulation();
+            assert!(
+                sim.dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "Crater turn{turn}: {:?}",
+                sim.dispatch_events()
+            );
+            assert_eq!(sim.source_arena().handle(dolmen_slot), Some(original));
+            for step in sim
+                .dispatch_events()
+                .iter()
+                .filter_map(|event| match event {
+                    Mc2DispatchEvent::Dolmen { step, .. } if step.source_slot == dolmen_slot => {
+                        Some(*step)
+                    }
+                    _ => None,
+                })
+            {
+                assert_eq!(
+                    step.previous_position, previous_dolmen_pose,
+                    "action6 tests contact using its retained pre-ground pose"
+                );
+                previous_dolmen_pose = step.position;
+                if step.position.z != old_floor && first_reground.is_none() {
+                    let live = &sim.session.state.live;
+                    let view = source_target::read(
+                        sim.source_arena(),
+                        source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+                        dolmen_slot,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let dto = sim
+                        .campaign_entity_presentations(sim.state.yaw)
+                        .unwrap()
+                        .into_iter()
+                        .find(|dto| dto.entity_index == dolmen_slot)
+                        .expect("original Dolmen sprite");
+                    first_reground = Some((
+                        step.previous_position,
+                        step.position,
+                        view.position,
+                        dto.position,
+                    ));
+                }
+            }
+            for receipt in sim.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot,
+                    original: before,
+                    current:
+                        CurrentOccupant::Known {
+                            selector: after, ..
+                        },
+                    ..
+                } = receipt
+                else {
+                    continue;
+                };
+                let (Some(before), Some(after)) = (
+                    before.observed_player_resources(),
+                    after.observed_player_resources(),
+                ) else {
+                    continue;
+                };
+                if slot == player
+                    && before.0 == player_handle
+                    && after.0 == player_handle
+                    && before.2 <= -rule.mana_cost
+                    && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+                    && before.1 - after.1 >= rule.mana_cost
+                {
+                    paid = true;
+                }
+            }
+            if let Some(impact) = impacts.iter().find(|impact| {
+                launches.iter().any(|launch| {
+                    launch.holder == holder_handle
+                        && launch.caster == player_handle
+                        && launch.projectile == impact.projectile
+                })
+            }) {
+                let current_handle = sim.source_arena().handle(impact.impact.source_slot);
+                if hidden_turn.is_some_and(|hidden| turn == hidden + 1) {
+                    assert_ne!(
+                        current_handle,
+                        Some(impact.impact),
+                        "the original hidden ring reclaims at the following source boundary"
+                    );
+                    if current_handle.is_none() {
+                        assert!(
+                            !sim.economy()
+                                .map_chains()
+                                .is_linked(impact.impact.source_slot)
+                        );
+                    }
+                    next_boundary_reclaimed = true;
+                }
+                if current_handle == Some(impact.impact) {
+                    let row = &sim.entities()[usize::from(impact.impact.source_slot)];
+                    if row.drawing_disabled() {
+                        ring_hidden = true;
+                        hidden_turn.get_or_insert(turn);
+                    }
+                } else {
+                    ring_reclaimed = true;
+                }
+            }
+            if ring_reclaimed && paid {
+                break;
+            }
+        }
+        let own = launches
+            .iter()
+            .filter(|launch| launch.holder == holder_handle && launch.caster == player_handle)
+            .collect::<Vec<_>>();
+        assert_eq!(own.len(), 1, "one actual public Crater: {launches:?}");
+        let launch = own[0];
+        assert_eq!(
+            launch.caster_before.control_flags & 0x300,
+            0x100,
+            "successful public activation selects the source left-hand offset"
+        );
+        assert_eq!(
+            (
+                launch.caster_before.position,
+                launch.caster_before.array_fov()
+            ),
+            (origin, source_parent_fov),
+            "the real cast reads the declared current parent"
+        );
+        assert_eq!(
+            launch.packet.position, expected_launch_position,
+            "the source hand calculation reaches the actual projectile"
+        );
+        assert_eq!(
+            (launch.packet.yaw, launch.packet.pitch),
+            (
+                launch.input.aim_yaw.wrapping_add(launch.caster_before.yaw),
+                launch
+                    .input
+                    .aim_pitch
+                    .wrapping_add(launch.caster_before.pitch),
+            )
+        );
+        assert_eq!(
+            (launch.packet.yaw & 2047, launch.packet.pitch & 2047),
+            (aim.0 & 2047, aim.1 & 2047),
+            "the public cast retains the fixed aim"
+        );
+        assert_eq!(
+            (
+                launch.packet.class,
+                launch.packet.model,
+                launch.packet.action
+            ),
+            (9, 5, 5)
+        );
+        assert_eq!(
+            (
+                launch.holder_before.level_gate,
+                launch.holder_before.max_mana
+            ),
+            (0, rule.mana_cost)
+        );
+        assert_eq!(
+            launch.caster_after.mana_regen,
+            if launch.caster_before.mana_regen >= 0 {
+                -rule.mana_cost
+            } else {
+                launch.caster_before.mana_regen.wrapping_sub(rule.mana_cost)
+            }
+        );
+        let impact = impacts
+            .iter()
+            .find(|impact| impact.projectile == launch.projectile)
+            .expect("the paid Crater projectile creates its own ring");
+        assert_eq!(
+            (
+                impact.packet.class,
+                impact.packet.model,
+                impact.packet.action,
+                impact.packet.source_id
+            ),
+            (10, 11, 11, player)
+        );
+        let (contact_pose, grounded_pose, target_pose, dto_pose) =
+            first_reground.expect("the original action6 must observe the changed floor");
+        assert!(
+            samples.iter().any(|sample| sample.ring == impact.impact
+                && sample.dolmen == original
+                && (sample.position.x, sample.position.y)
+                    == (dolmen.position.x, dolmen.position.y)
+                && sample.ground_before == old_floor
+                && sample.ground_after == grounded_pose.z
+                && sample.ground_after < sample.ground_before),
+            "the actual paid ring must lower the original Dolmen floor: samples={samples:?} impacts={impacts:?}"
+        );
+        assert_eq!(
+            contact_pose.z, old_floor,
+            "first contact uses the old source pose"
+        );
+        assert_ne!(grounded_pose.z, contact_pose.z);
+        assert_eq!(
+            target_pose, grounded_pose,
+            "the reached ground write reaches current targeting"
+        );
+        assert_eq!(
+            dto_pose, grounded_pose,
+            "the reached ground write reaches presentation"
+        );
+        assert!(
+            paid && ring_hidden && ring_reclaimed && next_boundary_reclaimed,
+            "Crater payment/normal ring cleanup"
+        );
+        let sim = game.simulation();
+        let live = &sim.session.state.live;
+        let current = live
+            .ordinary
+            .dolmens()
+            .iter()
+            .find(|row| row.entity().index == dolmen_slot)
+            .unwrap()
+            .entity();
+        let new_floor = live.terrain.ground_height(current.position);
+        let raw = &sim.entities()[usize::from(dolmen_slot)];
+        assert_eq!(
+            (raw.position, raw.phase, raw.record_bytes()[66]),
+            (current.position, current.phase, current.phase),
+            "the common source tail reaches the same current Dolmen carrier"
+        );
+        assert!(new_floor < old_floor);
+        assert_eq!(
+            current.position.z, new_floor,
+            "following action6 grounds the original Dolmen"
+        );
+        assert!(sim.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Dolmen { step, .. } if step.source_slot == dolmen_slot && step.position.z == new_floor)));
+        let target = source_target::read(
+            sim.source_arena(),
+            source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+            dolmen_slot,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            target.position, current.position,
+            "current targeting uses the same grounded source position"
+        );
+        let sprite = sim
+            .campaign_entity_presentations(sim.state.yaw)
+            .unwrap()
+            .into_iter()
+            .find(|view| view.entity_index == dolmen_slot)
+            .expect("original Dolmen sprite");
+        assert_eq!(
+            (sprite.position, sprite.render_parameter_index),
+            (current.position, 39)
+        );
+        assert_eq!(sim.source_arena().handle(dolmen_slot), Some(original));
+        let settled_position = current.position;
+        let mut far = settled_position;
+        far.x = far.x.wrapping_add(4096);
+        far.z = live
+            .terrain
+            .ground_height(far)
+            .wrapping_add(sim.profile().ground_clearance);
+        assert_eq!(
+            crate::resolve_legacy_movement(
+                &mut crate::FlightState::default(),
+                far,
+                far,
+                sim.profile(),
+                sim.canonical_terrain()
+            ),
+            crate::MovementResolution::Accept(far)
+        );
+        // Complete the equal-elapsed control only after positive TLS traces.
+        for turn in 0..elapsed {
+            if turn == 0 {
+                no_cast
+                    .simulation_mut()
+                    .set_level2_player_aim_for_test(aim.0, aim.1);
+            }
+            no_cast.step(PlayerCommand::default(), 0);
+            assert!(
+                no_cast
+                    .simulation()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+        }
+        assert_eq!(
+            no_cast.simulation().source_arena().handle(dolmen_slot),
+            Some(original)
+        );
+        assert_eq!(
+            no_cast
+                .simulation()
+                .canonical_terrain()
+                .ground_height(dolmen.position),
+            old_floor,
+            "equal-elapsed no-cast world retains the original floor"
+        );
+
+        // Player-only travel to the actual grounded Dolmen exercises the
+        // ordinary action6 collision and the existing player-upkeep consumer.
+        game.simulation_mut()
+            .set_level2_entity_position(player, far)
+            .unwrap();
+        for _ in 0..2 {
+            game.step(PlayerCommand::default(), 0);
+            assert!(
+                game.simulation()
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+            );
+        }
+        let sim = game.simulation();
+        assert!(
+            sim.dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let parent = &sim.entities()[usize::from(player)];
+        assert_eq!(
+            parent.control_flags & 0x1000,
+            0,
+            "leaving consumes the earlier contact latch"
+        );
+        let player_callback = |game: &CampaignSession| {
+            game.simulation().cf10_production_schedule_receipts().into_iter().find_map(|receipt| {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot, original, current: CurrentOccupant::Known { selector, .. }, ..
+                } = receipt else { return None };
+                if slot != player { return None; }
+                let before = original.observed_player_resources()?;
+                let after = selector.observed_player_resources()?;
+                (before.0 == player_handle && after.0 == player_handle).then_some((before, after))
+            })
+        };
+        // 6BAB0/68DE0 can clear positive regeneration after the player visit
+        // while this same paid holder is still active. Let its real countdown
+        // finish before testing an unsuppressed recharge consumer.
+        let initial_active = sim.shared_spells().pickup(holder).unwrap().active_value.max(0);
+        let mut later_holder_clear = false;
+        let mut outdoor_ready = false;
+        let mut settlement = Vec::new();
+        for _ in 0..usize::try_from(initial_active).unwrap() + 3 {
+            game.step(PlayerCommand::default(), 0);
+            let sim = game.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+            assert_eq!(sim.source_arena().handle(holder), Some(holder_handle));
+            assert_eq!(sim.source_arena().handle(player), Some(player_handle));
+            let parent = &sim.entities()[usize::from(player)];
+            assert!(parent.life >= 0 && parent.action == 0,
+                "recharge requires the original living player: {parent:?}");
+            let (before, after) = player_callback(&game).expect("actual numeric player callback");
+            let outdoor = (after.3 / 2_000).max(crate::level1_mission::PLAYER_OUTDOOR_MANA_REGEN);
+            assert_eq!(after.2, outdoor,
+                "far player selects outdoor recharge at its own source boundary: before={before:?}, after={after:?}");
+            for receipt in sim.cf10_production_schedule_receipts() {
+                let ScheduleReceipt::EpilogueCompleted {
+                    slot, original, current: CurrentOccupant::Known { selector, .. }, ..
+                } = receipt else { continue };
+                if slot != holder { continue; }
+                if let (Some(before), Some(after)) = (
+                    original.observed_player_resources(), selector.observed_player_resources()
+                ) {
+                    later_holder_clear |= before.0 == player_handle && after.0 == player_handle
+                        && before.2 > 0 && after.2 == 0;
+                }
+            }
+            let active = sim.shared_spells().pickup(holder).unwrap().active_value;
+            settlement.push((active, before, after, parent.mana_regen, parent.mana, parent.max_mana));
+            if active == 0 && parent.mana_regen == outdoor {
+                outdoor_ready = true;
+                break;
+            }
+        }
+        assert!(outdoor_ready && (initial_active == 0 || later_holder_clear),
+            "natural holder expiry and source-time outdoor selection: {settlement:?}");
+        let sim = game.simulation();
+        let mut contact = settled_position;
+        contact.z = sim
+            .canonical_terrain()
+            .ground_height(contact)
+            .wrapping_add(sim.profile().ground_clearance);
+        assert_eq!(
+            crate::resolve_legacy_movement(
+                &mut crate::FlightState::default(),
+                contact,
+                contact,
+                sim.profile(),
+                sim.canonical_terrain()
+            ),
+            crate::MovementResolution::Accept(contact)
+        );
+        game.simulation_mut()
+            .set_level2_entity_position(player, contact)
+            .unwrap();
+        {
+            let sim = game.simulation();
+            let live = &sim.session.state.live;
+            let contacts = live
+                .ordinary
+                .dolmen_source_contacts(
+                    sim.source_arena(),
+                    source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    },
+                    dolmen_slot,
+                    &[player],
+                )
+                .unwrap();
+            assert!(
+                contacts.iter().any(|contact| contact.index == player),
+                "the current source collision bounds admit the actual player"
+            );
+        }
+        game.step(PlayerCommand::default(), 0);
+        let sim = game.simulation();
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        assert!(sim.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Dolmen { step, .. } if step.source_slot == dolmen_slot)));
+        let (contact_before, contact_after) = player_callback(&game).expect("reached player contact consumer");
+        let selected_rate = (contact_after.3 / 200)
+            .max(crate::level1_mission::PLAYER_RECHARGE_MINIMUM_MANA_REGEN);
+        assert_eq!(contact_after.2, selected_rate,
+            "actual Dolmen contact selects the high rate: before={contact_before:?}, after={contact_after:?}");
+        assert_eq!(sim.entities()[usize::from(player)].control_flags & 0x1000, 0,
+            "the actual player visit consumes the contact latch");
+        game.simulation_mut()
+            .set_level2_entity_position(player, far)
+            .unwrap();
+        game.step(PlayerCommand::default(), 0);
+        assert!(
+            game.simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        let (credit_before, credit_after) = player_callback(&game).expect("next actual player recharge visit");
+        assert_eq!(credit_before.2, selected_rate);
+        assert!(credit_before.1.wrapping_add(selected_rate) <= credit_after.3,
+            "the actual player has unsaturated headroom: {credit_before:?} -> {credit_after:?}");
+        assert_eq!(credit_after.1,
+            credit_before.1.wrapping_add(credit_before.2).clamp(0, credit_after.3),
+            "the next player callback consumes the source-selected Dolmen recharge");
+        assert_eq!(credit_after.1 - credit_before.1, selected_rate);
+        game.reset();
+        let sim = game.simulation();
+        let live = &sim.session.state.live;
+        let typed = live
+            .ordinary
+            .dolmens()
+            .iter()
+            .find(|row| row.entity().index == dolmen_slot)
+            .expect("reset restores the authored Dolmen")
+            .entity();
+        let raw = &sim.entities()[usize::from(dolmen_slot)];
+        let target = source_target::read(
+            sim.source_arena(),
+            source_target::Context::from_ordinary(&live.goats, &live.ordinary),
+            dolmen_slot,
+        )
+        .unwrap()
+        .unwrap();
+        let dto = sim
+            .campaign_entity_presentations(sim.state.yaw)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.entity_index == dolmen_slot)
+            .expect("reset Dolmen sprite");
+        assert_eq!(
+            (
+                (typed.position, typed.phase),
+                (raw.position, raw.phase),
+                target.position,
+                (dto.position, dto.render_parameter_index)
+            ),
+            reset_baseline,
+            "reset restores the actual typed, raw, targeting and presentation carriers"
+        );
+        assert_eq!(
+            game.simulation()
+                .canonical_terrain()
+                .ground_height(dolmen.position),
+            old_floor
+        );
+    }
+
+    #[test]
     fn disaster_holder_adapter_preserves_failed_allocation_and_missing_parent() {
         use crate::level_definition::{CRATER_PROPERTIES, EARTHQUAKE_PROPERTIES, VOLCANO_PROPERTIES};
         for (family, properties) in [(16_u8, CRATER_PROPERTIES), (17, EARTHQUAKE_PROPERTIES), (18, VOLCANO_PROPERTIES)] {

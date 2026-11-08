@@ -1051,6 +1051,18 @@ pub(crate) struct Creature17Trace {
     /// Actual web impact, player and prepared sound journal sequence.
     pub(crate) web_first_hit_sounds: Vec<(SourceEntityHandle, SourceEntityHandle, u64)>,
     pub(crate) boss_sound_calls: Vec<BossSoundBoundaryReceipt>,
+    pub(crate) dolmen_terrain_watch: Option<SourceEntityHandle>,
+    pub(crate) dolmen_terrain: Vec<DolmenTerrainBoundaryReceipt>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DolmenTerrainBoundaryReceipt {
+    pub(crate) ring: SourceEntityHandle,
+    pub(crate) dolmen: SourceEntityHandle,
+    pub(crate) position: Position,
+    pub(crate) ground_before: i16,
+    pub(crate) ground_after: i16,
 }
 
 #[cfg(test)]
@@ -2291,6 +2303,15 @@ impl Mc2Simulation {
     #[cfg(test)]
     pub(crate) fn start_creature17_trace(&self) {
         CREATURE17_TRACE.with(|trace| *trace.borrow_mut() = Some(Creature17Trace::default()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watch_dolmen_terrain_for_test(&self, dolmen: SourceEntityHandle) {
+        CREATURE17_TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                trace.dolmen_terrain_watch = Some(dolmen);
+            }
+        });
     }
 
     #[cfg(test)]
@@ -16380,6 +16401,11 @@ impl Mc2Simulation {
                 {
                     row.entity.record[66] = advanced;
                 }
+                if let Some(current) = live.economy.entities.get_mut(usize::from(source_slot))
+                    .filter(|row| row.active && (row.class, row.model, row.action) == (2, 2, 6))
+                {
+                    current.set_phase(advanced);
+                }
             }
             SourceRoute::PossessionHolder | SourceRoute::FireballHolder => {
                 if is_rival_holder
@@ -19730,6 +19756,23 @@ impl Mc2Simulation {
             }
             (ExistingHandler::TerrainDisasters, SourceRoute::Imported) => {
                 use crate::world::terrain::disasters::mc2;
+                #[cfg(test)]
+                let dolmen_ground_before = CREATURE17_TRACE.with(|trace| {
+                    let watch = trace.borrow().as_ref()?.dolmen_terrain_watch?;
+                    let live = &self.session.state.live;
+                    let ring = live.economy.handle(source_slot)?;
+                    let ring_row = live.economy.entities.get(usize::from(source_slot))?;
+                    if (ring_row.class, ring_row.action) != (10, 11)
+                        || live.economy.handle(watch.source_slot) != Some(watch)
+                    {
+                        return None;
+                    }
+                    let row = live.economy.entities.get(usize::from(watch.source_slot))?;
+                    if (row.class, row.model, row.action) != (2, 2, 6) {
+                        return None;
+                    }
+                    Some((ring, watch, row.position, live.terrain.ground_height(row.position)))
+                });
                 let particles = &self.session.definition.presentation.particles;
                 let masks = self.session.definition.collision_masks.as_ref();
                 let outcome = {
@@ -19772,6 +19815,21 @@ impl Mc2Simulation {
                         },
                     )?
                 };
+                #[cfg(test)]
+                if let Some((ring, dolmen, position, ground_before)) = dolmen_ground_before {
+                    let ground_after = self.session.state.live.terrain.ground_height(position);
+                    CREATURE17_TRACE.with(|trace| {
+                        if let Some(trace) = trace.borrow_mut().as_mut() {
+                            trace.dolmen_terrain.push(DolmenTerrainBoundaryReceipt {
+                                ring,
+                                dolmen,
+                                position,
+                                ground_before,
+                                ground_after,
+                            });
+                        }
+                    });
+                }
                 for effect in outcome.effects(source_slot) {
                     self.push_flight_effect(effect);
                 }
@@ -20928,7 +20986,17 @@ impl Mc2Simulation {
                         .map_err(|error| error.to_string())?;
                 }
                 let live = &mut self.session.state.live;
+                let original = live.economy.handle(source_slot);
                 let step = live.ordinary.step_dolmen_source_pose(source_slot, &live.terrain)?;
+                // 65080 tests contact first, then writes Z at this same source
+                // address. Publish only that field for later target/sprite reads.
+                if original.is_some() && live.economy.handle(source_slot) == original
+                    && let Some(current) = live.economy.entities.get_mut(usize::from(source_slot))
+                    .filter(|row| row.active && (row.class, row.model, row.action) == (2, 2, 6))
+                {
+                    current.position.z = step.position.z;
+                    current.record[84..86].copy_from_slice(&step.position.z.to_le_bytes());
+                }
                 self.push_dispatch_effect(Mc2DispatchEvent::Dolmen { pass, step });
             }
             (ExistingHandler::CastleRoot, SourceRoute::CastleRoot) => {
