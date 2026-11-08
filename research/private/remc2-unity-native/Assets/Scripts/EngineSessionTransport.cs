@@ -703,14 +703,16 @@ namespace MagicCarpet.Native
             {
                 throw new InvalidOperationException("managed neutral command exceeds negotiated bound");
             }
-            Check(
+            var stepStart = ModernCapture.BeginMeasurement();
+            try { Check(
                 NativeSim.mc_game_session_step_json_v1(
                     handle,
                     ParseCounter(identity.generation, "generation"),
                     ParseCounter(identity.tick, "tick"),
                     bytes,
                     checked((uint)bytes.Length)),
-                "step neutral engine session");
+                "step neutral engine session"); }
+            finally { ModernCapture.EndMeasurement("engine_step_native", stepStart); }
         }
 
         internal SnapshotObservation Reset()

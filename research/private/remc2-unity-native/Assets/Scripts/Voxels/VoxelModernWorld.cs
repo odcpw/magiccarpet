@@ -160,6 +160,7 @@ namespace MagicCarpet.Native.Voxels
                 if((uint)knownRemoved.Count!=state.removedCount)throw new InvalidOperationException("Native voxel removal count mismatch");
                 worldGeneration=session.Generation;lastRevision=state.revision;lastContentHash=state.contentHash;impactCursor=state.impactHead;
                 ready=true;LogProjectionState(true);started=Time.time;startedWall=Time.realtimeSinceStartup;firstNativeTick=nativeTick;wall=Stopwatch.GetTimestamp();
+                ModernCapture.BeginWorldMeasurement();
                 if(capture)StartCoroutine(Record());
                 Debug.Log($"MC_VOXEL_MODERN_READY native_tick={nativeTick} revision={lastRevision} removed={knownRemoved.Count} impact_head={impactCursor} native_authority=True");
                 return;
@@ -216,7 +217,9 @@ namespace MagicCarpet.Native.Voxels
         private VoxelVolume CreateVolume(NativeCampaignSession.VoxelVolumeProjection data,Material material)
         {
             var origin=Origin(data);var size=data.cell_size/64f;var dims=Dimensions(data);
-            var volume=new VoxelVolume(physical.transform,origin,dims,size,material);
+            var groupOption=Option("-mc-voxel-render-group");
+            int renderGroup=groupOption==null?4:int.Parse(groupOption,CultureInfo.InvariantCulture);
+            var volume=new VoxelVolume(physical.transform,origin,dims,size,material,renderGroup);
             for(int z=0;z<dims.z;z++)for(int x=0;x<dims.x;x++)
             {
                 int count=data.kind==0?data.terrain_columns[z*dims.x+x]:dims.y;
@@ -375,7 +378,8 @@ namespace MagicCarpet.Native.Voxels
         internal void Render()
         {
             if(!ready)return;
-            long now=Stopwatch.GetTimestamp();if(Time.time-started>1)frames.Add((now-wall)*1000.0/Stopwatch.Frequency);wall=now;
+            long now=Stopwatch.GetTimestamp();double frameMs=(now-wall)*1000.0/Stopwatch.Frequency;if(Time.time-started>1)frames.Add(frameMs);wall=now;
+            if(ModernCapture.Measure)view.GetComponent<ModernCapture>()?.SampleWorldFrame(nativeTick,rubble.ActiveBodies,frameMs,Time.time-started,Time.realtimeSinceStartup-startedWall);
             float t=Time.time-started;
             if(automatic&&!characterReview&&!nativeCamera){
                 if(t<8)Look(home+new Vector3(-24+t*.5f,13,-31),home+Vector3.up*5);
@@ -437,6 +441,7 @@ namespace MagicCarpet.Native.Voxels
             r.belowTerrainOther=rubble.CountBelowSurface(ContactHeight,VoxelRubble.RubbleKind.Other);
             r.belowTerrain=r.belowTerrainImpact+r.belowTerrainCharacter+r.belowTerrainOther;
             File.WriteAllText(Path.Combine(output,"report.json"),JsonUtility.ToJson(r,true));
+            ModernCapture.WriteWorldProfile(output);
         }
         private void OnDestroy()
         {

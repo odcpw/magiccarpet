@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
+using Unity.Profiling;
 
 namespace MagicCarpet.Native
 {
@@ -34,6 +35,43 @@ namespace MagicCarpet.Native
         private ulong lastTimingTimestamp;
         private Vector3? orbitCenter;
         private float orbitRadius, orbitHeight, orbitSpeed;
+        private readonly List<ProfilerRecorder> counters = new();
+        private static readonly string[] CounterNames = { "Draw Calls Count", "Batches Count", "SetPass Calls Count", "Triangles Count" };
+        [Serializable] private sealed class CounterSample { public string name; public bool available; public long value; }
+        [Serializable] private sealed class ScopeSample { public string name; public double[] milliseconds; }
+        [Serializable] private sealed class ProfileFrame { public int frame, bodies; public ulong tick, gpuFrameTimestamp; public float wallSeconds, gameSeconds; public double milliseconds, gpuMilliseconds; public bool gpuAvailable; public CounterSample[] counters; }
+        [Serializable] private sealed class Profile { public string mode = "unthrottled; counters refer to last completed frame"; public ProfileFrame[] frames; public ScopeSample[] scopes; }
+        private static readonly List<ProfileFrame> profileFrames = new();
+        private static int measurementEpoch;
+
+        // Campaign startup can take longer than the old Awake+5 second window.
+        // Start the voxel's common scope window only after its world is ready.
+        internal static void BeginWorldMeasurement()
+        {
+            if (!Measure) return;
+            measurementEpoch++;
+            scopeTimes.Clear(); profileFrames.Clear();
+            measurementReadyAt = Time.realtimeSinceStartup + 1f;
+            Debug.Log("MC_MODERN_MEASUREMENT_WORLD_READY epoch=" + measurementEpoch);
+        }
+
+        internal static void WriteWorldProfile(string directory)
+        {
+            if (!Measure) return;
+            File.WriteAllText(Path.Combine(directory, "performance.json"), JsonUtility.ToJson(new Profile {
+                frames = profileFrames.ToArray(), scopes = scopeTimes.Select(pair => new ScopeSample { name = pair.Key, milliseconds = pair.Value.ToArray() }).ToArray()
+            }, true));
+        }
+
+        internal void SampleWorldFrame(ulong tick, int bodies, double milliseconds, float gameSeconds, float wallSeconds)
+        {
+            if (!Measure || profileFrames.Count >= 12000) return;
+            var latest = FrameTimingManager.GetLatestTimings(1, timings) > 0 ? timings[0] : default;
+            profileFrames.Add(new ProfileFrame { frame = Time.frameCount, tick = tick, bodies = bodies,
+                milliseconds = milliseconds, gameSeconds = gameSeconds, wallSeconds = wallSeconds,
+                gpuMilliseconds = latest.gpuFrameTime, gpuFrameTimestamp = latest.frameStartTimestamp, gpuAvailable = latest.gpuFrameTime > 0,
+                counters = counters.Select((recorder, index) => new CounterSample { name = CounterNames[index], available = recorder.Valid, value = recorder.Valid ? recorder.LastValue : -1 }).ToArray() });
+        }
 
         internal static long BeginMeasurement() => Measure && Time.realtimeSinceStartup >= measurementReadyAt
             ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
@@ -48,11 +86,11 @@ namespace MagicCarpet.Native
         {
             if (!scopeTimes.TryGetValue(scope, out var samples))
                 scopeTimes.Add(scope, samples = new List<double>(120));
-            if (samples.Count >= 120) return;
+            if (samples.Count >= (Voxels.VoxelModernWorld.Requested ? 12000 : 120)) return;
             samples.Add(milliseconds);
             if (samples.Count != 120) return;
-            samples.Sort();
-            Debug.Log($"MC_MODERN_SCOPE scope={scope} samples=120 mean_ms={samples.Average():F2} median_ms={samples[60]:F2} p95_ms={samples[113]:F2}");
+            var sorted = samples.OrderBy(value => value).ToArray();
+            Debug.Log($"MC_MODERN_SCOPE scope={scope} samples=120 mean_ms={samples.Average():F2} median_ms={sorted[60]:F2} p95_ms={sorted[113]:F2}");
         }
 
         private void Awake()
@@ -77,6 +115,8 @@ namespace MagicCarpet.Native
             Shader.SetGlobalFloat("_ModernSmokeDebug", 0);
             Shader.SetGlobalFloat("_ModernVegetationDebug", 0);
             scopeTimes.Clear();
+            profileFrames.Clear();
+            if (Measure) foreach (var name in CounterNames) counters.Add(ProfilerRecorder.StartNew(ProfilerCategory.Render, name, 1));
             ReviewPosition = null;
             var args = Environment.GetCommandLineArgs();
             var review = Array.IndexOf(args, "-mc-modern-review-camera");
@@ -103,6 +143,11 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void OnDestroy()
+        {
+            foreach (var counter in counters) counter.Dispose();
+        }
+
         private void Update()
         {
             if (orbitCenter.HasValue)
@@ -111,7 +156,7 @@ namespace MagicCarpet.Native
                 ReviewPosition = orbitCenter.Value + new Vector3(Mathf.Cos(angle) * orbitRadius, orbitHeight, Mathf.Sin(angle) * orbitRadius);
                 ReviewRotation = Quaternion.LookRotation(orbitCenter.Value - ReviewPosition.Value);
             }
-            if (Measure && !reported)
+            if (Measure && (!reported || Voxels.VoxelModernWorld.Requested))
             {
                 FrameTimingManager.CaptureFrameTimings();
                 if (Time.realtimeSinceStartup >= measurementReadyAt &&

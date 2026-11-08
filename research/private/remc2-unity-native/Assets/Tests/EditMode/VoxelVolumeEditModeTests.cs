@@ -14,6 +14,68 @@ namespace MagicCarpet.Native.Tests
         private VoxelVolume volume;
         private static readonly Color32 Stone = new Color32(120, 90, 70, 255);
 
+        private static (Vector3, Vector3, Color32)[] RenderedVertices(GameObject owner) => owner.GetComponentsInChildren<MeshRenderer>()
+            .Where(renderer => renderer.enabled && renderer.gameObject.activeInHierarchy)
+            .SelectMany(renderer => {
+                var mesh = renderer.GetComponent<MeshFilter>().sharedMesh;
+                var positions = mesh.vertices; var normals = mesh.normals; var colors = mesh.colors32;
+                return positions.Select((position, i) => (position, normals[i], colors[i]));
+            }).ToArray();
+
+        [TestCase(2)]
+        [TestCase(4)]
+        public void GroupedRenderingRetainsExactFacesAndSmallCollidersDuringChunkEdits(int groupSize)
+        {
+            var other = new GameObject("Grouped volume");
+            var dimensions = new Vector3Int(66, 3, 18);
+            var origin = new Vector3(8, 3, -5);
+            Create(dimensions, .125f, origin);
+            using var grouped = new VoxelVolume(other.transform, origin, dimensions, .125f, material, groupSize);
+            try
+            {
+                for (int z = 0; z < dimensions.z; z++)
+                for (int x = 0; x < dimensions.x; x++)
+                {
+                    var color = new Color32((byte)x, (byte)z, 90, 255);
+                    volume.SetCell(x, 0, z, color); grouped.SetCell(x, 0, z, color);
+                }
+                volume.Build(); grouped.Build();
+                void AssertSame()
+                {
+                    var expected = RenderedVertices(parent).GroupBy(vertex => vertex).ToDictionary(group => group.Key, group => group.Count());
+                    var actual = RenderedVertices(other).GroupBy(vertex => vertex).ToDictionary(group => group.Key, group => group.Count());
+                    Assert.That(actual.Count == expected.Count && expected.All(pair => actual.TryGetValue(pair.Key, out var count) && count == pair.Value), Is.True,
+                        "Rendered positions, normals, colors and face multiplicities must remain exact");
+                    Assert.That(other.GetComponentsInChildren<MeshCollider>().Length,
+                        Is.EqualTo(parent.GetComponentsInChildren<MeshCollider>().Length));
+                    Assert.That(other.GetComponentsInChildren<MeshCollider>().Sum(c => c.sharedMesh.triangles.Length),
+                        Is.EqualTo(parent.GetComponentsInChildren<MeshCollider>().Sum(c => c.sharedMesh.triangles.Length)));
+                }
+                AssertSame();
+                Assert.That(other.GetComponentsInChildren<MeshRenderer>().Count(r => r.enabled),
+                    Is.LessThan(parent.GetComponentsInChildren<MeshRenderer>().Count(r => r.enabled)));
+                var cells = Enumerable.Range(14, 38).Select(x => new Vector3Int(x, 0, 8)).ToArray();
+                var legacyEdit = volume.BeginRemoveCells(cells); var groupedEdit = grouped.BeginRemoveCells(cells);
+                while (!legacyEdit.Complete || !groupedEdit.Complete)
+                {
+                    legacyEdit.Step(1); groupedEdit.Step(1); AssertSame();
+                }
+                CollectionAssert.AreEqual(legacyEdit.Removed.Select(c => c.Position), groupedEdit.Removed.Select(c => c.Position));
+            }
+            finally { grouped.Dispose(); UnityEngine.Object.DestroyImmediate(other); }
+        }
+
+        [Test]
+        public void EmptyRenderGroupDisappearsWhenLastPhysicalCellIsRemoved()
+        {
+            using var grouped = new VoxelVolume(parent.transform, Vector3.zero, new Vector3Int(17, 1, 1), 1, material, 4);
+            grouped.SetCell(16, 0, 0, Stone); grouped.Build();
+            Assert.That(RenderedVertices(parent).Length, Is.EqualTo(24));
+            grouped.RemoveSphere(new Vector3(16.5f, .5f, .5f), .1f);
+            Assert.That(RenderedVertices(parent), Is.Empty);
+            Assert.That(parent.GetComponentsInChildren<MeshCollider>(), Is.Empty);
+        }
+
         [SetUp]
         public void SetUp()
         {

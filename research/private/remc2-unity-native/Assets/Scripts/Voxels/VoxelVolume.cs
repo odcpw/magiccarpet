@@ -41,19 +41,25 @@ namespace MagicCarpet.Native.Voxels
         private readonly Color32[] colors;
         private readonly GameObject root;
         private readonly Dictionary<Vector3Int, Chunk> chunks = new Dictionary<Vector3Int, Chunk>();
+        private readonly Dictionary<Vector3Int, Chunk> renderGroups = new();
+        private readonly HashSet<Vector3Int> dirtyRenderGroups = new();
+        private readonly int renderGroupChunks;
         private readonly HashSet<Vector3Int> dirty = new HashSet<Vector3Int>();
         private readonly HashSet<Vector3Int> affected = new HashSet<Vector3Int>();
         private SphereEdit activeEdit;
         private SupportEdit activeSupport;
         private bool disposed;
 
-        internal VoxelVolume(Transform parent, Vector3 origin, Vector3Int dimensions, float cellSize, Material material)
+        internal VoxelVolume(Transform parent, Vector3 origin, Vector3Int dimensions, float cellSize, Material material, int renderGroupChunks = 1)
         {
             if (dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0)
                 throw new ArgumentOutOfRangeException(nameof(dimensions));
             if (float.IsNaN(cellSize) || float.IsInfinity(cellSize) || cellSize <= 0)
                 throw new ArgumentOutOfRangeException(nameof(cellSize));
             if (material == null) throw new ArgumentNullException(nameof(material));
+            if (renderGroupChunks != 1 && renderGroupChunks != 2 && renderGroupChunks != 4)
+                throw new ArgumentOutOfRangeException(nameof(renderGroupChunks));
+            this.renderGroupChunks = renderGroupChunks;
             int count = checked(checked(dimensions.x * dimensions.y) * dimensions.z);
             this.origin = origin;
             this.dimensions = dimensions;
@@ -85,6 +91,8 @@ namespace MagicCarpet.Native.Voxels
             ThrowIfDisposed();
             foreach (Vector3Int key in dirty) RebuildChunk(key);
             dirty.Clear();
+            foreach (var key in dirtyRenderGroups) RebuildRenderGroup(key);
+            dirtyRenderGroups.Clear();
         }
 
         // The collider may still reflect an earlier bounded edit chunk while
@@ -509,6 +517,7 @@ namespace MagicCarpet.Native.Voxels
 
         private void RebuildChunk(Vector3Int key)
         {
+            if (renderGroupChunks > 1) dirtyRenderGroups.Add(new Vector3Int(key.x / renderGroupChunks, key.y / renderGroupChunks, key.z / renderGroupChunks));
             var vertices = new List<Vector3>();
             var normals = new List<Vector3>();
             var vertexColors = new List<Color32>();
@@ -555,7 +564,9 @@ namespace MagicCarpet.Native.Voxels
                 go.layer = root.layer;
                 go.transform.SetParent(root.transform, false);
                 chunk = new Chunk { Object = go, Filter = go.AddComponent<MeshFilter>(), Collider = go.AddComponent<MeshCollider>() };
-                go.AddComponent<MeshRenderer>().sharedMaterial = material;
+                var renderer = go.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = material;
+                renderer.enabled = renderGroupChunks == 1;
                 chunks.Add(key, chunk);
             }
             var mesh = new Mesh { name = "Voxel chunk mesh", indexFormat = IndexFormat.UInt32 };
@@ -570,6 +581,41 @@ namespace MagicCarpet.Native.Voxels
             chunk.Collider.sharedMesh = null;
             chunk.Collider.sharedMesh = mesh;
             DestroyObject(oldMesh);
+        }
+
+        // Keep small, exact collision/edit chunks; submit their unchanged faces
+        // in larger render groups. Only committed chunks enter each rebuild.
+        private void RebuildRenderGroup(Vector3Int key)
+        {
+            var parts = new List<CombineInstance>(renderGroupChunks * renderGroupChunks * renderGroupChunks);
+            var first = key * renderGroupChunks;
+            for (int z = 0; z < renderGroupChunks; z++)
+            for (int y = 0; y < renderGroupChunks; y++)
+            for (int x = 0; x < renderGroupChunks; x++)
+                if (chunks.TryGetValue(first + new Vector3Int(x, y, z), out var chunk))
+                    parts.Add(new CombineInstance { mesh = chunk.Mesh });
+            if (parts.Count == 0)
+            {
+                if (renderGroups.TryGetValue(key, out var empty))
+                {
+                    empty.Object.SetActive(false); DestroyObject(empty.Object); DestroyObject(empty.Mesh);
+                    renderGroups.Remove(key);
+                }
+                return;
+            }
+            if (!renderGroups.TryGetValue(key, out var group))
+            {
+                var node = new GameObject($"Voxel render group {key.x},{key.y},{key.z}");
+                node.layer = root.layer; node.transform.SetParent(root.transform, false);
+                group = new Chunk { Object = node, Filter = node.AddComponent<MeshFilter>() };
+                node.AddComponent<MeshRenderer>().sharedMaterial = material;
+                renderGroups.Add(key, group);
+            }
+            var mesh = new Mesh { name = "Voxel grouped faces", indexFormat = IndexFormat.UInt32 };
+            mesh.CombineMeshes(parts.ToArray(), true, false, false);
+            var previous = group.Mesh;
+            group.Filter.sharedMesh = mesh; group.Mesh = mesh;
+            if (previous != null) DestroyObject(previous);
         }
 
         private int Index(int x, int y, int z) => x + dimensions.x * (y + dimensions.y * z);
@@ -590,6 +636,8 @@ namespace MagicCarpet.Native.Voxels
             root.SetActive(false);
             foreach (Chunk chunk in chunks.Values) DestroyObject(chunk.Mesh);
             chunks.Clear();
+            foreach (var group in renderGroups.Values) DestroyObject(group.Mesh);
+            renderGroups.Clear(); dirtyRenderGroups.Clear();
             DestroyObject(root);
         }
     }
