@@ -328,7 +328,7 @@ without bypassing or rewriting those dependencies.
 - [x] Spider20 full ordinary web/contact/death capability — `mc-bhq.3`.
 - [x] Hydra27 — `mc-1pb.14`.
 - [x] Builder/Villager/Trader — `mc-1pb.16`.
-- [ ] All single-player rival wizards — `mc-1pb.17`.
+- [x] Single-player rival-wizard runtime — `mc-1pb.17` (original shared-system dependencies remain open).
 - [x] Player death, banishment and revival — `mc-1pb.18`.
 - [ ] Final boss10 — `mc-1pb.3`.
 - [x] Shared actor contact/damage/linked death/collectible mana — `mc-1pb.24`.
@@ -338,6 +338,52 @@ Goat (`mc-1pb.1`, already closed) and the delivered Spider20 family are inputs. 
 long checks. An unchecked family may already be substantially implemented.
 Original full acceptance remains open until its evidence is independently
 verified and matching native delivery lands. No automatic heartbeat is recreated.
+
+### Installed canonical rival family/lifecycle — `mc-1pb.17` (2026-11-08)
+
+Implemented, committed and pushed at `16d953fe`; matching optimized Original
+native `2d58e46e` is installed through refresh `build-fsmagut5`. All654 unique
+inputs match canonical source, isolated checkout and Rig. Root viewed the normal
+canonical map/loading/NightSpire terrain/HUD with that mapped native, one portal
+click, zero retries, then stopped the owned player/display. This is launch/load,
+not native Mission18 combat, human play/FPS/hardware audio/full missions or old
+saves. No Unity/art rebuild was needed.
+
+Actual rival state/behavior and action2/3 death, scattering, banishment and
+sequential Castle revival now belong to `creatures::rival_wizards`. The old
+implementation files are moved, not duplicated. Narrow borrowed domains replace
+whole-session lifecycle methods; shared composition retains the flight-journal
+and ordinary reclaim/rebuild barriers. Root's normalized comparison confirms
+the roster move preserves behavior. Current-slot/generation checks, source
+allocation order, partial failures and following-pass reclaim remain intact.
+
+Frozen C2's nine exact checks pass: distinct imported roster/shared RNG,
+all-rival dispatch/tail, actual paid Meteor, configured mode14, actual Morph,
+source order, remote Morph scatter, real whole-Mission23 full1200 Castle revival
+(155.705s), and final-Castle loss (0.862s). The configured mode14 gate now asserts
+the exact68DE0 before/after debt and unchanged immediate mana, resolving the
+prior lower-bound review finding. The last-loss check observes actual owner425,
+Castle450 and holder428 against living peer451/holder454 through teardown,
+current A4/roster removal and ordinary no-rebuild. It reuses the same compiled
+ELF and qualified whole package; no new control or source edit was needed.
+Workspace/all-targets release check passes with462 Rust inputs and37 extra
+inputs unchanged. Fresh bounded source/gate assessment supports rival runtime
+qualification and identifies no further concrete family producer/consumer gap.
+It does not require every tactic to occur naturally in one mission. Original
+external acceptance/dependencies remain OPEN; `.17` is not force-closed.
+
+Evidence: `research/private/generated/rival-ownership-20261108-integration/candidate-2`
+and its Original smoke. Rename-aware UBS found no changed-hunk critical; legacy
+formatting/whole-file findings remain. Failed C1 compile and its exact source
+are preserved; the retained scatter test now calls the canonical helper with
+its original assertions. Completed return artifacts are verified on Rig.
+
+Next creature is final boss10 (`mc-1pb.3`). Its ordinary building68/group29
+producer already exists. The first diagnosed missing consumer is source-time
+prepared attack/death audio: most sounds currently stop at the economy journal,
+and periodic death sound63 has no producer. RedElk owns the family correction;
+Root coordinates the narrow shared audio join and matching delivery. Preserve
+the original whole-family acceptance and actual source24 data/feature gate.
 
 ### Installed rival Morph steering/full activation — `mc-1pb.17` (2026-11-08)
 
