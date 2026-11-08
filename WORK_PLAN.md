@@ -358,6 +358,23 @@ source-reachable scenery burial/retirement producer and its reclaim/consumer
 path; the reported stale typed-Dolmen retirement remains a source finding,
 not a reproduced runtime result. Then continue remaining enabled scenery.
 
+The next producer is now source-pinned: ordinary Castle child10/42/action44
+starts with control bit0x10000. Source37BC0 calls57390 for each cell of
+BUILD[1..current stage] before that cell's material work, then performs the
+height pass. Rust `step_castle_build_child` currently uses only the collapsed
+terrain footprint and omits burial. Restore this shared join with actual stage,
+cell and non-square axis order; do not stamp a final bounding rectangle as an
+actor-burial substitute. Real Level2 authored411/Dolmen108 is different-owner
+and lies inside the retained stage-I 8×8 footprint for the proposed landing.
+Its actual public placement/landing admission still needs runtime proof.
+The resulting hidden row and following cleanup must also retire its ordinary
+typed view so it cannot keep scheduling contacts or mask a legitimate new
+occupant. That latter stale-view finding is still unexecuted. Root owns the
+next shared implementation and builds; NavyBadger stays on source/consumer
+verification (its current Mail credential is unavailable, so no worker edits
+without a fresh authenticated lease). Existing `mc-bhq.10`/`mc-k5k.9` and full
+scenery acceptance remain open; reuse delivered casting/mana/tier evidence.
+
 ### Installed paid Tree burning — partial `mc-bhq.13` (2026-11-08)
 
 Source checkpoint `8eae0efe` is committed/pushed; matching optimized Original
