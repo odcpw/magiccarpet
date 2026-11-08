@@ -1036,10 +1036,9 @@ impl Level2NyphurCommonUpkeep {
         true
     }
 
-    /// The source `sub_15170` availability predicate for the source-backed
-    /// profiles: direct family 0/1/3 rows from `Spells.cpp`, plus the generic
-    /// family 6/11/12 table. Families without one of those qualified rows
-    /// fail closed; they are not coerced into a neighboring profile.
+    /// The source `sub_15170` availability predicate for the current holder
+    /// tier. Capacity and price are source-table fields; the holder's own
+    /// maximum mana may separately reflect its current Castle discount.
     fn source_spell_available(
         &self,
         family: u8,
@@ -1054,17 +1053,27 @@ impl Level2NyphurCommonUpkeep {
         if family == 2 {
             return self.source_castle_spell_available(holder, profile, entities, [false; 2], &mut false);
         }
-        if self.max_mana < profile.max_mana
-            || self.mana < profile.mana
-            || self.spell_enabled[usize::from(family)] != 0
+        if self.max_mana < profile.mana_regen
+            || self.mana < profile.max_mana
             || self.mana < holder.max_mana
         {
             return false;
         }
-        if matches!(family, 4 | 6 | 8 | 11) && self.sub_156f0(family, entities) {
-            return false;
+        match family {
+            3 => true,
+            0 | 7 | 13 | 14 | 22 => self.spell_enabled[usize::from(family)] == 0
+                && entities.get(usize::from(self.source_slot))
+                    .is_some_and(|source| self.castle_aim_admitted(source)),
+            1 | 9 | 16 | 18 | 19 | 21 => holder.active_value == 0
+                && self.spell_enabled[usize::from(family)] == 0
+                && entities.get(usize::from(self.source_slot))
+                    .is_some_and(|source| self.castle_aim_admitted(source)),
+            4 | 6 | 8 | 11 => holder.active_value == 0
+                && self.spell_enabled[usize::from(family)] == 0,
+            5 | 10 | 12 | 15 | 17 | 20 | 23..=25 =>
+                self.spell_enabled[usize::from(family)] == 0,
+            _ => false,
         }
-        true
     }
 
     /// Execute the source `sub_15F20`: SetSpell happens before the
@@ -1122,12 +1131,14 @@ impl Level2NyphurCommonUpkeep {
                 2
             };
         }
-        if !self.source_spell_available(family, holder, profile, entities) {
-            return if self.max_mana < profile.max_mana || self.mana < profile.mana {
-                -1
-            } else {
-                0
-            };
+        let Some((_, applied)) = Self::source_spell_profile(family, holder.level_gate) else {
+            return 0;
+        };
+        if !self.source_spell_available(family, holder, applied, entities) {
+            return 0;
+        }
+        if self.max_mana < profile.mana_regen || self.mana < profile.max_mana {
+            return -1;
         }
         family.cast_signed()
     }
@@ -1342,7 +1353,10 @@ impl Level2NyphurCommonUpkeep {
                 }
             }
             4 | 6 | 8 | 11 | 12 | 14 => {
-                if source_model == 0 && holder.active_value > 0 {
+                if source_model != 0 {
+                    // Source jumps to LABEL_16, which accepts only zero.
+                    use_mana_fallback = holder.active_value == 0;
+                } else if holder.active_value > 0 {
                     holder.active_value = if holder.model == 4 { 7 } else { 1 };
                     holder.record[50..52].copy_from_slice(&holder.active_value.to_le_bytes());
                     // The pinned branch jumps to LABEL_23 with v7 still
@@ -1353,14 +1367,14 @@ impl Level2NyphurCommonUpkeep {
                 }
             }
             7 => {
-                if holder.byte_3b >= 1 && holder.active_value > 0 {
+                if holder.level_gate.cast_unsigned() >= 1 && holder.active_value != 0 {
                     // LABEL_23 returns the switch's initial zero result.
                 } else {
                     use_mana_fallback = true;
                 }
             }
             9 | 10 | 13 | 15..=24 => {
-                if holder.active_value > 0 {
+                if holder.active_value != 0 {
                     // LABEL_23 returns the switch's initial zero result.
                 } else {
                     use_mana_fallback = true;
@@ -4619,12 +4633,7 @@ impl Level2NyphurDispatcher {
         self.step_sub_16580(source_index, entities, terrain)
     }
 
-    /// Route one selected spell family through the pinned `sub_14E10`
-    /// switch shape. Families `0/1/7/0x16` share the aimed-caster case-0
-    /// branch owned here. Every other family the qualified selectors can
-    /// scan has no live Level 2 holder (`sub_15F20` therefore never returns
-    /// it), so those switch cases fail closed instead of borrowing the
-    /// wrong angle gate or fabricating a holder.
+    /// Route selected spells through their source `sub_14E10` branches.
     fn step_sub_14e10_selected(
         &mut self,
         family: u8,
@@ -4634,8 +4643,71 @@ impl Level2NyphurDispatcher {
     ) -> bool {
         match family {
             0 | 1 | 7 | 0x16 => self.step_sub_14e10_case0(family, source_index, target, entities),
+            4 | 9 | 13 | 14 | 18 | 19 | 21 =>
+                self.step_sub_14e10_aimed(family, source_index, target, entities),
+            3 | 5 | 6 | 8 | 10 | 11 | 12 | 16 | 17 | 20 =>
+                self.step_sub_14e10_direct(family, source_index, entities),
             _ => false,
         }
+    }
+
+    /// Non-aimed source branch: availability, flag clear, activation and
+    /// cooldown, without a pitch or burst-counter write.
+    fn step_sub_14e10_direct(
+        &mut self,
+        family: u8,
+        source_index: usize,
+        entities: &mut [EntitySnapshot],
+    ) -> bool {
+        if !self.source_spell_ready(family, entities) {
+            return false;
+        }
+        let Some(source) = entities.get(source_index).cloned() else {
+            return false;
+        };
+        let mut source_control_flags = source.control_flags & !0x0000_0100;
+        entities[source_index].set_control_flags(source_control_flags);
+        let activated = self.common_upkeep.step_sub_14e10(
+            family, source.model, &mut source_control_flags, entities,
+        );
+        entities[source_index].set_control_flags(source_control_flags);
+        activated
+    }
+
+    /// This source branch uses a 227-unit aim gate without the burst
+    /// counter used by family 0. The availability check precedes every
+    /// action/pose write, including the control-flag clear.
+    fn step_sub_14e10_aimed(
+        &mut self,
+        family: u8,
+        source_index: usize,
+        target: &EntitySnapshot,
+        entities: &mut [EntitySnapshot],
+    ) -> bool {
+        if !self.source_spell_ready(family, entities) {
+            return false;
+        }
+        let Some(source) = entities.get(source_index).cloned() else {
+            return false;
+        };
+        let mut source_control_flags = source.control_flags & !0x0000_0100;
+        entities[source_index].set_control_flags(source_control_flags);
+        if angle_distance(i32::from(source.yaw), i32::from(source.source_roll())) >= 227 {
+            return false;
+        }
+        let horizontal = crate::legacy_sqrt(super::level2_wrapping_xy_distance(
+            source.position, target.position,
+        ));
+        let pitch = crate::pitch_for_delta(
+            i32::try_from(horizontal).expect("Nyphur Meteor XY distance fits signed 32 bits"),
+            i32::from(target.position.z) - i32::from(source.position.z),
+        );
+        entities[source_index].set_pitch(pitch);
+        let activated = self.common_upkeep.step_sub_14e10(
+            family, source.model, &mut source_control_flags, entities,
+        );
+        entities[source_index].set_control_flags(source_control_flags);
+        activated
     }
 
     /// The case `0/1/7/0x16` branch of pinned `sub_14E10`: the aimed-caster
@@ -4649,6 +4721,9 @@ impl Level2NyphurDispatcher {
         target: &EntitySnapshot,
         entities: &mut [EntitySnapshot],
     ) -> bool {
+        if !self.source_spell_ready(family, entities) {
+            return false;
+        }
         let Some(source) = entities.get(source_index).cloned() else {
             return false;
         };

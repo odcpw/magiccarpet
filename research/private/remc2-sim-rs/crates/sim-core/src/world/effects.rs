@@ -52,6 +52,12 @@ pub(crate) struct Visit {
     /// Completed ordinary emitter birth; the MC2 adapter may retain its
     /// existing typed smoke carrier without rerunning the constructor.
     pub(crate) smoke_child: Option<u16>,
+    #[cfg(test)]
+    pub(crate) meteor_children: Vec<(
+        crate::campaign::source_arena::SourceEntityHandle,
+        crate::campaign::source_arena::SourceEntityHandle,
+        EntitySnapshot,
+    )>,
 }
 
 /// Source-global eruption ownership, reset with the arena, never inferred
@@ -1313,6 +1319,8 @@ where
                         y: source.position.y.wrapping_add(dy as u16),
                         z: source.position.z,
                     };
+                    #[cfg(test)]
+                    let parent_handle = arena.handle(source.index);
                     if let Some(child_slot) = child(
                         arena,
                         terrain,
@@ -1328,8 +1336,16 @@ where
                         write_word(row, 90, 512);
                         write_word(row, 92, 512);
                         row.set_source_dword_10(0);
+                        #[cfg(test)]
+                        let child_packet = row.clone();
                         if child_slot == slot {
                             source = row.clone();
+                        }
+                        #[cfg(test)]
+                        if let (Some(parent), Some(child)) =
+                            (parent_handle, arena.handle(child_slot))
+                        {
+                            visit.meteor_children.push((parent, child, child_packet));
                         }
                     }
                 }

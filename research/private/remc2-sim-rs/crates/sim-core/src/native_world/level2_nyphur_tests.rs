@@ -140,6 +140,783 @@ fn ordinary_rival_castle_upgrade_gates_use_distinct_source_carriers() {
 }
 
 #[test]
+fn configured_mission18_rival_meteor_uses_source_availability_and_aim_order() {
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        std::path::PathBuf::from,
+    );
+    let base = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    ).expect("whole ordinary Mission 18").simulation().clone();
+    const CASTER: u16 = 92;
+    const HOLDER: u16 = 101;
+    let target = base.entities()[91].clone();
+    let holder = &base.entities()[usize::from(HOLDER)];
+    assert_eq!((holder.active, holder.class, holder.model, holder.action,
+        holder.source_spell_parent_entity_index()), (true, 15, 9, 27, CASTER));
+    let prepare = || {
+        let mut candidate = base.clone();
+        let live = &mut candidate.session.state.live;
+        let handle = live.economy.handle(CASTER).unwrap();
+        let source = &mut live.economy.entities[usize::from(CASTER)];
+        source.set_yaw(0);
+        source.set_source_roll(0);
+        source.set_control_flags(source.control_flags | 0x100);
+        let ai = live.nyphur_dispatcher.get_mut(handle).unwrap();
+        // Configured boundaries isolate the source predicate; ordinary profile
+        // and resource admission are checked by the connected consumer.
+        ai.common_upkeep.max_mana = 40_000;
+        ai.common_upkeep.mana = 6_000;
+        ai.common_upkeep.word_0x244 = 0;
+        ai.common_upkeep.spell_enabled[9] = 0;
+        candidate
+    };
+
+    for boundary in ["capacity", "mana", "active", "cooldown", "aperture"] {
+        let mut candidate = prepare();
+        let live = &mut candidate.session.state.live;
+        let handle = live.economy.handle(CASTER).unwrap();
+        let ai = live.nyphur_dispatcher.get_mut(handle).unwrap();
+        match boundary {
+            "capacity" => ai.common_upkeep.max_mana = 39_999,
+            "mana" => ai.common_upkeep.mana = 5_999,
+            "active" => {
+                let holder = &mut live.economy.entities[usize::from(HOLDER)];
+                holder.active_value = 1;
+                holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            }
+            "cooldown" => ai.common_upkeep.spell_enabled[9] = 1,
+            "aperture" => live.economy.entities[usize::from(CASTER)].set_source_roll(473),
+            _ => unreachable!(),
+        }
+        let selected = ai.common_upkeep.step_sub_15f20(9, 0, &mut live.economy.entities);
+        assert_eq!(selected, 0, "source 15170 rejects {boundary}");
+        assert_eq!(live.economy.entities[usize::from(HOLDER)].active_value,
+            if boundary == "active" { 1 } else { 0 });
+    }
+
+    for (angle, succeeds) in [(226, true), (227, false)] {
+        let mut candidate = prepare();
+        let live = &mut candidate.session.state.live;
+        let handle = live.economy.handle(CASTER).unwrap();
+        live.economy.entities[usize::from(CASTER)].set_source_roll(angle);
+        let ai = live.nyphur_dispatcher.get_mut(handle).unwrap();
+        assert_eq!(ai.common_upkeep.step_sub_15f20(9, 0, &mut live.economy.entities), 9);
+        let before_pitch = live.economy.entities[usize::from(CASTER)].pitch;
+        let burst = ai.common_upkeep.word_0x1a2;
+        assert_eq!(ai.step_sub_14e10_selected(9, usize::from(CASTER), &target,
+            &mut live.economy.entities), succeeds);
+        let source = &live.economy.entities[usize::from(CASTER)];
+        let holder = &live.economy.entities[usize::from(HOLDER)];
+        assert_eq!(source.control_flags & 0x100, 0);
+        assert_eq!(ai.common_upkeep.word_0x1a2, burst, "Meteor has no family-0 burst write");
+        if succeeds {
+            let horizontal = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+                source.position, target.position));
+            assert_eq!(source.pitch, crate::pitch_for_delta(horizontal as i32,
+                i32::from(target.position.z) - i32::from(source.position.z)));
+            assert_eq!(holder.active_value, holder.activation_value.cast_signed());
+            assert_eq!(ai.common_upkeep.spell_enabled[9], LEVEL2_NYPHUR_SPELL_COOLDOWNS[9]);
+        } else {
+            assert_eq!(source.pitch, before_pitch);
+            assert_eq!(holder.active_value, 0);
+            assert_eq!(ai.common_upkeep.spell_enabled[9], 0);
+        }
+    }
+}
+
+#[test]
+fn configured_mission18_rival_aimed_spell_group_obeys_15170_boundaries() {
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        std::path::PathBuf::from,
+    );
+    let session = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    ).expect("whole ordinary Mission 18").simulation().clone();
+    let live = &session.session.state.live;
+    let owner = 140_u16;
+    let handle = live.economy.handle(owner).unwrap();
+    let base = &live.nyphur_dispatcher.get(handle).unwrap().common_upkeep;
+    for (family, slot) in [(1, 142), (9, 149), (16, 156), (18, 158), (19, 159), (21, 161)] {
+        let mut entities = live.economy.entities.clone();
+        let actual = &entities[slot];
+        assert_eq!((actual.active, actual.class, actual.model,
+            actual.source_spell_parent_entity_index()), (true, 15, family, owner));
+        let profile = Level2NyphurCommonUpkeep::source_spell_profile(family, 0).unwrap().1;
+        let mut holder = actual.clone();
+        holder.active_value = 0;
+        holder.max_mana = profile.max_mana;
+        let mut ai = base.clone();
+        ai.word_0x244 = 0;
+        ai.max_mana = profile.mana_regen;
+        ai.mana = profile.max_mana;
+        ai.spell_enabled[usize::from(family)] = 0;
+        entities[usize::from(owner)].set_yaw(0);
+        entities[usize::from(owner)].set_source_roll(0);
+        assert!(ai.source_spell_available(family, &holder, profile, &entities),
+            "family {family} admits inclusive source resource boundaries");
+        let mut short_capacity = ai.clone();
+        short_capacity.max_mana = profile.mana_regen - 1;
+        assert!(!short_capacity.source_spell_available(family, &holder, profile, &entities));
+        let mut short_mana = ai.clone();
+        short_mana.mana = profile.max_mana - 1;
+        assert!(!short_mana.source_spell_available(family, &holder, profile, &entities));
+        let mut active = holder.clone();
+        active.active_value = 1;
+        assert!(!ai.source_spell_available(family, &active, profile, &entities));
+        let mut cooldown = ai.clone();
+        cooldown.spell_enabled[usize::from(family)] = 1;
+        assert!(!cooldown.source_spell_available(family, &holder, profile, &entities));
+        entities[usize::from(owner)].set_source_roll(473);
+        assert!(!ai.source_spell_available(family, &holder, profile, &entities),
+            "perception zero gives strict 472-unit aperture");
+    }
+}
+
+#[test]
+fn configured_mission18_selected_meteor_and_crater_preserve_source_admission_order() {
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+        std::path::PathBuf::from,
+    );
+    let session = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    ).expect("whole ordinary Mission 18").simulation().clone();
+    let live = &session.session.state.live;
+    let owner = 184_u16;
+    let handle = live.economy.handle(owner).unwrap();
+    let base = live.nyphur_dispatcher.get(handle).unwrap();
+    let target = live.economy.entities[91].clone();
+
+    // These are configured source-branch controls, not ordinary AI selection:
+    // use the real imported holder/owner and isolate inclusive resource gates.
+    for (family, slot) in [(9_u8, 194_usize), (16, 201)] {
+        let mut entities = live.economy.entities.clone();
+        assert_eq!((entities[slot].class, entities[slot].model,
+            entities[slot].source_spell_parent_entity_index()), (15, family, owner));
+        let mut ai = base.clone();
+        let profile = Level2NyphurCommonUpkeep::source_spell_profile(family, 0).unwrap().1;
+        ai.common_upkeep.max_mana = profile.mana_regen;
+        ai.common_upkeep.mana = profile.max_mana;
+        ai.common_upkeep.word_0x244 = 0;
+        ai.common_upkeep.spell_enabled[usize::from(family)] = 0;
+        let actor = &mut entities[usize::from(owner)];
+        actor.set_control_flags(actor.control_flags | 0x100);
+        actor.set_yaw(0);
+        actor.set_source_roll(0);
+        actor.set_pitch(77);
+        assert_eq!(ai.common_upkeep.step_sub_15f20(family, 0, &mut entities), family as i8);
+
+        let mut refused_ai = ai.clone();
+        refused_ai.common_upkeep.spell_enabled[usize::from(family)] = 1;
+        let mut refused_rows = entities.clone();
+        let actor_before = refused_rows[usize::from(owner)].clone();
+        let holder_before = refused_rows[slot].clone();
+        assert!(!refused_ai.step_sub_14e10_selected(
+            family, usize::from(owner), &target, &mut refused_rows));
+        assert_eq!(refused_rows[usize::from(owner)], actor_before,
+            "failed15170 must precede flag clear and aim for family{family}");
+        assert_eq!(refused_rows[slot], holder_before);
+
+        let burst_before = ai.common_upkeep.word_0x1a2;
+        assert!(ai.step_sub_14e10_selected(family, usize::from(owner), &target, &mut entities));
+        assert_eq!(entities[usize::from(owner)].control_flags & 0x100, 0);
+        assert_eq!(entities[slot].active_value, entities[slot].activation_value as i16);
+        assert_eq!(ai.common_upkeep.spell_enabled[usize::from(family)],
+            LEVEL2_NYPHUR_SPELL_COOLDOWNS[usize::from(family)]);
+        assert_eq!(ai.common_upkeep.word_0x1a2, burst_before);
+        if family == 16 {
+            assert_eq!(entities[usize::from(owner)].pitch, 77,
+                "direct Crater activation does not invent the aimed branch's pitch write");
+        }
+    }
+
+    for slot in [192_usize, 202, 197] {
+        for active in if slot == 197 { &[-1_i16, 1][..] } else { &[-1_i16][..] } {
+            let mut holder = live.economy.entities[slot].clone();
+            assert!(matches!(holder.model, 7 | 12 | 17));
+            assert_eq!(holder.source_spell_parent_entity_index(), owner);
+            holder.active_value = *active;
+            holder.record[50..52].copy_from_slice(&active.to_le_bytes());
+            if holder.model == 7 {
+                holder.level_gate = 1;
+                holder.record[74] = 1;
+                holder.byte_3b = 0;
+                holder.record[63] = 0;
+            }
+            let holder_before = holder.clone();
+            let mut common = base.common_upkeep.clone();
+            common.mana = holder.max_mana;
+            let mut flags = 0x30d;
+            assert!(!common.step_sub_5f660(1, &mut flags, &mut holder, 0));
+            assert_eq!(holder, holder_before,
+                "source5F660 model1 refuses nonzero word2E{active} for family{}", holder.model);
+            assert_eq!(flags, 0x30d);
+        }
+    }
+    let mut lightning = live.economy.entities[192].clone();
+    lightning.level_gate = 0;
+    lightning.record[74] = 0;
+    lightning.byte_3b = 1;
+    lightning.record[63] = 1;
+    lightning.active_value = -1;
+    lightning.record[50..52].copy_from_slice(&(-1_i16).to_le_bytes());
+    let mut common = base.common_upkeep.clone();
+    common.mana = lightning.max_mana;
+    let mut flags = 0x30d;
+    assert!(common.step_sub_5f660(1, &mut flags, &mut lightning, 0),
+        "family7 tier0 reaches the fallback despite nonzero word2E and byte3B");
+    assert_eq!(lightning.active_value, lightning.activation_value as i16);
+}
+
+#[test]
+fn ordinary_mission18_rival_selects_and_pays_for_a_real_offensive_spell() {
+    use crate::native_world::{area_damage, source_target};
+
+    let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+        || {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj")
+        },
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        root.join("level18"),
+        crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    )
+    .expect("whole ordinary Night Mission18")
+    .simulation()
+    .clone();
+    let owners = [92_u16, 107, 123, 140, 162, 184];
+    let original = owners.map(|slot| session.source_arena().handle(slot).unwrap());
+    let caster = original[5];
+    let holder_handles =
+        [194_u16, 201, 200, 202, 203].map(|slot| session.source_arena().handle(slot).unwrap());
+    let caster_before = session.entities()[usize::from(caster.source_slot)].clone();
+    assert_eq!(
+        (
+            caster_before.class,
+            caster_before.model,
+            caster_before.life,
+            caster_before.max_life,
+            caster_before.mana,
+            caster_before.max_mana
+        ),
+        (3, 1, 9765, 9765, 1000, 1000)
+    );
+    let holder_count: usize = session
+        .players()
+        .iter()
+        .filter(|player| owners.contains(&player.entity_index))
+        .map(|player| {
+            player
+                .enabled_spell_holders
+                .iter()
+                .filter(|slot| **slot != 0)
+                .count()
+        })
+        .sum();
+    assert_eq!(holder_count, 111);
+    let player = session
+        .players()
+        .iter()
+        .find(|player| player.entity_index == 184)
+        .unwrap();
+    assert_eq!(
+        u16::from_le_bytes([player.record[42], player.record[43]]),
+        209
+    );
+    assert_eq!(player.enabled_spell_holders[9], 194);
+    assert_eq!(player.enabled_spell_holders[16], 201);
+    assert_eq!(player.spell_unlocked_levels[9], 1);
+    let castle = *session
+        .economy()
+        .castle_for_owner(184)
+        .expect("actual retained owner184 Castle");
+    assert_eq!(
+        (castle.source_entity_index, castle.source_id_entity_index),
+        (209, 184)
+    );
+    assert!(
+        castle.mana >= crate::level_definition::METEOR_PROPERTIES.tiers[0].castle_mana_required
+    );
+
+    // No player lure, spell input, AI target/mode, resource, timer, RNG or
+    // profile is changed. Source14530 can select the existing positive-mana
+    // class5 targets; natural source movement and spell priorities decide
+    // which newly supported offensive family is actually used.
+    let watched = session
+        .entities()
+        .iter()
+        .filter(|row| row.active && row.class == 5)
+        .filter_map(|row| session.source_arena().handle(row.index))
+        .collect::<Vec<_>>();
+    assert!(!watched.is_empty());
+    let nearest_distance = watched
+        .iter()
+        .map(|handle| {
+            crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+                caster_before.position,
+                session.entities()[usize::from(handle.source_slot)].position,
+            ))
+        })
+        .min()
+        .unwrap();
+    let minimum_speed =
+        u32::try_from(caster_before.minimum_speed()).expect("positive source minimum speed");
+    assert!(minimum_speed > 0);
+    // One complete source phase cycle allows Castle startup/cadence. The
+    // resource term conservatively uses minimum ordinary regen100 and the
+    // real Castle storage capacity's quarter+6000 starvation-latch boundary;
+    // the approach term uses the original nearest target and minimum speed.
+    // This is a finite observation budget, not a promise to catch a moving
+    // target. A refusal/miss remains a negative result.
+    let refill = (castle.mana_capacity / 4 + 6000 - caster_before.mana).max(0) as u32;
+    let admission_bound = 256 + refill.div_ceil(100) + nearest_distance.div_ceil(minimum_speed);
+    let longest_impact = [
+        crate::level_definition::TREMOR_PROPERTIES,
+        crate::level_definition::CRATER_PROPERTIES,
+        crate::level_definition::EARTHQUAKE_PROPERTIES,
+        crate::level_definition::VOLCANO_PROPERTIES,
+    ]
+    .into_iter()
+    .flat_map(|properties| properties.tiers)
+    .map(|tier| u32::from(tier.impact_parameter))
+    .max()
+    .unwrap();
+    let delivery_bound = (crate::level_definition::METEOR_PROPERTIES.projectile_range
+        / i32::from(crate::level_definition::METEOR_PROPERTIES.projectile_speed))
+        as u32
+        + longest_impact
+        + 4;
+    let observation_bound = admission_bound + delivery_bound;
+    let slots = watched
+        .iter()
+        .map(|handle| handle.source_slot)
+        .collect::<Vec<_>>();
+    area_damage::start_actor_damage_trace(&watched);
+    #[derive(Debug)]
+    struct ObservedCast {
+        launch: crate::native_world::simulation::SourceSpellLaunchReceipt,
+        born: u32,
+        impact: Option<crate::native_world::simulation::SourceSpellImpactReceipt>,
+        paid: bool,
+        accepted: Vec<area_damage::EffectDamageReceipt>,
+        consumed: Option<area_damage::PlayerDamageConsumptionReceipt>,
+        projectile_presented: bool,
+        controller_excluded: bool,
+        hidden: [bool; 2],
+        reclaimed: [bool; 2],
+        previous_phase: [Option<u8>; 2],
+        advanced: [bool; 2],
+        visual: Option<SourceEntityHandle>,
+        visual_hidden: bool,
+        visual_reclaimed: bool,
+        visual_phase: Option<u8>,
+        visual_advanced: bool,
+    }
+    impl ObservedCast {
+        fn cleanup_complete(&self) -> bool {
+            self.paid
+                && self.projectile_presented
+                && self.hidden[0]
+                && self.reclaimed[0]
+                && self.advanced[0]
+                && (self.impact.is_none()
+                    || self.controller_excluded
+                        && self.hidden[1]
+                        && self.reclaimed[1]
+                        && self.advanced[1])
+        }
+
+        fn completed_hit(&self) -> bool {
+            self.cleanup_complete()
+                && self.impact.is_some()
+                && self.consumed.is_some()
+                && (self.launch.holder_before.model != 9
+                    || self.visual.is_some()
+                        && self.visual_hidden
+                        && self.visual_reclaimed
+                        && self.visual_advanced)
+        }
+    }
+    let mut casts: Vec<ObservedCast> = Vec::new();
+    let mut impacts = Vec::new();
+    let mut consumptions = Vec::new();
+    let mut selected = None;
+    let mut history = Vec::new();
+    for turn in 0..observation_bound {
+        let before = session.entities()[184].clone();
+        session.start_creature17_trace();
+        area_damage::start_effect_damage_trace_for_targets(&slots);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let trace = session.take_creature17_trace();
+        let writes = area_damage::take_effect_damage_trace();
+        consumptions.extend(area_damage::take_player_damage_consumptions());
+        assert!(
+            session
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+            "turn{turn}: {:?}",
+            session.dispatch_events()
+        );
+        for receipt in trace.spell_launches {
+            if receipt.caster == caster && holder_handles.contains(&receipt.holder) {
+                let family = receipt.holder_before.model;
+                assert!(matches!(family, 9 | 15..=18));
+                let holder = &receipt.holder_before;
+                let parent = &receipt.caster_before;
+                let tier = holder.level_gate;
+                let profile = Level2NyphurCommonUpkeep::source_spell_profile(family, tier)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    holder.source_spell_parent_entity_index(),
+                    caster.source_slot
+                );
+                assert_eq!(holder.active_value, holder.activation_value as i16);
+                assert!(parent.max_mana >= profile.mana_regen && parent.mana >= profile.max_mana);
+                assert!(parent.mana >= holder.max_mana && parent.life >= 0);
+                assert!(
+                    receipt
+                        .input
+                        .castle_mana
+                        .is_some_and(|mana| mana >= holder.mana_regen)
+                );
+                let expected_regen = if parent.mana_regen >= 0 {
+                    -holder.max_mana
+                } else {
+                    parent.mana_regen.wrapping_sub(holder.max_mana)
+                };
+                assert_eq!(receipt.caster_after.mana_regen, expected_regen);
+                assert_eq!(
+                    receipt.caster_after.mana, parent.mana,
+                    "source68DE0 queues the real charge for following upkeep"
+                );
+                assert_eq!(receipt.packet.source_id, parent.source_id);
+                assert_eq!(
+                    u16::from_le_bytes([receipt.packet.record[42], receipt.packet.record[43]]),
+                    receipt.holder.source_slot
+                );
+                assert_eq!(
+                    receipt.packet.yaw,
+                    parent.yaw.wrapping_add(receipt.input.aim_yaw)
+                );
+                assert_eq!(
+                    receipt.packet.pitch,
+                    parent.pitch.wrapping_add(receipt.input.aim_pitch)
+                );
+                let (model, action, damage) = match family {
+                    9 => (
+                        3,
+                        3,
+                        crate::level_definition::METEOR_PROPERTIES.tiers[tier as usize].damage,
+                    ),
+                    15 => (
+                        23,
+                        24,
+                        crate::level_definition::TREMOR_PROPERTIES.tiers[tier as usize].damage,
+                    ),
+                    16 => (
+                        5,
+                        5,
+                        crate::level_definition::CRATER_PROPERTIES.tiers[tier as usize].damage,
+                    ),
+                    17 => (
+                        2,
+                        2,
+                        crate::level_definition::EARTHQUAKE_PROPERTIES.tiers[tier as usize].damage,
+                    ),
+                    18 => (
+                        4,
+                        4,
+                        crate::level_definition::VOLCANO_PROPERTIES.tiers[tier as usize].damage,
+                    ),
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    (
+                        receipt.packet.class,
+                        receipt.packet.model,
+                        receipt.packet.action
+                    ),
+                    (9, model, action)
+                );
+                assert_eq!(receipt.packet.subspell_index, damage);
+                assert_eq!((receipt.packet.max_life, receipt.packet.life), (21, 21));
+                casts.push(ObservedCast {
+                    previous_phase: [Some(receipt.packet.phase), None],
+                    launch: receipt,
+                    born: turn,
+                    impact: None,
+                    paid: false,
+                    accepted: Vec::new(),
+                    consumed: None,
+                    projectile_presented: false,
+                    controller_excluded: false,
+                    hidden: [false; 2],
+                    reclaimed: [false; 2],
+                    advanced: [false; 2],
+                    visual: None,
+                    visual_hidden: false,
+                    visual_reclaimed: false,
+                    visual_phase: None,
+                    visual_advanced: false,
+                });
+            }
+        }
+        impacts.extend(trace.spell_impacts);
+        let after = &session.entities()[184];
+        let views = session.campaign_entity_presentations(0).unwrap();
+        for cast in &mut casts {
+            let launch = &cast.launch;
+            if turn == cast.born + 1 {
+                assert!(
+                    before.mana_regen <= -launch.holder_before.max_mana,
+                    "this actual cast's queued charge survives until its following upkeep"
+                );
+                assert_eq!(
+                    after.mana,
+                    before
+                        .mana
+                        .wrapping_add(before.mana_regen)
+                        .clamp(0, after.max_mana),
+                    "actual ordered rival upkeep consumes the queued charge"
+                );
+                cast.paid = before.mana - after.mana >= launch.holder_before.max_mana;
+            }
+            if cast.impact.is_none() {
+                cast.impact = impacts
+                    .iter()
+                    .find(|hit| hit.projectile == launch.projectile)
+                    .cloned();
+                if let Some(hit) = &cast.impact {
+                    assert_eq!(
+                        (hit.packet.class, hit.packet.model),
+                        (launch.packet.record[71], launch.packet.record[72])
+                    );
+                    assert_eq!(hit.packet.source_id, launch.packet.source_id);
+                    assert_eq!(hit.packet.subspell_index, launch.packet.subspell_index);
+                    assert_eq!(
+                        hit.packet.control_flags & 4,
+                        0,
+                        "source impact controllers have no own AddMap/sprite flag"
+                    );
+                    if launch.holder_before.model == 9 {
+                        assert!(
+                            hit.packet
+                                .particle_parameter_index
+                                .is_none_or(|index| index == 0),
+                            "AddMeteor4ED70 leaves NewEvent's zero particle selector"
+                        );
+                    } else {
+                        assert!(hit.packet.particle_parameter_index.is_none());
+                    }
+                    cast.previous_phase[1] = Some(hit.packet.phase);
+                }
+            }
+            if let Some(hit) = &cast.impact {
+                for write in &writes {
+                    if write.source_scoped
+                        && write.source_slot == Some(hit.impact.source_slot)
+                        && write.writer_sequence.is_some()
+                        && write
+                            .mailbox_after
+                            .is_some_and(|(payload, owner)| payload > 0 && owner == 184)
+                    {
+                        cast.accepted.push(write.clone());
+                    }
+                }
+                if cast.consumed.is_none() {
+                    cast.consumed = cast.accepted.iter().find_map(|write| {
+                        let handle = SourceEntityHandle {
+                            source_slot: write.target_slot,
+                            generation: write.target_generation,
+                        };
+                        consumptions
+                            .iter()
+                            .find(|consumed| {
+                                consumed.target == handle
+                                    && consumed.mailbox == write.mailbox_after.unwrap()
+                                    && consumed.life_after < consumed.life_before
+                                    && consumed.life_after
+                                        == consumed.life_before.wrapping_sub(consumed.mailbox.0)
+                                    && consumed.writer.is_some_and(|writer| {
+                                        writer.target == handle
+                                            && writer.source
+                                                == area_damage::PlayerMailboxSource::Effect(
+                                                    hit.impact,
+                                                )
+                                            && Some(writer.sequence) == write.writer_sequence
+                                            && writer.mailbox == consumed.mailbox
+                                    })
+                            })
+                            .copied()
+                    });
+                }
+                // The successful source32880 child is raw in this canonical
+                // path. Its receipt freezes BOTH generations at allocation,
+                // so a same-ID child or a reused parent slot cannot qualify.
+                for (parent, child, packet) in &trace.meteor_children {
+                    if launch.holder_before.model == 9
+                        && *parent == hit.impact
+                        && cast.visual.is_none()
+                        && session.source_arena().handle(child.source_slot) == Some(*child)
+                        && views.iter().any(|view| {
+                            view.entity_index == child.source_slot
+                                && view.render_parameter_index
+                                    == crate::level1_mission::FIREBALL_IMPACT_RENDER_INDEX
+                        })
+                    {
+                        assert_eq!((packet.class, packet.model, packet.action), (10, 0, 0));
+                        assert_eq!(packet.source_id, launch.packet.source_id);
+                        assert_eq!(
+                            packet.particle_parameter_index,
+                            Some(crate::level1_mission::FIREBALL_IMPACT_RENDER_INDEX)
+                        );
+                        assert_eq!(packet.control_flags & 0x10084, 0x10084);
+                        cast.visual = Some(*child);
+                        cast.visual_phase = Some(packet.phase);
+                    }
+                }
+            }
+            for (index, handle) in [
+                Some(launch.projectile),
+                cast.impact.as_ref().map(|hit| hit.impact),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let Some(handle) = handle else { continue };
+                if session.source_arena().handle(handle.source_slot) == Some(handle) {
+                    let visible = views
+                        .iter()
+                        .any(|view| view.entity_index == handle.source_slot);
+                    if index == 1 {
+                        assert!(!visible, "a source terrain controller is not a sprite");
+                        cast.controller_excluded = true;
+                    } else {
+                        cast.projectile_presented |= visible;
+                    }
+                    let live = &session.session.state.live;
+                    let context = source_target::Context {
+                        particles: Some(&session.session.definition.presentation.particles),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    let current = source_target::read(&live.economy, context, handle.source_slot)
+                        .unwrap()
+                        .unwrap();
+                    cast.hidden[index] |= current.control_flags & 0x400 != 0;
+                    let phase = live.economy.entities[usize::from(handle.source_slot)].phase;
+                    cast.advanced[index] |=
+                        cast.previous_phase[index].is_some_and(|previous| phase != previous);
+                    cast.previous_phase[index] = Some(phase);
+                } else {
+                    cast.reclaimed[index] = true;
+                }
+            }
+            if let Some(child) = cast.visual {
+                if session.source_arena().handle(child.source_slot) == Some(child) {
+                    let row = &session.entities()[usize::from(child.source_slot)];
+                    cast.visual_hidden |= row.drawing_disabled();
+                    cast.visual_advanced |=
+                        cast.visual_phase.is_some_and(|phase| phase != row.phase);
+                    cast.visual_phase = Some(row.phase);
+                } else {
+                    cast.visual_reclaimed = true;
+                }
+            }
+        }
+        if turn < 8 || turn % 32 == 0 || casts.last().is_some_and(|cast| cast.born == turn) {
+            let common = session
+                .session
+                .state
+                .live
+                .nyphur_dispatcher
+                .get(caster)
+                .unwrap();
+            history.push((
+                turn,
+                common.state_byte,
+                after.position,
+                after.source_word_96(),
+                after.mana,
+                after.max_mana,
+                after.mana_regen,
+                common.common_upkeep.word_0x1a4,
+            ));
+        }
+        // Verification chooses the earliest completed causal success; no
+        // result changes a game command. Every preceding natural miss must
+        // have paid and completed its own unshortened product lifecycle.
+        selected = casts.iter().enumerate().find_map(|(index, cast)| {
+            (cast.completed_hit() && casts[..index].iter().all(ObservedCast::cleanup_complete))
+                .then_some(index)
+        });
+        if selected.is_some() {
+            break;
+        }
+    }
+    let cast_diagnostic = casts
+        .iter()
+        .map(|cast| {
+            (
+                cast.born,
+                cast.launch.holder_before.model,
+                cast.launch.holder_before.level_gate,
+                cast.launch.projectile,
+                cast.impact
+                    .as_ref()
+                    .map(|hit| (hit.impact, hit.packet.position)),
+                cast.paid,
+                cast.accepted.len(),
+                cast.consumed,
+                (cast.projectile_presented, cast.controller_excluded),
+                (cast.hidden, cast.reclaimed, cast.advanced),
+                (
+                    cast.visual,
+                    cast.visual_hidden,
+                    cast.visual_reclaimed,
+                    cast.visual_advanced,
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let candidate_diagnostic = casts.iter().find(|cast| cast.consumed.is_some());
+    let consumption_diagnostic = consumptions
+        .iter()
+        .take(16)
+        .chain(consumptions.iter().rev().take(16))
+        .collect::<Vec<_>>();
+    assert!(
+        selected.is_some(),
+        "ordinary source-selected offensive spell must reach real consumers: bound={observation_bound} \
+         cast_count={} casts={cast_diagnostic:?} candidate={candidate_diagnostic:?} \
+         consumption_count={} consumptions={consumption_diagnostic:?} history={history:?}",
+        casts.len(),
+        consumptions.len()
+    );
+    for handle in original {
+        assert_eq!(
+            session.source_arena().handle(handle.source_slot),
+            Some(handle)
+        );
+        assert!(
+            session.entities()[usize::from(handle.source_slot)].life >= 0,
+            "the six ordinary rival peers remain present and living"
+        );
+    }
+}
+
+#[test]
 fn ordinary_mission18_rival_roster_uses_each_real_owner_and_shared_rng() {
     let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
         || {
@@ -5817,8 +6594,8 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     carrier.spell_holder_indices[6] = u16::MAX;
     assert!(carrier.sub_146c0(6, &session.economy.entities).is_none());
 
-    // sub_15F20 applies SetSpell before checking mana. The failed result
-    // must still carry the tier-0 family-6 profile into the holder.
+    // sub_15F20 applies SetSpell before sub_15170 rejects insufficient
+    // mana with zero. The profile write remains observable on failure.
     let mut mutation_entities = session.session.state.live.economy.entities.clone();
     let before_holder = mutation_entities[113].clone();
     let mut mutation_probe = session
@@ -5833,7 +6610,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     mutation_probe.mana = 0;
     assert_eq!(
         mutation_probe.step_sub_15f20(6, 0, &mut mutation_entities),
-        -1
+        0
     );
     assert_ne!(mutation_entities[113], before_holder);
     assert_eq!(mutation_entities[113].subspell_index, 100);
@@ -5857,7 +6634,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     fireball_profile_probe.mana = 0;
     assert_eq!(
         fireball_profile_probe.step_sub_15f20(0, 1, &mut fireball_profile_entities),
-        -1
+        0
     );
     assert_eq!(fireball_profile_entities[113].subspell_index, 160);
     assert_eq!(fireball_profile_entities[113].activation_value, 11);
@@ -5878,7 +6655,7 @@ fn level_two_ai_cast_eligibility_owned_rows_are_exact() {
     possession_profile_probe.mana = 0;
     assert_eq!(
         possession_profile_probe.step_sub_15f20(1, 1, &mut possession_profile_entities),
-        -1
+        0
     );
     assert_eq!(possession_profile_entities[114].subspell_index, 15);
     assert_eq!(possession_profile_entities[114].activation_value, 41);

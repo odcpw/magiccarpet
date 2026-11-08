@@ -264,10 +264,29 @@ fn consume(actor: &mut Actor<'_>, ctx: &Context<'_>) -> Result<u8, String> {
     let mut pending = actor.word(102);
     let mut attacker = actor.word(42);
     let mut life = actor.row.life;
+    #[cfg(test)]
+    let (life_before, mailbox) = (life, (damage, pending));
     let mut hit = u8::from(
         crate::combat::actors::consume_damage(&mut life, &mut damage, &mut pending, &mut attacker)
             .is_some(),
     );
+    #[cfg(test)]
+    if hit != 0
+        && let Some((arena, _)) = ctx.reader
+        && let Some(target) = arena.handle(actor.row.index)
+    {
+        let writer = crate::native_world::area_damage::take_player_mailbox_writer(target, mailbox);
+        crate::native_world::area_damage::trace_player_damage_consumption(
+            crate::native_world::area_damage::PlayerDamageConsumptionReceipt {
+                target,
+                mailbox,
+                writer,
+                life_before,
+                life_after: life,
+                event_cursor: arena.economy.events().len(),
+            },
+        );
+    }
 
     // `sub_28860`, `sub_1BF90`, and `sub_1C310` all compare the linked child
     // chain's life before committing the parent result.

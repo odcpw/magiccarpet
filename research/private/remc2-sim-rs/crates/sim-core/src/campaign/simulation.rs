@@ -943,6 +943,28 @@ pub(crate) struct MeteorLaunchReceipt {
 }
 
 #[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SourceSpellLaunchReceipt {
+    pub(crate) holder: SourceEntityHandle,
+    pub(crate) caster: SourceEntityHandle,
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) holder_before: EntitySnapshot,
+    pub(crate) caster_before: EntitySnapshot,
+    pub(crate) caster_after: EntitySnapshot,
+    pub(crate) input: meteor::CastInput,
+    pub(crate) packet: EntitySnapshot,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SourceSpellImpactReceipt {
+    pub(crate) projectile: SourceEntityHandle,
+    pub(crate) impact: SourceEntityHandle,
+    pub(crate) collision_target: Option<SourceEntityHandle>,
+    pub(crate) packet: EntitySnapshot,
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MeteorImpactBirthReceipt {
     pub(crate) projectile: SourceEntityHandle,
@@ -996,6 +1018,10 @@ pub(crate) struct Creature17Trace {
     pub(crate) meteor_launches: Vec<MeteorLaunchReceipt>,
     pub(crate) meteor_impacts: Vec<MeteorImpactBirthReceipt>,
     pub(crate) meteor_acquisitions: Vec<MeteorAcquisitionReceipt>,
+    pub(crate) spell_launches: Vec<SourceSpellLaunchReceipt>,
+    pub(crate) spell_impacts: Vec<SourceSpellImpactReceipt>,
+    pub(crate) meteor_children:
+        Vec<(SourceEntityHandle, SourceEntityHandle, EntitySnapshot)>,
     pub(crate) slowing: Vec<Creature17SlowingReceipt>,
     pub(crate) flight: Vec<Creature17FlightReceipt>,
     /// Actual web impact, player and prepared sound journal sequence.
@@ -3930,13 +3956,15 @@ impl Mc2Simulation {
                 _ => return Err("source holder has an unsupported family".to_owned()),
             };
             #[cfg(test)]
-            let trace_parent = (family == Some(9))
+            let trace_parent = matches!(family, Some(9 | 15..=18))
                 .then(|| {
                     CREATURE17_TRACE.with(|trace| {
                         trace.borrow().as_ref().and_then(|_| {
                             Some((
                                 live.economy.handle(source_slot)?,
                                 live.economy.handle(parent_slot)?,
+                                live.shared_spells.pickup(source_slot)?.clone(),
+                                live.economy.entities.get(usize::from(parent_slot))?.clone(),
                             ))
                         })
                     })
@@ -3951,21 +3979,34 @@ impl Mc2Simulation {
                 input,
             )?;
             #[cfg(test)]
-            if let Some((holder, caster)) = trace_parent
+            if let Some((holder, caster, holder_before, caster_before)) = trace_parent
                 && let Some(slot) = outcome.projectile
                 && let Some(projectile) = live.economy.handle(slot)
             {
                 let packet = live.economy.entities[usize::from(slot)].clone();
+                let caster_after = live.economy.entities[usize::from(parent_slot)].clone();
                 CREATURE17_TRACE.with(|trace| {
-                    if let Some(trace) = trace.borrow_mut().as_mut()
-                        && trace.meteor_launches.len() < 64
-                    {
-                        trace.meteor_launches.push(MeteorLaunchReceipt {
-                            holder,
-                            caster,
-                            projectile,
-                            packet,
-                        });
+                    if let Some(trace) = trace.borrow_mut().as_mut() {
+                        if family == Some(9) && trace.meteor_launches.len() < 64 {
+                            trace.meteor_launches.push(MeteorLaunchReceipt {
+                                holder,
+                                caster,
+                                projectile,
+                                packet: packet.clone(),
+                            });
+                        }
+                        if trace.spell_launches.len() < 64 {
+                            trace.spell_launches.push(SourceSpellLaunchReceipt {
+                                holder,
+                                caster,
+                                projectile,
+                                holder_before,
+                                caster_before,
+                                caster_after,
+                                input,
+                                packet,
+                            });
+                        }
                     }
                 });
             }
@@ -17136,6 +17177,12 @@ impl Mc2Simulation {
             live.economy.effects = state;
             result?
         };
+        #[cfg(test)]
+        CREATURE17_TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                trace.meteor_children.extend(feedback.meteor_children.iter().cloned());
+            }
+        });
         if let Some(position) = feedback.nearest_fire {
             let distance = crate::distance_3d_wrapped(player_position, position) as i32;
             let current = &mut self.session.state.live.core.state.ambient_loop_5_distance;
@@ -18650,6 +18697,13 @@ impl Mc2Simulation {
                     particles: Some(&self.session.definition.presentation.particles),
                     ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
                 };
+                #[cfg(test)]
+                let spell_trace_projectile = matches!(
+                    visit.handler,
+                    ExistingHandler::MeteorProjectile | ExistingHandler::DisasterSpellProjectile
+                ).then(|| CREATURE17_TRACE.with(|trace| {
+                    trace.borrow().as_ref().and_then(|_| live.economy.handle(source_slot))
+                })).flatten();
                 let outcome = if visit.handler == ExistingHandler::SummonArmyProjectile {
                     summon_army::step_projectile(
                         &mut live.economy,
@@ -18841,6 +18895,25 @@ impl Mc2Simulation {
                         &mut freeze_storm_sound,
                     )?
                 };
+                #[cfg(test)]
+                if let Some(projectile) = spell_trace_projectile
+                    && let Some(slot) = outcome.impact_slot
+                    && let Some(impact) = live.economy.handle(slot)
+                {
+                    let packet = live.economy.entities[usize::from(slot)].clone();
+                    CREATURE17_TRACE.with(|trace| {
+                        if let Some(trace) = trace.borrow_mut().as_mut()
+                            && trace.spell_impacts.len() < 64
+                        {
+                            trace.spell_impacts.push(SourceSpellImpactReceipt {
+                                projectile,
+                                impact,
+                                collision_target: outcome.collision_target,
+                                packet,
+                            });
+                        }
+                    });
+                }
                 if outcome.impact_slot.is_some_and(|slot| {
                     live.economy
                         .entities
