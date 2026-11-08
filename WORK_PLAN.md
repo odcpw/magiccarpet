@@ -272,7 +272,55 @@ Implementation and evidence live in
 `research/private/remc2-unity-native/MODERN_RENDERER.md`. Keep incomplete visual
 acceptance open; a working control panel alone does not finish the environment.
 
-## Active request: complete the creature capabilities
+## Active request: complete the shared world capabilities
+
+Oliver authorized continuing the existing remc2-to-Rust delivery plan on
+2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1` are now
+installed, with the finite acceptance qualified below. Next capability: Cave
+corridors `mc-bhq.2`, through real authored production, opening/closing in both
+planes, subsequent collision, source sound and reset/removal. Inspect its current
+owner and existing connected checks before changing code. CopperMountain
+implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
+installation; keep one accountable family owner through any consumer failure.
+Keep the complete acceptance and dependencies. Then continue existing
+terrain/scenery, activation/objective and progression/flow capabilities, one
+connected runtime result at a time. Do not restart delivered spells/creatures.
+
+### Installed Cave mushrooms — `mc-bhq.1` (2026-11-08)
+
+Implemented, committed and pushed at `25b13176`; optimized Original native
+`e666b72d57db` is installed through refresh `build-n3sma5cg`. All654 unique inputs
+match canonical source, isolated checkout and Rig. Root viewed the canonical
+map/loading/NightSpire terrain/HUD with the matching mapped plugin: one portal,
+zero retries, then stopped the owned player/display. This is launch/load, not
+native Cave combat, human play/FPS/hardware audio, full missions or old saves.
+No Unity/art rebuild was needed.
+
+NavyBadger completed the owned mushroom callback; CopperMountain integrated its
+shared Smoke constructor/current-address seam. Source651B0 now allocates Smoke13
+before grounding/water, clears ownership through the current occupant and keeps
+the persistent dry stalk. Canonical constructor draws, failed allocation RNG,
+admissible replacement, current-position aliasing, hidden packets and following
+reclaim stay source-correct. No gameplay moved into the client or scheduler.
+
+C1's four focused checks pass, including non-Cave/exhaustion, damage boundaries
+and actual replacement/failure controls. C2 adds only a64-line test continuation;
+production is byte-identical. Its real unfiltered56-mushroom Cave12 path passes
+in0.219s: ordinary open/step/reset, declared carried FireballI and player pose,
+public paid cast against original30, exact250 accepted damage, stalk/smoke DTOs,
+natural smoke hide/reclaim, then declared water material on that same stalk and
+ordinary hide/following-pass unlink/reclaim. The water/pressure controls are
+explicit configurations, not natural terrain-change or exhausted-owner proof.
+Workspace all-targets check passes on unchanged production; final package
+all-targets check passes. UBS's two changed-line critical flags are test-assertion
+false positives; C2 adds no critical finding. Legacy whole-file debt remains.
+Two fresh bounded source/gate reviews found no further concrete finite-family
+gap. Root independently verified the integrated evidence and matching delivery;
+the original acceptance and dependencies are retained. Evidence:
+`research/private/generated/mushrooms-20261108-integration/candidate-2` and
+`original-launch-smoke`; C1 retains the four focused checks and source-order gate.
+
+## Delivered creature runtime checkpoints
 
 Oliver requested working through the remaining creature list on 2026-11-04.
 Continue the existing original `mc-1pb` acceptance and dependencies; this list
