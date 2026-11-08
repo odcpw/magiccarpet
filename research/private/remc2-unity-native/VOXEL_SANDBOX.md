@@ -1,5 +1,124 @@
 # Level 1 voxel experiments
 
+## Native-connected Level 1 interaction
+
+`run-voxels.sh --connected` selects the separate `Builds/VoxelsConnected`
+player-06. The accepted default player-15 and `--classic` are preserved.
+`--connected --goat` and `--connected --archer` open their native character views.
+The connected world starts from an earned Level 1 replay near house 38, with the
+native player camera and ordinary Fireball selected. Space casts; F5 saves;
+P pauses/resumes; F2 restores the native view; B opens the observer; F10 exits.
+Observer movement changes the camera, not the native aim of a spell.
+
+The save destination is separate from the accepted sandbox and campaign.
+`MC_VOXEL_SAVE=/absolute/path.json` overrides it. To resume an F5 save:
+
+```sh
+MC_VOXEL_LOAD=/absolute/path.json research/private/remc2-unity-native/run-voxels.sh --connected
+```
+
+Rust now owns projectile contact/damage, exact removed terrain/house cells,
+death lifetimes, mana production/ownership/collection and replay persistence.
+Unity projects that state into meshes and physical presentation fragments.
+The 25 cm house and 12.5 cm ground patch retain their previous extent; this is
+one connected interaction, not complete Level 1 assembly or whole-map streaming.
+Other buildings, creatures, vegetation and legacy combat effects have not all
+been voxelized. The house follows the source BUILD profile, not every ornament
+on the Modern architectural meshes.
+
+Goat and archer deaths freeze the current skinned voxel pose and emit separate
+physical pieces once per native world/slot/generation/source identity. Removal
+alone is not death. Pause rebinds retain the world epoch; slot reuse and replay
+rollback do not retain an old occupant. Pool sampling remains bounded at 768
+bodies; representative cubes carry sampled mass, not one Rigidbody per cell.
+Debris is presentation only and does not create or collect gameplay mana.
+
+Mana uses a shared three-dimensional voxel sphere mesh with native size, value,
+palette and ownership. It survives rubble fading and follows native collection
+and hide/delete rules. Its observer admission uses a new guarded world census;
+ordinary source-camera actors retain their existing admission path. A mana orb
+may hover or move according to native state. The presentation corrects its
+bottom edge against the Modern terrain without changing gameplay coordinates.
+
+Source: client `73408438`, native geometry/journals `b0db8ae4`, additive world query
+d6665e38. Player-06 pins native SHA256 `ea9276a3848ae8cc63907992e8daa6376b6b8e4811378dbcf5a4478977fb6731`
+and managed assembly `a1ea55bf4ea29bc7eb892c145ce3f15f01f056349963d3c1cb1999121bda7e40`.
+Its isolated shared UI excludes the separate player-lifecycle work. All 424
+copied source inputs and 195 read-only resource inputs matched after the build.
+The install receipt verifies all 170 payload files before launch. Nine immutable
+engine/asset files share inodes with the previous candidate; never patch either
+completed player in place. Both independent original trees are archived on Rig.
+
+Focused verification: 71 relevant Unity checks passed (one opt-in profiler
+skipped), the revised pending-chunk collision case passed independently, and 9
+Python receipt/input checks pass. The earned native E2E checker independently
+reproduces archer 273 death at tick 535, sphere 364/value 500 birth at 539,
+player 152 claim at 543, defender 372 collection at 1574, reclaim at 1575 and
+Castle 113 arrival/500 receipt at 1969.
+Cold replay hashes match. The ABI does not expose numeric Castle balance;
+credit evidence is the arrival event and its authoritative consumer call.
+
+Actual player-06 ground runs each converge 6,816 native/visual removed cells at
+hash `5432479835024191935` with zero below-terrain fragments in every category.
+Player-05 emitted 68 impact fragments below terrain: the original Fireball path
+can restore old horizontal coordinates while retaining the next column's
+height. At this hit the receipt lies0.375 units below the old local surface.
+The client now queries currently committed ground colliders and moves the whole
+fragment cloud clear of stepped columns, preserving shape and incoming momentum.
+The regression also covers a committed center chunk beside a pending neighbor.
+
+Unthrottled 1280×960 on an RTX 3090 private GPU compositor, no image readback:
+
+| Scenario | Median ms | p95 ms | p99 ms |
+|---|---:|---:|---:|
+| Player-05 quiet, repeat 1 |27.51|32.92|53.33|
+| Player-05 quiet, repeat 2 |27.62|37.05|52.47|
+| Player-06 native ground impact, repeat 1 |32.42|43.47|54.46|
+| Player-06 native ground impact, repeat 2 |32.64|54.62|80.01|
+
+The percentile window starts after the first second of Unity game time; the
+initial impact occurs earlier. These are post-impact settling measurements.
+Whole-run PhysX maxima are 16.60/8.31 ms and edit-step maxima 5.91/8.92 ms.
+The complete initial impact frame's outlier cost has not been isolated.
+Physics p95 is 2.99/2.98 ms with 384 peak bodies. These short samples retain
+whole-frame variability; they do not establish hitch-free performance or 60 fps.
+An earlier same-player debug/release comparison measured 168.21/27.40 ms median,
+but that was one quiet pair, not final impact performance. Capture timings
+include readback and are never used as frame-rate evidence.
+
+The checked [26-second phone video](http://3090.bumblebee-hue.ts.net:8095/voxel-connected/)
+has chapter controls and preserves the full frame. House and terrain play at
+0.67×, visibly labelled; character scenes play at their captured rate. Root
+inspected bursts, separate pieces, settling, the crater and mana after rubble
+fade, and decoded the complete published H.264 file. Video SHA256 is
+`d2954a3275b7863cdb450ad92c10abbf5a42f3278a03566f3b8950d80f8b1029`.
+The original flame sprites obscure the dying archer early; the standing actor
+at the left is a bystander. The native victim is identified by its impact/death
+records, not by that bystander's appearance.
+
+Installed-launcher XTest checks pass for B/F2/P/Space/F5/F10. Fresh loads restore
+house 626 cells/hash `15883481164168150708` and terrain 6,816 cells/hash
+`5432479835024191935`, with matching native/visual counts and no historical
+impact emissions. Both close-ground KWin captures failed their separate F5
+save checks; they remain failed runs. The earlier Xvfb ground save and independent
+installed cold-load provide persistence evidence. The backend difference does
+not establish the cause of the missed F5 events.
+
+Evidence starts at `research/private/generated/mc-voxel-combat-20261107/`.
+Complete captures, including failed runs, are verified on
+`rig:/data/projects/magiccarpet-voxel-final-evidence-wildfox-20261108/mc-voxel-final-20261108`:
+1,318 entries, manifest SHA256
+`38b39babc0a83368a0bfc845d3dabe4a45bd12ea0ff8df7212def3a6c866d537`.
+Root independently regenerated the remote file/mode/hash manifest. HTTP full
+download, metadata, byte ranges and fast-start layout pass using the advertised
+Tailnet Host and IP. The local OS and remote in-app browser lack MagicDNS
+resolution; interactive phone-browser playback, the locked desktop and VR remain
+unqualified.
+C# UBS is partial: the ground fix has no critical/warning findings; the wider
+18-file scan reports controlled dictionary/required First lookups and lacks
+complete semantic coverage. Compilation, focused tests and real producer-to-
+consumer runs provide the main verification.
+
 ## Modern environment with fine voxels
 
 The new opt-in player combines the existing Modern environment with local

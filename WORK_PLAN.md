@@ -1,5 +1,56 @@
 # Shared-engine delivery plan
 
+## Installed native voxel combat and mana loop — `mc-mwt` (2026-11-08)
+
+The Terra 6.1 xhigh team delivered the first native-connected Level 1 voxel
+interaction. Rust owns real Fireball hits, sparse terrain/house edits, exact
+lifetime death records, native mana ownership/collection and replay persistence.
+Unity presents the approved goat/archer rigs as fine voxels and explodes deaths
+into independent physical pieces. Proper source-colored 3D mana spheres remain
+after rubble fades. Accepted Modern player-15 and classic player-7 are preserved.
+This closes this connected sandbox milestone, not every Level 1 asset, whole-map
+voxel streaming, complete campaign assembly or the separate native-family work.
+
+Implemented/committed/pushed: native geometry and journals `b0db8ae4`, guarded
+world observer query `d6665e38`, client and earned E2E checker `73408438`.
+Installed: separate player-06 at `Builds/VoxelsConnected`, launched with
+`research/private/remc2-unity-native/run-voxels.sh --connected`. Native SHA starts
+`ea9276a3`; managed assembly starts `a1ea55bf`. All 170 payload files are pinned.
+Exact source closure: 424 copied inputs and 195 read-only resources. See
+`research/private/remc2-unity-native/VOXEL_SANDBOX.md` for controls and receipts.
+
+Verified by Root: 71 relevant Unity checks plus one revised collision fixture,
+9 Python checks, the focused native/ABI checks and earned public-input mana E2E.
+Native death at 535 → sphere 364/500 birth at 539 → player 152 claim at 543 →
+defender 372 collection at 1574 → reclaim at 1575 → Castle 113 arrival/500
+receipt at 1969. Cold hashes
+match; numeric Castle balance is not exposed, so credit evidence is the actual
+arrival event and its native consumer call. Earlier failed helper-reuse evidence
+is preserved without weakening shared assertions.
+
+Installed B/F2/P/Space/F5/F10 checks pass. Fresh loads restore house 626 cells at
+hash 15883481164168150708 and ground 6,816 at 5432479835024191935, with matching
+native/visual counts and no historical impact emission. Ground escape failures
+are fixed: both final unthrottled runs have zero below-terrain fragments, versus
+68 impact pieces before physical-surface clearance. No native gameplay positions
+were changed to hide presentation penetration.
+
+Root checked important raw and encoded burst, fragment, settling, crater and
+mana-after-fade frames. The 26-second full-frame phone preview is at
+http://3090.bumblebee-hue.ts.net:8095/voxel-connected/ . House/ground slow motion
+is visibly labelled. The full capture tree, including failed runs, is independently
+byte-verified on private Rig; manifest 38b39babc0a83368a0bfc845d3dabe4a45bd12ea0ff8df7212def3a6c866d537.
+
+Performance remains qualified: quiet p50 27.51/27.62 ms; ground-settling p50
+32.42/32.64 ms, p95 43.47/54.62 ms at 1280×960 on 3090 without readback. Frame
+percentiles exclude the first Unity game second and the initial hit. Whole-run
+PhysX maxima 16.60/8.31 ms and edit maxima 5.91/8.92 ms are retained; this is not
+a hitch-free/60 fps claim. Original flames obscure the victim early. Close-ground
+KWin captures failed their separate F5 checks, while the earlier Xvfb save and
+installed cold-load passed; the cause is unestablished. Desktop/VR and interactive
+phone-browser playback remain unqualified (private DNS unavailable in the remote
+browser). HTTP download/hash/range/fast-start and complete H.264 decode pass.
+
 ## Installed Modern voxel refinement (2026-11-07)
 
 Oliver accepted the first voxel experiment and requests smaller independent

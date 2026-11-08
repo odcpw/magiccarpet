@@ -100,7 +100,7 @@ def session(args):
         if modern:
             key('F2');wait_for(lambda:'MC_VOXEL_VIEW game' in log.read_text(errors='replace'),60,'F2 did not restore native game view')
             events=load_inputs(args.input_script) if args.input_script else [{'key':'w','hold':.7},{'key':'space'}]
-            inject(os.environ['DISPLAY'],events,player.pid)
+            inject(os.environ['DISPLAY'],events,player.pid,log)
             (output/'native-input-events.json').write_text(json.dumps(events,indent=2)+'\n',encoding='utf-8')
             def evidence_ready():
                 try:

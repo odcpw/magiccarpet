@@ -170,7 +170,7 @@ def wait_and_inject(player, log_path, display_name, events, output_path, timeout
 
 
 def inject(display_name, events, expected_pid, log_path):
-    """Focus the real player and inject ordinary XTest events on its display."""
+    """Inject XTest events; each event's waits run before its key or motion."""
     x=C.CDLL('libX11.so.6'); xt=C.CDLL('libXtst.so.6'); P,W=C.c_void_p,C.c_ulong
     x.XOpenDisplay.argtypes=[C.c_char_p];x.XOpenDisplay.restype=P
     x.XDefaultRootWindow.argtypes=[P];x.XDefaultRootWindow.restype=W
