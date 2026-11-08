@@ -428,6 +428,28 @@ pub const fn mushroom_entity_definition(
 }
 
 #[must_use]
+pub const fn ballistic_scenery_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: crate::level_definition::BallisticSceneryDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Scenery(crate::level_definition::SceneryKind::BallisticObject),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ).with_ballistic_scenery(config)
+}
+
+#[must_use]
 pub const fn cave_corridor_entity_definition(
     id: LevelEntityId,
     position: TilePosition,

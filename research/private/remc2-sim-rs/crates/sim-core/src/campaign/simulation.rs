@@ -7,6 +7,7 @@ use super::*;
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::campaign::source_arena::SourceArena;
+use crate::world::scenery::ballistic as ballistic_scenery;
 #[cfg(test)]
 use crate::campaign::source_arena::SourceEntityHandle;
 use crate::campaign::state::{
@@ -326,6 +327,7 @@ fn validate_semantic_scenery_dispatch(
     match (scenery_kind, handler) {
         (Some(SceneryKind::Tree), ExistingHandler::TreeLifecycle)
         | (Some(SceneryKind::Mushroom), ExistingHandler::Mushrooms)
+        | (Some(SceneryKind::BallisticObject), ExistingHandler::BallisticScenery)
         | (Some(SceneryKind::Stone), ExistingHandler::Stone | ExistingHandler::BadStone)
         | (Some(SceneryKind::ExitPortal), ExistingHandler::Class14Events) => Ok(()),
         (Some(kind), actual) => Err(format!(
@@ -12586,16 +12588,12 @@ impl Mc2Simulation {
         // already shared. Keep this preflight exhaustive so a newly reached
         // authored family is a visible capability error, never a no-op.
         if let Some(feature) = rows.iter().find(|feature| {
-            // sub_4B120 returns null in Cave before NewEvent. This is not
-            // admission of the still-unimplemented outdoor model8 producer.
-            !(feature.kind == 2 && feature.subtype == 8
-                && self.session.state.live.terrain.map_type() == MapType::Cave)
-            && !u16::try_from(feature.subtype).is_ok_and(|model| {
+            !u16::try_from(feature.subtype).is_ok_and(|model| {
                 crate::campaign::authored_spawn::has_family_constructor(feature.kind, model)
             })
             && !matches!(
                 (feature.kind, feature.subtype),
-                (2, 0 | 1 | 2 | 3 | 6 | 7)
+                (2, 0 | 1 | 2 | 3 | 6 | 7 | 8)
                     | (3, 4..=11)
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
@@ -12861,7 +12859,26 @@ impl Mc2Simulation {
                         live.core.runtime.bind_authored_stage_entity(feature.index, slot);
                     }
                 }
-                (2, 7) | (10, 80..=86) => {
+                (2, model @ (7 | 8)) => {
+                    let properties = self.session.definition
+                        .scenery_entity_for_authored_record(feature.index)
+                        .and_then(|id| self.session.definition.semantic_level()?.entity(id)?.ballistic_scenery())
+                        .ok_or_else(|| format!("authored ballistic scenery {} lacks its definition", feature.index))?;
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(live.terrain.ground_height(feature.world_position(0)));
+                    let kind = if model == 7 {
+                        ballistic_scenery::BallisticKind::Model7
+                    } else {
+                        ballistic_scenery::BallisticKind::Model8
+                    };
+                    if let Some(slot) = ballistic_scenery::construct(
+                        &mut live.economy, &mut live.terrain, position, kind, properties,
+                        &self.session.definition.presentation.particles,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
+                }
+                (10, 80..=86) => {
                     let properties = self
                         .session
                         .definition
@@ -22599,6 +22616,8 @@ impl Mc2Simulation {
         source_slot: u16,
     ) -> std::result::Result<(), String> {
         let live = &mut self.session.state.live;
+        #[cfg(test)]
+        let original = live.economy.handle(source_slot);
         let outcome = {
             let source = live
                 .economy
@@ -22618,6 +22637,18 @@ impl Mc2Simulation {
             ballistic_scenery::step_ballistic_scenery(source, &live.terrain)
         };
 
+        #[cfg(test)]
+        if let (Some(target), Some((mailbox, life_before, life_after))) = (original, outcome.damage) {
+            area_damage::trace_player_damage_consumption(area_damage::PlayerDamageConsumptionReceipt {
+                target,
+                mailbox,
+                writer: area_damage::take_player_mailbox_writer(target, mailbox),
+                life_before,
+                life_after,
+                event_cursor: live.economy.events().len(),
+            });
+        }
+
         let position = live.economy.entities[usize::from(source_slot)].position;
         crate::world::effects::sync_position(
             &mut live.economy,
@@ -22630,8 +22661,14 @@ impl Mc2Simulation {
 
         match outcome.spawn {
             Some(ballistic_scenery::BallisticScenerySpawn::Model13Smoke) => {
-                live.economy
+                let newborn = live.economy
                     .allocate_smoke13_with_terrain(position, &mut live.terrain);
+                #[cfg(test)]
+                if let (Some(parent), Some(child)) = (original, newborn.and_then(|slot| live.economy.handle(slot))) {
+                    ballistic_scenery::trace_smoke_birth(parent, child);
+                }
+                #[cfg(not(test))]
+                let _ = newborn;
             }
             Some(ballistic_scenery::BallisticScenerySpawn::Model5WaterSplash) => {
                 crate::world::effects::allocate(

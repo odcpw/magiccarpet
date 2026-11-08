@@ -8,26 +8,44 @@ use crate::{
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct GroundFireBirth {
-    parent: crate::campaign::source_arena::SourceEntityHandle,
-    child: crate::campaign::source_arena::SourceEntityHandle,
-    position: Position,
+pub(super) struct GroundFireBirth {
+    pub(super) parent: crate::campaign::source_arena::SourceEntityHandle,
+    pub(super) child: crate::campaign::source_arena::SourceEntityHandle,
+    pub(super) position: Position,
 }
 
 #[cfg(test)]
 thread_local! {
-    static GROUND_FIRE_BIRTH_TRACE: std::cell::RefCell<Option<(crate::campaign::source_arena::SourceEntityHandle, Option<GroundFireBirth>)>> =
+    static GROUND_FIRE_BIRTH_TRACE: std::cell::RefCell<Option<(Vec<crate::campaign::source_arena::SourceEntityHandle>, Vec<GroundFireBirth>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 fn start_ground_fire_birth_trace(parent: crate::campaign::source_arena::SourceEntityHandle) {
-    GROUND_FIRE_BIRTH_TRACE.with(|trace| *trace.borrow_mut() = Some((parent, None)));
+    start_ground_fire_birth_trace_many(&[parent]);
 }
 
 #[cfg(test)]
 fn take_ground_fire_birth_trace() -> Option<GroundFireBirth> {
-    GROUND_FIRE_BIRTH_TRACE.with(|trace| trace.borrow_mut().take().and_then(|(_, birth)| birth))
+    take_ground_fire_birth_trace_many().into_iter().next()
+}
+
+#[cfg(test)]
+pub(super) fn start_ground_fire_birth_trace_many(
+    parents: &[crate::campaign::source_arena::SourceEntityHandle],
+) {
+    GROUND_FIRE_BIRTH_TRACE
+        .with(|trace| *trace.borrow_mut() = Some((parents.to_vec(), Vec::new())));
+}
+
+#[cfg(test)]
+pub(super) fn take_ground_fire_birth_trace_many() -> Vec<GroundFireBirth> {
+    GROUND_FIRE_BIRTH_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .take()
+            .map_or_else(Vec::new, |(_, births)| births)
+    })
 }
 
 /// Present the current typed Tree occupant through the ordinary sprite path.
@@ -138,9 +156,9 @@ pub(crate) fn step_imported(
             };
             GROUND_FIRE_BIRTH_TRACE.with(|trace| {
                 if let Some((watched, result)) = trace.borrow_mut().as_mut()
-                    && *watched == parent
+                    && watched.contains(&parent)
                 {
-                    *result = Some(birth);
+                    result.push(birth);
                 }
             });
         }

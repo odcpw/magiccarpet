@@ -551,7 +551,6 @@ pub use world_types::*;
 pub(crate) mod area_damage;
 pub(crate) mod source_target;
 pub(crate) mod castle_defense;
-mod ballistic_scenery;
 #[path = "campaign/simulation.rs"]
 mod simulation;
 pub(crate) use simulation::CarriedSpellProgress;

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sim_definition::adapter::{
     absence_countdown_definition, absence_countdown_entity_definition, activation_group_id,
     activation_switch_entity_definition, area_entry_trigger_entity_definition,
-    area_exit_trigger_entity_definition, build_level_definition, cave_corridor_definition,
+    area_exit_trigger_entity_definition, ballistic_scenery_entity_definition, build_level_definition, cave_corridor_definition,
     cave_corridor_entity_definition, cave_feature_entity_definition, creature_entity_definition,
     effect_entity_definition, entity_definition_with_position_access,
     exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
@@ -21,7 +21,7 @@ use sim_definition::adapter::{
 use crate::{
     house::HouseParameter,
     level_definition::{
-        BuildingKind, CaveFeatureDefinition, CaveFeatureKind, CorridorOrientation, CreatureKind,
+        BallisticSceneryDefinition, BuildingKind, CaveFeatureDefinition, CaveFeatureKind, CorridorOrientation, CreatureKind,
         EffectKind, FieldKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
         LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
         LevelObjectiveId, MechanicKind, MushroomDefinition, ObjectiveCondition, RivalWizardId,
@@ -123,6 +123,7 @@ impl Mc2LevelDefinition {
             (2, 0) => Some(LevelEntityKind::Scenery(SceneryKind::Tree)),
             (2, 1 | 3) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
             (2, 6) => Some(LevelEntityKind::Scenery(SceneryKind::Mushroom)),
+            (2, 7 | 8) => Some(LevelEntityKind::Scenery(SceneryKind::BallisticObject)),
             (10, 45) => Some(LevelEntityKind::Building(BuildingKind::House)),
             (10, model @ 80..=86) => match Self::cave_feature_kind(model) {
                 Some(kind) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveFeature {
@@ -387,6 +388,7 @@ impl Mc2LevelDefinition {
             (2, 0, 0) => Some(SceneryKind::Tree),
             (2, 1, 3) | (2, 3, 9) => Some(SceneryKind::Stone),
             (2, 6, 18 | 19) => Some(SceneryKind::Mushroom),
+            (2, 7, 20) | (2, 8, 21) => Some(SceneryKind::BallisticObject),
             (14, 3, 8) => Some(SceneryKind::ExitPortal),
             _ => None,
         }
@@ -568,6 +570,7 @@ impl Mc2LevelDefinition {
                 }
                 (5, 15) => "creature.castle_defender".to_owned(),
                 (2, 6) => "scenery.mushroom".to_owned(),
+                (2, 7 | 8) => "scenery.ballistic_object".to_owned(),
                 _ => continue,
             };
             if stable_entity_ids.contains_key(&feature.index) {
@@ -801,6 +804,7 @@ impl Mc2LevelDefinition {
                 (2, 0) => Some(SceneryKind::Tree),
                 (2, 1 | 3) => Some(SceneryKind::Stone),
                 (2, 6) => Some(SceneryKind::Mushroom),
+                (2, 7 | 8) => Some(SceneryKind::BallisticObject),
                 // `sub_51570` constructs the package's class-14 exit target.
                 // Shared callers see the scenery role, never its MC2 selector.
                 (14, 3) => Some(SceneryKind::ExitPortal),
@@ -827,6 +831,11 @@ impl Mc2LevelDefinition {
                         activation_group,
                         position_access,
                         MushroomDefinition::default(),
+                    )
+                } else if kind == SceneryKind::BallisticObject {
+                    ballistic_scenery_entity_definition(
+                        id, position, activation_group, position_access,
+                        BallisticSceneryDefinition::default(),
                     )
                 } else {
                     entity_definition_with_position_access(
@@ -1669,7 +1678,7 @@ fn bind_private_entity(
             LevelEntityKind::Mechanic(MechanicKind::Field { .. }) => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
-            LevelEntityKind::Scenery(SceneryKind::Mushroom) => {
+            LevelEntityKind::Scenery(SceneryKind::Mushroom | SceneryKind::BallisticObject) => {
                 if feature.activation_group != 0 {
                     Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
                 } else {

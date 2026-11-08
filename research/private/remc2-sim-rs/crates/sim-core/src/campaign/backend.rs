@@ -7393,6 +7393,7 @@ pub(crate) mod tests {
             &[
                 (SceneryKind::Tree, 37),
                 (SceneryKind::Stone, 12),
+                (SceneryKind::BallisticObject, 1),
                 (SceneryKind::ExitPortal, 1),
             ],
             &[(ItemKind::ExperienceScroll, 10)],

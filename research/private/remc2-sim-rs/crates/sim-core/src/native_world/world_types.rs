@@ -5273,15 +5273,20 @@ impl NativeWorldInspection {
             standing_building_chains: definition.standing_building_chains().clone(),
             rival_wizard_by_id,
         });
-        let mut bound_mushroom = false;
+        let mut bound_scenery = false;
         for entity in definition.level_definition().entities() {
-            let Some(properties) = entity.mushroom() else {
+            if entity.mushroom().is_none() && entity.ballistic_scenery().is_none() {
                 continue;
+            }
+            let initial_source_slot = if entity.ballistic_scenery().is_some() {
+                definition.initial_scenery_property_source(entity.id())
+            } else {
+                match definition.movable_entity_binding(entity.id()) {
+                    Some(crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource { initial_source_slot, .. }) => Some(*initial_source_slot),
+                    _ => None,
+                }
             };
-            let Some(crate::campaign::spec::Mc2EntityRuntimeBinding::InitialSource {
-                initial_source_slot,
-                ..
-            }) = definition.movable_entity_binding(entity.id())
+            let Some(initial_source_slot) = initial_source_slot
             else {
                 // Later authored groups bind their properties at construction.
                 continue;
@@ -5289,13 +5294,19 @@ impl NativeWorldInspection {
             let source = session
                 .source_arena_mut()
                 .entities
-                .get_mut(usize::from(*initial_source_slot))
-                .ok_or_else(|| NativeWorldError::new("initial mushroom source slot is absent"))?;
-            crate::world::scenery::mushrooms::bind_initial(source, properties)
-                .map_err(NativeWorldError::new)?;
-            bound_mushroom = true;
+                .get_mut(usize::from(initial_source_slot))
+                .ok_or_else(|| NativeWorldError::new("initial scenery source slot is absent"))?;
+            if let Some(properties) = entity.mushroom() {
+                crate::world::scenery::mushrooms::bind_initial(source, properties)
+                    .map_err(NativeWorldError::new)?;
+            }
+            if let Some(properties) = entity.ballistic_scenery() {
+                crate::world::scenery::ballistic::bind_initial(source, properties)
+                    .map_err(NativeWorldError::new)?;
+            }
+            bound_scenery = true;
         }
-        if bound_mushroom {
+        if bound_scenery {
             session.session.rebase();
         }
         Ok(session)

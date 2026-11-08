@@ -1780,7 +1780,7 @@ pub(crate) fn apply_effect(
             // Preserve its packet/generation for the ordinary Ray ancestry
             // check; source inference above remains limited to model0.
             source_raw_impact: source_slot.and_then(|slot| world.targets.arena.entities.get(usize::from(slot))
-                .filter(|row| row.active && row.class == 10 && matches!(row.model, 0 | 23))
+                .filter(|row| row.active && row.class == 10 && matches!(row.model, 0 | 6 | 23))
                 .map(|row| (world.targets.arena.economy.slot_generation(slot), row.clone()))),
             source_impact: source_slot.and_then(|source_slot| {
                 world.targets.arena.economy.model17_spawned_children().iter()

@@ -798,6 +798,7 @@ pub struct CampaignDefinition {
     scenery_by_authored_record: BTreeMap<u16, SceneryKind>,
     scenery_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     scenery_by_initial_source_slot: BTreeMap<u16, SceneryKind>,
+    scenery_property_source_by_entity: BTreeMap<LevelEntityId, u16>,
     item_by_authored_record: BTreeMap<u16, ItemKind>,
     item_entity_by_authored_record: BTreeMap<u16, LevelEntityId>,
     switch_by_authored_record: BTreeMap<u16, SwitchKind>,
@@ -1873,6 +1874,30 @@ impl CampaignDefinition {
                 ))
             })
             .collect::<BTreeMap<_, _>>();
+        // Ballistic runtime properties are independent of position-edit access.
+        // Constructor jitter stays inside the authored tile for this family.
+        let mut scenery_property_source_by_entity = BTreeMap::new();
+        for (&slot, &kind) in &scenery_by_initial_source_slot {
+            if kind != SceneryKind::BallisticObject {
+                continue;
+            }
+            let position = initial_entity_tile(entities, slot)?;
+            let matches = semantic_level.semantic.entities().iter().filter(|entity| {
+                entity.kind() == LevelEntityKind::Scenery(kind)
+                    && entity.activation_group().is_none()
+                    && entity.default_position() == position
+            }).collect::<Vec<_>>();
+            if matches.len() != 1 {
+                return fail(ValidationStage::TypedOperations, format!(
+                    "initial {} scenery slot {slot} has {} semantic property candidates",
+                    kind.as_str(), matches.len(),
+                ));
+            }
+            if scenery_property_source_by_entity.insert(matches[0].id().clone(), slot).is_some() {
+                return fail(ValidationStage::TypedOperations,
+                    "initial scenery property identity has multiple source carriers");
+            }
+        }
         let building_by_initial_source_slot = expected_rows
             .iter()
             .filter_map(|row| {
@@ -2314,6 +2339,7 @@ impl CampaignDefinition {
             scenery_by_authored_record: semantic_level.scenery_by_authored_record,
             scenery_entity_by_authored_record: semantic_level.scenery_entity_by_authored_record,
             scenery_by_initial_source_slot,
+            scenery_property_source_by_entity,
             item_by_authored_record: semantic_level.item_by_authored_record,
             item_entity_by_authored_record: semantic_level.item_entity_by_authored_record,
             switch_by_authored_record: semantic_level.switch_by_authored_record,
@@ -2430,6 +2456,10 @@ impl CampaignDefinition {
 
     pub(crate) fn initial_scenery_bindings(&self) -> &BTreeMap<u16, SceneryKind> {
         &self.scenery_by_initial_source_slot
+    }
+
+    pub(crate) fn initial_scenery_property_source(&self, entity: &LevelEntityId) -> Option<u16> {
+        self.scenery_property_source_by_entity.get(entity).copied()
     }
 
     pub(crate) fn item_bindings(&self) -> &BTreeMap<u16, ItemKind> {
@@ -5277,6 +5307,52 @@ mod tests {
             non_movable_countdowns > 0,
             "actual cave package exercises fixed-position countdowns"
         );
+    }
+
+    #[test]
+    fn readonly_ballistic_properties_bind_without_rejecting_duplicate_cave_mushrooms() {
+        use crate::level_definition::{LevelEntityKind, LevelEntityPositionAccess, SceneryKind, TilePosition};
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let day = CampaignDefinition::preflight(
+            root.join("mc-cf14-campaign-package-v1-a/qualified-level3"),
+            CampaignSelection::LEVEL3,
+            &|_: &super::BehaviorKey| true,
+        ).unwrap();
+        let ballistic = day.level_definition.entities().iter().find(|entity| {
+            entity.kind() == LevelEntityKind::Scenery(SceneryKind::BallisticObject)
+        }).expect("actual Day3 ballistic placement");
+        assert_eq!(ballistic.position_access(), LevelEntityPositionAccess::ReadOnly);
+        assert_eq!(day.initial_scenery_property_source(ballistic.id()), Some(245));
+        assert!(!day.movable_entity_bindings.contains_key(ballistic.id()));
+        assert_eq!(ballistic.ballistic_scenery(), Some(crate::level_definition::BallisticSceneryDefinition::default()));
+        let frontend = crate::campaign::backend::load_mc2_campaign(
+            root.join("mc-cf14-campaign-package-v1-a/qualified-level3"),
+            &crate::game_definition::default_catalog().unwrap(),
+        ).expect("actual Day3 game-definition consumer");
+        let published = frontend.level_definition().unwrap().entity(ballistic.id()).unwrap();
+        assert_eq!(published.kind(), ballistic.kind());
+        assert_eq!(published.ballistic_scenery(), ballistic.ballistic_scenery());
+        assert_eq!(published.position_access(), LevelEntityPositionAccess::ReadOnly);
+
+        // This is package/schema validation, not Cave21 gameplay proof. These
+        // two readonly Mushroom placements legitimately share an authored tile.
+        let cave = CampaignDefinition::preflight(
+            root.join("mc-bhq6-ordinary-20261025-zclu5fjj/level21"),
+            CampaignSelection::ordinary(21).unwrap(),
+            &|_: &super::BehaviorKey| true,
+        ).unwrap();
+        let duplicates = cave.level_definition.entities().iter().filter(|entity| {
+            entity.kind() == LevelEntityKind::Scenery(SceneryKind::Mushroom)
+                && entity.position() == TilePosition { x: 112, y: 93 }
+        }).collect::<Vec<_>>();
+        assert_eq!(duplicates.len(), 2);
+        for entity in duplicates {
+            assert_eq!(entity.position_access(), LevelEntityPositionAccess::ReadOnly);
+            assert!(cave.initial_scenery_property_source(entity.id()).is_none());
+            assert!(!cave.movable_entity_bindings.contains_key(entity.id()));
+        }
+        assert_eq!(cave.initial_scenery_bindings().get(&52), Some(&SceneryKind::Mushroom));
+        assert_eq!(cave.initial_scenery_bindings().get(&74), Some(&SceneryKind::Mushroom));
     }
 
     #[test]
