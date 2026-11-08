@@ -343,8 +343,9 @@ Oliver authorized continuing the existing remc2-to-Rust delivery plan on
 corridors `mc-bhq.2` and authored Cave paths/rooms/features `mc-bhq.5` have their
 finite acceptance qualified below and are present in the installed runtime.
 Current family: trees, stones, dolmens and remaining scenery `mc-bhq.13`.
-Paid Tree burning, Crater/Dolmen grounding/recharge and Castle/scenery burial
-are installed below. Full scenery acceptance remains open.
+Paid Tree burning, Crater/Dolmen grounding/recharge, Castle/scenery burial and
+outdoor moving-scenery construction/fire collateral are installed below.
+Full scenery acceptance remains open.
 Use its existing original acceptance and canonical `world::scenery` owners;
 complete ordinary damage/destruction, real children and lifetime/consumers.
 Root CopperMountain implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
@@ -352,6 +353,63 @@ installation; keep one accountable family owner through any consumer failure.
 Keep the complete acceptance and dependencies. Then continue existing
 terrain/scenery, activation/objective and progression/flow capabilities, one
 connected runtime result at a time. Do not restart delivered spells/creatures.
+
+### Installed outdoor moving scenery and fire collateral — partial `mc-bhq.13` (2026-11-08)
+
+Implemented, committed and pushed source `3353744e`, on the shared presentation
+base `88319817`. Matching Original native `181c6007e782` is installed through
+qualified full player build `build-4lbjf6mv`. Typed `BallisticObject` life rules
+(source default `400 + draw % 2000`) reach actual initial readonly carriers and
+the shared authored 7/8 constructor. The canonical owner is now
+`world::scenery::ballistic`; the old native-world module was removed. Ordinary
+NewEvent/map/particle 322/323 construction preserves three draws, flags 12,
+half-speed axes and genuine Cave null-before-allocation. Initial life binding
+is independent of placement-edit permission. The 81 actual retained ordinary
+initial carriers preserve source-default maxima; Cave 21's duplicate readonly
+Mushrooms retain their existing binding behavior.
+
+At the committed integrated C14 revision, whole real Day 3 authored 245/source 245
+passes the public paid Fireball I → actual Tree ignition → GroundFire → original
+moving object path in 0.235 s. All 38 source turns remain live: actual 50-damage
+fire pulses and their accumulated 50/100/200 mailboxes take life 988 → −12, with
+real bounce, Smoke 273/generation 1 presentation, natural hide and
+following-boundary reclaim.
+Every contributing fire generation is traced through actual lethal Tree
+receipts to paid projectile impacts; source continuous damage is 5 for Trees
+and 50 for this object. Holder charges are exact; player debits are verified
+in aggregate. Equal-elapsed no-cast and real reset pass. Player pose/carry are
+declared controls; actors, objectives, terrain, RNG, allocator and lifetimes
+are not forced. These are focused Rust gameplay checks, not a human campaign.
+
+Typed property/backend consumer and duplicate-Cave regression, constructor/
+physics/Cave controls, existing paid Tree lifecycle, numeric source ordering,
+definition serialization and integrated workspace/all-target check pass.
+Independent source/gate review found no further concrete changed-path defect.
+UBS has no added-line critical finding; whole-file formatting/scanner debt stays
+explicit. C10's 100-damage writer remains unattributed; C12 reached death/smoke/
+cleanup but failed a wrong direct-250-only oracle. Both negatives and the C11
+missing-import check failure are preserved. The corrected gate requires actual
+source mode, generation, mailbox arithmetic, ancestry and payment, without
+weakening gameplay acceptance. The older opening semantic census still fails
+identically on C9/C12 before Day 3 due prior environmental-effect expectations;
+the narrow actual Day 3 backend loader passes. No broad census rewrite was made.
+
+All 465 Rust, 162 upstream and 37 extra inputs (657 unique) match clean committed
+dispatcher/Rig/source and the installed artifact. The additive native-header
+change correctly refused native-only refresh: Unity content was unchanged,
+and the existing verified native was reused for a full qualified Original
+rebuild without another Cargo build. The nearly-full RAM cache was copied
+byte-identically to SSD; old cache/link and previous player remain preserved.
+Root viewed normal canonical map/loading/NightSpire terrain/HUD with the mapped
+matching native, one portal and zero retries, then stopped owned smoke processes.
+This is launch/load, not native ballistic-encounter visuals, human combat, FPS,
+hardware audio, full missions or old-save proof. Evidence: C10/C11/C12/C13/C14
+and `ballistic-launch-smoke` in `research/private/generated/scenery-20261108-integration/`.
+
+Full original `.13` acceptance/dependencies stay open. Later-group 7/8 factory
+wiring is implemented; the real Level 7 group 10 triggering path remains
+unqualified. Continue the remaining existing scenery producers/typed bindings
+before activation/progression work; do not replay this delivered checkpoint.
 
 ### Installed Crater/Dolmen grounding and recharge — partial `mc-bhq.13`
 
@@ -444,16 +502,14 @@ This is not native burial gameplay, human combat, FPS, hardware audio, full
 missions or old-save proof. Evidence: `generated/scenery-20261108-integration/`
 C7/C8/C9 and `castle-burial-launch-smoke` under `research/private/`.
 
-Full `.13`/`.10`/`mc-k5k.9` acceptance/dependencies remain open. Next bounded
-capability is outdoor ballistic scenery models7/8: typed default/property/
-presentation bindings and real Day3 authored245/action21 paid-hit→smoke→
-cleanup consumer. The existing lifecycle control forces actor state and is
-not that positive. Night Level7 group10 has eight model7 rows, but its model4
-exit producer is objective-gated and current ordinary group dispatch remains
-unproved; do not claim it connected yet. Outdoor model7 construction currently
-falls into a Cave-only null adapter; retain genuine Cave7/8 null behavior.
-Root CopperMountain owns shared integration/builds; current family owner is
-NavyBridge (same native worker, fresh authenticated identity).
+Full `.13`/`.10`/`mc-k5k.9` acceptance/dependencies remain open. The then-next
+outdoor7/8 constructor/property and real Day3 paid collateral→smoke→cleanup
+capability is now installed above. The former forced-actor lifecycle control
+was not used as its positive. Night Level7 group10 has eight model7 rows; its
+objective-gated triggering path remains unqualified. The incorrect outdoor7
+Cave-only null-adapter join is fixed; genuine Cave7/8 null behavior remains.
+Root CopperMountain owns shared integration/builds; NavyBridge owned the
+connected family implementation through verification.
 
 ### Installed paid Tree burning — partial `mc-bhq.13` (2026-11-08)
 
