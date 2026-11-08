@@ -109,7 +109,7 @@ namespace MagicCarpet.Native
             catch { Dispose(); throw; }
         }
 
-        internal void Observe(NativeCampaignSession session, EngineSessionTransport.CampaignSnapshotValue snapshot)
+        internal void Observe(NativeCampaignSession session, EngineSessionTransport.CampaignRenderValue snapshot)
         {
             if (session.Generation != generation)
             {

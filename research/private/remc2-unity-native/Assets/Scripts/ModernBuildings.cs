@@ -5,8 +5,8 @@ using UnityEngine.Rendering;
 
 namespace MagicCarpet.Native
 {
-    // Frozen source-layout presentation. Rust still owns the original height
-    // stamp and gameplay; this class owns only the separately validated visuals.
+    // Source-layout presentation. Rust owns the height stamp and gameplay;
+    // live substitutions require the current source owner and exact cells.
     internal sealed class ModernBuildings : IDisposable
     {
         private sealed class Instance
@@ -14,6 +14,16 @@ namespace MagicCarpet.Native
             internal GameObject Node;
             internal Vector3 Position;
             internal Vector2 Size;
+            internal int Slot;
+            internal Vector3[] WindowCenters, WindowNormals;
+        }
+        internal struct LiveBuilding
+        {
+            internal int Slot, BuildingIndex, Action;
+            internal uint SlotGeneration;
+            internal bool Drawing;
+            internal ushort X, Y;
+            internal short Z;
         }
         private readonly Transform parent;
         private readonly List<Instance> instances=new();
@@ -21,15 +31,19 @@ namespace MagicCarpet.Native
         private readonly Material material;
         private readonly ModernBuildingLayout layout;
         private readonly List<Vector3> windowCenters=new(),windowNormals=new();
+        private readonly List<Bounds> changedFootprints=new();
         private bool prepared;
+        private HashSet<int> liveFlattened, liveVisible;
         internal Vector3[] WindowCenters => windowCenters.ToArray();
         internal Vector3[] WindowNormals => windowNormals.ToArray();
+        internal IReadOnlyList<Bounds> ChangedFootprints => changedFootprints;
         internal Vector3 Center { get; private set; }
         internal Vector3 House { get; private set; }
         internal Vector3 Hall { get; private set; }
         internal Vector3 Tower { get; private set; }
         internal Vector3 Coastal { get; private set; }
         internal int Count => instances.Count;
+        internal int VisibleCount => liveVisible?.Count ?? instances.Count;
         internal bool Ready => Count>0;
 
         internal ModernBuildings(Transform parent,ModernTerrainMesh terrain,ModernBuildingLayout source=null)
@@ -59,10 +73,56 @@ namespace MagicCarpet.Native
             if(layout==null) return original;
             var result=layout.VisualHeights(original);prepared=true;return result;
         }
+
+        // Every stamp is an atomic substitution. An unrelated terrain change
+        // may coexist with a valid stamp; an altered stamp is never flattened.
+        // The caller retains the untouched native height plane for the next
+        // reconciliation and rebuilds terrain when `changed` is true.
+        internal byte[] Reconcile(byte[] original, IReadOnlyList<LiveBuilding> live, int voxelSlot, out bool changed)
+        {
+            if(layout==null) throw new InvalidOperationException("Live buildings require a source layout");
+            if(live==null) throw new ArgumentNullException(nameof(live));
+            layout.ValidateCells(original,false);
+            var bySlot=new Dictionary<int,LiveBuilding>();
+            foreach(var row in live)
+                if(!bySlot.TryAdd(row.Slot,row)) throw new InvalidOperationException("Duplicate live building slot");
+            var flattened=new HashSet<int>();var visible=new HashSet<int>();
+            foreach(var entry in layout.buildings)
+            {
+                var source=entry.source_entity_position;
+                if(source==null||source.x<0||source.x>ushort.MaxValue||source.y<0||source.y>ushort.MaxValue||
+                    source.z<short.MinValue||source.z>short.MaxValue)
+                    throw new System.IO.InvalidDataException("Building source position is missing or invalid");
+                if(!bySlot.TryGetValue(entry.source_slot,out var row)||row.SlotGeneration!=0||
+                    row.BuildingIndex!=entry.build_index||row.Action!=52||!row.Drawing||row.X!=source.x||row.Y!=source.y||row.Z!=source.z)
+                    continue;
+                var intact=true;
+                foreach(var cell in entry.cells) if(original[cell.index]!=cell.expected) { intact=false;break; }
+                if(!intact) continue;
+                flattened.Add(entry.source_slot);
+                if(entry.source_slot!=voxelSlot) visible.Add(entry.source_slot);
+            }
+            changed=liveFlattened==null||!liveFlattened.SetEquals(flattened)||!liveVisible.SetEquals(visible);
+            changedFootprints.Clear();
+            foreach(var entry in layout.buildings)
+                if((liveVisible?.Contains(entry.source_slot)??false)!=visible.Contains(entry.source_slot))
+                    changedFootprints.Add(new Bounds(new Vector3(entry.x,entry.base_height,entry.z),
+                        new Vector3(entry.width+6,200,entry.depth+6)));
+            var visual=(byte[])original.Clone();
+            foreach(var entry in layout.buildings)
+                if(flattened.Contains(entry.source_slot))
+                    foreach(var cell in entry.cells) visual[cell.index]=(byte)cell.replacement;
+            prepared=true;
+            if(!Ready) Stage(Vector3.zero);
+            foreach(var instance in instances) instance.Node.SetActive(visible.Contains(instance.Slot));
+            if(liveVisible==null||!liveVisible.SetEquals(visible)) RebuildWindows();
+            liveFlattened=flattened;liveVisible=visible;
+            return visual;
+        }
         internal bool ExcludesVegetation(float x,float z)
         {
             foreach(var instance in instances)
-                if(Mathf.Abs(WrappedDelta(x,instance.Position.x))<instance.Size.x*.5f+3
+                if(instance.Node.activeSelf&&Mathf.Abs(WrappedDelta(x,instance.Position.x))<instance.Size.x*.5f+3
                     &&Mathf.Abs(WrappedDelta(z,instance.Position.z))<instance.Size.y*.5f+3) return true;
             return false;
         }
@@ -107,7 +167,8 @@ namespace MagicCarpet.Native
             var node=new GameObject($"Level 1 building {entry.source_slot} BUILD {entry.build_index}");
             node.transform.SetParent(parent,false);node.transform.position=best;
             // Register before creating children so rollback also owns partial instances.
-            instances.Add(new Instance { Node=node,Position=best,Size=ModernBuildingMeshes.Footprint(profile) });
+            var instance=new Instance { Node=node,Position=best,Size=ModernBuildingMeshes.Footprint(profile),Slot=entry.source_slot };
+            instances.Add(instance);
             var lods=new LOD[3];var thresholds=new[] {.22f,.07f,.008f};
             for(var lod=0;lod<3;lod++)
             {
@@ -119,7 +180,17 @@ namespace MagicCarpet.Native
             }
             var group=node.AddComponent<LODGroup>();group.SetLODs(lods);group.RecalculateBounds();
             var centers=ModernBuildingMeshes.WindowCenters(profile);var normals=ModernBuildingMeshes.WindowNormals(profile);
-            for(var i=0;i<centers.Length;i++) { windowCenters.Add(best+centers[i]);windowNormals.Add(normals[i]); }
+            instance.WindowCenters=new Vector3[centers.Length];instance.WindowNormals=normals;
+            for(var i=0;i<centers.Length;i++) { instance.WindowCenters[i]=best+centers[i];windowCenters.Add(instance.WindowCenters[i]);windowNormals.Add(normals[i]); }
+        }
+
+        private void RebuildWindows()
+        {
+            windowCenters.Clear();windowNormals.Clear();
+            foreach(var instance in instances)
+                if(instance.Node.activeSelf)
+                    for(var i=0;i<instance.WindowCenters.Length;i++)
+                    { windowCenters.Add(instance.WindowCenters[i]);windowNormals.Add(instance.WindowNormals[i]); }
         }
 
         internal void Render(Vector3 viewer)
@@ -140,6 +211,8 @@ namespace MagicCarpet.Native
         {
             foreach(var item in instances) Destroy(item.Node);
             instances.Clear();windowCenters.Clear();windowNormals.Clear();
+            changedFootprints.Clear();
+            liveFlattened=liveVisible=null;
             Center=House=Hall=Tower=Coastal=Vector3.zero;
         }
         private static void Destroy(UnityEngine.Object item)

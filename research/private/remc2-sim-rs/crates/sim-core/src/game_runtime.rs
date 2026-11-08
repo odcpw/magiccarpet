@@ -495,6 +495,26 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         })
     }
 
+    /// Scalar outer identity for a coherent live presentation read.
+    /// Avoids constructing the full runtime and preferences snapshot.
+    #[must_use]
+    pub fn presentation_identity(&self) -> (u64, u64, RuntimeMode) {
+        let mode = match &self.state {
+            RuntimeState::Title { .. } => RuntimeMode::Title,
+            RuntimeState::Campaign { .. } => RuntimeMode::Campaign,
+            RuntimeState::Loading { .. } => RuntimeMode::Loading,
+            RuntimeState::Playing { paused: true, .. } => RuntimeMode::Paused,
+            RuntimeState::Playing { paused: false, .. } => RuntimeMode::Playing,
+        };
+        (self.runtime_id, self.generation, mode)
+    }
+
+    /// Local player name selected by the authoritative preference store.
+    #[must_use]
+    pub fn presentation_player_name(&self) -> &str {
+        self.player_preferences.player_name()
+    }
+
     #[must_use]
     pub fn identity(&self) -> RuntimeIdentity {
         let (mode, presentation, pending_definition, active_runtime_flow, session) =

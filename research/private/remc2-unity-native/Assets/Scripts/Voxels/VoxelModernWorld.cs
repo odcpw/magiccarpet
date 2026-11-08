@@ -39,6 +39,8 @@ namespace MagicCarpet.Native.Voxels
         private int groundRemoved,houseRemoved,completedEdits;
         private float craterDepth;
         private int lightingPreset;
+        internal int LightingMode => lightingPreset;
+        internal int SelectedBuildingSlot => input?.building?.source_slot ?? -1;
         private string output;
         private bool capture,automatic,nativeCamera;
         private int visualRemoved,visualGroundRemoved,visualHouseRemoved;
@@ -78,7 +80,7 @@ namespace MagicCarpet.Native.Voxels
             patch=new Bounds(home,new Vector3(32,200,40));
             terrain.VoxelPatch=patch;
             lighting=new ModernEnvironmentSandbox(camera,terrain,water,night,sun,sky);
-            lighting.SetLighting(0); water.SetSandboxWind(1);
+            lighting.SetLighting(lightingPreset=2); water.SetSandboxWind(1);
             output=Option("-mc-voxel-capture");capture=output!=null;
             output ??= Option("-mc-voxel-benchmark");automatic=output!=null;
             characterReview=Option("-mc-character-follow")!=null;

@@ -94,12 +94,14 @@ namespace MagicCarpet.Native.Editor
             Prepare();
             var previous = GraphicsSettings.defaultRenderPipeline;
             var previousQuality = QualitySettings.renderPipeline;
+            var previousDeformation = PlayerSettings.meshDeformation;
             try
             {
                 // URP's build processors must see the asset to include its runtime resources.
                 QualitySettings.renderPipeline = null;
                 GraphicsSettings.defaultRenderPipeline = AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(
                     "Assets/Resources/ModernPipeline.asset");
+                PlayerSettings.meshDeformation = MeshDeformation.GPUBatched;
                 AssetDatabase.SaveAssets();
                 BuildNativePlayer.BuildLinuxPlayer();
             }
@@ -107,6 +109,7 @@ namespace MagicCarpet.Native.Editor
             {
                 GraphicsSettings.defaultRenderPipeline = previous;
                 QualitySettings.renderPipeline = previousQuality;
+                PlayerSettings.meshDeformation = previousDeformation;
                 AssetDatabase.SaveAssets();
             }
         }

@@ -9,6 +9,10 @@ use super::secret_transition_abi::BoundaryTransitionReceipt;
 use super::*;
 #[path = "voxel_abi.rs"]
 mod voxel_abi;
+#[path = "render_observation.rs"]
+mod render_observation;
+#[path = "building_observation.rs"]
+mod building_observation;
 use serde::Deserialize;
 use sim_core::{
     campaign::backend::{
@@ -158,6 +162,19 @@ impl RuntimeRecord {
     ) -> AbiResult<sim_session::SessionObservation<sim_session::CampaignSnapshot>> {
         let session = self.session()?;
         let mut observation = session.snapshot();
+        self.apply_local_presentation_name(
+            &mut observation.value.source_scoreboard,
+            &mut observation.value.participant_notifications,
+        )?;
+        Ok(observation)
+    }
+
+    fn apply_local_presentation_name(
+        &self,
+        scoreboard: &mut sim_session::SourceScoreboard,
+        notifications: &mut [sim_session::ParticipantNotification],
+    ) -> AbiResult<()> {
+        let session = self.session()?;
         let local_slot = session
             .backend()
             .campaign_presentation_source()
@@ -171,21 +188,19 @@ impl RuntimeRecord {
             .player_preferences
             .preferences
             .player_name;
-        if let Some(local) = observation
-            .value
-            .source_scoreboard
+        if let Some(local) = scoreboard
             .players
             .iter_mut()
             .find(|player| player.source_slot == local_slot)
         {
             local.display_name = local_name.clone();
         }
-        for notice in &mut observation.value.participant_notifications {
+        for notice in notifications {
             if notice.is_local {
                 notice.display_name = local_name.clone();
             }
         }
-        Ok(observation)
+        Ok(())
     }
 
     fn participant_notifications(
@@ -2079,6 +2094,32 @@ pub extern "C" fn mc_game_runtime_finish_mission_if_ready_v1(
     })
 }
 
+/// Status plus a transition flag, so a no-op boundary needs no identity JSON.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_finish_mission_if_ready_result_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    out_changed: *mut u8,
+) -> i32 {
+    boundary(|| {
+        require_output(out_changed, "mission boundary transition flag")?;
+        write_output(out_changed, 0);
+        with_runtime_mut(handle, |record| {
+            record.finish_mission_if_ready(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+            )?;
+            let (_, generation, _) = record.runtime.presentation_identity();
+            write_output(out_changed, u8::from(generation != runtime_generation));
+            Ok(())
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_preferences_command_json_v1(
     handle: u64,
@@ -2302,6 +2343,8 @@ pub extern "C" fn mc_game_runtime_destroy_v1(handle: u64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::building_observation::{mc_game_runtime_buildings_copy_v1, McRuntimeBuildingV1};
+    use super::render_observation::mc_game_runtime_render_observation_json_v1;
     use crate::native_v2::game_session_abi::{
         mc_game_session_destroy_v1, mc_game_session_reset_v1, mc_game_session_snapshot_json_v1,
         mc_game_session_step_json_v1,
@@ -2522,6 +2565,299 @@ mod tests {
         read_json(|buffer, capacity, length| {
             mc_game_runtime_identity_json_v1(handle, buffer, capacity, length)
         })
+    }
+
+    #[test]
+    fn live_buildings_bind_level1_descriptor_and_guard_reads() {
+        assert_eq!(std::mem::size_of::<McRuntimeBuildingV1>(), 48);
+        assert_eq!(std::mem::offset_of!(McRuntimeBuildingV1, generation), 8);
+        assert_eq!(
+            std::mem::offset_of!(McRuntimeBuildingV1, slot_generation),
+            24
+        );
+        assert_eq!(std::mem::offset_of!(McRuntimeBuildingV1, source_slot), 28);
+        assert_eq!(
+            std::mem::offset_of!(McRuntimeBuildingV1, building_index),
+            32
+        );
+        assert_eq!(std::mem::offset_of!(McRuntimeBuildingV1, x), 36);
+        assert_eq!(std::mem::offset_of!(McRuntimeBuildingV1, reserved), 42);
+        let path = std::env::var_os("MC_MODERN_BUILDING_LAYOUT").unwrap_or_else(|| {
+            "/home/oliver/Projects/odcpw/magiccarpet-modern-performance-20261105/research/private/remc2-unity-native/Builds/SandboxInputs/level1-building-source-layout.json".into()
+        });
+        let descriptor: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(descriptor["schema"], "mc-modern-building-layout/v2");
+        assert_eq!(descriptor["profiles"].as_array().unwrap().len(), 4);
+        let buildings = descriptor["buildings"].as_array().unwrap();
+        assert_eq!(buildings.len(), 32);
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        assert_eq!(
+            bootstrap_package_set(
+                handle,
+                1,
+                &[
+                    level_three_package(),
+                    level_one_package(),
+                    level_two_package()
+                ]
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let snapshot = || {
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            })
+        };
+        let before = snapshot();
+        with_runtime(handle, |record| {
+            let session = record.session()?;
+            let terrain = session
+                .backend()
+                .campaign_presentation_source()
+                .simulation()
+                .canonical_terrain();
+            let heights = terrain.ground_heights();
+            let mut checked = 0;
+            for entry in buildings {
+                for cell in entry["cells"].as_array().unwrap() {
+                    let index = cell["index"].as_u64().unwrap() as usize;
+                    assert_eq!(
+                        u64::from(heights[index]),
+                        cell["expected"].as_u64().unwrap(),
+                        "source stamp cell {index}"
+                    );
+                    checked += 1;
+                }
+            }
+            assert_eq!(checked, 1220);
+            Ok(())
+        })
+        .unwrap();
+        let mut count = 0;
+        let size = struct_size::<McRuntimeBuildingV1>();
+        assert_eq!(
+            mc_game_runtime_buildings_copy_v1(
+                handle,
+                1,
+                0,
+                std::ptr::null_mut(),
+                0,
+                size,
+                &raw mut count
+            ),
+            MC_STATUS_BOUNDS
+        );
+        assert!(count >= 32);
+        let mut rows = vec![McRuntimeBuildingV1::default(); count as usize];
+        assert_eq!(
+            mc_game_runtime_buildings_copy_v1(
+                handle,
+                2,
+                0,
+                rows.as_mut_ptr(),
+                count,
+                size,
+                &raw mut count
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(
+            mc_game_runtime_buildings_copy_v1(
+                handle,
+                1,
+                1,
+                rows.as_mut_ptr(),
+                rows.len() as u32,
+                size,
+                &raw mut count
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(
+            mc_game_runtime_buildings_copy_v1(
+                handle,
+                1,
+                0,
+                rows.as_mut_ptr(),
+                rows.len() as u32,
+                size,
+                &raw mut count
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(rows.len(), count as usize);
+        for entry in buildings {
+            let slot = entry["source_slot"].as_u64().unwrap() as u16;
+            let matching: Vec<_> = rows.iter().filter(|row| row.source_slot == slot).collect();
+            assert_eq!(matching.len(), 1, "descriptor slot {slot}");
+            let row = matching[0];
+            assert_eq!(
+                (
+                    row.generation,
+                    row.tick,
+                    row.slot_generation,
+                    row.action,
+                    row.active,
+                    row.drawing
+                ),
+                (1, 0, 0, 52, 1, 1)
+            );
+            assert_eq!(
+                u64::from(row.building_index),
+                entry["build_index"].as_u64().unwrap()
+            );
+            assert_eq!(
+                u64::from(row.x),
+                entry["source_entity_position"]["x"].as_u64().unwrap()
+            );
+            assert_eq!(
+                u64::from(row.y),
+                entry["source_entity_position"]["y"].as_u64().unwrap()
+            );
+            assert_eq!(row.reserved, [0; 3]);
+        }
+        assert_eq!(
+            snapshot(),
+            before,
+            "building read mutated authoritative state"
+        );
+        let command = br#"{}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_game_runtime_buildings_copy_v1(
+                handle,
+                1,
+                0,
+                rows.as_mut_ptr(),
+                rows.len() as u32,
+                size,
+                &raw mut count
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn render_observation_matches_full_snapshot_at_each_live_boundary() {
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&raw mut handle), MC_STATUS_OK);
+        let mut length = 0;
+        assert_eq!(
+            mc_game_runtime_render_observation_json_v1(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                &raw mut length
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            mc_game_runtime_render_observation_json_v1(0, std::ptr::null_mut(), 0, &raw mut length),
+            MC_STATUS_UNKNOWN_HANDLE
+        );
+        assert_eq!(
+            bootstrap_package_set(
+                handle,
+                1,
+                &[
+                    level_three_package(),
+                    level_one_package(),
+                    level_two_package()
+                ]
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+
+        let full = || {
+            read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            })
+        };
+        let render = || {
+            read_json(|buffer, capacity, length| {
+                mc_game_runtime_render_observation_json_v1(handle, buffer, capacity, length)
+            })
+        };
+        let check = || {
+            let before = full();
+            let compact = render();
+            let after = full();
+            assert_eq!(before, after, "observation changed authoritative state");
+            assert_eq!(
+                compact["contract"],
+                "carpet-flight-campaign-render-observation/v1"
+            );
+            assert_eq!(compact["identity"], before["identity"]);
+            let expected_sequence = with_runtime(handle, |record| {
+                Ok(record
+                    .session()?
+                    .backend()
+                    .campaign_presentation_source()
+                    .simulation()
+                    .canonical_terrain()
+                    .mutation_sequence()
+                    .to_string())
+            })
+            .unwrap();
+            assert_eq!(compact["terrain_mutation_sequence"], expected_sequence);
+            let mut expected = before["value"].clone();
+            let object = expected.as_object_mut().unwrap();
+            for key in ["state_hash", "terrain_hash", "effect_journal_sha256"] {
+                assert!(object.remove(key).is_some());
+            }
+            assert_eq!(compact["value"], expected);
+            compact
+        };
+        let initial = check();
+        let command = br#"{"longitudinal":"accelerate","look_yaw":64}"#;
+        assert_eq!(
+            mc_game_session_step_json_v1(handle, 1, 0, command.as_ptr(), command.len() as u32),
+            MC_STATUS_OK
+        );
+        let stepped = check();
+        assert_eq!(stepped["identity"]["tick"], "1");
+        assert_ne!(
+            stepped["value"]["player_pose"],
+            initial["value"]["player_pose"]
+        );
+        assert_eq!(mc_game_runtime_pause_v1(handle, 3), MC_STATUS_OK);
+        let paused_before = full();
+        assert_eq!(
+            mc_game_runtime_paused_frame_v1(handle, 4, 2, 1),
+            MC_STATUS_OK
+        );
+        let paused_after = full();
+        assert_eq!(paused_before["identity"], paused_after["identity"]);
+        assert_ne!(
+            paused_before["value"]["state_hash"],
+            paused_after["value"]["state_hash"]
+        );
+        check();
+        assert_eq!(mc_game_runtime_resume_v1(handle, 4), MC_STATUS_OK);
+        assert_eq!(mc_game_session_reset_v1(handle, 3, 1), MC_STATUS_OK);
+        let reset = check();
+        assert_eq!(reset["identity"]["tick"], "0");
+        assert_ne!(
+            reset["identity"]["generation"],
+            initial["identity"]["generation"]
+        );
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_game_runtime_render_observation_json_v1(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                &raw mut length
+            ),
+            MC_STATUS_UNKNOWN_HANDLE
+        );
     }
 
     #[test]

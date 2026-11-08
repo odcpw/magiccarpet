@@ -21,7 +21,8 @@ namespace MagicCarpet.Native
         private readonly bool tour = Environment.GetCommandLineArgs().Contains("-mc-sandbox-tour");
         private readonly int study = StudyOption();
         private bool initialized, panel = true, torches = true;
-        private float yaw, pitch, speed = 18, cover = .46f, started, lastImpact = -10;
+        internal const float DefaultCloudCover = .46f;
+        private float yaw, pitch, speed = 18, cover = DefaultCloudCover, started, lastImpact = -10;
         private float frameMilliseconds;
         private int lightMode, windMode, tourStage = -1;
         private bool secondReviewImpact;
@@ -188,7 +189,13 @@ namespace MagicCarpet.Native
             lightMode=Mathf.Clamp(mode,0,2);
             buildings?.SetLighting(lightMode);
             lighting.SetWindowLighting(lightMode==0?0:lightMode==1?.45f:.8f);
-            var day=lightMode==0; var dusk=lightMode==1;
+            ApplyLighting(lightMode, key, sky, cover);
+            Debug.Log($"MC_SANDBOX_LIGHT mode={LightNames[lightMode]}");
+        }
+
+        internal static void ApplyLighting(int mode, Light key, Material sky, float cover)
+        {
+            var day=mode==0; var dusk=mode==1;
             var direction=(day?new Vector3(-.5f,.65f,.55f):dusk?new Vector3(-.65f,.12f,.6f):new Vector3(-.38f,.48f,.79f)).normalized;
             key.transform.rotation=Quaternion.LookRotation(-direction);
             key.color=day?new Color(1,.94f,.82f):dusk?new Color(1,.54f,.27f):new Color(.76f,.86f,1);
@@ -206,7 +213,6 @@ namespace MagicCarpet.Native
             // atmospheric extinction to the sky horizon before that boundary.
             RenderSettings.fogColor=sky.GetColor("_HorizonColor");
             RenderSettings.fogDensity=day?.0038f:dusk?.0040f:.0038f;
-            Debug.Log($"MC_SANDBOX_LIGHT mode={LightNames[lightMode]}");
         }
 
         private void SetWind(int mode) { windMode=mode; water.SetSandboxWind(mode); }

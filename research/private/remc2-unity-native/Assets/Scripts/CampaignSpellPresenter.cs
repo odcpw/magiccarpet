@@ -77,7 +77,7 @@ namespace MagicCarpet.Native
         // helpers read the supplied observation every time, so reset/transition
         // cannot leave cached selections or readiness from an old generation.
         internal static EngineSessionTransport.SpellObservation SpellForKey(
-            EngineSessionTransport.CampaignSnapshotValue snapshot, int key)
+            EngineSessionTransport.CampaignRenderValue snapshot, int key)
         {
             var spells = snapshot?.player_spells;
             return spells != null && key > 0 && key <= spells.Length
@@ -85,13 +85,13 @@ namespace MagicCarpet.Native
         }
 
         internal static EngineSessionTransport.SpellObservation FindSpell(
-            EngineSessionTransport.CampaignSnapshotValue snapshot, string id)
+            EngineSessionTransport.CampaignRenderValue snapshot, string id)
         {
             if (snapshot?.player_spells == null || string.IsNullOrEmpty(id)) return null;
             return Array.Find(snapshot.player_spells, spell => spell.id == id);
         }
 
-        internal static string SpellMenuText(EngineSessionTransport.CampaignSnapshotValue snapshot)
+        internal static string SpellMenuText(EngineSessionTransport.CampaignRenderValue snapshot)
         {
             if (snapshot?.player_spells == null) return string.Empty;
             var rows = new List<string>();

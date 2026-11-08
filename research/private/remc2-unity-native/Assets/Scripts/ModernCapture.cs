@@ -30,6 +30,7 @@ namespace MagicCarpet.Native
         private float started;
         private bool reported;
         private static readonly Dictionary<string, List<double>> scopeTimes = new();
+        private static readonly Dictionary<string, long> identityReadCounts = new();
         private static float measurementReadyAt = float.PositiveInfinity;
         private readonly FrameTiming[] timings = new FrameTiming[1];
         private ulong lastTimingTimestamp;
@@ -39,8 +40,9 @@ namespace MagicCarpet.Native
         private static readonly string[] CounterNames = { "Draw Calls Count", "Batches Count", "SetPass Calls Count", "Triangles Count" };
         [Serializable] private sealed class CounterSample { public string name; public bool available; public long value; }
         [Serializable] private sealed class ScopeSample { public string name; public double[] milliseconds; }
+        [Serializable] private sealed class IdentityReads { public string caller; public long count; }
         [Serializable] private sealed class ProfileFrame { public int frame, bodies; public ulong tick, gpuFrameTimestamp; public float wallSeconds, gameSeconds; public double milliseconds, gpuMilliseconds; public bool gpuAvailable; public CounterSample[] counters; }
-        [Serializable] private sealed class Profile { public string mode = "unthrottled; counters refer to last completed frame"; public ProfileFrame[] frames; public ScopeSample[] scopes; }
+        [Serializable] private sealed class Profile { public string mode = "unthrottled; counters refer to last completed frame"; public ProfileFrame[] frames; public ScopeSample[] scopes; public IdentityReads[] identityReads; }
         private static readonly List<ProfileFrame> profileFrames = new();
         private static int measurementEpoch;
 
@@ -51,6 +53,7 @@ namespace MagicCarpet.Native
             if (!Measure) return;
             measurementEpoch++;
             scopeTimes.Clear(); profileFrames.Clear();
+            lock (identityReadCounts) identityReadCounts.Clear();
             measurementReadyAt = Time.realtimeSinceStartup + 1f;
             Debug.Log("MC_MODERN_MEASUREMENT_WORLD_READY epoch=" + measurementEpoch);
         }
@@ -58,9 +61,24 @@ namespace MagicCarpet.Native
         internal static void WriteWorldProfile(string directory)
         {
             if (!Measure) return;
+            IdentityReads[] identities;
+            lock (identityReadCounts) identities = identityReadCounts.Select(pair => new IdentityReads {
+                caller = pair.Key, count = pair.Value
+            }).ToArray();
             File.WriteAllText(Path.Combine(directory, "performance.json"), JsonUtility.ToJson(new Profile {
-                frames = profileFrames.ToArray(), scopes = scopeTimes.Select(pair => new ScopeSample { name = pair.Key, milliseconds = pair.Value.ToArray() }).ToArray()
+                frames = profileFrames.ToArray(), scopes = scopeTimes.Select(pair => new ScopeSample { name = pair.Key, milliseconds = pair.Value.ToArray() }).ToArray(),
+                identityReads = identities
             }, true));
+        }
+
+        internal static void CountIdentityRead(string caller)
+        {
+            if (!Measure || Time.realtimeSinceStartup < measurementReadyAt) return;
+            caller ??= "unknown";
+            lock (identityReadCounts) {
+                identityReadCounts.TryGetValue(caller, out var count);
+                identityReadCounts[caller] = count + 1;
+            }
         }
 
         internal void SampleWorldFrame(ulong tick, int bodies, double milliseconds, float gameSeconds, float wallSeconds)

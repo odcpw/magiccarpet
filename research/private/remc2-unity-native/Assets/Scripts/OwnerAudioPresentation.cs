@@ -647,9 +647,10 @@ namespace MagicCarpet.Native
                 root.transform.SetParent(parent, false);
                 musicSource = AddSource(
                     root, $"C2GAME{track} owner-local presentation adaptation", true);
-                var musicWaveBytes = cache.ReadOutput(component + descriptor.music.unity_wave_path);
-                Require(Sha256Hex(musicWaveBytes) == descriptor.music.unity_wave_sha256,
-                    "destination music WAVE content hash");
+                var musicWavePath = component + descriptor.music.unity_wave_path;
+                var musicWaveBytes = cache.ReadOutput(musicWavePath);
+                RequireMusicWaveHash(musicWaveBytes, descriptor.music.unity_wave_sha256,
+                    Path.Combine(cache.RootPath, musicWavePath), () => cache.ReadOutput(musicWavePath));
                 var musicWave = ParseWave(musicWaveBytes);
                 Require(
                     musicWave.Channels == 2 && musicWave.SampleWidth == 2 &&
@@ -1736,9 +1737,45 @@ namespace MagicCarpet.Native
 
         private static string Sha256Hex(byte[] payload)
         {
+            return Sha256Hex(payload, out _);
+        }
+
+        private static string Sha256Hex(byte[] payload, out string implementation)
+        {
             using (var hash = SHA256.Create())
+            {
+                implementation = hash.GetType().FullName;
                 return BitConverter.ToString(hash.ComputeHash(payload)).Replace("-", "")
                     .ToLowerInvariant();
+            }
+        }
+
+        internal static void RequireMusicWaveHash(
+            byte[] payload, string expected, string path, Func<byte[]> readAgain)
+        {
+            var actual = Sha256Hex(payload, out var implementation);
+            if (actual == expected) return;
+
+            // Preserve the original failed buffer and fail even if either
+            // subsequent observation matches. These reads are diagnostic only.
+            string sameBuffer;
+            try { sameBuffer = Sha256Hex(payload); }
+            catch (Exception error) { sameBuffer = "error:" + error.GetType().FullName; }
+            string fresh;
+            try
+            {
+                var bytes = readAgain();
+                fresh = $"fresh_length={bytes.Length} fresh_sha256={Sha256Hex(bytes)}";
+            }
+            catch (Exception error)
+            {
+                fresh = "fresh_read_error=" + error.GetType().FullName;
+            }
+            throw new InvalidDataException(
+                $"owner audio contract failed: destination music WAVE content hash " +
+                $"path={path} expected_sha256={expected} actual_sha256={actual} " +
+                $"buffer_length={payload.Length} same_buffer_sha256={sameBuffer} " +
+                $"{fresh} hash_implementation={implementation}");
         }
 
         private static string CampaignDayPlayClass(int soundId)

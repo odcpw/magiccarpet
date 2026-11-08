@@ -60,6 +60,8 @@ namespace MagicCarpet.Native
         private readonly NativeSim.CampaignEntityPresentation[] entityPresentationBuffer = new NativeSim.CampaignEntityPresentation[1000];
         private readonly HashSet<ushort> entityPresentationSlots = new HashSet<ushort>();
         private readonly List<NativeSim.VoxelImpactChild> voxelImpactChildren = new List<NativeSim.VoxelImpactChild>();
+        private readonly NativeSim.RuntimeBuilding[] buildingBuffer = new NativeSim.RuntimeBuilding[1000];
+        private ModernBuildings.LiveBuilding[] buildingObservations = Array.Empty<ModernBuildings.LiveBuilding>();
         private NativeSim.CampaignCharacterState[] cachedCharacterStates;
         private ulong characterStateGeneration, characterStateTick;
         private readonly bool ownsHandle;
@@ -120,6 +122,42 @@ namespace MagicCarpet.Native
         internal ulong Generation => generation;
 
         internal ulong Tick => tick;
+
+        internal IReadOnlyList<ModernBuildings.LiveBuilding> BuildingPresentations(out bool changed)
+        {
+            if (ownsHandle) throw new InvalidOperationException("Live BUILD observation requires the runtime-owned campaign");
+            NativeSession.Check(NativeSim.mc_game_runtime_buildings_copy_v1(Handle, generation, tick,
+                buildingBuffer, (uint)buildingBuffer.Length, 48, out var written), "read live BUILD owners");
+            if (written > buildingBuffer.Length) throw new InvalidOperationException("BUILD count exceeds bounded buffer");
+            changed = buildingObservations.Length != written;
+            for (var i = 0; i < written; i++)
+            {
+                var row = buildingBuffer[i];
+                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 48 ||
+                    row.generation != generation || row.tick != tick || row.active > 1 || row.drawing > 1 ||
+                    row.reserved0 != 0 || row.reserved1 != 0 || row.reserved2 != 0)
+                    throw new InvalidOperationException("BUILD observation identity or layout mismatch");
+                if (changed) continue;
+                var previous = buildingObservations[i];
+                changed = previous.Slot != row.sourceSlot || previous.SlotGeneration != row.slotGeneration ||
+                    previous.BuildingIndex != row.buildingIndex || previous.Action != row.action ||
+                    previous.Drawing != (row.active != 0 && row.drawing != 0) ||
+                    previous.X != row.x || previous.Y != row.y || previous.Z != row.z;
+            }
+            if (changed)
+            {
+                var next = new ModernBuildings.LiveBuilding[written];
+                for (var i = 0; i < written; i++) {
+                    var row = buildingBuffer[i];
+                    next[i] = new ModernBuildings.LiveBuilding { Slot = row.sourceSlot,
+                        SlotGeneration = row.slotGeneration, BuildingIndex = row.buildingIndex,
+                        Action = row.action, Drawing = row.active != 0 && row.drawing != 0,
+                        X = row.x, Y = row.y, Z = row.z };
+                }
+                buildingObservations = next;
+            }
+            return buildingObservations;
+        }
 
         // Stable for a voxel world's lifetime; the outer session generation
         // may change during a pause/preferences rebind without a world reset.
@@ -549,7 +587,7 @@ namespace MagicCarpet.Native
         }
 
         internal void BeginRuntimeEffectConsumption(
-            EngineSessionTransport.CampaignSnapshotObservation snapshot)
+            EngineSessionTransport.CampaignRenderObservation snapshot)
         {
             if (ownsHandle || snapshot?.identity == null || snapshot.value == null ||
                 snapshot.identity.session_id != Handle.ToString() ||

@@ -38,11 +38,13 @@ namespace MagicCarpet.Native
         private readonly float previousFogDensity;
         private readonly FogMode previousFogMode;
         private readonly AmbientMode previousAmbientMode;
-        private EngineSessionTransport.CampaignSnapshotValue snapshot;
+        private EngineSessionTransport.CampaignRenderValue snapshot;
         private Vector3 targetPosition;
         private Quaternion targetRotation;
         private bool positioned, disposed;
         private ulong generation = ulong.MaxValue, terrainSequence = ulong.MaxValue;
+        private byte[] nativeHeightPlane, visualHeightPlane;
+        private int buildingVoxelSlot = int.MinValue, buildingLightMode = -1;
         private int snapshotCount;
         private bool reportedGeometry;
         private double presentationMilliseconds;
@@ -182,6 +184,7 @@ namespace MagicCarpet.Native
             waterReflection = new ModernWaterReflection(root.transform, waterMaterial);
             nightLighting = new ModernNightLighting(root.transform);
             waterSystem = new ModernWaterSystem(root.transform, terrain, nightLighting, landMaterial);
+            ModernEnvironmentSandbox.ApplyLighting(2, moon, skyMaterial, ModernEnvironmentSandbox.DefaultCloudCover);
             if (Voxels.VoxelModernWorld.Requested)
             {
                 voxelWorld=root.AddComponent<Voxels.VoxelModernWorld>();
@@ -193,6 +196,14 @@ namespace MagicCarpet.Native
                 buildings=new ModernBuildings(root.transform,terrain);
                 vegetation.ExcludedFootprint=buildings.ExcludesVegetation;
                 sandbox = new ModernEnvironmentSandbox(camera, terrain, waterSystem, nightLighting, moon, skyMaterial,buildings);
+            }
+            else
+            {
+                var layout = ModernBuildingLayout.LoadRequested();
+                if (layout == null) throw new InvalidOperationException("The installed Level 1 building layout is missing");
+                buildings = new ModernBuildings(root.transform, terrain, layout);
+                vegetation.ExcludedFootprint = (x, z) => buildings.ExcludesVegetation(x, z) ||
+                    (voxelWorld?.ExcludesVegetation(x, z) ?? false);
             }
             camera.gameObject.AddComponent<ModernCapture>();
             Debug.Log($"MC_MODERN_CREATED graphics={SystemInfo.graphicsDeviceName} api={SystemInfo.graphicsDeviceType}");
@@ -211,7 +222,7 @@ namespace MagicCarpet.Native
             return new Material(shader) { name = name };
         }
 
-        internal void Present(NativeCampaignSession session, EngineSessionTransport.CampaignSnapshotObservation observation, bool showMap)
+        internal void Present(NativeCampaignSession session, EngineSessionTransport.CampaignRenderObservation observation, bool showMap)
         {
             var measuredStart = ModernCapture.Measure ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             snapshot = observation.value;
@@ -239,20 +250,60 @@ namespace MagicCarpet.Native
                 worldMap.Apply(false);
             }
             var terrainStart = ModernCapture.BeginMeasurement();
-            var state = session.TerrainState();
-            if (generation != state.generation) positioned = false;
-            if (generation != state.generation || terrainSequence != state.mutationSequence)
+            var observedGeneration = session.Generation;
+            var mutationSequence = observation.terrain_mutation_sequence == null
+                ? session.TerrainState().mutationSequence
+                : ulong.Parse(observation.terrain_mutation_sequence, System.Globalization.CultureInfo.InvariantCulture);
+            if (generation != observedGeneration) positioned = false;
+            var terrainChanged = nativeHeightPlane == null || generation != observedGeneration || terrainSequence != mutationSequence;
+            if (terrainChanged) nativeHeightPlane = session.TerrainPlane(NativeSim.TerrainHeight);
+            var architectureChanged = false;
+            if (sandbox == null && buildings != null)
             {
-                var heights=session.TerrainPlane(NativeSim.TerrainHeight);
-                if(buildings!=null) heights=buildings.PrepareTerrain(heights);
-                terrain.Update(heights,
+                var live = session.BuildingPresentations(out var ownersChanged);
+                var selectedSlot = voxelWorld?.SelectedBuildingSlot ?? -1;
+                if (terrainChanged || ownersChanged || selectedSlot != buildingVoxelSlot)
+                {
+                    visualHeightPlane = buildings.Reconcile(nativeHeightPlane, live, selectedSlot, out architectureChanged);
+                    buildingVoxelSlot = selectedSlot;
+                    if (architectureChanged)
+                    {
+                        nightLighting.SetReviewWindows(buildings.WindowCenters, buildings.WindowNormals);
+                        foreach (var footprint in buildings.ChangedFootprints)
+                        {
+                            var nearest = footprint;
+                            nearest.center = new Vector3(camera.transform.position.x + ModernBuildings.WrappedDelta(footprint.center.x, camera.transform.position.x),
+                                footprint.center.y, camera.transform.position.z + ModernBuildings.WrappedDelta(footprint.center.z, camera.transform.position.z));
+                            for (var dz = -1; dz <= 1; dz++) for (var dx = -1; dx <= 1; dx++) {
+                                var copy = nearest; copy.center += new Vector3(dx * 1024, 0, dz * 1024);
+                                vegetation.InvalidateFootprint(copy);
+                            }
+                        }
+                        Debug.Log($"MC_BUILDINGS_LIVE generation={observedGeneration} tick={session.Tick} known={buildings.Count} visible={buildings.VisibleCount} voxel_slot={selectedSlot} source_cells=True");
+                    }
+                }
+            }
+            else if (terrainChanged)
+                visualHeightPlane = buildings != null ? buildings.PrepareTerrain(nativeHeightPlane) : nativeHeightPlane;
+            if (terrainChanged || architectureChanged)
+            {
+                terrain.Update(visualHeightPlane,
                     session.TerrainPlane(NativeSim.TerrainTypes), session.TerrainPlane(NativeSim.TerrainAngle),
-                    state.generation, state.tick);
-                generation = state.generation;
-                terrainSequence = state.mutationSequence;
+                    observedGeneration, session.Tick);
+                generation = observedGeneration;
+                terrainSequence = mutationSequence;
             }
             ModernCapture.EndMeasurement("modern_terrain_observe", terrainStart);
             voxelWorld?.Observe(session);
+            if (sandbox == null && buildings != null)
+            {
+                var lightMode = voxelWorld?.LightingMode ?? 2;
+                if (lightMode != buildingLightMode) {
+                    buildings.SetLighting(lightMode);
+                    nightLighting.SetWindowLighting(lightMode == 0 ? 0 : lightMode == 1 ? .45f : .8f);
+                    buildingLightMode = lightMode;
+                }
+            }
             var pose = snapshot.source_camera_pose;
             var wrapped = new Vector3(pose.x / 64f, pose.z / 64f, pose.y / 64f);
             if (positioned)
@@ -282,7 +333,7 @@ namespace MagicCarpet.Native
             ModernCapture.EndMeasurement("modern_actors_present", actorsStart);
             Ready = true;
             if (snapshotCount++ == 0)
-                Debug.Log($"MC_MODERN_LIVE generation={generation} tick={state.tick} terrain={state.terrainHash:x16} position={wrapped} native_session={session.Handle}");
+                Debug.Log($"MC_MODERN_LIVE generation={generation} tick={session.Tick} terrain_revision={terrainSequence} position={wrapped} native_session={session.Handle}");
             if (measuredStart != 0)
             {
                 presentationMilliseconds += (System.Diagnostics.Stopwatch.GetTimestamp() - measuredStart) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;

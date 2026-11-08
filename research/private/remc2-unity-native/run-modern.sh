@@ -8,6 +8,9 @@ sandbox=0
 for argument in "$@"; do
     if [ "$argument" = "-mc-environment-sandbox" ]; then sandbox=1; fi
 done
+if [ "$sandbox" = 0 ] && { [ -e "$script_dir/Builds/Presentation" ] || [ -L "$script_dir/Builds/Presentation" ]; }; then
+    exec "$script_dir/run-presentation.sh" modern "$@"
+fi
 if [ "$sandbox" = 0 ] && [ -x "$script_dir/Builds/CharactersGameplay/run-player.sh" ]; then
     modern_project="$script_dir/Builds/CharactersGameplay"
     export MC_CAMPAIGN_SAVE="${MC_CAMPAIGN_SAVE:-$script_dir/../generated/modern-character-campaign-save.json}"

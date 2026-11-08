@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sim_definition::{BoundPresentationAsset, DefinitionError, GameDefinition, SemanticId};
 use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 
+pub mod render_publication;
+
 pub const GAME_SESSION_CONTRACT: &str = "carpet-flight-game-session/v6";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>

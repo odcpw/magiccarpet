@@ -174,13 +174,10 @@ namespace MagicCarpet.Native
         }
 
         [Serializable]
-        internal sealed class CampaignSnapshotValue
+        internal class CampaignRenderValue
         {
             public string tick;
             public string effect_head;
-            public string state_hash;
-            public string terrain_hash;
-            public string effect_journal_sha256;
             public Pose player_pose;
             public Motion player_motion;
             public PlayerVitals player_vitals;
@@ -196,6 +193,30 @@ namespace MagicCarpet.Native
             public byte objective_textbox_ticks;
             public bool exit_sequence_active;
             public PresentationEntity[] presentation_entities;
+        }
+
+        [Serializable]
+        internal sealed class CampaignSnapshotValue : CampaignRenderValue
+        {
+            public string state_hash;
+            public string terrain_hash;
+            public string effect_journal_sha256;
+        }
+
+        [Serializable]
+        internal sealed class CampaignRenderObservation
+        {
+            public string contract;
+            public Identity identity;
+            public string terrain_mutation_sequence;
+            public CampaignRenderValue value;
+
+            // A complete snapshot already contains these exact presentation
+            // fields. Retain their typed view for startup and diagnostic paths.
+            public static implicit operator CampaignRenderObservation(CampaignSnapshotObservation snapshot)
+                => snapshot == null ? null : new CampaignRenderObservation {
+                    identity = snapshot.identity, value = snapshot.value
+                };
         }
 
         [Serializable]
@@ -711,7 +732,7 @@ namespace MagicCarpet.Native
                     ParseCounter(identity.tick, "tick"),
                     bytes,
                     checked((uint)bytes.Length)),
-                "step neutral engine session"); }
+                "step neutral engine session", commandSubmission: true); }
             finally { ModernCapture.EndMeasurement("engine_step_native", stepStart); }
         }
 
@@ -947,6 +968,25 @@ namespace MagicCarpet.Native
             return contract;
         }
 
+        internal static CampaignRenderObservation CampaignRenderObservationForHandle(ulong handle)
+        {
+            var result = ReadJson<CampaignRenderObservation>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_runtime_render_observation_json_v1(handle, buffer, capacity, out length),
+                "read campaign render observation");
+            ValidateCampaignRenderObservation(result);
+            return result;
+        }
+
+        internal static void ValidateCampaignRenderObservation(CampaignRenderObservation result)
+        {
+            if (result == null || result.contract != "carpet-flight-campaign-render-observation/v1")
+                throw new InvalidOperationException("unsupported campaign render observation contract");
+            ValidateIdentity(result.identity);
+            ParseCounter(result.terrain_mutation_sequence, "terrain_mutation_sequence");
+            ValidateCampaignRenderValue(result.value, result.identity);
+        }
+
         internal static CampaignSnapshotObservation CampaignSnapshotForHandle(ulong handle)
         {
             var result = ReadJson<CampaignSnapshotObservation>(
@@ -1056,6 +1096,22 @@ namespace MagicCarpet.Native
 
         internal static void ValidateCampaignSnapshot(CampaignSnapshotValue value, Identity identity)
         {
+            ValidateCampaignRenderValue(value, identity);
+            ParseHash(value.state_hash, "state_hash");
+            ParseHash(value.terrain_hash, "terrain_hash");
+            if (value.effect_journal_sha256 == null ||
+                value.effect_journal_sha256.Length != 64 ||
+                value.effect_journal_sha256.Any(character =>
+                    (character < '0' || character > '9') &&
+                    (character < 'a' || character > 'f')))
+            {
+                throw new InvalidOperationException(
+                    "effect_journal_sha256 is not a lowercase SHA-256 hex receipt");
+            }
+        }
+
+        internal static void ValidateCampaignRenderValue(CampaignRenderValue value, Identity identity)
+        {
             if (value == null || value.player_pose == null || value.player_motion == null ||
                 value.source_camera_pose == null ||
                 value.player_vitals == null ||
@@ -1084,8 +1140,6 @@ namespace MagicCarpet.Native
                     "neutral campaign objective progress is invalid");
             }
             ParseCounter(value.effect_head, "effect_head");
-            ParseHash(value.state_hash, "state_hash");
-            ParseHash(value.terrain_hash, "terrain_hash");
             var spellIds = new System.Collections.Generic.HashSet<string>();
             var selectedSpells = 0;
             foreach (var spell in value.player_spells)
@@ -1120,15 +1174,6 @@ namespace MagicCarpet.Native
                         "neutral presentation entity is incomplete");
                 }
                 ParseCounter(entity.actor, "presentation_actor");
-            }
-            if (value.effect_journal_sha256 == null ||
-                value.effect_journal_sha256.Length != 64 ||
-                value.effect_journal_sha256.Any(character =>
-                    (character < '0' || character > '9') &&
-                    (character < 'a' || character > 'f')))
-            {
-                throw new InvalidOperationException(
-                    "effect_journal_sha256 is not a lowercase SHA-256 hex receipt");
             }
         }
 
@@ -1201,20 +1246,24 @@ namespace MagicCarpet.Native
         internal sealed class CommandException : InvalidOperationException
         {
             internal int Status { get; }
+            internal bool CommandSubmission { get; }
 
-            internal CommandException(string operation, int status, int expected, string detail)
+            internal CommandException(string operation, int status, int expected, string detail,
+                bool commandSubmission = false)
                 : base($"{operation} failed: status={status}, expected={expected}: {detail}")
             {
                 Status = status;
+                CommandSubmission = commandSubmission;
             }
         }
 
-        private static void Check(int status, string operation, int expected = NativeSim.Ok)
+        internal static void Check(int status, string operation, int expected = NativeSim.Ok,
+            bool commandSubmission = false)
         {
             if (status != expected)
             {
                 var detail = NativeSession.ReadLastError();
-                throw new CommandException(operation, status, expected, detail);
+                throw new CommandException(operation, status, expected, detail, commandSubmission);
             }
         }
     }

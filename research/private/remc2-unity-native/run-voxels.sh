@@ -1,6 +1,14 @@
 #!/bin/sh
 set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+case "${1:-}" in
+    --classic|--connected|--optimized) ;;
+    *)
+        if [ -e "$script_dir/Builds/Presentation" ] || [ -L "$script_dir/Builds/Presentation" ]; then
+            exec "$script_dir/run-presentation.sh" voxel "$@"
+        fi
+        ;;
+esac
 if [ "${1:-}" = "--classic" ]; then
     shift
     exec "$script_dir/Builds/Voxels/MagicCarpetVoxels.x86_64" -force-vulkan -screen-fullscreen 0 "$@"

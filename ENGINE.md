@@ -1,5 +1,13 @@
 # Flying-carpet engine and MC2 source map
 
+The [shared presentation boundary](research/private/remc2-unity-native/PRESENTATION.md)
+uses a versioned binary publication with reusable caller buffers. Its encoder is
+in sim-session/src/render_publication.rs, its native adapter in
+sim-capi/src/native_v2/render_observation.rs, and its C#/TypeScript readers in
+CampaignRenderTransport.cs and web/src/render-publication.ts. Committed state is
+bound to a session generation and tick; ordered event journals retain their own
+cursor and lifecycle contracts.
+
 MC2 is the first complete game delivered by this engine. Finish its complete
 single-player game first; deliver Rust-to-Rust multiplayer separately. Build the
 engine so agents can readily change assets, maps, items, rules and behavior.

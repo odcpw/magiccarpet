@@ -20,8 +20,10 @@ namespace MagicCarpet.Native
         {
             public int source_slot,build_index;
             public float x,z,base_height,width,depth,height;
+            public SourcePosition source_entity_position;
             public Cell[] cells;
         }
+        [Serializable] internal sealed class SourcePosition { public int x,y,z; }
         [Serializable] internal sealed class Cell { public int index,expected,replacement; }
 
         internal static ModernBuildingLayout LoadRequested()
@@ -72,10 +74,22 @@ namespace MagicCarpet.Native
 
         internal byte[] VisualHeights(byte[] original)
         {
-            ValidateProfiles();
             if(original==null||original.Length!=65536||provenance==null
                 ||Digest(original)!=provenance.source_height_plane_sha256)
                 throw new InvalidDataException("Building layout does not match the frozen terrain snapshot");
+            var changes=ValidateCells(original, true);
+            var visual=(byte[])original.Clone();
+            foreach(var pair in changes) visual[pair.Key]=(byte)pair.Value;
+            Debug.Log($"MC_BUILDING_VISUAL_TERRAIN buildings={buildings.Length} replaced_roof_cells={changes.Count} original_sha256={provenance.source_height_plane_sha256} simulation_changed=False");
+            return visual;
+        }
+
+        // Validate the descriptor independently from live terrain. The
+        // frozen sandbox still additionally requires the full plane digest.
+        internal Dictionary<int,int> ValidateCells(byte[] original, bool requireOriginal)
+        {
+            ValidateProfiles();
+            if(original==null||original.Length!=65536) throw new InvalidDataException("Invalid terrain height plane");
             var changes=new Dictionary<int,int>();var slots=new HashSet<int>();
             if(buildings==null||buildings.Length==0||buildings.Length>128) throw new InvalidDataException("Invalid building count");
             foreach(var entry in buildings)
@@ -99,11 +113,11 @@ namespace MagicCarpet.Native
                 foreach(var cell in entry.cells)
                 {
                     if(cell==null||!ownCells.Add(cell.index)||cell.index<0||cell.index>=original.Length||cell.expected>255
-                        ||cell.replacement<0||cell.replacement>=cell.expected||original[cell.index]!=cell.expected
+                        ||cell.replacement<0||cell.replacement>=cell.expected||(requireOriginal&&original[cell.index]!=cell.expected)
                         ||Mathf.Abs(cell.replacement*.5f-entry.base_height)>.001f
                         ||Mathf.Abs(ModernBuildings.WrappedDelta((cell.index%256)*4,entry.x))>entry.width*.5f
                         ||Mathf.Abs(ModernBuildings.WrappedDelta((cell.index/256)*4,entry.z))>entry.depth*.5f
-                        ||(changes.TryGetValue(cell.index,out var prior)&&prior!=cell.replacement))
+                        ||changes.ContainsKey(cell.index))
                         throw new InvalidDataException("Building stamp byte mismatch or conflicting replacement");
                     var px=(WrappedSample(cell.index%256,entry.x)+entry.width*.5f)/4;
                     var pz=(WrappedSample(cell.index/256,entry.z)+entry.depth*.5f)/4;
@@ -114,12 +128,7 @@ namespace MagicCarpet.Native
                     changes[cell.index]=cell.replacement;
                 }
             }
-            // Validate the entire description before touching even the private
-            // copy. Original Rust terrain bytes, topology and water stay intact.
-            var visual=(byte[])original.Clone();
-            foreach(var pair in changes) visual[pair.Key]=(byte)pair.Value;
-            Debug.Log($"MC_BUILDING_VISUAL_TERRAIN buildings={buildings.Length} replaced_roof_cells={changes.Count} original_sha256={provenance.source_height_plane_sha256} simulation_changed=False");
-            return visual;
+            return changes;
         }
         private static float WrappedSample(int sample,float center) => ModernBuildings.WrappedDelta(sample*4,center);
     }

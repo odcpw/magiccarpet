@@ -543,7 +543,7 @@ namespace MagicCarpet.Native
         private bool gameRuntimeStartupReady;
         private readonly CampaignTransitionPresenter.LoadingGate
             gameRuntimeLoadingPresentationGate = new();
-        private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
+        private EngineSessionTransport.CampaignRenderObservation gameRuntimeCampaignSnapshot;
         private EngineSessionTransport.ParticipantNotificationsObservation gameRuntimeParticipantNotifications;
         private string gameRuntimeNoticeObservationRuntimeGeneration;
         private int gameRuntimeNoticeFrame = -1;
@@ -1063,9 +1063,9 @@ namespace MagicCarpet.Native
                 if (!gameRuntimeMode || !gameRuntimeStartupReady ||
                     !string.IsNullOrEmpty(fatalError) || session == null ||
                     !session.UsesGameRuntimeContract) return false;
-                // One fresh observation for this synchronous readiness check.
-                // Nothing in the remaining expression mutates the runtime.
-                var mode = session.GameRuntimeIdentity().mode;
+                // Read readiness of the last completed campaign view; the
+                // owning transport refreshes metadata after mutations.
+                var mode = session.ObservedCampaignIdentity().mode;
                 return (mode == GameRuntimeTransport.CampaignMode ||
                     mode == GameRuntimeTransport.LoadingMode &&
                     gameRuntimeTransitionPresenter?.IsVisible == true ||
@@ -1154,7 +1154,11 @@ namespace MagicCarpet.Native
                 "game runtime production owner is not initialized");
 
         internal EngineSessionTransport.CampaignSnapshotObservation
-            GameRuntimeProductionCampaignSnapshot => gameRuntimeCampaignSnapshot;
+            GameRuntimeProductionCampaignSnapshot => gameRuntimeCampaignSnapshot == null
+                ? null : session.GameRuntimeCampaignSnapshot();
+
+        internal EngineSessionTransport.CampaignRenderObservation
+            GameRuntimeProductionCampaignRenderObservation => gameRuntimeCampaignSnapshot;
 
         internal GameRuntimeTransport.CompletionTransitionReceipt
             GameRuntimeProductionCompletionTransitionReceipt =>
@@ -2593,7 +2597,7 @@ namespace MagicCarpet.Native
                 {
                     if (playerPreferences != null && session != null)
                     {
-                        playerPreferences.Synchronize(session.GameRuntimeIdentity().player_preferences);
+                        playerPreferences.Synchronize(session.ObservedCampaignIdentity().player_preferences);
                         steeringRoll = playerPreferences.SteeringRoll;
                         steeringPitch = playerPreferences.SteeringPitch;
                         ownerAudio?.ApplyPreferences(playerPreferences.Current.preferences);
@@ -2778,7 +2782,7 @@ namespace MagicCarpet.Native
                 FreezeGameRuntimeInput();
                 return;
             }
-            var identity = session.GameRuntimeIdentity();
+            var identity = session.ObservedCampaignIdentity();
             if (identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 FreezeGameRuntimeInput();
@@ -2804,7 +2808,7 @@ namespace MagicCarpet.Native
             }
             if (identity.mode == GameRuntimeTransport.PausedMode)
             {
-                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedFrame(
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignPausedRenderFrame(
                     TakeGameRuntimeElapsedCentiseconds(), Input.GetKey(KeyCode.O));
                 DrainGameRuntimeSemanticEvents();
                 if (level2Mode || level3Mode || gameRuntimeNightSurface != null || modernEnvironment != null ||
@@ -2812,7 +2816,7 @@ namespace MagicCarpet.Native
                 {
                     // The source still draws while paused, including its
                     // objective palette flash and fade, without flight steps.
-                    var pausedIdentity = session.GameRuntimeIdentity();
+                    var pausedIdentity = session.ObservedCampaignIdentity();
                     if (level2Mode)
                         UpdateGameRuntimeLevel2Presentation(pausedIdentity, gameRuntimeCampaignSnapshot);
                     else if (level3Mode)
@@ -2860,7 +2864,7 @@ namespace MagicCarpet.Native
             var modernStepStart = modernEnvironment?.Ready == true ? ModernCapture.BeginMeasurement() : 0;
             try
             {
-                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderStep(
                     appliedRoll, appliedPitch, unchecked((sbyte)flags), 0, 0, selectSpell,
                     preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds,
                     gameRuntimeSpellAssignmentRequested, Input.GetKey(KeyCode.O), gameRuntimeRemoveCastleStageRequested,
@@ -2875,7 +2879,7 @@ namespace MagicCarpet.Native
                 }
             }
             catch (EngineSessionTransport.CommandException exception)
-                when ((selectSpell != null || gameRuntimeSpellAssignmentRequested != null ||
+                when (exception.CommandSubmission && (selectSpell != null || gameRuntimeSpellAssignmentRequested != null ||
                     gameRuntimeSpellMarkRequested != null || gameRuntimeSpellCycleRequested != null) && exception.Status == NativeSim.ValidationFailed)
             {
                 // Rust rejects an unacquired selection before changing the
@@ -2883,7 +2887,7 @@ namespace MagicCarpet.Native
                 // selected cast so an unavailable key cannot cast the old spell.
                 gameRuntimeSpellInputStatus = "That spell or tier is not available.";
                 gameRuntimeSpellInputStatusUntil = Time.unscaledTime + 3f;
-                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignStep(
+                gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderStep(
                     appliedRoll, appliedPitch, unchecked((sbyte)(flags & ~0x40)), 0, 0, null,
                     preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds,
                     showObjective: Input.GetKey(KeyCode.O), removeCastleStage: gameRuntimeRemoveCastleStageRequested,
@@ -2929,7 +2933,7 @@ namespace MagicCarpet.Native
             gameRuntimeSpellAssignmentRequested = null;
             gameRuntimeSpellMarkRequested = null;
             gameRuntimeSpellCycleRequested = null;
-            var afterStepIdentity = session.GameRuntimeIdentity();
+            var afterStepIdentity = session.ObservedCampaignIdentity();
             DrainGameRuntimeSemanticEvents();
             if (level2Mode)
             {
@@ -3013,7 +3017,7 @@ namespace MagicCarpet.Native
                 playerPreferences?.IsOpen == true);
             if (campaignSession != null && gameRuntimeManaHint != null)
             {
-                var identity = session.GameRuntimeIdentity();
+                var identity = session.ObservedCampaignIdentity();
                 AdvanceGameRuntimeHelpHint(campaignSession.DayHudState(campaignSession.Tick),
                     identity.player_preferences.preferences.show_help,
                     identity.mode == GameRuntimeTransport.PausedMode,
@@ -3023,7 +3027,7 @@ namespace MagicCarpet.Native
         }
 
         private void InitializeGameRuntimeAudioEffects(
-            EngineSessionTransport.CampaignSnapshotObservation observation, bool preserveSpeech = false)
+            EngineSessionTransport.CampaignRenderObservation observation, bool preserveSpeech = false)
         {
             if (campaignSession == null || string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath) ||
                 ownerAssetCache == null)
@@ -3077,7 +3081,7 @@ namespace MagicCarpet.Native
         private void RebindGameRuntimeAudioGeneration()
         {
             if (ownerAudio == null || session == null) return;
-            var identity = session.GameRuntimeIdentity();
+            var identity = session.ObservedCampaignIdentity();
             if (identity.mode != GameRuntimeTransport.PlayingMode &&
                 identity.mode != GameRuntimeTransport.PausedMode) return;
             var generation = ulong.Parse(identity.session.generation);
@@ -3135,7 +3139,7 @@ namespace MagicCarpet.Native
         private void UpdateGameRuntimeBriefing()
         {
             if (session == null || gameRuntimeMenu == null) return;
-            var identity = session.GameRuntimeIdentity();
+            var identity = session.ObservedCampaignIdentity();
             var menu = identity.campaign_menu;
             if (identity.mode == GameRuntimeTransport.CampaignMode)
             {
@@ -3172,7 +3176,7 @@ namespace MagicCarpet.Native
         private void ConsumeGameRuntimeAudioEffects()
         {
             if (campaignSession == null || string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath)) return;
-            campaignSession.SynchronizeGameRuntimeIdentity(session.GameRuntimeIdentity());
+            campaignSession.SynchronizeGameRuntimeIdentity(session.ObservedCampaignIdentity());
             RebindGameRuntimeAudioGeneration();
             var pooledAudio = new List<(NativeSim.NativeEvent nativeEvent,
                 NativeSim.AudioCommand command)>();
@@ -3517,7 +3521,7 @@ namespace MagicCarpet.Native
                     playerPreferences?.ToggleFullscreen();
                 if (!AutomatedInput && !gameRuntimeAbandonConfirmationOpen &&
                     !gameRuntimeSourceMenus.HasPendingAction &&
-                    session?.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode)
+                    session?.ObservedCampaignIdentity().mode == GameRuntimeTransport.PlayingMode)
                 {
                     var menus = gameRuntimeSourceMenus.Step(
                         playerPreferences?.Pressed(4) ?? Input.GetKeyDown(KeyCode.Return),
@@ -3577,7 +3581,7 @@ namespace MagicCarpet.Native
                     return;
                 }
                 if (session != null &&
-                    session.GameRuntimeIdentity().mode == GameRuntimeTransport.TitleMode)
+                    session.ObservedCampaignIdentity().mode == GameRuntimeTransport.TitleMode)
                 {
                     var input = Input.anyKey || Input.GetMouseButton(0) || Input.GetMouseButton(1);
                     if (frontendMedia?.Visible != true)
@@ -3593,7 +3597,7 @@ namespace MagicCarpet.Native
                         return;
                     }
                 }
-                if (gameRuntimeStartupReady && session?.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode &&
+                if (gameRuntimeStartupReady && session?.ObservedCampaignIdentity().mode == GameRuntimeTransport.PlayingMode &&
                     TryFinishGameRuntimeMission()) return;
                 if (gameRuntimeMenuAction != CampaignMenuPresenter.Action.None)
                 {
@@ -3611,7 +3615,7 @@ namespace MagicCarpet.Native
                 }
                 if (!AutomatedInput)
                 {
-                    var runtimeIdentity = session.GameRuntimeIdentity();
+                    var runtimeIdentity = session.ObservedCampaignIdentity();
                     if (runtimeIdentity.mode == GameRuntimeTransport.TitleMode)
                     {
                         gameRuntimeMovementFlags = 0;
@@ -3650,7 +3654,7 @@ namespace MagicCarpet.Native
                     ApplyGameRuntimeReplaySaveInput(Input.GetKeyDown(KeyCode.F5));
                     if (runtimeIdentity.mode == GameRuntimeTransport.PlayingMode && Input.GetKeyDown(KeyCode.L))
                         gameRuntimeRemoveCastleStageRequested = true;
-                    if (session.GameRuntimeIdentity().mode ==
+                    if (session.ObservedCampaignIdentity().mode ==
                             GameRuntimeTransport.PlayingMode &&
                         Cursor.lockState == CursorLockMode.Locked)
                     {
@@ -9586,7 +9590,7 @@ namespace MagicCarpet.Native
         internal void ApplyGameRuntimeHeldSpellInput(bool leftHeld, bool rightHeld)
         {
             var playing = GameRuntimeProductionStartupReady &&
-                session.GameRuntimeIdentity().mode == GameRuntimeTransport.PlayingMode;
+                session.ObservedCampaignIdentity().mode == GameRuntimeTransport.PlayingMode;
             // A hold spans every fixed step, including several steps per render
             // frame. The latches also retain a brief click until its first step.
             fireRequested |= playing && leftHeld && !gameRuntimeLeftSpellHeld;
@@ -9604,7 +9608,7 @@ namespace MagicCarpet.Native
             Require(
                 GameRuntimeProductionStartupReady,
                 "game runtime input requires a validated production owner");
-            var identity = session.GameRuntimeIdentity();
+            var identity = session.ObservedCampaignIdentity();
             if (identity.mode == GameRuntimeTransport.LoadingMode || identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 FreezeGameRuntimeInput();
@@ -9692,7 +9696,7 @@ namespace MagicCarpet.Native
             Require(
                 GameRuntimeProductionStartupReady,
                 "game runtime movement input requires a validated production owner");
-            var identity = session.GameRuntimeIdentity();
+            var identity = session.ObservedCampaignIdentity();
             if (identity.mode == GameRuntimeTransport.LoadingMode || identity.mode == GameRuntimeTransport.CampaignMode)
             {
                 FreezeGameRuntimeInput();
@@ -9855,7 +9859,7 @@ namespace MagicCarpet.Native
             // remc2 InGameLoop_47320 tests the persistent exit-success byte
             // before dispatching another gameplay frame. Rust decides whether
             // this boundary is ready; Unity only applies its returned mode.
-            var current = session.GameRuntimeIdentity().session;
+            var current = session.ObservedCampaignIdentity().session;
             var retained = gameRuntimeCampaignSnapshot?.identity;
             // Every admitted step/reset publishes its completed observation.
             // Reuse it only for the exact current session; a new generation,
@@ -10299,7 +10303,7 @@ namespace MagicCarpet.Native
             // OnGUI may precede the first briefing Update on direct NewGame
             // or map restore. Bind audio before the first portal draw, while
             // leaving cold Title's startup=true media initialization intact.
-            if (session?.GameRuntimeIdentity().mode == GameRuntimeTransport.CampaignMode)
+            if (session?.ObservedCampaignIdentity().mode == GameRuntimeTransport.CampaignMode)
             {
                 EnsureGameRuntimeFrontendMedia(false);
                 frontendMedia.StartMapMusic();
@@ -10574,7 +10578,8 @@ namespace MagicCarpet.Native
             var applied = GameRuntimeTransport.PreferencesCommand(session.Handle, before, json);
             // Startup/replay preparation can temporarily pause a live owner.
             // Refresh the borrowed generation before its first native consumer.
-            campaignSession?.SynchronizeGameRuntimeIdentity(session.GameRuntimeIdentity());
+            var after = session.GameRuntimeIdentity();
+            campaignSession?.SynchronizeGameRuntimeIdentity(after);
             RebindGameRuntimeAudioGeneration();
             if (before.player_preferences.preferences.sound_enabled != applied.preferences.sound_enabled)
             {
@@ -10611,7 +10616,7 @@ namespace MagicCarpet.Native
 
         private void ComposeGameRuntimeLevel2Presentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             var selection = NativeSim.CampaignSelection.Level2Day();
             var resource = ResolveGameRuntimePresentationResource(selection);
@@ -10647,7 +10652,7 @@ namespace MagicCarpet.Native
 
         private void ComposeGameRuntimeNightPresentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             if (identity.active_runtime_flow.bound_level_id != GameRuntimeLevelOneId) return;
             var selection = NativeSim.CampaignSelection.Create(1, 0, 1);
@@ -10684,7 +10689,7 @@ namespace MagicCarpet.Native
 
         private void UpdateGameRuntimeNightPresentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             if (modernEnvironment != null)
             {
@@ -10708,7 +10713,7 @@ namespace MagicCarpet.Native
 
         private void ComposeGameRuntimeLevel3Presentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             var cave = identity.active_runtime_flow.bound_level_id == GameRuntimeLevelFourId;
             var selection = cave ? NativeSim.CampaignSelection.Create(4, 3, 2) :
@@ -10746,7 +10751,7 @@ namespace MagicCarpet.Native
 
         private void ComposeGameRuntimeEnvironmentPresentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation,
+            EngineSessionTransport.CampaignRenderObservation observation,
             GameRuntimeTransport.LoadingPresentationBinding binding)
         {
             var source = binding?.source_selection;
@@ -10835,7 +10840,7 @@ namespace MagicCarpet.Native
 
         private void UpdateGameRuntimeLevel3Presentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             Require(
                 level3Mode && level3StartupReady && campaignSession != null &&
@@ -10858,7 +10863,7 @@ namespace MagicCarpet.Native
 
         private void UpdateGameRuntimeSecretPresentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             Require(gameRuntimeSecretSurface != null && campaignSession != null &&
                 observation?.identity != null && observation.value != null,
@@ -10973,7 +10978,7 @@ namespace MagicCarpet.Native
 
         private void UpdateGameRuntimeLevel2Presentation(
             GameRuntimeTransport.Identity identity,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             Require(
                 level2Mode && level2StartupReady && campaignSession != null &&
@@ -14191,7 +14196,7 @@ namespace MagicCarpet.Native
                 return "CARPET FLIGHT — RUST GAME RUNTIME\n" +
                     "waiting for authoritative runtime identity";
             }
-            var identity = session.GameRuntimeIdentity();
+            var identity = session.ObservedCampaignIdentity();
             if (identity.mode == GameRuntimeTransport.TitleMode)
             {
                 return "CARPET FLIGHT — RUST GAME RUNTIME · TITLE\n" +
@@ -14252,7 +14257,7 @@ namespace MagicCarpet.Native
             {
                 return null;
             }
-            return (observedMode ?? session.GameRuntimeIdentity().mode) == GameRuntimeTransport.PausedMode
+            return (observedMode ?? session.ObservedCampaignIdentity().mode) == GameRuntimeTransport.PausedMode
                 ? "PAUSED\nP resume \u00b7 Escape close"
                 : null;
         }
@@ -14518,7 +14523,7 @@ namespace MagicCarpet.Native
             {
                 // Reuse only within this GUI callback. A menu that can change
                 // preferences returns below; no identity survives this call.
-                guiIdentity = session.GameRuntimeIdentity();
+                guiIdentity = session.ObservedCampaignIdentity();
                 var mode = guiIdentity.mode;
                 if (mode == GameRuntimeTransport.LoadingMode) return;
                 if (mode == GameRuntimeTransport.TitleMode || mode == GameRuntimeTransport.PausedMode || mode == GameRuntimeTransport.CampaignMode)
@@ -15269,7 +15274,7 @@ namespace MagicCarpet.Native
 
         private void ConfigureGameRuntimeFireballPresentation(
             EngineSessionTransport.PresentationAssetObservation asset,
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             DestroyGameRuntimeFireballPresentation();
             var cache = new SemanticPresentationAssetCache();
@@ -15330,7 +15335,7 @@ namespace MagicCarpet.Native
         }
 
         private void UpdateGameRuntimeFireballPresentation(
-            EngineSessionTransport.CampaignSnapshotObservation observation)
+            EngineSessionTransport.CampaignRenderObservation observation)
         {
             Require(
                 observation?.value?.player_pose != null &&

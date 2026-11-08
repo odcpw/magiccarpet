@@ -168,7 +168,7 @@ namespace MagicCarpet.Native
         }
 
         internal EngineSessionTransport.SpellAssignment Draw(
-            EngineSessionTransport.CampaignSnapshotValue snapshot,
+            EngineSessionTransport.CampaignRenderValue snapshot,
             Func<int, Texture2D> bitmap,
             Func<int, Vector2Int> size,
             bool markHeld,

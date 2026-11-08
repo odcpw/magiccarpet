@@ -263,6 +263,11 @@ pub struct PreferenceStore {
 }
 
 impl PreferenceStore {
+    /// Borrow the authoritative name without materializing a preferences snapshot.
+    pub(super) fn player_name(&self) -> &str {
+        &self.current.player_name
+    }
+
     fn show_foreign_objective_text(&self) -> bool {
         if !self.current.auto_show_objectives_for_foreign_languages {
             return false;

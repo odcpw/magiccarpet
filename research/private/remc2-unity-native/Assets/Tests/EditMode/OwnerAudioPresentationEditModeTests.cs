@@ -33,6 +33,40 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/mc-paj2-source-secret-34-campaign-package");
 
         [Test]
+        public void MusicWaveHashFailureReportsOriginalAndFreshBytesWithoutAcceptingReread()
+        {
+            var original = System.Text.Encoding.ASCII.GetBytes("abc");
+            var expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+            var reads = 0;
+            OwnerAudioPresentation.RequireMusicWaveHash(original, expected, "/cache/music.wav",
+                () => { reads++; return original; });
+            Assert.That(reads, Is.Zero, "valid payload never triggers diagnostic reread");
+
+            var error = Assert.Throws<InvalidDataException>(() =>
+                OwnerAudioPresentation.RequireMusicWaveHash(
+                    System.Text.Encoding.ASCII.GetBytes("bad"), expected, "/cache/music.wav",
+                    () => { reads++; return original; }));
+            Assert.That(reads, Is.EqualTo(1));
+            Assert.That(error.Message, Does.Contain("path=/cache/music.wav"));
+            Assert.That(error.Message, Does.Contain("expected_sha256=" + expected));
+            Assert.That(error.Message, Does.Contain("actual_sha256=2f05d4b689d270cafb02285f35f44866f7dc8a2d368a3f9d1124373eeab31fb1"));
+            Assert.That(error.Message, Does.Contain("buffer_length=3"));
+            Assert.That(error.Message, Does.Contain("same_buffer_sha256=2f05d4b689d270cafb02285f35f44866f7dc8a2d368a3f9d1124373eeab31fb1"));
+            Assert.That(error.Message, Does.Contain("fresh_length=3 fresh_sha256=" + expected));
+            Assert.That(error.Message, Does.Contain("hash_implementation=System.Security.Cryptography."));
+        }
+
+        [Test]
+        public void MusicWaveHashFailureRemainsFailureWhenDiagnosticReadFails()
+        {
+            var error = Assert.Throws<InvalidDataException>(() =>
+                OwnerAudioPresentation.RequireMusicWaveHash(new byte[] { 1 }, "unexpected",
+                    "/cache/music.wav", () => throw new IOException("read failed")));
+            Assert.That(error.Message, Does.Contain("owner audio contract failed: destination music WAVE content hash"));
+            Assert.That(error.Message, Does.Contain("fresh_read_error=System.IO.IOException"));
+        }
+
+        [Test]
         public void AudioReplacementKeepsPreviousPresenterWhenDestinationFails()
         {
             var cache = OwnerAssetCache.OpenAndValidateEnvironment(

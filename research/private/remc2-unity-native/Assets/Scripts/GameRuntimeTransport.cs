@@ -544,6 +544,9 @@ namespace MagicCarpet.Native
         internal EngineSessionTransport.Contract NegotiatedSessionContract { get; }
 
         internal Identity Current { get; private set; }
+        private readonly CampaignRenderTransport renderTransport = new();
+        private static readonly bool JsonRenderObservations =
+            Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-render-json") >= 0;
 
         internal GameRuntimeTransport()
         {
@@ -583,15 +586,17 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal Identity IdentitySnapshot()
+        internal Identity IdentitySnapshot([System.Runtime.CompilerServices.CallerMemberName] string caller = null)
         {
             var handle = RequireHandle();
-            Current = ReadIdentity(handle);
+            Current = ReadIdentity(handle, caller);
             return Current;
         }
 
-        internal static Identity ReadIdentity(ulong handle)
+        internal static Identity ReadIdentity(ulong handle,
+            [System.Runtime.CompilerServices.CallerMemberName] string caller = null)
         {
+            ModernCapture.CountIdentityRead(caller);
             var nativeStart = ModernCapture.BeginMeasurement();
             var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
@@ -761,10 +766,14 @@ namespace MagicCarpet.Native
             RequireSessionMode(allowPaused: false, "finish mission boundary");
             var before = Current;
             var generation = ParseCounter(before.generation, "generation");
-            Check(NativeSim.mc_game_runtime_finish_mission_if_ready_v1(RequireHandle(), generation,
-                ParseCounter(before.session.generation, "session_generation"), ParseCounter(before.session.tick, "tick")), "finish mission boundary");
+            Check(NativeSim.mc_game_runtime_finish_mission_if_ready_result_v1(RequireHandle(), generation,
+                ParseCounter(before.session.generation, "session_generation"), ParseCounter(before.session.tick, "tick"),
+                out var changed), "finish mission boundary");
+            if (changed == 0) return null;
+            if (changed != 1) throw new InvalidDataException("Invalid mission boundary transition flag");
             var after = IdentitySnapshot();
-            if (SameIdentity(before, after)) return null;
+            if (SameIdentity(before, after))
+                throw new InvalidDataException("Mission boundary reported a transition without changing identity");
             var maximumLength = NegotiatedContract.limits.maximum_output_json_bytes;
             var bytes = ReadBytes(
                 (IntPtr buffer, uint capacity, out uint length) =>
@@ -888,6 +897,12 @@ namespace MagicCarpet.Native
 
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignPausedFrame(uint elapsedCentiseconds = 0, bool showObjective = false)
         {
+            CampaignPausedRenderFrame(elapsedCentiseconds, showObjective);
+            return CampaignSnapshot();
+        }
+
+        internal EngineSessionTransport.CampaignRenderObservation CampaignPausedRenderFrame(uint elapsedCentiseconds = 0, bool showObjective = false)
+        {
             RequireSessionMode(allowPaused: true, "campaign paused frame");
             if (Current.mode != PausedMode)
             {
@@ -902,6 +917,8 @@ namespace MagicCarpet.Native
                     ParseCounter(before.session.generation, "session_generation"),
                     ParseCounter(before.session.tick, "tick"), elapsedCentiseconds, showObjective ? (byte)1 : (byte)0),
                 "service game runtime paused frame");
+            if (!JsonRenderObservations)
+                return ReadRenderPublication(before, ParseCounter(before.session.tick, "tick")).Observation;
             var identity = IdentitySnapshot();
             if (identity.mode != PausedMode ||
                 identity.generation != before.generation ||
@@ -914,7 +931,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "paused frame mutated the runtime or gameplay session identity");
             }
-            return CampaignSnapshot();
+            return JsonRenderObservation();
         }
 
         internal Identity Close() => Close(out _);
@@ -973,6 +990,55 @@ namespace MagicCarpet.Native
                 EngineSessionTransport.CampaignSnapshotForHandle(RequireHandle()));
         }
 
+        internal EngineSessionTransport.CampaignRenderObservation RenderObservation()
+        {
+            RequireSessionMode(allowPaused: true, "campaign render observation");
+            if (!JsonRenderObservations)
+                return ReadRenderPublication(Current, ParseCounter(Current.session.tick, "tick")).Observation;
+            return JsonRenderObservation();
+        }
+
+        private EngineSessionTransport.CampaignRenderObservation JsonRenderObservation()
+        {
+            var observation = EngineSessionTransport.CampaignRenderObservationForHandle(RequireHandle());
+            if (!PreservesSessionBinding(Current.session, observation.identity) ||
+                observation.identity.generation != Current.session.generation ||
+                observation.identity.tick != Current.session.tick)
+                throw new InvalidOperationException("campaign render observation is not identity-bound");
+            return observation;
+        }
+
+        private CampaignRenderTransport.Publication ReadRenderPublication(Identity before, ulong tick)
+        {
+            var publication = renderTransport.Read(RequireHandle(),
+                ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"), tick);
+            var observed = publication.Observation.identity;
+            if (publication.RuntimeId != ParseCounter(before.runtime_id, "runtime_id") ||
+                publication.RuntimeGeneration != ParseCounter(before.generation, "generation") ||
+                publication.Mode != before.mode ||
+                !PreservesSessionBinding(before.session, observed) ||
+                observed.generation != before.session.generation ||
+                ParseCounter(observed.tick, "tick") != tick)
+                throw new InvalidDataException("Render publication changed its bound runtime or session");
+            return publication;
+        }
+
+        private void PublishCampaignIdentity(Identity before, EngineSessionTransport.Identity sessionIdentity)
+        {
+            // Ordinary steps change the committed session tick. Other metadata
+            // is changed only by explicit guarded control operations, which
+            // retain their fresh full identity reads.
+            Current = new Identity {
+                runtime_contract = before.runtime_contract, runtime_id = before.runtime_id,
+                generation = before.generation, mode = before.mode,
+                frontend_media = before.frontend_media, player_preferences = before.player_preferences,
+                presentation = before.presentation, campaign_menu = before.campaign_menu,
+                pending_definition = before.pending_definition, active_runtime_flow = before.active_runtime_flow,
+                session = sessionIdentity, secret_campaign = before.secret_campaign
+            };
+        }
+
         internal EngineSessionTransport.ParticipantNotificationsObservation ParticipantNotifications()
         {
             RequireSessionMode(allowPaused: true, "participant notifications");
@@ -1021,6 +1087,22 @@ namespace MagicCarpet.Native
             EngineSessionTransport.MarkedSpellCycle cycle = null,
             string abandonAction = null)
         {
+            CampaignAdvance(roll, pitch, flags, lookYaw, lookPitch, selectSpell,
+                recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment,
+                showObjective, removeCastleStage, mark, cycle, abandonAction);
+            return CampaignSnapshot();
+        }
+
+        internal EngineSessionTransport.CampaignRenderObservation CampaignAdvance(
+            sbyte roll, sbyte pitch, sbyte flags, ushort lookYaw, ushort lookPitch,
+            string selectSpell = null, bool recenter = false, bool fullStop = false,
+            bool recoverPlayer = false, uint elapsedCentiseconds = 0,
+            EngineSessionTransport.SpellAssignment assignment = null,
+            bool showObjective = false, bool removeCastleStage = false,
+            EngineSessionTransport.SpellMark mark = null,
+            EngineSessionTransport.MarkedSpellCycle cycle = null,
+            string abandonAction = null)
+        {
             RequireSessionMode(allowPaused: false, "campaign step");
             var before = Current;
             var beforeRuntimeGeneration = ParseCounter(before.generation, "generation");
@@ -1037,6 +1119,12 @@ namespace MagicCarpet.Native
                 lookPitch,
                 NegotiatedSessionContract.limits.maximum_command_json_bytes,
                 selectSpell, recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment, showObjective, removeCastleStage, mark, cycle, abandonAction);
+            if (!JsonRenderObservations)
+            {
+                var publication = ReadRenderPublication(before, checked(beforeTick + 1));
+                PublishCampaignIdentity(before, publication.Observation.identity);
+                return publication.Observation;
+            }
             var identity = IdentitySnapshot();
             if (identity.mode != PlayingMode ||
                 ParseCounter(identity.generation, "generation") != beforeRuntimeGeneration ||
@@ -1049,7 +1137,7 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException(
                     "campaign step did not advance only the bound gameplay tick");
             }
-            return CampaignSnapshot();
+            return JsonRenderObservation();
         }
 
         internal EngineSessionTransport.EventObservation CampaignEvents(

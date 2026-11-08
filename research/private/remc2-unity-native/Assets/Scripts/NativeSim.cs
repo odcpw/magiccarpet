@@ -2690,6 +2690,33 @@ namespace MagicCarpet.Native
             out uint length);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_render_observation_json_v1(
+            ulong handle, IntPtr buffer, uint capacity, out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_render_observation_copy_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong tick,
+            [Out] byte[] buffer, uint capacity, out uint length);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct RuntimeBuilding
+        {
+            public uint abiVersion, structSize;
+            public ulong generation, tick;
+            public uint slotGeneration;
+            public ushort sourceSlot, sourceId;
+            public byte buildingIndex, action, active, drawing;
+            public ushort x, y;
+            public short z;
+            public ushort reserved0, reserved1, reserved2;
+        }
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_buildings_copy_v1(
+            ulong handle, ulong generation, ulong expectedTick,
+            [Out] RuntimeBuilding[] buffer, uint capacity, uint elementSize, out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_bootstrap_package_set_json_v1(
             ulong handle,
             ulong generation,
@@ -2777,6 +2804,10 @@ namespace MagicCarpet.Native
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_finish_mission_if_ready_v1(
             ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_finish_mission_if_ready_result_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration, ulong expectedTick, out byte changed);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_completion_transition_receipt_json_v1(
@@ -3352,6 +3383,12 @@ namespace MagicCarpet.Native
 
         internal static void AssertLayouts()
         {
+            RequireSize<RuntimeBuilding>(48);
+            RequireOffset<RuntimeBuilding>(nameof(RuntimeBuilding.generation), 8);
+            RequireOffset<RuntimeBuilding>(nameof(RuntimeBuilding.slotGeneration), 24);
+            RequireOffset<RuntimeBuilding>(nameof(RuntimeBuilding.sourceSlot), 28);
+            RequireOffset<RuntimeBuilding>(nameof(RuntimeBuilding.buildingIndex), 32);
+            RequireOffset<RuntimeBuilding>(nameof(RuntimeBuilding.z), 40);
             RequireSize<WorldInfo>(72);
             RequireSize<CampaignSelection>(32);
             RequireSize<CampaignStepInput>(80);

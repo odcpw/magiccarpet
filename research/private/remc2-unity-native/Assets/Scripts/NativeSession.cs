@@ -211,15 +211,37 @@ namespace MagicCarpet.Native
                 "legacy session has no neutral engine observation");
         }
 
-        internal GameRuntimeTransport.Identity GameRuntimeIdentity()
+        internal GameRuntimeTransport.Identity GameRuntimeIdentity(
+            [System.Runtime.CompilerServices.CallerMemberName] string caller = null)
         {
-            return gameRuntime?.IdentitySnapshot() ?? throw new InvalidOperationException(
+            return gameRuntime?.IdentitySnapshot(caller) ?? throw new InvalidOperationException(
                 "session does not own a game runtime");
         }
+
+        // Campaign callbacks reuse metadata published by the owning transport.
+        // Its step/pause/reset/load/preference mutations explicitly refresh it.
+        // Frontend media has separate mutations, so those modes still read.
+        internal GameRuntimeTransport.Identity ObservedCampaignIdentity(
+            [System.Runtime.CompilerServices.CallerMemberName] string caller = null)
+        {
+            _ = Handle;
+            var current = gameRuntime?.Current;
+            return !FreshRuntimeIdentities && (current?.mode is GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode)
+                ? current : GameRuntimeIdentity(caller);
+        }
+
+        private static readonly bool FreshRuntimeIdentities =
+            System.Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-fresh-runtime-identities") >= 0;
 
         internal EngineSessionTransport.CampaignSnapshotObservation GameRuntimeCampaignSnapshot()
         {
             return gameRuntime?.CampaignSnapshot() ?? throw new InvalidOperationException(
+                "session does not own a game runtime");
+        }
+
+        internal EngineSessionTransport.CampaignRenderObservation GameRuntimeCampaignRenderObservation()
+        {
+            return gameRuntime?.RenderObservation() ?? throw new InvalidOperationException(
                 "session does not own a game runtime");
         }
 
@@ -263,6 +285,28 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 
+        internal EngineSessionTransport.CampaignRenderObservation GameRuntimeCampaignRenderStep(
+            sbyte roll, sbyte pitch, sbyte flags, ushort lookYaw, ushort lookPitch,
+            string selectSpell = null, bool recenter = false, bool fullStop = false,
+            bool recoverPlayer = false, uint elapsedCentiseconds = 0,
+            EngineSessionTransport.SpellAssignment assignment = null,
+            bool showObjective = false, bool removeCastleStage = false,
+            EngineSessionTransport.SpellMark mark = null,
+            EngineSessionTransport.MarkedSpellCycle cycle = null,
+            string abandonAction = null)
+        {
+            if (gameRuntime == null) throw new InvalidOperationException("session does not own a game runtime");
+            // Diagnostic A/B uses the same advance, inputs and native library.
+            // A failed read never retries an already committed command.
+            var observation = gameRuntime.CampaignAdvance(roll, pitch, flags, lookYaw, lookPitch, selectSpell,
+                recenter, fullStop, recoverPlayer, elapsedCentiseconds, assignment,
+                showObjective, removeCastleStage, mark, cycle, abandonAction);
+            return DiagnosticRenderObservations ? gameRuntime.CampaignSnapshot() : observation;
+        }
+
+        private static readonly bool DiagnosticRenderObservations =
+            System.Array.IndexOf(Environment.GetCommandLineArgs(), "-mc-render-diagnostics") >= 0;
+
         internal EngineSessionTransport.EventObservation GameRuntimeCampaignEvents(
             string cursor,
             uint limit = 1024)
@@ -293,6 +337,13 @@ namespace MagicCarpet.Native
             GameRuntimeCampaignPausedFrame(uint elapsedCentiseconds = 0, bool showObjective = false)
         {
             return gameRuntime?.CampaignPausedFrame(elapsedCentiseconds, showObjective) ??
+                throw new InvalidOperationException("session does not own a game runtime");
+        }
+
+        internal EngineSessionTransport.CampaignRenderObservation
+            GameRuntimeCampaignPausedRenderFrame(uint elapsedCentiseconds = 0, bool showObjective = false)
+        {
+            return gameRuntime?.CampaignPausedRenderFrame(elapsedCentiseconds, showObjective) ??
                 throw new InvalidOperationException("session does not own a game runtime");
         }
 

@@ -3513,40 +3513,101 @@ fn source_objective_input_admitted(
     )
 }
 
-impl GameSessionBackend for Mc2CampaignBackend {
-    type Command = GameCommand;
-    type Snapshot = CampaignSnapshot;
-    type Error = CampaignBackendError;
+/// The live presentation subset of a campaign snapshot. Diagnostic receipts
+/// are deliberately absent: obtaining this view must not hash world state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CampaignRenderObservation {
+    #[serde(serialize_with = "serialize_render_u64")]
+    pub tick: u64,
+    #[serde(serialize_with = "serialize_render_u64")]
+    pub effect_head: u64,
+    pub player_pose: PlayerPose,
+    pub player_motion: PlayerMotion,
+    pub player_vitals: PlayerVitals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_menu_admission: Option<sim_session::SourceMenuAdmission>,
+    pub return_to_title_requested: bool,
+    pub source_scoreboard: sim_session::SourceScoreboard,
+    pub participant_notifications: Vec<sim_session::ParticipantNotification>,
+    pub player_immobilized_ticks: u16,
+    pub source_camera_pose: sim_session::CameraPose,
+    pub source_camera_fov: i16,
+    pub player_spells: Vec<sim_session::SpellObservation>,
+    pub objective_progress: ObjectiveProgress,
+    pub objective_textbox_ticks: u8,
+    pub exit_sequence_active: bool,
+    pub presentation_entities: Vec<PresentationEntity>,
+}
 
-    fn tick(&self) -> u64 {
-        self.campaign.tick()
+fn serialize_render_u64<S: serde::Serializer>(
+    value: &u64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
+/// Source-owned identity and current selector of a live BUILD house.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiveBuildingObservation {
+    pub source_slot: u16,
+    pub source_id: u16,
+    pub slot_generation: u32,
+    pub building_index: u8,
+    pub action: u8,
+    pub active: bool,
+    pub drawing: bool,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+}
+
+impl Mc2CampaignBackend {
+    /// Current source house owners for a presentation adapter. This does not
+    /// materialize the legacy campaign presentation snapshot.
+    #[must_use]
+    pub fn live_building_observations(&self) -> Vec<LiveBuildingObservation> {
+        let simulation = self.campaign.simulation();
+        let arena = simulation.source_arena();
+        simulation
+            .ordinary()
+            .houses()
+            .iter()
+            .filter_map(|house| {
+                let handle = arena.handle(house.entity_index)?;
+                let row = arena.entities().get(usize::from(house.entity_index))?;
+                // The carrier may remain briefly after its source slot was
+                // retired or reused. Only the current matching owner is visible.
+                if !house.active
+                    || !row.active
+                    || row.class != crate::house::HOUSE_CLASS
+                    || row.model != crate::house::HOUSE_MODEL
+                    || row.source_id != house.source_id
+                    || row.position.x != house.position.x
+                    || row.position.y != house.position.y
+                {
+                    return None;
+                }
+                Some(LiveBuildingObservation {
+                    source_slot: house.entity_index,
+                    source_id: house.source_id,
+                    slot_generation: handle.generation,
+                    building_index: house.building_index,
+                    action: house.action,
+                    active: house.active,
+                    // Bit 0 is ownership for these terrain stamps; only the
+                    // source draw-disable bit hides the underlying entity.
+                    drawing: house.control_flags & 0x400 == 0,
+                    x: house.position.x,
+                    y: house.position.y,
+                    z: house.position.z,
+                })
+            })
+            .collect()
     }
 
-    fn flight_assistance_menu_open(&self) -> bool {
-        super::source_menus::suppresses_flight_assistance(
-            self.campaign.simulation().level2_player_menu_state(),
-        )
-    }
-
-    fn completion_status(&self) -> GameCompletionStatus {
-        let exit = self.campaign.simulation().level_exit_sequence();
-        if !exit.complete {
-            GameCompletionStatus::InProgress
-        } else if exit.result_code == 10 {
-            GameCompletionStatus::Completed {
-                completion: GameCompletion {
-                    state_hash: self.campaign.state_hash(),
-                    statistics: Some(self.campaign.simulation().completion_statistics()),
-                },
-            }
-        } else {
-            GameCompletionStatus::Invalid {
-                message: "completed MC2 exit carrier has a non-success result".to_owned(),
-            }
-        }
-    }
-
-    fn snapshot(&self) -> Self::Snapshot {
+    /// Project the current boundary without computing diagnostic hashes.
+    #[must_use]
+    pub fn render_observation(&self) -> CampaignRenderObservation {
         let flight = &self.campaign.simulation.state;
         let compatibility = self.campaign.simulation();
         let shared_spells = compatibility.shared_spells();
@@ -3612,21 +3673,11 @@ impl GameSessionBackend for Mc2CampaignBackend {
                     .collect()
             })
             .unwrap_or_default();
-        let (state_hash, terrain_hash) = self.campaign.state_and_terrain_hashes();
-        CampaignSnapshot {
+        CampaignRenderObservation {
             tick: flight.tick,
             source_menu_admission: self.campaign.simulation().source_menu_admission(),
             return_to_title_requested: self.campaign.simulation().ordinary_banishment_result(),
             effect_head: self.campaign.effect_cursor().next_sequence,
-            state_hash,
-            terrain_hash,
-            effect_journal_sha256: hex_digest(
-                self.campaign
-                    .simulation
-                    .effect_journal()
-                    .receipt()
-                    .as_bytes(),
-            ),
             player_pose: PlayerPose {
                 x: flight.position.x,
                 y: flight.position.y,
@@ -3691,6 +3742,87 @@ impl GameSessionBackend for Mc2CampaignBackend {
             objective_textbox_ticks: compatibility.runtime().objective_textbox_ticks,
             exit_sequence_active: compatibility.level_exit_sequence().active,
             presentation_entities,
+        }
+    }
+}
+
+impl GameSessionBackend for Mc2CampaignBackend {
+    type Command = GameCommand;
+    type Snapshot = CampaignSnapshot;
+    type Error = CampaignBackendError;
+
+    fn tick(&self) -> u64 {
+        self.campaign.tick()
+    }
+
+    fn flight_assistance_menu_open(&self) -> bool {
+        super::source_menus::suppresses_flight_assistance(
+            self.campaign.simulation().level2_player_menu_state(),
+        )
+    }
+
+    fn completion_status(&self) -> GameCompletionStatus {
+        let exit = self.campaign.simulation().level_exit_sequence();
+        if !exit.complete {
+            GameCompletionStatus::InProgress
+        } else if exit.result_code == 10 {
+            GameCompletionStatus::Completed {
+                completion: GameCompletion {
+                    state_hash: self.campaign.state_hash(),
+                    statistics: Some(self.campaign.simulation().completion_statistics()),
+                },
+            }
+        } else {
+            GameCompletionStatus::Invalid {
+                message: "completed MC2 exit carrier has a non-success result".to_owned(),
+            }
+        }
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        let CampaignRenderObservation {
+            tick,
+            effect_head,
+            player_pose,
+            player_motion,
+            player_vitals,
+            source_menu_admission,
+            return_to_title_requested,
+            source_scoreboard,
+            participant_notifications,
+            player_immobilized_ticks,
+            source_camera_pose,
+            source_camera_fov,
+            player_spells,
+            objective_progress,
+            objective_textbox_ticks,
+            exit_sequence_active,
+            presentation_entities,
+        } = self.render_observation();
+        let (state_hash, terrain_hash) = self.campaign.state_and_terrain_hashes();
+        CampaignSnapshot {
+            tick,
+            effect_head,
+            player_pose,
+            player_motion,
+            player_vitals,
+            source_menu_admission,
+            return_to_title_requested,
+            source_scoreboard,
+            participant_notifications,
+            player_immobilized_ticks,
+            source_camera_pose,
+            source_camera_fov,
+            player_spells,
+            objective_progress,
+            objective_textbox_ticks,
+            exit_sequence_active,
+            presentation_entities,
+            state_hash,
+            terrain_hash,
+            effect_journal_sha256: hex_digest(
+                self.campaign.simulation.effect_journal().receipt().as_bytes(),
+            ),
         }
     }
 

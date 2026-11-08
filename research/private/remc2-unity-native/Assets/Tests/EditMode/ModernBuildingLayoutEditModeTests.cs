@@ -14,7 +14,7 @@ namespace MagicCarpet.Native.Tests
             foreach(var selector in new[] {26,29,30,42})
             {
                 var values=new float[25];
-                for(var z=1;z<4;z++) for(var x=1;x<4;x++) values[z*5+x]=(x==2&&z==2)?8:4;
+                for(var z=1;z<4;z++) for(var x=1;x<4;x++) values[z*5+x]=(x==2&&z==2)?16:8;
                 profiles.Add(new ModernBuildingMeshes.Profile {build_index=selector,columns=5,rows=5,heights=values});
             }
             var entries=new List<ModernBuildingLayout.Entry>();
@@ -30,7 +30,8 @@ namespace MagicCarpet.Native.Tests
                     cells.Add(new ModernBuildingLayout.Cell {index=index,expected=original[index],replacement=20});
                 }
                 entries.Add(new ModernBuildingLayout.Entry {source_slot=b,build_index=ids[b],x=cx*4,z=cz*4,
-                    base_height=10,width=16,depth=16,height=8,cells=cells.ToArray()});
+                    base_height=10,width=16,depth=16,height=16,cells=cells.ToArray(),
+                    source_entity_position=new ModernBuildingLayout.SourcePosition {x=cx*256,y=cz*256,z=1280}});
             }
             return new ModernBuildingLayout {schema="mc-modern-building-layout/v2",profiles=profiles.ToArray(),
                 provenance=new ModernBuildingLayout.Provenance {source_height_plane_sha256=ModernBuildingLayout.Digest(original)},

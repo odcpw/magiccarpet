@@ -1334,6 +1334,34 @@ int32_t mc_game_runtime_create_v1(uint64_t *out_handle);
 int32_t mc_game_runtime_identity_json_v1(
     uint64_t handle, uint8_t *buffer, uint32_t capacity,
     uint32_t *out_length);
+/* Identity-bound render fields without diagnostic hashes. The terrain
+ * mutation sequence is scoped to identity.generation. Playing and paused
+ * runtimes are accepted; the usual JSON buffer sizing convention applies. */
+int32_t mc_game_runtime_render_observation_json_v1(
+    uint64_t handle, uint8_t *buffer, uint32_t capacity,
+    uint32_t *out_length);
+/* Coherent little-endian MCPO v1 render packet. On a short buffer, no
+ * payload is written and out_written receives the required byte count.
+ * Stale outer generation, session generation or tick is rejected. */
+int32_t mc_game_runtime_render_observation_copy_v1(
+    uint64_t handle, uint64_t expected_runtime_generation,
+    uint64_t expected_session_generation, uint64_t expected_tick,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_written);
+/* Read-only, generation/tick-guarded live source BUILD owners. */
+typedef struct McRuntimeBuildingV1 {
+    uint32_t abi_version, struct_size;
+    uint64_t generation, tick;
+    uint32_t slot_generation;
+    uint16_t source_slot, source_id;
+    uint8_t building_index, action, active, drawing;
+    uint16_t x, y;
+    int16_t z;
+    uint16_t reserved[3];
+} McRuntimeBuildingV1;
+int32_t mc_game_runtime_buildings_copy_v1(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McRuntimeBuildingV1 *buffer, uint32_t capacity, uint32_t element_size,
+    uint32_t *out_written);
 int32_t mc_game_runtime_bootstrap_package_set_json_v1(
     uint64_t handle, uint64_t generation,
     const uint8_t *request_json, uint32_t request_json_len);
@@ -1415,6 +1443,11 @@ int32_t mc_game_runtime_preferences_command_json_v1(
 int32_t mc_game_runtime_finish_mission_if_ready_v1(
     uint64_t handle, uint64_t runtime_generation,
     uint64_t session_generation, uint64_t expected_tick);
+/* As above, additionally reports 1 when the boundary transitioned; 0 when
+ * it was a no-op or rejected. The output pointer must be non-null. */
+int32_t mc_game_runtime_finish_mission_if_ready_result_v1(
+    uint64_t handle, uint64_t runtime_generation,
+    uint64_t session_generation, uint64_t expected_tick, uint8_t *out_changed);
 int32_t mc_game_runtime_close_v1(
     uint64_t handle,
     uint64_t runtime_generation,
