@@ -16,6 +16,9 @@ namespace MagicCarpet.Native
         private readonly GameObject[] nodes=new GameObject[Tiles*Tiles];
         private readonly bool[] populated=new bool[Tiles*Tiles];
         private ulong revision=ulong.MaxValue;
+        private ulong coastShapeRevision=ulong.MaxValue;
+        private readonly ulong[] tileRevisions=new ulong[Tiles*Tiles];
+        internal int LastRebuiltTileCount { get; private set; }
 
         internal ModernWaterBed(Transform parent, Material material)
         {
@@ -47,11 +50,21 @@ namespace MagicCarpet.Native
 
         internal void Update(ModernTerrainMesh terrain, ModernWaterCoast coast, Vector3 camera)
         {
+            LastRebuiltTileCount = 0;
             if(revision!=terrain.Revision)
             {
                 if(coast.Revision!=terrain.Revision) throw new InvalidOperationException("Lake bed requires matching coast and terrain revisions");
-                for(var z=0;z<Tiles;z++) for(var x=0;x<Tiles;x++) Rebuild(x,z,terrain,coast);
+                bool all = revision == ulong.MaxValue || coastShapeRevision != coast.ShapeRevision;
+                for(var z=0;z<Tiles;z++) for(var x=0;x<Tiles;x++)
+                {
+                    int i = x + z * Tiles;
+                    ulong next = terrain.SectionNeighborhoodRevision(x, z);
+                    if (!all && tileRevisions[i] == next) continue;
+                    Rebuild(x,z,terrain,coast); tileRevisions[i] = next; LastRebuiltTileCount++;
+                }
+                coastShapeRevision = coast.ShapeRevision;
                 revision=terrain.Revision;
+                if (ModernCapture.Measure) Debug.Log($"MC_MODERN_WATERBED revision={revision} coast_shape={coastShapeRevision} rebuilt_tiles={LastRebuiltTileCount}");
             }
             for(var z=0;z<Tiles;z++) for(var x=0;x<Tiles;x++)
             {

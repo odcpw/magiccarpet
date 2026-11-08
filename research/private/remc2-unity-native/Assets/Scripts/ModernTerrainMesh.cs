@@ -41,6 +41,7 @@ namespace MagicCarpet.Native
             internal Bounds WaterBounds;
             internal int DetailTriangles;
             internal int FarTriangles;
+            internal ulong Revision;
             internal readonly Copy[] Copies = new Copy[9];
         }
 
@@ -70,6 +71,17 @@ namespace MagicCarpet.Native
         // Set before the first Update; local voxel physics replaces this aligned patch.
         internal Bounds? VoxelPatch { get; set; }
         internal Func<float,float,float?> VoxelHeightSampler { get; set; }
+
+        // Lake-bed normals and shoreline joins sample just outside their tile.
+        // Include neighbouring sections, including the periodic map seam.
+        internal ulong SectionNeighborhoodRevision(int x, int z)
+        {
+            ulong revision = 0;
+            for (int dz = -1; dz <= 1; dz++)
+            for (int dx = -1; dx <= 1; dx++)
+                revision = Math.Max(revision, sections[((x + dx + Sections) % Sections) + ((z + dz + Sections) % Sections) * Sections].Revision);
+            return revision;
+        }
 
         internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null)
         {
@@ -150,6 +162,7 @@ namespace MagicCarpet.Native
                     out section.WaterBounds);
                 section.DetailTriangles = (int)((section.Mesh.GetIndexCount(0) + section.Mesh.GetIndexCount(1)) / 3);
                 section.FarTriangles = (int)((section.FarMesh.GetIndexCount(0) + section.FarMesh.GetIndexCount(1)) / 3);
+                section.Revision = Revision;
                 dirty[i] = false;
             }
         }

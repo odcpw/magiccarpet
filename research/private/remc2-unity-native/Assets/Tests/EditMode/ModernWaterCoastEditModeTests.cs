@@ -7,6 +7,28 @@ namespace MagicCarpet.Native.Tests
     public sealed class ModernWaterCoastEditModeTests
     {
         [Test]
+        public void EqualMaskAdvancesSourceRevisionWithoutRebuildingTheCoast()
+        {
+            var mask = new bool[256 * 256];
+            mask[0] = true;
+            using var coast = new ModernWaterCoast();
+            coast.UpdateMask(mask, 1);
+            var shape = coast.ShapeRevision;
+            var upload = coast.Texture.updateCount;
+            var original = coast.SampleDistance(2, 2);
+            coast.UpdateMask((bool[])mask.Clone(), 2);
+            Assert.That(coast.Revision, Is.EqualTo(2));
+            Assert.That(coast.ShapeRevision, Is.EqualTo(shape));
+            Assert.That(coast.Texture.updateCount, Is.EqualTo(upload));
+            Assert.That(coast.SampleDistance(2, 2), Is.EqualTo(original));
+            mask[1] = true;
+            coast.UpdateMask(mask, 3);
+            Assert.That(coast.ShapeRevision, Is.GreaterThan(shape));
+            Assert.That(coast.Texture.updateCount, Is.GreaterThan(upload));
+            Assert.That(coast.SampleDistance(6, 2), Is.GreaterThan(0));
+        }
+
+        [Test]
         public void StripeCoastHasWorldSpaceDistanceDepthAndCorrectSeamGradient()
         {
             var mask = new bool[256 * 256];

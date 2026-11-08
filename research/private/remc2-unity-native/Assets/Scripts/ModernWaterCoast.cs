@@ -26,6 +26,7 @@ namespace MagicCarpet.Native
 
         internal Texture2D Texture { get; }
         internal ulong Revision { get; private set; }
+        internal ulong ShapeRevision { get; private set; }
 
         internal ModernWaterCoast()
         {
@@ -41,10 +42,17 @@ namespace MagicCarpet.Native
             if (terrain == null) throw new ArgumentNullException(nameof(terrain));
             ThrowIfDisposed();
             if (initialized && Revision == terrain.Revision) return;
+            bool changed = !initialized;
             for (var z = 0; z < Resolution; z++)
             for (var x = 0; x < Resolution; x++)
-                wet[Index(x, z)] = terrain.IsWater((x + .5f) * CellSize, (z + .5f) * CellSize);
-            Rebuild(terrain.Revision);
+            {
+                int i = Index(x, z);
+                bool value = terrain.IsWater((x + .5f) * CellSize, (z + .5f) * CellSize);
+                changed |= wet[i] != value;
+                wet[i] = value;
+            }
+            if (changed) Rebuild(terrain.Revision);
+            else Revision = terrain.Revision;
         }
 
         // Also supports authored water masks; copies the mask to retain ownership.
@@ -54,8 +62,10 @@ namespace MagicCarpet.Native
             if (source == null || source.Length != Count)
                 throw new ArgumentException("Water mask must contain 256 by 256 cells", nameof(source));
             if (initialized && Revision == revision) return;
-            Array.Copy(source, wet, Count);
-            Rebuild(revision);
+            bool changed = !initialized;
+            for (int i = 0; i < Count; i++) { changed |= source[i] != wet[i]; wet[i] = source[i]; }
+            if (changed) Rebuild(revision);
+            else Revision = revision;
         }
 
         private void Rebuild(ulong revision)
@@ -80,6 +90,7 @@ namespace MagicCarpet.Native
             Texture.SetPixels(pixels);
             Texture.Apply(false, false);
             Revision = revision;
+            unchecked { ShapeRevision++; }
             initialized = true;
         }
 

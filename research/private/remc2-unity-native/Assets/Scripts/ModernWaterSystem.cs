@@ -176,10 +176,12 @@ namespace MagicCarpet.Native
         {
             var dt = Mathf.Clamp(Time.unscaledDeltaTime, 0, .25f);
             time += dt;
+            var coastStart = ModernCapture.BeginMeasurement();
             if (coastRevision != terrain.Revision)
             {
                 heightProbe?.Invalidate(); coast.Update(terrain); coastRevision = terrain.Revision; interactions.Reset();
             }
+            ModernCapture.EndMeasurement("water_coast_update", coastStart);
             if (bornAt < 0)
             {
                 bornAt = time;
@@ -189,7 +191,9 @@ namespace MagicCarpet.Native
             }
             if (review) Review(camera, Mathf.Max(0, time - bornAt - reviewDelay), dt);
             viewPosition = camera.transform.position;
+            var bedStart = ModernCapture.BeginMeasurement();
             bed.Update(terrain,coast,viewPosition);
+            ModernCapture.EndMeasurement("water_bed_update", bedStart);
             if (sandboxWind == 0) wind.SetTarget(new Vector2(.7f+.3f*Mathf.Sin(time*.2f),.3f+.2f*Mathf.Cos(time*.17f)));
             else if (sandboxWind == 2) wind.SetTarget(new Vector2(13+4*Mathf.Sin(time*.18f),4+5*Mathf.Cos(time*.13f)));
             wind.Update(dt, time);
