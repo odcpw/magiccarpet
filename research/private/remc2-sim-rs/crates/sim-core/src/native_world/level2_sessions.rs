@@ -152,6 +152,13 @@ mod castle_revival_tests {
         (shared, economy)
     }
 
+    fn revival_arena(economy: Level2EconomyState) -> (crate::campaign::source_arena::SourceArena, SessionTerrain) {
+        let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
+            .expect("qualified source player/arena package");
+        (crate::campaign::source_arena::SourceArena::new(inspection.entities().to_vec().into_boxed_slice(), economy),
+            SessionTerrain::from_inspection(&inspection))
+    }
+
     fn dead_actor(shared: &mut Level2SharedSpellResetSession) {
         let mut actor = shared.player_entity.clone();
         actor.set_player_death_state();
@@ -272,8 +279,9 @@ mod castle_revival_tests {
             y: 6272,
             z: -123,
         };
+        let (mut arena, mut terrain) = revival_arena(economy);
         let holders = shared
-            .revive_local_player_at_castle(&mut economy, position, false)
+            .revive_local_player_at_castle(&mut arena, &mut terrain, 0, position, false)
             .unwrap();
 
         let actor = &shared.player_entity;
@@ -381,9 +389,12 @@ mod castle_revival_tests {
         let only_slot = *economy.free_slots.last().unwrap();
         economy.free_slots = vec![only_slot];
         dead_actor(&mut shared);
+        let (mut arena, mut terrain) = revival_arena(economy);
         let holders = shared
             .revive_local_player_at_castle(
-                &mut economy,
+                &mut arena,
+                &mut terrain,
+                0,
                 Position {
                     x: 1024,
                     y: 2048,
@@ -397,7 +408,7 @@ mod castle_revival_tests {
         assert_eq!(shared.local_player.enabled_spell_holders[0], only_slot);
         assert_eq!(shared.local_player.enabled_spell_holders[3], 0);
         assert_eq!(shared.local_player.enabled_spell_holders[25], 0);
-        assert_eq!(economy.free_slot_count(), 0);
+        assert_eq!(arena.economy.free_slot_count(), 0);
         assert_eq!(shared.local_player.runtime_spell_experience[2], 7);
         assert_eq!(shared.local_player.persistent_spell_experience[2], 42);
         assert_eq!(shared.local_player.spell_unlocked_levels[2], 1);
@@ -405,20 +416,21 @@ mod castle_revival_tests {
 
     #[test]
     fn castle_revival_rejects_a_living_actor_before_mutating_inventory_or_arena() {
-        let (mut shared, mut economy) = fixture();
+        let (mut shared, economy) = fixture();
         let actor = shared.player_entity.clone();
         let player = shared.local_player.clone();
         let rng = economy.global_rng;
         let slots = economy.free_slots.clone();
+        let (mut arena, mut terrain) = revival_arena(economy);
         assert!(
             shared
-                .revive_local_player_at_castle(&mut economy, actor.position, true)
+                .revive_local_player_at_castle(&mut arena, &mut terrain, 0, actor.position, true)
                 .is_err()
         );
         assert_eq!(shared.player_entity, actor);
         assert_eq!(shared.local_player, player);
-        assert_eq!(economy.global_rng, rng);
-        assert_eq!(economy.free_slots, slots);
+        assert_eq!(arena.economy.global_rng, rng);
+        assert_eq!(arena.economy.free_slots, slots);
     }
 }
 
@@ -1659,6 +1671,24 @@ impl Level2SharedSpellResetSession {
         holder
     }
 
+    fn revival_castle_stage(
+        arena: &crate::campaign::source_arena::SourceArena,
+        slot: u16,
+    ) -> Result<Option<i32>> {
+        if slot == 0 {
+            return Ok(None);
+        }
+        if let Some(castle) = super::source_target::current_castle_entry(arena, slot) {
+            return Ok(Some(i32::from(castle.level)));
+        }
+        if arena.economy.live_arena_kind(slot).is_some() {
+            return Err(NativeWorldError::new(format!("revival Castle address {slot} has no current stage binding")));
+        }
+        let raw = arena.entities.get(usize::from(slot))
+            .ok_or_else(|| NativeWorldError::new(format!("revival Castle address {slot} is outside the arena")))?;
+        Ok(Some(raw.source_dword_10()))
+    }
+
     /// Existing-human-actor branch of sub_5C950/sub_5CF40 (Space action 15).
     /// The caller validates the linked Castle, runs sub_49F90 and relocates
     /// the actor's map-chain entry BEFORE these holder births, then publishes
@@ -1666,17 +1696,18 @@ impl Level2SharedSpellResetSession {
     /// mission reset, Castle resource write or dropped-holder reclaim occurs.
     pub(crate) fn revive_local_player_at_castle(
         &mut self,
-        economy: &mut Level2EconomyState,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &mut SessionTerrain,
+        castle_slot: u16,
         castle_position: Position,
         cap_castle_experience: bool,
     ) -> Result<Vec<EntitySnapshot>> {
         if !self.player_entity.active
-            || self.player_entity.life >= 0
             || self.local_player.is_ai
             || self.local_player.entity_index != self.player_entity.index
         {
             return Err(NativeWorldError::new(
-                "Castle revival requires the existing dead local human actor",
+                "revival requires the existing local human actor",
             ));
         }
         let owner_index = self
@@ -1686,17 +1717,24 @@ impl Level2SharedSpellResetSession {
             .ok_or_else(|| NativeWorldError::new("Castle revival local player row is absent"))?;
 
         let mut actor = self.player_entity.clone();
+        let (pre_revival_life, pre_revival_mana) = (actor.life, actor.mana);
         actor.set_source_action(0);
         actor.set_control_flags((actor.control_flags & !0x20) | 1);
         actor.set_position(castle_position);
-        actor.set_max_life(10_000);
-        actor.max_mana = 1_000;
-        actor.record[144..148].copy_from_slice(&1_000_i32.to_le_bytes());
+        let rules = crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES;
+        actor.set_max_life(rules.revival_max_life);
+        actor.max_mana = rules.revival_max_mana;
+        actor.record[144..148].copy_from_slice(&rules.revival_max_mana.to_le_bytes());
         // Source fills current life/mana after sub_5CF40. No spell constructor
         // consumes them before this point; cold lifecycle caches need the
         // restored parent values rather than the death projection.
-        actor.set_life(10_000);
-        actor.set_mana(1_000);
+        actor.set_life(rules.revival_max_life);
+        actor.set_mana(rules.revival_max_mana);
+        let mut source_actor = actor.clone();
+        source_actor.set_life(pre_revival_life);
+        source_actor.set_mana(pre_revival_mana);
+        source_actor.set_map_links(arena.economy.map_chains.old_map_entity(actor.index), arena.economy.map_chains.next_entity(actor.index));
+        arena.entities[usize::from(actor.index)] = source_actor;
         self.sync_player_entity_from_authority(&actor);
         self.player_mana = actor.mana;
         self.caster.mana = actor.mana;
@@ -1723,16 +1761,27 @@ impl Level2SharedSpellResetSession {
                 continue;
             }
             let family_id = family as u8;
-            let Some(source) = economy.allocate_starting_spell_holder(family_id, castle_position)
-            else {
+            if level2_set_spell_profile(family_id, 0).is_none() {
+                self.set_enabled_spell_holder_index(family, 0);
+                continue;
+            }
+            let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
                 self.set_enabled_spell_holder_index(family, 0);
                 continue;
             };
-            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let Some(source) = arena.economy.initialize_starting_spell_holder_at(slot, family_id, castle_position) else {
+                self.set_enabled_spell_holder_index(family, 0);
+                continue;
+            };
+            crate::world::effects::sync_position(arena, terrain, slot, castle_position, true, false)
+                .map_err(NativeWorldError::new)?;
+            let stage = if family_id == 2 { Self::revival_castle_stage(arena, castle_slot)? } else { None };
             let profile = self
                 .physical_spell_profile(family_id, 0, actor.index, stage)
                 .expect("the source holder allocator validated its base profile");
-            let holder = Self::starting_spell_holder(source, actor.index, 0, profile);
+            let mut holder = Self::starting_spell_holder(source, actor.index, 0, profile);
+            holder.set_map_links(arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
+            arena.entities[usize::from(slot)] = holder.clone();
             self.set_enabled_spell_holder_index(family, holder.index);
             holders.push(holder);
         }
@@ -1766,14 +1815,14 @@ impl Level2SharedSpellResetSession {
         let player = self.local_player.clone();
         for holder in &mut holders {
             let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
-            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let stage = if holder.model == 2 { Self::revival_castle_stage(arena, castle_slot)? } else { None };
             let profile = self
                 .physical_spell_profile(holder.model, tier, actor.index, stage)
                 .expect("recomputed selected tier has a source SetSpell profile");
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.set_map_links(
-                economy.map_chains.old_map_entity(holder.index),
-                economy.map_chains.next_entity(holder.index),
+                arena.economy.map_chains.old_map_entity(holder.index),
+                arena.economy.map_chains.next_entity(holder.index),
             );
             self.register_starting_acquisition(holder, &player);
             if let Some(existing) = self.pickup_mut(holder.index) {
@@ -1802,7 +1851,9 @@ impl Level2SharedSpellResetSession {
     /// Castle/generation check and publishes these actual constructor rows.
     pub(crate) fn revive_rival_at_castle(
         &mut self,
-        economy: &mut Level2EconomyState,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        terrain: &mut SessionTerrain,
+        castle_slot: u16,
         mut actor: EntitySnapshot,
         castle_position: Position,
     ) -> Result<(EntitySnapshot, Vec<EntitySnapshot>)> {
@@ -1816,14 +1867,21 @@ impl Level2SharedSpellResetSession {
                 "Castle revival requires the existing dead rival actor",
             ));
         }
+        let (pre_revival_life, pre_revival_mana) = (actor.life, actor.mana);
         actor.set_source_action(1);
         actor.set_control_flags(actor.control_flags & !0x20);
         actor.set_position(castle_position);
-        actor.set_max_life(10_000);
-        actor.max_mana = 1_000;
-        actor.record[144..148].copy_from_slice(&1_000_i32.to_le_bytes());
-        actor.set_life(10_000);
-        actor.set_mana(1_000);
+        let rules = crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES;
+        actor.set_max_life(rules.revival_max_life);
+        actor.max_mana = rules.revival_max_mana;
+        actor.record[144..148].copy_from_slice(&rules.revival_max_mana.to_le_bytes());
+        actor.set_life(rules.revival_max_life);
+        actor.set_mana(rules.revival_max_mana);
+        let mut source_actor = actor.clone();
+        source_actor.set_life(pre_revival_life);
+        source_actor.set_mana(pre_revival_mana);
+        source_actor.set_map_links(arena.economy.map_chains.old_map_entity(actor.index), arena.economy.map_chains.next_entity(actor.index));
+        arena.entities[usize::from(actor.index)] = source_actor;
         self.sync_player_entity_from_authority(&actor);
         let mut player = self.players[owner_index].clone();
         player.record[20..24].fill(0);
@@ -1844,17 +1902,27 @@ impl Level2SharedSpellResetSession {
             if player.enabled_spell_holders[family] == 0 {
                 continue;
             }
-            let Some(source) =
-                economy.allocate_starting_spell_holder(family as u8, castle_position)
-            else {
+            if level2_set_spell_profile(family as u8, 0).is_none() {
+                player.set_enabled_spell_holder_index(family, 0);
+                continue;
+            }
+            let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
                 player.set_enabled_spell_holder_index(family, 0);
                 continue;
             };
-            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let Some(source) = arena.economy.initialize_starting_spell_holder_at(slot, family as u8, castle_position) else {
+                player.set_enabled_spell_holder_index(family, 0);
+                continue;
+            };
+            crate::world::effects::sync_position(arena, terrain, slot, castle_position, true, false)
+                .map_err(NativeWorldError::new)?;
+            let stage = if family == 2 { Self::revival_castle_stage(arena, castle_slot)? } else { None };
             let profile = self
                 .physical_spell_profile(family as u8, 0, actor.index, stage)
                 .ok_or_else(|| NativeWorldError::new("rival starting holder profile is absent"))?;
-            let holder = Self::starting_spell_holder(source, actor.index, 0, profile);
+            let mut holder = Self::starting_spell_holder(source, actor.index, 0, profile);
+            holder.set_map_links(arena.economy.map_chains.old_map_entity(slot), arena.economy.map_chains.next_entity(slot));
+            arena.entities[usize::from(slot)] = holder.clone();
             player.set_enabled_spell_holder_index(family, holder.index);
             holders.push(holder);
         }
@@ -1865,14 +1933,14 @@ impl Level2SharedSpellResetSession {
         let player = self.players[owner_index].clone();
         for holder in &mut holders {
             let tier = player.family_selected_tiers[usize::from(holder.model)].cast_unsigned();
-            let stage = Self::castle_stage_for_owner(economy, actor.index);
+            let stage = if holder.model == 2 { Self::revival_castle_stage(arena, castle_slot)? } else { None };
             let profile = self
                 .physical_spell_profile(holder.model, tier, actor.index, stage)
                 .ok_or_else(|| NativeWorldError::new("rival selected holder profile is absent"))?;
             holder.apply_nyphur_spell_profile(profile, tier);
             holder.set_map_links(
-                economy.map_chains.old_map_entity(holder.index),
-                economy.map_chains.next_entity(holder.index),
+                arena.economy.map_chains.old_map_entity(holder.index),
+                arena.economy.map_chains.next_entity(holder.index),
             );
             self.register_starting_acquisition(holder, &player);
             if let Some(existing) = self.pickup_mut(holder.index) {

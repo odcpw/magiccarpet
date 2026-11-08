@@ -299,9 +299,83 @@ revival or no-Castle removal, and the actual flow/objective consumer. Preserve
 full original acceptance and source1200 countdown/allocation-failure behavior.
 Read current source instead of the bead's historical file paths. Extend its
 canonical family with owned state/behavior; keep scheduler/ABI wiring thin.
-AmberStream now owns the separate voxel backend/simulation/economy edit windows;
-request precise shared-file joins rather than editing over that work. Later
-rivals/boss acceptance stays queued with its existing dependencies intact.
+AmberStream's voxel joins landed at `b0db8ae4`; their shared source windows were
+handed back. Keep their unfinished isolated diagnostics and client work separate
+from this capability. Later rivals/boss acceptance stays queued with its existing
+dependencies intact.
+
+The lifecycle candidate now implements source fall/camera, current A4 Castle
+revival, full-arena burst/marker/holder births, mutable source spawn XY and public
+no-Castle recovery, plus per-participant original-font notices with a separate
+guarded, replayed presentation clock. This is implemented, not installed. Candidate3
+core/CAPI compilation passed with460 unchanged Rust inputs. The current-carrier,
+generation-bound Morph/Bee repair passes its focused discriminator1.092s and
+existing acquired all-tier/follow/expiry/reclaim check47.639s; source order0.617s
+and actual CAPI paused-clock/guard/replay5.760s pass. Candidate2's six family and
+public recovery controls remain unchanged. The full Mission23 natural1200 check
+failed1455.246s on Skeleton187's damage-target236 lookup. Its exact late target
+packet was not captured. RedElk's reviewed repair reads retained/current typed
+identity only at the actual source-reached reaction, preserves inner20940 versus
+outer73/79 tails, prior nonfatal word24 and cadenced axis-read order. Actual74
+still uses20C50; the misleading private20940 helper was renamed without an alias.
+All seven focused Skeleton timing controls pass on C5; its retained/reused
+control stopped because the fixture discarded the available real collision bank.
+That test now supplies the same bank, actor domains and player as production.
+
+C4's actual FIRST-cast carriers and source68D50 establish missing Castle
+prerequisites: LightningI30000 with no Castle, MeteorII80000 with only50000.
+Both public activations were accepted; source correctly suppressed production.
+C5 uses one Castle-free paid FireballI provocation and the actual80000 Castle
+entry requirement, preserving health, geometry, timing and downstream predicates.
+No spell-admission production change was needed. C5 release compilation passes
+with460 unchanged inputs; actual Mission23 defeat, full natural1200 countdown,
+real Castle revival and new holder generations PASS172.526s. Family controls,
+public recovery and CAPI pause/guard/replay also pass. Its human encounter stops
+at the declared contact point's terrain-clearance guard; C6 derives legal Z from
+that same XY and adds strict source envelope/range checks. Castleless death,
+banishment, objective and notice checks pass up to the final dropped-holder
+reclaim assertion. A genuine missing scheduler join left ordinary/persistent
+families0–2 without68FF0 callbacks. Root's reviewed fix admits those pickup roles
+while retaining dedicated active0/1/2 routes and dynamic/78 precedence. The same
+expiry assertion remains unchanged. C6 integrates this join and both exact
+fixture prerequisites onto delivered ABI base `d6665e38`. Release compilation
+passes with461 unchanged inputs and serializedcodegen1. Actual Castle revival
+through its full1200 countdown PASS181.159s; Castleless defeat, banishment,
+objective and all26 dropped-generation natural cleanup PASS2.024s. The real-bank
+retained-address control, active Fireball/Possession paths, public recovery,
+source order, CAPI pause/clock/replay and additive world-ABI boundary pass.
+The C6 human encounter reached actual lethal damage, fall, scatter, marker and
+owned mana, then stopped at the marker's original presentation assertion. The
+typed marker was excluded by the dynamic-slot raw fallback without a matching
+typed DTO join. C7 adds the source-owned marker presentation helper and one
+canonical consumer join; the original check remains unchanged. C7 compilation
+passes with461 unchanged inputs; the complete actual human encounter, original
+marker/burst DTOs, source camera, notice clock and public recovery PASS1.239s.
+CAPI pause/clock/ordered replay PASS0.652s and marker hide/reclaim PASS0.082s.
+Independent bounded original-acceptance/source/gate review found no further
+concrete defect. C6 and C7 differ only in the two pure marker-projection joins;
+reuse C6's qualified gameplay/1200 checks. Completed C6/C7 outputs are
+hash-verified before/after on Rig. New-family UBS has no critical or production
+warning; source wrapping arithmetic is intentional, with test/legacy findings
+and whole-package formatting debt retained. The integrated strict-Rig workspace
+all-target check PASS51.165s with461 Rust and37 extra inputs unchanged. It
+returned no local compiler artifacts; no cleanup or repeated check is needed.
+Full acceptance remains open until native/client delivery qualifies; installed
+Original24df bytes are unchanged. Frozen Original-only
+runtime and test C# compilation passes with68 immutable source inputs; Unity
+execution, matching native/player build and installation remain pending.
+
+Evidence is in `generated/player-lifecycle-20261107-integration` under
+`research/private/`. The next source candidate uses the existing native
+worktree with owned files only, excluding another owner's unfinished cfg fixture.
+Its applied Original UI patch contains only this notification consumer. Local
+Cargo cache bytes/links/timestamps were verified and relocated to existing RAM
+storage at the same target alias; duplicate returned metadata and completed test
+ELFs were byte-preserved on Rig. The inactive Original UnityLibrary cache also
+retains its5249 entries, byte/link/mode/time-verified at its original path via
+an existing RAM alias. Keep the5GB root floor and measured7.2GB heavy
+stage reserve; `/tmp` has only about0.85GB free. Do not remove source, data, current
+players or remote warm caches to create room.
 
 ### Current installed delivery: shared creature combat (2026-11-07)
 

@@ -7,10 +7,12 @@ fn possession_death_marker_requires_current_class3_but_always_consumes_the_mailb
         (None, 0, None),
         (Some(3), 77, None),
     ] {
-        let mut economy = session.session.state.live.economy.economy.clone();
-        let marker = economy
-            .allocate_player_death_marker(59, session.state.position)
-            .unwrap();
+        let mut arena = session.source_arena().clone();
+        let mut terrain = session.session.state.live.terrain.clone();
+        let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut arena, &mut terrain, 59, session.state.position,
+        ).unwrap().unwrap();
+        let economy = &mut arena.economy;
         {
             let row = economy
                 .player_death_markers
@@ -5856,9 +5858,11 @@ fn level_two_death_marker_redirect_follows_current_frozen_mana_chain() {
     assert!(arena.economy.merge_mana_spheres_with_entities(born, freed, Some(&mut arena.entities)));
     assert!(arena.economy.merge_mana_spheres_with_entities(born, spare, Some(&mut arena.entities)));
     assert_eq!((arena.entities[usize::from(freed)].class, arena.entities[usize::from(freed)].model), (0, 39));
-    let marker = arena.economy.allocate_player_death_marker(player, position).unwrap().source_entity_index;
+    let mut marker_terrain = terrain.clone();
+    let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+        &mut arena, &mut marker_terrain, player, position,
+    ).unwrap().unwrap().source_entity_index;
     assert_eq!(marker, spare, "the later freed slot is reused by the real marker constructor");
-    arena.retire_previous_source_projection(marker);
     assert_eq!(arena.redirect_mana_chain_to_marker(&chain, player, marker), 3,
         "hidden, freed and later live rows remain reachable in source order");
     assert_eq!(arena.economy.spheres().iter().find(|row| row.source_entity_index == hidden).unwrap().player_entity_index, marker);
@@ -5878,8 +5882,12 @@ fn level_two_marker_merge_resolves_current_slot_class_after_reuse() {
     let rival = session.players.iter().find(|row| row.entity_index != victim)
         .expect("actual rival owner").entity_index;
     let position = session.state.position;
-    let marker = session.economy_mut().allocate_player_death_marker(victim, position)
-        .expect("controlled marker allocation").source_entity_index;
+    let marker = {
+        let live = &mut session.session.state.live;
+        crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut live.economy, &mut live.terrain, victim, position,
+        ).unwrap().expect("controlled marker allocation").source_entity_index
+    };
     let marker_generation = session.economy().slot_generation(marker);
     let target = session.economy_mut().spawn_mana_sphere_from_death(901, position, 0, 1, 100, victim).unwrap() as u16;
     let source = session.economy_mut().spawn_mana_sphere_from_death(902, position, 0, 2, 50, rival).unwrap() as u16;

@@ -13,6 +13,7 @@
 #[path = "global_context_tests.rs"]
 mod global_context_tests;
 mod marked_spells;
+mod player_notifications;
 mod runtime_catalog;
 mod source_scoreboard;
 mod spells;
@@ -3242,6 +3243,12 @@ impl Mc2CampaignBackend {
     pub fn campaign_presentation_source(&self) -> &CampaignSession {
         &self.campaign
     }
+
+    /// Observe only the participant text domain, without projecting the world.
+    #[must_use]
+    pub fn participant_notifications(&self) -> Vec<sim_session::ParticipantNotification> {
+        player_notifications::observe(self)
+    }
 }
 
 impl GameAdapter for Mc2CampaignAdapter {
@@ -3649,6 +3656,7 @@ impl GameSessionBackend for Mc2CampaignBackend {
                 players: Vec::new(),
                 projection_error: Some(error.to_string()),
             }),
+            participant_notifications: self.participant_notifications(),
             player_spells: spells::observe(
                 shared_spells,
                 |holder| self.spell_holder_actor(holder),
@@ -3776,6 +3784,16 @@ impl GameSessionBackend for Mc2CampaignBackend {
         self.campaign.simulation_mut().clear_objective_textbox();
         self.replay_operations
             .push(crate::game_runtime::ReplayOperation::Pause);
+    }
+
+    fn presentation_frame(&mut self, notifications_visible: bool) {
+        self.campaign
+            .simulation_mut()
+            .present_player_lifecycle_notifications(notifications_visible);
+        self.replay_operations
+            .push(crate::game_runtime::ReplayOperation::PresentationFrame {
+                notifications_visible,
+            });
     }
 
     fn paused_frame_timed(
@@ -19787,6 +19805,13 @@ pub(crate) mod tests {
         for (operation_index, operation) in trace.operations.into_iter().enumerate() {
             let guard = current.identity().guard();
             match operation {
+                ReplayOperation::PresentationFrame { notifications_visible } => {
+                    current.presentation_frame(guard, notifications_visible).map_err(|error| {
+                        Mc2CampaignReplaySaveError::Restore(RestorePlayingError::Transition(
+                            crate::game_runtime::RuntimeTransitionError::SessionGuard(Box::new(error)),
+                        ))
+                    })?;
+                }
                 ReplayOperation::Pause => {
                     current.backend_mut().enter_pause();
                     continue;

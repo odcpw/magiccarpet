@@ -544,6 +544,10 @@ namespace MagicCarpet.Native
         private readonly CampaignTransitionPresenter.LoadingGate
             gameRuntimeLoadingPresentationGate = new();
         private EngineSessionTransport.CampaignSnapshotObservation gameRuntimeCampaignSnapshot;
+        private EngineSessionTransport.ParticipantNotificationsObservation gameRuntimeParticipantNotifications;
+        private string gameRuntimeNoticeObservationRuntimeGeneration;
+        private int gameRuntimeNoticeFrame = -1;
+        private string gameRuntimeNoticeSession;
         private GameRuntimeTransport.CompletionTransitionReceipt
             gameRuntimeLastCompletionTransitionReceipt;
         private string gameRuntimeSemanticEventCursor = "0";
@@ -14358,12 +14362,85 @@ namespace MagicCarpet.Native
         private void OnGUI()
         {
             var measuredStart = modernEnvironment?.Ready == true ? ModernCapture.BeginMeasurement() : 0;
-            try { DrawRuntimeGui(); }
+            try
+            {
+                DrawRuntimeGui(out var guiIdentity);
+                DrawGameRuntimeParticipantNotifications(guiIdentity);
+            }
             finally { ModernCapture.EndMeasurement("runtime_gui", measuredStart); }
         }
 
-        private void DrawRuntimeGui()
+        private void DrawGameRuntimeParticipantNotifications(GameRuntimeTransport.Identity guiIdentity)
         {
+            if (Event.current.type != EventType.Repaint || !gameRuntimeMode || session == null ||
+                fatalError != null || gameRuntimeSecretEntryPending || frontendMedia?.Visible == true ||
+                modernEnvironment?.SandboxActive == true || gameRuntimeTransitionPresenter?.HasFailure == true ||
+                string.IsNullOrWhiteSpace(gameRuntimeLoadingCachePath) || gameRuntimeCampaignSnapshot?.value == null)
+                return;
+            // Same source admission controls both clock and draw. Pause alone
+            // does not hide notices, including the last frame with timer zero.
+            EnsureGameRuntimeMenu();
+            if (playerPreferences?.IsOpen == true || gameRuntimeMenu.IsSourceDialogOpen ||
+                gameRuntimeAbandonConfirmationOpen)
+                return;
+            var identity = guiIdentity ?? session.GameRuntimeIdentity();
+            if (identity.mode is not (GameRuntimeTransport.PlayingMode or GameRuntimeTransport.PausedMode))
+                return;
+            var current = identity.session;
+            if (current == null) return;
+            var noticeObservation = gameRuntimeParticipantNotifications;
+            var sameNoticeIdentity = gameRuntimeNoticeObservationRuntimeGeneration == identity.generation &&
+                noticeObservation?.identity?.session_id == current.session_id &&
+                noticeObservation.identity.generation == current.generation &&
+                noticeObservation.identity.tick == current.tick &&
+                noticeObservation.identity.definition_hash == current.definition_hash &&
+                noticeObservation.identity.package_graph_hash == current.package_graph_hash;
+            EngineSessionTransport.ParticipantNotification[] notices;
+            if (sameNoticeIdentity)
+                notices = noticeObservation.value;
+            else if (gameRuntimeCampaignSnapshot.identity.session_id == current.session_id &&
+                gameRuntimeCampaignSnapshot.identity.generation == current.generation &&
+                gameRuntimeCampaignSnapshot.identity.tick == current.tick)
+                notices = gameRuntimeCampaignSnapshot.value.participant_notifications;
+            else
+            {
+                noticeObservation = session.GameRuntimeParticipantNotifications();
+                gameRuntimeParticipantNotifications = noticeObservation;
+                gameRuntimeNoticeObservationRuntimeGeneration = identity.generation;
+                notices = noticeObservation.value;
+            }
+            Require(notices != null, "participant notifications use the negotiated native observation");
+            // Pause/rekey may change the guard during one Unity frame; that
+            // does not create a second source text-render visit.
+            var noticeSession = current.session_id;
+            if (notices.Length != 0 && (gameRuntimeNoticeFrame != Time.frameCount ||
+                gameRuntimeNoticeSession != noticeSession))
+            {
+                // GUI layout/input/capacity probes never advance this clock.
+                // This runs once on a real repaint, after source menus process
+                // their input, using the exact same visibility as drawing.
+                noticeObservation = session.GameRuntimePresentationFrame(true);
+                gameRuntimeParticipantNotifications = noticeObservation;
+                gameRuntimeNoticeObservationRuntimeGeneration = identity.generation;
+                notices = noticeObservation.value;
+                gameRuntimeNoticeFrame = Time.frameCount;
+                gameRuntimeNoticeSession = noticeSession;
+            }
+            var paused = identity.mode == GameRuntimeTransport.PausedMode;
+            var completed = gameRuntimeCampaignSnapshot.value.objective_progress?.all_objectives_satisfied == true;
+            if (notices.Length == 0 && !paused && !completed) return;
+            var level = identity.active_runtime_flow.bound_level_id;
+            SourcePlayerNotificationsPresenter.Draw(notices,
+                paused,
+                gameRuntimeSourceMenus.MapOpen || gameRuntimeCampaignSnapshot.value.player_vitals.life < 0,
+                completed,
+                gameRuntimeMenu.GameplayText(level), gameRuntimeMenu.GameplayLanguageText,
+                gameRuntimeMenu.GameplayNoticeColor(level), gameRuntimeMenu.GameplayPausedColor(level));
+        }
+
+        private void DrawRuntimeGui(out GameRuntimeTransport.Identity guiIdentity)
+        {
+            guiIdentity = null;
             if (modernEnvironment?.SandboxActive == true)
             {
                 modernEnvironment.DrawHud(null);
@@ -14437,7 +14514,6 @@ namespace MagicCarpet.Native
                 }
                 return;
             }
-            GameRuntimeTransport.Identity guiIdentity = null;
             if (gameRuntimeMode && session != null && fatalError == null)
             {
                 // Reuse only within this GUI callback. A menu that can change

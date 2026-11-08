@@ -1380,6 +1380,13 @@ int32_t mc_game_runtime_paused_frame_v1(
 int32_t mc_game_runtime_paused_frame_timed_v1(
     uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
     uint64_t expected_tick, uint32_t elapsed_centiseconds, uint8_t show_objective);
+/* One admitted UI frame in Playing or Paused. Does not advance gameplay/RNG.
+ * Call once per rendered frame; JSON observation/capacity queries are read-only. */
+int32_t mc_game_runtime_presentation_frame_v1(
+    uint64_t handle, uint64_t runtime_generation, uint64_t session_generation,
+    uint64_t expected_tick, uint8_t notifications_visible);
+int32_t mc_game_runtime_participant_notifications_json_v1(
+    uint64_t handle, uint8_t *buffer, uint32_t capacity, uint32_t *out_length);
 int32_t mc_game_runtime_resume_v1(
     uint64_t handle, uint64_t generation);
 int32_t mc_game_runtime_accept_transition_v1(

@@ -64,6 +64,12 @@ impl SourcePlayerResult {
         self.source_player_slot
     }
 
+    /// Single-player PlayerEvents case 0x0f records the no-Castle retry in
+    /// byte 2 of the current player header before invoking 5C950.
+    pub(crate) fn record_single_player_no_castle_recovery(&mut self) {
+        self.headers[usize::from(self.source_player_slot)] |= 0x000c_0000;
+    }
+
     /// Return the raw source-width word, preserving ordinary result 0x0008.
     pub(crate) const fn raw_word(&self) -> u16 {
         (self.headers[self.source_player_slot as usize] >> 16) as u16

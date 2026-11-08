@@ -107,6 +107,11 @@ namespace MagicCarpet.Native
             ? value : throw new InvalidDataException("source gameplay sprite is unbound: " + selector);
         internal Color GameplayColor(string profile, byte index) => profiles[profile].Palette[index];
         internal byte GameplayBlackIndex(string profile) => checked((byte)profiles[profile].Colours[0]);
+        internal Color GameplayNoticeColor(string profile) => profiles[profile].Palette[profiles[profile].Colours[2]];
+        internal Color GameplayPausedColor(string profile) => profiles[profile].Palette[profiles[profile].Colours[1]];
+        // Source SelectedMenuItem gates its confirmation/save/load dialogs;
+        // the ordinary options/volume submenus do not set that selector.
+        internal bool IsSourceDialogOpen => confirmation != CampaignMenuPresenter.Action.None;
         internal bool DismissSubmenu()
         {
             if (confirmation == CampaignMenuPresenter.Action.None && !options && volume == 0) return false;
@@ -219,7 +224,6 @@ namespace MagicCarpet.Native
                 DrawOptions(profile, preferences, view, At, Click, DrawBitmap);
                 return CampaignMenuPresenter.Action.None;
             }
-            profile.Text.DrawText(language(425), 132, 50, view, profile.Palette[profile.Colours[1]]);
             foreach (var selector in new[] { 174, 175, 176, 177, 178 })
             {
                 var enabled = selector switch {

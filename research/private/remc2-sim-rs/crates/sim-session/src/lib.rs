@@ -98,6 +98,18 @@ pub struct PlayerVitals {
     pub max_mana: i32,
 }
 
+/// A live participant notice, independent of the participant's current actor.
+/// The backend owns its frame clock; rendering this observation never ages it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ParticipantNotification {
+    pub participant: RuntimeParticipantId,
+    pub is_local: bool,
+    pub display_name: String,
+    pub kind: SemanticId,
+    /// Zero is the last visible frame, rather than an inactive notice.
+    pub remaining_frames: i16,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SourceSorcererScore {
     pub source_slot: u8,
@@ -255,6 +267,7 @@ pub struct CampaignSnapshot {
     /// This is a live result, distinct from completion or a secret return.
     pub return_to_title_requested: bool,
     pub source_scoreboard: SourceScoreboard,
+    pub participant_notifications: Vec<ParticipantNotification>,
     /// Source Spider immobilization countdown; presentation must not invent one.
     pub player_immobilized_ticks: u16,
     pub source_camera_pose: CameraPose,
@@ -677,6 +690,9 @@ pub trait GameSessionBackend {
     /// Apply package-declared presentation changes at an accepted pause edge.
     /// This cannot advance gameplay or fail after lifecycle publication.
     fn enter_pause(&mut self) {}
+    /// Apply one admitted presentation frame without advancing gameplay. This
+    /// work is infallible after the exact session guard has been validated.
+    fn presentation_frame(&mut self, _notifications_visible: bool) {}
     /// Service deterministic backend work that the bound package declares
     /// before its gameplay pause gate. Implementations must not advance the
     /// gameplay tick or execute a gameplay command.
@@ -958,6 +974,18 @@ impl<B: GameSessionBackend> GameSession<B> {
             .paused_frame_timed(elapsed_centiseconds, show_objective)
             .map_err(GameSessionError::Backend)?;
         Ok(self.snapshot())
+    }
+
+    /// Advance package-owned presentation state through its own clock. An
+    /// observation or repeated raster copy must never perform this mutation.
+    pub fn presentation_frame(
+        &mut self,
+        guard: SessionGuard,
+        notifications_visible: bool,
+    ) -> Result<(), SessionGuardError> {
+        self.validate_guard(guard)?;
+        self.backend.presentation_frame(notifications_visible);
+        Ok(())
     }
 
     /// Reset against the already-bound immutable definition.

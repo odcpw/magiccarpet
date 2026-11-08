@@ -4784,6 +4784,17 @@ namespace MagicCarpet.Native.Tests
                 afterSecondPausedFrame.value.state_hash,
                 Is.Not.EqualTo(afterFirstPausedFrame.value.state_hash));
 
+            var noticesBefore = runtime.ParticipantNotifications();
+            Assert.That(noticesBefore.value, Is.Empty);
+            var hiddenFrame = runtime.PresentationFrame(false);
+            var visibleFrame = runtime.PresentationFrame(true);
+            Assert.That(hiddenFrame.identity.tick, Is.EqualTo(before.identity.tick));
+            Assert.That(visibleFrame.identity.generation, Is.EqualTo(paused.session.generation));
+            Assert.That(visibleFrame.value, Is.Empty);
+            Assert.That(runtime.CampaignSnapshot().value.state_hash,
+                Is.EqualTo(afterSecondPausedFrame.value.state_hash),
+                "a participant presentation frame does not run the paused RNG/objective prefix");
+
             var resumed = runtime.Resume();
             Assert.That(resumed.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
             Assert.That(resumed.generation, Is.EqualTo("5"));

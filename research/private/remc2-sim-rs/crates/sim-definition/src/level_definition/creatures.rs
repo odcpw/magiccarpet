@@ -5,6 +5,36 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A player's source-owned role, independent of numeric actor selectors.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PlayerKind {
+    Human,
+    Rival,
+}
+
+/// Rules for a player's source death fall and subsequent revival wait.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlayerLifecycleProperties {
+    pub fall_acceleration: i16,
+    pub terminal_fall_velocity: i16,
+    pub revival_wait_visits: i32,
+    pub revival_max_life: i32,
+    pub revival_max_mana: i32,
+    pub death_notice_frames: i16,
+    pub banishment_notice_frames: i16,
+}
+
+/// Source `sub_5E310` and `sub_5E7C0` defaults.
+pub const PLAYER_LIFECYCLE_PROPERTIES: PlayerLifecycleProperties = PlayerLifecycleProperties {
+    fall_acceleration: 2,
+    terminal_fall_velocity: -256,
+    revival_wait_visits: 1_200,
+    revival_max_life: 10_000,
+    revival_max_mana: 1_000,
+    death_notice_frames: 100,
+    banishment_notice_frames: 200,
+};
+
 /// Dragon constructor, movement and combat defaults shared by ordinary and
 /// encounter-produced roots. Source descriptor and sprite identities belong
 /// to the MC2 adapter, not to these game rules.

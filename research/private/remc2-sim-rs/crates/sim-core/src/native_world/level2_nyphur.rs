@@ -250,6 +250,8 @@ impl Level2NyphurDispatchTrace {
 /// the source position/life/mana projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Level2NyphurCommonUpkeep {
+    #[cfg(test)]
+    damage_trace_context: Option<(SourceEntityHandle, usize)>,
     player_slot: u8,
     player_color_index: u8,
     pub(super) source_slot: u16,
@@ -472,6 +474,8 @@ impl Level2NyphurCommonUpkeep {
             move_speed: 0,
             move_speed_flag: 0,
             flight_water_counter: 0,
+            #[cfg(test)]
+            damage_trace_context: None,
             flight_immobilize_counter: 0,
             flight_immobilize_subcounter: 0,
             flight_recovery_latch: false,
@@ -1637,6 +1641,14 @@ impl Level2NyphurCommonUpkeep {
         if attacker == 0 {
             return self.return_value;
         }
+        #[cfg(test)]
+        let damage_trace = self.damage_trace_context.take().map(|(target, event_cursor)| {
+            assert_eq!(target.source_slot, source.index,
+                "the owner-bound caller supplies this actual rival generation");
+            let mailbox = (source.source_upkeep_payload(), attacker);
+            let writer = crate::native_world::area_damage::current_actor_mailbox_writer(target, mailbox);
+            (target, event_cursor, mailbox, writer, self.life)
+        });
         source.record[42..44].copy_from_slice(&attacker.to_le_bytes());
         let mut control_flags = source.control_flags;
         if control_flags & 0x0000_4000 != 0 || control_flags & 0x0040_0000 != 0 {
@@ -1654,6 +1666,14 @@ impl Level2NyphurCommonUpkeep {
         }
         let damage = source.source_upkeep_payload();
         self.life = self.life.wrapping_sub(damage);
+        #[cfg(test)]
+        if let Some((target, event_cursor, mailbox, writer, life_before)) = damage_trace {
+            crate::native_world::area_damage::trace_player_damage_consumption(
+                crate::native_world::area_damage::PlayerDamageConsumptionReceipt {
+                    target, event_cursor, mailbox, writer, life_before, life_after: self.life,
+                },
+            );
+        }
         self.move_boost = (damage / 10).clamp(0, 80) as i16;
         if let Some((target_position, _)) = attacker_target {
             self.yaw_0x1e_30 =
@@ -1699,6 +1719,10 @@ impl Level2NyphurCommonUpkeep {
         } else {
             source.apply_source_sub_5ef70();
             source.clear_source_upkeep_owner();
+            #[cfg(test)]
+            if let Some((target, _, mailbox, _, _)) = damage_trace {
+                let _ = crate::native_world::area_damage::take_player_mailbox_writer(target, mailbox);
+            }
             self.return_value = 1;
         }
         self.return_value
@@ -3760,6 +3784,13 @@ impl std::ops::DerefMut for RivalWizardRoster {
 }
 
 impl Level2NyphurDispatcher {
+    /// The source adapter installs this immediately around its owner-bound
+    /// callback. Missing/no-hit paths must clear it again after the call.
+    #[cfg(test)]
+    pub(crate) fn set_damage_trace_context(&mut self, context: Option<(SourceEntityHandle, usize)>) {
+        self.common_upkeep.damage_trace_context = context;
+    }
+
     pub(super) fn has_duel_target(&self) -> bool {
         self.common_upkeep.contact_target_entity.is_some_and(|slot| slot != 0)
     }

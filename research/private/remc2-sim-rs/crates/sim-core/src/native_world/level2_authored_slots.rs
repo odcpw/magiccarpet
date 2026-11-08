@@ -1452,6 +1452,16 @@ impl Level2EconomyState {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
+        self.initialize_starting_spell_holder_at(source_entity_index, family, position)
+    }
+
+    /// Initialize the canonical holder after the caller's source allocation.
+    pub(super) fn initialize_starting_spell_holder_at(
+        &mut self,
+        source_entity_index: u16,
+        family: u8,
+        position: Position,
+    ) -> Option<Level2StartingSpellHolderSource> {
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
             .map_chains

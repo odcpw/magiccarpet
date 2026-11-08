@@ -38,6 +38,7 @@ namespace MagicCarpet.Native
         private bool sourceLeftHeld;
         private bool sourceMapCursorOwned, previousCursorVisible;
         internal bool IsSourceDialogOpen => scrollDialog != null ||
+            campaignCache?.PauseMenu?.IsSourceDialogOpen == true ||
             lastMode == GameRuntimeTransport.CampaignMode && campaignCache?.Campaign?.Motion is { } motion &&
             (!motion.Ready || motion.Travelling);
         internal bool SourceBriefingReady => lastMode == GameRuntimeTransport.CampaignMode &&
@@ -112,6 +113,11 @@ namespace MagicCarpet.Native
             campaignCache.PauseMenu.GameplayColor(campaignCache.ForMission(level).pause_profile, index);
         internal byte GameplayBlackIndex(string level) =>
             campaignCache.PauseMenu.GameplayBlackIndex(campaignCache.ForMission(level).pause_profile);
+        internal Color GameplayNoticeColor(string level) =>
+            campaignCache.PauseMenu.GameplayNoticeColor(campaignCache.ForMission(level).pause_profile);
+        internal Color GameplayPausedColor(string level) =>
+            campaignCache.PauseMenu.GameplayPausedColor(campaignCache.ForMission(level).pause_profile);
+        internal string GameplayLanguageText(int selector) => SourceText(selector);
         internal bool DismissPauseSubmenu() => campaignCache?.PauseMenu?.DismissSubmenu() == true;
 
         internal SourcePauseMenu.ConfirmationResult DrawAbandonConfirmation(

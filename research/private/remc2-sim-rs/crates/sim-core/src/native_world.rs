@@ -1571,13 +1571,6 @@ pub struct Level2PlayerDeathMarker {
     pub active: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2PlayerDeathNotification {
-    pub id: u16,
-    pub state: u8,
-    pub timer: i16,
-}
-
 /// The class-15 row created by remc2 `sub_69250` through the family
 /// `arsub_2a881e`/`AddSpellXX_XX_51120` constructor.  It deliberately lives
 /// in the economy arena so it consumes and returns the same source slots as
@@ -3091,7 +3084,9 @@ pub struct Mc2LiveState {
     /// Source per-player `MenuState_0x3DF`, distinct from the spell-fire
     /// holder's `spell_menu_stage` byte.
     pub(crate) player_menu_state: u8,
-    pub(crate) player_death_notification: Option<Level2PlayerDeathNotification>,
+    pub(crate) player_lifecycle_notifications:
+        creatures::player_lifecycle::notifications::PlayerLifecycleNotifications,
+    pub(crate) player_spawn_positions: creatures::player_lifecycle::PlayerSpawnPositions,
     pub(crate) level_exit: LevelExitSequence,
     pub(crate) level2_group8_activated: bool,
     /// Mutable selected-objective stage state consumed by class-11/model-32

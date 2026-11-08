@@ -2882,9 +2882,9 @@ mod lightning_consumer_tests {
         assert_eq!(terrain.source_predicted_position(), prior_scratch,
             "the stationary branch does not write source movement scratch");
 
-        let marker = arena.economy.allocate_player_death_marker(
-            root.source_entity_index, burst_position,
-        ).expect("actual typed player-death marker").source_entity_index;
+        let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut arena, &mut terrain, root.source_entity_index, burst_position,
+        ).unwrap().expect("actual typed player-death marker").source_entity_index;
         assert_eq!(source_target::read(&arena, Default::default(), marker).unwrap().unwrap().yaw, None);
         let (from, distance) = {
             let part = arena.economy.authored_dragon_parts.iter_mut()

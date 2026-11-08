@@ -23,6 +23,7 @@ pub use creatures::{
     DRAGON_CLASS_PROPERTIES, DragonClassProperties,
     CymmerianClassProperties, FINAL_BOSS_CLASS_PROPERTIES, FinalBossClassProperties,
     WORM_PROPERTIES, WormProperties, WYVERN_CLASS_PROPERTIES, WyvernClassProperties,
+    PLAYER_LIFECYCLE_PROPERTIES, PlayerKind, PlayerLifecycleProperties,
 };
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};

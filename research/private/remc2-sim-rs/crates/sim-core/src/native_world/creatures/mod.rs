@@ -20,6 +20,7 @@ pub(crate) mod creature_26;
 pub(crate) mod creature_27;
 pub(crate) mod creature_28;
 pub(crate) mod morph;
+pub(crate) mod player_lifecycle;
 pub(crate) mod raw_lifecycle;
 pub(crate) mod settlements;
 pub(crate) mod skeleton;

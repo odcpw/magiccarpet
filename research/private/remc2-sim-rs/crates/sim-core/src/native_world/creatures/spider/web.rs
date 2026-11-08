@@ -41,12 +41,16 @@ pub(crate) struct WebImpactReceipt {
 #[cfg(test)]
 thread_local! {
     static WEB_TRACE: std::cell::RefCell<Option<(
-        crate::campaign::source_arena::SourceEntityHandle, Vec<WebLaunchReceipt>, Vec<WebImpactReceipt>,
+        Vec<crate::campaign::source_arena::SourceEntityHandle>, Vec<WebLaunchReceipt>, Vec<WebImpactReceipt>,
     )>> = const { std::cell::RefCell::new(None) };
 }
 #[cfg(test)]
 pub(crate) fn start_trace(spider: crate::campaign::source_arena::SourceEntityHandle) {
-    WEB_TRACE.with(|trace| *trace.borrow_mut() = Some((spider, Vec::new(), Vec::new())));
+    start_trace_for_roots(&[spider]);
+}
+#[cfg(test)]
+pub(crate) fn start_trace_for_roots(spiders: &[crate::campaign::source_arena::SourceEntityHandle]) {
+    WEB_TRACE.with(|trace| *trace.borrow_mut() = Some((spiders.to_vec(), Vec::new(), Vec::new())));
 }
 #[cfg(test)]
 pub(crate) fn trace_snapshot() -> (Vec<WebLaunchReceipt>, Vec<WebImpactReceipt>) {
@@ -172,7 +176,7 @@ pub(crate) fn launch(
     if let (Some(spider), Some(projectile)) = (shooter, arena.handle(slot)) {
         WEB_TRACE.with(|trace| {
             if let Some((wanted, launches, _)) = trace.borrow_mut().as_mut()
-                && *wanted == spider && launches.len() < 64
+                && wanted.contains(&spider) && launches.len() < 64
             {
                 launches.push(WebLaunchReceipt { spider, projectile, target: target_slot,
                     packet: arena.entities[usize::from(slot)].clone() });

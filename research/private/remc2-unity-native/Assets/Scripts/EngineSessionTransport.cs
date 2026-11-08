@@ -187,6 +187,7 @@ namespace MagicCarpet.Native
             public SourceMenuAdmission source_menu_admission;
             public bool return_to_title_requested;
             public SourceScoreboard source_scoreboard;
+            public ParticipantNotification[] participant_notifications;
             public SpellObservation[] player_spells;
             public ushort player_immobilized_ticks;
             public CameraPose source_camera_pose;
@@ -213,6 +214,21 @@ namespace MagicCarpet.Native
         {
             public Identity identity;
             public CampaignSnapshotValue value;
+        }
+
+        [Serializable]
+        internal sealed class ParticipantNotification
+        {
+            public string participant, display_name, kind;
+            public bool is_local;
+            public short remaining_frames;
+        }
+
+        [Serializable]
+        internal sealed class ParticipantNotificationsObservation
+        {
+            public Identity identity;
+            public ParticipantNotification[] value;
         }
 
         [Serializable]

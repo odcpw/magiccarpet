@@ -2851,17 +2851,13 @@ mod tests {
                 &terrain,
             )
             .unwrap() as u16;
-        let marker = arena
-            .economy
-            .allocate_player_death_marker(player, session.state.position)
-            .unwrap()
-            .source_entity_index;
+        let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut arena, &mut terrain, player, session.state.position,
+        ).unwrap().unwrap().source_entity_index;
         let lists = capture_effect_lists(&mut arena, None);
-        let later = arena
-            .economy
-            .allocate_player_death_marker(player, session.state.position)
-            .unwrap()
-            .source_entity_index;
+        let later = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut arena, &mut terrain, player, session.state.position,
+        ).unwrap().unwrap().source_entity_index;
 
         let before_flags = arena.economy.reset_hash();
         apply_encounter_world_action(

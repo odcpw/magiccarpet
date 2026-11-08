@@ -2281,8 +2281,9 @@ mod tests {
         let mut position = session.state.position;
         position.z = terrain.ground_height(position);
         let first = arena.allocate_authored_model39(0, 0, position).unwrap().source_entity_index;
-        let marker = arena.allocate_player_death_marker(session.state.entity_index, position)
-            .unwrap().source_entity_index;
+        let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut arena, &mut terrain, session.state.entity_index, position,
+        ).unwrap().unwrap().source_entity_index;
         let middle = arena.allocate_authored_model39(0, 0, position).unwrap().source_entity_index;
         let last_position = Position { x: position.x.wrapping_add(4096), ..position };
         let last = arena.allocate_authored_model39(0, 0, last_position).unwrap().source_entity_index;
@@ -2316,9 +2317,10 @@ mod tests {
         assert_eq!((arena.entities[usize::from(reused)].class,
             arena.entities[usize::from(reused)].model), (0, 39),
             "49F90 retains the hidden model39 packet before marker allocation");
-        let new_marker = arena.allocate_player_death_marker(session.state.entity_index, position).unwrap();
+        let new_marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+            &mut arena, &mut terrain, session.state.entity_index, position,
+        ).unwrap().unwrap();
         assert_eq!(new_marker.source_entity_index, reused);
-        arena.retire_previous_source_projection(reused);
         assert_eq!(chain.rows(&arena.economy, &arena.entities).iter()
             .map(|row| row.source_slot).collect::<Vec<_>>(), vec![first],
             "marker NewEvent cuts the current source link after49F90 reclaim");

@@ -59,6 +59,8 @@ namespace MagicCarpet.Native
             this.background = background;
         }
 
+        internal int LineAdvance => font.advance_y;
+
         internal void DrawText(string text, int x, int y, Rect view, Color? color = null)
         {
             var start = x;

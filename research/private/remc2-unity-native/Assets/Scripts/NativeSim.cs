@@ -2750,6 +2750,15 @@ namespace MagicCarpet.Native
             ulong expectedTick, uint elapsedCentiseconds, byte showObjective);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_presentation_frame_v1(
+            ulong handle, ulong runtimeGeneration, ulong sessionGeneration,
+            ulong expectedTick, byte notificationsVisible);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_game_runtime_participant_notifications_json_v1(
+            ulong handle, IntPtr buffer, uint capacity, out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_game_runtime_resume_v1(
             ulong handle,
             ulong generation);

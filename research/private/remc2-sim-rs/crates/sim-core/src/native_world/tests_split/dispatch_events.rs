@@ -3629,14 +3629,9 @@ fn level_two_player_contact_runs_remc2_action2_death_lifecycle_on_following_visi
             crate::level1_mission::PLAYER_DEATH_MARKER_PARTICLE_PARAMETER,
         )
     );
-    assert_eq!(
-        session.player_death_notification,
-        Some(Level2PlayerDeathNotification {
-            id: 374,
-            state: 1,
-            timer: 100,
-        })
-    );
+    let notice = session.player_lifecycle_notifications.entries()[usize::from(session.state.player_color_index)];
+    assert_eq!((notice.kind, notice.source_owner, notice.state, notice.remaining_frames),
+        (Some(creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Died), session.state.entity_index, 1, 100));
     assert!(!session.dispatch_events().iter().any(|event| matches!(
         event,
         Mc2DispatchEvent::Economy {
@@ -3809,10 +3804,11 @@ fn level_two_player_death_dispatch_rejects_wrong_selector_or_stale_identity() {
             candidate.economy.entities[player_index].set_source_action(2);
         }
         let source_id = candidate.economy.entities[player_index].source_id;
+        let event_start = candidate.economy.events().len();
         candidate.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(!candidate.economy.death_bursts.iter().any(|burst| {
-            burst.parent_entity_index == player_entity_index && burst.id_entity_index == source_id
-        }));
+        assert!(!candidate.economy.events()[event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, id_entity_index, .. }
+                if *parent_entity_index == player_entity_index && *id_entity_index == source_id)));
     }
 }
 
@@ -3826,18 +3822,14 @@ fn level_two_player_dying_burst_adds_only_remc2_control_byte_bit_80() {
     let player_entity_index = session.state.entity_index;
     let source_id = session.economy.entities[usize::from(player_entity_index)].source_id;
     let position = session.state.position;
-    let source_slot = session
-        .economy_mut()
-        .spawn_player_dying_burst(player_entity_index, source_id, position)
-        .expect("player death burst slot");
-    let burst = session
-        .economy()
-        .death_bursts()
-        .iter()
-        .find(|burst| burst.source_entity_index == source_slot)
-        .expect("player death burst carrier");
-    assert_eq!(burst.control_flags, SOURCE_REPLACEABLE_FLAG | 0x80);
-    assert_eq!(burst.id_entity_index, source_id);
+    let particles = session.session.definition.presentation.particles.clone();
+    let live = &mut session.session.state.live;
+    let source_slot = crate::native_world::creatures::player_lifecycle::spawn_dying_burst(
+        &mut live.economy, &mut live.terrain, &particles, player_entity_index, position,
+    ).unwrap().expect("player death burst slot");
+    let burst = &live.economy.entities[usize::from(source_slot)];
+    assert_eq!(burst.control_flags, SOURCE_REPLACEABLE_FLAG | 4 | 0x80);
+    assert_eq!(burst.source_id, source_id);
     assert_eq!(burst.position, position);
 }
 
@@ -3848,7 +3840,10 @@ fn level_two_player_contact_rebuild_reuses_burst_then_skips_next_replaceable() {
     let mut session = inspection
         .level2_reset_session()
         .expect("Level 2 replacement cursor session");
-    let economy = &mut session.economy;
+    let particles = session.session.definition.presentation.particles.clone();
+    let live = &mut session.session.state.live;
+    let economy = &mut live.economy;
+    let terrain = &mut live.terrain;
     economy.free_slots.clear();
     economy.replacement_cursor_exclusions.clear();
     economy.castle_children.clear();
@@ -3917,18 +3912,26 @@ fn level_two_player_contact_rebuild_reuses_burst_then_skips_next_replaceable() {
         });
     }
 
-    let burst_slot = economy
-        .spawn_player_dying_burst(111, 777, position)
-        .expect("burst replaces the lowest candidate");
+    // This configured cursor control isolates the same four candidates as
+    // before, now that the full source allocator also sees raw rows.
+    for row in economy.entities.iter_mut() {
+        row.set_control_flags(row.control_flags & !SOURCE_REPLACEABLE_FLAG);
+    }
+    economy.rebuild_free_arena(&[]);
+    economy.economy.free_slots.clear();
+    let burst_slot = crate::native_world::creatures::player_lifecycle::spawn_dying_burst(
+        economy, terrain, &particles, 111, position,
+    ).unwrap().expect("burst replaces the lowest candidate");
     assert_eq!(burst_slot, 900);
     economy.rebuild_free_arena(&[]);
-    let marker = economy
-        .allocate_player_death_marker(111, position)
-        .expect("marker reuses the rebuilt lowest replaceable");
+    economy.economy.free_slots.clear();
+    let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+        economy, terrain, 111, position,
+    ).unwrap().expect("marker reuses the rebuilt lowest replaceable");
     assert_eq!(marker.source_entity_index, 900);
     economy.decrement_replacement_cursor_after_player_contact();
     assert_eq!(
-        economy.allocate_slot(),
+        economy.allocate_source_slot(),
         Some(902),
         "tail decrement excludes candidate 901, so the next allocation gets 902"
     );
@@ -4057,7 +4060,7 @@ fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
         session.effect_journal().receipt(),
         session.dispatch_events().to_vec(),
         session.economy().player_death_markers().to_vec(),
-        session.player_death_notification,
+        session.player_lifecycle_notifications.clone(),
     );
 
     session.reset();
@@ -4065,7 +4068,7 @@ fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
     assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
     assert!(session.dispatch_events().is_empty());
     assert!(session.economy().player_death_markers().is_empty());
-    assert_eq!(session.player_death_notification, None);
+    assert_eq!(session.player_lifecycle_notifications, Default::default());
 
     session.player_life = 100;
     session.economy.entities[local_index].life = 100;
@@ -4080,7 +4083,7 @@ fn level_two_player_death_reset_replays_hash_events_and_audio_exactly() {
         session.effect_journal().receipt(),
         session.dispatch_events().to_vec(),
         session.economy().player_death_markers().to_vec(),
-        session.player_death_notification,
+        session.player_lifecycle_notifications.clone(),
     );
     assert_eq!(replay, first);
 }

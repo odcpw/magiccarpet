@@ -109,6 +109,9 @@ pub(crate) enum ReplayOperation<C> {
         #[serde(default, skip_serializing_if = "is_false")]
         show_objective: bool,
     },
+    PresentationFrame {
+        notifications_visible: bool,
+    },
     SpeechPreference {
         enabled: bool,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1258,17 +1261,26 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                             command_index: operation_index,
                             error,
                         }
-                    })?
+                    })?;
                 }
                 ReplayOperation::PausedFrame {
                     elapsed_centiseconds,
                     show_objective,
+                } => {
+                    candidate
+                        .paused_frame_timed(guard, elapsed_centiseconds, show_objective)
+                        .map_err(|error| RestorePlayingError::ReplayPausedFrame {
+                            operation_index,
+                            error,
+                        })?;
+                }
+                ReplayOperation::PresentationFrame {
+                    notifications_visible,
                 } => candidate
-                    .paused_frame_timed(guard, elapsed_centiseconds, show_objective)
-                    .map_err(|error| RestorePlayingError::ReplayPausedFrame {
-                        operation_index,
-                        error,
-                    })?,
+                    .presentation_frame(guard, notifications_visible)
+                    .map_err(Box::new)
+                    .map_err(RuntimeTransitionError::SessionGuard)
+                    .map_err(RestorePlayingError::Transition)?,
             };
             observe(&candidate);
         }
@@ -1595,6 +1607,33 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .paused_frame_timed(session_guard, elapsed_centiseconds, show_objective)
             .map_err(PausedFrameError::Session)?;
         Ok(self.identity())
+    }
+
+    /// Service exactly one presentation frame in either gameplay mode. This
+    /// is separate from paused pre-gate work and cannot advance the gameplay
+    /// tick, RNG or actor schedule. Both guards are checked before mutation.
+    pub fn presentation_frame(
+        &mut self,
+        guard: RuntimeGuard,
+        session_guard: SessionGuard,
+        notifications_visible: bool,
+    ) -> Result<(), RuntimeTransitionError> {
+        self.validate_guard(guard)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::Guard)?;
+        if !matches!(self.state, RuntimeState::Playing { .. }) {
+            return Err(RuntimeTransitionError::InvalidMode {
+                expected: RuntimeMode::Playing,
+                actual: self.identity().mode,
+            });
+        }
+        let RuntimeState::Playing { session, .. } = &mut self.state else {
+            unreachable!("validated gameplay mode owns its session")
+        };
+        session
+            .presentation_frame(session_guard, notifications_visible)
+            .map_err(Box::new)
+            .map_err(RuntimeTransitionError::SessionGuard)
     }
 
     /// Abandon the active gameplay session and return this runtime to Title.

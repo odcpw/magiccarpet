@@ -46,6 +46,8 @@ Thumbs.db
 
 # Rust, web, probe, and native build products.
 **/target/
+# The local Cargo cache may be relocated with a filesystem alias.
+/research/private/remc2-sim-rs/target
 **/node_modules/
 **/dist/
 **/artifacts/

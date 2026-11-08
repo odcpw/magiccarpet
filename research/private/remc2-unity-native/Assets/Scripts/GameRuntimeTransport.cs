@@ -66,6 +66,7 @@ namespace MagicCarpet.Native
             public InstalledPackageSetTransport installed_package_set;
             public ReplaySaveTransport replay_save;
             public PausedFrameTransport paused_frame;
+            public PresentationFrameTransport presentation_frame;
             public RuntimeFlowContract runtime_flow;
             public CompletionTransitionTransport completion_transition;
             public Limits limits;
@@ -100,6 +101,13 @@ namespace MagicCarpet.Native
             public string session_identity;
             public string deterministic_work;
             public string replay;
+        }
+
+        [Serializable]
+        internal sealed class PresentationFrameTransport
+        {
+            public string transport, observation_transport, gameplay_tick,
+                session_identity, deterministic_work, replay;
         }
 
         [Serializable]
@@ -965,6 +973,36 @@ namespace MagicCarpet.Native
                 EngineSessionTransport.CampaignSnapshotForHandle(RequireHandle()));
         }
 
+        internal EngineSessionTransport.ParticipantNotificationsObservation ParticipantNotifications()
+        {
+            RequireSessionMode(allowPaused: true, "participant notifications");
+            var observation = ReadJson<EngineSessionTransport.ParticipantNotificationsObservation>(
+                (IntPtr buffer, uint capacity, out uint length) =>
+                    NativeSim.mc_game_runtime_participant_notifications_json_v1(
+                        RequireHandle(), buffer, capacity, out length),
+                "read participant notifications");
+            if (observation?.identity == null || observation.value == null ||
+                observation.identity.session_id != Current.session.session_id ||
+                observation.identity.generation != Current.session.generation ||
+                observation.identity.tick != Current.session.tick)
+                throw new InvalidDataException("participant notifications are not identity-bound");
+            return observation;
+        }
+
+        internal EngineSessionTransport.ParticipantNotificationsObservation PresentationFrame(bool notificationsVisible)
+        {
+            RequireSessionMode(allowPaused: true, "presentation frame");
+            var before = Current;
+            // This status-only call mutates once. The bounded JSON getter below
+            // is read-only, including its capacity probe.
+            Check(NativeSim.mc_game_runtime_presentation_frame_v1(
+                RequireHandle(), ParseCounter(before.generation, "generation"),
+                ParseCounter(before.session.generation, "session_generation"),
+                ParseCounter(before.session.tick, "tick"), notificationsVisible ? (byte)1 : (byte)0),
+                "service presentation frame");
+            return ParticipantNotifications();
+        }
+
         internal EngineSessionTransport.CampaignSnapshotObservation CampaignStep(
             sbyte roll,
             sbyte pitch,
@@ -1128,6 +1166,13 @@ namespace MagicCarpet.Native
                 contract.paused_frame.session_identity != "unchanged" ||
                 contract.paused_frame.deterministic_work != "package_declared_pre_gate" ||
                 contract.paused_frame.replay != "ordered_operation" ||
+                contract.presentation_frame == null ||
+                contract.presentation_frame.transport != "mc_game_runtime_presentation_frame_v1" ||
+                contract.presentation_frame.observation_transport != "mc_game_runtime_participant_notifications_json_v1" ||
+                contract.presentation_frame.gameplay_tick != "frozen" ||
+                contract.presentation_frame.session_identity != "unchanged" ||
+                contract.presentation_frame.deterministic_work != "package_presentation_only" ||
+                contract.presentation_frame.replay != "ordered_operation" ||
                 contract.runtime_flow == null ||
                 contract.runtime_flow.title != "absent" ||
                 contract.runtime_flow.loading != "pending_definition.runtime_flow" ||

@@ -573,6 +573,17 @@ pub(super) enum Model9Action79Error {
         source_slot: u16,
         target_slot: u16,
     },
+    DamageTargetRead {
+        source_slot: u16,
+        target_slot: u16,
+        reason: String,
+    },
+    MissingDamageDescriptor { source_slot: u16 },
+    StageAxisRead {
+        source_slot: u16,
+        reason: String,
+        completed: Model9Action79Outcome,
+    },
     PeerRead {
         source_slot: u16,
         peer_slot: u16,
@@ -599,6 +610,16 @@ impl fmt::Display for Model9Action79Error {
             } => write!(
                 formatter,
                 "model-9 source slot {source_slot} has invalid damage target slot {target_slot}"
+            ),
+            Self::DamageTargetRead { source_slot, target_slot, reason } => write!(
+                formatter,
+                "model-9 source slot {source_slot} cannot read current damage target slot {target_slot}: {reason}"
+            ),
+            Self::MissingDamageDescriptor { source_slot } => write!(
+                formatter, "model-9 source slot {source_slot} has no current reaction descriptor"
+            ),
+            Self::StageAxisRead { source_slot, reason, .. } => write!(
+                formatter, "model-9 source slot {source_slot} cannot read its stage axis: {reason}"
             ),
             Self::PeerRead {
                 source_slot,
@@ -646,12 +667,20 @@ fn apply_model9_reaction_pose(
     entity.record[70] = target.model;
 }
 
+#[derive(Clone, Copy)]
+enum Model9DamageTail {
+    Outer73,
+    Inner20940,
+    Stage79 { descriptor_flags: Option<u8> },
+}
+
 fn consume_model9_damage<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     entities: &[EntitySnapshot],
-    dynamic_targets: &[Model9DamageTarget],
+    damage_target_at: &mut impl FnMut(u16) -> std::result::Result<Option<Model9DamageTarget>, String>,
     reaction_pose: ParticlePose,
+    tail: Model9DamageTail,
 ) -> std::result::Result<Option<Model9DamageTransition>, Model9Action79Error> {
     let mut damage_owner = entity.source_upkeep_word_62();
     let mut damage_seen = damage_owner != 0;
@@ -661,7 +690,7 @@ fn consume_model9_damage<W: FlightWorld>(
     } else {
         damage_owner = 0;
     }
-    entity.set_damage_result_words(0, damage_owner);
+    entity.set_damage_result_words(entity.word_24(), damage_owner);
 
     let mut child_slot = entity.word_34();
     let mut visited = 0_usize;
@@ -676,7 +705,7 @@ fn consume_model9_damage<W: FlightWorld>(
         if child.life < entity.life {
             entity.set_life(child.life);
             damage_owner = child.word_26();
-            entity.set_damage_result_words(0, damage_owner);
+            entity.set_damage_result_words(entity.word_24(), damage_owner);
             damage_seen = true;
             break;
         }
@@ -697,8 +726,6 @@ fn consume_model9_damage<W: FlightWorld>(
             attacker_slot: damage_owner,
         })
     } else if damage_seen {
-        entity.record[154..156].copy_from_slice(&damage_owner.to_le_bytes());
-        entity.set_source_action(MODEL9_ACTION_REACTION);
         Some(Model9DamageTransition::Reaction {
             attacker_slot: damage_owner,
         })
@@ -706,30 +733,42 @@ fn consume_model9_damage<W: FlightWorld>(
         None
     };
 
-    if transition.is_some() {
-        settle_model9_after_damage(entity, world);
-    }
     if matches!(transition, Some(Model9DamageTransition::Reaction { .. })) {
-        let target = dynamic_targets
-            .iter()
-            .copied()
-            .find(|target| target.source_slot == damage_owner)
-            .or_else(|| {
-                entities
-                    .get(usize::from(damage_owner))
-                    .filter(|target| target.active && target.index == damage_owner)
-                    .map(|target| Model9DamageTarget {
-                        source_slot: target.index,
-                        source_id: target.source_id,
-                        class: target.class,
-                        model: target.model,
-                    })
-            })
+        let source_index = entity.index;
+        let mut target_at = |slot| damage_target_at(slot)
+            .map_err(|reason| Model9Action79Error::DamageTargetRead {
+                source_slot: source_index, target_slot: slot, reason,
+            })?
             .ok_or(Model9Action79Error::InvalidDamageTarget {
-                source_slot: entity.index,
-                target_slot: damage_owner,
-            })?;
-        apply_model9_reaction_pose(entity, target, reaction_pose);
+                source_slot: source_index,
+                target_slot: slot,
+            });
+        match tail {
+            Model9DamageTail::Inner20940 => {
+                entity.record[154..156].copy_from_slice(&damage_owner.to_le_bytes());
+                entity.set_source_action(MODEL9_ACTION_REACTION);
+            }
+            Model9DamageTail::Outer73 => {
+                entity.record[154..156].copy_from_slice(&damage_owner.to_le_bytes());
+                entity.set_source_action(MODEL9_ACTION_REACTION);
+                apply_model9_reaction_pose(entity, target_at(damage_owner)?, reaction_pose);
+            }
+            Model9DamageTail::Stage79 { descriptor_flags } => {
+                let target = target_at(damage_owner)?;
+                if (target.class, target.model) != (entity.class, entity.model) {
+                    entity.record[154..156].copy_from_slice(&damage_owner.to_le_bytes());
+                    entity.record[77] = 10;
+                    let flags = descriptor_flags.ok_or(Model9Action79Error::MissingDamageDescriptor {
+                        source_slot: source_index,
+                    })?;
+                    entity.set_source_action(if flags & 8 != 0 { 78 } else { 74 });
+                }
+                settle_model9_after_damage(entity, world);
+                if entity.action == MODEL9_ACTION_REACTION {
+                    apply_model9_reaction_pose(entity, target_at(entity.source_word_96())?, reaction_pose);
+                }
+            }
+        }
     }
     Ok(transition)
 }
@@ -859,6 +898,7 @@ pub(super) struct Model9PointStageVisit {
     pub before: EntitySnapshot,
     pub after: EntitySnapshot,
     pub stage_target: Position,
+    pub stage_target_read: bool,
     pub frozen_model9_slots: Vec<u16>,
     pub visited_model9_slots: Vec<u16>,
     pub peers: Vec<Model9Peer>,
@@ -886,7 +926,7 @@ pub(super) fn take_model9_point_stage_trace() -> Vec<Model9PointStageVisit> {
 fn record_model9_point_stage_visit(
     before: Option<EntitySnapshot>,
     after: &EntitySnapshot,
-    stage_target: Position,
+    stage_target: Option<Position>,
     frozen_model9_slots: &[u16],
     visited_model9_slots: &[u16],
     peers: &[Model9Peer],
@@ -900,7 +940,8 @@ fn record_model9_point_stage_visit(
             visits.push(Model9PointStageVisit {
                 before,
                 after: after.clone(),
-                stage_target,
+                stage_target: stage_target.unwrap_or_default(),
+                stage_target_read: stage_target.is_some(),
                 frozen_model9_slots: frozen_model9_slots.to_vec(),
                 visited_model9_slots: visited_model9_slots.to_vec(),
                 peers: peers.to_vec(),
@@ -923,11 +964,12 @@ fn record_model9_point_stage_visit(
 pub(super) fn step_model9_action79<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
-    stage_target: Position,
+    stage_target_at: impl FnOnce() -> std::result::Result<Position, String>,
     entities: &[EntitySnapshot],
     frozen_model9_slots: &[u16],
     mut peer_at: impl FnMut(u16) -> std::result::Result<Option<Model9Peer>, String>,
-    dynamic_targets: &[Model9DamageTarget],
+    mut damage_target_at: impl FnMut(u16) -> std::result::Result<Option<Model9DamageTarget>, String>,
+    descriptor_flags: Option<u8>,
     reaction_pose: ParticlePose,
 ) -> std::result::Result<Model9Action79Outcome, Model9Action79Error> {
     require_selector(
@@ -939,7 +981,8 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         MODEL9_POINT_STAGE_VISITS.with(|trace| trace.borrow().as_ref().map(|_| entity.clone()));
 
     if let Some(damage_transition) =
-        consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?
+        consume_model9_damage(entity, world, entities, &mut damage_target_at, reaction_pose,
+            Model9DamageTail::Stage79 { descriptor_flags })?
     {
         let outcome = Model9Action79Outcome {
             damage_transition: Some(damage_transition),
@@ -949,7 +992,7 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         record_model9_point_stage_visit(
             before,
             entity,
-            stage_target,
+            None,
             frozen_model9_slots,
             &[],
             &[],
@@ -971,7 +1014,7 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         record_model9_point_stage_visit(
             before,
             entity,
-            stage_target,
+            None,
             frozen_model9_slots,
             &[],
             &[],
@@ -980,6 +1023,11 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
         return Ok(outcome);
     }
 
+    let stage_target = stage_target_at().map_err(|reason| Model9Action79Error::StageAxisRead {
+        source_slot: entity.index,
+        reason,
+        completed: outcome,
+    })?;
     if entity.control_flags & MODEL9_BLOCKED_BIT == 0 {
         let mut roll = i16::try_from(crate::heading_for_positions(entity.position, stage_target))
             .expect("11-bit model-9 target heading");
@@ -1042,7 +1090,7 @@ pub(super) fn step_model9_action79<W: FlightWorld>(
     record_model9_point_stage_visit(
         before,
         entity,
-        stage_target,
+        Some(stage_target),
         frozen_model9_slots,
         &visited_model9_slots,
         &visited_peers,
@@ -1065,7 +1113,7 @@ pub(super) fn step_model9_action73<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     entities: &[EntitySnapshot],
-    dynamic_targets: &[Model9DamageTarget],
+    mut damage_target_at: impl FnMut(u16) -> std::result::Result<Option<Model9DamageTarget>, String>,
     movement_pose: ParticlePose,
     reaction_pose: ParticlePose,
     scan_period: u16,
@@ -1108,22 +1156,35 @@ pub(super) fn step_model9_action73<W: FlightWorld>(
             })
             .collect::<Vec<_>>();
         // The source invokes sub_20940 without changing the outer action.
-        return step_model9_action74(
+        let outcome = step_model9_inner_20940(
             entity,
             world,
             entities,
-            dynamic_targets,
+            &mut damage_target_at,
             movement_pose,
             reaction_pose,
             scan_period,
             awareness_radius,
             &candidates,
-        );
+        )?;
+        if entity.action == MODEL9_ACTION_REACTION {
+            let slot = entity.source_word_96();
+            let target = damage_target_at(slot)
+                .map_err(|reason| Model9Action79Error::DamageTargetRead {
+                    source_slot: entity.index, target_slot: slot, reason,
+                })?
+                .ok_or(Model9Action79Error::InvalidDamageTarget {
+                    source_slot: entity.index, target_slot: slot,
+                })?;
+            apply_model9_reaction_pose(entity, target, reaction_pose);
+        }
+        return Ok(outcome);
     }
     if entity.record[61] != 0 {
         entity.set_source_dword_10(400);
     }
-    if consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?.is_some() {
+    if consume_model9_damage(entity, world, entities, &mut damage_target_at, reaction_pose,
+        Model9DamageTail::Outer73)?.is_some() {
         return Ok(Model9ReactionOutcome::default());
     }
     let (_, _, population_decrement) = step_model9_source_movement(entity, world)?;
@@ -1216,11 +1277,11 @@ pub(super) fn step_model9_action73<W: FlightWorld>(
 
 /// Port remc2 `sub_20940` through its frozen model-list selection. The caller
 /// commits the hide/allocation effect through the shared source arena.
-pub(super) fn step_model9_action74<W: FlightWorld>(
+pub(super) fn step_model9_inner_20940<W: FlightWorld>(
     entity: &mut EntitySnapshot,
     world: &W,
     entities: &[EntitySnapshot],
-    dynamic_targets: &[Model9DamageTarget],
+    mut damage_target_at: impl FnMut(u16) -> std::result::Result<Option<Model9DamageTarget>, String>,
     movement_pose: ParticlePose,
     reaction_pose: ParticlePose,
     scan_period: u16,
@@ -1233,7 +1294,8 @@ pub(super) fn step_model9_action74<W: FlightWorld>(
         MODEL9_ACTION_REACTION
     };
     require_selector(entity, (MODEL9_CLASS, MODEL9_MODEL, callback_action))?;
-    if consume_model9_damage(entity, world, entities, dynamic_targets, reaction_pose)?.is_some() {
+    if consume_model9_damage(entity, world, entities, &mut damage_target_at, reaction_pose,
+        Model9DamageTail::Inner20940)?.is_some() {
         return Ok(Model9ReactionOutcome::default());
     }
 
@@ -1583,6 +1645,132 @@ mod tests {
     }
 
     #[test]
+    fn skeleton_damage_target_lookup_occurs_only_on_reached_nonfatal_reaction() {
+        let pose = ParticlePose { animation_limit: 1, array_yaw: 0, array_pitch: 0,
+            array_roll: 0, array_fov: 0 };
+        let mut fatal = entity(5, 9, 73);
+        fatal.set_life(5);
+        fatal.record[98..102].copy_from_slice(&6_i32.to_le_bytes());
+        fatal.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+        step_model9_action73(&mut fatal, &Model9World, &[],
+            |_| panic!("fatal damage must not read a reaction target"),
+            pose, pose, 30, 2000, 1024, &[]).unwrap();
+        assert_eq!((fatal.life, fatal.action), (-1, 76));
+
+        let mut hit = entity(5, 9, 73);
+        hit.set_life(20);
+        hit.record[98..102].copy_from_slice(&6_i32.to_le_bytes());
+        hit.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+        let error = step_model9_action73(&mut hit, &Model9World, &[], |slot| {
+            assert_eq!(slot, 44);
+            Err("current carrier unavailable".into())
+        }, pose, pose, 30, 2000, 1024, &[]).unwrap_err();
+        assert!(matches!(error, Model9Action79Error::DamageTargetRead {
+            target_slot: 44, ..
+        }));
+        assert_eq!((hit.life, hit.action, hit.source_upkeep_word_62(), hit.source_word_96()),
+            (14, 74, 0, 44), "source damage writes precede the reached carrier error");
+    }
+
+    #[test]
+    fn skeleton_20940_tail_depends_on_its_outer_source_caller() {
+        let pose = ParticlePose { animation_limit: 7, array_yaw: 1, array_pitch: 2,
+            array_roll: 3, array_fov: 4 };
+        let mut direct = entity(5, 9, 74);
+        direct.set_damage_result_words(91, 0);
+        direct.record[98..102].copy_from_slice(&6_i32.to_le_bytes());
+        direct.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+        let initial_position = direct.position;
+        step_model9_inner_20940(&mut direct, &Model9World, &[],
+            |_| panic!("20940 has no 20EC0 tail by itself"),
+            pose, pose, 30, 2000, &[]).unwrap();
+        assert_eq!((direct.life, direct.action, direct.source_word_96(), direct.position),
+            (294, 74, 44, initial_position));
+        assert_eq!(direct.word_24(), 91, "nonfatal source damage preserves the prior killer word");
+        assert_eq!(direct.particle_parameter_index, None);
+
+        let mut outer = entity(5, 9, 73);
+        outer.record[74] = 1;
+        outer.record[98..102].copy_from_slice(&6_i32.to_le_bytes());
+        outer.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+        let mut reads = Vec::new();
+        step_model9_action73(&mut outer, &Model9World, &[], |slot| {
+            reads.push(slot);
+            Ok(Some(Model9DamageTarget { source_slot: slot, source_id: 44, class: 3, model: 1 }))
+        }, pose, pose, 30, 2000, 1024, &[]).unwrap();
+        assert_eq!(reads, [44]);
+        assert_eq!((outer.life, outer.action, outer.source_word_96(), outer.position),
+            (294, 74, 44, initial_position));
+        assert_eq!((outer.particle_parameter_index, outer.record[69], outer.record[70]),
+            (Some(MC2_SKELETON_ASSETS.reaction_particle), 3, 1));
+    }
+
+    #[test]
+    fn skeleton_stage_damage_reads_family_before_settle_and_outer_visual() {
+        let pose = ParticlePose { animation_limit: 1, array_yaw: 0, array_pitch: 0,
+            array_roll: 0, array_fov: 0 };
+        for (target_class, target_model, flags, expected_action, expected_reads) in [
+            (5, 9, Some(0), 79, 1),
+            (3, 1, Some(0), 74, 2),
+            (3, 1, Some(8), 78, 1),
+        ] {
+            let mut source = entity(5, 9, 79);
+            source.record[77] = 2;
+            source.record[98..102].copy_from_slice(&6_i32.to_le_bytes());
+            source.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+            let before_z = source.position.z;
+            let mut reads = 0;
+            step_model9_action79(&mut source, &Model9World, || Ok(Position::default()), &[], &[],
+                |_| Ok(None), |slot| {
+                    reads += 1;
+                    Ok(Some(Model9DamageTarget { source_slot: slot, source_id: 44,
+                        class: target_class, model: target_model }))
+                }, flags, pose).unwrap();
+            assert_eq!((source.action, reads), (expected_action, expected_reads));
+            assert_eq!(source.position.z, before_z - 128);
+            assert_eq!(source.record[77], if target_class == 5 { 2 } else { 10 });
+        }
+    }
+
+    #[test]
+    fn skeleton_stage_axis_is_read_only_after_damage_free_cadenced_movement() {
+        let pose = ParticlePose { animation_limit: 1, array_yaw: 0, array_pitch: 0,
+            array_roll: 0, array_fov: 0 };
+        for fatal in [false, true] {
+            let mut source = entity(5, 9, 79);
+            if fatal { source.set_life(5); }
+            source.record[98..102].copy_from_slice(&6_i32.to_le_bytes());
+            source.record[102..104].copy_from_slice(&44_u16.to_le_bytes());
+            step_model9_action79(&mut source, &Model9World,
+                || panic!("damage must not read the stage axis"), &[], &[],
+                |_| panic!("damage must not scan peers"),
+                |slot| Ok(Some(Model9DamageTarget { source_slot: slot, source_id: 44,
+                    class: 3, model: 1 })), Some(0), pose).unwrap();
+            assert_eq!(source.action, if fatal { 76 } else { 74 });
+        }
+        let mut off_phase = entity(5, 9, 79);
+        off_phase.set_phase(9);
+        off_phase.set_actual_speed(64);
+        let result = step_model9_action79(&mut off_phase, &Model9World,
+            || panic!("off-cadence movement must not read the stage axis"), &[], &[],
+            |_| panic!("off-cadence movement must not scan peers"), |_| Ok(None), Some(0), pose)
+            .unwrap();
+        assert!(result.moved);
+
+        let mut reached = entity(5, 9, 79);
+        reached.set_phase(8);
+        reached.set_actual_speed(64);
+        let before = reached.position;
+        let error = step_model9_action79(&mut reached, &Model9World,
+            || Err("missing axis".into()), &[], &[], |_| Ok(None), |_| Ok(None), Some(0), pose)
+            .unwrap_err();
+        assert!(matches!(error, Model9Action79Error::StageAxisRead {
+            completed: Model9Action79Outcome { moved: true, .. }, ..
+        }));
+        assert_ne!(reached.position, before, "movement precedes the reached axis read");
+    }
+
+    #[test]
     fn model9_uses_predecrement_transition_and_even_animation_cadence() {
         let pose = ParticlePose {
             animation_limit: 9,
@@ -1654,11 +1842,12 @@ mod tests {
         let result = step_model9_action79(
             &mut source,
             &Blocked,
-            Position::default(),
+            || Ok(Position::default()),
             &[],
             &[],
             |_| Ok(None),
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap();
@@ -1674,11 +1863,12 @@ mod tests {
         let result = step_model9_action79(
             &mut source,
             &Blocked,
-            Position::default(),
+            || Ok(Position::default()),
             &[],
             &[],
             |_| Ok(None),
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap();
@@ -1746,7 +1936,7 @@ mod tests {
             &mut negative,
             &Model9World,
             &[],
-            &[],
+            |_| Ok(None),
             pose,
             pose,
             30,
@@ -1772,7 +1962,7 @@ mod tests {
             &mut source,
             &Model9World,
             &[],
-            &[],
+            |_| Ok(None),
             pose,
             pose,
             30,
@@ -1843,15 +2033,16 @@ mod tests {
         let outcome = step_model9_action79(
             &mut source,
             &Model9World,
-            Position {
+            || Ok(Position {
                 x: moved.x.wrapping_add(1_000),
                 y: moved.y,
                 z: moved.z,
-            },
+            }),
             &entities,
             &frozen_model9_slots,
             |slot| Ok(peers.iter().copied().find(|peer| peer.source_slot == slot)),
-            &[],
+            |_| Ok(None),
+            Some(0),
             ParticlePose {
                 animation_limit: 1,
                 array_yaw: 0,
@@ -1884,11 +2075,14 @@ mod tests {
         let outcome = step_model9_action79(
             &mut damaged,
             &Model9World,
-            Position { x: 0, y: 0, z: 0 },
+            || Ok(Position { x: 0, y: 0, z: 0 }),
             &entities,
             &frozen_model9_slots,
             |slot| Ok(peers.iter().copied().find(|peer| peer.source_slot == slot)),
-            &[],
+            |slot| Ok(entities.get(usize::from(slot)).map(|row| Model9DamageTarget {
+                source_slot: slot, source_id: row.source_id, class: row.class, model: row.model,
+            })),
+            Some(0),
             ParticlePose {
                 animation_limit: 1,
                 array_yaw: 0,
@@ -1963,11 +2157,12 @@ mod tests {
         let result = step_model9_action79(
             &mut without_newborn,
             &Model9World,
-            target,
+            || Ok(target),
             &entities,
             &frozen_model9_slots,
             |slot| Ok(Some(observe(&entities, slot))),
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap();
@@ -1999,11 +2194,12 @@ mod tests {
         let result = step_model9_action79(
             &mut source,
             &Model9World,
-            target,
+            || Ok(target),
             &entities,
             &frozen_model9_slots,
             |slot| Ok(Some(observe(&entities, slot))),
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap();
@@ -2023,11 +2219,12 @@ mod tests {
         let result = step_model9_action79(
             &mut same_id,
             &Model9World,
-            target,
+            || Ok(target),
             &entities,
             &frozen_model9_slots,
             |slot| Ok(Some(observe(&entities, slot))),
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap();
@@ -2071,14 +2268,15 @@ mod tests {
             let result = step_model9_action79(
                 &mut source,
                 &Model9World,
-                target,
+                || Ok(target),
                 &[],
                 &frozen,
                 |slot| {
                     reads.push(slot);
                     Err("reader must stay gated".into())
                 },
-                &[attacker],
+                |slot| Ok((slot == attacker.source_slot).then_some(attacker)),
+                Some(0),
                 pose,
             )
             .unwrap();
@@ -2087,6 +2285,7 @@ mod tests {
             assert_eq!(result.moved, !hit);
             let visits = take_model9_point_stage_trace();
             assert_eq!(visits.len(), 1);
+            assert!(!visits[0].stage_target_read);
             assert_eq!(visits[0].frozen_model9_slots, frozen);
             assert!(visits[0].visited_model9_slots.is_empty());
             assert!(visits[0].peers.is_empty());
@@ -2098,7 +2297,7 @@ mod tests {
         let result = step_model9_action79(
             &mut source,
             &Model9World,
-            target,
+            || Ok(target),
             &[],
             &frozen,
             |slot| {
@@ -2122,7 +2321,8 @@ mod tests {
                     _ => Err("unvisited suffix reader error".into()),
                 }
             },
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap();
@@ -2130,6 +2330,7 @@ mod tests {
         assert_eq!(reads, [93, 94, 95]);
         let visits = take_model9_point_stage_trace();
         assert_eq!(visits.len(), 1);
+        assert!(visits[0].stage_target_read);
         assert_eq!(visits[0].visited_model9_slots, reads);
         assert_eq!(
             visits[0]
@@ -2145,7 +2346,7 @@ mod tests {
         let error = step_model9_action79(
             &mut source,
             &Model9World,
-            target,
+            || Ok(target),
             &[],
             &frozen,
             |slot| {
@@ -2156,7 +2357,8 @@ mod tests {
                     Err("current carrier error".into())
                 }
             },
-            &[],
+            |_| Ok(None),
+            Some(0),
             pose,
         )
         .unwrap_err();

@@ -165,6 +165,12 @@ impl RuntimeRecord {
             .shared_spells()
             .local_player()
             .slot;
+        let local_name = self
+            .runtime
+            .identity()
+            .player_preferences
+            .preferences
+            .player_name;
         if let Some(local) = observation
             .value
             .source_scoreboard
@@ -172,14 +178,28 @@ impl RuntimeRecord {
             .iter_mut()
             .find(|player| player.source_slot == local_slot)
         {
-            local.display_name = self
-                .runtime
-                .identity()
-                .player_preferences
-                .preferences
-                .player_name;
+            local.display_name = local_name.clone();
+        }
+        for notice in &mut observation.value.participant_notifications {
+            if notice.is_local {
+                notice.display_name = local_name.clone();
+            }
         }
         Ok(observation)
+    }
+
+    fn participant_notifications(
+        &self,
+    ) -> AbiResult<sim_session::SessionObservation<Vec<sim_session::ParticipantNotification>>> {
+        let session = self.session()?;
+        let mut value = session.backend().participant_notifications();
+        let local_name = self.runtime.identity().player_preferences.preferences.player_name;
+        for notice in &mut value {
+            if notice.is_local {
+                notice.display_name = local_name.clone();
+            }
+        }
+        Ok(sim_session::SessionObservation { identity: session.identity(), value })
     }
 
     pub(super) fn session_mut(&mut self) -> AbiResult<&mut GameSession<Mc2CampaignBackend>> {
@@ -823,6 +843,32 @@ impl RuntimeRecord {
         Ok(())
     }
 
+    fn presentation_frame(
+        &mut self,
+        handle: u64,
+        runtime_generation: u64,
+        session_generation: u64,
+        expected_tick: u64,
+        notifications_visible: bool,
+    ) -> AbiResult<()> {
+        self.runtime
+            .presentation_frame(
+                RuntimeGuard {
+                    runtime_id: handle,
+                    generation: runtime_generation,
+                },
+                SessionGuard {
+                    session_id: handle,
+                    generation: session_generation,
+                    expected_tick,
+                },
+                notifications_visible,
+            )
+            .map_err(map_transition_error)?;
+        self.campaign_presentation_dirty = true;
+        Ok(())
+    }
+
     fn resume(&mut self, handle: u64, generation: u64) -> AbiResult<()> {
         self.validate_transition(handle, generation, RuntimeMode::Paused)?;
         self.runtime
@@ -1431,6 +1477,14 @@ pub extern "C" fn mc_game_runtime_contract_json_v1(
                 "deterministic_work": "package_declared_pre_gate",
                 "replay": "ordered_operation"
             },
+            "presentation_frame": {
+                "transport": "mc_game_runtime_presentation_frame_v1",
+                "observation_transport": "mc_game_runtime_participant_notifications_json_v1",
+                "gameplay_tick": "frozen",
+                "session_identity": "unchanged",
+                "deterministic_work": "package_presentation_only",
+                "replay": "ordered_operation"
+            },
             "frontend_media": {
                 "contract": sim_core::game_runtime::media::MEDIA_CONTRACT,
                 "command_transport": "mc_game_runtime_media_command_json_v1",
@@ -1930,6 +1984,34 @@ pub extern "C" fn mc_game_runtime_resume_v1(handle: u64, generation: u64) -> i32
     boundary(|| with_runtime_mut(handle, |runtime| runtime.resume(handle, generation)))
 }
 
+/// Advance one visible/hidden presentation frame without a gameplay callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_presentation_frame_v1(
+    handle: u64,
+    runtime_generation: u64,
+    session_generation: u64,
+    expected_tick: u64,
+    notifications_visible: u8,
+) -> i32 {
+    boundary(|| {
+        if notifications_visible > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "notifications_visible must be zero or one",
+            ));
+        }
+        with_runtime_mut(handle, |runtime| {
+            runtime.presentation_frame(
+                handle,
+                runtime_generation,
+                session_generation,
+                expected_tick,
+                notifications_visible != 0,
+            )
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_game_runtime_paused_frame_timed_v1(
     handle: u64,
@@ -2112,6 +2194,22 @@ pub extern "C" fn mc_game_runtime_campaign_menu_command_json_v1(
         let request = utf8_input(request, request_len, "campaign action JSON")?;
         with_runtime_mut(handle, |runtime| {
             runtime.campaign_menu_command(handle, generation, &request)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_game_runtime_participant_notifications_json_v1(
+    handle: u64,
+    buffer: *mut u8,
+    capacity: u32,
+    out_length: *mut u32,
+) -> i32 {
+    boundary(|| {
+        with_runtime(handle, |runtime| {
+            super::game_session_abi::write_json(
+                &runtime.participant_notifications()?, buffer, capacity, out_length,
+            )
         })
     })
 }
@@ -3337,6 +3435,29 @@ mod tests {
             source_snapshot["value"]["terrain_hash"],
             before_paused_frames["value"]["terrain_hash"]
         );
+        // Participant presentation has a distinct clock. On this ordinary
+        // package no notice is active: both admitted visibility values leave
+        // every gameplay carrier/hash unchanged, unlike PausedFrame above.
+        // Repeated JSON capacity probes are pure observations.
+        let notices = read_json(|buffer, capacity, length| {
+            mc_game_runtime_participant_notifications_json_v1(source, buffer, capacity, length)
+        });
+        assert_eq!(notices["value"], serde_json::json!([]));
+        assert_eq!(notices["identity"], source_snapshot["identity"]);
+        for (outer, nested, tick, visible, expected) in [
+            (3, 2, 3, 1, MC_STATUS_GENERATION_MISMATCH),
+            (4, 1, 3, 1, MC_STATUS_GENERATION_MISMATCH),
+            (4, 2, 2, 1, MC_STATUS_INVALID_ARGUMENT),
+            (4, 2, 3, 2, MC_STATUS_INVALID_ARGUMENT),
+            (4, 2, 3, 0, MC_STATUS_OK),
+            (4, 2, 3, 1, MC_STATUS_OK),
+        ] {
+            assert_eq!(mc_game_runtime_presentation_frame_v1(source, outer, nested, tick, visible), expected);
+            assert_eq!(identity(source), source_identity);
+            assert_eq!(read_json(|buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(source, buffer, capacity, length)
+            }), source_snapshot);
+        }
         let save = read_bytes(|buffer, capacity, length| {
             mc_game_runtime_save_replay_json_v1(source, 4, 2, 3, buffer, capacity, length)
         });
@@ -3354,10 +3475,16 @@ mod tests {
         );
         assert_eq!(save_json["completed_levels"], serde_json::json!([]));
         let operations = save_json["operations"].as_array().unwrap();
-        assert_eq!(operations.len(), 6);
+        assert_eq!(operations.len(), 8);
         assert_eq!(operations[3]["operation"], "pause");
         assert_eq!(operations[4]["operation"], "paused_frame");
         assert_eq!(operations[5]["operation"], "paused_frame");
+        assert_eq!(operations[6], serde_json::json!({
+            "operation": "presentation_frame", "notifications_visible": false
+        }));
+        assert_eq!(operations[7], serde_json::json!({
+            "operation": "presentation_frame", "notifications_visible": true
+        }));
         assert_eq!(save_json["paused"], true);
 
         let mut restored = 0_u64;

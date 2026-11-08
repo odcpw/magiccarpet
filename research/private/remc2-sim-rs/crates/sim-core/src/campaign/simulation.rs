@@ -6387,6 +6387,16 @@ impl Mc2Simulation {
             crate::campaign::source_player_result::SourcePlayerResult::source_level_start(
                 u16::from(runtime.local_player_slot),
             );
+        let mut player_spawn_positions = creatures::player_lifecycle::PlayerSpawnPositions::default();
+        for feature in crate::campaign::authored_spawn::source_group_rows(
+            mission.authored_features(), 0, &BTreeSet::new(),
+        ) {
+            if feature.kind == 3 && (4..=11).contains(&feature.subtype) {
+                let mut position = feature.world_position(0);
+                position.z = terrain.ground_height(position);
+                player_spawn_positions.write_source_constructor(feature.subtype as u16, position);
+            }
+        }
         let nyphur_dispatcher = RivalWizardRoster::from_source_reset(&economy, &players, &mission)?;
         let player_visibility = player_visibility::PlayerVisibility::from_reset(
             &economy,
@@ -6421,8 +6431,9 @@ impl Mc2Simulation {
             player_life: initial_player_life,
             player_menu_state: 0,
             source_player_result,
+            player_spawn_positions,
             source_menu_admission: None,
-            player_death_notification: None,
+            player_lifecycle_notifications: Default::default(),
             level_exit: LevelExitSequence::default(),
             level2_group8_activated: false,
             // The qualified frame-zero model-32 row observes stage index 3's
@@ -6578,20 +6589,28 @@ impl Mc2Simulation {
             {
                 return Some(identity);
             }
-            return self
-                .session
-                .state
-                .live
-                .shared_spells
-                .pickup(holder_slot)
-                .filter(|holder| {
-                    holder.active
-                        && holder.model == 4
-                        && holder.action == 12
-                        && holder.source_word_96() == source_slot
-                        && holder.source_spell_parent_entity_index() == source.parent_entity_index
-                })
-                .map(|_| identity);
+            let live = &self.session.state.live;
+            // Rival Morph callbacks update their raw holder, whereas the
+            // local held spell uses its shared carrier. Death scattering
+            // advances action12 to action13 without clearing word96; the
+            // independently scheduled follower still runs its source tail.
+            let holder = if self.morph_holder_is_raw(holder_slot) {
+                live.economy.entities.get(usize::from(holder_slot))
+            } else {
+                live.shared_spells.pickup(holder_slot)
+            };
+            let current_birth = live.economy.handle(holder_slot).is_some_and(|holder| {
+                live.economy.economy.morph.body_for_holder(holder) == Some(identity.handle)
+            });
+            return holder.filter(|holder| {
+                holder.active
+                    && holder.class == 15
+                    && holder.model == 4
+                    && matches!(holder.action, 12 | 13)
+                    && holder.source_word_96() == source_slot
+                    && holder.source_spell_parent_entity_index() == source.parent_entity_index
+                    && current_birth
+            }).map(|_| identity);
         }
 
         Some(identity)
@@ -7658,6 +7677,9 @@ impl Mc2Simulation {
         }
         candidates.extend(crate::native_world::effects::sprite_sources(
             &self.session.state.live.economy,
+        ));
+        candidates.extend(creatures::player_lifecycle::presentation_candidates(
+            self.economy().player_death_markers(),
         ));
         candidates.extend(crate::world::scenery::trees::sprite_sources(
             self.economy().authored_trees(),
@@ -8854,6 +8876,16 @@ impl Mc2Simulation {
         let live = &self.session.state.live;
         live.source_player_result
             .is_ordinary_banishment_for(u16::from(live.core.runtime.local_player_slot))
+    }
+
+    pub(crate) fn player_lifecycle_notifications(
+        &self,
+    ) -> &crate::native_world::creatures::player_lifecycle::notifications::PlayerLifecycleNotifications {
+        &self.session.state.live.player_lifecycle_notifications
+    }
+
+    pub(crate) fn present_player_lifecycle_notifications(&mut self, visible: bool) {
+        self.session.state.live.player_lifecycle_notifications.presentation_frame(visible);
     }
 
     /// Move one imported source entity through the lossless Level 2 seam.
@@ -12455,6 +12487,7 @@ impl Mc2Simulation {
             && !matches!(
                 (feature.kind, feature.subtype),
                 (2, 0 | 1 | 2 | 3 | 6 | 7)
+                    | (3, 4..=11)
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
@@ -12535,6 +12568,13 @@ impl Mc2Simulation {
                     .insert(feature.index);
             }
             consumed.push(feature.index);
+            if feature.kind == 3 && (4..=11).contains(&feature.subtype) {
+                let live = &mut self.session.state.live;
+                let mut position = feature.world_position(0);
+                position.z = live.terrain.ground_height(position);
+                live.player_spawn_positions.write_source_constructor(feature.subtype as u16, position);
+                continue;
+            }
             if feature.kind == 2 && feature.subtype == 8
                 && self.session.state.live.terrain.map_type() == MapType::Cave
             {
@@ -15257,12 +15297,14 @@ impl Mc2Simulation {
                 row.active
                     && row.index == source_slot
                     && row.class == 15
-                    // Carried holders have no dynamic arena cursor. All
-                    // remaining source families delegate to their existing
-                    // holder/pickup handlers through this route.
-                    && matches!(row.model, 3..=25)
-                    && (physical_spell_action(row.model, PhysicalSpellActionRole::Active)
-                        == Some(row.action)
+                    // Carried and released holders have no dynamic arena
+                    // cursor. The first three active families keep their
+                    // dedicated routes below; their dropped pickup roles
+                    // still need the shared 68FF0 life/scan/reclaim path.
+                    && row.model < 26
+                    && ((row.model >= 3
+                        && physical_spell_action(row.model, PhysicalSpellActionRole::Active)
+                            == Some(row.action))
                         || physical_spell_action(
                             row.model,
                             PhysicalSpellActionRole::OrdinaryPickup,
@@ -20192,7 +20234,7 @@ impl Mc2Simulation {
                             self.push_scene_change_effect(4);
                         }
                     } else if player_action_at_visit == 3 {
-                        self.step_level2_player_banished_action();
+                        self.step_level2_player_banished_action()?;
                     }
                     // sub_5D530 writes source yaw and pitch during ordinary
                     // and dying flight. Spell constructors read this pitch,
@@ -22040,6 +22082,8 @@ impl Mc2Simulation {
                         })
                     };
                     let castle_profiles = [castle_profile(0)?, castle_profile(1)?, castle_profile(2)?];
+                    #[cfg(test)]
+                    let damage_event_cursor = live.economy.events().len();
                     let terrain = &mut live.terrain;
                     let players = live.core.players.clone();
                     let source_arena = &mut live.economy;
@@ -22082,7 +22126,10 @@ impl Mc2Simulation {
                          (source_arena.slot_generation(sphere.source_entity_index), sphere.player_entity_index))
                     }).collect::<BTreeMap<_, _>>();
                     let result = live.nyphur_dispatcher
-                        .with_owner_mut(target_handle, |dispatcher| dispatcher.step_dispatch_with_castle_seed(
+                        .with_owner_mut(target_handle, |dispatcher| {
+                        #[cfg(test)]
+                        dispatcher.set_damage_trace_context(Some((target_handle, damage_event_cursor)));
+                        let result = dispatcher.step_dispatch_with_castle_seed(
                             pass,
                             source_slot,
                             &mut entities,
@@ -22123,7 +22170,11 @@ impl Mc2Simulation {
                                 mana_slots: &mana_slots,
                             }),
                             &mut target_relation_writes,
-                        ))
+                        );
+                        #[cfg(test)]
+                        dispatcher.set_damage_trace_context(None);
+                        result
+                        })
                         .ok_or_else(|| {
                             format!("rival source slot {source_slot} lost its player dispatcher")
                         })?;
@@ -22480,10 +22531,6 @@ impl Mc2Simulation {
                     &pass_start_class5_model_slots[9],
                 );
             }
-            74 => {
-                return self
-                    .step_imported_model9_action74(source_slot, pass_start_class5_model_slots);
-            }
             76 => return self.step_imported_model9_pre_kill(source_slot),
             77 => return self.step_imported_model9_kill(source_slot),
             72 => {}
@@ -22566,6 +22613,23 @@ impl Mc2Simulation {
         })
     }
 
+    fn model9_current_damage_target(
+        arena: &crate::campaign::source_arena::SourceArena,
+        context: source_target::Context<'_>,
+        slot: u16,
+    ) -> std::result::Result<Option<campaign_shared_families::Model9DamageTarget>, String> {
+        if slot == 0 {
+            return Ok(arena.entities.first().map(|row| campaign_shared_families::Model9DamageTarget {
+                source_slot: 0, source_id: row.source_id, class: row.class, model: row.model,
+            }));
+        }
+        source_target::read(arena, context, slot).map(|target| target.map(|target|
+            campaign_shared_families::Model9DamageTarget {
+                source_slot: slot, source_id: target.source_id, class: target.class, model: target.model,
+            }))
+    }
+
+    #[cfg(test)]
     fn model9_dynamic_damage_targets(&self) -> Vec<campaign_shared_families::Model9DamageTarget> {
         let economy = &self.session.state.live.economy.economy;
         let mut targets = economy
@@ -22633,33 +22697,14 @@ impl Mc2Simulation {
     ) -> std::result::Result<(), String> {
         let reaction_pose =
             self.model9_particle_pose(usize::from(MC2_SKELETON_ASSETS.reaction_particle))?;
-        let dynamic_targets = self.model9_dynamic_damage_targets();
         let (stage_index, mut source) = {
             let live = &self.session.state.live;
             let source = &live.economy.entities[usize::from(source_slot)];
             (usize::from(source.record_bytes()[76]), source.clone())
         };
-        let stage_target = match self
-            .session
-            .state
-            .live
-            .core
-            .runtime
-            .stage_variables
-            .get(stage_index)
-            .map(|stage| stage.relation)
-        {
-            Some(RuntimeRelation::AxisScalar(packed)) => Position {
-                x: packed as u16,
-                y: (packed >> 16) as u16,
-                z: 0,
-            },
-            relation => {
-                return Err(format!(
-                    "model-9 source slot {source_slot} StageVar1 {stage_index} needs a packed axis target, found {relation:?}"
-                ));
-            }
-        };
+        let descriptor_flags = source.parameter_relation
+            .and_then(|index| self.session.definition.presentation.entity_parameters.get(usize::from(index)))
+            .map(|descriptor| descriptor[32]);
         let outcome = {
             let live = &self.session.state.live;
             let arena = &live.economy;
@@ -22678,7 +22723,16 @@ impl Mc2Simulation {
             campaign_shared_families::step_model9_action79(
                 &mut source,
                 &live.terrain,
-                stage_target,
+                || match live.core.runtime.stage_variables.get(stage_index).map(|stage| stage.relation) {
+                    Some(RuntimeRelation::AxisScalar(packed)) => Ok(Position {
+                        x: packed as u16,
+                        y: (packed >> 16) as u16,
+                        z: 0,
+                    }),
+                    relation => Err(format!(
+                        "StageVar1 {stage_index} needs a packed axis target, found {relation:?}"
+                    )),
+                },
                 &arena.entities,
                 frozen_model9_slots,
                 |slot| {
@@ -22690,19 +22744,21 @@ impl Mc2Simulation {
                         })
                     })
                 },
-                &dynamic_targets,
+                |slot| Self::model9_current_damage_target(arena, context, slot),
+                descriptor_flags,
                 reaction_pose,
             )
         };
         let position = source.position;
         let completed = match &outcome {
             Ok(completed)
+            | Err(campaign_shared_families::Model9Action79Error::StageAxisRead { completed, .. })
             | Err(campaign_shared_families::Model9Action79Error::PeerRead { completed, .. }) => {
                 Some(*completed)
             }
             Err(_) => None,
         };
-        // Publish source writes even when the subsequent peer read fails.
+        // Publish movement and population writes even when a reached read fails.
         self.session.state.live.economy.entities[usize::from(source_slot)] = source;
         if let Some(completed) = completed {
             if completed.population_decrement {
@@ -22754,7 +22810,6 @@ impl Mc2Simulation {
         }
         let awareness_radius = i32::from(i16::from_le_bytes([parameter[28], parameter[29]]));
         let sight_angle = u16::from_le_bytes([parameter[30], parameter[31]]);
-        let dynamic_targets = self.model9_dynamic_damage_targets();
         let live = &self.session.state.live;
         let mut targets = Vec::new();
         for (model, slots) in pass_start_class5_model_slots.iter().enumerate() {
@@ -22830,23 +22885,23 @@ impl Mc2Simulation {
             });
         }
         targets.sort_by_key(|target| target.identity.source_slot);
-        let entities = live.economy.entities.clone();
-        let live = &mut self.session.state.live;
-        let source = &mut live.economy.entities[usize::from(source_slot)];
+        let mut source = live.economy.entities[usize::from(source_slot)].clone();
+        let context = source_target::Context {
+            spells: Some(&live.shared_spells), map_type: Some(live.terrain.map_type()),
+            player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+            particles: Some(&self.session.definition.presentation.particles),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
         let outcome = campaign_shared_families::step_model9_action73(
-            source,
-            &live.terrain,
-            &entities,
-            &dynamic_targets,
-            movement_pose,
-            reaction_pose,
-            scan_period,
-            awareness_radius,
-            sight_angle,
-            &targets,
-        )
-        .map_err(|error| error.to_string())?;
+            &mut source, &live.terrain, &live.economy.entities,
+            |slot| Self::model9_current_damage_target(&live.economy, context, slot),
+            movement_pose, reaction_pose, scan_period, awareness_radius, sight_angle, &targets,
+        );
         let position = source.position;
+        let live = &mut self.session.state.live;
+        live.economy.entities[usize::from(source_slot)] = source;
+        let outcome = outcome.map_err(|error| error.to_string())?;
         if outcome.population_decrement {
             live.economy.decrement_source_creature_population();
         }
@@ -22875,7 +22930,8 @@ impl Mc2Simulation {
         Ok(())
     }
 
-    fn step_imported_model9_action74(
+    #[cfg(test)]
+    fn step_imported_model9_inner_20940(
         &mut self,
         source_slot: u16,
         pass_start_class5_model_slots: &[Vec<u16>; 29],
@@ -22929,17 +22985,22 @@ impl Mc2Simulation {
                     )
             })
             .collect::<Vec<_>>();
-        let dynamic_targets = self.model9_dynamic_damage_targets();
-        let (position, outcome) = {
-            let live = &mut self.session.state.live;
+        let (position, source, outcome) = {
+            let live = &self.session.state.live;
             // Only this row changes during the kernel. Borrow the original
             // table as the frozen callback view, including its old source row.
             let mut source = live.economy.entities[usize::from(source_slot)].clone();
-            let outcome = campaign_shared_families::step_model9_action74(
+            let outcome = campaign_shared_families::step_model9_inner_20940(
                 &mut source,
                 &live.terrain,
                 &live.economy.entities,
-                &dynamic_targets,
+                |slot| Self::model9_current_damage_target(&live.economy, source_target::Context {
+                    spells: Some(&live.shared_spells), map_type: Some(live.terrain.map_type()),
+                    player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                    player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                    particles: Some(&self.session.definition.presentation.particles),
+                    ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                }, slot),
                 movement_pose,
                 reaction_pose,
                 scan_period,
@@ -22949,9 +23010,9 @@ impl Mc2Simulation {
             let position = source.position;
             // Damage consumption can mutate the row before a child/attacker
             // error. Preserve those writes before propagating the result.
-            live.economy.entities[usize::from(source_slot)] = source;
-            (position, outcome)
+            (position, source, outcome)
         };
+        self.session.state.live.economy.entities[usize::from(source_slot)] = source;
         let outcome = outcome.map_err(|error| error.to_string())?;
         if let Some(prey_slot) = outcome.prey_to_consume {
             self.convert_model9_prey(source_slot, prey_slot, scan_period, true)?;
@@ -29138,27 +29199,46 @@ impl Mc2Simulation {
         true
     }
 
-    /// PlayerEvents action 15 reuses the dead human actor and the linked
-    /// Castle. It does not reset the mission, debit Castle mana, or recreate
-    /// the runtime generation.
+    /// PlayerEvents action 15 reuses the current human actor. With no Castle,
+    /// source uses the current player-row spawn and the live terrain height.
     fn revive_level2_player_at_castle(&mut self) -> Result<bool> {
         let live = &mut self.session.state.live;
         let actor_index = live.core.state.entity_index;
-        let castle_index = live.economy.player_castle_entity_index();
-        if live.player_life >= 0 || castle_index == 0 {
-            return Ok(false);
-        }
-        let Some(castle_position) = live
-            .economy
-            .castle()
-            .filter(|castle| castle.active && castle.source_entity_index == castle_index)
-            .map(|castle| castle.position)
-        else {
-            return Ok(false);
+        let actor = &live.economy.entities[usize::from(actor_index)];
+        let castle_index = match actor.special_relation {
+            EntitySpecialRelation::PlayerState(slot) => {
+                let player = live.core.players.iter().find(|player| player.slot == slot)
+                    .ok_or_else(|| NativeWorldError::new(format!("reviving player has no current A4 slot {slot}")))?;
+                u16::from_le_bytes([player.record[42], player.record[43]])
+            }
+            EntitySpecialRelation::GlobalSpecialState => live.shared_spells.global_special_state.castle_entity_index,
+            EntitySpecialRelation::None => return Err(NativeWorldError::new("reviving player has no current A4")),
         };
+        if castle_index == 0 {
+            live.source_player_result.record_single_player_no_castle_recovery();
+        }
         live.economy
             .rebuild_source_arena_with_terrain(&mut live.terrain, &[])
             .map_err(NativeWorldError::new)?;
+        let context = source_target::Context {
+            spells: Some(&live.shared_spells),
+            map_type: Some(live.terrain.map_type()),
+            player: Some((actor_index, live.core.state.position, live.player_life)),
+            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+            particles: Some(&self.session.definition.presentation.particles),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        let castle_position = if castle_index == 0 {
+            let player_row = live.source_player_result.source_player_slot();
+            let mut position = live.player_spawn_positions.get(player_row)
+                .ok_or_else(|| NativeWorldError::new(format!("revival player row {player_row} is outside the source spawn table")))?;
+            position.z = live.terrain.ground_height(position).wrapping_add(256);
+            position
+        } else {
+            source_target::read(&live.economy, context, castle_index)
+                .map_err(NativeWorldError::new)?
+                .ok_or_else(|| NativeWorldError::new(format!("revival Castle address {castle_index} is unavailable")))?.position
+        };
         crate::world::effects::sync_position(
             &mut live.economy,
             &mut live.terrain,
@@ -29171,7 +29251,9 @@ impl Mc2Simulation {
         let actor = live.economy.entities[usize::from(actor_index)].clone();
         live.shared_spells.sync_player_entity_from_authority(&actor);
         let holders = live.shared_spells.revive_local_player_at_castle(
-            &mut live.economy.economy,
+            &mut live.economy,
+            &mut live.terrain,
+            castle_index,
             castle_position,
             true,
         )?;
@@ -29190,7 +29272,8 @@ impl Mc2Simulation {
             )
             .map_err(NativeWorldError::new)?;
         }
-        let actor = live.shared_spells.player_entity().clone();
+        let mut actor = live.shared_spells.player_entity().clone();
+        actor.set_map_links(live.economy.map_chains.old_map_entity(actor_index), live.economy.map_chains.next_entity(actor_index));
         live.economy.entities[usize::from(actor_index)] = actor.clone();
         crate::world::effects::sync_position(
             &mut live.economy,
@@ -29269,7 +29352,7 @@ impl Mc2Simulation {
         &mut self,
         player_entity_index: u16,
         player_position: Position,
-    ) {
+    ) -> std::result::Result<(), String> {
         let Some(player_index) = self
             .session
             .state
@@ -29279,7 +29362,7 @@ impl Mc2Simulation {
             .iter()
             .position(|player| player.entity_index == player_entity_index && player.is_ai)
         else {
-            return;
+            return Ok(());
         };
         let enabled = self.session.state.live.core.players[player_index].enabled_spell_holders;
         let owner_handle = self.session.state.live.economy.handle(player_entity_index);
@@ -29287,12 +29370,24 @@ impl Mc2Simulation {
             self.session.state.live.economy.entities[usize::from(player_entity_index)].entity_rng;
 
         for (family, holder_index) in enabled.into_iter().enumerate() {
+            if holder_index == 1 {
+                let live = &mut self.session.state.live;
+                if crate::native_world::creatures::player_lifecycle::scatter_current_sentinel_house(
+                    &mut live.economy, &mut live.ordinary.houses, &mut live.terrain,
+                    player_entity_index, player_position, &mut rng,
+                )? {
+                    continue;
+                }
+                if live.economy.economy.live_arena_kind(1).is_some() {
+                    return Err("released-holder sentinel1 has no current typed scatter owner".to_owned());
+                }
+            }
             let valid = owner_handle.is_some_and(|handle| {
                 let live = &self.session.state.live;
                 live.nyphur_dispatcher.bound_live_holder(handle, &live.core.players[player_index], &live.economy, family)
                     .is_some_and(|holder| holder.source_slot == holder_index)
             });
-            if !valid {
+            if holder_index != 1 && !valid {
                 assert!(
                     self.session.state.live.core.players[player_index]
                         .set_enabled_spell_holder_index(family, u16::from(holder_index != 0)),
@@ -29358,6 +29453,7 @@ impl Mc2Simulation {
         if let Some(shared) = live.shared_spells.players.iter_mut().find(|row| row.entity_index == player_entity_index) {
             *shared = player;
         }
+        Ok(())
     }
 
     /// Continue the ordinary AI player death selected by Nyphur's lethal
@@ -29369,9 +29465,7 @@ impl Mc2Simulation {
         source_slot: u16,
         mana_chain: &crate::campaign::source_arena::SourceManaChain,
     ) -> std::result::Result<(), String> {
-        const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
-
-        let (old_fall_velocity, source_id, collision_vertical_offset, flight_profile) = {
+        let (old_fall_velocity, collision_vertical_offset, flight_profile) = {
             let player = &self.session.state.live.economy.entities[usize::from(source_slot)];
             let parameter = player
                 .parameter_relation
@@ -29392,14 +29486,13 @@ impl Mc2Simulation {
             profile.raw_word_0x12 = word(18);
             (
                 player.source_word_2c(),
-                player.source_id,
                 profile.ground_clearance,
                 profile,
             )
         };
         // sub_5E310 runs the full owner flight body before falling.
         let event_start = self.session.state.live.core.context.events.len();
-        let (mut position, dying_burst_position) = {
+        let (position, dying_burst_position) = {
             let live = &mut self.session.state.live;
             live.nyphur_dispatcher.step_dying_flight(
                 &mut live.economy, &mut live.shared_spells, &mut live.core.players,
@@ -29409,20 +29502,19 @@ impl Mc2Simulation {
         };
         let events = self.session.state.live.core.context.events[event_start..].to_vec();
         self.append_context_effects(events);
-        position.z = position.z.wrapping_add(old_fall_velocity);
-        let next_fall_velocity = old_fall_velocity.wrapping_sub(2).clamp(-256, 0);
-        let ground = self
+        let altitude = self
             .session
             .state
             .live
             .terrain
-            .ground_height(position)
-            .wrapping_add(collision_vertical_offset);
-        if position.z < ground {
-            position.z = ground;
-        }
+            .ground_height(position);
+        let fall = crate::native_world::creatures::player_lifecycle::fall(
+            crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES,
+            position, old_fall_velocity, altitude, collision_vertical_offset,
+        );
+        let position = fall.position;
         self.session.state.live.economy.entities[usize::from(source_slot)]
-            .set_source_word_2c(next_fall_velocity);
+            .set_source_word_2c(fall.next_velocity);
         self.set_level2_entity_position(source_slot, position)
             .expect("qualified Nyphur map carrier remains valid while dying");
         {
@@ -29430,13 +29522,19 @@ impl Mc2Simulation {
             let actor = live.economy.entities[usize::from(source_slot)].clone();
             live.shared_spells.sync_player_entity_from_authority(&actor);
         }
-        let _ = self.session.state.live.economy.spawn_player_dying_burst(
-            source_slot,
-            source_id,
-            dying_burst_position,
-        );
+        let burst = {
+            let live = &mut self.session.state.live;
+            crate::native_world::creatures::player_lifecycle::spawn_dying_burst(
+                &mut live.economy, &mut live.terrain,
+                &self.session.definition.presentation.particles, source_slot, dying_burst_position,
+            )?
+        };
 
-        if position.z != ground {
+        let grounded = if burst == Some(source_slot) {
+            i32::from(self.session.state.live.economy.entities[usize::from(source_slot)].position.z)
+                == i32::from(altitude) + i32::from(collision_vertical_offset)
+        } else { fall.grounded };
+        if !grounded {
             return Ok(());
         }
         let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
@@ -29454,19 +29552,33 @@ impl Mc2Simulation {
         }
         self.session.state.live.economy.entities[usize::from(source_slot)]
             .clear_source_upkeep_mailbox();
-        self.release_level2_nyphur_spell_holders(source_slot, position);
-        if let Some(marker) = self
-            .session
-            .state
-            .live
-            .economy
-            .allocate_player_death_marker(source_slot, position)
         {
-            self.session.state.live.economy
-                .retire_previous_source_projection(marker.source_entity_index);
+            let live = &mut self.session.state.live;
+            let relation = live.economy.entities[usize::from(source_slot)].special_relation;
+            let EntitySpecialRelation::PlayerState(slot) = relation else {
+                return Err(format!("dying rival {source_slot} has no current player A4"));
+            };
+            let color = live.core.players.iter().find(|player| player.slot == slot)
+                .ok_or_else(|| format!("dying rival {source_slot} has no player A4 slot {slot}"))?
+                .player_color_index();
+            live.player_lifecycle_notifications.publish(
+                color, source_slot,
+                crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Died,
+                crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.death_notice_frames,
+            ).map_err(|error| error.to_string())?;
+        }
+        self.release_level2_nyphur_spell_holders(source_slot, position)?;
+        let marker = {
+            let live = &mut self.session.state.live;
+            let current_position = live.economy.entities[usize::from(source_slot)].position;
+            crate::native_world::creatures::player_lifecycle::construct_death_marker(
+                &mut live.economy, &mut live.terrain, source_slot, current_position,
+            )?
+        };
+        if let Some(marker) = marker {
             let player = &mut self.session.state.live.economy.entities[usize::from(source_slot)];
             player.set_source_action(3);
-            player.set_source_dword_10(PLAYER_BANISHED_ACTION_TIMER);
+            player.set_source_dword_10(crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.revival_wait_visits);
             self.session
                 .state
                 .live
@@ -29491,17 +29603,13 @@ impl Mc2Simulation {
     /// carrier changes only after the ordinary lethal mailbox and grounded
     /// action-2 transition selected action 3.
     fn step_level2_nyphur_banished_action(&mut self, source_slot: u16) -> std::result::Result<(), String> {
-        let Some(player_index) = self
-            .session
-            .state
-            .live
-            .core
-            .players
-            .iter()
-            .position(|player| player.entity_index == source_slot && player.is_ai)
-        else {
-            return Ok(());
+        let player_slot = match self.session.state.live.economy.entities[usize::from(source_slot)].special_relation {
+            EntitySpecialRelation::PlayerState(slot) => slot,
+            _ => return Err(format!("banished rival {source_slot} has no current player A4")),
         };
+        let player_index = self.session.state.live.core.players.iter()
+            .position(|player| player.slot == player_slot)
+            .ok_or_else(|| format!("banished rival {source_slot} has no player A4 slot {player_slot}"))?;
         {
             let live = &mut self.session.state.live;
             let dispatcher = live.nyphur_dispatcher
@@ -29509,42 +29617,64 @@ impl Mc2Simulation {
                 .ok_or_else(|| format!("banished rival {source_slot} lost its current owner carrier"))?;
             dispatcher.clear_banished_recoil();
         }
-        let live = &self.session.state.live;
-        let castle_entity_index = live.economy.castle_for_owner(source_slot)
-            .map_or(0, |castle| castle.source_entity_index);
-        if castle_entity_index != 0 {
-            let timer = self.session.state.live.economy.entities[usize::from(source_slot)]
-                .source_dword_10();
-            if timer != 0 {
-                self.session.state.live.economy.entities[usize::from(source_slot)]
-                    .set_source_dword_10(timer.wrapping_sub(1));
-            } else {
-                self.revive_level2_rival_at_castle(source_slot).map_err(|error| error.to_string())?;
+        let outcome = {
+            let live = &mut self.session.state.live;
+            crate::native_world::creatures::player_lifecycle::step_ai_banished(
+                &mut live.economy.entities[usize::from(source_slot)],
+                &live.core.players[player_index],
+            )?
+        };
+        use crate::native_world::creatures::player_lifecycle::AiBanishment;
+        match outcome {
+            AiBanishment::Waiting => {}
+            AiBanishment::Revive { castle_slot } => {
+                self.revive_level2_rival_at_castle(source_slot, castle_slot).map_err(|error| error.to_string())?;
             }
-            return Ok(());
+            AiBanishment::Banished { announce } => {
+                let live = &mut self.session.state.live;
+                let player = &mut live.core.players[player_index];
+                if announce {
+                    live.player_lifecycle_notifications.publish(
+                        player.player_color_index(), source_slot,
+                        crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Banished,
+                        crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.banishment_notice_frames,
+                    ).map_err(|error| error.to_string())?;
+                }
+                crate::native_world::creatures::player_lifecycle::finish_ai_banishment(player)?;
+                let slot = player.slot;
+                if let Some(projected) = live.shared_spells.players.iter_mut().find(|row| row.slot == slot) {
+                    if !projected.set_banishment_state(0) {
+                        return Err(format!("banished rival {source_slot} lost its shared participation projection"));
+                    }
+                }
+            }
         }
-        assert!(
-            self.session.state.live.core.players[player_index].set_banishment_state(0),
-            "qualified Nyphur player owns the Level-2 banishment carrier"
-        );
         Ok(())
     }
 
-    fn revive_level2_rival_at_castle(&mut self, owner: u16) -> Result<()> {
+    fn revive_level2_rival_at_castle(&mut self, owner: u16, castle_slot: u16) -> Result<()> {
         let live = &mut self.session.state.live;
         let handle = live.economy.handle(owner)
             .ok_or_else(|| NativeWorldError::new("reviving rival source handle is absent"))?;
-        let castle_position = live.economy.castle_for_owner(owner)
-            .map(|castle| castle.position)
-            .ok_or_else(|| NativeWorldError::new("reviving rival Castle is absent"))?;
         live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &[])
             .map_err(NativeWorldError::new)?;
+        let context = source_target::Context {
+            spells: Some(&live.shared_spells),
+            map_type: Some(live.terrain.map_type()),
+            player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+            player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+            particles: Some(&self.session.definition.presentation.particles),
+            ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        let castle_position = source_target::read(&live.economy, context, castle_slot)
+            .map_err(NativeWorldError::new)?
+            .ok_or_else(|| NativeWorldError::new(format!("reviving rival Castle address {castle_slot} is absent")))?.position;
         let actor = live.economy.entities.get(usize::from(owner)).cloned()
             .ok_or_else(|| NativeWorldError::new("reviving rival actor is absent"))?;
         crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, owner, castle_position, true, false)
             .map_err(NativeWorldError::new)?;
-        let (actor, holders) = live.shared_spells.revive_rival_at_castle(
-            &mut live.economy.economy, actor, castle_position,
+        let (mut actor, holders) = live.shared_spells.revive_rival_at_castle(
+            &mut live.economy, &mut live.terrain, castle_slot, actor, castle_position,
         )?;
         for holder in holders {
             let slot = holder.index;
@@ -29554,6 +29684,7 @@ impl Mc2Simulation {
             crate::world::effects::sync_position(&mut live.economy, &mut live.terrain, slot, position, active, false)
                 .map_err(NativeWorldError::new)?;
         }
+        actor.set_map_links(live.economy.map_chains.old_map_entity(owner), live.economy.map_chains.next_entity(owner));
         live.economy.entities[usize::from(owner)] = actor;
         if !live.nyphur_dispatcher.publish_revival_player_state(
             handle, &live.economy, &mut live.core.players, &live.shared_spells,
@@ -29569,7 +29700,7 @@ impl Mc2Simulation {
         Ok(())
     }
 
-    fn release_level2_player_spell_holders(&mut self, player_position: Position) {
+    fn release_level2_player_spell_holders(&mut self, player_position: Position) -> std::result::Result<(), String> {
         let player_entity_index = self.session.state.live.core.state.entity_index;
         let enabled = self
             .session
@@ -29597,6 +29728,18 @@ impl Mc2Simulation {
                 .live
                 .shared_spells
                 .set_enabled_spell_holder_index(family, 1);
+            if holder_index == 1 {
+                let live = &mut self.session.state.live;
+                if crate::native_world::creatures::player_lifecycle::scatter_current_sentinel_house(
+                    &mut live.economy, &mut live.ordinary.houses, &mut live.terrain,
+                    player_entity_index, player_position, &mut rng,
+                )? {
+                    continue;
+                }
+                if live.economy.economy.live_arena_kind(1).is_some() {
+                    return Err("released-holder sentinel1 has no current typed scatter owner".to_owned());
+                }
+            }
             {
                 let holder =
                     &mut self.session.state.live.economy.entities[usize::from(holder_index)];
@@ -29669,6 +29812,7 @@ impl Mc2Simulation {
                 .shared_spells
                 .enabled_spell_holder_indices();
         }
+        Ok(())
     }
 
     fn step_level2_player_dying_action(
@@ -29678,13 +29822,9 @@ impl Mc2Simulation {
         burst_position: Position,
         mana_chain: &crate::campaign::source_arena::SourceManaChain,
     ) -> std::result::Result<(), String> {
-        const PLAYER_DEATH_NOTIFICATION_ID: u16 = 374;
-        const PLAYER_DEATH_NOTIFICATION_STATE: u8 = 1;
-        const PLAYER_DEATH_NOTIFICATION_TIMER: i16 = 100;
-        const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
 
         let player_entity_index = self.session.state.live.core.state.entity_index;
-        let (old_fall_velocity, source_id, collision_vertical_offset) = {
+        let (old_fall_velocity, collision_vertical_offset) = {
             let player =
                 &self.session.state.live.economy.entities[usize::from(player_entity_index)];
             let collision_vertical_offset = player
@@ -29700,7 +29840,6 @@ impl Mc2Simulation {
                 .expect("qualified Level 2 player parameter row remains present");
             (
                 player.source_word_2c(),
-                player.source_id,
                 collision_vertical_offset,
             )
         };
@@ -29714,34 +29853,39 @@ impl Mc2Simulation {
         if self.session.state.live.player_menu_state != 0 {
             self.session.state.live.player_menu_state = 0;
         }
-        let mut position = self.session.state.live.core.state.position;
-        position.z = position.z.wrapping_add(old_fall_velocity);
-        let next_fall_velocity = old_fall_velocity.wrapping_sub(2).clamp(-256, 0);
-        let ground = self
+        let position = self.session.state.live.core.state.position;
+        let altitude = self
             .session
             .state
             .live
             .terrain
-            .ground_height(position)
-            .wrapping_add(collision_vertical_offset);
-        if position.z < ground {
-            position.z = ground;
-        }
+            .ground_height(position);
+        let fall = crate::native_world::creatures::player_lifecycle::fall(
+            crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES,
+            position, old_fall_velocity, altitude, collision_vertical_offset,
+        );
+        let position = fall.position;
         {
             let player =
                 &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
-            player.set_source_word_2c(next_fall_velocity);
+            player.set_source_word_2c(fall.next_velocity);
         }
         self.set_level2_entity_position(player_entity_index, position)
             .expect("qualified Level 2 player map carrier remains valid");
 
-        let _ = self.session.state.live.economy.spawn_player_dying_burst(
-            player_entity_index,
-            source_id,
-            burst_position,
-        );
+        let burst = {
+            let live = &mut self.session.state.live;
+            crate::native_world::creatures::player_lifecycle::spawn_dying_burst(
+                &mut live.economy, &mut live.terrain,
+                &self.session.definition.presentation.particles, player_entity_index, burst_position,
+            )?
+        };
 
-        if position.z == ground {
+        let grounded = if burst == Some(player_entity_index) {
+            i32::from(self.session.state.live.economy.entities[usize::from(player_entity_index)].position.z)
+                == i32::from(altitude) + i32::from(collision_vertical_offset)
+        } else { fall.grounded };
+        if grounded {
             let reset_free_slots = self.session.baseline.economy.economy.free_slots.clone();
             {
                 let live = &mut self.session.state.live;
@@ -29800,27 +29944,25 @@ impl Mc2Simulation {
                 .live
                 .shared_spells
                 .set_player_entity_damage_mailbox(0, 0);
-            self.session.state.live.player_death_notification =
-                Some(Level2PlayerDeathNotification {
-                    id: PLAYER_DEATH_NOTIFICATION_ID,
-                    state: PLAYER_DEATH_NOTIFICATION_STATE,
-                    timer: PLAYER_DEATH_NOTIFICATION_TIMER,
-                });
-            self.release_level2_player_spell_holders(position);
+            self.session.state.live.player_lifecycle_notifications.publish(
+                victim_color as u8, player_entity_index,
+                crate::native_world::creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Died,
+                crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.death_notice_frames,
+            ).map_err(|error| error.to_string())?;
+            self.release_level2_player_spell_holders(position)?;
 
-            if let Some(marker) = self
-                .session
-                .state
-                .live
-                .economy
-                .allocate_player_death_marker(player_entity_index, position)
-            {
-                self.session.state.live.economy
-                    .retire_previous_source_projection(marker.source_entity_index);
+            let marker = {
+                let live = &mut self.session.state.live;
+                let current_position = live.economy.entities[usize::from(player_entity_index)].position;
+                crate::native_world::creatures::player_lifecycle::construct_death_marker(
+                    &mut live.economy, &mut live.terrain, player_entity_index, current_position,
+                )?
+            };
+            if let Some(marker) = marker {
                 let player =
                     &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
                 player.set_source_action(3);
-                player.set_source_dword_10(PLAYER_BANISHED_ACTION_TIMER);
+                player.set_source_dword_10(crate::level_definition::PLAYER_LIFECYCLE_PROPERTIES.revival_wait_visits);
                 self.session
                     .state
                     .live
@@ -29853,13 +29995,15 @@ impl Mc2Simulation {
         Ok(())
     }
 
-    fn step_level2_player_banished_action(&mut self) {
+    fn step_level2_player_banished_action(&mut self) -> std::result::Result<(), String> {
         let player_entity_index = self.session.state.live.core.state.entity_index;
-        let is_ai = self.session.state.live.shared_spells.local_player.is_ai;
-        if is_ai {
+        let role = crate::native_world::creatures::player_lifecycle::kind(
+            &self.session.state.live.shared_spells.local_player,
+        );
+        if role == crate::level_definition::PlayerKind::Rival {
             // The qualified owner route is human. Refuse to run the active
             // flight body for an unclosed AI action-3 branch.
-            return;
+            return Ok(());
         }
         if let Some(effects) = self.session.state.live.core.context.effects.as_mut() {
             effects.palette_submode = 7;
@@ -29875,64 +30019,45 @@ impl Mc2Simulation {
             .live
             .shared_spells
             .clear_local_player_banished_camera_feedback();
-        let killer =
-            self.session.state.live.economy.entities[usize::from(player_entity_index)].word_24();
-        let target = (killer != 0)
-            .then(|| {
-                self.session
-                    .state
-                    .live
-                    .economy
-                    .entities
-                    .get(usize::from(killer))
-                    .map(|entity| entity.position)
-            })
-            .flatten();
-        let state = &mut self.session.state.live.core.state;
-        let mut entity_roll = None;
-        let mut entity_fov = None;
-        if let Some(target) = target {
-            let desired_yaw = i16::try_from(heading_for_positions(state.position, target))
-                .expect("11-bit banished camera yaw");
-            let dx = i32::from(target.x.wrapping_sub(state.position.x).cast_signed());
-            let dy = i32::from(target.y.wrapping_sub(state.position.y).cast_signed());
-            let horizontal = i32::try_from(crate::legacy_sqrt(
-                dx.wrapping_mul(dx)
-                    .cast_unsigned()
-                    .wrapping_add(dy.wrapping_mul(dy).cast_unsigned()),
-            ))
-            .expect("wrapped Level 2 camera distance fits i32");
-            let desired_pitch = crate::pitch_for_delta(
-                horizontal,
-                i32::from(target.z.wrapping_sub(state.position.z)),
+        let (actor_position, actor_yaw, _killer, target, altitude) = {
+            let live = &self.session.state.live;
+            let actor = &live.economy.entities[usize::from(player_entity_index)];
+            let killer = actor.word_24();
+            let target = if killer == 0 {
+                None
+            } else if killer == player_entity_index {
+                Some(actor.position)
+            } else {
+                let context = source_target::Context {
+                    spells: Some(&live.shared_spells),
+                    map_type: Some(live.terrain.map_type()),
+                    player: Some((live.core.state.entity_index, live.core.state.position, live.player_life)),
+                    player_orientation: Some((live.core.state.yaw, live.core.state.roll_accumulator)),
+                    particles: Some(&self.session.definition.presentation.particles),
+                    ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                };
+                Some(source_target::read(&live.economy, context, killer)?
+                    .ok_or_else(|| format!("banished player killer address {killer} is unavailable"))?.position)
+            };
+            (actor.position, actor.yaw, killer, target, live.terrain.ground_height(actor.position))
+        };
+        let camera = crate::native_world::creatures::player_lifecycle::camera(
+            actor_position, actor_yaw, target, altitude,
+        );
+        #[cfg(test)]
+        if let Some(player) = self.session.state.live.economy.handle(player_entity_index) {
+            crate::native_world::creatures::player_lifecycle::record_camera_visit(
+                crate::native_world::creatures::player_lifecycle::CameraReceipt {
+                    player, killer_slot: _killer, player_position: actor_position,
+                    player_yaw: actor_yaw, target_position: target, altitude, result: camera,
+                },
             );
-            entity_roll = Some(desired_yaw);
-            entity_fov = Some(desired_pitch);
-            state.entity_fov = desired_pitch;
-            state.yaw = state
-                .yaw
-                .wrapping_add(crate::turn_toward(state.yaw, desired_yaw, 22))
-                & 0x07ff;
-            state.pitch_accumulator = state.pitch_accumulator.wrapping_add(crate::turn_toward(
-                state.pitch_accumulator & 0x07ff,
-                desired_pitch,
-                22,
-            )) & 0x07ff;
-            state.position.z = self
-                .session
-                .state
-                .live
-                .terrain
-                .ground_height(state.position);
-        } else {
-            state.yaw = state.yaw.wrapping_add(5) & 0x07ff;
-            state.position.z = self
-                .session
-                .state
-                .live
-                .terrain
-                .ground_height(state.position)
-                .wrapping_add(256);
+        }
+        let state = &mut self.session.state.live.core.state;
+        state.position = camera.position;
+        state.yaw = camera.yaw;
+        if let Some(fov) = camera.entity_fov {
+            state.entity_fov = fov;
         }
         state.display_pitch = 0;
         state.pitch_accumulator = 0;
@@ -29948,10 +30073,10 @@ impl Mc2Simulation {
             &mut self.session.state.live.economy.entities[usize::from(player_entity_index)];
         player.set_yaw(yaw);
         player.set_pitch(0);
-        if let Some(roll) = entity_roll {
+        if let Some(roll) = camera.entity_roll {
             player.set_source_roll(roll);
         }
-        if let Some(fov) = entity_fov {
+        if let Some(fov) = camera.entity_fov {
             player.set_fov(fov);
         }
         player.set_phase(phase);
@@ -29961,6 +30086,7 @@ impl Mc2Simulation {
             .live
             .shared_spells
             .sync_player_entity_from_authority(&snapshot);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -34777,10 +34903,9 @@ mod tests {
                 z: 0,
             };
             position.z = live.terrain.ground_height(position);
-            let marker = live
-                .economy
-                .allocate_player_death_marker(owner, position)
-                .unwrap();
+            let marker = crate::native_world::creatures::player_lifecycle::construct_death_marker(
+                &mut live.economy, &mut live.terrain, owner, position,
+            ).unwrap().unwrap();
             area_damage::publish_player_death_marker(
                 &mut live.economy,
                 marker.source_entity_index,
@@ -36270,6 +36395,50 @@ mod tests {
         let body = session.entities()[usize::from(slot)].source_word_96();
         assert_ne!(body, 0);
         let body_handle = session.session.state.live.economy.handle(body).unwrap();
+        // The real remote Morph callback wrote word96 to the raw holder;
+        // its shared local-holder projection is deliberately still cold.
+        assert_ne!(session.shared_spells().pickup(slot).unwrap().source_word_96(), body);
+        assert_eq!(session.creature_kind_for_source_slot(body), Some(CreatureKind::Bee));
+        let mut severed_remote = session.clone();
+        severed_remote.session.state.live.economy.entities[usize::from(slot)].clear_source_word_96();
+        assert_eq!(severed_remote.creature_kind_for_source_slot(body), None,
+            "a genuinely severed current raw relation remains invalid");
+        let mut scattered = session.clone();
+        {
+            let live = &mut scattered.session.state.live;
+            let player_index = live.core.players.iter().position(|player| player.entity_index == owner).unwrap();
+            assert!(live.core.players[player_index].set_enabled_spell_holder_index(4, slot));
+            let player = live.core.players[player_index].clone();
+            let owner_handle = live.economy.handle(owner).unwrap();
+            assert!(live.nyphur_dispatcher.bind_acquired_holder(owner_handle, &player, &live.economy, 4));
+        }
+        let owner_position = scattered.entities()[usize::from(owner)].position;
+        scattered.release_level2_nyphur_spell_holders(owner, owner_position).unwrap();
+        assert_eq!(scattered.entities()[usize::from(slot)].action, 13);
+        assert_eq!(scattered.entities()[usize::from(slot)].source_word_96(), body);
+        assert_eq!(scattered.creature_kind_for_source_slot(body), Some(CreatureKind::Bee),
+            "source5E310 scatters the holder without severing its already-born follower");
+        let mut severed_scatter = scattered.clone();
+        severed_scatter.session.state.live.economy.entities[usize::from(slot)].clear_source_word_96();
+        assert_eq!(severed_scatter.creature_kind_for_source_slot(body), None);
+        // Configured death boundary: the already-created follower still gets
+        // its real 1E4D0 callback, hides on the current negative-life parent,
+        // and is reclaimed only at the following source boundary.
+        let particles = scattered.session.definition.presentation.particles.clone();
+        {
+            let live = &mut scattered.session.state.live;
+            live.economy.entities[usize::from(owner)].set_life(-1);
+            let models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+            crate::native_world::creatures::bee::mc2::step_in_arena(
+                &mut live.economy, &live.core.runtime, &mut live.terrain, &particles,
+                body, &models, &[owner], None, None,
+            ).unwrap();
+            assert!(live.economy.bee_creatures().iter().any(|bee|
+                bee.source_entity_index == body && bee.active && !bee.drawing_enabled));
+            assert_eq!(live.economy.handle(body), Some(body_handle));
+        }
+        scattered.step_level2_source_pass(0);
+        assert!(scattered.session.state.live.economy.resolve(body_handle).is_none());
         assert_eq!(
             (
                 session.current_morph_parent(body).unwrap().unwrap().model,
@@ -37375,7 +37544,7 @@ mod tests {
     }
 
     #[test]
-    fn qualified_castle_revival_public_action_preserves_world_and_rejects_free_heal() {
+    fn qualified_public_recovery_uses_current_castle_or_source_spawn() {
         fn assert_no_dispatch_error(campaign: &CampaignSession) {
             assert!(
                 campaign
@@ -37481,15 +37650,29 @@ mod tests {
             let before_actor = &before_live.economy.entities[usize::from(actor_slot)];
             let before_player = before_live.shared_spells.local_player().clone();
             let castle_slot = before_live.economy.player_castle_entity_index();
-            let expected_protection = castle_position.map(|position| {
+            let recovery_position = castle_position.unwrap_or_else(|| {
+                let source_row = before_live.source_player_result.source_player_slot();
+                let mut position = before_live.mission.authored_features().iter()
+                    .filter(|feature| feature.index > 0 && feature.index < 1200
+                        && feature.activation_group == 0 && feature.kind == 3
+                        && feature.subtype == 4 + source_row as i16)
+                    .max_by_key(|feature| feature.index)
+                    .map_or(Position::default(), |feature| feature.world_position(0));
+                let recorded = before_live.player_spawn_positions.get(source_row).unwrap();
+                assert_eq!((recorded.x, recorded.y), (position.x, position.y),
+                    "real group-zero constructor seeded the current player-row spawn");
+                position.z = before_live.terrain.ground_height(position).wrapping_add(256);
+                position
+            });
+            let expected_protection = {
                 let mut probe = before_actor.clone();
-                probe.set_position(position);
+                probe.set_position(recovery_position);
                 if before_live.economy.player_castle_shift_aabb_overlap(&probe) {
                     1
                 } else {
                     99
                 }
-            });
+            };
             let mut neutral = before.clone();
             let _ = neutral.step(PlayerCommand::default(), 0);
             assert_no_dispatch_error(&neutral);
@@ -37572,8 +37755,8 @@ mod tests {
                     "recovery does not debit, refill or replace the Castle"
                 );
             }
-            if dead && with_castle {
-                let position = castle_position.unwrap();
+            {
+                let position = recovery_position;
                 assert_eq!(
                     (actor.max_life, actor.life, actor.action),
                     (10_000, 10_000, 0)
@@ -37593,7 +37776,10 @@ mod tests {
                         .clamp(0, actor.max_mana)
                 );
                 assert_eq!(live.shared_spells.player_mana(), actor.mana);
-                assert_eq!(live.player_protection_ticks, expected_protection.unwrap());
+                assert_eq!(live.player_protection_ticks, expected_protection);
+                if !with_castle {
+                    assert_eq!(live.source_player_result.raw_word() & 0x0c, 0x0c);
+                }
                 assert_eq!(
                     player.persistent_spell_experience,
                     before_player.persistent_spell_experience
@@ -37678,33 +37864,6 @@ mod tests {
                     fast.state_hash(),
                     campaign.state_hash(),
                     "successful source revival restores speedIndex=0 before entity dispatch"
-                );
-            } else {
-                let expected_actor = &reference.economy.entities[usize::from(actor_slot)];
-                assert_eq!(
-                    (
-                        actor.life,
-                        actor.max_life,
-                        actor.mana,
-                        actor.position,
-                        actor.action
-                    ),
-                    (
-                        expected_actor.life,
-                        expected_actor.max_life,
-                        expected_actor.mana,
-                        expected_actor.position,
-                        expected_actor.action
-                    ),
-                    "alive/no-Castle recovery is the same gameplay result as neutral input"
-                );
-                assert_eq!(
-                    player.enabled_spell_holders,
-                    reference.shared_spells.local_player().enabled_spell_holders
-                );
-                assert_eq!(
-                    live.player_protection_ticks,
-                    reference.player_protection_ticks
                 );
             }
         }
@@ -38888,6 +39047,137 @@ mod tests {
     }
 
     #[test]
+    fn skeleton_damage_reaction_reads_retained_and_reused_current_source_address() {
+        let package = std::env::var_os("MC_LEVEL23_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../../../generated/creatures-20261104-integration/current-owner-package/level23"),
+            PathBuf::from,
+        );
+        let mut campaign = CampaignSession::open(
+            package, CampaignSelection::ordinary(23).unwrap(),
+        ).unwrap();
+        let masks = campaign.simulation().collision_mask_bank()
+            .expect("qualified Level 23 retains its real collision masks").clone();
+        let session = campaign.simulation_mut();
+        let skeleton = 187_u16;
+        let parent = 558_u16;
+        let holder = 563_u16;
+        let particles = session.session.definition.presentation.particles.clone();
+        let frozen_models: [Vec<u16>; 29] = std::array::from_fn(|_| Vec::new());
+        let mut direct74 = session.clone();
+        let mut delegated73 = session.clone();
+        for (probe, action, inner) in [(&mut direct74, 74, 0), (&mut delegated73, 73, 1)] {
+            let live = &mut probe.session.state.live;
+            let row = &mut live.economy.entities[usize::from(skeleton)];
+            row.set_source_action(action);
+            row.record[74] = inner;
+            area_damage::contact(&mut live.economy, None, skeleton, 1, u16::MAX).unwrap();
+        }
+        direct74.step_imported_model9(skeleton, &frozen_models, &[]).unwrap();
+        assert_eq!((direct74.entities()[usize::from(skeleton)].action,
+            direct74.entities()[usize::from(skeleton)].source_word_96()), (74, u16::MAX),
+            "actual 20C50 does not read the nonfatal attacker address");
+        let error = delegated73.step_imported_model9(skeleton, &frozen_models, &[]).unwrap_err();
+        assert!(error.contains("invalid damage target slot 65535"), "{error}");
+        assert_eq!((delegated73.entities()[usize::from(skeleton)].life,
+            delegated73.entities()[usize::from(skeleton)].action,
+            delegated73.entities()[usize::from(skeleton)].source_word_96()), (999, 74, u16::MAX),
+            "outer 203D0 reaches 20EC0 after publishing the same hit");
+        let (target, original_handle) = {
+            let live = &mut session.session.state.live;
+            assert_eq!((live.economy.entities[usize::from(skeleton)].class,
+                live.economy.entities[usize::from(skeleton)].model), (5, 9));
+            assert_eq!((live.economy.entities[usize::from(parent)].class,
+                live.economy.entities[usize::from(parent)].model), (3, 1));
+            assert_eq!((live.economy.entities[usize::from(holder)].class,
+                live.economy.entities[usize::from(holder)].model), (15, 4));
+            let position = Position { x: 128, y: 128, z: 10_000 };
+            let target = crate::world::effects::allocate(
+                &mut live.economy, &mut live.terrain,
+                sim_definition::adapter::mc2_effect_definition(crate::level_definition::EffectKind::Impact),
+                position, &particles,
+            ).unwrap().unwrap();
+            assert_ne!(target, parent);
+            assert_eq!(live.economy.entities[usize::from(target)].source_id, target);
+            let handle = live.economy.handle(target).unwrap();
+            // The real source contact writer leaves its mailbox pending while
+            // the producing 10/0 effect runs its normal terminal lifetime.
+            area_damage::contact(&mut live.economy, None, skeleton, 1, target).unwrap();
+            let source = &mut live.economy.entities[usize::from(skeleton)];
+            source.set_source_action(73);
+            source.record[74] = 0;
+            source.record[56..58].fill(0);
+            let player = (live.core.state.entity_index, live.core.state.position);
+            let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary);
+            let lists = area_damage::capture_effect_lists(&mut live.economy, Some(actors.reborrow()));
+            let mut effects = std::mem::take(&mut live.economy.effects);
+            for _ in 0..16 {
+                if live.economy.entities[usize::from(target)].drawing_disabled() { break; }
+                crate::world::effects::visit(
+                    &mut live.economy, &mut live.terrain, target, &particles, &mut effects,
+                    |arena, pulse| area_damage::apply_effect(
+                        arena, Some(actors.reborrow()), Some(player), Some(&masks), &lists, pulse,
+                    ),
+                ).unwrap();
+            }
+            live.economy.effects = effects;
+            assert!(live.economy.entities[usize::from(target)].drawing_disabled());
+            assert_eq!(live.economy.handle(target), Some(handle));
+            live.economy.rebuild_source_arena_with_terrain(&mut live.terrain, &[]).unwrap();
+            assert!(live.economy.resolve(handle).is_none());
+            assert!(!live.economy.entities[usize::from(target)].active);
+            (target, handle)
+        };
+        let mut replacement = session.clone();
+        session.step_imported_model9_action73(skeleton, &frozen_models, &[]).unwrap();
+        let retained = &session.entities()[usize::from(skeleton)];
+        assert_eq!((retained.action, retained.life, retained.record[69], retained.record[70]),
+            (74, 999, 0, 0), "20EC0 reads the reclaimed fixed-address packet");
+
+        {
+            let live = &mut replacement.session.state.live;
+            // Isolate the same legitimately reclaimed address for one real
+            // source Bee constructor; its current typed ID differs from raw.
+            live.economy.economy.free_slots = vec![target];
+            let parent_row = live.economy.entities[usize::from(parent)].clone();
+            let born = creatures::bee::mc2::allocate_morph(
+                &mut live.economy, &mut live.terrain, holder, parent,
+                parent_row.source_id, parent_row.position,
+            ).unwrap();
+            assert_eq!(born.source_entity_index, target);
+            assert_eq!(born.entity_id, parent_row.source_id);
+            assert_ne!(live.economy.handle(target), Some(original_handle));
+            assert_ne!(live.economy.entities[usize::from(target)].source_id, born.entity_id);
+        }
+        let mut same_owner = replacement.clone();
+        {
+            // Configured identity discriminator: the typed replacement's
+            // copied parent ID matches the Skeleton, while its raw shadow's
+            // former physical ID does not.
+            let source = &mut same_owner.session.state.live.economy.entities[usize::from(skeleton)];
+            source.source_id = parent;
+            source.record[30..32].copy_from_slice(&parent.to_le_bytes());
+        }
+        same_owner.step_imported_model9_action73(skeleton, &frozen_models, &[]).unwrap();
+        assert_eq!(same_owner.entities()[usize::from(skeleton)].action, 73,
+            "20EC0 compares the current typed ID before selecting reaction pose");
+        replacement.step_imported_model9_action73(skeleton, &frozen_models, &[]).unwrap();
+        let reacted = &replacement.entities()[usize::from(skeleton)];
+        assert_eq!((reacted.action, reacted.life, reacted.record[69], reacted.record[70]),
+            (74, 999, 5, 2), "the reused typed Bee owns current class/model");
+        let live = &replacement.session.state.live;
+        let sentinel = &live.economy.entities[0];
+        let actual = Mc2Simulation::model9_current_damage_target(
+            &live.economy, source_target::Context::default(), 0,
+        ).unwrap().unwrap();
+        assert_eq!((actual.source_id, actual.class, actual.model),
+            (sentinel.source_id, sentinel.class, sentinel.model));
+        assert!(Mc2Simulation::model9_current_damage_target(
+            &live.economy, source_target::Context::default(), u16::MAX,
+        ).unwrap().is_none());
+    }
+
+    #[test]
     fn level_three_skeleton_action74_local_row_matches_frozen_table_callback() {
         let package = level_three_descriptor_fixture_path();
         let mut seed = CampaignSession::open(&package, CampaignSelection::LEVEL3).unwrap();
@@ -38994,11 +39284,15 @@ mod tests {
                 let result = {
                     let live = &mut session.session.state.live;
                     let source = &mut live.economy.entities[usize::from(predator_slot)];
-                    campaign_shared_families::step_model9_action74(
+                    campaign_shared_families::step_model9_inner_20940(
                         source,
                         &live.terrain,
                         &frozen,
-                        &dynamic_targets,
+                        |slot| Ok(dynamic_targets.iter().copied().find(|target| target.source_slot == slot)
+                            .or_else(|| frozen.get(usize::from(slot)).filter(|row| row.active)
+                                .map(|row| campaign_shared_families::Model9DamageTarget {
+                                    source_slot: slot, source_id: row.source_id, class: row.class, model: row.model,
+                                }))),
                         movement_pose,
                         reaction_pose,
                         scan_period,
@@ -39034,7 +39328,7 @@ mod tests {
             };
             let observed = actual
                 .simulation_mut()
-                .step_imported_model9_action74(predator_slot, &model_slots);
+                .step_imported_model9_inner_20940(predator_slot, &model_slots);
             assert_eq!(observed, expected, "{case}");
             let actual = actual.simulation();
             let reference = reference.simulation();
@@ -47292,6 +47586,7 @@ mod tests {
             .map(|sphere| sphere.player_entity_index)
             .collect::<Vec<_>>();
 
+        let burst_event_start = session.economy.events().len();
         let lists = area_damage::capture_effect_lists(&mut session.session.state.live.economy, None);
         session
             .step_level2_player_dying_action(0, player_entity_index, position, lists.mana_chain())
@@ -47309,15 +47604,12 @@ mod tests {
             0
         );
         assert!(session.economy.player_death_markers.is_empty());
-        assert!(session.economy.death_bursts.is_empty());
-        assert_eq!(
-            session.player_death_notification,
-            Some(Level2PlayerDeathNotification {
-                id: 374,
-                state: 1,
-                timer: 100,
-            })
-        );
+        assert!(!session.economy.events()[burst_event_start..].iter().any(|event| matches!(event,
+            Level2EconomyEvent::DeathBurstSpawned { parent_entity_index, .. }
+                if *parent_entity_index == player_entity_index)));
+        let notice = session.player_lifecycle_notifications.entries()[usize::from(session.state.player_color_index)];
+        assert_eq!((notice.kind, notice.source_owner, notice.state, notice.remaining_frames),
+            (Some(creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Died), player_entity_index, 1, 100));
         assert_eq!(
             session
                 .economy
@@ -47334,14 +47626,9 @@ mod tests {
             .unwrap();
         assert_eq!(session.economy.entities[player_index].action, 2);
         assert!(session.economy.player_death_markers.is_empty());
-        assert_eq!(
-            session.player_death_notification,
-            Some(Level2PlayerDeathNotification {
-                id: 374,
-                state: 1,
-                timer: 100,
-            })
-        );
+        let notice = session.player_lifecycle_notifications.entries()[usize::from(session.state.player_color_index)];
+        assert_eq!((notice.kind, notice.source_owner, notice.state, notice.remaining_frames),
+            (Some(creatures::player_lifecycle::notifications::PlayerLifeNoticeKind::Died), player_entity_index, 1, 100));
     }
     #[test]
     fn level24_real_creature_groups_reach_their_original_absence_objectives() {
