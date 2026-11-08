@@ -965,6 +965,28 @@ pub(crate) struct SourceSpellImpactReceipt {
 }
 
 #[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct MorphPaymentReceipt {
+    pub(crate) holder: SourceEntityHandle,
+    pub(crate) parent: SourceEntityHandle,
+    pub(crate) body: Option<SourceEntityHandle>,
+    pub(crate) cost: i32,
+    pub(crate) before_mana: i32,
+    pub(crate) before_regen: i32,
+    pub(crate) after_regen: i32,
+    pub(crate) committed: std::result::Result<Option<(i32, i32)>, String>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct MorphFollowerReceipt {
+    pub(crate) body: SourceEntityHandle,
+    pub(crate) parent: Option<SourceEntityHandle>,
+    pub(crate) parent_packet: Option<EntitySnapshot>,
+    pub(crate) body_after: EntitySnapshot,
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MeteorImpactBirthReceipt {
     pub(crate) projectile: SourceEntityHandle,
@@ -1020,6 +1042,8 @@ pub(crate) struct Creature17Trace {
     pub(crate) meteor_acquisitions: Vec<MeteorAcquisitionReceipt>,
     pub(crate) spell_launches: Vec<SourceSpellLaunchReceipt>,
     pub(crate) spell_impacts: Vec<SourceSpellImpactReceipt>,
+    pub(crate) morph_payments: Vec<MorphPaymentReceipt>,
+    pub(crate) morph_followers: Vec<MorphFollowerReceipt>,
     pub(crate) meteor_children:
         Vec<(SourceEntityHandle, SourceEntityHandle, EntitySnapshot)>,
     pub(crate) slowing: Vec<Creature17SlowingReceipt>,
@@ -16626,7 +16650,21 @@ impl Mc2Simulation {
                         && holder.model == 4
                         && holder.action == 12
                         && holder.source_spell_parent_entity_index() == parent
-                        && (holder.source_word_96() == source_slot
+                        && ({
+                            let direct = holder.source_word_96() == source_slot;
+                            #[cfg(test)]
+                            if direct {
+                                let arena = &self.session.state.live.economy;
+                                if let (Some(holder_handle), Some(body)) =
+                                    (arena.handle(holder.index), arena.handle(source_slot))
+                                {
+                                    creatures::morph::observe_binding_admission(
+                                        arena, holder_handle, body, holder.source_word_96(),
+                                    );
+                                }
+                            }
+                            direct
+                        }
                             // Raw Morph controllers update their arena carrier;
                             // the shared pickup projection can retain word96=0.
                             // Check the current generation-bound birth relation.
@@ -17460,6 +17498,23 @@ impl Mc2Simulation {
             let parent = self.current_morph_parent(parent_slot).map_err(|error| error.to_string())?;
             let live = &mut self.session.state.live;
             creatures::morph::step(&mut live.economy, &mut live.terrain, source_slot, parent.as_ref())?;
+            #[cfg(test)]
+            if CREATURE17_TRACE.with(|trace| trace.borrow().is_some()) {
+                if let Some(body) = live.economy.handle(source_slot) {
+                    let parent_handle = live.economy.handle(parent_slot);
+                    let body_after = live.economy.entities[usize::from(source_slot)].clone();
+                    CREATURE17_TRACE.with(|trace| {
+                        if let Some(trace) = trace.borrow_mut().as_mut() {
+                            trace.morph_followers.push(MorphFollowerReceipt {
+                                body,
+                                parent: parent_handle,
+                                parent_packet: parent,
+                                body_after,
+                            });
+                        }
+                    });
+                }
+            }
             return Ok(());
         }
         if visit.handler == ExistingHandler::SpellHolderAndPickup
@@ -24433,6 +24488,8 @@ impl Mc2Simulation {
                 let fresh =
                     current_holder.active_value == current_holder.activation_value.cast_signed();
                 if fresh || current_parent.mana_regen > 0 {
+                    #[cfg(test)]
+                    let payment_before = (current_parent.mana, current_parent.mana_regen);
                     let regen = if fresh {
                         if current_parent.mana_regen >= 0 {
                             current_holder.max_mana.wrapping_neg()
@@ -24464,6 +24521,33 @@ impl Mc2Simulation {
                         self.commit_spell_parent_mana_regen(owner, regen);
                     }
                     current_parent.set_mana_regen(regen);
+                    #[cfg(test)]
+                    if fresh && CREATURE17_TRACE.with(|trace| trace.borrow().is_some()) {
+                        let arena = &self.session.state.live.economy;
+                        if let (Some(holder), Some(parent)) =
+                            (arena.handle(source_slot), arena.handle(current_parent.index))
+                        {
+                            let body = arena.economy.morph.body_for_holder(holder)
+                                .filter(|body| arena.resolve(*body).is_some());
+                            let committed = self.current_morph_parent(current_parent.index)
+                                .map(|row| row.map(|row| (row.mana, row.mana_regen)))
+                                .map_err(|error| error.to_string());
+                            CREATURE17_TRACE.with(|trace| {
+                                if let Some(trace) = trace.borrow_mut().as_mut() {
+                                    trace.morph_payments.push(MorphPaymentReceipt {
+                                        holder,
+                                        parent,
+                                        body,
+                                        cost: current_holder.max_mana,
+                                        before_mana: payment_before.0,
+                                        before_regen: payment_before.1,
+                                        after_regen: current_parent.mana_regen,
+                                        committed,
+                                    });
+                                }
+                            });
+                        }
+                    }
                 }
             }
             let local = self.morph_parent_is_local(current_parent)?;

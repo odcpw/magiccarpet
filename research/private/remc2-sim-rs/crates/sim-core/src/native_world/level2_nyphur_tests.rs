@@ -2376,10 +2376,614 @@ fn level_two_nyphur_mode14_rejects_non_family4_holder_carrier() {
             &mut session.session.state.live.economy.entities,
             &players,
             &terrain,
+            &session.session.definition.presentation,
         )
         .expect("malformed mode-14 carrier fails through movement epilogue");
     assert_eq!(session.economy.entities[112].source_word_96(), 0);
     assert_eq!(session.economy.entities[112].source_word_98(), 0);
+}
+
+#[test]
+fn configured_mission18_mode14_uses_full_activation_and_descriptor_vertical_order() {
+    let package = std::env::var_os("MC_LEVEL18_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/rival-spells-20261108-integration/current-owner-package/level18-current"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    ).expect("whole current Mission18").simulation().clone();
+    // The retained Castle is still under construction. Its actual initialized
+    // model42 child counts18→−1→0. Source order209before210 then requires a
+    // root state2→action4 visit, a zero-timer owner publication and the NEXT
+    //60F00 census. No timer/state/capacity is changed during this preparation.
+    let owner_handle = session.source_arena().handle(184).unwrap();
+    let holder_handle = session.source_arena().handle(194).unwrap();
+    let castle_handle = session.source_arena().handle(209).unwrap();
+    let initial_castle = *session.economy().castle_for_owner(184).unwrap();
+    let build_child = *session.economy().castle_children().iter()
+        .find(|child| child.active && child.source_entity_index == 210).unwrap();
+    assert_eq!((initial_castle.source_entity_index, initial_castle.action,
+        initial_castle.build_state, initial_castle.player_entity_index, initial_castle.mana),
+        (209, 5, 4, 0, 78_600));
+    assert_eq!((build_child.model, build_child.action, build_child.parent_entity_index,
+        build_child.source_dword_10, build_child.source_byte_3b), (42, 44, 209, 18, 0));
+    assert_ne!(build_child.control_flags & 2, 0, "the actual BUILD child is already initialized");
+    let construction_bound = u32::try_from(build_child.source_dword_10).unwrap() + 4;
+    let mut completed = None;
+    let mut action4 = None;
+    let mut owner_published = None;
+    let mut capacity_published = None;
+    let mut construction_history = Vec::new();
+    for turn in 0..construction_bound {
+        let before = *session.economy().castle_for_owner(184).unwrap();
+        let child_clock = session.economy().castle_children().iter()
+            .find(|child| child.active && child.source_entity_index == 210)
+            .map(|child| child.source_dword_10);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", session.dispatch_events());
+        assert_eq!(session.source_arena().handle(184), Some(owner_handle));
+        assert_eq!(session.source_arena().handle(194), Some(holder_handle));
+        assert_eq!(session.source_arena().handle(209), Some(castle_handle));
+        assert!(session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::Castle { source_slot: 209, advanced: true, .. })),
+            "actual209 callback must drive construction: {:?}", session.dispatch_events());
+        let after = *session.economy().castle_for_owner(184).unwrap();
+        construction_history.push((turn, child_clock,
+            (before.action, before.build_state, before.phase, before.timer, before.player_entity_index),
+            (after.action, after.build_state, after.phase, after.timer, after.player_entity_index),
+            session.entities()[184].max_mana));
+        if before.build_state != 2 && after.build_state == 2 {
+            assert_eq!(child_clock, Some(-1), "actual210 terminal visit completes its real parent");
+            completed = Some(turn);
+        }
+        if before.action == 5 && after.action == 4 {
+            assert_eq!(before.build_state, 2);
+            assert_eq!(completed, turn.checked_sub(1));
+            action4 = Some(turn);
+        }
+        if before.player_entity_index == 0 && after.player_entity_index == 184 {
+            assert_eq!((before.action, before.timer), (4, 0));
+            assert_eq!(action4, turn.checked_sub(1));
+            owner_published = Some(turn);
+        }
+        if session.entities()[184].max_mana == 79_600 {
+            assert_eq!(before.player_entity_index, 184);
+            assert_eq!(owner_published, turn.checked_sub(1),
+                "60F00 follows the previous numeric owner write");
+            assert_eq!(session.economy().owner_max_mana_capacity(184), 79_600);
+            capacity_published = Some(turn);
+            break;
+        }
+    }
+    assert!(completed.is_some() && action4.is_some() && owner_published.is_some()
+        && capacity_published.is_some(), "real Castle publication chain incomplete within source clock+4 bound{construction_bound}: {construction_history:?}");
+    assert_eq!(session.entities()[184].max_mana, 79_600);
+    let live = &session.session.state.live;
+    let owner = 184_u16;
+    let handle = live.economy.handle(owner).unwrap();
+    let base = live.nyphur_dispatcher.get(handle).unwrap();
+    let presentation = &session.session.definition.presentation;
+    let terrain = session.canonical_terrain();
+    let players = session.players();
+    let descriptor = live.economy.entities[184].parameter_relation.unwrap();
+    assert_eq!(i16::from_le_bytes([
+        presentation.entity_parameters[usize::from(descriptor)][14],
+        presentation.entity_parameters[usize::from(descriptor)][15],
+    ]), -4);
+    assert_eq!((live.economy.entities[189].model,
+        live.economy.entities[189].source_spell_parent_entity_index()), (4, owner));
+
+    // These cloned packets isolate source161A0, not a claim that gameplay
+    // selected mode14 or supplied these configured coordinates/resources.
+    let prepare = |actor_z: i16, target_z: i16| {
+        let mut rows = live.economy.entities.clone();
+        let actor_position = Position { x: 2176, y: 2416, z: actor_z };
+        rows[184].set_position(actor_position);
+        rows[71].set_position(Position { x: 2176, y: 4464, z: target_z });
+        rows[91].set_position(Position { x: 5248, y: 2416, z: actor_z });
+        let target = rows[71].clone();
+        rows[184].set_source_relation(&target);
+        rows[184].set_yaw(0);
+        rows[184].set_source_roll(0);
+        rows[184].set_pitch(77);
+        let flags = rows[184].control_flags | 0x100;
+        rows[184].set_control_flags(flags);
+        let mut ai = base.clone();
+        ai.common_upkeep.max_mana = 100_000;
+        ai.common_upkeep.mana = 100_000;
+        ai.common_upkeep.word_0x244 = 0;
+        ai.common_upkeep.byte_0x45e = 3; // isolate the avoidance tail from turning
+        ai.common_upkeep.spell_enabled.fill(1);
+        assert!(ai.common_upkeep.step_set_spell_profile(4, 1, &mut rows));
+        (ai, rows)
+    };
+
+    // The FIRST full14E10 sees the entry roll, before161A0 replaces it with
+    // the target heading. Failed15170 precedes even the flag clear; angle227
+    // clears the flag but does not activate or overwrite pitch.
+    for (angle, cooldown, succeeds) in [(226, 0, true), (227, 0, false), (0, 1, false)] {
+        let (mut ai, mut rows) = prepare(5000, 6000);
+        ai.common_upkeep.spell_enabled[4] = cooldown;
+        rows[184].set_source_roll(angle);
+        let target = rows[71].clone();
+        let burst = ai.common_upkeep.word_0x1a2;
+        ai.step_sub_161a0(owner, &mut rows, players, terrain, presentation).unwrap();
+        assert_eq!(rows[189].active_value,
+            if succeeds { rows[189].activation_value as i16 } else { 0 });
+        assert_eq!(ai.common_upkeep.spell_enabled[4],
+            if succeeds { LEVEL2_NYPHUR_SPELL_COOLDOWNS[4] } else { cooldown });
+        assert_eq!(ai.common_upkeep.word_0x1a2, burst);
+        assert_eq!(rows[184].control_flags & 0x100,
+            if cooldown != 0 { 0x100 } else { 0 });
+        assert_eq!(rows[184].pitch, if succeeds {
+            let xy = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+                Position { x: 2176, y: 2416, z: 5000 }, target.position));
+            crate::pitch_for_delta(xy as i32, i32::from(target.position.z) - 5000)
+        } else { 77 }, "first aim uses the pre-correction caster Z");
+        assert_eq!(rows[184].position.z, 5008);
+    }
+
+    // Source descriptor word14=-4 is independent of the A4 movement latch.
+    // First targetZ+512 narrows to i16; the second remains promoted. In the
+    // wrapped-equal case the first difference is0 but promoted equality is
+    // false, so its source <=0 branch is-1 rather than signum(0).
+    for (actor_z, target_z, expected_z) in [(5000, 6000, 5008), (0, 32767, 0),
+        (-32768, 32256, -32760)] {
+        for latch in [-123_i16, 77] {
+            let (mut ai, mut rows) = prepare(actor_z, target_z);
+            ai.common_upkeep.word_0xe_14 = latch;
+            ai.step_sub_161a0(owner, &mut rows, players, terrain, presentation).unwrap();
+            assert_eq!(rows[184].position.z, expected_z,
+                "descriptor step and source narrowing: actorZ{actor_z}, targetZ{target_z}, latch{latch}");
+            assert_eq!(rows[189].active_value, 0);
+        }
+    }
+    let (mut ai, mut rows) = prepare(5000, 6000);
+    rows[91].set_position(Position { x: 3200, y: 2416, z: 5000 });
+    ai.common_upkeep.word_0xe_14 = 77;
+    ai.step_sub_161a0(owner, &mut rows, players, terrain, presentation).unwrap();
+    assert_eq!(rows[184].position.z, 5012,
+        "outside the strict attack band the third correction also reads descriptor word14");
+    assert_eq!(ai.common_upkeep.word_0xe_14, 77);
+
+    // The SECOND call follows retarget/15790 and must use the new primary
+    // target and the strict227 group as well. All other spell cooldowns are
+    // configured busy; only the real own Meteor holder194 is available.
+    for (angle, succeeds) in [(227_i16, false), (226, true)] {
+        let (mut ai, mut rows) = prepare(5000, 6000);
+        ai.common_upkeep.spell_enabled[9] = 0;
+        ai.common_upkeep.spell_levels.fill(-1);
+        ai.common_upkeep.spell_levels[9] = 0;
+        let target_heading = heading_for_positions(rows[184].position, rows[71].position) as i16;
+        rows[184].set_yaw(target_heading.wrapping_sub(angle) & 0x7ff);
+        let yaw = rows[184].yaw;
+        rows[184].set_source_roll(yaw);
+        let primary = rows[91].clone();
+        let burst = ai.common_upkeep.word_0x1a2;
+        ai.step_sub_161a0(owner, &mut rows, players, terrain, presentation).unwrap();
+        assert_eq!(rows[184].source_word_96(), 91);
+        assert_eq!((ai.common_upkeep.speed, ai.common_upkeep.word_0xe_14), (0, 1));
+        assert_eq!(rows[194].active_value,
+            if succeeds { rows[194].activation_value as i16 } else { 0 });
+        assert_eq!(ai.common_upkeep.spell_enabled[9],
+            if succeeds { LEVEL2_NYPHUR_SPELL_COOLDOWNS[9] } else { 0 });
+        assert_eq!(rows[184].control_flags & 0x100, 0);
+        assert_eq!(ai.common_upkeep.word_0x1a2, burst);
+        assert_eq!(rows[184].pitch, if succeeds {
+            let xy = crate::legacy_sqrt(super::super::level2_wrapping_xy_distance(
+                rows[184].position, primary.position));
+            crate::pitch_for_delta(xy as i32,
+                i32::from(primary.position.z) - i32::from(rows[184].position.z))
+        } else { 77 });
+        if succeeds {
+            // A separate CONFIGURED same-pass continuation starts with the
+            // actual published Castle/census, real core A4 inventory and cold
+            // own holder. It seeds mode14/current geometry and inclusive
+            // caster recovery funds, not the active result of the manual helper above.
+            // Ordinary12910 must run161A0 and then the real194 callback.
+            let mut producer = session.clone();
+            let target = {
+                let live = &producer.session.state.live;
+                let context = crate::native_world::source_target::Context {
+                    particles: Some(&producer.session.definition.presentation.particles),
+                    ..crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                };
+                crate::native_world::source_target::status_parent(&live.economy, context, 71)
+                    .unwrap().expect("the actual current original71 target")
+            };
+            assert_eq!((target.class, target.model), (5, 25));
+            assert!(target.active && target.life >= 0);
+            let actor_position = Position { x: target.position.x,
+                y: target.position.y.wrapping_sub(2048),
+                z: target.position.z.checked_add(512).unwrap() };
+            let mut primary_position = Position { x: actor_position.x.wrapping_add(3072),
+                y: actor_position.y, z: 0 };
+            let primary_floor = producer.canonical_terrain().ground_height(primary_position);
+            primary_position.z = actor_position.z.max(primary_floor.checked_add(256)
+                .expect("configured primary has legal source floor clearance"));
+            producer.set_level2_entity_position(91, primary_position).unwrap();
+            producer.set_level2_entity_position(184, actor_position).unwrap();
+            {
+                let live = &mut producer.session.state.live;
+                let mut actor = live.economy.entities[184].clone();
+                actor.set_source_relation(&target);
+                let heading = heading_for_positions(actor.position, target.position) as i16;
+                actor.set_yaw(heading);
+                actor.set_source_roll(heading);
+                actor.set_pitch(77);
+                actor.set_control_flags(actor.control_flags | 0x100);
+                assert_eq!(actor.max_mana, 79_600);
+                //15790 checks the quarter-capacity hysteresis BEFORE15170's
+                // individual6000 price. Let its real low-mana latch recover;
+                // do not clear that latch as part of this configured setup.
+                let recovery = actor.max_mana / 4 + 6000;
+                assert_eq!(recovery, 25_900);
+                actor.set_mana(recovery);
+                assert!(level2_nyphur_mode14_attack_band(
+                    level2_nyphur_source_distance_3d(actor.position, primary_position)));
+                live.economy.entities[184] = actor.clone();
+                live.shared_spells.sync_player_entity_from_authority(&actor);
+                let dispatcher = live.nyphur_dispatcher.get_mut(handle).unwrap();
+                assert!(dispatcher.sync_support_parent_resources(&actor, false));
+                dispatcher.state_byte = 14;
+                dispatcher.common_upkeep.byte_0x45e = 3;
+                //12A70 consumes one cooldown visit before161A0. Keep Morph
+                // and every other family busy then, while9 remains ready.
+                dispatcher.common_upkeep.spell_enabled.fill(2);
+                dispatcher.common_upkeep.spell_enabled[9] = 0;
+                assert_eq!(dispatcher.common_upkeep.spell_levels[9], 1,
+                    "retain the real core inventory:79600 capacity refuses II then admits I");
+                assert_eq!(live.economy.entities[194].active_value, 0);
+                assert_eq!(live.shared_spells.pickup(194).unwrap().active_value, 0);
+            }
+            let entry_holder = producer.entities()[194].clone();
+            let entry_shared_holder = producer.shared_spells().pickup(194).cloned();
+            let entry_parent = producer.entities()[184].clone();
+            let entry_ai_tier = producer.session.state.live.nyphur_dispatcher.get(handle)
+                .unwrap().common_upkeep.spell_levels[9];
+            producer.start_creature17_trace();
+            producer.step_outer_turn(PlayerCommand::default(), 0);
+            assert!(!producer.dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })),
+                "{:?}", producer.dispatch_events());
+            assert!(producer.nyphur_dispatch_traces().iter().any(|trace|
+                trace.source_slot == 184 && trace.state_byte == 14
+                    && trace.calls.contains(&Level2NyphurDispatchCall::Helper(
+                        Level2NyphurDispatchHelper::Sub161a0))),
+                "same-pass source184 must execute161A0 before194: {:?}", producer.nyphur_dispatch_traces());
+            let trace = producer.take_creature17_trace();
+            let shot = trace.spell_launches.iter().find(|launch|
+                launch.caster == handle && launch.holder.source_slot == 194)
+                .unwrap_or_else(|| {
+                    let describe = |holder: &EntitySnapshot| (holder.index, holder.class,
+                        holder.model, holder.action, holder.level_gate, holder.active_value,
+                        holder.activation_value, holder.max_mana, holder.mana_regen,
+                        holder.source_spell_parent_entity_index());
+                    let live = &producer.session.state.live;
+                    let parent = &producer.entities()[184];
+                    let raw = &producer.entities()[194];
+                    let shared = producer.shared_spells().pickup(194);
+                    let castle = producer.economy().castle_for_owner(184);
+                    let bound = producer.players().iter().find(|row| row.entity_index == 184)
+                        .and_then(|player| live.nyphur_dispatcher.bound_live_holder(
+                            handle, player, &live.economy, 9));
+                    let visits = producer.dispatch_events().iter().filter(|event| matches!(event,
+                        Mc2DispatchEvent::DynamicArena { source_slot: 194, .. }
+                            | Mc2DispatchEvent::Economy { source_slot: 194, .. }
+                            | Mc2DispatchEvent::Error { source_slot: 194, .. })).collect::<Vec<_>>();
+                    let current_ai = live.nyphur_dispatcher.get(handle).map(|ai|
+                        (ai.common_upkeep.spell_levels[9], ai.common_upkeep.spell_enabled[9],
+                            ai.common_upkeep.mana, ai.common_upkeep.max_mana));
+                    let player_tier = producer.players().iter().find(|row| row.entity_index == 184)
+                        .map(|player| player.spell_unlocked_levels[9]);
+                    panic!("the admitted second14E10 reaches its own real Meteor holder: entry_raw{:?} entry_shared{:?} entry_parent(life,mana,max,regen,flags){:?} entry_ai_tier{entry_ai_tier} current_raw{:?} current_shared{:?} current_parent{:?} original_owner{handle:?} current_owner{:?} current_holder{:?} bound{bound:?} kind{:?} castle{:?} post_admission{:?} visits{visits:?} ai{:?} current_ai(tier,cooldown,mana,max){current_ai:?} player_tier{player_tier:?} launches{:?}",
+                        describe(&entry_holder), entry_shared_holder.as_ref().map(describe),
+                        (entry_parent.life, entry_parent.mana, entry_parent.max_mana, entry_parent.mana_regen, entry_parent.control_flags),
+                        describe(raw), shared.map(describe),
+                        (parent.life, parent.mana, parent.max_mana, parent.mana_regen, parent.control_flags),
+                        producer.source_arena().handle(184), producer.source_arena().handle(194),
+                        live.economy.economy.live_arena_kind(194),
+                        castle.map(|castle| (castle.source_entity_index, castle.mana, castle.mana_capacity)),
+                        crate::native_world::meteor::admission(raw, parent, castle.map(|castle| castle.mana), raw.active_value),
+                        producer.nyphur_dispatch_traces(), trace.spell_launches);
+                });
+            assert_eq!(shot.holder, session.source_arena().handle(194).unwrap());
+            assert_eq!(shot.holder_before.level_gate, 0);
+            assert_eq!(shot.holder_before.max_mana,
+                crate::level_definition::METEOR_PROPERTIES.tiers[0].mana_cost);
+            assert_eq!(shot.holder_before.max_mana, 6000,
+                "the real source-selected MeteorI cost has an independent oracle");
+            assert_eq!((shot.packet.class, shot.packet.model, shot.packet.subspell_index),
+                (9, 3, crate::level_definition::METEOR_PROPERTIES.tiers[0].damage));
+            assert_eq!(shot.packet.source_id, rows[184].source_id);
+            assert!(shot.caster_after.mana_regen <= -shot.holder_before.max_mana);
+            let projectile = shot.projectile;
+            let mut advanced = false;
+            let mut hidden = false;
+            let mut reclaimed = false;
+            for turn in 0..u32::try_from(shot.packet.life + 16).unwrap() {
+                if producer.source_arena().handle(projectile.source_slot) == Some(projectile) {
+                    let live = &producer.session.state.live;
+                    let context = crate::native_world::source_target::Context {
+                        particles: Some(&producer.session.definition.presentation.particles),
+                        ..crate::native_world::source_target::Context::from_ordinary(
+                            &live.goats, &live.ordinary)
+                    };
+                    let current = crate::native_world::source_target::read(
+                        &live.economy, context, projectile.source_slot).unwrap().unwrap();
+                    advanced |= current.position != shot.packet.position || current.life != shot.packet.life;
+                    hidden |= current.drawing_disabled();
+                }
+                let before = producer.entities()[184].clone();
+                producer.step_outer_turn(PlayerCommand::default(), 0);
+                assert!(!producer.dispatch_events().iter().any(|event|
+                    matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "{:?}", producer.dispatch_events());
+                if turn == 0 {
+                    let after = &producer.entities()[184];
+                    assert!(before.mana_regen <= -shot.holder_before.max_mana);
+                    assert_eq!(after.mana, before.mana.wrapping_add(before.mana_regen)
+                        .clamp(0, after.max_mana));
+                    assert!(before.mana - after.mana >= shot.holder_before.max_mana,
+                        "the actual following upkeep debits the real selected spell cost");
+                }
+                if producer.source_arena().handle(projectile.source_slot) == Some(projectile) {
+                    let live = &producer.session.state.live;
+                    let context = crate::native_world::source_target::Context {
+                        particles: Some(&producer.session.definition.presentation.particles),
+                        ..crate::native_world::source_target::Context::from_ordinary(
+                            &live.goats, &live.ordinary)
+                    };
+                    let current = crate::native_world::source_target::read(
+                        &live.economy, context, projectile.source_slot).unwrap().unwrap();
+                    advanced |= current.position != shot.packet.position || current.life != shot.packet.life;
+                    hidden |= current.drawing_disabled();
+                } else {
+                    reclaimed = true;
+                    break;
+                }
+            }
+            assert!(advanced && hidden && reclaimed,
+                "the actual configured shot must advance, hide and retire naturally");
+        }
+    }
+
+}
+
+#[test]
+fn ordinary_mission18_selector14_morph_follows_pays_presents_and_expires() {
+    use crate::native_world::creatures::morph;
+
+    let package = std::env::var_os("MC_LEVEL18_PACKAGE").map_or_else(
+        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/rival-spells-20261108-integration/current-owner-package/level18-current"),
+        std::path::PathBuf::from,
+    );
+    let mut session = crate::campaign::CampaignSession::open(
+        package, crate::campaign::spec::CampaignSelection::ordinary(18).unwrap(),
+    ).expect("whole current Night Mission18").simulation().clone();
+    let owners = [92_u16, 107, 123, 140, 162, 184];
+    let originals = owners.map(|slot| session.source_arena().handle(slot).unwrap());
+    let caster = originals[5];
+    let holder = session.source_arena().handle(189).unwrap();
+    let target = session.source_arena().handle(71).unwrap();
+    let human = session.source_arena().handle(91).unwrap();
+    let initial = session.entities()[184].clone();
+    let original_target = session.entities()[71].clone();
+    assert_eq!((initial.class, initial.model, initial.life, initial.max_life,
+        initial.mana, initial.max_mana), (3, 1, 9765, 9765, 1000, 1000));
+    assert_eq!((original_target.class, original_target.model), (5, 25));
+    let player = session.players().iter().find(|row| row.entity_index == 184).unwrap();
+    assert_eq!(player.enabled_spell_holders[4], holder.source_slot);
+    assert_eq!(player.spell_unlocked_levels[4], 1);
+    let held = &session.entities()[189];
+    assert_eq!((held.class, held.model, held.action, held.source_spell_parent_entity_index()),
+        (15, 4, 12, caster.source_slot));
+    let castle = *session.economy().castle_for_owner(184).unwrap();
+    assert_eq!((castle.source_entity_index, castle.mana), (209, 78_600));
+    let profile = Level2NyphurCommonUpkeep::source_spell_profile(4, 1).unwrap().1;
+    assert_eq!((profile.mana_regen, profile.max_mana, profile.word_0x30),
+        (20_000, 7500, 301));
+    assert!(castle.mana >= profile.mana_regen);
+    let original_holders = session.players().iter()
+        .filter(|row| owners.contains(&row.entity_index))
+        .flat_map(|row| row.enabled_spell_holders.iter().copied().filter(|slot| *slot != 0))
+        .map(|slot| session.source_arena().handle(slot).unwrap()).collect::<Vec<_>>();
+    assert_eq!(original_holders.len(), 111);
+
+    // Sole scenario control: place the HUMAN at the wrapped XY midpoint of
+    // initial184 and predetermined original71, with legal current-floor
+    // clearance. This puts a real primary player in both source15FC0 lenses.
+    // The current selector order, all NPC state, resources, RNG, target
+    // choice, cooldowns and the complete unfiltered population are retained.
+    let midpoint = |from: u16, to: u16| {
+        from.wrapping_add((i32::from(to.wrapping_sub(from) as i16) / 2) as u16)
+    };
+    let mut lure = Position {
+        x: midpoint(initial.position.x, original_target.position.x),
+        y: midpoint(initial.position.y, original_target.position.y),
+        z: 0,
+    };
+    let floor = i32::from(session.canonical_terrain().ground_height(lure));
+    lure.z = i16::try_from(floor + 384).expect("legal source player altitude");
+    assert!(i32::from(lure.z) >= floor + 256);
+    if let Some(ceiling) = session.canonical_terrain().ceiling_height(lure) {
+        assert!(i32::from(lure.z) <= i32::from(ceiling) - 256);
+    }
+    assert!(level2_nyphur_source_distance_3d(initial.position, lure) <= 5120);
+    assert!(level2_nyphur_source_distance_3d(lure, original_target.position) < 5120);
+    session.set_level2_entity_position(human.source_slot, lure).unwrap();
+
+    // One full source phase cycle plus conservative ordinary100-mana refill,
+    // the actual301-visit Morph duration and16 cleanup visits. Observation
+    // does not change commands when an actor approaches, casts or expires.
+    let bound = 256 + ((profile.max_mana - initial.mana) as u32).div_ceil(100)
+        + u32::from(profile.word_0x30) + 16;
+    let mut admissions = Vec::new();
+    let mut selected = false;
+    let mut source14_visited = false;
+    let mut observed: Option<(SourceEntityHandle, u32)> = None;
+    let mut paid = false;
+    let mut presented = false;
+    let mut followed = false;
+    let mut moved = false;
+    let mut activation_audio = false;
+    let mut hidden = false;
+    let mut reclaimed = false;
+    let mut body_initial_position = None;
+    let mut expiry_turn = None;
+    let mut payments = Vec::new();
+    let mut selected_attacks = Vec::new();
+    let mut history = Vec::new();
+    for turn in 0..bound {
+        let before = session.entities()[184].clone();
+        let entry_ai = session.session.state.live.nyphur_dispatcher.get(caster).unwrap();
+        selected |= entry_ai.state_byte() == 14;
+        let journal_cursor = session.effect_journal().cursor(0).next_sequence;
+        morph::start_binding_admission_trace();
+        session.start_creature17_trace();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let trace = session.take_creature17_trace();
+        admissions.extend(morph::take_binding_admission_trace());
+        assert!(!session.dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })),
+            "source dispatch failed at turn{turn}: {:?}", session.dispatch_events());
+        let source14_this_turn = session.nyphur_dispatch_traces().iter().any(|trace|
+            trace.source_slot == caster.source_slot && trace.state_byte == 14
+                && trace.calls.contains(&Level2NyphurDispatchCall::Helper(
+                    Level2NyphurDispatchHelper::Sub161a0)));
+        source14_visited |= source14_this_turn;
+        selected_attacks.extend(trace.spell_launches.into_iter()
+            .filter(|launch| source14_this_turn && launch.caster == caster)
+            .map(|launch| (turn, launch.holder_before.model, launch.projectile)));
+        payments.extend(trace.morph_payments.into_iter().filter(|payment|
+            payment.holder == holder && payment.parent == caster));
+        assert_eq!(session.source_arena().handle(184), Some(caster));
+        assert_eq!(session.source_arena().handle(189), Some(holder));
+        let after = &session.entities()[184];
+        let current_holder = &session.entities()[189];
+        if turn < 8 || turn % 16 == 0 {
+            let ai = session.session.state.live.nyphur_dispatcher.get(caster).unwrap();
+            history.push((turn, ai.state_byte(), after.position, after.yaw,
+                after.source_roll(), after.source_word_96(), after.mana, after.max_mana,
+                current_holder.level_gate, current_holder.active_value,
+                current_holder.source_word_96(), session.state.position));
+        }
+        let binding = session.economy().morph.body_for_holder(holder);
+        if observed.is_none() && let Some(body) = binding {
+            assert!(selected && source14_this_turn,
+                "the real selector-produced mode14 callback must run before189 in this exact birth/payment pass");
+            assert_eq!(current_holder.level_gate, 1);
+            assert_eq!(current_holder.max_mana, profile.max_mana);
+            assert_eq!(current_holder.active_value, 300,
+                "the real fresh301 pulse, not a shortened or already-running timer");
+            assert_eq!(current_holder.source_word_96(), body.source_slot);
+            assert_eq!(session.source_arena().handle(body.source_slot), Some(body));
+            let row = &session.entities()[usize::from(body.source_slot)];
+            assert_eq!((row.class, row.model, row.action, row.record[77],
+                row.source_spell_parent_entity_index(), row.source_id, row.particle_parameter_index),
+                (5, 25, 207, 12, 184, initial.source_id, Some(290)));
+            assert_eq!((row.life, row.max_life), (7500, 7500));
+            assert_ne!(after.control_flags & 0x20, 0);
+            let payment = payments.iter().find(|payment| payment.body == Some(body))
+                .expect("this actual body's first pulse must charge the current parent");
+            assert_eq!(payment.cost, profile.max_mana);
+            assert!(payment.before_mana >= payment.cost);
+            let debt = if payment.before_regen >= 0 { -payment.cost }
+                else { payment.before_regen.wrapping_sub(payment.cost) };
+            assert_eq!(payment.after_regen, debt,
+                "Morph accumulates, rather than replacing, an earlier holder's queued debt");
+            assert_eq!(payment.committed, Ok(Some((payment.before_mana, debt))),
+                "the actual current parent readback must own this exact charge");
+            assert!(after.mana_regen <= debt,
+                "any later source holder preserves or accumulates the queued charge");
+            body_initial_position = Some(row.position);
+            observed = Some((body, turn));
+        }
+        if let Some((body, born)) = observed {
+            if turn == born + 1 {
+                assert!(before.mana_regen <= -profile.max_mana);
+                assert_eq!(after.mana, before.mana.wrapping_add(before.mana_regen)
+                    .clamp(0, after.max_mana));
+                paid = before.mana - after.mana >= profile.max_mana;
+            }
+            if session.source_arena().handle(body.source_slot) == Some(body) {
+                let row = &session.entities()[usize::from(body.source_slot)];
+                if binding == Some(body) && turn > born {
+                    let visits = trace.morph_followers.iter().filter(|visit|
+                        visit.body == body && visit.parent == Some(caster)).collect::<Vec<_>>();
+                    assert_eq!(visits.len(), 1,
+                        "one speed0 numeric pass must reach this exact current follower: {:?}",
+                        trace.morph_followers);
+                    let visit = visits[0];
+                    let parent = visit.parent_packet.as_ref()
+                        .expect("the current original parent must be read at this body callback");
+                    assert_eq!((parent.index, parent.class, parent.model, parent.source_id),
+                        (caster.source_slot, 3, 1, initial.source_id));
+                    let copied = &visit.body_after;
+                    assert_eq!((copied.index, copied.source_spell_parent_entity_index(),
+                        copied.class, copied.model, copied.action), (body.source_slot, 184, 5, 25, 207));
+                    let expected = Position { z: (i32::from(parent.position.z) - 512).max(0) as i16,
+                        ..parent.position };
+                    assert_eq!((copied.position, copied.yaw, copied.source_roll()),
+                        (expected, parent.yaw, parent.source_roll()),
+                        "actual Stage12 callback copies its source-time current parent, before any later force or clamp");
+                    followed = true;
+                    moved |= body_initial_position != Some(copied.position);
+                }
+                presented |= session.campaign_entity_presentations(0).unwrap().iter().any(|view|
+                    view.entity_index == body.source_slot && view.render_parameter_index == 290
+                        && view.position == row.position && view.yaw == row.yaw);
+                if current_holder.active_value == 0 && binding.is_none() {
+                    assert_eq!(turn - born, 300,
+                        "the unchanged source301 duration includes the first birth visit");
+                    assert_eq!(current_holder.source_word_96(), 0);
+                    assert_eq!(after.control_flags & 0x21, 0);
+                    assert!(row.drawing_disabled());
+                    assert!(!session.campaign_entity_presentations(0).unwrap().iter()
+                        .any(|view| view.entity_index == body.source_slot));
+                    hidden = true;
+                    expiry_turn.get_or_insert(turn);
+                }
+            } else {
+                assert!(hidden && expiry_turn.is_some_and(|expiry| turn == expiry + 1),
+                    "the original owned body must hide before following-pass retirement");
+                reclaimed = true;
+            }
+        }
+        activation_audio |= session.effect_journal().records().iter().any(|record|
+            record.sequence >= journal_cursor && matches!(record.effect,
+                crate::campaign::journal::CampaignEffect::Flight(crate::FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::MorphSpellActivation,
+                    entity_index: 184, sound_id: 60, player_index: -1,
+                })) && record.audio.is_some_and(|audio|
+                    audio.play_type == 1 && audio.command.rate_delta_percent == 0));
+        if reclaimed { break; }
+    }
+    assert!(selected && source14_visited && observed.is_some() && paid && followed && moved
+        && presented && activation_audio && hidden && reclaimed,
+        "real selector14/Morph consumer incomplete: selected{selected} visit{source14_visited} body{observed:?} paid{paid} followed{followed} moved{moved} presented{presented} audio{activation_audio} hidden{hidden} reclaimed{reclaimed}; target{target:?} lure{lure:?} bound{bound} history{history:?} admissions{admissions:?} payments{payments:?} selected_attacks{selected_attacks:?}");
+    eprintln!("ordinary selector14 completed: body{observed:?}, payments{payments:?}; source-selected offensive launch observations (not damage proof): {selected_attacks:?}");
+    let body = observed.unwrap().0;
+    assert!(admissions.iter().any(|receipt| receipt.holder == holder && receipt.body == body
+        && receipt.raw_word96 == body.source_slot
+        && receipt.raw_holder_selector == (15, 4, 12)
+        && receipt.raw_holder_parent == caster.source_slot && receipt.parent == caster.source_slot
+        // The direct callback observation has shared==body. Shared0 cannot
+        // reach that observer: it is emitted only after the alternative's
+        // actual current-generation holder→body binding has been validated.
+        && matches!(receipt.shared_word96, slot if slot == body.source_slot || slot == 0)),
+        "semantic dispatch must admit the same current holder/body generations via the actual direct/current-binding branch: semantic={} holder{holder:?} body{body:?} admissions{admissions:?}",
+        session.session.definition.semantic_level().is_some());
+    for original in originals {
+        assert_eq!(session.source_arena().handle(original.source_slot), Some(original));
+        assert!(session.entities()[usize::from(original.source_slot)].life >= 0);
+    }
+    for original in original_holders {
+        assert_eq!(session.source_arena().handle(original.source_slot), Some(original));
+    }
 }
 
 #[test]

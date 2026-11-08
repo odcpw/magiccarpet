@@ -4531,7 +4531,7 @@ impl Level2NyphurDispatcher {
             11 => self.step_sub_133b0(source_slot, entities, terrain)?,
             12 => self.step_sub_13270(source_slot, entities, terrain)?,
             13 => self.step_sub_13850(source_slot, entities, players, terrain, presentation)?,
-            14 => self.step_sub_161a0(source_slot, entities, players, terrain)?,
+            14 => self.step_sub_161a0(source_slot, entities, players, terrain, presentation)?,
             _ => {}
         }
         let tail_calls = if selected_state == 0 { 2 } else { 1 };
@@ -5117,6 +5117,7 @@ impl Level2NyphurDispatcher {
         entities: &mut [EntitySnapshot],
         players: &[PlayerSnapshot],
         terrain: &SessionTerrain,
+        presentation: &PresentationSelectors,
     ) -> Result<()> {
         let source_index = entities
             .iter()
@@ -5125,9 +5126,6 @@ impl Level2NyphurDispatcher {
                 NativeWorldError::new("Level 2 Nyphur sub_161A0 source row is absent")
             })?;
         let source = entities[source_index].clone();
-        if self.common_upkeep.source_family4_holder(entities).is_none() {
-            return self.step_sub_16580(source_index, entities, terrain);
-        }
         let Some(target) = entities.get(usize::from(source.source_word_96())).cloned() else {
             return self.step_sub_16580(source_index, entities, terrain);
         };
@@ -5135,27 +5133,42 @@ impl Level2NyphurDispatcher {
             return self.step_sub_16580(source_index, entities, terrain);
         }
 
-        let mut source_control_flags = source.control_flags;
-        let _ =
-            self.common_upkeep
-                .step_sub_14e10(4, source.model, &mut source_control_flags, entities);
-        entities[source_index].set_control_flags(source_control_flags);
+        let _ = self.step_sub_14e10_selected(4, source_index, &target, entities);
 
         let initial_roll = i16::try_from(heading_for_positions(source.position, target.position))
             .expect("Nyphur sub_161A0 roll fits the signed source angle carrier");
         entities[source_index].set_source_roll(initial_roll);
-        for _ in 0..2 {
+        let parameter_index = entities[source_index].parameter_relation.ok_or_else(|| {
+            NativeWorldError::new("Level 2 Nyphur sub_161A0 source parameter is absent")
+        })?;
+        let parameter = presentation.entity_parameters.get(usize::from(parameter_index))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur sub_161A0 parameter row is absent"))?;
+        let vertical_step = i16::from_le_bytes([parameter[14], parameter[15]]);
+        for correction in 0..2 {
             let current = entities[source_index].position;
-            let vertical_delta = i32::from(current.z) - (i32::from(target.position.z) + 512);
-            let direction = vertical_delta.signum() as i16;
+            let promoted_target = i32::from(target.position.z) + 512;
+            let direction = if i32::from(current.z) == promoted_target {
+                0
+            } else if correction == 0 {
+                // Source first narrows targetZ+512 to signed16 for the
+                // difference, but tests equality against the promoted sum.
+                let narrowed = target.position.z.wrapping_add(512);
+                if i32::from(current.z) - i32::from(narrowed) <= 0 { -1 } else { 1 }
+            } else if i32::from(current.z) - promoted_target <= 0 {
+                -1
+            } else {
+                1
+            };
             let mut position = current;
             position.z = position
                 .z
-                .wrapping_add(direction.wrapping_mul(self.common_upkeep.word_0xe_14));
+                .wrapping_add((direction as i16).wrapping_mul(vertical_step));
             entities[source_index].set_position(position);
-            let roll = i16::try_from(heading_for_positions(position, target.position))
-                .expect("Nyphur sub_161A0 roll fits the signed source angle carrier");
-            entities[source_index].set_source_roll(roll);
+            if correction == 0 {
+                let roll = i16::try_from(heading_for_positions(position, target.position))
+                    .expect("Nyphur sub_161A0 roll fits the signed source angle carrier");
+                entities[source_index].set_source_roll(roll);
+            }
         }
 
         let family4_holder = self.common_upkeep.source_family4_holder(entities).cloned();
@@ -5214,14 +5227,13 @@ impl Level2NyphurDispatcher {
             self.common_upkeep.speed = 0;
             self.common_upkeep.word_0xe_14 = 1;
             if family >= 0
-                && self.common_upkeep.step_sub_14e10(
+                && self.step_sub_14e10_selected(
                     family.cast_unsigned(),
-                    source.model,
-                    &mut source_control_flags,
+                    source_index,
+                    &candidate,
                     entities,
                 )
             {
-                entities[source_index].set_control_flags(source_control_flags);
                 return self.step_sub_16580(source_index, entities, terrain);
             }
         } else {
@@ -5244,7 +5256,7 @@ impl Level2NyphurDispatcher {
             let mut position = entities[source_index].position;
             position.z = position
                 .z
-                .wrapping_add(direction.wrapping_mul(self.common_upkeep.word_0xe_14));
+                .wrapping_add(direction.wrapping_mul(vertical_step));
             entities[source_index].set_position(position);
         }
 
