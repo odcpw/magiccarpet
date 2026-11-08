@@ -1,5 +1,26 @@
 # Shared-engine delivery plan
 
+## Voxel rendering optimization pass — 2026-11-08
+
+Oliver requested one Astra high review, measured FPS improvements and a hybrid
+rendering assessment. The review and local implementation are complete: larger
+render groups preserve exact voxel faces and 16-cell collider/edit chunks; local
+lake-bed invalidation preserves full rebuild output and shoreline changes.
+Twenty A/B runs measured ground throughput 32.64→39.20 fps and draw calls
+6,847→831; quiet 29.32→32.29 fps. Three paired water comparisons reduced median
+early impact-window worst frame 873.34→194.35 ms. Remaining roughly 20 ms campaign
+CPU turns, cold loading and residual hitches are open; this is not 60 fps qualification.
+
+Installed separately through `run-voxels.sh --optimized`; accepted `--connected`
+player-06 and previous Modern/classic selectors remain. 92 integrated checks pass
+with one opt-in profiler skipped. Installed cast/save/controls and cold reload
+pass; final impact/crater/shore frames inspected. Intermittent music integrity
+failures and one native Unity Editor crash are preserved and unresolved; no
+validation weakened. Native remains frozen `ea9276a3`. See
+`research/private/remc2-unity-native/VOXEL_SANDBOX.md` and ignored evidence under
+`research/private/generated/mc-voxel-perf-20261108/`. Fireball visual lifetime,
+smooth mana and full 3D actor admission remain separate future presentation work.
+
 ## Installed native voxel combat and mana loop — `mc-mwt` (2026-11-08)
 
 The Terra 6.1 xhigh team delivered the first native-connected Level 1 voxel

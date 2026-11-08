@@ -9,6 +9,9 @@ player_dir="$script_dir/Builds/VoxelsModern"
 if [ "${1:-}" = "--connected" ]; then
     shift
     player_dir="$script_dir/Builds/VoxelsConnected"
+elif [ "${1:-}" = "--optimized" ]; then
+    shift
+    player_dir="$script_dir/Builds/VoxelsOptimized"
 fi
 exec python3 - "$player_dir" "$@" <<'PY'
 import hashlib

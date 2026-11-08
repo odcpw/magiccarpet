@@ -1,5 +1,102 @@
 # Level 1 voxel experiments
 
+## Measured rendering pass — 2026-11-08
+
+`run-voxels.sh --optimized` runs the new, separate `Builds/VoxelsOptimized`
+candidate. `--connected` retains accepted player-06; default Modern and classic
+selectors also retain their previous builds. Goat/archer presets and save/load
+environment overrides work with the new selector.
+
+Oliver requested one Astra high review followed by a measured optimization pass.
+The read-only `gpt-6-astra` high reviewer identified campaign CPU cost, rubble
+submission, contact/edit spikes and reflection/vegetation as the paths to measure.
+Four times fewer pixels did not meaningfully improve throughput. Fresh counters
+showed thousands of draw calls, while GPU samples were much smaller than the
+roughly 20 ms native campaign fixed-step path. JSON decoding was only about 0.13 ms;
+this pass does not replace the transport or change native gameplay.
+
+Implemented two independent changes:
+
+- Combine unchanged voxel faces into larger render groups while retaining the
+  exact 16-cell collider/edit chunks. A committed edit rebuilds only affected
+  groups. Positions, normals, colors, face multiplicities and physical geometry
+  match the original submission, including partially committed edits. Use
+  `-mc-voxel-render-group 1` for the original submission in the same executable;
+  `2` and `4` are supported, with `4` the optimized default.
+- Track shoreline shape separately from terrain revision, and retain per-section
+  geometry revisions. An inland edit refreshes nearby lake-bed tiles, including
+  conservative seam/normal neighbours. Actual shoreline changes retain the full
+  rebuild. Previously every terrain edit rebuilt all 64 bed tiles. Fresh-rebuild
+  comparisons cover inland, coast, material, periodic seam and generation changes.
+
+The profiling window now starts from world readiness. Bounded JSON includes frame
+IDs, native ticks, real/game clocks, draw counters and raw scope samples; final
+GPU samples retain their timing timestamps. Capture readback is excluded from
+performance runs. The earlier group-comparison executable stopped collecting GPU
+timings after 120 unique samples; its later per-frame latest values can repeat.
+Use its unique scope samples, not repeated latest GPU values.
+
+Twenty successful same-executable A/B runs on RTX 3090/i7-10700, Vulkan 1280×960,
+private KWin compositor, five repeats per mode/scenario:
+
+| Post-first-game-second measurement | Original chunk submission | Grouped faces |
+|---|---:|---:|
+| Ground scene, median measured throughput |32.64 fps|39.20 fps|
+| Ground scene, median run p95 |41.78 ms|34.71 ms|
+| Ground scene, median draw calls |6,847|831|
+| Quiet scene, median measured throughput |29.32 fps|32.29 fps|
+| Quiet scene, median run p95 |45.04 ms|41.26 ms|
+| Quiet scene, median draw calls |3,422|621.5|
+
+Throughput uses observed frames/wall time, not reciprocal median frame time.
+Native tick throughput was also retained; no turns, collision rates or detail
+were removed. Larger groups submit some additional offscreen triangles. Ground
+edit-step maxima increased from 4.80 to 8.84 ms in these repeats; this memory/culling
+and edit-cost tradeoff accompanies fewer draw calls.
+
+Separate alternating three-before/three-after ground runs isolate water
+invalidation. Median post-initial bed rebuild fell 752.89→116.95 ms; coast refresh
+20.13→5.69 ms. The worst frame in the early impact window, native ticks 604–630,
+fell 873.34→194.35 ms. Steady p95 remained 36.07→35.21 ms; this change addresses
+the initial impact stall, not the remaining campaign CPU bottleneck. Initial
+scene creation still builds the whole lake bed. This is not 60 fps or hitch-free
+qualification. Native/visual 6,816 ground removals converge with unchanged hash
+`5432479835024191935`, and all final ground runs report zero escaped fragments.
+
+Self-verification: 92 integrated Unity checks passed, one opt-in PhysX profiler
+fixture skipped. Installed B/F2/P/Space/F5/F10 checks pass, and a fresh installed
+load restores the 626-cell house. Individually inspected full frames 0/7/25/119
+of the final ground capture for crater, material and shoreline continuity. A
+distant original tree disappears later in the sequence; its cause has not been
+isolated here. Ordinary actor source-camera admission remains unchanged.
+
+Three startup attempts failed music WAVE integrity checks, and one Unity build
+crashed in native asset refresh; failed logs are preserved. Subsequent captures,
+benchmarks and installed controls/reload pass. Separate Python cache checks also
+observed inconsistent music-file hashes, followed by repeated matching reads.
+The cause remains open; validation was not weakened or retried inside the game.
+Do not call startup reliability fixed. The physical desktop is still locked.
+UBS is partial: zero critical findings; existing private dictionary and strict
+CLI parse warnings remain, with incomplete C# semantic coverage.
+
+Evidence: `research/private/generated/mc-voxel-perf-20261108/`, notably
+`render-group-summary.json`, `water-invalidation-summary.json`, the per-run
+`performance.json`/`report.json`, `integrated-tests.xml`, `installed-controls-02`,
+`installed-coldload` and `final-ground-capture-02`. Earlier probes are copied into
+`first-probes`. The final player and exact source/resource closures are pinned
+by `water-player/voxel-install.json` and `water-player-source.json`. Native
+remains the accepted `ea9276a3` binary. Unity normalized 25 inactive platform
+metadata blocks during resource reimport; their override flags are false and
+the same metadata is used by both comparison modes. No source texture changed.
+
+Recommended visual direction from the review: retain the hybrid Modern
+water/sky/vegetation with voxel destruction and characters. The bouncing orange
+pieces are Fireball impact fragments, not mana. A later Fireball pass should
+give them a brief hot impact and cooling sparks; material rubble retains its
+physical pieces. Mana can use a smooth source-colored sphere without changing
+native ownership, value or collection. No Fireball/mana appearance change is
+claimed by this performance pass.
+
 ## Native-connected Level 1 interaction
 
 `run-voxels.sh --connected` selects the separate `Builds/VoxelsConnected`
