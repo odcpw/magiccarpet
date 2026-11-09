@@ -378,13 +378,13 @@ constructors because no rows appeared in29 inspected packages. Root required
 the generic-factory admission to be checked before closure. The reviewer
 withdrew that conclusion: source `4A1E0 → 4A310 → 4A190` admits both through
 enabled constructor-table entries, while Rust rejects them and omits actions
-12/15. TopazAnchor now owns this original-scope missing static-scenery path,
+12/15. TopazAnchor completed this original-scope missing static-scenery path,
 including typed source-default life300/particle48 bindings, real construction
 and the source-empty callback's common phase/reclaim consumers. A configured
-source-language control will be labeled as such; no shipped occurrence is
-claimed. Full `.13` stays open. Its ten-file edit window is explicitly serial:
-TopazAnchor alone writes those canonical files; Root builds the separate frozen
-dispatcher and remains read-only there until handback. Mail returns grant IDs
+source-language control is labeled as such; no shipped occurrence is claimed.
+Its ten-file edit window was explicitly serial: TopazAnchor wrote those
+canonical files; Root built the separate frozen dispatcher and remained
+read-only there until handback. Mail returns grant IDs
 but normal renewals return0 even for Root; no force release or coordinator
 setup is used, and verified renewal is not claimed. After frozen handback,
 independent review found that the raw Imported prefilter still omitted12/15.
@@ -398,19 +398,29 @@ critical findings (23 legacy whole-file critical findings remain). All659
 guarded inputs match canonical/dispatcher/Rig. This proves configured4/5
 construction, target/DTO, scheduled empty callback/common phase, canonical
 burial hide/following reclaim and exact reset; no shipped occurrence or native
-encounter is claimed. Matching native installation is pending; full `.13`
-acceptance remains open.
+encounter is claimed. Source `9a0a65b8` is committed/pushed; strict Rig native
+build passes226.393s and worker/returned SHA128a372376b772a3 matches exactly.
+Native-only Original installation `build-lul3mta2` matches all467 Rust inputs
+and both plugin copies. Root viewed canonical map/loading/NightSpire scene/HUD
+with that mapped library, one portal/zero retry; owned smoke processes stopped.
+Fresh finite-family acceptance reconciliation found no remaining concrete
+admitted gap alongside unchanged prior Tree/Stone/Dolmen/moving-scenery
+evidence. `mc-bhq.13` is CLOSED with original acceptance/dependencies unchanged.
+Evidence: `generated/static-scenery-20261109-integration/candidate-2`.
+This is not native4/5 encounter, human combat, FPS, hardware audio, full missions
+or old-save proof. The wider shared engine and objective/activation/flow
+acceptance remain open.
 
 Oliver authorized continuing the existing remc2-to-Rust delivery plan on
 2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1`, Cave
 corridors `mc-bhq.2` and authored Cave paths/rooms/features `mc-bhq.5` have their
 finite acceptance qualified below and are present in the installed runtime.
-Current family: trees, stones, dolmens and remaining scenery `mc-bhq.13`.
+Trees, stones, dolmens and remaining scenery `mc-bhq.13` are now qualified.
 Paid Tree burning, Crater/Dolmen grounding/recharge, Castle/scenery burial and
 outdoor moving-scenery construction/fire collateral are installed below.
-Full scenery acceptance remains open.
-Use its existing original acceptance and canonical `world::scenery` owners;
-complete ordinary damage/destruction, real children and lifetime/consumers.
+Continue the existing activation/objective work above, then progression/flow.
+Use each family's existing original acceptance and canonical owners; complete
+ordinary production, real children and lifetime/consumers.
 Root CopperMountain implements shared joins and serializes Cargo/RCH, acceptance, commit/push and
 installation; keep one accountable family owner through any consumer failure.
 Keep the complete acceptance and dependencies. Then continue existing
