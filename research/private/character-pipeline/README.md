@@ -2,8 +2,10 @@
 
 ## Live Level 1 character delivery
 
-The active cycle replaces the actual Level 1 goats, archers and native archer
-arrows. Other character remakes remain inactive until this cycle is accepted.
+The accepted cycle replaces the actual Level 1 goats, archers and native archer
+arrows. Oliver has authorized the remaining Level 1 Modern/Voxel assets; the
+current source-verified scope is in
+[LEVEL1_ASSETS.md](../remc2-unity-native/LEVEL1_ASSETS.md).
 `run-characters.sh` starts the qualified Modern campaign; `--preview` retains
 the earlier isolated inspection player. Rust owns movement, damage, projectile
 allocation and cleanup. The Unity presenters consume read-only observations;
@@ -105,7 +107,13 @@ supplies the measured transition contact check. In captures only,
 `-mc-character-follow-yaw <degrees>` selects another inspection angle without
 changing native state.
 
-### Level 1 asset inventory — queued, not started
+### Level 1 asset inventory — current conversion scope
+
+The 2026-11-09 source/package and installed-presentation audit is recorded in
+[LEVEL1_ASSETS.md](../remc2-unity-native/LEVEL1_ASSETS.md). It adds house-produced
+Builders/Traders, four Villager appearances, Castle collectors/auxiliaries and
+incomplete building/voxel coverage to the authored census below. Goat, archer
+and arrow delivery is retained. The remaining assets are now authorized.
 
 Counts below come from the canonical package's `authored-level.bin`, parsed by
 `remc2-level-exporter/scripts/campaign_census.py:parse_authored`, and source kind
@@ -114,8 +122,8 @@ including later activation groups, rather than simultaneous live actors.
 
 | Character family | Authored records | Work after the active cycle |
 | --- | ---: | --- |
-| Goat | 33 | Finish current gait/contact/damage/install cycle |
-| Bow archer and arrow | 4 | Finish current aiming/shooting/damage/install cycle |
+| Goat | 33 | Retain accepted gait/contact/damage/install cycle |
+| Bow archer and arrow | 4 | Retain accepted aiming/shooting/damage/install cycle |
 | Villager | 28 | Source-sheet identity; idle/walk/run, interactions and death; native resident binding |
 | Worm | 4 | Source-sheet identity; movement/attack/hit/death; burrow/body/ground contact |
 | Firefly | 6 | Source-sheet identity; flight/turn/attack/hit/death; wings and projectile binding |
@@ -130,22 +138,24 @@ of simultaneously visible effects or distinct meshes.
 
 | Authored visual/content family | Records | Remaining asset work |
 | --- | ---: | --- |
-| Houses/building constructors | 81 | Retain the four source-shaped profiles; inspect live construction/destruction and resident emissions separately |
-| Trees | 18 | Retain approved environment meshes and source placement bindings |
-| Stone | 1 | Retain approved geometry and source binding |
+| Houses/building constructors | 81 | 47 initial and 34 deferred; retain four profiles, inspect nine uncovered selectors and complete dynamic construction/destruction |
+| Trees | 18 | Reuse suitable environment meshes; add authored live/burning/stump bindings |
+| Stone | 1 | Bind source-owned geometry and interaction state |
+| Dolmen | 3 | Source-matching model and charge/contact feedback |
 | Experience scroll | 5 | High-resolution collectible model/material and pickup feedback |
 | Exit portal | 1 | Portal surface, activation/entry and transition presentation |
 | Castle pickup | 1 | Pickup model, player castle stages and construction effects |
 | Speed pickup | 1 | Pickup model and speed presentation |
 | Ambient smoke emitters | 9 | Retain environment work; verify each live emission binding |
-| Ash emitters | 31 | Match the source locations and bounded particles |
-| Radial explosion emitters | 42 | Modern impact/explosion presentation without changing damage |
+| Model-5 splash/ash effects | 31 | Match actual source frames, locations and bounded particles |
+| Explosion/quick-fire producers | 42 | Modern source-driven effects and fire children without changing damage |
 
-The raw authored census also retains three scenery-selector `2/2` records,
-one `3/4` record, two `10/29` records and three `10/59` records not named by
-that typed inventory. Their source identity/visibility must be confirmed before
-assigning a remake; they are not grounds to invent another creature. The three
-class0 records and the typed area/objective/exit/absence gates are control data.
+The 2026-11-09 audit resolves three scenery-selector 2/2 records as Dolmens,
+one 3/4 record as the player-start marker, two 10/29 records as linked endpoints
+of one terrain/path construction, and three 10/59 records as checkpoint smoke
+emitters. They are not extra creature families. The model-5 effect's constructor
+says water splash while its historical action says Ash; use actual frames and
+behavior. Class0 and typed area/objective/exit/absence gates are control data.
 
 The rest of the Level 1 visual inventory includes terrain/shore/water/sky and
 night lighting, trees/stone and decorative scenery, source-shaped house/building

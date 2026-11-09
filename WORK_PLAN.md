@@ -1,5 +1,22 @@
 # Shared-engine delivery plan
 
+## Active Modern/Voxel Level 1 asset completion — 2026-11-09
+
+Oliver confirms Rust Level 1 is playable and requests completing its Modern
+and Voxel presentation, beginning with a source-verified remaining asset list.
+This work preserves that behavior baseline and the accepted goat/archer/arrow
+masters. Its current inventory and per-family delivery acceptance are in
+research/private/remc2-unity-native/LEVEL1_ASSETS.md; character-pipeline/README.md
+links the same scope. Source and installed-binding audit confirms Villager
+(four looks), Builder, Trader, Worm, Firefly and Castle collector/auxiliary
+conversions, remaining building selectors/stages, authored scenery, pickups,
+portal, effects and playable HUD. Whole-map Voxel coverage remains integration
+work; the current selected house/local patch does not finish the level.
+Keep the separate Original/shared-gameplay work below independent. Complete
+each converted family through real native binding, checked important frames,
+Voxel death breakup and qualified installation before calling it delivered.
+Then run the complete level and gameplay/performance checks in both styles.
+
 ## Shared binary presentation delivery — 2026-11-08
 
 Oliver requested finishing the JSON hot-state fix as shared engine infrastructure
