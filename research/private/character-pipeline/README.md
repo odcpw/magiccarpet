@@ -1,5 +1,80 @@
 # Character animation experiments
 
+## Local TRELLIS villager comparison — 2026-11-09
+
+Oliver requested local TRELLIS and a comparison with the handmade Villager241,
+with no paid 3D generation. The isolated runtime now executes textured jobs on
+the 3090 through loopback port 8189. It uses a project-local Python 3.12/Torch
+2.10+cu130 environment, SDPA, the existing pinned ComfyUI/node sources and
+17.60 GB of existing model weights. No model download or paid 3D API was used.
+The environment occupies 8.9 GiB on SSD; large cached weights remain on HDD.
+
+Owner-local reproduction and actual outputs are under
+`../generated/villager-modern-20261109/local-trellis/`. Its `README.md` records
+the exact transient user-service start/status/stop commands, environment pins,
+kernel checks and saved API graphs. Unit
+`magiccarpet-trellis2-local-20261109.service` is manually started, not enabled
+at login. Never use the unrelated Pinokio service on 8188 for these jobs, or
+overlap model generation with another GPU owner's render. The original pack
+doctor does not understand this relocated mirror; it is not a clean doctor
+pass. Actual CUDA kernels, HTTP node schema and completed textured jobs are
+the working-runtime evidence.
+
+Matched front/back inputs and seed12345 produced these real jobs; times below
+are server execution durations. Memory is sampled total GPU use during each
+job, not reserved model memory or a repeated performance benchmark:
+
+| Starting mesh | Server time | Largest observed GPU use | Raw triangles | Visual result |
+| --- | ---: | ---: | ---: | --- |
+| Handmade Blender | Not measured | Not measured | See retained master | More controllable mesh, but flat robe, poor shoulders and visible garment gaps |
+| TRELLIS 512, two views | 347 s | 4057 MiB | 486,498 | Dimensional cloth/turban; crude dark face and fused extremities |
+| TRELLIS 1024, two views | 390 s | 6711 MiB | 436,135 | Better face and folds; side fold and hem/ankle geometry still distort in motion |
+| TRELLIS 1024, four views | 508 s | At least 5513 MiB | 440,982 | Better closed side drape at rest; pale eyes and lower-garment deformation in diagnostic Run pose |
+
+The four-view memory sampler missed 61 seconds after its initial observer
+exited; a durable monitor reattached to the same prompt. Its actual peak may
+be higher. No job was resubmitted. The server remained active and its successful
+history and exact output hash were independently checked by Root.
+
+Raw outputs are reconstruction meshes, not game assets. A roughly 30k-triangle
+derived mesh and proxy-assisted rigging were exercised in Blender, but the
+moving villager is unapproved. Four-view reconstruction improves the long
+side-slit appearance at rest, but a diagnostic nearest-surface transfer to the
+same Run rig/phase opens the lower gown into stretched triangles. Matched clay
+confirms deformed geometry; this transfer is not a production rig and its
+shoes were not yet separated. It does not prove the unrigged gown itself is
+broken. All three raw outputs have zero skins and zero animations: TRELLIS does not
+deliver the requested character animation. Clean garment/foot separation,
+retopology and skinning remain necessary.
+The profiles' human filenames are not the node socket names: face-image-left
+goes to node right (+X), face-image-right to node left (−X), front is +Z and
+back is −Z. The parent generated directory's `reference/selected-prompts.json`
+retains the selected imagegen prompts and mapping; TMAP/palette hashes remain
+in `reference/source.json` and `reference/day/source.json`. `villager_reference.py`
+re-extracts original villager views into a new output directory without
+overwriting existing work. A fresh Day241 extraction reproduced all 14 source
+PNG/JSON files byte-for-byte.
+
+For example, from the repository root with the existing owner cache:
+
+```sh
+uv run --no-project --with pillow python research/private/character-pipeline/villager_reference.py --cache research/private/generated/level1-unity-asset-cache --output research/private/generated/villager-reference-unique
+```
+
+Choose an unused output directory. Use `--world day` with a material cache
+containing `palette/pald.rgb8` and `terrain/tmaps0` for neutral Day references.
+
+Use matched Eevee/PBR and clay renders to compare geometry. Workbench studio
+specular made the robe look metallic despite the actual texture having zero
+metallic and approximately 0.99 roughness; that preview is not material proof.
+The comparison favors TRELLIS1024 as a sculpting base, followed by deliberate
+Blender retopology and one shared rig/timeline. Four-view cloth has better side
+geometry; two-view has the better face. Neither is an approved game character,
+and no face-swap or automatic-weight shortcut is qualified. This does not
+establish complete animations, Unity gameplay, Voxel death or installation.
+`mc-fu7` remains open; accepted goat,
+archer and installed players are preserved.
+
 ## Live Level 1 character delivery
 
 The accepted cycle replaces the actual Level 1 goats, archers and native archer

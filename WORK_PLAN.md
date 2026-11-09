@@ -17,6 +17,35 @@ each converted family through real native binding, checked important frames,
 Voxel death breakup and qualified installation before calling it delivered.
 Then run the complete level and gameplay/performance checks in both styles.
 
+Current pilot `mc-fu7`: finish one Villager appearance 241 (original TMAP
+180–182; six Level 1 residents), preserving accepted goat/archer and installed
+players. Oliver requires **zero paid 3D generation** and explicitly requests
+setting up local TRELLIS and comparing it with the Blender attempt. Imagegen
+front/back references are owner-local in generated/villager-modern-20261109/.
+WhiteBay owns the Blender master/rig/actions; GentleBadger owns integration;
+MistyPond owns the isolated local TRELLIS runtime and actual generation.
+Native observation/journal admission is committed in `eaf0f1bc`; Root reran the
+549-input earned Fireball kill and warm/cold replay on optimized native
+`e8a6e707`, with exactly one death record. Five Unity admission/input/material
+loader checks pass. The isolated 8189 local TRELLIS runtime is working; Root
+verified successful 512 and 1024 jobs and output hashes. Matched clay/Eevee
+comparison favors 1024 as a starting mesh, with better face and real cloth
+folds. It is not a finished asset: the two-view gown opens/distorts in motion.
+Paired 120 Hz FBX/GLB reimports retain loop/contact, but these metrics do not
+approve the visible character. The four-view job also completed (507.83 s),
+and Root checked its history/hash and matched Eevee/clay frames. Explicit
+profiles improve the deep side slit at rest; the common-rig diagnostic Run
+still produces stretched lower-garment triangles, and the four-view eyes
+regress. This comparison is complete; further generation/weight-field variants
+are stopped. TRELLIS1024 is useful as a sculpting base, not an automatic rigged
+asset. Deliberate garment/foot separation, retopology and skinning are the next
+concrete repair. Current five Unity checks cover admission/input/material
+loading only; whole-asset animation checks have not passed. Complete actions,
+Unity import, live important frames and installation remain pending. No new
+villager player is installed. Keep the pilot open. Runtime/setup/comparison
+instructions and the three measured jobs are in character-pipeline/README.md;
+owner-local meshes, prompts and matched frames are retained in generated/.
+
 ## Shared binary presentation delivery — 2026-11-08
 
 Oliver requested finishing the JSON hot-state fix as shared engine infrastructure
