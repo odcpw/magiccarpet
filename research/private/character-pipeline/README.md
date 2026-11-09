@@ -1,5 +1,60 @@
 # Character animation experiments
 
+## Fitted human and portable skin export — 2026-11-10
+
+The current Villager241 route uses a real human and separate authored clothing.
+The supported MPFB/hm08 clothing fit is under review, with the free CC0 Donitz
+monk robe as a starting garment. Its own opaque-clothing body mask is legitimate
+game geometry; retain the full anatomical source for editing/collision and check
+exposed neck, hands and legs through complete actions. Do not use arbitrary
+height cutoffs. [MakeHuman's explanation](https://static.makehumancommunity.org/assets/creatingassets/makeclothes/makeclothes_deletegroups.html)
+describes the intended mask and why fitting alone cannot guarantee posed skin
+clearance. The [official asset index](https://static.makehumancommunity.org/assets/assetpacks/suits02.html)
+identifies the robe as CC0. Static fit does not approve moving cloth.
+
+`human_figure.py` authors procedural own-Rigify actions; they are not mocap.
+`export_character_fbx.py --bake-rig` freezes the active anatomical rest morph
+mix, retains only weighted deform bones, and concatenates evaluated actions
+onto a portable rig. It rejects multiple/DQ armature modifiers, corrective or
+cloth simulation, weighted segmented B-bones and non-normalized/>4 influences.
+Body and robe remain separate in the editable master; `--join-skins` combines
+disconnected components only in the game export. The default prepared-scene
+export mode remains available.
+
+For example, with the retained local body diagnostic and a fresh output path:
+
+```sh
+/home/oliver/Projects/fittimer-avatar-toolchain/blender-4.5.12-linux-x64/blender --background research/private/generated/human-figure-20261109/candidate08/human-master.blend --python-exit-code 1 --python research/private/character-pipeline/export_character_fbx.py -- --output research/private/generated/portable-human-unique/human.fbx --animations --bake-rig cm_vitruvian_rig --mesh cm_vitruvian --action Idle --action Walk --action Run --action Hit --action Death --join-skins
+```
+
+Outputs include the FBX, `.export.json` and little-endian `.samples.bin` pose
+samples (`MCSK`, u32 version1, u32 sample count, f64 FPS; each sample has u32 frame,
+u32 vertex count, then float32 XYZ). The exporter checks actual posed surfaces
+before and after FBX reimport. Blender's importer adds a +1-frame offset by
+default and invents connected joints that suppress valid animated translations;
+the verifier uses zero offset and restores the compact rig's disconnected
+transform semantics. Never loosen the surface gate to hide that discrepancy.
+
+Root self-verified the 86-bone body diagnostic at 25 poses over all five actions:
+source-to-game maximum 2.35 micrometres, corrected Blender FBX reimport maximum
+0.0235 mm. Actual Unity6000.3.20f1 import then matched every sampled point in both
+directions within 0.1 mm, using one fixed `(x,z,y)` axis conversion. Unity split
+37,436 source vertices into 42,841 UV/material vertices without losing the
+sampled surfaces. Evidence is retained in
+`../generated/human-figure-20261109/export-probe/`; the Unity probe runs in the
+isolated villager project. This establishes the body export consumer, not the
+dressed villager, gameplay, Voxel death, frame rate or installation. `mc-fu7`
+remains open and the accepted installed player is preserved.
+
+The matched MPFB motion02 body also passes: 188 weighted deform bones,
+source-to-game maximum 1.57 micrometres, FBX reimport maximum 0.0217 mm, and
+25 actual Unity poses with no unmatched points within 0.1 mm. Masked fitting
+helpers are checked after evaluating REST geometry; deliberately exposing the
+16 unweighted helpers is rejected. The full editable body is retained.
+`measurements-audited.json` records measured stance speeds 1.4300195/3.7283345 m/s,
+action timings, samples and source/master/builder hashes. The garment is still
+under repair and is excluded from these body-only export claims.
+
 ## Local TRELLIS villager comparison — 2026-11-09
 
 Oliver requested local TRELLIS and a comparison with the handmade Villager241,

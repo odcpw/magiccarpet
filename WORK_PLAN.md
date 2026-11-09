@@ -22,8 +22,8 @@ Current pilot `mc-fu7`: finish one Villager appearance 241 (original TMAP
 players. Oliver requires **zero paid 3D generation** and explicitly requests
 setting up local TRELLIS and comparing it with the Blender attempt. Imagegen
 front/back references are owner-local in generated/villager-modern-20261109/.
-WhiteBay owns the Blender master/rig/actions; GentleBadger owns integration;
-MistyPond owns the isolated local TRELLIS runtime and actual generation.
+WhiteBay's original Blender experiments are retained read-only; GentleBadger
+owns integration. The isolated local TRELLIS comparison is complete.
 Native observation/journal admission is committed in `eaf0f1bc`; Root reran the
 549-input earned Fireball kill and warm/cold replay on optimized native
 `e8a6e707`, with exactly one death record. Five Unity admission/input/material
@@ -45,6 +45,57 @@ Unity import, live important frames and installation remain pending. No new
 villager player is installed. Keep the pilot open. Runtime/setup/comparison
 instructions and the three measured jobs are in character-pipeline/README.md;
 owner-local meshes, prompts and matched frames are retained in generated/.
+
+Oliver resumes with a separate human figure wearing a draped robe. TopazReef
+owns `dressed_villager.py` and actual body/garment authoring and moving-frame
+repair. WhiteBay's prior mesh experiments are retained read-only. Fitting over
+the reused archer failed actual-mesh checks: its bulky existing clothing is
+not an anatomical human, despite simplified proxy clearance. That branch is
+stopped. `human_figure.py` now builds from the local CC0 Vitruvian human and
+preserves its own Rigify rig, all 146 drivers and A-rest skin binding. Its
+procedural actions use the original rig; no foreign A-to-T mesh warp. Candidate08
+has corrected arm carriage and same-rig Idle/Walk/Run/Hit/Death, normalized top-four
+weights, one LBS modifier and single-segment weighted bones. Reopened gait loops
+match; actual sole/body contact is sampled at quarter frames. Root's compact
+86-bone bake matches 25 body poses within 2.35 micrometres before FBX. FBX
+roundtrip exposed Blender's automatic connected-joint translation lock; the
+verifier now restores ordinary transform semantics and matches within 0.0235 mm.
+Root's actual Unity6000.3.20f1 import matches all 25 sampled surfaces in both
+directions within 0.1 mm after one fixed (x,z,y) axis conversion. This is a body
+consumer check, not dressed gameplay, Voxel, performance or installation.
+The direct sewn robe remained flat after bounded static draping. A free CC0
+Donitz monk robe has useful authored folds, but its hm08 fitting data cannot
+directly address Vitruvian. TopazReef's supported MPFB matched-human/garment proof
+is therefore the next worn-figure foundation, with motion owner reusing the
+procedural Rigify actions. Keep all prior body/fit trials.
+MPFB motion02 now has five same-rig actions and measured Walk/Run stance speeds
+1.4300195/3.7283345 m/s in measurements-audited.json. Root exported its visible
+body with 188 deform bones and independently checked all 25 Unity poses within
+0.1 mm; an exposed-unweighted-helper negative check also rejects correctly.
+The robe still wedges/crosses the leg; TopazReef owns its sector/vent and costume
+repairs. No dressed motion acceptance or new player installation yet. The full anatomical
+body stays editable; game export may use the garment's authored covered-body
+mask, as documented by MakeHuman. Root corrected the overstrict hidden-skin
+intersection gate: actual visible clipping, exposed stumps/holes, bad garment
+crossings and incomplete moving silhouettes still fail. No arbitrary height
+cutoffs. Free cloth
+locomotion ratcheted and billowed, so the chosen route is a clean fitted,
+anatomically skinned upper garment plus eight authored skirt-sector bones and
+source-inspired hem vents. No more whole-garment locomotion solver variants.
+Oracle GPT-6 Pro source review is retained under generated/villager-robe-oracle-20261109/;
+Root verified the unusual rig layout (Spine02 is lower, Spine is upper), and
+TopazReef corrected garment weights, the collar discontinuity, a 36 mm imported
+origin shift, missing GroundControl and the defective per-proxy clearance gate.
+Use final combined actual-body checks and actual complete-phase frames. Old
+trial27 quarter-frame sole checks did not establish acceptable anatomy or a
+wearable robe. Moving appearance remains unapproved. SilverFox verified isolated released
+py-dem-bones0.13.1 availability only; no actual garment bake was accepted, and
+that optional helper is not needed for directly authored bones.
+GentleBadger owns integration and acceptance. Keep editable body and robe
+separate; a final game export may join disconnected components on one rig
+without fusing garment to skin or shoes. First establish a believable worn
+robe in motion; a simulated cache, solver import or training error alone does
+not finish the character or qualify runtime performance. No paid 3D services.
 
 ## Shared binary presentation delivery — 2026-11-08
 
