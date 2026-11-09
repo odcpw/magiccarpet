@@ -16,6 +16,7 @@ use sim_definition::adapter::{
     mc2_authored_terrain_disaster_definition, mc2_effect_definition, mc2_field_definition,
     mushroom_entity_definition, objective_definition, stable_entity_id, stable_objective_id,
     terrain_disaster_entity_definition,
+    static_scenery_entity_definition,
 };
 
 use crate::{
@@ -27,6 +28,7 @@ use crate::{
         LevelObjectiveId, MechanicKind, MushroomDefinition, ObjectiveCondition, RivalWizardId,
         SceneryKind, SpellKind, SwitchKind, TerrainDisasterKind, TilePosition,
         supports_authorable_creature_placement,
+        StaticSceneryDefinition,
     },
     level1_mission::{AuthoredFeature, parse_authored_features},
 };
@@ -123,6 +125,7 @@ impl Mc2LevelDefinition {
             (2, 0) => Some(LevelEntityKind::Scenery(SceneryKind::Tree)),
             (2, 1 | 3) => Some(LevelEntityKind::Scenery(SceneryKind::Stone)),
             (2, 2) => Some(LevelEntityKind::Scenery(SceneryKind::Dolmen)),
+            (2, 4 | 5) => Some(LevelEntityKind::Scenery(SceneryKind::StaticObject)),
             (2, 6) => Some(LevelEntityKind::Scenery(SceneryKind::Mushroom)),
             (2, 7 | 8) => Some(LevelEntityKind::Scenery(SceneryKind::BallisticObject)),
             (10, 45) => Some(LevelEntityKind::Building(BuildingKind::House)),
@@ -389,6 +392,7 @@ impl Mc2LevelDefinition {
             (2, 0, 0) => Some(SceneryKind::Tree),
             (2, 1, 3) | (2, 3, 9) => Some(SceneryKind::Stone),
             (2, 2, 6) => Some(SceneryKind::Dolmen),
+            (2, 4, 12) | (2, 5, 15) => Some(SceneryKind::StaticObject),
             (2, 6, 18 | 19) => Some(SceneryKind::Mushroom),
             (2, 7, 20) | (2, 8, 21) => Some(SceneryKind::BallisticObject),
             (14, 3, 8) => Some(SceneryKind::ExitPortal),
@@ -572,6 +576,7 @@ impl Mc2LevelDefinition {
                 }
                 (5, 15) => "creature.castle_defender".to_owned(),
                 (2, 2) => "scenery.dolmen".to_owned(),
+                (2, 4 | 5) => "scenery.static_object".to_owned(),
                 (2, 6) => "scenery.mushroom".to_owned(),
                 (2, 7 | 8) => "scenery.ballistic_object".to_owned(),
                 _ => continue,
@@ -807,6 +812,7 @@ impl Mc2LevelDefinition {
                 (2, 0) => Some(SceneryKind::Tree),
                 (2, 1 | 3) => Some(SceneryKind::Stone),
                 (2, 2) => Some(SceneryKind::Dolmen),
+                (2, 4 | 5) => Some(SceneryKind::StaticObject),
                 (2, 6) => Some(SceneryKind::Mushroom),
                 (2, 7 | 8) => Some(SceneryKind::BallisticObject),
                 // `sub_51570` constructs the package's class-14 exit target.
@@ -845,6 +851,11 @@ impl Mc2LevelDefinition {
                     ballistic_scenery_entity_definition(
                         id, position, activation_group, position_access,
                         BallisticSceneryDefinition::default(),
+                    )
+                } else if kind == SceneryKind::StaticObject {
+                    static_scenery_entity_definition(
+                        id, position, activation_group, position_access,
+                        StaticSceneryDefinition::default(),
                     )
                 } else {
                     entity_definition_with_position_access(
@@ -1687,7 +1698,7 @@ fn bind_private_entity(
             LevelEntityKind::Mechanic(MechanicKind::Field { .. }) => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
-            LevelEntityKind::Scenery(SceneryKind::Mushroom | SceneryKind::BallisticObject | SceneryKind::Dolmen) => {
+            LevelEntityKind::Scenery(SceneryKind::Mushroom | SceneryKind::BallisticObject | SceneryKind::Dolmen | SceneryKind::StaticObject) => {
                 if feature.activation_group != 0 {
                     Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
                 } else {

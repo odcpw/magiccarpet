@@ -5311,10 +5311,10 @@ impl NativeWorldInspection {
         });
         let mut bound_scenery = false;
         for entity in definition.level_definition().entities() {
-            if entity.mushroom().is_none() && entity.ballistic_scenery().is_none() && entity.dolmen().is_none() {
+            if entity.mushroom().is_none() && entity.ballistic_scenery().is_none() && entity.dolmen().is_none() && entity.static_scenery().is_none() {
                 continue;
             }
-            let initial_source_slot = if entity.ballistic_scenery().is_some() || entity.dolmen().is_some() {
+            let initial_source_slot = if entity.ballistic_scenery().is_some() || entity.dolmen().is_some() || entity.static_scenery().is_some() {
                 definition.initial_scenery_property_source(entity.id())
             } else {
                 match definition.movable_entity_binding(entity.id()) {
@@ -5338,6 +5338,10 @@ impl NativeWorldInspection {
             }
             if let Some(properties) = entity.ballistic_scenery() {
                 crate::world::scenery::ballistic::bind_initial(source, properties)
+                    .map_err(NativeWorldError::new)?;
+            }
+            if let Some(properties) = entity.static_scenery() {
+                crate::world::scenery::static_objects::bind_initial(source, properties)
                     .map_err(NativeWorldError::new)?;
             }
             if let Some(properties) = entity.dolmen() {

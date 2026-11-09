@@ -468,6 +468,24 @@ pub const fn dolmen_entity_definition(
 }
 
 #[must_use]
+pub const fn static_scenery_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: crate::level_definition::StaticSceneryDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Scenery(crate::level_definition::SceneryKind::StaticObject),
+        position,
+        activation_group,
+        position_access,
+        None, None, None, None, None,
+    ).with_static_scenery(config)
+}
+
+#[must_use]
 pub const fn cave_corridor_entity_definition(
     id: LevelEntityId,
     position: TilePosition,

@@ -4,3 +4,4 @@ pub(crate) mod bad_stones;
 pub(crate) mod ballistic;
 pub(crate) mod mushrooms;
 pub(crate) mod trees;
+pub(crate) mod static_objects;

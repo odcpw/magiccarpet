@@ -338,6 +338,69 @@ acceptance open; a working control panel alone does not finish the environment.
 
 ## Active request: complete the shared world capabilities
 
+Oliver's 2026-11-09 correction keeps voxel/Modern work in its separate thread.
+This thread continues remc2-to-Rust single-player behavior and qualified
+Original-client delivery. Preserve the already landed cross-thread work.
+Oliver subsequently authorized deleting obsolete temporary build/test outputs
+instead of archiving them. Root removed19 inactive Nov3/4 output directories
+and the just-copied old test backups; `/tmp` now has about20GiB free. Current
+source, warm caches, active build and current installation were not removed.
+Do not create more old-output archives or rollback work as a delivery step.
+Current connected capability is `mc-bhq.7`: replace the existing paid Spider
+check's forced prior objective with actual mana collection/deposit crossing
+the original40-percent threshold, then observe reset6 and all six living
+Spiders through the normal scheduler. CrimsonForge owns the focused existing
+Spider check; Root CopperMountain owns required shared joins and serialized
+verification/delivery. Prior bank/carry/pose controls must be explicit; funding
+alone is not earned mana. Keep the full route and dependencies open. Do not
+replace the real six-death/exit acceptance with this bounded prefix or create
+an automated mission-combat script.
+
+The first prefix candidate (C2 under
+`generated/objective-20261109-integration`) typechecks and builds on Rig, but
+fails its real Firefly-death predicate. Same-binary read-only GDB confirms all
+four paid launches/impacts. Source/owner geometry places Firefly164 in front of
+165 on the original+X approach. C3 corrects only the fixed approach to−X, adds
+source target-score admission and decisive diagnostics, and retains all health,
+kill/payment/deposit/negative gates; its typecheck passes. C4 optimized build
+passed in524.038s. Its exact runtime still fails: the first250hit leaves350HP;
+the second flyer collides, but the following area pulse misses the fleeing
+Firefly by10units (X223 versus strict213 overlap). Source hit reaction sets
+phase7 then speed76×3; bounded source review found no port defect. The same
+four casts held on turns0–3 is the queued source-justified discriminator, not
+a verified result. To land the independent scenery capability, Root preserved
+the complete C3 source/diff and failed C4 evidence, then reverted only the
+experiment's1002 added cfg-test lines. All original Spider bytes and gates
+are unchanged. No successful mana crossing or full route is claimed.
+
+An independent bounded `.13` review initially treated models4/5 as orphan
+constructors because no rows appeared in29 inspected packages. Root required
+the generic-factory admission to be checked before closure. The reviewer
+withdrew that conclusion: source `4A1E0 → 4A310 → 4A190` admits both through
+enabled constructor-table entries, while Rust rejects them and omits actions
+12/15. TopazAnchor now owns this original-scope missing static-scenery path,
+including typed source-default life300/particle48 bindings, real construction
+and the source-empty callback's common phase/reclaim consumers. A configured
+source-language control will be labeled as such; no shipped occurrence is
+claimed. Full `.13` stays open. Its ten-file edit window is explicitly serial:
+TopazAnchor alone writes those canonical files; Root builds the separate frozen
+dispatcher and remains read-only there until handback. Mail returns grant IDs
+but normal renewals return0 even for Root; no force release or coordinator
+setup is used, and verified renewal is not claimed. After frozen handback,
+independent review found that the raw Imported prefilter still omitted12/15.
+Root joined those exact actions and corrected one signed expected-value tuple
+in the configured check. Rig workspace/alltargets passes38.27s and the typed
+property serde/reset-immutability test passes11.279s. Frozen C2 optimized build
+passes550.004s; its real configured source-language path passes0.090s, registry
+0.022s and ordinary source order0.100s. Independent source/gate review supports
+these joins after the prefilter fix; final ten-file UBS has zero added-line
+critical findings (23 legacy whole-file critical findings remain). All659
+guarded inputs match canonical/dispatcher/Rig. This proves configured4/5
+construction, target/DTO, scheduled empty callback/common phase, canonical
+burial hide/following reclaim and exact reset; no shipped occurrence or native
+encounter is claimed. Matching native installation is pending; full `.13`
+acceptance remains open.
+
 Oliver authorized continuing the existing remc2-to-Rust delivery plan on
 2026-11-08 after the creature runtime pass. Cave mushrooms `mc-bhq.1`, Cave
 corridors `mc-bhq.2` and authored Cave paths/rooms/features `mc-bhq.5` have their

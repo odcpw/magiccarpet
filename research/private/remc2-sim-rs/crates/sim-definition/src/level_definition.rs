@@ -55,7 +55,7 @@ pub use morph::{MORPH_PROPERTIES, MorphProperties, MorphTierProperties};
 mod lightning;
 pub use lightning::{LIGHTNING_PROPERTIES, LightningProperties, LightningTier};
 mod scenery;
-pub use scenery::{BallisticSceneryDefinition, DolmenDefinition, MushroomDefinition};
+pub use scenery::{BallisticSceneryDefinition, DolmenDefinition, MushroomDefinition, StaticSceneryDefinition};
 mod spider;
 pub use spider::{SPIDER_CLASS_PROPERTIES, SpiderClassProperties};
 mod terrain_disasters;
@@ -503,6 +503,7 @@ pub enum SceneryKind {
     Dolmen,
     Mushroom,
     BallisticObject,
+    StaticObject,
     ExitPortal,
 }
 
@@ -515,6 +516,7 @@ impl SceneryKind {
             Self::Dolmen => "dolmen",
             Self::Mushroom => "mushroom",
             Self::BallisticObject => "ballistic_object",
+            Self::StaticObject => "static_object",
             Self::ExitPortal => "exit_portal",
         }
     }
@@ -1143,6 +1145,8 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dolmen: Option<DolmenDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    static_scenery: Option<StaticSceneryDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -1181,6 +1185,7 @@ impl LevelEntityDefinition {
             mushroom: None,
             ballistic_scenery: None,
             dolmen: None,
+            static_scenery: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -1310,6 +1315,16 @@ impl LevelEntityDefinition {
     }
 
     #[must_use]
+    pub const fn static_scenery(&self) -> Option<StaticSceneryDefinition> {
+        self.static_scenery
+    }
+
+    pub(crate) const fn with_static_scenery(mut self, config: StaticSceneryDefinition) -> Self {
+        self.static_scenery = Some(config);
+        self
+    }
+
+    #[must_use]
     pub const fn experience_scroll(&self) -> Option<ExperienceScrollDefinition> {
         self.experience_scroll
     }
@@ -1344,6 +1359,12 @@ impl LevelDefinition {
     ) -> Result<Self, String> {
         let mut ids = BTreeSet::new();
         for entity in &entities {
+            match (entity.kind, entity.static_scenery) {
+                (LevelEntityKind::Scenery(SceneryKind::StaticObject), Some(config)) => config.validate()?,
+                (LevelEntityKind::Scenery(SceneryKind::StaticObject), None) => return Err(format!("static scenery {} lacks construction properties", entity.id.as_str())),
+                (_, Some(_)) => return Err(format!("non-static scenery {} carries static properties", entity.id.as_str())),
+                (_, None) => {}
+            }
             match (entity.kind, entity.dolmen) {
                 (LevelEntityKind::Scenery(SceneryKind::Dolmen), Some(config)) => config.validate()?,
                 (LevelEntityKind::Scenery(SceneryKind::Dolmen), None) => return Err(format!("dolmen {} lacks construction properties", entity.id.as_str())),
@@ -2116,6 +2137,7 @@ impl LevelDefinition {
                 || candidate.mushroom != original.mushroom
                 || candidate.ballistic_scenery != original.ballistic_scenery
                 || candidate.dolmen != original.dolmen
+                || candidate.static_scenery != original.static_scenery
                 || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(
@@ -2727,7 +2749,7 @@ mod tests {
     #[test]
     fn retained_field_and_mushroom_rules_survive_serialization_and_reject_rebinding() {
         use super::*;
-        use crate::adapter::{ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition, mushroom_entity_definition};
+        use crate::adapter::{ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition, mushroom_entity_definition, static_scenery_entity_definition};
         let field = field_entity_definition(
             LevelEntityId::parse("mechanic.transport.test").unwrap(),
             TilePosition { x: 10, y: 20 },
@@ -2755,8 +2777,13 @@ mod tests {
             TilePosition { x: 17, y: 18 }, None, LevelEntityPositionAccess::ReadOnly,
             DolmenDefinition::default(),
         );
+        let static_object = static_scenery_entity_definition(
+            LevelEntityId::parse("scenery.static_object.test").unwrap(),
+            TilePosition { x: 18, y: 18 }, None, LevelEntityPositionAccess::ReadOnly,
+            StaticSceneryDefinition::default(),
+        );
         let base = LevelDefinition::new(
-            vec![field.clone(), mushroom.clone(), ballistic.clone(), dolmen.clone()], vec![], vec![],
+            vec![field.clone(), mushroom.clone(), ballistic.clone(), dolmen.clone(), static_object.clone()], vec![], vec![],
         ).unwrap();
         let decoded: LevelDefinition =
             serde_json::from_slice(&serde_json::to_vec(&base).unwrap()).unwrap();
@@ -2774,9 +2801,22 @@ mod tests {
         let mut rebound = decoded.clone();
         rebound.entities[2].ballistic_scenery.as_mut().unwrap().minimum_life += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
-        let mut rebound = decoded;
+        let mut rebound = decoded.clone();
         rebound.entities[3].dolmen.as_mut().unwrap().horizontal_half_extent += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+        let mut rebound = decoded;
+        rebound.entities[4].static_scenery.as_mut().unwrap().max_life += 1;
+        assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+
+        let mut invalid = static_object.clone();
+        invalid.static_scenery = None;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = static_object.clone();
+        invalid.static_scenery.as_mut().unwrap().max_life = 0;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = static_object;
+        invalid.kind = LevelEntityKind::Scenery(SceneryKind::Stone);
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
 
         let mut invalid = dolmen.clone();
         invalid.dolmen = None;

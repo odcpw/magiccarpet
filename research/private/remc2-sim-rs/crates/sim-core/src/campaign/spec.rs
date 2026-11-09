@@ -1878,7 +1878,7 @@ impl CampaignDefinition {
         // Ballistic constructor jitter stays inside the authored tile.
         let mut scenery_property_source_by_entity = BTreeMap::new();
         for (&slot, &kind) in &scenery_by_initial_source_slot {
-            if !matches!(kind, SceneryKind::BallisticObject | SceneryKind::Dolmen) {
+            if !matches!(kind, SceneryKind::BallisticObject | SceneryKind::Dolmen | SceneryKind::StaticObject) {
                 continue;
             }
             let position = initial_entity_tile(entities, slot)?;

@@ -2,6 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Stationary scenery whose scheduled rule leaves its source packet intact.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaticSceneryDefinition {
+    pub max_life: i32,
+}
+
+impl Default for StaticSceneryDefinition {
+    fn default() -> Self {
+        Self { max_life: 300 }
+    }
+}
+
+impl StaticSceneryDefinition {
+    pub fn validate(self) -> Result<(), String> {
+        if self.max_life <= 0 {
+            return Err("static scenery maximum life must be positive".into());
+        }
+        Ok(())
+    }
+}
+
 /// The source Dolmen's collision extents; its sprite remains a retained asset binding.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

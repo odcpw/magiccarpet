@@ -116,6 +116,7 @@ pub enum ExistingHandler {
     Creature21 = 57,
     Creature27 = 58,
     FinalBoss = 59,
+    StaticScenery = 60,
 }
 
 impl ExistingHandler {
@@ -148,6 +149,7 @@ impl ExistingHandler {
             Self::BeeFamily => "accepted Level 2 Bee reset rows and spawned children",
             Self::CastleAuxiliary => "accepted Level 2 Castle auxiliary constructor",
             Self::BallisticScenery => "authored class-2 ballistic-scenery constructor",
+            Self::StaticScenery => "authored static-scenery constructor and source-empty callback",
             Self::CountdownSwitch => "authored absence-countdown switch constructor",
             Self::TerrainStripController => {
                 "authored terrain-strip controller and open/close triggers"
@@ -223,6 +225,7 @@ impl ExistingHandler {
             Self::BeeFamily => "level2-bee-family",
             Self::CastleAuxiliary => "level2-castle-auxiliary",
             Self::BallisticScenery => "ballistic-scenery",
+            Self::StaticScenery => "static-scenery",
             Self::CountdownSwitch => "absence-countdown-switch",
             Self::TerrainStripController => "terrain-strip-controller",
             Self::DragonFamily => "dragon-family",
@@ -407,6 +410,7 @@ compiled_registry! {
         (Stone, 2, [3]);
         (Dolmen, 2, [6]);
         (BadStone, 2, [9]);
+        (StaticScenery, 2, [12, 15]);
         (Mushrooms, 2, [18, 19]);
         (PlayerFlight, 3, [0]);
         (NyphurPlayer, 3, [1]);
@@ -492,6 +496,7 @@ compiled_registry! {
         (Stone, 2, [1]);
         (Dolmen, 2, [2]);
         (BadStone, 2, [3]);
+        (StaticScenery, 2, [4, 5]);
         (Mushrooms, 2, [6]);
         (BallisticScenery, 2, [8]);
         (PlayerFlight, 3, [0]);
@@ -811,6 +816,7 @@ mod tests {
     fn cf10_supplemental_handlers() -> BTreeMap<String, &'static str> {
         let mut expected = BTreeMap::new();
         for (class, actions, handler) in [
+            (2_u16, &[12_u16, 15][..], "static-scenery"),
             (2_u16, &[18_u16, 19][..], "mushrooms"),
             (3_u16, &[2_u16, 3, 11, 12][..], "player-flight"),
             (3, &[4, 6][..], "castle-root"),
@@ -999,6 +1005,7 @@ mod tests {
             }
         }
         for (class, models, handler) in [
+            (2_u16, &[4_u16, 5][..], "static-scenery"),
             (2_u16, &[6_u16][..], "mushrooms"),
             (2_u16, &[8_u16][..], "ballistic-scenery"),
             (10, &[3, 4, 7, 16, 18, 87, 88, 90][..], "class10-effects"),

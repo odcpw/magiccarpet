@@ -329,6 +329,7 @@ fn validate_semantic_scenery_dispatch(
         | (Some(SceneryKind::Mushroom), ExistingHandler::Mushrooms)
         | (Some(SceneryKind::BallisticObject), ExistingHandler::BallisticScenery)
         | (Some(SceneryKind::Dolmen), ExistingHandler::Dolmen)
+        | (Some(SceneryKind::StaticObject), ExistingHandler::StaticScenery)
         | (Some(SceneryKind::Stone), ExistingHandler::Stone | ExistingHandler::BadStone)
         | (Some(SceneryKind::ExitPortal), ExistingHandler::Class14Events) => Ok(()),
         (Some(kind), actual) => Err(format!(
@@ -6786,6 +6787,13 @@ impl Mc2Simulation {
                     })
                     .flatten()
             })
+            .or_else(|| {
+                let row = self.session.state.live.economy.entities.get(usize::from(source_slot))?;
+                row.active.then_some(())?;
+                crate::campaign::mc2_level_definition::Mc2LevelDefinition::scenery_for_reset_selector(
+                    row.class, u16::from(row.model), row.action,
+                ).filter(|kind| *kind == SceneryKind::StaticObject)
+            })
     }
 
     fn item_kind_for_source_slot(&self, source_slot: u16) -> Option<ItemKind> {
@@ -12629,7 +12637,7 @@ impl Mc2Simulation {
             })
             && !matches!(
                 (feature.kind, feature.subtype),
-                (2, 0 | 1 | 2 | 3 | 6 | 7 | 8)
+                (2, 0..=8)
                     | (3, 4..=11)
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
@@ -12919,6 +12927,25 @@ impl Mc2Simulation {
                         ballistic_scenery::BallisticKind::Model8
                     };
                     if let Some(slot) = ballistic_scenery::construct(
+                        &mut live.economy, &mut live.terrain, position, kind, properties,
+                        &self.session.definition.presentation.particles,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
+                }
+                (2, model @ (4 | 5)) => {
+                    let properties = self.session.definition
+                        .scenery_entity_for_authored_record(feature.index)
+                        .and_then(|id| self.session.definition.semantic_level()?.entity(id)?.static_scenery())
+                        .ok_or_else(|| format!("authored static scenery {} lacks its definition", feature.index))?;
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(live.terrain.ground_height(feature.world_position(0)));
+                    let kind = if model == 4 {
+                        crate::world::scenery::static_objects::Kind::Model4
+                    } else {
+                        crate::world::scenery::static_objects::Kind::Model5
+                    };
+                    if let Some(slot) = crate::world::scenery::static_objects::construct(
                         &mut live.economy, &mut live.terrain, position, kind, properties,
                         &self.session.definition.presentation.particles,
                     )? {
@@ -15661,7 +15688,7 @@ impl Mc2Simulation {
                         )
                             || matches!(
                             (entity.class, entity.action),
-                            (2, 0 | 1 | 2 | 3 | 9 | 18 | 19 | 20 | 21)
+                            (2, 0 | 1 | 2 | 3 | 9 | 12 | 15 | 18 | 19 | 20 | 21)
                                 | (
                                     5,
                                     24 | 25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 75 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
@@ -16594,6 +16621,7 @@ impl Mc2Simulation {
             SourceRoute::Imported => matches!(
                 handler,
                 ExistingHandler::BallisticScenery
+                    | ExistingHandler::StaticScenery
                     | ExistingHandler::BadStone
                     | ExistingHandler::CountdownSwitch
                     | ExistingHandler::TerrainStripController
@@ -16909,7 +16937,7 @@ impl Mc2Simulation {
                     ..
                 })
             )
-            || visit.handler == ExistingHandler::TreeLifecycle
+            || matches!(visit.handler, ExistingHandler::TreeLifecycle | ExistingHandler::StaticScenery)
         {
             validate_semantic_scenery_dispatch(source_slot, semantic_scenery, visit.handler)?;
         }
@@ -19954,6 +19982,9 @@ impl Mc2Simulation {
             }
             (ExistingHandler::BallisticScenery, SourceRoute::Imported) => {
                 self.step_imported_ballistic_scenery(source_slot)?;
+            }
+            (ExistingHandler::StaticScenery, SourceRoute::Imported) => {
+                crate::world::scenery::static_objects::step(&self.session.state.live.economy, source_slot)?;
             }
             (
                 ExistingHandler::CountdownSwitch
@@ -30830,6 +30861,183 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_static_scenery_rows_use_generic_construction_schedule_and_reclaim() {
+        use crate::campaign::mc2_level_definition::Mc2LevelDefinition;
+        use crate::level_definition::{LevelEntityKind, SceneryKind};
+        use sim_definition::adapter::{activation_group_id, build_level_definition};
+        use crate::world::scenery::static_objects;
+
+        const GROUP: u16 = 200;
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/ribbon-20261104-integration/group-zero-owner-package-v4/level2");
+        let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL2).unwrap();
+        let definition = campaign.definition().clone();
+        let original = campaign.simulation().semantic_level_definition().unwrap().clone();
+        let original_bytes = std::fs::read(package.join("authored-level.bin")).unwrap();
+        let original_features = crate::level1_mission::parse_authored_features(&original_bytes).unwrap();
+        assert!(original_features.iter().all(|row| row.activation_group != GROUP as i16));
+        let unused = original_features.iter().filter(|row| row.index != 0 && row.kind == 0)
+            .take(2).map(|row| row.index).collect::<Vec<_>>();
+        assert_eq!(unused.len(), 2);
+        // Declared source-language configuration, not shipped placements:
+        // retain every original nonempty row and add only two dormant rows.
+        // The generic group publisher, NewEvent, scheduler and DTO are real.
+        let mut authored = original_bytes.clone();
+        for (&index, model) in unused.iter().zip([4_i16, 5]) {
+            let start = crate::level1_mission::AUTHORED_FEATURE_OFFSET + usize::from(index) * 20;
+            for (offset, value) in [(0, 2_u16), (2, model as u16), (4, 32 + model as u16), (6, 32), (8, GROUP)] {
+                authored[start + offset..start + offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let configured_features = crate::level1_mission::parse_authored_features(&authored).unwrap();
+        for row in original_features.iter().filter(|row| row.kind != 0) {
+            assert_eq!(&configured_features[usize::from(row.index)], row);
+        }
+        let translated = Mc2LevelDefinition::catalog_binding(&authored, CampaignSelection::LEVEL2).unwrap();
+        let mut entities = original.entities().to_vec();
+        let mut authored_scenery = definition.scenery_bindings().clone();
+        let mut authored_scenery_entities = definition.authored_scenery_entity_bindings();
+        for &index in &unused {
+            let id = translated.scenery_entity_by_authored_record.get(&index).unwrap();
+            let entity = translated.semantic.entity(id).unwrap();
+            assert_eq!(entity.kind(), LevelEntityKind::Scenery(SceneryKind::StaticObject));
+            assert_eq!(entity.static_scenery(), Some(static_objects::Definition::default()));
+            entities.push(entity.clone());
+            authored_scenery.insert(index, SceneryKind::StaticObject);
+            authored_scenery_entities.insert(index, id.clone());
+        }
+        let mut groups = original.activation_groups().collect::<Vec<_>>();
+        groups.push(activation_group_id(GROUP));
+        let level = build_level_definition(entities, original.objectives().to_vec(), groups).unwrap();
+        assert_eq!(&level.entities()[..original.entities().len()], original.entities());
+        assert_eq!(level.objectives(), original.objectives());
+        let rival_wizard_by_id = definition.rival_wizard_selectors().iter().map(|(id, selector)| {
+            let target = crate::campaign::objectives::rival_wizard::target_from_selector(*selector).unwrap();
+            let sim = campaign.simulation();
+            let bound = crate::campaign::objectives::rival_wizard::bind_target(
+                &target, sim.players(), &sim.source_arena().entities,
+            ).unwrap();
+            (id.clone(), bound.entity_index)
+        }).collect();
+        let sim = campaign.simulation_mut();
+        sim.bind_semantic_level_definition(SemanticLevelBindings {
+            level,
+            authored_creature_kinds: definition.creature_bindings().clone(),
+            authored_creature_entities: definition.authored_creature_entity_bindings(),
+            initial_source_creatures: definition.initial_creature_bindings().clone(),
+            creature_models: definition.creature_models().clone(),
+            authored_spells: definition.spell_bindings().clone(),
+            spell_families: definition.spell_families().clone(),
+            authored_buildings: definition.building_bindings().clone(),
+            authored_building_entities: definition.authored_building_entity_bindings(),
+            initial_source_buildings: definition.initial_building_bindings().clone(),
+            authored_scenery, authored_scenery_entities,
+            initial_source_scenery: definition.initial_scenery_bindings().clone(),
+            authored_items: definition.item_bindings().clone(),
+            authored_item_entities: definition.item_entity_bindings(),
+            authored_switches: definition.switch_bindings().clone(),
+            authored_switch_entities: definition.authored_switch_entity_bindings(),
+            initial_source_switches: definition.initial_switch_bindings().clone(),
+            initial_source_switch_entities: definition.initial_switch_entity_bindings().clone(),
+            authored_mechanics: definition.mechanic_bindings().clone(),
+            initial_source_mechanics: definition.initial_mechanic_bindings().clone(),
+            authored_mechanic_entities: definition.mechanic_entity_bindings().clone(),
+            initial_source_mechanic_entities: definition.initial_mechanic_entity_bindings().clone(),
+            standing_building_chains: definition.standing_building_chains().clone(),
+            rival_wizard_by_id,
+        });
+        sim.session.state.live.mission.authored_features_mut().copy_from_slice(&configured_features);
+        sim.session.rebase();
+        let baseline = sim.session.state.live.clone();
+        let player = sim.state.entity_index;
+        // Definition/asset admission must fail before NewEvent changes the
+        // arena, source RNG, map topology or raw packets.
+        for (properties, particles) in [
+            (static_objects::Definition { max_life: 0 }, &sim.session.definition.presentation.particles[..]),
+            (static_objects::Definition::default(), &[][..]),
+        ] {
+            let mut arena = sim.session.state.live.economy.clone();
+            let mut terrain = sim.canonical_terrain().clone();
+            let unchanged_arena = arena.clone();
+            let unchanged_terrain = terrain.clone();
+            assert!(static_objects::construct(&mut arena, &mut terrain, Position::default(),
+                static_objects::Kind::Model4, properties, particles).is_err());
+            assert_eq!(arena, unchanged_arena);
+            assert_eq!(terrain, unchanged_terrain);
+        }
+        let rng = sim.source_global_rng();
+        sim.publish_authored_group(0, player, GROUP, true).unwrap();
+        assert_eq!(sim.source_global_rng(), rng, "these constructors draw no RNG");
+        let births = sim.entities().iter().filter(|row| row.active && row.class == 2 && matches!(row.model, 4 | 5))
+            .cloned().collect::<Vec<_>>();
+        assert_eq!(births.len(), 2);
+        for row in &births {
+            let action = if row.model == 4 { 12 } else { 15 };
+            let feature = &configured_features[usize::from(unused[usize::from(row.model - 4)])];
+            let expected_position = feature.world_position(sim.canonical_terrain().ground_height(feature.world_position(0)));
+            assert_eq!((row.class, row.action, row.position), (2, action, expected_position));
+            assert_eq!((row.max_life, row.life, row.control_flags, row.actual_speed), (300, 300, 12, 16));
+            assert_eq!((row.source_id, row.phase, row.entity_rng), (row.index, row.index as u8, row.index.wrapping_add(rng as u16)));
+            assert_eq!(row.source_dword_10(), i32::from(row.index % 11));
+            assert_eq!((row.parameter_relation, row.special_relation), (Some(59), EntitySpecialRelation::GlobalSpecialState));
+            let particle = sim.session.definition.presentation.particles[48];
+            assert_eq!((row.particle_parameter_index, row.array_yaw(), row.array_pitch(), row.array_roll(), row.array_fov()),
+                (Some(48), (particle.rotation_speed / 2) as i16, (particle.speed / 2) as i16, (particle.speed / 2) as i16, (particle.rotation_speed / 2) as i16));
+            assert!(sim.economy().map_chains().is_linked(row.index));
+            let target = source_target::read(sim.source_arena(), source_target::Context::default(), row.index).unwrap().unwrap();
+            assert_eq!((target.position, target.life, target.collision.unwrap().half_width), (row.position, 300, row.array_pitch()));
+            assert_eq!(sim.scenery_kind_for_source_slot(row.index), Some(SceneryKind::StaticObject));
+            assert!(sim.campaign_entity_presentations(0).unwrap().iter().any(|dto|
+                dto.entity_index == row.index && dto.render_parameter_index == 48 && dto.position == row.position));
+        }
+        sim.step_level2_source_pass(0);
+        assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })), "{:?}", sim.dispatch_events());
+        let receipts = sim.cf10_production_schedule_receipts();
+        for birth in &births {
+            let mut expected = birth.clone();
+            expected.set_phase(birth.phase.wrapping_add(1));
+            assert_eq!(&sim.entities()[usize::from(birth.index)], &expected, "empty rule changes only scheduler phase");
+            assert!(receipts.iter().any(|r| matches!(r, ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == birth.index)));
+            assert!(receipts.iter().any(|r| matches!(r, ScheduleReceipt::EpilogueCompleted { slot, .. } if *slot == birth.index)));
+        }
+        // Explicit negative callback control: even a negative life/mailbox
+        // packet does not gain invented death, motion or child behavior.
+        let slot = births[0].index;
+        let row = &mut sim.session.state.live.economy.entities[usize::from(slot)];
+        row.set_life(-7);
+        row.record[98..102].copy_from_slice(&900_i32.to_le_bytes());
+        row.record[102..104].copy_from_slice(&player.to_le_bytes());
+        let before = row.clone();
+        sim.step_level2_source_pass(1);
+        let mut expected = before;
+        expected.set_phase(expected.phase.wrapping_add(1));
+        assert_eq!(&sim.entities()[usize::from(slot)], &expected);
+        let handle = sim.source_arena().handle(slot).unwrap();
+        // The real source57390 class2 policy supplies hiding. No bespoke
+        // destruction/lifetime is added; following UpdateEntities owns release.
+        let position = sim.entities()[usize::from(slot)].position;
+        {
+            let live = &mut sim.session.state.live;
+            crate::world::terrain::disasters::mc2::burial::cell(
+                &mut live.economy, None, (position.x >> 8) as u8, (position.y >> 8) as u8, player,
+            ).unwrap();
+        }
+        assert_eq!(sim.source_arena().handle(slot), Some(handle));
+        assert!(sim.entities()[usize::from(slot)].drawing_disabled());
+        sim.step_level2_source_pass(2);
+        assert!(sim.source_arena().resolve(handle).is_none());
+        assert!(!sim.economy().map_chains().is_linked(slot));
+        assert!(sim.economy().free_source_slots().contains(&slot));
+        assert_eq!(sim.entities()[usize::from(slot)].class, 0);
+        assert!(sim.campaign_entity_presentations(0).unwrap().iter().all(|dto| dto.entity_index != slot));
+        sim.reset();
+        assert_eq!(sim.session.state.live, baseline);
+        sim.publish_authored_group(0, player, GROUP, true).unwrap();
+        assert_eq!(sim.entities().iter().filter(|row| row.active && row.class == 2 && matches!(row.model, 4 | 5))
+            .cloned().collect::<Vec<_>>(), births, "configured reset preserves exact constructor packets");
+    }
 
     fn creature28_level14_campaign() -> crate::campaign::CampaignSession {
         let package = std::env::var_os("MC_LEVEL14_PACKAGE").map_or_else(
