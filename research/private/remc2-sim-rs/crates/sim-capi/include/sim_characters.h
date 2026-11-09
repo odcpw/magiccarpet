@@ -21,7 +21,9 @@ typedef struct McCampaignCharacterStateV1 {
     uint16_t target_index, target_x, target_y;
     int16_t target_z;
     uint32_t control_flags;
-    uint16_t age_ticks, reserved_1;
+    /* render_parameter is the original appearance selector for class 5/model 13;
+     * it is zero for all other admitted families. */
+    uint16_t age_ticks, render_parameter;
 } McCampaignCharacterStateV1;
 int32_t mc_native_campaign_character_states_copy(uint64_t handle,
     uint64_t generation, uint64_t tick, McCampaignCharacterStateV1 *buffer,

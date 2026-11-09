@@ -36,7 +36,8 @@ pub struct McCampaignCharacterStateV1 {
     pub target_z: i16,
     pub control_flags: u32,
     pub age_ticks: u16,
-    pub reserved_1: u16,
+    /// Source appearance parameter for class-5/model-13; zero otherwise.
+    pub render_parameter: u16,
 }
 
 /// A retained native death, tied to the world/session and slot incarnation.
@@ -167,6 +168,7 @@ pub extern "C" fn mc_native_campaign_character_states_copy(
             for goat in reset.goats().iter().filter(|s| s.active) {
                 targets.insert(goat.entity_index, goat.position);
             }
+            let live_slots = reset.economy().live_arena_slots().into_iter().collect::<BTreeMap<_, _>>();
             // Imported slots retain generation zero until NewEvent replaces
             // them; dynamically authored goats use the same arena identity.
             for goat in reset.goats().iter().filter(|s| s.active) {
@@ -187,6 +189,46 @@ pub extern "C" fn mc_native_campaign_character_states_copy(
                     speed: goat.actual_speed,
                     life: goat.life,
                     control_flags: goat.control_flags,
+                    ..base
+                });
+            }
+            // Reset villagers and house-born residents have distinct source
+            // owners. An arena replacement must never inherit a retained row.
+            for villager in reset.ordinary().villagers().iter().filter(|s|
+                s.active && !live_slots.contains_key(&s.entity_index))
+            {
+                let target = villager.target_entity_index.and_then(|index| targets.get(&index));
+                rows.push(McCampaignCharacterStateV1 {
+                    slot_generation: reset.economy().slot_generation(villager.entity_index),
+                    entity_index: villager.entity_index, source_id: villager.source_id,
+                    class_id: 5, model: 13, action: villager.action, phase: villager.phase,
+                    active: 1, x: villager.position.x, y: villager.position.y, z: villager.position.z,
+                    yaw: villager.yaw, pitch: villager.pitch, speed: villager.actual_speed,
+                    life: villager.life, control_flags: villager.control_flags,
+                    has_target: u8::from(target.is_some()),
+                    target_index: villager.target_entity_index.unwrap_or(0),
+                    target_x: target.map_or(0, |p| p.x), target_y: target.map_or(0, |p| p.y),
+                    target_z: target.map_or(0, |p| p.z),
+                    render_parameter: villager.render_parameter_index,
+                    ..base
+                });
+            }
+            for resident in reset.economy().house_residents().iter().filter(|s|
+                s.active && s.model == 13 && live_slots.get(&s.source_entity_index)
+                    == Some(&sim_core::native_world::Level2DynamicArenaKind::HouseResident))
+            {
+                let target = targets.get(&resident.target_entity_index);
+                rows.push(McCampaignCharacterStateV1 {
+                    slot_generation: reset.economy().slot_generation(resident.source_entity_index),
+                    entity_index: resident.source_entity_index, source_id: resident.source_id,
+                    class_id: 5, model: 13, action: resident.action, phase: resident.phase,
+                    active: u8::from(resident.drawing_enabled),
+                    x: resident.position.x, y: resident.position.y, z: resident.position.z,
+                    yaw: resident.yaw, speed: resident.actual_speed, life: resident.life,
+                    control_flags: resident.control_flags, has_target: u8::from(target.is_some()),
+                    target_index: resident.target_entity_index,
+                    target_x: target.map_or(0, |p| p.x), target_y: target.map_or(0, |p| p.y),
+                    target_z: target.map_or(0, |p| p.z), render_parameter: resident.render_parameter_index,
                     ..base
                 });
             }
@@ -230,7 +272,6 @@ pub extern "C" fn mc_native_campaign_character_states_copy(
             }
             // The live arena is authoritative when a source address has been
             // reused; retained projectile carriers must not claim the new row.
-            let live_slots = reset.economy().live_arena_slots().into_iter().collect::<BTreeMap<_, _>>();
             for projectile in reset.economy().fireball_projectiles().iter().filter(|p|
                 p.active && !p.drawing_disabled && p.source_class == 9 && matches!(p.source_model, 0 | 28) &&
                 live_slots.get(&p.source_entity_index) == Some(&sim_core::native_world::Level2DynamicArenaKind::FireballProjectile))
@@ -342,6 +383,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignCharacterStateV1>(), 80);
         assert_eq!(std::mem::offset_of!(McCampaignCharacterStateV1, x), 48);
         assert_eq!(std::mem::offset_of!(McCampaignCharacterStateV1, life), 60);
+        assert_eq!(std::mem::offset_of!(McCampaignCharacterStateV1, render_parameter), 78);
         let mut written = 19;
         assert_ne!(
             mc_native_campaign_character_states_copy(
@@ -371,5 +413,52 @@ mod tests {
             ),
             MC_STATUS_OK
         );
+    }
+
+    #[test]
+    fn level_one_villagers_are_observed_from_live_native_state() {
+        use super::super::game_session_abi::mc_game_session_step_json_v1;
+        use super::super::game_runtime_abi::{mc_game_runtime_bootstrap_package_set_json_v1,
+            mc_game_runtime_create_v1, mc_game_runtime_destroy_v1, mc_game_runtime_open_level_v1};
+        let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let request = serde_json::to_vec(&serde_json::json!({
+            "request_contract": "carpet-flight-installed-package-set-bootstrap/v1",
+            "packages": [
+                {"package_dir":generated.join("mc-bhq8-level1-collision-v5-night"),"owner_cache_path":generated.join("mc-oi62-environment-level1-v2")},
+                {"package_dir":generated.join("mc-cf02-campaign-package-v2-b/qualified-level2"),"owner_cache_path":null},
+                {"package_dir":generated.join("mc-cf14-campaign-package-v1-a/qualified-level3"),"owner_cache_path":null}
+            ]
+        })).unwrap();
+        let mut handle = 0;
+        assert_eq!(mc_game_runtime_create_v1(&mut handle), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_bootstrap_package_set_json_v1(handle, 1, request.as_ptr(), request.len() as u32), MC_STATUS_OK);
+        assert_eq!(mc_game_runtime_open_level_v1(handle, 2), MC_STATUS_OK);
+        let read = |tick| {
+            let mut rows = vec![McCampaignCharacterStateV1::default(); 1000];
+            let mut written = 0;
+            assert_eq!(mc_native_campaign_character_states_copy(handle, 1, tick, rows.as_mut_ptr(), 1000, 80, &mut written), MC_STATUS_OK);
+            rows.truncate(written as usize);
+            rows
+        };
+        let initial = read(0);
+        let villagers: Vec<_> = initial.iter().filter(|r| (r.class_id, r.model) == (5, 13)).collect();
+        assert_eq!(villagers.len(), 28);
+        assert!(villagers.iter().all(|r| matches!(r.render_parameter, 239 | 241 | 242 | 271)));
+        assert!(initial.iter().filter(|r| (r.class_id, r.model) != (5, 13)).all(|r| r.render_parameter == 0));
+        for row in villagers.iter().filter(|r| r.render_parameter == 241) {
+            println!("reset 241 slot={} source={} xyz={},{},{} speed={} action={}", row.entity_index, row.source_id, row.x, row.y, row.z, row.speed, row.action);
+        }
+        for tick in 0..20 {
+            assert_eq!(mc_game_session_step_json_v1(handle, 1, tick, b"{}".as_ptr(), 2), MC_STATUS_OK);
+        }
+        let later = read(20);
+        let moved: Vec<_> = villagers.iter().filter_map(|a| later.iter().find(|b| b.entity_index == a.entity_index && b.source_id == a.source_id && b.slot_generation == a.slot_generation && (a.x, a.y) != (b.x, b.y)).map(|b| (*a,b))).collect();
+        assert!(!moved.is_empty());
+        for (a,b) in moved.iter().filter(|(a,_)| a.render_parameter == 241) {
+            println!("tick20 241 slot={} xyz={},{},{} delta={},{} speed={} action={}", b.entity_index,b.x,b.y,b.z, i32::from(b.x)-i32::from(a.x), i32::from(b.y)-i32::from(a.y),b.speed,b.action);
+        }
+        let mut written = 0;
+        assert_eq!(mc_native_campaign_character_states_copy(handle, 1, 0, std::ptr::null_mut(), 0, 80, &mut written), MC_STATUS_GENERATION_MISMATCH);
+        assert_eq!(mc_game_runtime_destroy_v1(handle), MC_STATUS_OK);
     }
 }

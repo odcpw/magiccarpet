@@ -1545,8 +1545,11 @@ namespace MagicCarpet.Native
             foreach (var row in rows)
                 if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 80 ||
                     row.generation != generation || row.tick != tick || !seen.Add(row.entityIndex) ||
-                    row.stance > 1 || row.reserved1 != 0 || row.active > 1 || row.hasTarget > 1 || row.hasParent > 1 ||
-                    !(row.classId == 5 && (row.model == 1 || row.model == 4) || row.classId == 9 && (row.model == 0 || row.model == 13 || row.model == 28)))
+                    row.stance > 1 || row.active > 1 || row.hasTarget > 1 || row.hasParent > 1 ||
+                    (row.classId == 5 && row.model == 13
+                        ? !(row.renderParameter == 239 || row.renderParameter == 241 || row.renderParameter == 242 || row.renderParameter == 271)
+                        : row.renderParameter != 0) ||
+                    !(row.classId == 5 && (row.model == 1 || row.model == 4 || row.model == 13) || row.classId == 9 && (row.model == 0 || row.model == 13 || row.model == 28)))
                     throw new InvalidOperationException("Invalid source-backed character state");
             cachedCharacterStates=rows;characterStateGeneration=generation;characterStateTick=tick;
             return rows;

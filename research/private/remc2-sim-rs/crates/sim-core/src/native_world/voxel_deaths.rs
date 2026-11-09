@@ -9,6 +9,7 @@ pub const VOXEL_DEATH_CAPACITY: usize = 1024;
 
 fn goat_dead(action: u8, life: i32) -> bool { life < 0 || matches!(action, 12 | 13) }
 fn archer_dead(action: u8, life: i32) -> bool { life < 0 || action == 37 }
+fn villager_dead(action: u8, life: i32) -> bool { life < 0 || matches!(action, 108 | 109) }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Identity {
@@ -86,6 +87,22 @@ impl Mc2Simulation {
             deaths.insert(Identity { slot: source.source_entity_index,
                 slot_generation: archer.slot_generation, source_id: archer.entity_id });
         }
+        for villager in self.ordinary().villagers().iter().filter(|row|
+            row.active && villager_dead(row.action, row.life)) {
+            let Some(handle) = arena.handle(villager.entity_index) else { continue; };
+            let Some(current) = super::source_target::read(arena, context, villager.entity_index)? else { continue; };
+            if !current.active || (current.class, current.model, current.source_id) != (5, 13, villager.source_id) { continue; }
+            deaths.insert(Identity { slot: villager.entity_index,
+                slot_generation: handle.generation, source_id: villager.source_id });
+        }
+        for resident in economy.house_residents().iter().filter(|row|
+            row.active && row.model == 13 && villager_dead(row.action, row.life)) {
+            let Some(handle) = arena.handle(resident.source_entity_index) else { continue; };
+            let Some(current) = super::source_target::read(arena, context, resident.source_entity_index)? else { continue; };
+            if !current.active || (current.class, current.model, current.source_id) != (5, 13, resident.source_id) { continue; }
+            deaths.insert(Identity { slot: resident.source_entity_index,
+                slot_generation: handle.generation, source_id: resident.source_id });
+        }
         if let Some(journal) = self.session.state.terrain_mut().voxel_deaths_mut() {
             journal.observe(deaths);
         }
@@ -108,6 +125,9 @@ mod tests {
         assert!(!archer_dead(36, 100));
         assert!(archer_dead(36, -1));
         assert!(archer_dead(37, 1));
+        assert!(!villager_dead(105, 0));
+        assert!(villager_dead(108, 1));
+        assert!(villager_dead(109, 1));
     }
 
     #[test]
@@ -169,5 +189,30 @@ mod tests {
         let matching = rows.iter().filter(|row| row.slot == goat.entity_index
             && row.slot_generation == generation && row.source_id == goat.source_id).count();
         assert_eq!(matching, 1, "one death for the native actor incarnation through reclaim");
+    }
+
+    #[test]
+    fn source_villager_damage_records_once_through_following_pass_reclaim() {
+        use crate::voxel_world::{Grid, Point, Volume, VoxelWorld};
+        let mut session = super::super::tests::level_two_campaign_session();
+        let grid = Grid { origin: Point { x: -100_000, y: -100_000, z: 0 }, cell_size: 8, dimensions: [1, 1, 1] };
+        let world = VoxelWorld::new(11, vec![Volume::terrain(grid, vec![1]).unwrap()]).unwrap();
+        session.session.state.terrain_mut().install_voxel_world(world).unwrap();
+        let villager = session.ordinary().villagers().iter().find(|row| row.active && row.action == 105).unwrap().clone();
+        let generation = session.economy().slot_generation(villager.entity_index);
+        let attacker = session.shared_spells().players()[0].entity_index;
+        session.ordinary_mut().inject_villager_damage(villager.entity_index, villager.life + 1, attacker as i16).unwrap();
+        let mut reclaimed = false;
+        for pass in 0..120_u8 {
+            session.step_level2_source_pass(pass);
+            if !session.ordinary().villagers().iter().any(|row| row.entity_index == villager.entity_index && row.active) {
+                reclaimed = true;
+                break;
+            }
+        }
+        assert!(reclaimed, "actual source damage must reach Villager reclaim");
+        let rows = session.canonical_terrain().voxel_deaths().unwrap().rows();
+        assert_eq!(rows.iter().filter(|row| row.slot == villager.entity_index &&
+            row.slot_generation == generation && row.source_id == villager.source_id).count(), 1);
     }
 }

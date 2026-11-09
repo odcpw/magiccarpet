@@ -574,7 +574,7 @@ namespace MagicCarpet.Native
             internal ushort targetIndex, targetX, targetY;
             internal short targetZ;
             internal uint controlFlags;
-            internal ushort ageTicks, reserved1;
+            internal ushort ageTicks, renderParameter;
         }
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
@@ -3415,6 +3415,7 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignVoxelDeath>(nameof(CampaignVoxelDeath.sequence), 16);
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.x), 48);
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.life), 60);
+            RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.renderParameter), 78);
             RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<CampaignInvisibleSnapshot>(80);
             RequireSize<CampaignBeyondSightSnapshot>(80);
