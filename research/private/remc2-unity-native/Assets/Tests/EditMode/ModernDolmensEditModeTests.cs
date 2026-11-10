@@ -26,6 +26,16 @@ namespace MagicCarpet.Native.Tests
             Assert.That(ModernDolmens.Matches(entity, other), Is.False);
         }
 
+        [Test]
+        public void VisualGroundingUsesTerrainAndBoundsSteepSlopePenetration()
+        {
+            Assert.That(ModernDolmens.VisualBaseHeight(10, 20, 4, (_, _) => 42), Is.EqualTo(42));
+            var baseY = ModernDolmens.VisualBaseHeight(0, 0, 4, (x, _) => 10 + x);
+            // Right support's highest footprint is x=.58*4. Grounding must not
+            // bury it more than one quarter of the model's height.
+            Assert.That(baseY, Is.EqualTo(11.32f).Within(.001f));
+        }
+
         [TestCase("ModernScenery/Dolmen")]
         [TestCase("ModernScenery/DolmenVoxel")]
         public void ImportedModelHasGroundedWideSourceShapeAndBoundedGeometry(string resource)

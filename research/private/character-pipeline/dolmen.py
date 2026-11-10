@@ -33,6 +33,9 @@ def stone(name, center, radii, seed, slab=False):
             y = center[1] + radii[1] * profile * math.sin(angle) * wobble
             z = center[2] + radii[2] * (2 * t - 1)
             z += radii[2] * .10 * math.sin(5 * angle + 3 * t + seed) * (0.3 + 0.7 * math.sin(math.pi * t))
+            if slab:
+                # The original TMAP has a long, rising cap, not a flat roof.
+                z += .24 * (x - center[0]) / radii[0]
             if not slab and j == 0:
                 z = 0
             verts.append((x, y, z))
@@ -74,7 +77,7 @@ def stone(name, center, radii, seed, slab=False):
 def voxelize(stones, size=1 / 32):
     trees = [BVHTree.FromObject(obj, bpy.context.evaluated_depsgraph_get()) for obj in stones]
     lo = (-.91, -.44, 0.0)
-    dims = (59, 29, 34)
+    dims = (59, 29, 36)
     solid = set()
     direction = Vector((0.0, 0.0, 1.0))
     # Pair all vertical intersections for each independent, closed stone.
@@ -147,10 +150,10 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
-    stones = [stone('Left upright',(-.50,-.08,.36),(.20,.23,.36),13),
-              stone('Right upright',(.48,-.05,.37),(.23,.24,.37),23),
-              stone('Rear upright',(.02,.23,.36),(.19,.18,.36),47),
-              stone('Overhanging capstone',(0,0,.84),(.87,.37,.16),71,True)]
+    stones = [stone('Left upright',(-.50,-.08,.24),(.18,.23,.24),13),
+              stone('Right upright',(.48,-.05,.38),(.22,.24,.38),23),
+              stone('Rear upright',(.02,.23,.31),(.19,.18,.31),47),
+              stone('Overhanging capstone',(0,0,.70),(.87,.37,.08),71,True)]
     mat = bpy.data.materials.new('Weathered brown grey stone')
     mat.diffuse_color = (.32,.30,.28,1)
     mat.use_nodes = True
