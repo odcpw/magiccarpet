@@ -6,6 +6,7 @@ namespace MagicCarpet.Native.Voxels
     public sealed class VoxelGoatAsset : ScriptableObject
     {
         public Mesh sourceMesh;
+        public string sourceFingerprint;
         public Mesh mesh;
         public Color32[] cellColors;
         public Vector3[] cellCenters;

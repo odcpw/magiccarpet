@@ -18,7 +18,7 @@ namespace MagicCarpet.Native
         }
     }
 
-    // Joins native occupants to the two reviewed rigs. No gameplay is simulated here.
+    // Joins supported native occupants to reviewed rigs. No gameplay is simulated here.
     internal sealed class ModernCharacterActors : IDisposable
     {
         private sealed class Actor : IDisposable
@@ -26,11 +26,13 @@ namespace MagicCarpet.Native
             internal NativeSim.CampaignCharacterState State;
             internal ModernGoatPresenter Goat;
             internal ModernArcherPresenter Archer;
+            internal ModernVillagerPresenter Villager;
             internal Vector3 From, To;
             internal float FromYaw, ToYaw;
             internal double ObservedAt;
             internal float Interval = 1f / 30;
             internal bool Visible, WasVisible;
+            internal bool WasRendered;
             internal bool TerrainContactComplete = true;
             internal float TerrainSlope;
             internal Renderer[] Renderers;
@@ -39,18 +41,20 @@ namespace MagicCarpet.Native
             internal bool AuthoritativeDeath;
             internal List<Voxels.VoxelFragment> DeathFragments;
             internal Vector3 DeathVelocity, DeathOrigin;
-            internal bool IsDying => AuthoritativeDeath || (Goat != null ? Goat.IsDying : Archer.IsDying);
+            internal bool IsDying => AuthoritativeDeath || (Goat != null ? Goat.IsDying : Villager != null ? Villager.IsDying : Archer.IsDying);
             internal bool VoxelIsDying => AuthoritativeDeath || SourceVoxelDeath(State.model, State.action, State.life);
-            internal GameObject Root => Goat != null ? Goat.Root : Archer.Root;
-            internal bool Finished => Goat != null ? Goat.DeathFinished : Archer.DeathFinished;
+            internal GameObject Root => Goat != null ? Goat.Root : Villager != null ? Villager.Root : Archer.Root;
+            internal bool Finished => Goat != null ? Goat.DeathFinished : Villager != null ? Villager.DeathFinished : Archer.DeathFinished;
+            internal string Clip => Goat != null ? Goat.CurrentClip : Villager != null ? Villager.CurrentClip : Archer.CurrentClip;
+            internal float ClipTime => Goat != null ? Goat.ClipTime : Villager != null ? Villager.ClipTime : Archer.ClipTime;
             internal void Render(float dt)
             {
                 if (RenderedFrame == Time.frameCount) return;
                 RenderedFrame = Time.frameCount;
-                if (Goat != null) Goat.Render(dt); else Archer.Render(dt);
+                if (Goat != null) Goat.Render(dt); else if (Villager != null) Villager.Render(dt); else Archer.Render(dt);
             }
-            internal void Remove() { if (Goat != null) Goat.MarkRemoved(); else Archer.MarkRemoved(); }
-            public void Dispose() { Goat?.Dispose(); Archer?.Dispose(); }
+            internal void Remove() { if (Goat != null) Goat.MarkRemoved(); else if (Villager != null) Villager.MarkRemoved(); else Archer.MarkRemoved(); }
+            public void Dispose() { Goat?.Dispose(); Archer?.Dispose(); Villager?.Dispose(); }
         }
         private sealed class Arrow
         {
@@ -68,8 +72,8 @@ namespace MagicCarpet.Native
         private readonly Dictionary<ushort, Arrow> arrows = new();
         private readonly List<Actor> dying = new();
         private readonly Dictionary<ushort, NativeSim.CampaignCharacterState> observed = new();
-        private ModernCharacterAsset goatAsset, archerAsset;
-        private Voxels.VoxelGoatAsset goatFine,goatMiddle,goatFar,archerFine,archerFar;
+        private ModernCharacterAsset goatAsset, archerAsset, villagerAsset;
+        private Voxels.VoxelGoatAsset goatFine,goatMiddle,goatFar,archerFine,archerFar,villagerFine,villagerFar;
         private GameObject arrowTemplate;
         private ulong generation = ulong.MaxValue, tick = ulong.MaxValue;
         private bool logged;
@@ -90,7 +94,7 @@ namespace MagicCarpet.Native
             var option = Array.IndexOf(args, "-mc-character-follow");
             if (option >= 0)
             {
-                if (option + 1 >= args.Length) throw new ArgumentException("Character follow requires Goat, Archer or a source slot");
+                if (option + 1 >= args.Length) throw new ArgumentException("Character follow requires Goat, Archer, Villager or a source slot");
                 follow = args[option + 1];
             }
             var yawOption = Array.IndexOf(args, "-mc-character-follow-yaw");
@@ -109,7 +113,8 @@ namespace MagicCarpet.Native
         {
             if (follow == null) return null;
             if (ushort.TryParse(follow, out var slot)) return actors.TryGetValue(slot, out var value) && !value.VoxelDeath.Exploded ? value : dying.FirstOrDefault(a => a.State.entityIndex == slot && !a.VoxelDeath.Exploded);
-            return actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => !a.VoxelDeath.Exploded && (follow == "Goat" ? a.Goat != null : a.Archer != null));
+            return actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => !a.VoxelDeath.Exploded &&
+                (follow == "Goat" ? a.Goat != null : follow == "Villager" ? a.Villager != null : follow == "Archer" && a.Archer != null));
         }
 
         internal bool ReviewCamera(Camera camera)
@@ -209,11 +214,14 @@ namespace MagicCarpet.Native
         }
 
         internal static bool IsArcherArrow(NativeSim.CampaignCharacterState state) => state.classId == 9 && state.model == 13;
+        internal static bool IsSupportedActor(NativeSim.CampaignCharacterState state) =>
+            state.classId == 5 && (state.model == 1 || state.model == 4 || ModernVillagerPresenter.Supports(state));
         internal bool Replaces(ushort sourceSlot) => observed.TryGetValue(sourceSlot, out var state) &&
-            (state.classId == 5 && (state.model == 1 || state.model == 4) || IsArcherArrow(state));
+            (IsSupportedActor(state) || IsArcherArrow(state));
 
         internal static bool SourceVoxelDeath(byte model, byte action, int life) => life < 0 ||
-            (model == 1 && (action == 12 || action == 13)) || (model == 4 && action == 37);
+            (model == 1 && (action == 12 || action == 13)) || (model == 4 && action == 37) ||
+            (model == 13 && ModernVillagerPresenter.SourceDeath(action, life));
 
         // The integration delivers lifetime-qualified native death evidence
         // before observing removal or reuse. A slot alone is never sufficient.
@@ -258,10 +266,10 @@ namespace MagicCarpet.Native
                 if (!arrows.TryGetValue(state.entityIndex, out var prior) || prior.State.slotGeneration != state.slotGeneration)
                     births[state.parentIndex] = state;
             }
-            foreach (var state in observed.Values.Where(s => s.classId == 5))
+            foreach (var state in observed.Values.Where(IsSupportedActor))
             {
                 if (actors.TryGetValue(state.entityIndex, out var prior) &&
-                    (prior.State.sourceId != state.sourceId || prior.State.slotGeneration != state.slotGeneration || prior.State.model != state.model))
+                    (prior.State.sourceId != state.sourceId || prior.State.slotGeneration != state.slotGeneration || prior.State.model != state.model || prior.State.renderParameter != state.renderParameter))
                 { Retire(prior); actors.Remove(state.entityIndex); }
                 var position = Position(state);
                 var yaw = 180f - state.yaw * 360f / 2048f;
@@ -274,6 +282,12 @@ namespace MagicCarpet.Native
                         goatAsset ??= Load("Goat");
                         actor.Goat = new ModernGoatPresenter(goatAsset, parent, 150f / 64);
                         if(Voxels.VoxelModernWorld.Requested){PrepareVoxelDetails();actor.Goat.AttachVoxelSkin(goatFine);}
+                    }
+                    else if (state.model == 13)
+                    {
+                        villagerAsset ??= Load("Villager");
+                        actor.Villager = new ModernVillagerPresenter(villagerAsset, parent, 250f / 64);
+                        if(Voxels.VoxelModernWorld.Requested){PrepareVoxelDetails();actor.Villager.AttachVoxelSkin(villagerFine);}
                     }
                     else
                     {
@@ -296,6 +310,7 @@ namespace MagicCarpet.Native
                 actor.Visible = presentations.TryGetValue(state.entityIndex, out var presentation);
                 actor.WasVisible |= actor.Visible;
                 if (actor.Goat != null) actor.Goat.Observe(position, yaw, state.life, state.action, state.tick);
+                else if (actor.Villager != null) actor.Villager.Observe(position, yaw, state.life, state.action, state.tick);
                 else
                 {
                     var aim = state.hasTarget != 0 ? Delta(position, new Vector3(state.targetX / 64f, state.targetZ / 64f, state.targetY / 64f)) : Direction(state.yaw, state.pitch);
@@ -307,7 +322,7 @@ namespace MagicCarpet.Native
                     actor.Archer.Observe(position, yaw, state.life, state.action, state.phase, state.tick, aim, release, kneeling);
                 }
             }
-            foreach (var key in actors.Keys.Where(key => !observed.TryGetValue(key, out var s) || s.classId != 5).ToArray())
+            foreach (var key in actors.Keys.Where(key => !observed.TryGetValue(key, out var s) || !IsSupportedActor(s)).ToArray())
             {
                 var actor = actors[key]; actors.Remove(key);
                 Retire(actor);
@@ -346,7 +361,7 @@ namespace MagicCarpet.Native
             if (!logged)
             {
                 logged = true;
-                Debug.Log($"MC_MODERN_CHARACTERS_LIVE goats={actors.Values.Count(s => s.Goat != null)} archers={actors.Values.Count(s => s.Archer != null)} native_tick={tick} generation={generation}");
+                Debug.Log($"MC_MODERN_CHARACTERS_LIVE goats={actors.Values.Count(s => s.Goat != null)} archers={actors.Values.Count(s => s.Archer != null)} villagers={actors.Values.Count(s => s.Villager != null)} native_tick={tick} generation={generation}");
             }
         }
 
@@ -368,9 +383,11 @@ namespace MagicCarpet.Native
                 if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying && actor!=followed &&
                     (Delta(camera.transform.position,position).sqrMagnitude>14400 ||
                      !GeometryUtility.TestPlanesAABB(voxelViewPlanes,new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,new Vector3(12,16,12)))))
-                { actor.Root.SetActive(false); continue; }
+                { actor.Root.SetActive(false); actor.WasRendered = false; continue; }
                 if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying)SetVoxelDetail(actor,actor==followed?0:Delta(camera.transform.position,position).magnitude);
                 Place(actor, position, InterpolatedYaw(actor), camera);
+                if (!actor.WasRendered && actor.Villager != null) actor.Villager.RebaseTravel();
+                actor.WasRendered = true;
                 // Capture the last live pose before advancing a death animation.
                 if (Voxels.VoxelModernWorld.Requested && actor.VoxelIsDying)
                 { FractureIfDead(actor); actor.Root.SetActive(false); continue; }
@@ -421,7 +438,7 @@ namespace MagicCarpet.Native
                 if (Voxels.VoxelModernWorld.Active == null) return false;
                 if (actor.DeathFragments == null)
                 {
-                    actor.DeathFragments = actor.Goat != null ? actor.Goat.SnapshotVoxelFragments() : actor.Archer.SnapshotVoxelFragments();
+                    actor.DeathFragments = actor.Goat != null ? actor.Goat.SnapshotVoxelFragments() : actor.Villager != null ? actor.Villager.SnapshotVoxelFragments() : actor.Archer.SnapshotVoxelFragments();
                     actor.DeathVelocity = Delta(actor.From, actor.To) / Mathf.Max(actor.Interval, .0333f);
                     actor.DeathOrigin = actor.Root.transform.position;
                 }
@@ -441,7 +458,8 @@ namespace MagicCarpet.Native
                 else actor.Dispose();
                 return;
             }
-            actor.Remove(); dying.Add(actor);
+            if (actor.IsDying) { actor.Remove(); dying.Add(actor); }
+            else actor.Dispose();
         }
 
         private void PrepareVoxelDetails()
@@ -453,12 +471,14 @@ namespace MagicCarpet.Native
             }
             goatFine=LoadDetail("Goat",96);goatMiddle=LoadDetail("Goat",64);goatFar=LoadDetail("Goat",40);
             archerFine=LoadDetail("Archer",96);archerFar=LoadDetail("Archer",64);
+            villagerFine=LoadDetail("Villager",96);villagerFar=LoadDetail("Villager",64);
         }
         private void SetVoxelDetail(Actor actor,float distance)
         {
-            int current=actor.Goat!=null?actor.Goat.VoxelResolution:actor.Archer.VoxelResolution;
+            int current=actor.Goat!=null?actor.Goat.VoxelResolution:actor.Villager!=null?actor.Villager.VoxelResolution:actor.Archer.VoxelResolution;
             bool fine=distance<(current==96?16:12);
             if(actor.Goat!=null)actor.Goat.SetVoxelDetail(fine?goatFine:distance<(current==40?32:40)?goatMiddle:goatFar);
+            else if(actor.Villager!=null)actor.Villager.SetVoxelDetail(fine?villagerFine:villagerFar);
             else actor.Archer.SetVoxelDetail(fine?archerFine:archerFar);
         }
 
@@ -521,8 +541,8 @@ namespace MagicCarpet.Native
             framingChecked=follow != null, framingValid=FollowedFramingValid(),
             actors = actors.Values.Concat(dying).Select(a => new ActorReport { slot=a.State.entityIndex,
                 epoch=a.State.slotGeneration, model=a.State.model, action=a.State.action, life=a.State.life,
-                clip=a.Goat != null ? a.Goat.CurrentClip : a.Archer.CurrentClip,
-                clipTime=a.Goat != null ? a.Goat.ClipTime : a.Archer.ClipTime,
+                clip=a.Clip,
+                clipTime=a.ClipTime,
                 source=Position(a.State), rendered=a.Root.transform.position,
                 nativePresent=actors.TryGetValue(a.State.entityIndex, out var occupant) && occupant == a,
                 visible=a.Root.activeSelf, up=a.Root.transform.up,
@@ -530,7 +550,7 @@ namespace MagicCarpet.Native
                 hoofStanceMask=a.Goat != null && a == Followed() ? a.Goat.HoofStanceMask() : 0,
                 terrainContactComplete=a.TerrainContactComplete,
                 terrainSlope=a.TerrainSlope,
-                movingHit=a.Goat != null && a.Goat.MovingHitActive,
+                movingHit=a.Goat != null ? a.Goat.MovingHitActive : a.Villager != null && a.Villager.MovingHit,
                 contactBoundMask=a.Goat != null && a == Followed() ? a.Goat.ContactBoundMask : 0,
                 contactReachMask=a.Goat != null && a == Followed() ? a.Goat.ContactReachMask : 0,
                 contactBefore=a.Goat != null && a == Followed() ? a.Goat.ContactBefore : null,

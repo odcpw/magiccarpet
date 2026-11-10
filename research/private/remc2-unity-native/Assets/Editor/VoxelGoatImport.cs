@@ -25,6 +25,7 @@ namespace MagicCarpet.Native.Editor
         {
             PrepareCharacter("Goat", new[] { 24, 40, 64, 96 });
             PrepareCharacter("Archer", new[] { 64, 96 });
+            PrepareCharacter("Villager", new[] { 64, 96 });
             AssetDatabase.SaveAssets();
         }
 
@@ -36,15 +37,30 @@ namespace MagicCarpet.Native.Editor
             var folder = "Assets/Resources/ModernCharacters/" + name + "/Voxels";
             Directory.CreateDirectory(folder);
             AssetDatabase.Refresh();
+            var fingerprint = AssetDatabase.GetAssetDependencyHash(AssetDatabase.GetAssetPath(character.model)).ToString() +
+                "-" + character.height.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
             var instance = UnityEngine.Object.Instantiate(character.model);
             try
             {
                 var skins = instance.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-                var renderer = name == "Goat" ? skins.Single() : skins.Single(skin => skin.name == "char1");
+                var renderer = name == "Archer" ? skins.Single(skin => skin.name == "char1") : skins.Single();
                 foreach (var resolution in resolutions)
                 {
                     var path = $"{folder}/{name}{resolution}.asset";
                     var existing = AssetDatabase.LoadAssetAtPath<VoxelGoatAsset>(path);
+                    if (existing != null && (name == "Villager" || !string.IsNullOrEmpty(existing.sourceFingerprint)) &&
+                        existing.sourceFingerprint != fingerprint)
+                    {
+                        // Preserve losing derived output outside Resources; it must not
+                        // silently survive a changed source mesh, rig or fabric map.
+                        var history = "Assets/GeneratedCharacterHistory/" + name;
+                        Directory.CreateDirectory(history);
+                        AssetDatabase.Refresh();
+                        var archived = AssetDatabase.GenerateUniqueAssetPath(history + "/" + name + resolution + ".asset");
+                        var error = AssetDatabase.MoveAsset(path, archived);
+                        if (!string.IsNullOrEmpty(error)) throw new InvalidOperationException("Cannot preserve prior voxel asset: " + error);
+                        existing = null;
+                    }
                     if (existing != null)
                     {
                         if (existing.sourceMesh != renderer.sharedMesh || existing.mesh == null || existing.resolution != resolution)
@@ -56,6 +72,7 @@ namespace MagicCarpet.Native.Editor
                         continue;
                     }
                     var result = Build(character, renderer, resolution);
+                    result.sourceFingerprint = fingerprint;
                     result.name = name + resolution;
                     AssetDatabase.CreateAsset(result, path);
                     AssetDatabase.AddObjectToAsset(result.mesh, result);

@@ -529,6 +529,7 @@ namespace MagicCarpet.Native
             "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa";
 
         private NativeSession session;
+        private CampaignInputPlayback campaignInputPlayback;
         private NativeCampaignSession campaignSession;
         private const string GameRuntimeFireballAssetSlot =
             "presentation.spell.fireball.projectile_asset";
@@ -2861,11 +2862,27 @@ namespace MagicCarpet.Native
             appliedPitch = ClampToSByte(steeringPitch);
             var elapsedCentiseconds = TakeGameRuntimeElapsedCentiseconds();
             var menuAction = gameRuntimeSourceMenus.PendingAction;
+            campaignInputPlayback ??= new CampaignInputPlayback(Environment.GetCommandLineArgs());
+            var recordedInput = campaignInputPlayback.At(
+                ulong.Parse(identity.session.generation, System.Globalization.CultureInfo.InvariantCulture),
+                ulong.Parse(identity.session.tick, System.Globalization.CultureInfo.InvariantCulture));
+            if (recordedInput != null)
+            {
+                flags = recordedInput.Flags;
+                appliedRoll = (sbyte)recordedInput.roll_axis;
+                appliedPitch = (sbyte)recordedInput.pitch_axis;
+                selectSpell = recordedInput.select_spell;
+                elapsedCentiseconds = recordedInput.elapsed_centiseconds;
+                if (menuAction != null || preferenceRecenterRequested || preferenceFullStopRequested || gameRuntimeRecoverPlayerRequested ||
+                    gameRuntimeSpellAssignmentRequested != null || gameRuntimeSpellMarkRequested != null || gameRuntimeSpellCycleRequested != null)
+                    throw new InvalidOperationException("Live semantic controls cannot be mixed with recorded input playback");
+            }
             var modernStepStart = modernEnvironment?.Ready == true ? ModernCapture.BeginMeasurement() : 0;
             try
             {
                 gameRuntimeCampaignSnapshot = session.GameRuntimeCampaignRenderStep(
-                    appliedRoll, appliedPitch, unchecked((sbyte)flags), 0, 0, selectSpell,
+                    appliedRoll, appliedPitch, unchecked((sbyte)flags),
+                    unchecked((ushort)(recordedInput?.look_yaw ?? 0)), unchecked((ushort)(recordedInput?.look_pitch ?? 0)), selectSpell,
                     preferenceRecenterRequested, preferenceFullStopRequested, gameRuntimeRecoverPlayerRequested, elapsedCentiseconds,
                     gameRuntimeSpellAssignmentRequested, Input.GetKey(KeyCode.O), gameRuntimeRemoveCastleStageRequested,
                     gameRuntimeSpellMarkRequested, gameRuntimeSpellCycleRequested,
@@ -2879,7 +2896,7 @@ namespace MagicCarpet.Native
                 }
             }
             catch (EngineSessionTransport.CommandException exception)
-                when (exception.CommandSubmission && (selectSpell != null || gameRuntimeSpellAssignmentRequested != null ||
+                when (recordedInput == null && exception.CommandSubmission && (selectSpell != null || gameRuntimeSpellAssignmentRequested != null ||
                     gameRuntimeSpellMarkRequested != null || gameRuntimeSpellCycleRequested != null) && exception.Status == NativeSim.ValidationFailed)
             {
                 // Rust rejects an unacquired selection before changing the

@@ -13,11 +13,11 @@ namespace MagicCarpet.Native
     // This scene never opens a campaign, advances Rust or selects a game save.
     public sealed class ModernCharacterReview : MonoBehaviour
     {
-        private ModernCharacterInstance goat, archer, current;
+        private ModernCharacterInstance goat, archer, villager, current;
         private Camera reviewCamera;
         private Material floorMaterial;
         private Texture2D floorTexture;
-        private Renderer[] goatRenderers, archerRenderers;
+        private Renderer[] goatRenderers, archerRenderers, villagerRenderers;
         private Vector3 framingCenter;
         private float framingDistance;
         private bool cameraPositioned;
@@ -31,7 +31,7 @@ namespace MagicCarpet.Native
         private int reportedFramingPhase = int.MinValue;
         private bool singleFrame;
         private GUIStyle title, body, button;
-        private readonly string[] clips = { "Idle", "Walk", "StandingShot", "KneelEnter", "KneelingShot", "KneelExit" };
+        private readonly string[] clips = { "Idle", "Walk", "Run", "Sprint", "StandingShot", "KneelEnter", "KneelingShot", "KneelExit", "Hit", "Death" };
         private ReviewStep[] steps;
         private float duration;
         private sealed class ReviewStep {
@@ -79,8 +79,11 @@ namespace MagicCarpet.Native
             reviewCamera.rect = new Rect(0, .15f, 1, .69f);
             reviewCamera.GetUniversalAdditionalCameraData().renderPostProcessing = false;
             goat = Create("Goat"); archer = Create("Archer");
+            var villagerAsset = Resources.Load<ModernCharacterAsset>("ModernCharacters/Villager/Character");
+            if (villagerAsset != null) villager = new ModernCharacterInstance(villagerAsset, transform);
             goatRenderers = goat.Root.GetComponentsInChildren<Renderer>(true);
             archerRenderers = archer.Root.GetComponentsInChildren<Renderer>(true);
+            villagerRenderers = villager?.Root.GetComponentsInChildren<Renderer>(true);
             SetCharacter(goat);
             steps = new[] {
                 Step(goat, "Idle", "GOAT · idle", 3),
@@ -95,6 +98,13 @@ namespace MagicCarpet.Native
                 Step(archer, "KneelExit", "ARCHER · rise"),
                 Step(archer, "Idle", "ARCHER · recovered stance", 3)
             };
+            if (villager != null) steps = steps.Concat(new[] {
+                Step(villager, "Idle", "VILLAGER · idle", 2),
+                Step(villager, "Walk", "VILLAGER · walk", 4),
+                Step(villager, "Run", "VILLAGER · run", 4),
+                Step(villager, "Hit", "VILLAGER · impact and recover"),
+                Step(villager, "Death", "VILLAGER · fall and settle")
+            }).ToArray();
             duration = steps.Sum(step => step.duration);
             var args = Environment.GetCommandLineArgs();
             var still = Array.IndexOf(args, "-mc-character-still");
@@ -103,7 +113,8 @@ namespace MagicCarpet.Native
                 if (still + 1 >= args.Length) throw new ArgumentException("Still requires character,clip,time,yaw");
                 var values = args[still + 1].Split(',');
                 if (values.Length != 4) throw new ArgumentException("Still requires character,clip,time,yaw");
-                SetCharacter(values[0] == "Goat" ? goat : values[0] == "Archer" ? archer : throw new ArgumentException("Unknown character"));
+                SetCharacter(values[0] == "Goat" ? goat : values[0] == "Archer" ? archer :
+                    values[0] == "Villager" && villager != null ? villager : throw new ArgumentException("Unknown or unavailable character"));
                 current.Sample(values[1], float.Parse(values[2], CultureInfo.InvariantCulture));
                 orbitYaw = float.Parse(values[3], CultureInfo.InvariantCulture);
                 automatic = false; paused = true; singleFrame = true;
@@ -119,7 +130,7 @@ namespace MagicCarpet.Native
                 Time.captureFramerate = 24;
                 StartCoroutine(Capture());
             }
-            Debug.Log($"MC_CHARACTER_REVIEW_READY goat={goat.Asset.height} archer={archer.Asset.height} capture={captureDirectory != null} gameplay=False");
+            Debug.Log($"MC_CHARACTER_REVIEW_READY goat={goat.Asset.height} archer={archer.Asset.height} villager={villager != null} capture={captureDirectory != null} gameplay=False");
         }
 
         private ModernCharacterInstance Create(string name)
@@ -132,6 +143,7 @@ namespace MagicCarpet.Native
         {
             current = value;
             goat.Root.SetActive(current == goat); archer.Root.SetActive(current == archer);
+            if (villager != null) villager.Root.SetActive(current == villager);
             current.Root.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
             current.Play("Idle", 0); current.Tick(0);
             cameraPositioned = false;
@@ -156,6 +168,7 @@ namespace MagicCarpet.Native
             if (Input.GetKeyDown(KeyCode.Space)) paused = !paused;
             if (Input.GetKeyDown(KeyCode.Alpha1)) { automatic = false; SetCharacter(goat); caption = "Goat"; }
             if (Input.GetKeyDown(KeyCode.Alpha2)) { automatic = false; SetCharacter(archer); caption = "Archer"; }
+            if (villager != null && Input.GetKeyDown(KeyCode.Alpha3)) { automatic = false; SetCharacter(villager); caption = "Villager"; }
             if (Input.GetMouseButton(0) && Input.mousePosition.y > Screen.height * .2f)
                 orbitYaw += Input.GetAxisRaw("Mouse X") * 2;
             var dt = paused ? 0 : Time.deltaTime;
@@ -173,12 +186,13 @@ namespace MagicCarpet.Native
             current.Tick(dt);
             if (automatic)
             {
-                if (current.CurrentClip == "Walk")
+                if (current.CurrentClip == "Walk" || current.CurrentClip == "Run")
                 {
                     var local = elapsed - phaseTime;
                     current.Root.transform.rotation = Quaternion.Euler(0, local * (current == goat ? 9 : 6), 0);
                 }
-                current.Root.transform.position += current.Root.transform.forward * (current.Asset.walkSpeed * current.WalkWeight * dt);
+                var speed = current.CurrentClip == "Run" ? current.Asset.runSpeed : current.Asset.walkSpeed * current.WalkWeight;
+                current.Root.transform.position += current.Root.transform.forward * (speed * dt);
             }
             var angleView = automatic ? current.Root.transform.eulerAngles.y + (current == goat ? 38 : 50) : orbitYaw;
             var rotation = Quaternion.Euler(9, angleView + 180, 0);
@@ -188,7 +202,7 @@ namespace MagicCarpet.Native
 
         private void FrameCharacter(Quaternion rotation, float dt)
         {
-            var renderers = current == goat ? goatRenderers : archerRenderers;
+            var renderers = current == goat ? goatRenderers : current == archer ? archerRenderers : villagerRenderers;
             var bounds = new Bounds(); var found = false;
             foreach (var renderer in renderers)
             {
@@ -293,10 +307,14 @@ namespace MagicCarpet.Native
                     Screen.width - 70 * scale, 25 * scale), current.ClipTime, 0, clip.length);
                 if (Mathf.Abs(time - current.ClipTime) > .00001f)
                 { automatic = false; paused = true; current.Sample(current.CurrentClip, time); }
-                if (GUI.Button(new Rect(25 * scale, y, 210 * scale, 70 * scale), "Goat", button)) { automatic = false; SetCharacter(goat); caption = "GOAT"; }
-                if (GUI.Button(new Rect(250 * scale, y, 210 * scale, 70 * scale), "Archer", button)) { automatic = false; SetCharacter(archer); caption = "ARCHER"; }
-                if (GUI.Button(new Rect(475 * scale, y, 240 * scale, 70 * scale), paused ? "Play" : "Pause", button)) paused = !paused;
-                if (GUI.Button(new Rect(730 * scale, y, 280 * scale, 70 * scale), "Full sequence", button)) { automatic = true; paused = false; elapsed = 0; phase = -1; }
+                var actors = villager == null ? new[] { goat, archer } : new[] { goat, archer, villager };
+                var width = (Screen.width - 50 * scale) / (actors.Length + 2);
+                for (var i = 0; i < actors.Length; i++)
+                    if (GUI.Button(new Rect(25 * scale + i * width, y, width - 10 * scale, 70 * scale), actors[i].Asset.name, button))
+                    { automatic = false; SetCharacter(actors[i]); caption = actors[i].Asset.name; }
+                if (GUI.Button(new Rect(25 * scale + actors.Length * width, y, width - 10 * scale, 70 * scale), paused ? "Play" : "Pause", button)) paused = !paused;
+                if (GUI.Button(new Rect(25 * scale + (actors.Length + 1) * width, y, width - 10 * scale, 70 * scale), "Full sequence", button))
+                { automatic = true; paused = false; elapsed = 0; phase = -1; }
                 var visible = clips.Where(name => current.Asset.clips.Any(clip => clip.name == name)).ToArray();
                 for (var i = 0; i < visible.Length; i++)
                     if (GUI.Button(new Rect(25 * scale + i * (Screen.width - 50 * scale) / visible.Length, y + 85 * scale,
@@ -314,7 +332,7 @@ namespace MagicCarpet.Native
 
         private void OnDestroy()
         {
-            goat?.Dispose(); archer?.Dispose();
+            goat?.Dispose(); archer?.Dispose(); villager?.Dispose();
             if (floorMaterial != null) Destroy(floorMaterial);
             if (floorTexture != null) Destroy(floorTexture);
             if (captureDirectory != null) Time.captureFramerate = 0;

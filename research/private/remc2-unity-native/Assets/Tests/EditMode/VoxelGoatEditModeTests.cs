@@ -187,6 +187,7 @@ namespace MagicCarpet.Native.Tests
 
         [TestCase("Goat", 40)]
         [TestCase("Archer", 64)]
+        [TestCase("Villager", 64)]
         public void SwitchingDetailKeepsRigAndSnapshotsCurrentPose(string name, int coarseResolution)
         {
             var source = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
@@ -225,6 +226,7 @@ namespace MagicCarpet.Native.Tests
 
         [TestCase("Goat")]
         [TestCase("Archer")]
+        [TestCase("Villager")]
         public void FineSkinCullsOnlyCoincidentFacesAndKeepsPosedFragments(string name)
         {
             var source = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
@@ -282,7 +284,9 @@ namespace MagicCarpet.Native.Tests
             TestContext.WriteLine($"{name}96 sourceCells={skin.cellColors.Length} fullVertices={skin.cellColors.Length * 24} optimizedVertices={skin.mesh.vertexCount}");
             using var character = new ModernCharacterInstance(source, null);
             using var voxel = new VoxelCharacterSkin(character.Root, skin);
-            var clips = name == "Goat" ? new[] { "Idle", "Walk", "Sprint" } : new[] { "Idle", "StandingShot", "KneelingShot" };
+            var clips = name == "Goat" ? new[] { "Idle", "Walk", "Sprint" }
+                : name == "Villager" ? new[] { "Idle", "Walk", "Run", "Hit", "Death" }
+                : new[] { "Idle", "StandingShot", "KneelingShot" };
             foreach (var clip in clips)
             {
                 character.Sample(clip, Mathf.Min(.35f, source.Clip(clip).length * .5f));
