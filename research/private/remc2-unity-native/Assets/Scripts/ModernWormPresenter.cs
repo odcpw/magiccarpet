@@ -450,9 +450,8 @@ namespace MagicCarpet.Native
             var result = new List<VoxelFragment>(maxFragments); var remainingParts = retainedParts;
             void Append(VoxelCharacterSkin skin)
             {
-                var cells = skin.SnapshotFragments(); var allowance = (maxFragments - result.Count) / remainingParts--;
-                var count = Math.Min(cells.Count, allowance);
-                for (var i = 0; i < count; i++) result.Add(cells[(int)((long)i * cells.Count / count)]);
+                var allowance = (maxFragments - result.Count) / remainingParts--;
+                result.AddRange(skin.SnapshotFragments(allowance));
             }
             try
             {

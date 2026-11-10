@@ -298,6 +298,46 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void FullFamilySnapshotCoversEveryRetainedPartAndRestoresCurrentPoses()
+        {
+            using var worm = Worm();
+            worm.AttachVoxelSkins(headVoxel, segmentVoxel);
+            var poses = Enumerable.Range(0, 16).Select(i => Part((byte)i, (ushort)(20+i))).ToArray();
+            worm.Observe(9000, 25, 1, poses);
+            worm.PlaceHead(new Vector3(0, 4, 0), Quaternion.identity, 3, 1, 2);
+            for (var i = 0; i < 16; i++) Place(worm, (ushort)(20+i), 1, new Vector3((i+1)*12, 4, 0));
+            worm.Render(.12f);
+            worm.Observe(-1, 28, 2, Array.Empty<ModernWormPresenter.SegmentPose>());
+
+            // Move the current roots after retaining the living poses. The
+            // snapshot must sample each retained pose and restore these roots.
+            var headCurrent = new Vector3(2, 20, 3);
+            worm.PlaceHead(headCurrent, Quaternion.Euler(0, 72, 0), 3, 1, 2);
+            var current = new Vector3[16];
+            for (var i = 0; i < 16; i++)
+            {
+                current[i] = new Vector3((i+1)*12, 25, 100);
+                worm.SegmentRoot((ushort)(20+i), 1).transform.position = current[i];
+            }
+            Assert.Throws<ArgumentOutOfRangeException>(() => worm.SnapshotVoxelFragments(16));
+            var fragments = worm.SnapshotVoxelFragments(8192);
+            Assert.That(fragments.Count, Is.GreaterThanOrEqualTo(17).And.LessThanOrEqualTo(8192));
+            var partCounts = new int[17];
+            foreach (var fragment in fragments)
+            {
+                Assert.That(fragment.Position.z, Is.LessThan(10), "A current pose leaked into the retained snapshot");
+                var index = Mathf.RoundToInt(fragment.Position.x / 12f);
+                Assert.That(index, Is.InRange(0, 16));
+                partCounts[index]++;
+            }
+            Assert.That(partCounts.All(count => count > 0), Is.True, "Every retained head and body part contributes");
+            Assert.That(worm.Root.transform.position, Is.EqualTo(headCurrent));
+            for (var i = 0; i < 16; i++)
+                Assert.That(worm.SegmentRoot((ushort)(20+i), 1).transform.position, Is.EqualTo(current[i]));
+            Assert.That(worm.SnapshotVoxelFragments(8192), Is.SameAs(fragments));
+        }
+
+        [Test]
         public void DeathSnapshotRebasesTheWholeFamilyAcrossTheMapSeam()
         {
             using var reference = Worm(); using var wrapped = Worm();
