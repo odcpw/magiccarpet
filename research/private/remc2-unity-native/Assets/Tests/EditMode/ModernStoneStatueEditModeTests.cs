@@ -149,7 +149,10 @@ namespace MagicCarpet.Native.Tests
                     if (pixel.r + pixel.g + pixel.b > background.r + background.g + background.b + 60) litPixels++;
                 }
                 Directory.CreateDirectory(directory);
-                File.WriteAllBytes(Path.Combine(directory, Path.GetFileName(resource) + ".png"), pixels.EncodeToPNG());
+                var path = Path.Combine(directory, Path.GetFileName(resource) + ".png");
+                var encoded = pixels.EncodeToPNG();
+                using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                    output.Write(encoded, 0, encoded.Length);
                 Assert.That(changed, Is.GreaterThan(1000), "review render contains visible geometry");
                 Assert.That(errorPixels, Is.LessThan(10), "review render must not contain the magenta shader error");
                 Assert.That(litPixels, Is.GreaterThan(5000), "review render contains visibly lit stone");
