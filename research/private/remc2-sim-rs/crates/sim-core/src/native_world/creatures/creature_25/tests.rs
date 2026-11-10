@@ -12,7 +12,7 @@ fn configured_player_headers() -> crate::campaign::source_player_result::SourceP
 
 fn level18_shared_player_state() -> crate::native_world::Level2SharedSpellResetSession {
     use crate::native_world::{
-        Level2SharedSpellResetSession, OwnerPackageProfile, OwnerPackageSchema,
+        Level2SharedSpellResetSession, MapType, OwnerPackageProfile, OwnerPackageSchema,
         parse_entities, parse_players, parse_runtime,
     };
     let package = crate::campaign::spec::DecodedCampaignPackage::decode(
@@ -24,7 +24,13 @@ fn level18_shared_player_state() -> crate::native_world::Level2SharedSpellResetS
     let players = parse_players(package.member("players.bin").unwrap(),
         OwnerPackageProfile::Level2, OwnerPackageSchema::V5).unwrap();
     let runtime = parse_runtime(package.member("runtime.bin").unwrap()).unwrap();
-    Level2SharedSpellResetSession::from_campaign_parts(&entities, &players, &runtime)
+    let map_type = match package.campaign_spec.presentation_recipe.map_type.as_str() {
+        "Day" => MapType::Day,
+        "Night" => MapType::Night,
+        "Cave" => MapType::Cave,
+        other => panic!("unrecognized actual Mission18 map type {other}"),
+    };
+    Level2SharedSpellResetSession::from_campaign_parts(&entities, &players, &runtime, map_type)
         .expect("Mission18 actual player and holder records")
 }
 

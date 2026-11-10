@@ -30,3 +30,26 @@ impl PassiveItemDefinition {
         Ok(())
     }
 }
+
+/// The source reward controller's construction health. Its emission cadence
+/// and child construction remain behavior owned by the item family.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RewardJarDefinition {
+    pub max_life: i32,
+}
+
+impl Default for RewardJarDefinition {
+    fn default() -> Self {
+        Self { max_life: 10_000 }
+    }
+}
+
+impl RewardJarDefinition {
+    pub fn validate(self) -> Result<(), String> {
+        if self.max_life <= 0 {
+            return Err("reward jars require positive construction health".into());
+        }
+        Ok(())
+    }
+}

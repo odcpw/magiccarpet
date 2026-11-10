@@ -5527,6 +5527,23 @@ impl Level2EconomyState {
         &self.events
     }
 
+    /// A producer may overwrite its freshly constructed sphere's mana before
+    /// publishing that same birth. Never amend an older or unrelated event.
+    pub(crate) fn update_last_mana_sphere_birth_mana(
+        &mut self,
+        slot: u16,
+        mana: i32,
+    ) -> std::result::Result<(), String> {
+        match self.events.last_mut() {
+            Some(Level2EconomyEvent::ManaSphereSpawned { sphere_id, mana: value, .. })
+                if *sphere_id == u32::from(slot) => {
+                    *value = mana;
+                    Ok(())
+                }
+            _ => Err(format!("sphere {slot} has no matching current birth to amend")),
+        }
+    }
+
     /// Record one source-shaped `PrepareEventSound_6E450` call. The handler
     /// slot and the exact entity argument are separate because house and
     /// switch callbacks prepare sound on an owner/player row rather than on

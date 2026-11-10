@@ -28,7 +28,7 @@ pub use creatures::{
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
 mod items;
-pub use items::PassiveItemDefinition;
+pub use items::{PassiveItemDefinition, RewardJarDefinition};
 mod directional_spells;
 mod disaster_spells;
 pub use directional_spells::{DUEL_TIERS, DirectionalSpellTier, STEAL_MANA_TIERS};
@@ -529,6 +529,7 @@ impl SceneryKind {
 pub enum ItemKind {
     ExperienceScroll,
     PassiveItem,
+    RewardJar,
 }
 
 impl ItemKind {
@@ -537,6 +538,7 @@ impl ItemKind {
         match self {
             Self::ExperienceScroll => "experience_scroll",
             Self::PassiveItem => "passive_item",
+            Self::RewardJar => "reward_jar",
         }
     }
 }
@@ -1153,6 +1155,8 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     passive_item: Option<PassiveItemDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    reward_jar: Option<RewardJarDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -1193,6 +1197,7 @@ impl LevelEntityDefinition {
             dolmen: None,
             static_scenery: None,
             passive_item: None,
+            reward_jar: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -1338,6 +1343,16 @@ impl LevelEntityDefinition {
 
     pub(crate) const fn with_passive_item(mut self, config: PassiveItemDefinition) -> Self {
         self.passive_item = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub const fn reward_jar(&self) -> Option<RewardJarDefinition> {
+        self.reward_jar
+    }
+
+    pub(crate) const fn with_reward_jar(mut self, config: RewardJarDefinition) -> Self {
+        self.reward_jar = Some(config);
         self
     }
 
@@ -1603,6 +1618,26 @@ impl LevelDefinition {
                 (_, Some(_)) => {
                     return Err(format!(
                         "non-passive-item entity {} carries passive item properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.reward_jar) {
+                (LevelEntityKind::Item(ItemKind::RewardJar), Some(config)) => {
+                    config.validate().map_err(|error| {
+                        format!("semantic reward jar {}: {error}", entity.id.as_str())
+                    })?;
+                }
+                (LevelEntityKind::Item(ItemKind::RewardJar), None) => {
+                    return Err(format!(
+                        "semantic reward jar {} has no class properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-reward-jar entity {} carries reward jar properties",
                         entity.id.as_str()
                     ));
                 }
@@ -2176,6 +2211,7 @@ impl LevelDefinition {
                 || candidate.dolmen != original.dolmen
                 || candidate.static_scenery != original.static_scenery
                 || candidate.passive_item != original.passive_item
+                || candidate.reward_jar != original.reward_jar
                 || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(
@@ -2787,7 +2823,11 @@ mod tests {
     #[test]
     fn retained_field_and_mushroom_rules_survive_serialization_and_reject_rebinding() {
         use super::*;
-        use crate::adapter::{ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition, mushroom_entity_definition, passive_item_entity_definition, static_scenery_entity_definition};
+        use crate::adapter::{
+            ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition,
+            mushroom_entity_definition, passive_item_entity_definition,
+            reward_jar_entity_definition, static_scenery_entity_definition,
+        };
         let field = field_entity_definition(
             LevelEntityId::parse("mechanic.transport.test").unwrap(),
             TilePosition { x: 10, y: 20 },
@@ -2825,9 +2865,33 @@ mod tests {
             TilePosition { x: 19, y: 18 }, None, LevelEntityPositionAccess::ReadOnly,
             PassiveItemDefinition::default(),
         );
+        let jar = reward_jar_entity_definition(
+            LevelEntityId::parse("item.reward_jar.test").unwrap(),
+            TilePosition { x: 20, y: 18 },
+            None,
+            LevelEntityPositionAccess::ReadOnly,
+            RewardJarDefinition::default(),
+        );
+        assert_eq!(jar.reward_jar().unwrap().max_life, 10_000);
+        let jar_binding = crate::adapter::REWARD_JAR_SOURCE_BINDING;
+        assert_eq!(
+            (jar_binding.class, jar_binding.model, jar_binding.action),
+            (10, 91, 98)
+        );
         let base = LevelDefinition::new(
-            vec![field.clone(), mushroom.clone(), ballistic.clone(), dolmen.clone(), static_object.clone(), passive.clone()], vec![], vec![],
-        ).unwrap();
+            vec![
+                field.clone(),
+                mushroom.clone(),
+                ballistic.clone(),
+                dolmen.clone(),
+                static_object.clone(),
+                passive.clone(),
+                jar.clone(),
+            ],
+            vec![],
+            vec![],
+        )
+        .unwrap();
         let decoded: LevelDefinition =
             serde_json::from_slice(&serde_json::to_vec(&base).unwrap()).unwrap();
         assert_eq!(decoded, base);
@@ -2850,9 +2914,26 @@ mod tests {
         let mut rebound = decoded.clone();
         rebound.entities[4].static_scenery.as_mut().unwrap().max_life += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
-        let mut rebound = decoded;
-        rebound.entities[5].passive_item.as_mut().unwrap().horizontal_half_extent += 1;
+        let mut rebound = decoded.clone();
+        rebound.entities[5]
+            .passive_item
+            .as_mut()
+            .unwrap()
+            .horizontal_half_extent += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+        let mut rebound = decoded;
+        rebound.entities[6].reward_jar.as_mut().unwrap().max_life += 1;
+        assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+
+        let mut invalid = jar.clone();
+        invalid.reward_jar = None;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = jar.clone();
+        invalid.reward_jar.as_mut().unwrap().max_life = 0;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = jar;
+        invalid.kind = LevelEntityKind::Item(ItemKind::PassiveItem);
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
 
         let mut invalid = passive.clone();
         invalid.passive_item = None;

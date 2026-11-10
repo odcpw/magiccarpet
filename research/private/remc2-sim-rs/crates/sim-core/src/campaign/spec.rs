@@ -2373,32 +2373,55 @@ impl CampaignDefinition {
     }
 
     #[cfg(test)]
-    pub(crate) fn configure_passive_item_source_for_test(
+    pub(crate) fn configure_item_source_for_test(
         &mut self,
         record: u16,
         id: LevelEntityId,
+        kind: ItemKind,
         level: LevelDefinition,
     ) -> std::result::Result<(), String> {
         if level.entities().len() != self.level_definition.entities().len() + 1
-            || self.level_definition.entities().iter().any(|entity| level.entity(entity.id()) != Some(entity))
+            || self
+                .level_definition
+                .entities()
+                .iter()
+                .any(|entity| level.entity(entity.id()) != Some(entity))
             || level.objectives() != self.level_definition.objectives()
-            || level.activation_groups().collect::<Vec<_>>() != self.level_definition.activation_groups().collect::<Vec<_>>()
+            || level.activation_groups().collect::<Vec<_>>()
+                != self
+                    .level_definition
+                    .activation_groups()
+                    .collect::<Vec<_>>()
             || self.item_by_authored_record.contains_key(&record)
             || self.movable_entity_bindings.contains_key(&id)
         {
-            return Err("configured passive item must preserve all original entities, objectives and groups".into());
+            return Err(
+                "configured item must preserve all original entities, objectives and groups".into(),
+            );
         }
         if level.entity(&id).is_none_or(|entity| {
-            entity.kind() != LevelEntityKind::Item(ItemKind::PassiveItem) || entity.passive_item().is_none()
+            entity.kind() != LevelEntityKind::Item(kind)
+                || !match kind {
+                    ItemKind::PassiveItem => entity.passive_item().is_some(),
+                    ItemKind::RewardJar => entity.reward_jar().is_some(),
+                    _ => false,
+                }
         }) {
-            return Err("configured passive item requires its typed definition".into());
+            return Err(
+                "configured item requires its matching passive-item or reward-jar definition"
+                    .into(),
+            );
         }
-        self.item_by_authored_record.insert(record, ItemKind::PassiveItem);
-        self.item_entity_by_authored_record.insert(record, id.clone());
-        self.movable_entity_bindings.insert(id, Mc2EntityRuntimeBinding::AuthoredFeature {
-            authored_record: record,
-            kind: LevelEntityKind::Item(ItemKind::PassiveItem),
-        });
+        self.item_by_authored_record.insert(record, kind);
+        self.item_entity_by_authored_record
+            .insert(record, id.clone());
+        self.movable_entity_bindings.insert(
+            id,
+            Mc2EntityRuntimeBinding::AuthoredFeature {
+                authored_record: record,
+                kind: LevelEntityKind::Item(kind),
+            },
+        );
         self.level_definition = level;
         Ok(())
     }

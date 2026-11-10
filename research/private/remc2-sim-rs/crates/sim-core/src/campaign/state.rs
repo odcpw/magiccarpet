@@ -595,20 +595,26 @@ impl CampaignDefinition {
     }
 
     #[cfg(test)]
-    pub(crate) fn configure_passive_item_source_for_test(
+    pub(crate) fn configure_item_source_for_test(
         &mut self,
         record: u16,
         id: LevelEntityId,
+        kind: ItemKind,
         bindings: SemanticLevelBindings,
     ) -> Result<(), String> {
+        if !matches!(kind, ItemKind::PassiveItem | ItemKind::RewardJar) {
+            return Err(
+                "configured item requires an enabled passive-item or reward-jar kind".into(),
+            );
+        }
         let mut expected = self.clone();
         expected.semantic_level = Some(bindings.level.clone());
-        expected.authored_items.insert(record, ItemKind::PassiveItem);
+        expected.authored_items.insert(record, kind);
         expected.authored_item_entities.insert(record, id);
         let mut configured = self.clone();
         configured.bind_semantic_level(bindings);
         if configured != expected {
-            return Err("configured passive item must preserve every original runtime binding".into());
+            return Err("configured item must preserve every original runtime binding".into());
         }
         *self = configured;
         Ok(())

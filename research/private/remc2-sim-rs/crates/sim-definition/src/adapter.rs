@@ -36,6 +36,20 @@ pub const PASSIVE_ITEM_SOURCE_BINDING: ItemSourceBinding = ItemSourceBinding {
     descriptor: 77,
 };
 
+/// The reward controller has no parent particle binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RewardJarSourceBinding {
+    pub class: u8,
+    pub model: u8,
+    pub action: u8,
+}
+
+pub const REWARD_JAR_SOURCE_BINDING: RewardJarSourceBinding = RewardJarSourceBinding {
+    class: 10,
+    model: 91,
+    action: 98,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SettlementAppearanceBinding {
     pub particle: u16,
@@ -517,6 +531,29 @@ pub const fn passive_item_entity_definition(
         position_access,
         None, None, None, None, None,
     ).with_passive_item(config)
+}
+
+#[must_use]
+pub const fn reward_jar_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: crate::level_definition::RewardJarDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Item(crate::level_definition::ItemKind::RewardJar),
+        position,
+        activation_group,
+        position_access,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .with_reward_jar(config)
 }
 
 #[must_use]

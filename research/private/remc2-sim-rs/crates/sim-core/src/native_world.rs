@@ -558,7 +558,6 @@ mod campaign_shared_families;
 pub(crate) use crate::world::terrain::cave_features;
 mod cave_spells;
 pub(crate) mod disaster_spells;
-pub(crate) mod reward_source;
 pub(crate) mod gravity_field;
 pub(crate) mod field_spells;
 pub(crate) mod summon_army;
@@ -805,6 +804,8 @@ pub struct CampaignEntityPresentation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2SharedSpellResetSession {
     mission_rewards: crate::campaign::rewards::MissionRewards,
+    /// Immutable source isCaveLevel context, bound by ordinary construction.
+    progression_map_type: MapType,
     pickups: Box<[EntitySnapshot]>,
 
     dynamic_pickups: Vec<EntitySnapshot>,
@@ -2942,6 +2943,10 @@ pub struct Level2EconomyState {
 mod level2_authored_slots;
 pub(crate) mod level2_class5;
 mod level2_dynamic_economy;
+#[cfg(test)]
+pub(crate) use level2_dynamic_economy::{
+    PossessionSourceReceipt, start_possession_trace, take_possession_trace,
+};
 mod level2_sessions;
 mod spell_entry;
 #[cfg(test)]

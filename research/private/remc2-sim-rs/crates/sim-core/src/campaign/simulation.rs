@@ -12674,7 +12674,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
-                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
+                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90 | 91
                     )
                     | (11, 0..=44)
                     | (14, 0 | 1 | 2 | 3 | 4 | 5)
@@ -13557,6 +13557,19 @@ impl Mc2Simulation {
                         properties,
                         particle,
                     )?;
+                }
+                (10, 91) => {
+                    let properties = self.session.definition
+                        .item_entity_for_authored_record(feature.index)
+                        .and_then(|id| self.session.definition.semantic_level()?.entity(id)?.reward_jar())
+                        .ok_or_else(|| format!("authored reward jar {} lacks its typed properties", feature.index))?;
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(live.terrain.ground_height(feature.world_position(0)));
+                    if let Some(slot) = crate::world::items::reward_source::construct(
+                        &mut live.economy, &mut live.terrain, position, properties,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
                 }
                 (10, 39) => {
                     let position = feature.world_position(
@@ -15752,7 +15765,7 @@ impl Mc2Simulation {
                                     24 | 25 | 26 | 27 | 28 | 29 | 31 | 72 | 73 | 74 | 75 | 76 | 77 | 79 | 80..=87 | 128..=133 | 135..=141 | 143 | 144..=149 | 151 | 160..=167 | 168..=173 | 175 | 176..=181 | 183..=189 | 191..=205 | 207..=213 | 215 | 216..=221 | 223 | 224..=229 | 231 | 232
                                 )
                                 | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 30 | 31)
-                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96)
+                                | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96 | 98)
                                 | (11, 0..=44)
                                 | (14, 0 | 6 | 7 | 8 | 9)
                         ))
@@ -20376,13 +20389,20 @@ impl Mc2Simulation {
                     self.append_new_economy_events(pass, source_slot);
                 } else if (source.class, source.model, source.action) == (10, 91, 98) {
                     let live = &mut self.session.state.live;
-                    reward_source::step(
+                    crate::world::items::reward_source::step(
                         &mut live.economy,
                         &mut live.terrain,
                         &mut live.shared_spells,
                         player_entity_index,
                         source_slot,
+                        &self.session.definition.presentation.particles,
                     )?;
+                    if source.phase & 1 == 0 {
+                        for family in 0..26 {
+                            publish_spell_progression(live, player_entity_index, family);
+                        }
+                    }
+                    self.append_new_economy_events(pass, source_slot);
                 } else if crate::world::effects::source_kind(
                     self.session.state.live.economy.entities[usize::from(source_slot)].model,
                 )

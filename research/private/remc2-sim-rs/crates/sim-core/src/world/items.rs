@@ -17,6 +17,8 @@ use sim_definition::adapter::PASSIVE_ITEM_SOURCE_BINDING as SOURCE;
 
 pub(crate) use sim_definition::level_definition::PassiveItemDefinition as Definition;
 
+pub(crate) mod reward_source;
+
 /// One authoritative authored scroll or visible portal incarnation. The arena
 /// stores this state; item behavior and construction defaults live here.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

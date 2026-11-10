@@ -1,34 +1,43 @@
 //! Hidden source10/91 rewards, including the final volcano's real product.
 //! Mana spheres enter the existing economy and its ordinary collection path.
 
-use super::{EntitySnapshot, Level2SharedSpellResetSession, SessionTerrain};
+use crate::native_world::{
+    EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain,
+};
 use crate::{FlightWorld, Position, campaign::source_arena::SourceArena};
+use sim_definition::{
+    adapter::REWARD_JAR_SOURCE_BINDING as SOURCE, level_definition::RewardJarDefinition,
+};
 
 /// sub_4EF30: no map insertion and no visible particle.
 pub(crate) fn construct(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     position: Position,
-    owner: u16,
-) -> Option<u16> {
-    let slot = arena.allocate_source_slot_with_terrain(terrain)?;
-    let mut row =
-        super::cave_features::new_event(slot, arena.economy.new_event_rng(slot), position);
-    row.class = 10;
-    row.model = 91;
-    row.record[67] = 10;
-    row.record[68] = 91;
-    row.set_source_action(98);
+    properties: RewardJarDefinition,
+) -> Result<Option<u16>, String> {
+    properties.validate()?;
+    let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
+        return Ok(None);
+    };
+    let mut row = crate::world::terrain::cave_features::new_event(
+        slot,
+        arena.economy.new_event_rng(slot),
+        position,
+    );
+    row.class = SOURCE.class;
+    row.model = SOURCE.model;
+    row.record[67] = SOURCE.class;
+    row.record[68] = SOURCE.model;
+    row.set_source_action(SOURCE.action);
     row.set_subspell_index(200);
     row.set_source_dword_10(0);
-    row.set_max_life(10000);
-    row.set_life(10000);
+    row.set_max_life(properties.max_life);
+    row.set_life(properties.max_life);
     row.set_control_flags((row.control_flags & !9) | 1);
-    row.source_id = owner;
-    row.record[30..32].copy_from_slice(&owner.to_le_bytes());
     arena.economy.source_rng.insert(slot, row.entity_rng);
     arena.entities[usize::from(slot)] = row;
-    Some(slot)
+    Ok(Some(slot))
 }
 
 fn draw(row: &mut EntitySnapshot) -> u16 {
@@ -41,21 +50,17 @@ fn sphere(
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     source: &mut EntitySnapshot,
+    particles: &[ParticleParameter],
 ) -> Result<(), String> {
     let Some(slot) = arena.allocate_source_slot_with_terrain(terrain) else {
         return Ok(());
     };
-    // sub_4FA60's NewEvent and its private two draws precede all five parent
-    // draws. Its standard sphere is then overwritten by sub_32CF0.
-    arena.economy.initialize_death_mana_sphere_at_slot(
-        slot,
-        source.index,
-        source.position,
-        0,
-        0,
-        0,
-        terrain,
-    );
+    // The generic model39 factory selects 50080 -> 500C0. It retains the
+    // child's NewEvent stream; only the five parent draws below advance RNG.
+    arena
+        .economy
+        .initialize_authored_model39(slot, source.index, source.position)
+        .ok_or("reward sphere generic constructor failed")?;
     let speed = (draw(source) % 0x300).max(64) as i16;
     let vertical_velocity = ((draw(source) & 0x7f) + 128) as i16;
     let variant = (draw(source) % 9).wrapping_sub(1);
@@ -67,13 +72,17 @@ fn sphere(
         105 + 8 * [0_u16, 1, 4, 3, 2, 5, 7, 6][usize::from(variant)]
     };
     let yaw = (draw(source) & 0x7ff) as i16;
+    let particle_index = base + u16::from(ordinal);
+    let particle = particles
+        .get(usize::from(particle_index))
+        .ok_or_else(|| format!("reward sphere needs particle {particle_index}"))?;
     let mut velocity = Position::default();
     crate::move_entity(&mut velocity, yaw, 0, speed);
     let mut position = source.position;
     position.z = terrain.ground_height(position).wrapping_add(96);
     let sphere = arena
         .economy
-        .spheres
+        .spheres_mut()
         .iter_mut()
         .find(|sphere| sphere.source_entity_index == slot)
         .ok_or("reward sphere constructor lost its typed carrier")?;
@@ -82,21 +91,20 @@ fn sphere(
     sphere.velocity_y = velocity.y as i16;
     sphere.vertical_velocity = vertical_velocity;
     sphere.yaw = yaw;
+    sphere.roll = yaw;
+    sphere.actual_speed = speed;
     sphere.max_life = 140;
     sphere.life = 140;
     sphere.mana = mana;
     sphere.control_flags |= 0x2000;
-    sphere.particle_index = base + u16::from(ordinal);
-    sphere.collision_yaw = 25 * (i16::from(ordinal) + 1);
-    sphere.collision_pitch = 0;
-    sphere.collision_roll = 0;
+    sphere.particle_index = particle_index;
+    sphere.collision_yaw = (particle.rotation_speed / 2) as i16;
+    sphere.collision_pitch = (particle.speed / 2) as i16;
+    sphere.collision_roll = sphere.collision_pitch;
     sphere.collision_fov = sphere.collision_yaw;
-    if let Some(super::Level2EconomyEvent::ManaSphereSpawned {
-        mana: event_mana, ..
-    }) = arena.economy.events.last_mut()
-    {
-        *event_mana = mana;
-    }
+    arena
+        .economy
+        .update_last_mana_sphere_birth_mana(slot, mana)?;
     // Publish the ordinary sphere's existing map chain, including live terrain
     // heads. Dynamic dispatch/phase and reclaim belong to the sphere owner.
     crate::world::effects::sync_position(arena, terrain, slot, position, true, true)?;
@@ -111,6 +119,7 @@ pub(crate) fn step(
     shared: &mut Level2SharedSpellResetSession,
     mission_player: u16,
     slot: u16,
+    particles: &[ParticleParameter],
 ) -> Result<(), String> {
     let mut source = arena
         .entities
@@ -119,8 +128,11 @@ pub(crate) fn step(
         .cloned()
         .ok_or("reward source callback has no live source91")?;
     for _ in 0..3 {
-        sphere(arena, terrain, &mut source)?;
+        sphere(arena, terrain, &mut source, particles)?;
     }
+    // The generic constructor initially published512; retain the amended
+    // current sphere rows without advancing the owning-pass global counters.
+    arena.economy.refresh_owner_mana_rows();
     if source.phase & 1 == 0 {
         if !shared
             .players()
@@ -129,11 +141,10 @@ pub(crate) fn step(
         {
             return Err("reward source mission player is absent".into());
         }
-        for (family, thresholds) in super::LEVEL2_SPELL_TIER_THRESHOLDS.iter().enumerate() {
-            let threshold = thresholds[2];
-            let sign = threshold >> 31;
-            let amount = (threshold - (sign << 9) + sign) >> 9;
-            shared.award_spell_experience(mission_player, family as u8, amount);
+        for family in 0..26 {
+            let amount = Level2SharedSpellResetSession::source_reward_experience_increment(family)
+                .expect("the source reward table has all 26 families");
+            shared.award_source_spell_experience(arena, mission_player, family, amount)?;
         }
     }
     arena.economy.source_rng.insert(slot, source.entity_rng);
@@ -152,15 +163,34 @@ mod tests {
 
     #[test]
     fn reward_birth_emits_real_spheres_and_even_phase_experience_without_self_expiry() {
-        let mut session = super::super::tests::level_two_campaign_session();
-        let live = &mut session.session.state.live;
+        let package = std::env::var_os("MC_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/mc-cf02-campaign-package-v2-b/qualified-level2")
+            },
+            std::path::PathBuf::from,
+        );
+        let mut session = crate::campaign::CampaignSession::open(
+            package,
+            crate::campaign::spec::CampaignSelection::LEVEL2,
+        )
+        .unwrap();
+        let particles = session
+            .simulation()
+            .session
+            .definition
+            .presentation
+            .particles
+            .clone();
+        let live = &mut session.simulation_mut().campaign_state_mut().live;
         let player = live.core.state.entity_index;
         let slot = construct(
             &mut live.economy,
             &mut live.terrain,
             live.core.state.position,
-            player,
+            RewardJarDefinition::default(),
         )
+        .unwrap()
         .expect("available real source slot");
         let source = &mut live.economy.entities[usize::from(slot)];
         assert_eq!((source.class, source.model, source.action), (10, 91, 98));
@@ -175,7 +205,8 @@ mod tests {
         );
         source.set_phase(0);
         let rng = source.entity_rng;
-        let count = live.economy.spheres.len();
+        let count = live.economy.spheres().len();
+        let global = live.economy.owner_mana_global();
         let xp = live.shared_spells.players()[0].runtime_spell_experience;
         step(
             &mut live.economy,
@@ -183,10 +214,16 @@ mod tests {
             &mut live.shared_spells,
             player,
             slot,
+            &particles,
         )
         .unwrap();
-        assert_eq!(live.economy.spheres.len(), count + 3);
-        for sphere in &live.economy.spheres[count..] {
+        assert_eq!(live.economy.spheres().len(), count + 3);
+        assert_eq!(
+            live.economy.owner_mana_global(),
+            global,
+            "the source owning pass publishes the global mana counter"
+        );
+        for sphere in &live.economy.spheres()[count..] {
             assert_eq!((sphere.max_life, sphere.life), (140, 140));
             assert!(sphere.mana > 0 && sphere.mana <= 2560);
             assert_ne!(sphere.control_flags & 0x2000, 0);
@@ -216,9 +253,10 @@ mod tests {
             &mut live.shared_spells,
             player,
             slot,
+            &particles,
         )
         .unwrap();
-        assert_eq!(live.economy.spheres.len(), count + 6);
+        assert_eq!(live.economy.spheres().len(), count + 6);
         assert_eq!(live.shared_spells.players()[0].runtime_spell_experience, xp);
     }
 }

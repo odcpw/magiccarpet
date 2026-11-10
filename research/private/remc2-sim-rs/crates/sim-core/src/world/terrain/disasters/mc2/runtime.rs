@@ -259,12 +259,18 @@ where
                 |arena, request| damage(arena, DamageRequest::Rectangle(request)),
                 |arena, terrain, request| {
                     if request.alternate {
-                        return Ok(crate::native_world::reward_source::construct(
+                        let child = crate::world::items::reward_source::construct(
                             arena,
                             terrain,
                             request.position,
-                            request.owner,
-                        ));
+                            sim_definition::level_definition::RewardJarDefinition::default(),
+                        )?;
+                        if let Some(slot) = child {
+                            let row = &mut arena.entities[usize::from(slot)];
+                            row.source_id = request.owner;
+                            row.record[30..32].copy_from_slice(&request.owner.to_le_bytes());
+                        }
+                        return Ok(child);
                     }
                     let child = crate::world::effects::allocate(
                         arena,

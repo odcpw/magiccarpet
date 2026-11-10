@@ -123,6 +123,7 @@ mod tests {
             inspection.entities(),
             inspection.players(),
             inspection.runtime(),
+            SessionTerrain::from_inspection(&inspection).map_type(),
         )
         .unwrap();
         let mut economy = Level2EconomyState::from_parts(

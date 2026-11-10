@@ -28,7 +28,7 @@ pub(crate) fn current_castle_entry(
     }
 }
 
-fn status_kind(arena: &SourceArena, slot: u16) -> Option<Kind> {
+pub(crate) fn status_kind(arena: &SourceArena, slot: u16) -> Option<Kind> {
     if let Some(kind) = arena.economy.live_arena_kind(slot) {
         return Some(kind);
     }

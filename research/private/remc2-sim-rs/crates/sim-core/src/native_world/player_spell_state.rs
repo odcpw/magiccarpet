@@ -1,6 +1,7 @@
 //! Source state outside the compact owner-package player record.
 
 use super::*;
+use crate::campaign::source_arena::SourceArena;
 
 /// The Castle callback borrows source records for its two mana scans and
 /// player records for final loss. Keeping those operations in one narrow
@@ -228,6 +229,24 @@ impl Level2SharedSpellResetSession {
             .map(|castle| i32::from(castle.level))
     }
 
+    pub(crate) fn source_spell_profile(
+        &self,
+        arena: &SourceArena,
+        family: u8,
+        tier: u8,
+        owner: u16,
+    ) -> Option<Level2SetSpellProfile> {
+        let stage = Self::castle_stage_for_owner(&arena.economy, owner).or_else(|| {
+            let player = self.players.iter().find(|player| player.entity_index == owner)?;
+            let slot = u16::try_from(i16::from_le_bytes([player.record[42], player.record[43]])).ok()?;
+            arena.entities.get(usize::from(slot))
+                .filter(|row| slot != 0 && row.active && (row.class, row.model) == (3, 2)
+                    && row.source_id == owner)
+                .map(EntitySnapshot::source_dword_10)
+        });
+        self.physical_spell_profile(family, tier, owner, stage)
+    }
+
     pub(super) fn reprice_acquired_castle_holder(
         &mut self,
         economy: &Level2EconomyState,
@@ -359,30 +378,8 @@ impl Mc2LiveState {
         tier: u8,
         owner: u16,
     ) -> Option<Level2SetSpellProfile> {
-        let stage =
-            Level2SharedSpellResetSession::castle_stage_for_owner(&self.economy.economy, owner)
-                .or_else(|| {
-                    let player = self
-                        .shared_spells
-                        .players
-                        .iter()
-                        .find(|player| player.entity_index == owner)?;
-                    let slot =
-                        u16::try_from(i16::from_le_bytes([player.record[42], player.record[43]]))
-                            .ok()?;
-                    self.economy
-                        .entities
-                        .get(usize::from(slot))
-                        .filter(|row| {
-                            slot != 0
-                                && row.active
-                                && (row.class, row.model) == (3, 2)
-                                && row.source_id == owner
-                        })
-                        .map(EntitySnapshot::source_dword_10)
-                });
         self.shared_spells
-            .physical_spell_profile(family, tier, owner, stage)
+            .source_spell_profile(&self.economy, family, tier, owner)
     }
 
     pub(crate) fn set_player_castle_destroyed(&mut self, owner: u16, value: u8) {

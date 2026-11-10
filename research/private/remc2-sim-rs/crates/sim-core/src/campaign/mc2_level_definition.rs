@@ -14,21 +14,21 @@ use sim_definition::adapter::{
     exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
     field_entity_definition, house_construction_entity_definition,
     mc2_authored_terrain_disaster_definition, mc2_effect_definition, mc2_field_definition,
-    mushroom_entity_definition, objective_definition, passive_item_entity_definition, stable_entity_id, stable_objective_id,
-    terrain_disaster_entity_definition,
-    static_scenery_entity_definition,
+    mushroom_entity_definition, objective_definition, passive_item_entity_definition,
+    reward_jar_entity_definition, stable_entity_id, stable_objective_id,
+    static_scenery_entity_definition, terrain_disaster_entity_definition,
 };
 
 use crate::{
     house::HouseParameter,
     level_definition::{
-        BallisticSceneryDefinition, BuildingKind, CaveFeatureDefinition, CaveFeatureKind, CorridorOrientation, CreatureKind, DolmenDefinition,
-        EffectKind, FieldKind, ItemKind, LevelDefinition, LevelEntityId, LevelEntityKind,
-        LevelEntityParameterAccess, LevelEntityPositionAccess, LevelObjectiveConditionAccess,
-        LevelObjectiveId, MechanicKind, MushroomDefinition, ObjectiveCondition, RivalWizardId,
-        SceneryKind, SpellKind, SwitchKind, TerrainDisasterKind, TilePosition,
-        supports_authorable_creature_placement,
-        PassiveItemDefinition, StaticSceneryDefinition,
+        BallisticSceneryDefinition, BuildingKind, CaveFeatureDefinition, CaveFeatureKind,
+        CorridorOrientation, CreatureKind, DolmenDefinition, EffectKind, FieldKind, ItemKind,
+        LevelDefinition, LevelEntityId, LevelEntityKind, LevelEntityParameterAccess,
+        LevelEntityPositionAccess, LevelObjectiveConditionAccess, LevelObjectiveId, MechanicKind,
+        MushroomDefinition, ObjectiveCondition, PassiveItemDefinition, RewardJarDefinition,
+        RivalWizardId, SceneryKind, SpellKind, StaticSceneryDefinition, SwitchKind,
+        TerrainDisasterKind, TilePosition, supports_authorable_creature_placement,
     },
     level1_mission::{AuthoredFeature, parse_authored_features},
 };
@@ -139,6 +139,7 @@ impl Mc2LevelDefinition {
             (14, 2) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveCorridor)),
             (14, 0) => Some(LevelEntityKind::Item(ItemKind::PassiveItem)),
             (14, 5) => Some(LevelEntityKind::Item(ItemKind::ExperienceScroll)),
+            (10, 91) => Some(LevelEntityKind::Item(ItemKind::RewardJar)),
             (11, 0) => Some(LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger)),
             (11, 1) => Some(LevelEntityKind::Switch(SwitchKind::AreaExitTrigger)),
             (11, 2) => Some(LevelEntityKind::Switch(
@@ -931,10 +932,12 @@ impl Mc2LevelDefinition {
 
             // Model0 is the persistent passive item from sub_51530. Model5
             // uses UpdateScroll_59C80 to award experience on collection.
+            // Reward jar10/91 is the persistent emitting item controller.
             // Portals share class14 but are scenery, not inventory items.
             let item_kind = match (feature.kind, feature.subtype) {
                 (14, 0) => Some(ItemKind::PassiveItem),
                 (14, 5) => Some(ItemKind::ExperienceScroll),
+                (10, 91) => Some(ItemKind::RewardJar),
                 _ => None,
             };
             if let Some(kind) = item_kind {
@@ -955,6 +958,13 @@ impl Mc2LevelDefinition {
                     ItemKind::PassiveItem => passive_item_entity_definition(
                         id.clone(), position, activation_group, position_access,
                         PassiveItemDefinition::default(),
+                    ),
+                    ItemKind::RewardJar => reward_jar_entity_definition(
+                        id.clone(),
+                        position,
+                        activation_group,
+                        position_access,
+                        RewardJarDefinition::default(),
                     ),
                     ItemKind::ExperienceScroll => experience_scroll_entity_definition(
                         id.clone(),

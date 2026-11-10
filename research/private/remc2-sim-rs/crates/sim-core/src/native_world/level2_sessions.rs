@@ -220,6 +220,7 @@ mod castle_revival_tests {
             inspection.entities(),
             inspection.players(),
             inspection.runtime(),
+            SessionTerrain::from_inspection(&inspection).map_type(),
         )
         .unwrap();
         let economy = Level2EconomyState::from_parts(
@@ -529,6 +530,7 @@ mod authored_spell_family_tests {
             inspection.entities(),
             inspection.players(),
             inspection.runtime(),
+            SessionTerrain::from_inspection(&inspection).map_type(),
         )
         .unwrap();
         let terrain = SessionTerrain::from_inspection(&inspection);
@@ -831,6 +833,96 @@ mod scroll_progression_tests {
     use super::*;
 
     #[test]
+    fn arena_reward_classifies_current_typed_carriers_before_raw_shadows() {
+        let mut simulation = super::super::tests::level_two_campaign_session();
+        let live = &mut simulation.session.state.live;
+        let owner = live.core.state.entity_index;
+        let slot = live.economy.allocate_source_slot_with_terrain(&mut live.terrain).unwrap();
+        live.economy.economy.initialize_authored_model39(slot, owner, live.core.state.position)
+            .expect("actual ordinary sphere constructor");
+        // Deliberate negative discriminator, not a natural alias producer:
+        // the raw header falsely looks human while the real carrier is39.
+        let raw = &mut live.economy.entities[usize::from(slot)];
+        raw.class = 3;
+        raw.model = 0;
+        raw.record[67] = 3;
+        raw.record[68] = 0;
+        let before = live.shared_spells.players.clone();
+        live.shared_spells.award_source_spell_experience(&mut live.economy, slot, 0, 1).unwrap();
+        assert_eq!(live.shared_spells.players, before, "typed sphere is not a human reward owner");
+
+        let index = live.shared_spells.players.iter().position(|row| row.entity_index == owner).unwrap();
+        assert!(live.shared_spells.players[index].set_enabled_spell_holder_index(2, slot));
+        let before = live.shared_spells.players.clone();
+        let packet = live.economy.entities[usize::from(slot)].clone();
+        let error = live.shared_spells.award_source_spell_experience(
+            &mut live.economy, owner, CASTLE_SPELL_FAMILY, 1,
+        ).unwrap_err();
+        assert!(error.contains("unsupported current typed carrier"), "{error}");
+        assert_eq!(live.shared_spells.players, before);
+        assert_eq!(live.economy.entities[usize::from(slot)], packet);
+    }
+
+    #[test]
+    fn source_rewards_use_current_human_cap_context_and_map_announcement_gate() {
+        let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
+            .expect("qualified source player records");
+        for map_type in [MapType::Day, MapType::Cave] {
+            // Declared progression-boundary controls. The ordinary jar check
+            // owns production and scheduled reward calls, without these edits.
+            let mut shared = Level2SharedSpellResetSession::from_campaign_parts(
+                inspection.entities(),
+                inspection.players(),
+                inspection.runtime(),
+                map_type,
+            ).unwrap();
+            let player = shared.local_player.entity_index;
+            let owner_index = shared.players.iter().position(|row| row.entity_index == player).unwrap();
+            let mut owner = shared.players[owner_index].clone();
+            owner.runtime_spell_experience[2] = 11;
+            owner.record[172..176].copy_from_slice(&11_i32.to_le_bytes());
+            owner.runtime_spell_experience[25] = 0;
+            owner.record[264..268].copy_from_slice(&0_i32.to_le_bytes());
+            owner.persistent_spell_experience[25] = LEVEL2_SPELL_TIER_THRESHOLDS[25][1] - 1;
+            owner.record[160..164].copy_from_slice(&owner.persistent_spell_experience[25].to_le_bytes());
+            owner.spell_unlocked_levels[25] = 0;
+            owner.record[527] = 0;
+            owner.spell_enabled_flags[25] = 1;
+            owner.record[475] = 1;
+            shared.players[owner_index] = owner.clone();
+            shared.local_player = owner.clone();
+            shared.spell_experience = owner.runtime_spell_experience;
+            shared.persistent_spell_experience = owner.persistent_spell_experience;
+            shared.spell_levels = owner.spell_unlocked_levels;
+            let before = shared.pickup_events.len();
+            shared.award_spell_experience(player, 25, 1);
+            let owner = &shared.players[owner_index];
+            assert_eq!(owner.runtime_spell_experience[25], 1);
+            assert_eq!(owner.spell_unlocked_levels[25], 1);
+            assert_eq!(owner.runtime_spell_experience[2], 7);
+            assert_eq!(&owner.record[172..176], &7_i32.to_le_bytes());
+            assert_eq!(shared.spell_experience[2], 7, "same cap in local projection");
+            let announced = shared.pickup_events[before..].iter().any(|event|
+                matches!(event, Level2SharedSpellEvent::AbilityImproved { source_family: 25, tier: 1 }));
+            assert_eq!(announced, map_type == MapType::Cave);
+
+            // The internal revival call retains its explicit uncapped context.
+            shared.players[owner_index].runtime_spell_experience[2] = 11;
+            shared.players[owner_index].record[172..176].copy_from_slice(&11_i32.to_le_bytes());
+            shared.update_spell_experience(player, 0, 0, false, false);
+            assert_eq!(shared.players[owner_index].runtime_spell_experience[2], 11);
+
+            let before = shared.players[owner_index].clone();
+            let header = shared.player_entities.iter_mut().find(|row| row.index == player).unwrap();
+            header.model = 1;
+            header.record[68] = 1;
+            shared.award_spell_experience(player, 0, 3);
+            shared.award_spell_experience(0, 0, 3);
+            assert_eq!(shared.players[owner_index], before, "sub6D8B0 requires non-null class3/model0");
+        }
+    }
+
+    #[test]
     fn scroll_recomputes_disabled_rows_without_awarding_them_or_announcing_unowned_spells() {
         let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
             .expect("qualified source player records");
@@ -838,6 +930,7 @@ mod scroll_progression_tests {
             inspection.entities(),
             inspection.players(),
             inspection.runtime(),
+            SessionTerrain::from_inspection(&inspection).map_type(),
         )
         .unwrap();
         for is_cave in [false, true] {
@@ -951,6 +1044,15 @@ mod scroll_progression_tests {
 }
 
 impl Level2SharedSpellResetSession {
+    /// sub_32CF0's signed third-tier/512 amount, narrowed through the source
+    /// sub_6D8B0 signed-word argument before adding to runtime experience.
+    pub(crate) fn source_reward_experience_increment(family: u8) -> Option<i32> {
+        let threshold = LEVEL2_SPELL_TIER_THRESHOLDS.get(usize::from(family))?[2];
+        let sign = threshold >> 31;
+        let amount = threshold.wrapping_sub(sign << 9).wrapping_add(sign) >> 9;
+        Some(i32::from(amount as i16))
+    }
+
     #[cfg(test)]
     pub(crate) fn source_spell_tier_thresholds_for_test(family: usize) -> Option<[i32; 3]> {
         LEVEL2_SPELL_TIER_THRESHOLDS.get(family).copied()
@@ -1238,6 +1340,7 @@ impl Level2SharedSpellResetSession {
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         runtime: &RuntimeSnapshot,
+        map_type: MapType,
     ) -> Result<Self> {
         let local_player = players
             .get(usize::from(runtime.local_player_slot))
@@ -1404,6 +1507,7 @@ impl Level2SharedSpellResetSession {
         };
         Ok(Self {
             mission_rewards: crate::campaign::rewards::MissionRewards::Enabled,
+            progression_map_type: map_type,
             pickups,
             dynamic_pickups: Vec::new(),
             authored_pickup_slots: BTreeMap::new(),
@@ -1444,7 +1548,7 @@ impl Level2SharedSpellResetSession {
     }
 
     pub(super) fn from_parts_with_starting_spells(
-        _terrain: SessionTerrain,
+        terrain: SessionTerrain,
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         presentation: &PresentationSelectors,
@@ -1613,6 +1717,7 @@ impl Level2SharedSpellResetSession {
             .into_boxed_slice();
         let mut session = Self {
             mission_rewards: crate::campaign::rewards::MissionRewards::Enabled,
+            progression_map_type: terrain.map_type(),
             pickups,
 
             dynamic_pickups: Vec::new(),
@@ -2006,7 +2111,7 @@ impl Level2SharedSpellResetSession {
             self.players[owner_index] = self.local_player.clone();
         }
         for family in 0..PLAYER_SPELL_COUNT {
-            self.update_spell_experience(actor.index, family as u8, 0, false);
+            self.update_spell_experience(actor.index, family as u8, 0, false, cap_castle_experience);
         }
         for (hand, offset) in [
             (self.local_player.left_spell_slot_raw, 558),
@@ -3859,10 +3964,90 @@ impl Level2SharedSpellResetSession {
         family: u8,
         amount: i32,
     ) {
-        if !self.mission_rewards.allows_experience() {
+        if !self.mission_rewards.allows_experience()
+            || parent_entity_index == 0
+            || !self.player_entities.iter().any(|entity| {
+                entity.index == parent_entity_index && entity.class == 3 && entity.model == 0
+            })
+        {
             return;
         }
-        self.update_spell_experience(parent_entity_index, family, amount, true);
+        self.update_spell_experience(parent_entity_index, family, amount, true, true);
+    }
+
+    /// The ordinary sub_6D8B0 entry when the caller owns the real arena. Its
+    /// Castle visit refreshes the fixed SpellEnabled[2] address after XP add
+    /// and before sub_6D9C0's cap/tier visit. Other families use that same
+    /// canonical progression transition without a physical holder write.
+    pub(crate) fn award_source_spell_experience(
+        &mut self,
+        arena: &mut crate::campaign::source_arena::SourceArena,
+        parent: u16,
+        family: u8,
+        amount: i32,
+    ) -> std::result::Result<(), String> {
+        if !self.mission_rewards.allows_experience() || parent == 0 {
+            return Ok(());
+        }
+        let context = super::source_target::Context { spells: Some(self), ..Default::default() };
+        let Some(actor) = super::source_target::status_parent(arena, context, parent)?
+            .filter(|row| row.class == 3 && row.model == 0)
+        else {
+            return Ok(());
+        };
+        self.sync_player_entity_from_authority(&actor);
+        if family != CASTLE_SPELL_FAMILY {
+            self.award_spell_experience(parent, family, amount);
+            return Ok(());
+        }
+        let owner_index = self.players.iter().position(|row| row.entity_index == parent)
+            .ok_or("source spell reward human has no player state")?;
+        let castle = usize::from(CASTLE_SPELL_FAMILY);
+        let owner = &self.players[owner_index];
+        let slot = owner.enabled_spell_holders[castle];
+        let tier = level2_applied_tier(owner.family_selected_tiers[castle])
+            .ok_or("source Castle reward selected a negative tier")?;
+        // Never accept a typed carrier's stale raw shadow as a spell packet.
+        // No ordinary jar producer into other typed kinds is established;
+        // their general SetSpell mutation remains explicit unfinished scope.
+        if let Some(kind) = super::source_target::status_kind(arena, slot)
+            && !matches!(kind, Level2DynamicArenaKind::SpellPickup | Level2DynamicArenaKind::SpellReplacement)
+        {
+            return Err(format!("source Castle reward SetSpell has unsupported current typed carrier {kind:?} at {slot}"));
+        }
+        let mut holder = if slot == 0 {
+            arena.entities.first().cloned()
+        } else {
+            super::source_target::status_parent(
+                arena,
+                super::source_target::Context { spells: Some(self), ..Default::default() },
+                slot,
+            )?
+        }.ok_or("source Castle reward holder address has no current packet")?;
+        if usize::from(holder.model) >= PLAYER_SPELL_COUNT {
+            return Err("source Castle reward holder has no admitted spell table".into());
+        }
+        let owner = &mut self.players[owner_index];
+        owner.runtime_spell_experience[castle] =
+            owner.runtime_spell_experience[castle].wrapping_add(amount);
+        owner.record[164 + castle * 4..168 + castle * 4]
+            .copy_from_slice(&owner.runtime_spell_experience[castle].to_le_bytes());
+        if holder.record[50..52] != [0, 0] {
+            holder.record[48..50].copy_from_slice(&u16::from(tier + 1).to_le_bytes());
+        } else {
+            let physical_parent = holder.source_spell_parent_entity_index();
+            let profile = self.source_spell_profile(arena, holder.model, tier, physical_parent)
+                .ok_or("source Castle reward holder profile is unavailable")?;
+            holder.apply_nyphur_spell_profile(profile, tier);
+        }
+        arena.entities[usize::from(slot)] = holder.clone();
+        self.sync_pickup_from_authority(&holder);
+        self.sync_typed_spell_profile_from_holder(slot);
+        self.sync_player_entity_from_authority(&holder);
+        // The addition is already committed above, so this common visit adds
+        // zero and applies the source cap, tier/clamp and announcement order.
+        self.update_spell_experience(parent, family, 0, true, true);
+        Ok(())
     }
 
     pub(in crate::native_world) fn update_spell_experience(
@@ -3871,6 +4056,7 @@ impl Level2SharedSpellResetSession {
         family: u8,
         amount: i32,
         announce_improvement: bool,
+        cap_castle_experience: bool,
     ) {
         let family = usize::from(family);
         assert!(family < PLAYER_SPELL_COUNT, "spell family is in range");
@@ -3881,13 +4067,23 @@ impl Level2SharedSpellResetSession {
             .expect("spell holder parent remains in the source player rows");
         let mut owner = self.players[owner_index].clone();
         let previous_unlocked = owner.spell_unlocked_levels[family];
-        let runtime = owner.runtime_spell_experience[family].wrapping_add(amount);
+        owner.runtime_spell_experience[family] =
+            owner.runtime_spell_experience[family].wrapping_add(amount);
+        // sub_6D9C0 caps Castle before calculating the requested family's
+        // total, including visits to other families. Revival supplies its
+        // existing explicit WINDY/normal cap context; ordinary rewards cap.
+        let castle = usize::from(CASTLE_SPELL_FAMILY);
+        if cap_castle_experience {
+            owner.runtime_spell_experience[castle] = owner.runtime_spell_experience[castle].min(7);
+            owner.record[164 + castle * 4..168 + castle * 4]
+                .copy_from_slice(&owner.runtime_spell_experience[castle].to_le_bytes());
+        }
+        let runtime = owner.runtime_spell_experience[family];
         let total = owner.persistent_spell_experience[family].wrapping_add(runtime);
         let unlocked = LEVEL2_SPELL_TIER_THRESHOLDS[family]
             .iter()
             .rposition(|threshold| total >= *threshold)
             .unwrap_or(0) as i8;
-        owner.runtime_spell_experience[family] = runtime;
         owner.spell_unlocked_levels[family] = unlocked;
         owner.record[164 + family * std::mem::size_of::<i32>()
             ..164 + (family + 1) * std::mem::size_of::<i32>()]
@@ -3898,12 +4094,13 @@ impl Level2SharedSpellResetSession {
             owner.record[528 + family] = unlocked.cast_unsigned();
         }
         let family_enabled =
-            owner.spell_enabled_flags[family] != 0 || owner.enabled_spell_holders[family] != 0;
+            (owner.spell_enabled_flags[family] != 0 || owner.enabled_spell_holders[family] != 0)
+                && (self.progression_map_type == MapType::Cave || family != 25);
         let owner_is_local = owner.entity_index == self.local_player.entity_index;
         self.players[owner_index] = owner.clone();
         if owner_is_local {
-            self.spell_experience[family] = runtime;
-            self.spell_levels[family] = unlocked;
+            self.spell_experience = owner.runtime_spell_experience;
+            self.spell_levels = owner.spell_unlocked_levels;
             self.local_player = owner;
         }
         if announce_improvement && unlocked != previous_unlocked && family_enabled {

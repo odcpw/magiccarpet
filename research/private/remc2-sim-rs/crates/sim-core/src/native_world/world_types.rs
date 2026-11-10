@@ -5449,6 +5449,7 @@ impl NativeWorldInspection {
             &self.entities,
             &self.players,
             &self.runtime,
+            self.metadata.map_type,
         )?;
         if let Some(learned_spells) = learned_spells {
             let wizard = definition

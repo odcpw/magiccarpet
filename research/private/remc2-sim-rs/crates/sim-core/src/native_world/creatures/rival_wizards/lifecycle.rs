@@ -563,7 +563,7 @@ fn reinitialize_rival(
     }
     shared.players[owner_index] = player;
     for family in 0..PLAYER_SPELL_COUNT {
-        shared.update_spell_experience(actor.index, family as u8, 0, false);
+        shared.update_spell_experience(actor.index, family as u8, 0, false, true);
     }
     let player = shared.players[owner_index].clone();
     for holder in &mut holders {
