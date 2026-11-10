@@ -378,19 +378,24 @@ namespace MagicCarpet.Native
             renderedCamera = camera;
             var dt = Time.deltaTime;
             var followed = Followed();
-            if(Voxels.VoxelModernWorld.Requested)GeometryUtility.CalculateFrustumPlanes(camera,voxelViewPlanes);
+            GeometryUtility.CalculateFrustumPlanes(camera,voxelViewPlanes);
             foreach (var actor in actors.Values)
             {
                 if (Voxels.VoxelModernWorld.Requested && actor.VoxelDeath.Exploded)
                 { actor.Root.SetActive(false); continue; }
                 var sampled = actor.RenderedFrame == Time.frameCount;
                 var position = Interpolated(actor);
-                // The voxel workbench camera can be far from the native player.
-                // Continue observing every native actor, but don't evaluate/IK
-                // distant presentation rigs that cannot contribute to this view.
-                if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying && actor!=followed &&
-                    (Delta(camera.transform.position,position).sqrMagnitude>14400 ||
-                     !GeometryUtility.TestPlanesAABB(voxelViewPlanes,new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,new Vector3(12,16,12)))))
+                // Keep observing every occupant. Manual PlayableGraph updates
+                // bypass Animator visibility culling, so don't evaluate rigs
+                // that cannot contribute to this view. Modern's large margin
+                // retains nearby offscreen shadow casters and has no distance
+                // cutoff. Deaths continue even when the camera turns away.
+                var voxelMode = Voxels.VoxelModernWorld.Requested;
+                if(!actor.VoxelIsDying && actor!=followed &&
+                    (voxelMode && Delta(camera.transform.position,position).sqrMagnitude>14400 ||
+                     (voxelMode || actor.Villager != null) && !GeometryUtility.TestPlanesAABB(voxelViewPlanes,
+                        new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,
+                            voxelMode ? new Vector3(12,16,12) : new Vector3(64,24,64)))))
                 { actor.Root.SetActive(false); actor.WasRendered = false; continue; }
                 if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying)SetVoxelDetail(actor,actor==followed?0:Delta(camera.transform.position,position).magnitude);
                 Place(actor, position, InterpolatedYaw(actor), camera);
