@@ -499,23 +499,142 @@ mod castle_revival_tests {
     }
 
     #[test]
-    fn castle_revival_rejects_a_living_actor_before_mutating_inventory_or_arena() {
-        let (mut shared, economy) = fixture();
-        let actor = shared.player_entity.clone();
-        let player = shared.local_player.clone();
-        let rng = economy.global_rng;
-        let slots = economy.free_slots.clone();
-        let (mut arena, mut terrain) = revival_arena(economy);
-        assert!(
-            shared
-                .revive_local_player_at_castle(&mut arena, &mut terrain, 0, actor.position, true)
-                .is_err()
-        );
-        assert_eq!(shared.player_entity, actor);
-        assert_eq!(shared.local_player, player);
-        assert_eq!(arena.economy.global_rng, rng);
-        assert_eq!(arena.economy.free_slots, slots);
+    fn castle_revival_rejects_invalid_local_actor_before_mutating_inventory_or_arena() {
+        // Source5C950 has no life gate: input cases1/3/15 can reinitialize
+        // a living human. These are the actual invalid local-owner contracts,
+        // distinct from the AI/death entry and the null/new-actor factory.
+        for invalid in ["inactive", "ai", "identity", "missing-player"] {
+            let (mut shared, economy) = fixture();
+            match invalid {
+                "inactive" => {
+                    shared.player_entity.active = false;
+                    shared.player_entity.record[2] = 0;
+                }
+                "ai" => shared.local_player.is_ai = true,
+                "identity" => {
+                    shared.local_player.entity_index = shared.player_entity.index.wrapping_add(1);
+                }
+                "missing-player" => {
+                    let owner = shared.player_entity.index;
+                    shared.players = shared.players.iter()
+                        .filter(|player| player.entity_index != owner)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice();
+                }
+                _ => unreachable!(),
+            }
+            let before_shared = shared.clone();
+            let actor = shared.player_entity.clone();
+            let player = shared.local_player.clone();
+            let rng = economy.global_rng;
+            let slots = economy.free_slots.clone();
+            let (mut arena, mut terrain) = revival_arena(economy);
+            let before_arena = arena.clone();
+            let before_terrain = terrain.clone();
+            assert!(
+                shared
+                    .revive_local_player_at_castle(&mut arena, &mut terrain, 0, actor.position, true)
+                    .is_err(),
+                "invalid local revival admission: {invalid}"
+            );
+            assert_eq!(shared.player_entity, actor, "actor: {invalid}");
+            assert_eq!(shared.local_player, player, "player: {invalid}");
+            assert_eq!(arena.economy.global_rng, rng, "RNG: {invalid}");
+            assert_eq!(arena.economy.free_slots, slots, "allocator: {invalid}");
+            assert_eq!(shared, before_shared, "all shared spell state: {invalid}");
+            assert_eq!(arena, before_arena, "all arena state: {invalid}");
+            assert_eq!(terrain, before_terrain, "all terrain state: {invalid}");
+        }
     }
+
+    #[test]
+    fn castle_revival_admits_a_living_human_and_preserves_same_actor_progress() {
+        let (mut shared, mut economy) = fixture();
+        shared
+            .materialize_carried_spell_families(&mut economy, &[(0, 0)])
+            .unwrap();
+        let mut actor = shared.player_entity.clone();
+        assert_eq!((actor.class, actor.model), (3, 0));
+        actor.set_life(1); // Positive life is legal for source input15, not death-only.
+        shared.sync_player_entity_from_authority(&actor);
+        shared.local_player.persistent_spell_experience[0] = 12_000;
+        shared.local_player.runtime_spell_experience[0] = 123;
+        shared.local_player.family_selected_tiers[0] = 1;
+        let before = shared.local_player.clone();
+        let old_holder = shared
+            .pickup(before.enabled_spell_holders[0])
+            .unwrap()
+            .clone();
+        let expected_families = before
+            .enabled_spell_holders
+            .iter()
+            .enumerate()
+            .filter_map(|(family, holder)| (*holder != 0).then_some(family as u8))
+            .collect::<Vec<_>>();
+        let (mut arena, mut terrain) = revival_arena(economy);
+        let actor_handle = arena.handle(actor.index).unwrap();
+        let holders = shared
+            .revive_local_player_at_castle(&mut arena, &mut terrain, 0, actor.position, true)
+            .unwrap();
+        let current = shared.player_entity();
+        assert_eq!(
+            (current.index, current.source_id, current.entity_rng),
+            (actor.index, actor.source_id, actor.entity_rng)
+        );
+        assert_eq!(arena.handle(actor.index), Some(actor_handle));
+        assert_eq!(
+            (
+                current.class,
+                current.model,
+                current.action,
+                current.position
+            ),
+            (3, 0, 0, actor.position)
+        );
+        assert_eq!(
+            (
+                current.max_life,
+                current.life,
+                current.max_mana,
+                current.mana
+            ),
+            (10_000, 10_000, 1_000, 1_000)
+        );
+        assert_eq!(
+            holders.iter().map(|row| row.model).collect::<Vec<_>>(),
+            expected_families
+        );
+        let fireball = holders.iter().find(|row| row.model == 0).unwrap();
+        assert_ne!(fireball.index, old_holder.index);
+        assert_eq!(fireball.source_spell_parent_entity_index(), actor.index);
+        assert_eq!(fireball.level_gate, 1);
+        assert_eq!(shared.pickup(old_holder.index), Some(&old_holder));
+        let owner = shared.local_player();
+        assert_eq!(owner.enabled_spell_holders[0], fireball.index);
+        assert_eq!(
+            owner.persistent_spell_experience,
+            before.persistent_spell_experience
+        );
+        let mut expected_runtime = before.runtime_spell_experience;
+        expected_runtime[2] = expected_runtime[2].min(7);
+        assert_eq!(owner.runtime_spell_experience, expected_runtime);
+        assert_eq!(
+            (
+                owner.spell_unlocked_levels[0],
+                owner.family_selected_tiers[0]
+            ),
+            (2, 1)
+        );
+        assert_eq!(owner.banishment_state_0x006, before.banishment_state_0x006);
+        assert_eq!(owner.spell_enabled_flags, before.spell_enabled_flags);
+        assert_eq!(owner.acquired_spell_flags, before.acquired_spell_flags);
+        assert!(
+            shared.pending_effects.is_empty(),
+            "source6DB50(0,0) is quiet"
+        );
+    }
+
 }
 
 #[cfg(test)]
@@ -2007,6 +2126,8 @@ impl Level2SharedSpellResetSession {
     }
 
     /// Existing-human-actor branch of sub_5C950/sub_5CF40 (Space action 15).
+    /// Source input cases 1/3/15 admit this actor regardless of current life;
+    /// the death-only predicate belongs to the separate action-3 AI caller.
     /// The caller validates the linked Castle, runs sub_49F90 and relocates
     /// the actor's map-chain entry BEFORE these holder births, then publishes
     /// the new holders and actor into the source arena. No
