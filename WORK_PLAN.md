@@ -555,15 +555,15 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current connected capability is `mc-bhq.7`: replace the existing paid Spider
-check's forced prior objective with actual mana collection/deposit crossing
-the original40-percent threshold, then observe reset6 and all six living
-Spiders through the normal scheduler. CrimsonForge owns the focused existing
-Spider check; Root CopperMountain owns required shared joins and serialized
-verification/delivery. Prior bank/carry/pose controls must be explicit; funding
-alone is not earned mana. Keep the full route and dependencies open. Do not
-replace the real six-death/exit acceptance with this bounded prefix or create
-an automated mission-combat script.
+Current connected capability is `mc-bhq.11`: actual Experience Scroll
+production, overlap, source XP/tier/audio consumers and cleanup. CrimsonForge
+owns the item path and real Level2 group5 producer; Root CopperMountain owns
+the shared reward correction in `native_world/level2_sessions.rs` and serialized
+checks/push/install. Preserve original rows/objectives and use declared fixed
+player controls, without forced groups, phases, RNG or NPC health. The passive
+item checkpoint below is installed; do not restart it. Full `.11`, `.7` and
+their dependencies stay open. Original presentation is this thread's consumer;
+Modern/Voxel work remains separate.
 
 2026-11-10: the connected prefix now PASSES on current source C3
 (`generated/objective-20261110-integration/candidate-3`, 5.644s). Four held
@@ -601,10 +601,30 @@ Canonical map/loading/NightSpire terrain/HUD smoke passes with the matching
 mapped library, one portal/zero retries; owned processes stopped. This is not
 a native Firefly/Level4 encounter, human combat, FPS, hardware audio, complete
 missions or old-save proof. Modern/Voxel Presentation remains untouched.
-Next integrate this earned prefix into the existing paid Spider encounter,
-removing its forced prior objective while retaining its web/contact/recovery,
-fatal paid Meteor, mana ownership/deposit and reclaim gates. The six ordinary
-deaths/exit/full objective-language acceptance remain open.
+The complete connected Spider check now passes58.513s at proof `7695ab29`:
+earned prefix -> six original Spiders -> paid Lightning/authored Meteor pulses
+-> real Web/recovery/melee -> fatal paid Meteor -> ownership/deposit/reclaim.
+Configured six-death absence passes6.182s; this is not six public kills or a
+complete mission. The proof is cfg(test)-only, with initial resources/poses,
+post-earned Castle200k and later empty-store controls explicit. Evidence:
+`generated/objective-20261110-integration/candidate-9`.
+
+Installed passive item checkpoint: runtime `8a471f1f`, native
+`3b1ce93f46e29d7153e5edc1ed225c15698b523791c3975b9ceadf66bf430a34`,
+pushed metadata `e56c4615`. Canonical `world::items` owns source14/0
+construction/properties and its empty Update callback. Actual Level4 switch124/
+group37/corridor195 plus one declared dormant source-language row verifies
+constructor/target/particle77, changed floor with retained itemZ, queued contact,
+common hide/reclaim and two normal neutral resets (13.420s). No shipped14/0
+occurrence or positive stage-pointer overwrite is claimed. Source/registry,
+definition and workspace checks pass; fresh bounded source/gate review found
+no remaining concrete defect in this path. Strict Rig native passes238.077s;
+all662 inputs and worker/returned bytes match. Native-only Original refresh
+`build-7b0t4tzx` and470Rust/200UI/142player-file hashes qualify. Root viewed normal
+canonical map/loading/NightSpire scene/HUD with mapped matching native,
+one portal/zero retries, then stopped owned smoke. This is not a native item
+encounter, human combat/FPS/audio, full missions or old saves. Evidence:
+`generated/passive-item-20261110-integration/candidate-2`.
 
 The first prefix candidate (C2 under
 `generated/objective-20261109-integration`) typechecks and builds on Rig, but
