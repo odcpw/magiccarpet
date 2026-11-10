@@ -655,9 +655,40 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current installed Original checkpoint is runtime `385c63a8`, native
-`59d4c1d9d230fbaa34ed25a9f59210019783c9e41b3d7ead0eb40740d56e88e0`.
-Oliver's three sequential steps are delivered as bounded checkpoints: recovery
+Current installed Original checkpoint is runtime `58e7b65c`, native
+`f76aff6bdee1de80ead42c110c8f373b09cc0e5ea39896997aae5f9d276c95d5`.
+Oliver authorizes the next four priorities in order: deliver current shared
+fixes, retained playable secret entry, source-correct return/carry, then actual
+campaign round trips/save/revisit across all five associations. These priorities
+do not represent the entire remaining port or waive existing acceptance.
+
+Step1 is delivered: stage-pulse/Castle-phase and additive character observations
+are committed source, independently checked on frozen470-input58e7. Actual
+group7→villagers, Castle holder phase, three character ABI consumers, source
+order and configured secret entry pass. The original recorded public Castle
+failure at3497 advances through3498 and120more ticks to3618 without error;
+finalhash4fe8a46afa27fa80. Rig/returned release matches all662 inputs. New native
+headers required genuine full Original rebuild build-kl71jtms; no PInvoke
+migration was needed because Original does not use the additive character API.
+Installed470Rust/200UI/142player files and both native hashes match. Root viewed
+canonical map/loading/NightSpire terrain/HUD, oneportal/zero retries, stopped
+owned smoke. This is launch/load, not human combat/FPS/hardware audio/full
+missions/old-save proof. Evidence: generated/shared-refresh-20261110-integration/
+candidate-1. Eighteen superseded owned test executables (~1.7GB) were removed;
+source/logs/current marker proof/caches/player remain, without archival copies.
+
+Active team: Root CopperMountain serializes shared integration/Cargo/Unity/
+push/install; CrimsonForge owns retained portal-content admission and local
+entry/return; GoldElk owns actual outer return/statistics/save/transport consumers;
+the Original integration owner prepares the matching private-client consumer.
+The capacity-stopped Terra worker remains stopped. No new infrastructure.
+Retained variant admission uses existing WorkspaceStore plus exact unchanged
+base package identity, not rewritten/resealed owner bytes. Work in progress is
+not in installed58e7: a confirmed secret-result statistics loss on return/save
+and missing retained workspace→installed resolver/native input joins are being
+implemented. Keep original reset/hash/root/association/phase gates intact.
+
+The previous three sequential steps were delivered as bounded checkpoints: recovery
 admission reconciliation, configured real secret entry, then the reproduced
 possession ownership-transfer failure. Modern/Voxel remains separate.
 
@@ -714,10 +745,8 @@ wholefile critical findings, none on added lines; legacy formatting debt remains
 Four superseded recovery/portal test executables were removed (~650MB); current
 proofs, logs, source, caches and installed player remain. No archive was made.
 
-Next concrete shared blocker: the separate Trader owner reproduced a group7
-pulse consumed twice before28 villagers see it. GentleBadger coordinates that
-owner's immutable narrow goat-prepass repair; Root has not qualified/installed
-it. Keep it separate from this completed three-step checkpoint.
+The prior group7 pulse-loss and Castle holder phase blockers are resolved in
+the current58e7/f76 Original checkpoint above. Do not restart their diagnostics.
 
 Full `.11`, `.6qf.6`, `.6qf.4`, `.7`, `.6qf.2`, `.bhq.10` and dependencies stay
 open. Retained native variant, vanilla portal mission, outer return/carry and
