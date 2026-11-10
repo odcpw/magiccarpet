@@ -144,7 +144,9 @@ def action(rig, name, keys):
     a=bpy.data.actions.new(name);a.use_fake_user=True;rig.animation_data_create();rig.animation_data.action=a
     for frame,spread in keys:
         for side,sign in [('L',1),('R',-1)]:
-            bone=rig.pose.bones['Mandible.'+side];bone.rotation_mode='XYZ';bone.rotation_euler=(0,0,sign*spread);bone.keyframe_insert(data_path='rotation_euler',frame=frame,group=bone.name)
+            # Bone local Y follows world Z in the bind pose. Swing about that
+            # axis so the mandibles close horizontally as in TMAP 34–37.
+            bone=rig.pose.bones['Mandible.'+side];bone.rotation_mode='XYZ';bone.rotation_euler=(0,sign*spread,0);bone.keyframe_insert(data_path='rotation_euler',frame=frame,group=bone.name)
     return a
 
 
@@ -454,7 +456,7 @@ def main():
         rig.animation_data.action = bpy.data.actions[name]
         for frame in range(1, end + 1):
             bpy.context.scene.frame_set(frame)
-            timeline_keys.append((cursor + frame - 1, rig.pose.bones['Mandible.L'].rotation_euler.z))
+            timeline_keys.append((cursor + frame - 1, rig.pose.bones['Mandible.L'].rotation_euler.y))
         cursor += end
     action(rig,'GameTimeline',timeline_keys)
     bpy.context.scene.frame_start = 1
