@@ -6,6 +6,7 @@ Reference: private original Day/Night TMAP 279..286, six wing frames each.
 """
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -236,12 +237,51 @@ def package(output):
     print('FIREFLY_PACKAGE_OK',target,flush=True)
 
 
+def normalize_for_unity(source, target):
+    """Prepare the existing importer's relative paths and required Idle name."""
+    target.mkdir(parents=True, exist_ok=False)
+    for name in ('Firefly.fbx', 'Firefly.samples.bin'):
+        shutil.copyfile(source / name, target / name)
+    shutil.copytree(source / 'pbr/textures', target / 'textures')
+    manifest = json.loads((source / 'Firefly.clips.json').read_text())
+    report = json.loads((source / 'Firefly.export.json').read_text())
+    for data in (manifest, report):
+        for clip in data['clips']:
+            if clip['name'] == 'Hover':
+                clip['name'] = 'Idle'
+    for proof in report['surfaceProof']:
+        if proof['clip'] == 'Hover':
+            proof['clip'] = 'Idle'
+    if manifest['clips'] != report['clips']:
+        raise ValueError('Clip manifests disagree')
+    for material in manifest['materials']:
+        name = material['name']
+        material['opacity'] = manifest['opacity'].get(name, 1.0)
+        emission = manifest['emission'].get(name, {})
+        material['emissionStrength'] = emission.get('strength', 0)
+        material['emissionColor'] = emission.get('linearColor', [0, 0, 0, 1])
+    manifest['minBoneWeight'] = 1e-7
+    manifest.pop('materialDirectory', None)
+    (target / 'Firefly.clips.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    (target / 'Firefly.export.json').write_text(json.dumps(report, indent=2) + '\n')
+    (target / 'README.md').write_text(
+        'Import-normalized copy: Hover is Idle because ModernCharacterInstance initializes Idle. '
+        'Source frames, geometry and samples are identical. Paths are relative to this folder. '
+        'Material entries expose opacity, emissionStrength and emissionColor; the existing '
+        'importer ignores those fields until extended.\n')
+    print('FIREFLY_UNITY_PACKAGE_OK', target, flush=True)
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True)
-    parser.add_argument('--package',action='store_true')
+    group=parser.add_mutually_exclusive_group()
+    group.add_argument('--package',action='store_true')
+    group.add_argument('--unity-output',type=Path,help='Create a fresh Unity importer package at this path')
     args=parser.parse_args(sys.argv[sys.argv.index('--')+1:])
     output=args.output.resolve()
-    if args.package:
+    if args.unity_output:
+        normalize_for_unity(output/'portable',args.unity_output.resolve())
+    elif args.package:
         bpy.ops.wm.open_mainfile(filepath=str(output/'Firefly.blend'))
         package(output)
     else:
