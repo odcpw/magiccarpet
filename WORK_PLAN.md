@@ -109,8 +109,21 @@ source speed18/action111 yields median 8.30627 world units/s, so Run is the
 principal live gait at the measured costume scale. Walk-only cloth weights lose
 visible folds/contact in Run; AmberCave is testing one jointly trained weight
 set and source-rate transform keys. Keep accepted Walk immutable for comparison.
-Run/Idle/Hit/Death garment behavior, final Unity frames, Voxel and gameplay/install
-still remain open.
+The corrected shared-weight Walk/Run master is now frozen at SHA256
+0a24b6ddc552cd078960e3db76b9df95f43dc2e0b72262c764fab8e7281cbf56.
+Root reviewed stride/flight/worst-contact frames and independently reran upper
+preparation, joined FBX and actual Unity conformance: all ten sampled poses
+match within 0.1 mm in both directions. Evidence is under
+generated/villager-modern-20261109/gait-unity-conformance/. Small covered-body/
+natural-fold contact residuals remain disclosed. Twelve retained goat/archer
+Unity animation checks pass after the pending import/review-source changes.
+AmberCave owns cloth_skinning.py and the remaining action integration; TopazReef
+now owns villager_cloth.py and finite Idle/Hit/Death targets. Full-costume Death
+auditing found upper robe/trousers/headwear/shoe floor penetrations despite
+the bare-human proof. Root authorizes correcting only the authored Death pose
+for dressed support before simulating it; other four body actions stay exact.
+Idle/Hit/Death garment behavior, final Unity frames, Voxel and gameplay/install
+still remain open. No new Villager player is installed.
 Oracle GPT-6 Pro source review is retained under generated/villager-robe-oracle-20261109/;
 Root verified the unusual rig layout (Spine02 is lower, Spine is upper), and
 TopazReef corrected garment weights, the collar discontinuity, a 36 mm imported
@@ -125,6 +138,19 @@ separate; a final game export may join disconnected components on one rig
 without fusing garment to skin or shoes. First establish a believable worn
 robe in motion; a simulated cache, solver import or training error alone does
 not finish the character or qualify runtime performance. No paid 3D services.
+
+The final dressed master now supersedes the partial checks above. Cloth and
+costume source is committed in `0f89d761`, `2aa530fa` and `205ce5a2`; Root reran
+the three-step cloth recipe and independently reproduced all 264 Death target
+poses exactly. Final joined game skin: 224 bones, 26,204 face-referenced points,
+26,931 Unity split vertices. All five actions pass the actual Unity surface
+gate at 25 poses within the unchanged 0.1 mm tolerance. Four masked non-face
+anchors are explicitly counted/excluded; a 1 mm rendered-point negative check
+still fails. Thirteen villager tests and 48 Goat/Archer/Voxel tests pass. The
+actual 3090 Vulkan importer produced 64/96 villager skins (8,393/20,045 cells).
+Root owns pending shared presentation/input wiring and is building the private
+player. Actual Level 1 moving/death frames, Voxel breakup, performance and
+qualified installation remain open. No new Villager player is installed.
 
 ## Shared binary presentation delivery — 2026-11-08
 

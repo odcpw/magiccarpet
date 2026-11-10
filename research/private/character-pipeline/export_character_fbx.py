@@ -18,10 +18,16 @@ from mathutils.kdtree import KDTree
 
 
 def world_vertices(obj):
+    """Sample face-referenced surface points, excluding nonrendered anchors.
+
+    A clothing Mask can leave isolated vertices. Unity drops those points;
+    they have no polygon surface and must not count as lost visible geometry.
+    """
     evaluated = obj.evaluated_get(bpy.context.evaluated_depsgraph_get())
     mesh = evaluated.to_mesh()
     try:
-        return [evaluated.matrix_world @ vertex.co for vertex in mesh.vertices]
+        referenced = {index for polygon in mesh.polygons for index in polygon.vertices}
+        return [evaluated.matrix_world @ mesh.vertices[index].co for index in sorted(referenced)]
     finally:
         evaluated.to_mesh_clear()
 
@@ -50,6 +56,8 @@ def bake_deform_rig(rig_name, mesh_names, action_names):
     # unweighted fitting helpers in the editable base, hidden by Mask modifiers.
     rest_meshes = {obj.name:bpy.data.meshes.new_from_object(obj.evaluated_get(deps),
                    preserve_all_data_layers=True, depsgraph=deps) for obj in meshes}
+    non_surface_vertices = {name:len(mesh.vertices)-len({index for polygon in mesh.polygons for index in polygon.vertices})
+                            for name,mesh in rest_meshes.items()}
     deform_names = {bone.name for bone in source.data.bones if bone.use_deform}
     names = {obj.vertex_groups[group.group].name for obj in meshes for vertex in rest_meshes[obj.name].vertices
              for group in vertex.groups if group.weight > 0 and obj.vertex_groups[group.group].name in deform_names}
@@ -186,6 +194,7 @@ def bake_deform_rig(rig_name, mesh_names, action_names):
     scene.frame_set(1)
     return [target, *exported], {'schema':'mc-game-skin-export/v1', 'fps':scene.render.fps/scene.render.fps_base, 'clips':clips,
                                  'deformBones':len(bones), 'bindSurfaceProof':bind_proof,
+                                 'nonSurfaceVerticesExcluded':non_surface_vertices,
                                  'maxRestBoneMatrixError':rest_matrix_error, 'surfaceProof':proof,
                                  '_expectedSamples':expected_samples}
 

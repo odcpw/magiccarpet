@@ -85,6 +85,29 @@ inventing surface detail, normals or baked AO. Linked inputs and unsupported
 volume/displacement/emission are rejected rather than silently flattened.
 Use `extract_packed` for existing source texture maps.
 
+The final shared five-action garment bake now supersedes the partial Walk
+results above. See [CLOTH_SKINNING.md](CLOTH_SKINNING.md) for the reproducible
+48-bone fixed-weight fit. `villager_cloth.py` prepares the finite Death and
+guarded shoe-mask/Run-support merges; `dressed_villager.py --prepare-upper`
+prepares the separate bodice. The editable anatomical body and clothing remain
+separate. The game export has 224 weighted bones, 26,204 face-referenced surface
+points and 26,931 Unity split vertices. A mask can leave isolated non-face
+vertices: these do not render and Unity drops them. The exporter now explicitly
+counts/excludes those points from its surface comparison without removing
+anatomy or changing the 0.1 mm consumer tolerance. This costume has four such
+points. Actual Unity matches all 25 sampled poses across Idle/Walk/Run/Hit/Death;
+a deliberate 1 mm displacement of a rendered point fails the same gate.
+
+Root self-verification is under
+`../generated/villager-modern-20261109/runtime-character/`: positive and negative
+`unity-face-*-proof.json`, 13 passing villager EditMode checks, and 48 passing
+retained Goat/Archer/Voxel checks. The real 3090 Vulkan importer generated
+8,393-cell and 20,045-cell villager skins at 64/96 height resolution. Cloth
+simulation is offline; both game styles use normal bone playback. Small
+covered-body/fold fitting residuals remain; this is not an exact cloth solver.
+Live Level 1 frames, Voxel death breakup, performance and installation are still
+pending; no new villager player is installed yet.
+
 ## Local TRELLIS villager comparison — 2026-11-09
 
 Oliver requested local TRELLIS and a comparison with the handmade Villager241,
