@@ -156,6 +156,45 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void NativeHeightUsesBakedIdleSurfaceAndKeepsEachNativeBottom()
+        {
+            using var worm = Worm();
+            worm.Observe(9000, 25, 1, new[] { Part(0, 20) });
+            var headBottom = new Vector3(5, 3, -7); const float headHeight = 180f / 64f;
+            var headCenter = headBottom - Vector3.up * (headHeight * worm.HeadBottomToHeight);
+            worm.PlaceHead(headCenter, ModernWormPresenter.SourceRotation(321),
+                headHeight * worm.HeadWidthToHeight, headHeight, headHeight * worm.HeadDepthToHeight);
+            var bodyBottom = new Vector3(11, 4, 8); const float bodyHeight = 150f / 64f;
+            var bodyCenter = bodyBottom - Vector3.up * (bodyHeight * worm.SegmentBottomToHeight);
+            Assert.That(worm.PlaceSegment(20, 1, bodyCenter, ModernWormPresenter.SourceRotation(830),
+                bodyHeight * worm.SegmentWidthToHeight, bodyHeight, bodyHeight * worm.SegmentDepthToHeight), Is.True);
+
+            void CheckIdleSurface(GameObject root, Vector3 expectedBottom, float expectedHeight)
+            {
+                var renderer = root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+                var mesh = new Mesh();
+                try
+                {
+                    renderer.BakeMesh(mesh, true);
+                    Assert.That(mesh.vertexCount, Is.GreaterThan(0));
+                    var low = float.PositiveInfinity; var high = float.NegativeInfinity;
+                    foreach (var vertex in mesh.vertices)
+                    {
+                        var world = renderer.transform.TransformPoint(vertex);
+                        low = Mathf.Min(low, world.y); high = Mathf.Max(high, world.y);
+                    }
+                    Assert.That(high-low, Is.EqualTo(expectedHeight).Within(.001f), "Baked Idle surface must match native visual height");
+                    Assert.That(low, Is.EqualTo(expectedBottom.y).Within(.001f), "Native Z represents the visual bottom");
+                    Assert.That(root.transform.position.x, Is.EqualTo(expectedBottom.x).Within(.0001f));
+                    Assert.That(root.transform.position.z, Is.EqualTo(expectedBottom.z).Within(.0001f));
+                }
+                finally { UnityEngine.Object.DestroyImmediate(mesh); }
+            }
+            CheckIdleSurface(worm.Root, headBottom, headHeight);
+            CheckIdleSurface(worm.SegmentRoot(20, 1), bodyBottom, bodyHeight);
+        }
+
+        [Test]
         public void MonotonicObservationRejectsForeignOrReusedChildIdentity()
         {
             using var worm = Worm();

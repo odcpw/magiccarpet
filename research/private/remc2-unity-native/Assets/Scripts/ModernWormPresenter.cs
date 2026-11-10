@@ -225,18 +225,29 @@ namespace MagicCarpet.Native
         {
             var renderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
             if (renderers.Length != 1) throw new InvalidOperationException("Worm part requires exactly one skinned mesh");
-            var renderer = renderers[0]; var bounds = renderer.localBounds;
+            var renderer = renderers[0];
             var low = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
             var high = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
-            for (var x = -1; x <= 1; x += 2) for (var y = -1; y <= 1; y += 2) for (var z = -1; z <= 1; z += 2)
+            // Imported renderer.localBounds can use the FBX authoring axes
+            // rather than the converted skinned surface axes. Measure Idle0
+            // once at construction, in the actual character root frame.
+            var baked = new Mesh();
+            try
             {
-                var corner = bounds.center + Vector3.Scale(bounds.extents, new Vector3(x, y, z));
-                var local = root.transform.InverseTransformPoint(renderer.transform.TransformPoint(corner));
-                low = Vector3.Min(low, local); high = Vector3.Max(high, local);
+                renderer.BakeMesh(baked, true);
+                var vertices = baked.vertices;
+                if (vertices.Length == 0) throw new InvalidOperationException("Worm Idle mesh is empty");
+                foreach (var vertex in vertices)
+                {
+                    var local = root.transform.InverseTransformPoint(renderer.transform.TransformPoint(vertex));
+                    if (!Finite(local)) throw new InvalidOperationException("Worm Idle mesh has non-finite vertices");
+                    low = Vector3.Min(low, local); high = Vector3.Max(high, local);
+                }
             }
+            finally { Destroy(baked); }
             var size = high - low;
             if (!Positive(size.x) || !Positive(size.y) || !Positive(size.z))
-                throw new InvalidOperationException("Worm mesh has invalid imported bounds");
+                throw new InvalidOperationException("Worm Idle mesh has invalid dimensions");
             return new ArtSize(size.x, size.y, size.z, low.y);
         }
 
