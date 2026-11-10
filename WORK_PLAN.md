@@ -655,21 +655,47 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current installed world checkpoint is the reward jar below. Continue original
-`mc-bhq.11` exit/secret-entry/carry acceptance and concrete source admission
-gaps; do not restart installed scroll, passive item or jar paths. Bounded source
-inspection found no missing ordinary-exit join: Level1 rows132/137, human
-action12, result10 and the authoritative flow consumer are connected. The
-existing earned-Level1 runtime test is long/adaptive and has NOT been run;
-Oliver's no automated playthrough rule still applies. Do not substitute a
-forced objective/group completion and call it earned exit proof. Secret entry
-and return qualification remain open. An existing living-actor revival negative
-fails identically on the prior installed Scroll C6 and current Jar C2; its
-source/admission contract needs bounded reconciliation, not assertion removal.
-CrimsonForge and StormyFalcon completed their frozen handbacks; Root
-CopperMountain owns serialized integration, checks, push and installation.
-Keep full `.11`, `.7`, `.6qf.2`, `.bhq.10` and their dependencies open.
-Modern/Voxel remains in its separate thread.
+Current installed world checkpoint remains the reward jar below. Oliver's next
+three sequential steps are now: source recovery admission, real secret entry,
+then the reproduced possession ownership-transfer failure. The latter takes
+priority over further secret return/carry qualification because an ordinary
+Level7 session currently stops at tick1139. Modern/Voxel remains separate.
+
+Recovery reconciliation is committed/pushed `d16c0607`: source input1/3/15
+admits an existing living human. Runtime behavior was already correct. The
+false death-only oracle is replaced by four real invalid-owner/nonmutation
+cases and a living same-actor/progression countercontrol; module6/6 and existing
+public recovery pass. Do not add a health gate or restart this diagnosis.
+
+Secret-entry source is committed/pushed `c34836d0`: distinct SecretPortal
+binding14/4/9 and dynamic dispatch now reach the existing339 constructor,
+world::portals sequence and guarded result0x1A. The owner module is a direct
+move, with no old-path wrapper. Whole current source4 plus a declared pair75/76
+group6→4 and two legal outside pose/aim controls reaches actual136, full source
+cadence/sequence/audio/DTO, following reclaim/reuse and once-only public result
+(17.431s). All other rows/positions/objectives/bindings stay intact. The current
+MCI3/v4 Level5 package has identical authored bytes to the old source4 package;
+the old v2 package lacks initialCastleBUILD1 and was not admitted by fallback.
+Adjacent ordinary exit had an identical baseline palette oracle failure; source
+PaletteChanges consumes5→10→0 while black remains installed. The strengthened
+check observes those modes and actual all-black768-byte palette. Frozen C4
+ordinary/entry checks pass13.750s/17.461s. Its whole-workspace capture refused
+concurrent presentation ABI edits; separate exact Rig/core-artifact evidence
+qualifies only that frozen core candidate, not current native/whole workspace.
+Final matching compilation/installation is still pending the third batch.
+
+Next integrate the one existing Trader worker's marker-transfer repair under
+Root CopperMountain: sub36AE0 must read current shared spell records and update
+current typed/raw word94, including action78 republishing. This is missing
+consumer context, not proof of an expired/missing Whirlwind replacement. The
+worker owns its isolated two-file candidate; Root owns canonical shared joins,
+serialized Cargo/RCH, commit/push and Original installation. Coordinate a stable
+shared Rust/header window with GentleBadger before expensive final stages.
+
+Full `.11`, `.6qf.6`, `.6qf.4`, `.7`, `.6qf.2`, `.bhq.10` and dependencies stay
+open. Retained native variant, vanilla portal mission, outer return/carry and
+all-five gameplay remain unqualified. The long/adaptive earned-Level1 runtime
+test has NOT been run: no bots, forced objectives or group-completion proof.
 
 Installed reward-jar checkpoint: runtime `d70dc599`, native
 `97584d162e0a5909c9d4aa4dacc0c1bf998f662a3d0f3fcc4adbd2f7990d3058`.
