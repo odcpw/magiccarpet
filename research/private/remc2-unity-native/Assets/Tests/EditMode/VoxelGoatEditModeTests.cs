@@ -278,15 +278,18 @@ namespace MagicCarpet.Native.Tests
             AssertPoseGrid(character.Root, fine, skin.SnapshotFragments());
         }
 
-        [TestCase("Goat")]
-        [TestCase("Archer")]
-        [TestCase("Villager")]
-        public void FineSkinCullsOnlyCoincidentFacesAndKeepsPosedFragments(string name)
+        [TestCase("Goat", 96)]
+        [TestCase("Archer", 96)]
+        [TestCase("Villager", 96)]
+        [TestCase("Firefly", 64)]
+        [TestCase("WormHead", 64)]
+        [TestCase("WormSegment", 64)]
+        public void FineSkinCullsOnlyCoincidentFacesAndKeepsPosedFragments(string name, int resolution)
         {
             var source = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
-            var skin = Resources.Load<VoxelGoatAsset>("ModernCharacters/" + name + "/Voxels/" + name + "96");
+            var skin = Resources.Load<VoxelGoatAsset>("ModernCharacters/" + name + "/Voxels/" + name + resolution);
             Assert.That(source, Is.Not.Null); Assert.That(skin, Is.Not.Null);
-            Assert.That(skin.meshFormat, Is.EqualTo(1), "Run VoxelGoatImport.Prepare to optimize the backed-up 96 asset");
+            Assert.That(skin.meshFormat, Is.EqualTo(1), "Run VoxelGoatImport.Prepare to optimize the preserved derived asset");
             Assert.That(skin.cellFaceMasks.Length, Is.EqualTo(skin.cellColors.Length));
             Assert.That(skin.cellCenters.Length, Is.EqualTo(skin.cellColors.Length));
             Assert.That(skin.cellWeights.Length, Is.EqualTo(skin.cellColors.Length));
@@ -335,10 +338,11 @@ namespace MagicCarpet.Native.Tests
             Assert.That(shared.Count, Is.GreaterThan(0));
             Assert.That(skin.mesh.vertexCount, Is.EqualTo(faceCount * 4));
             Assert.That(skin.mesh.vertexCount, Is.LessThan(skin.cellColors.Length * 24));
-            TestContext.WriteLine($"{name}96 sourceCells={skin.cellColors.Length} fullVertices={skin.cellColors.Length * 24} optimizedVertices={skin.mesh.vertexCount}");
+            TestContext.WriteLine($"{name}{resolution} sourceCells={skin.cellColors.Length} fullVertices={skin.cellColors.Length * 24} optimizedVertices={skin.mesh.vertexCount}");
             using var character = new ModernCharacterInstance(source, null);
             using var voxel = new VoxelCharacterSkin(character.Root, skin);
-            var clips = name == "Goat" ? new[] { "Idle", "Walk", "Sprint" }
+            var clips = ModernCreatureAssets.TryGet(name, out var creature) ? creature.Clips
+                : name == "Goat" ? new[] { "Idle", "Walk", "Sprint" }
                 : name == "Villager" ? new[] { "Idle", "Walk", "Run", "Hit", "Death" }
                 : new[] { "Idle", "StandingShot", "KneelingShot" };
             foreach (var clip in clips)

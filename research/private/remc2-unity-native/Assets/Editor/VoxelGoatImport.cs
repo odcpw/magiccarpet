@@ -47,6 +47,11 @@ namespace MagicCarpet.Native.Editor
                 var renderer = name == "Archer" ? skins.Single(skin => skin.name == "char1") : skins.Single();
                 foreach (var resolution in resolutions)
                 {
+                    // Multipart creatures render many copies of their 64-cell
+                    // skins. Retain every occupied cell for fracture, but omit
+                    // coincident interior faces with identical skin transforms.
+                    // Accepted legacy character meshes keep their current form.
+                    var optimize = resolution == 96 || resolution == 64 && ModernCreatureAssets.ContainsResource(name);
                     var path = $"{folder}/{name}{resolution}.asset";
                     var existing = AssetDatabase.LoadAssetAtPath<VoxelGoatAsset>(path);
                     if (existing != null && (ModernVillagerAppearances.ContainsResource(name) || !string.IsNullOrEmpty(existing.sourceFingerprint)) &&
@@ -66,7 +71,7 @@ namespace MagicCarpet.Native.Editor
                     {
                         if (existing.sourceMesh != renderer.sharedMesh || existing.mesh == null || existing.resolution != resolution)
                             throw new InvalidOperationException("Existing generated asset differs from approved source: " + path);
-                        if (resolution == 96 && (existing.meshFormat == 0 ||
+                        if (optimize && (existing.meshFormat == 0 ||
                             existing.meshFormat == 1 && existing.mesh.vertexCount != CountFaceVertices(existing.cellFaceMasks)))
                             Optimize(existing);
                         else Debug.Log("Retaining existing voxel character " + path);
@@ -77,7 +82,7 @@ namespace MagicCarpet.Native.Editor
                     result.name = name + resolution;
                     AssetDatabase.CreateAsset(result, path);
                     AssetDatabase.AddObjectToAsset(result.mesh, result);
-                    if (resolution == 96) Optimize(result);
+                    if (optimize) Optimize(result);
                     EditorUtility.SetDirty(result);
                     Debug.Log($"Voxel {name} {resolution}: {result.cellColors.Length} cells, {result.cellSize} local units");
                 }
