@@ -25714,7 +25714,24 @@ impl Mc2Simulation {
             });
             return false;
         }
-        true
+        // The active holder and the ordinary pickup share this NewEvent
+        // carrier. Keep its phase current while action6 owns the callback;
+        // cleanup can return it to action7 in this same visit.
+        let remains_live = self
+            .session
+            .state
+            .live
+            .economy
+            .step_spell_pickup_slot(source_slot);
+        if let Err(error) = self.commit_imported_spell_source_projection(source_slot) {
+            self.push_dispatch_effect(Mc2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: error.to_string(),
+            });
+            return false;
+        }
+        remains_live
     }
 
     fn step_dynamic_speed_holder(&mut self, pass: u8, source_slot: u16) -> bool {
@@ -30907,6 +30924,59 @@ impl Mc2Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_castle_holder_preserves_phase_when_returning_to_ordinary_pickup() {
+        let mut campaign = CampaignSession::open(
+            level_one_descriptor_fixture_path(), CampaignSelection::LEVEL1,
+        ).expect("real Level1 source package");
+        let session = campaign.simulation_mut();
+        // Controlled source group prerequisite, not an earned playthrough.
+        // Use the real authored pickup constructor and acquisition callback.
+        session.consume_authored_group(0, 0, 1).unwrap();
+        let source = *session.economy().spell_pickups().iter()
+            .find(|row| row.family == CASTLE_SPELL_FAMILY && row.active)
+            .expect("group1 Castle jar");
+        let slot = source.source_entity_index;
+        let player = session.state.entity_index;
+        session.set_level2_entity_position(player, source.position).unwrap();
+        for _ in 0..8 {
+            assert!(session.step_level2_dynamic_spell_pickup(0, slot, player, source.position, &[0]));
+            if session.shared_spells().pickup(slot).unwrap().action == 6 { break; }
+        }
+        assert_eq!(session.shared_spells().pickup(slot).unwrap().action, 6);
+        {
+            let holder = session.session.state.live.shared_spells.pickup_mut(slot).unwrap();
+            // A running, nonfresh active pulse exercises upkeep without
+            // producing an unrelated Castle flyer in this focused test.
+            holder.active_value = 1;
+            holder.record[50..52].copy_from_slice(&1_i16.to_le_bytes());
+            holder.activation_value = 64;
+            holder.mana_regen = 0;
+        }
+        let mut phase = session.shared_spells().pickup(slot).unwrap().phase;
+        for _ in 0..10 {
+            assert!(session.step_dynamic_castle_holder(0, slot));
+            phase = phase.wrapping_add(1);
+            let live = &session.session.state.live;
+            let shared = live.shared_spells.pickup(slot).unwrap();
+            let cursor = live.economy.spell_pickups().iter()
+                .find(|row| row.source_entity_index == slot).unwrap();
+            assert_eq!(shared.phase, phase);
+            assert_eq!(cursor.phase, phase, "active holder must not leave an old cursor phase");
+            assert_eq!(live.economy.entities[usize::from(slot)].phase, phase);
+        }
+        // Player-death cleanup returns this same carrier to ordinary action7.
+        // Exercise its next callback with the acquisition position out of range.
+        session.session.state.live.shared_spells.pickup_mut(slot).unwrap().set_source_action(7);
+        assert!(session.session.state.live.economy.sync_spell_pickup_projection(slot, 7, source.position));
+        let away = Position { x: source.position.x.wrapping_add(4096), ..source.position };
+        assert!(session.step_level2_dynamic_spell_pickup(0, slot, player, away, &[0]));
+        phase = phase.wrapping_add(1);
+        assert_eq!(session.shared_spells().pickup(slot).unwrap().phase, phase);
+        assert_eq!(session.economy().spell_pickups().iter().find(|row| row.source_entity_index == slot).unwrap().phase, phase);
+        assert_eq!(session.entities()[usize::from(slot)].phase, phase);
+    }
 
     #[test]
     fn configured_static_scenery_rows_use_generic_construction_schedule_and_reclaim() {

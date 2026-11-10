@@ -636,7 +636,7 @@ pub extern "C" fn mc_native_campaign_character_states_copy_v2(
                         source_id,
                         model: source.model,
                         action: source.action,
-                        phase: source.phase,
+                        phase: source.source_byte_3e,
                         active: u8::from(source.drawing_enabled),
                         x: source.position.x,
                         y: source.position.y,
@@ -687,7 +687,7 @@ pub extern "C" fn mc_native_campaign_character_states_copy_v2(
                         // not merely an equal recycled numeric parent address.
                         let mut previous = head.source_entity_index;
                         let mut next = head.word_0x34;
-                        for index in 0..16 {
+                        for index in 0_u16..16 {
                             let Some(part) =
                                 economy
                                     .authored_class5_model3_children()
@@ -697,7 +697,7 @@ pub extern "C" fn mc_native_campaign_character_states_copy_v2(
                                             && part.source_entity_index == next
                                             && part.word_0x32 == previous
                                             && part.parent_entity_index == head.source_entity_index
-                                            && part.source_byte_3e == index
+                                            && part.particle_index == 89 + index
                                             && part.root_authored_index == child.root_authored_index
                                             && slots.get(&part.source_entity_index)
                                                 == Some(&Kind::AuthoredClass5Model3Child)
@@ -714,7 +714,10 @@ pub extern "C" fn mc_native_campaign_character_states_copy_v2(
                         false
                     })
                     .map(|s| s.entity_id);
-                if child.render_pitch <= 0 || child.render_fov <= 0 || child.source_byte_3e >= 16 {
+                if child.render_pitch <= 0
+                    || child.render_fov <= 0
+                    || !(89..=104).contains(&child.particle_index)
+                {
                     return Err(AbiError::new(
                         MC_STATUS_VALIDATION_FAILED,
                         "invalid native Worm part dimensions/index",
@@ -737,7 +740,7 @@ pub extern "C" fn mc_native_campaign_character_states_copy_v2(
                         has_parent: u8::from(parent_id.is_some()),
                         model: 3,
                         action: child.action,
-                        phase: child.phase,
+                        phase: child.source_byte_3e,
                         active: u8::from(child.drawing_enabled),
                         x: child.position.x,
                         y: child.position.y,
@@ -753,7 +756,10 @@ pub extern "C" fn mc_native_campaign_character_states_copy_v2(
                     roll: child.roll,
                     source_half_width: child.render_pitch as u16,
                     render_height: logical_height(child.particle_index)?,
-                    part_index: u16::from(child.source_byte_3e),
+                    // The constructor seeds byte3e from the part number,
+                    // but the scheduler advances it every visit. Appearance
+                    // remains the stable body index throughout that cadence.
+                    part_index: child.particle_index - 89,
                     previous_index: child.word_0x32,
                     next_index: child.word_0x34,
                     ..Default::default()
