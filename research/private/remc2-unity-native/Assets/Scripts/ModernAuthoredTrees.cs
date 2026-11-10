@@ -78,6 +78,8 @@ namespace MagicCarpet.Native
             modernFar[0] = modern[0];
             modernFar[1] = modern[1];
             modernFar[2] = Compose(source[2], 1.2f, 2, anchor);
+            TintCanopy(modern[2]);
+            TintCanopy(modernFar[2]);
             float top = 0;
             for (int i = 0; i < 3; i++)
             {
@@ -292,9 +294,35 @@ namespace MagicCarpet.Native
             material.SetFloat("_WindUseHeight", 1f); material.SetFloat("_WindMinY", mesh.bounds.min.y);
             material.SetFloat("_WindInvHeight", 1f / Mathf.Max(mesh.bounds.size.y, .001f));
             material.SetFloat("_WindStrength", foliage ? .12f : 0f);
-            if (foliage) { material.SetTexture("_AlphaMap", Texture(name + "_alpha_1k")); material.SetFloat("_UseAlphaMap", 1f); }
+            if (foliage)
+            {
+                material.SetTexture("_AlphaMap", Texture(name + "_alpha_1k"));
+                material.SetFloat("_UseAlphaMap", 1f);
+                material.SetFloat("_Cutoff", .15f);
+            }
             return material;
         }
+
+        // ModernVegetation multiplies albedo by its vertex color. Preserve
+        // positions and topology while shifting the night canopy toward the
+        // original blue/teal palette. Alpha stays unchanged.
+        private static void TintCanopy(Mesh mesh)
+        {
+            var colors = mesh.colors;
+            if (colors.Length != mesh.vertexCount)
+            {
+                colors = new Color[mesh.vertexCount];
+                Array.Fill(colors, Color.white);
+            }
+            for (int i = 0; i < colors.Length; i++)
+                colors[i] = new Color(colors[i].r * .5f, colors[i].g * .95f, colors[i].b * 1.4f, colors[i].a);
+            mesh.colors = colors;
+        }
+
+        private static Color32 TintLeaf(Color32 color) => new Color32(
+            (byte)Mathf.Clamp(Mathf.RoundToInt(color.r * .5f), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(color.g * .95f), 0, 255),
+            (byte)Mathf.Clamp(Mathf.RoundToInt(color.b * 1.4f), 0, 255), color.a);
 
         private static Texture2D Texture(string name) => Resources.Load<Texture2D>("ModernNature/" + name)
             ?? throw new InvalidOperationException("Missing tree texture " + name);
@@ -329,10 +357,10 @@ namespace MagicCarpet.Native
             var built = new Mesh[4];
             try
             {
-                built[0] = MakeVoxelSurface(modern[0], .19f, new Color32(102, 73, 47, 255), bark, null);
-                built[1] = MakeVoxelSurface(modern[1], .19f, new Color32(99, 76, 46, 255), branches, null);
-                built[2] = MakeVoxelSurface(modern[2], .19f, new Color32(65, 105, 54, 255), leaves, alpha);
-                built[3] = MakeVoxelSurface(modernFar[2], .29f, new Color32(65, 105, 54, 255), leaves, alpha);
+                built[0] = MakeVoxelSurface(modern[0], .19f, new Color32(102, 73, 47, 255), bark, null, false);
+                built[1] = MakeVoxelSurface(modern[1], .19f, new Color32(99, 76, 46, 255), branches, null, false);
+                built[2] = MakeVoxelSurface(modern[2], .19f, new Color32(65, 105, 54, 255), leaves, alpha, true);
+                built[3] = MakeVoxelSurface(modernFar[2], .29f, new Color32(65, 105, 54, 255), leaves, alpha, true);
                 Array.Copy(built, voxel, voxel.Length);
                 voxelFarLeaves = built[3];
             }
@@ -367,7 +395,7 @@ namespace MagicCarpet.Native
         }
 
         private static Mesh MakeVoxelSurface(Mesh source, float size, Color32 color,
-            TextureSamples albedo, TextureSamples alpha)
+            TextureSamples albedo, TextureSamples alpha, bool foliage)
         {
             var vertices = source.vertices;
             var uv = source.uv;
@@ -387,9 +415,13 @@ namespace MagicCarpet.Native
                     var tex = uv.Length == vertices.Length
                         ? uv[triangles[i]] + (uv[triangles[i+1]] - uv[triangles[i]]) * fu +
                           (uv[triangles[i+2]] - uv[triangles[i]]) * fv : Vector2.zero;
-                    if (alpha != null && alpha.At(tex).r < 102) continue;
+                    if (alpha != null && alpha.At(tex).r < 38) continue;
                     var cell = new Vector3Int(Mathf.FloorToInt(p.x/size), Mathf.FloorToInt(p.y/size), Mathf.FloorToInt(p.z/size));
-                    if (!cells.ContainsKey(cell)) cells.Add(cell, albedo == null ? color : albedo.At(tex));
+                    if (!cells.ContainsKey(cell))
+                    {
+                        var sampled = albedo == null ? color : albedo.At(tex);
+                        cells.Add(cell, foliage ? TintLeaf(sampled) : sampled);
+                    }
                 }
             }
             if (cells.Count == 0) throw new InvalidOperationException("Tree voxel source produced no visible cells: " + source.name);

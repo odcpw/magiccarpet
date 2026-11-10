@@ -74,6 +74,12 @@ namespace MagicCarpet.Native.Tests
                 }
                 Assert.That(nearLeaves.GetIndexCount(0), Is.EqualTo(sourceLeaves.GetIndexCount(0) * 10));
                 Assert.That(farLeaves.GetIndexCount(0), Is.EqualTo(sourceLeaves.GetIndexCount(0) * 2));
+                var sourceColor = sourceLeaves.colors[0];
+                var leafColor = nearLeaves.colors[0];
+                Assert.That(leafColor.r, Is.EqualTo(sourceColor.r * .5f).Within(.0001f));
+                Assert.That(leafColor.g, Is.EqualTo(sourceColor.g * .95f).Within(.0001f));
+                Assert.That(leafColor.b, Is.EqualTo(sourceColor.b * 1.4f).Within(.0001f));
+                Assert.That(first.GetChild(2).GetComponent<MeshRenderer>().sharedMaterial.GetFloat("_Cutoff"), Is.EqualTo(.15f).Within(.0001f));
                 Assert.That(root.transform.GetChild(1).GetChild(2).GetComponent<MeshFilter>().sharedMesh,
                     Is.SameAs(nearLeaves), "all authored trees share one canopy mesh");
                 Assert.That(trees.Replaces(1, 1), Is.True);
@@ -92,6 +98,8 @@ namespace MagicCarpet.Native.Tests
                     "the voxel canopy has a smaller distant mesh");
                 var voxelNear = first.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
                 var voxelFar = first.GetChild(5).GetComponent<MeshFilter>().sharedMesh;
+                if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+                    Assert.That(voxelNear.colors32[0], Is.EqualTo(new Color32(32, 100, 76, 255)));
                 Assert.That(voxelNear.GetIndexCount(0) / 3, Is.LessThanOrEqualTo(80_000),
                     "the shared near voxel canopy remains bounded");
                 TestContext.WriteLine($"Tree canopy triangles: Modern near={nearLeaves.GetIndexCount(0) / 3}, far={farLeaves.GetIndexCount(0) / 3}; " +
