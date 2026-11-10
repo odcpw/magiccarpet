@@ -1546,13 +1546,19 @@ namespace MagicCarpet.Native
                 if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 80 ||
                     row.generation != generation || row.tick != tick || !seen.Add(row.entityIndex) ||
                     row.stance > 1 || row.active > 1 || row.hasTarget > 1 || row.hasParent > 1 ||
-                    (row.classId == 5 && row.model == 13
-                        ? !(row.renderParameter == 239 || row.renderParameter == 241 || row.renderParameter == 242 || row.renderParameter == 271)
-                        : row.renderParameter != 0) ||
-                    !(row.classId == 5 && (row.model == 1 || row.model == 4 || row.model == 13) || row.classId == 9 && (row.model == 0 || row.model == 13 || row.model == 28)))
+                    !HasSupportedCharacterIdentity(row))
                     throw new InvalidOperationException("Invalid source-backed character state");
             cachedCharacterStates=rows;characterStateGeneration=generation;characterStateTick=tick;
             return rows;
+        }
+
+        internal static bool HasSupportedCharacterIdentity(NativeSim.CampaignCharacterState row)
+        {
+            if (row.classId == 5 && (row.model == 12 || row.model == 13 || row.model == 14))
+                return ModernVillagerAppearances.TryGet(row.renderParameter, out var binding) && binding.Model == row.model;
+            return row.renderParameter == 0 &&
+                (row.classId == 5 && (row.model == 1 || row.model == 4) ||
+                 row.classId == 9 && (row.model == 0 || row.model == 13 || row.model == 28));
         }
 
         internal NativeSim.CampaignGoatSnapshot[] Goats()

@@ -123,8 +123,11 @@ namespace MagicCarpet.Native.Tests
             int freeAction, int hitAction, int entryAction, int deathAction)
         {
             var state = new NativeSim.CampaignCharacterState { classId = 5, model = (byte)model, renderParameter = (ushort)parameter };
+            Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(state), Is.True,
+                "The production native reader must admit the same source identity as the renderer");
             Assert.That(ModernCharacterActors.IsSupportedActor(state), Is.True);
             state.model = 13;
+            Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(state), Is.False);
             Assert.That(ModernCharacterActors.IsSupportedActor(state), Is.False, "Appearance cannot change the native class identity");
             var binding = ModernVillagerAppearances.Get((ushort)parameter);
             Assert.That(binding.Resource, Is.EqualTo(name));
@@ -145,6 +148,28 @@ namespace MagicCarpet.Native.Tests
             Assert.That(actor.IsDying, Is.True);
             Assert.That(ModernCharacterActors.SourceVoxelDeath((byte)model, (byte)deathAction, 100), Is.True,
                 "Native forced linked-kill action is still a real death");
+        }
+
+        [Test]
+        public void NativeCharacterReaderRetainsStrictAppearanceAndProjectileValidation()
+        {
+            foreach (var binding in ModernVillagerAppearances.All)
+            {
+                var row = new NativeSim.CampaignCharacterState { classId = 5, model = binding.Model, renderParameter = binding.Parameter };
+                Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(row), Is.True);
+                row.renderParameter = 0;
+                Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(row), Is.False);
+                row.renderParameter = binding.Parameter; row.classId = 9;
+                Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(row), Is.False);
+            }
+            foreach (var model in new byte[] { 0, 13, 28 })
+            {
+                var row = new NativeSim.CampaignCharacterState { classId = 9, model = model };
+                Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(row), Is.True);
+                row.renderParameter = 219;
+                Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(row), Is.False);
+            }
+            Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(new NativeSim.CampaignCharacterState { classId = 5, model = 15 }), Is.False);
         }
 
         [TestCase(false)]
