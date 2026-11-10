@@ -15,10 +15,17 @@ namespace MagicCarpet.Native
         private readonly Mesh[] meshes=new Mesh[Tiles*Tiles];
         private readonly GameObject[] nodes=new GameObject[Tiles*Tiles];
         private readonly bool[] populated=new bool[Tiles*Tiles];
+        private readonly Vector3[][] verticesByTile = new Vector3[Tiles*Tiles][];
+        private readonly Vector3[][] normalsByTile = new Vector3[Tiles*Tiles][];
+        private readonly Color[][] colorsByTile = new Color[Tiles*Tiles][];
+        private readonly ulong[][] vertexRevisions = new ulong[Tiles*Tiles][];
         private ulong revision=ulong.MaxValue;
+        private ulong bedVersion=ulong.MaxValue;
         private ulong coastShapeRevision=ulong.MaxValue;
+        private ulong resetRevision=ulong.MaxValue;
         private readonly ulong[] tileRevisions=new ulong[Tiles*Tiles];
         internal int LastRebuiltTileCount { get; private set; }
+        internal int LastUpdatedVertexCount { get; private set; }
 
         internal ModernWaterBed(Transform parent, Material material)
         {
@@ -51,20 +58,26 @@ namespace MagicCarpet.Native
         internal void Update(ModernTerrainMesh terrain, ModernWaterCoast coast, Vector3 camera)
         {
             LastRebuiltTileCount = 0;
-            if(revision!=terrain.Revision)
+            LastUpdatedVertexCount = 0;
+            if(revision!=terrain.Revision || bedVersion!=terrain.WaterBedVersion)
             {
                 if(coast.Revision!=terrain.Revision) throw new InvalidOperationException("Lake bed requires matching coast and terrain revisions");
-                bool all = revision == ulong.MaxValue || coastShapeRevision != coast.ShapeRevision;
+                bool all = revision == ulong.MaxValue || coastShapeRevision != coast.ShapeRevision
+                    || resetRevision != terrain.WaterBedResetRevision;
                 for(var z=0;z<Tiles;z++) for(var x=0;x<Tiles;x++)
                 {
                     int i = x + z * Tiles;
-                    ulong next = terrain.SectionNeighborhoodRevision(x, z);
+                    ulong next = terrain.WaterBedRevision(x, z);
                     if (!all && tileRevisions[i] == next) continue;
-                    Rebuild(x,z,terrain,coast); tileRevisions[i] = next; LastRebuiltTileCount++;
+                    if (all) Rebuild(x,z,terrain,coast);
+                    else UpdateVertices(x,z,terrain,coast);
+                    tileRevisions[i] = next; LastRebuiltTileCount++;
                 }
                 coastShapeRevision = coast.ShapeRevision;
+                resetRevision = terrain.WaterBedResetRevision;
                 revision=terrain.Revision;
-                if (ModernCapture.Measure) Debug.Log($"MC_MODERN_WATERBED revision={revision} coast_shape={coastShapeRevision} rebuilt_tiles={LastRebuiltTileCount}");
+                bedVersion=terrain.WaterBedVersion;
+                if (ModernCapture.Measure) Debug.Log($"MC_MODERN_WATERBED revision={revision} coast_shape={coastShapeRevision} rebuilt_tiles={LastRebuiltTileCount} updated_vertices={LastUpdatedVertexCount}");
             }
             for(var z=0;z<Tiles;z++) for(var x=0;x<Tiles;x++)
             {
@@ -93,8 +106,15 @@ namespace MagicCarpet.Native
                 else { indices.Add(a);indices.Add(c);indices.Add(b);indices.Add(c);indices.Add(d);indices.Add(b); }
             }
             mesh.Clear(); populated[i]=indices.Count>0;
-            if(!populated[i]) return;
-            var vertices=new Vector3[Side*Side];var normals=new Vector3[vertices.Length];var colors=new Color[vertices.Length];
+            if(!populated[i])
+            {
+                verticesByTile[i]=null; normalsByTile[i]=null; colorsByTile[i]=null; vertexRevisions[i]=null;
+                return;
+            }
+            var vertices=verticesByTile[i]=new Vector3[Side*Side];
+            var normals=normalsByTile[i]=new Vector3[vertices.Length];
+            var colors=colorsByTile[i]=new Color[vertices.Length];
+            var revisions=vertexRevisions[i]=new ulong[vertices.Length];
             for(var z=0;z<Side;z++) for(var x=0;x<Side;x++)
             {
                 var wx=tx*128+x*2;var wz=tz*128+z*2;var v=x+z*Side;
@@ -102,8 +122,34 @@ namespace MagicCarpet.Native
                 normals[v]=new Vector3(Height(terrain,coast,wx-1,wz)-Height(terrain,coast,wx+1,wz),2,
                     Height(terrain,coast,wx,wz-1)-Height(terrain,coast,wx,wz+1)).normalized;
                 colors[v]=terrain.DetailColor(wx/2,wz/2);
+                revisions[v]=terrain.WaterBedVertexRevision(wx/2,wz/2);
             }
+            LastUpdatedVertexCount += vertices.Length;
             mesh.vertices=vertices;mesh.normals=normals;mesh.colors=colors;mesh.SetTriangles(indices,0);mesh.RecalculateBounds();
+        }
+
+        private void UpdateVertices(int tx, int tz, ModernTerrainMesh terrain, ModernWaterCoast coast)
+        {
+            var i=tx+tz*Tiles;
+            if(!populated[i]) return; // An unchanged coast has unchanged topology.
+            var vertices=verticesByTile[i]; var normals=normalsByTile[i];
+            var colors=colorsByTile[i]; var revisions=vertexRevisions[i];
+            var updated=0;
+            for(var z=0;z<Side;z++) for(var x=0;x<Side;x++)
+            {
+                var wx=tx*128+x*2; var wz=tz*128+z*2; var v=x+z*Side;
+                var next=terrain.WaterBedVertexRevision(wx/2,wz/2);
+                if(revisions[v]==next) continue;
+                vertices[v]=new Vector3(x*2,Height(terrain,coast,wx,wz),z*2);
+                normals[v]=new Vector3(Height(terrain,coast,wx-1,wz)-Height(terrain,coast,wx+1,wz),2,
+                    Height(terrain,coast,wx,wz-1)-Height(terrain,coast,wx,wz+1)).normalized;
+                colors[v]=terrain.DetailColor(wx/2,wz/2);
+                revisions[v]=next; updated++;
+            }
+            LastUpdatedVertexCount+=updated;
+            if(updated==0) return;
+            var mesh=meshes[i];
+            mesh.vertices=vertices;mesh.normals=normals;mesh.colors=colors;mesh.RecalculateBounds();
         }
 
         public void Dispose()

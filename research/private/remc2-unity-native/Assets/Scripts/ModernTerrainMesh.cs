@@ -41,7 +41,6 @@ namespace MagicCarpet.Native
             internal Bounds WaterBounds;
             internal int DetailTriangles;
             internal int FarTriangles;
-            internal ulong Revision;
             internal readonly Copy[] Copies = new Copy[9];
         }
 
@@ -57,12 +56,15 @@ namespace MagicCarpet.Native
         private readonly float[] detailHeights = new float[512 * 512];
         private readonly bool[] detailHeightValid = new bool[512 * 512];
         private readonly bool[] dirty = new bool[Sections * Sections];
+        private readonly ulong[] waterBedRevisions = new ulong[Sections * Sections];
+        private readonly ulong[] waterBedVertexRevisions = new ulong[512 * 512];
         private readonly Plane[] frustumPlanes = new Plane[6];
         private static readonly int WaveStrength = Shader.PropertyToID("_WaveStrength");
         private bool initialized;
         private bool disposed;
         private ulong lastGeneration;
         internal ulong Revision { get; private set; }
+        internal ulong WaterBedResetRevision { get; private set; }
         internal int VisibleTriangleCount { get; private set; }
         internal int VisibleDetailCopies { get; private set; }
         internal int VisibleFarCopies { get; private set; }
@@ -70,17 +72,53 @@ namespace MagicCarpet.Native
         internal float ViewDistance { get; set; } = 320f;
         // Set before the first Update; local voxel physics replaces this aligned patch.
         internal Bounds? VoxelPatch { get; set; }
-        internal Func<float,float,float?> VoxelHeightSampler { get; set; }
+        internal Func<float,float,float?> VoxelHeightSampler { get; private set; }
+        private Bounds? voxelHeightFootprint;
+        internal ulong WaterBedVersion { get; private set; }
 
-        // Lake-bed normals and shoreline joins sample just outside their tile.
-        // Include neighbouring sections, including the periodic map seam.
-        internal ulong SectionNeighborhoodRevision(int x, int z)
+        internal ulong WaterBedRevision(int x, int z) => waterBedRevisions[x + z * Sections];
+        internal ulong WaterBedVertexRevision(int x, int z) => waterBedVertexRevisions[(x & 511) + (z & 511) * 512];
+
+        // Sampler coverage is expressed in the same absolute world coordinates as
+        // SampleHeight. Invalidate both footprints when replacing or removing it.
+        internal void SetVoxelHeightSampler(Func<float,float,float?> sampler, Bounds? footprint)
         {
-            ulong revision = 0;
-            for (int dz = -1; dz <= 1; dz++)
-            for (int dx = -1; dx <= 1; dx++)
-                revision = Math.Max(revision, sections[((x + dx + Sections) % Sections) + ((z + dz + Sections) % Sections) * Sections].Revision);
-            return revision;
+            if (sampler != null && !footprint.HasValue) throw new ArgumentException("Voxel sampler needs its actual footprint", nameof(footprint));
+            if (VoxelHeightSampler == null && sampler == null) return;
+            var old = voxelHeightFootprint;
+            VoxelHeightSampler = sampler;
+            voxelHeightFootprint = sampler == null ? null : footprint;
+            if (old.HasValue) InvalidateWaterBedBounds(old.Value);
+            if (voxelHeightFootprint.HasValue) InvalidateWaterBedBounds(voxelHeightFootprint.Value);
+        }
+
+        internal void InvalidateVoxelHeight(Bounds bounds)
+        {
+            if (VoxelHeightSampler != null) InvalidateWaterBedBounds(bounds);
+        }
+
+        private void InvalidateWaterBedBounds(Bounds bounds)
+        {
+            // Bed normals sample height one metre around each two-metre vertex.
+            // Clip absolute samples to the canonical bed, then fold edge stamps
+            // so both copies of each periodic boundary are considered.
+            int minX = Mathf.Max(0, Mathf.FloorToInt((bounds.min.x - 1) / DetailSize));
+            int minZ = Mathf.Max(0, Mathf.FloorToInt((bounds.min.z - 1) / DetailSize));
+            int maxX = Mathf.Min(512, Mathf.CeilToInt((bounds.max.x + 1) / DetailSize));
+            int maxZ = Mathf.Min(512, Mathf.CeilToInt((bounds.max.z + 1) / DetailSize));
+            if (minX > maxX || minZ > maxZ) return;
+            ulong next = unchecked(++WaterBedVersion);
+            for (int z = minZ; z <= maxZ; z++) for (int x = minX; x <= maxX; x++)
+            {
+                int wx = x & 511, wz = z & 511;
+                waterBedVertexRevisions[wx + wz * 512] = next;
+                int sx = wx / DetailCells, sz = wz / DetailCells;
+                waterBedRevisions[sx + sz * Sections] = next;
+                if (wx % DetailCells == 0) waterBedRevisions[((sx + Sections - 1) % Sections) + sz * Sections] = next;
+                if (wz % DetailCells == 0) waterBedRevisions[sx + ((sz + Sections - 1) % Sections) * Sections] = next;
+                if (wx % DetailCells == 0 && wz % DetailCells == 0)
+                    waterBedRevisions[((sx + Sections - 1) % Sections) + ((sz + Sections - 1) % Sections) * Sections] = next;
+            }
         }
 
         internal ModernTerrainMesh(Transform parent, Material terrainMaterial, Material waterMaterial, ModernShoreMask sourceShore = null)
@@ -112,6 +150,7 @@ namespace MagicCarpet.Native
             ValidatePlane(nextAngles, nameof(nextAngles));
             var reset = !initialized || generation != lastGeneration;
             var changed = reset;
+            ulong nextBedVersion = unchecked(WaterBedVersion + 1);
             if (reset)
             {
                 Array.Copy(nextHeights, heights, PlaneSize);
@@ -146,11 +185,34 @@ namespace MagicCarpet.Native
                     for (var dz = -4; dz <= 4; dz++)
                         for (var dx = -4; dx <= 4; dx++)
                             MarkSection(x + dx, z + dz);
+                    // Bed heights sample one metre beyond tile edges for normals.
+                    // Including detail interpolation, the landform gradient and
+                    // reconstruction kernel needs at most six source cells of
+                    // influence. Mark the bed sections directly instead of
+                    // expanding every dirty terrain section to nine sections.
+                    for (var dz = -6; dz <= 6; dz++)
+                        for (var dx = -6; dx <= 6; dx++)
+                            waterBedRevisions[((x + dx) & 255) / SectionCells
+                                + (((z + dz) & 255) / SectionCells) * Sections] = nextBedVersion;
+                    // Bed vertices are spaced at half a source cell. Keep the
+                    // same six-cell dependency halo at vertex granularity so
+                    // a small edit need not resample an entire populated tile.
+                    for (var dz = -12; dz <= 12; dz++)
+                        for (var dx = -12; dx <= 12; dx++)
+                            waterBedVertexRevisions[((x * 2 + dx) & 511)
+                                + (((z * 2 + dz) & 511) * 512)] = nextBedVersion;
                 }
             }
             lastGeneration = generation;
             initialized = true;
             if (changed) unchecked { Revision++; }
+            if (changed) WaterBedVersion = nextBedVersion;
+            if (reset)
+            {
+                unchecked { WaterBedResetRevision++; }
+                Array.Fill(waterBedRevisions, WaterBedVersion);
+                Array.Fill(waterBedVertexRevisions, WaterBedVersion);
+            }
             if (changed) sourceShore?.Update(heights,types,angles,Revision);
             if (changed) ReconstructLandform();
             if (changed) Array.Clear(detailHeightValid,0,detailHeightValid.Length);
@@ -162,7 +224,6 @@ namespace MagicCarpet.Native
                     out section.WaterBounds);
                 section.DetailTriangles = (int)((section.Mesh.GetIndexCount(0) + section.Mesh.GetIndexCount(1)) / 3);
                 section.FarTriangles = (int)((section.FarMesh.GetIndexCount(0) + section.FarMesh.GetIndexCount(1)) / 3);
-                section.Revision = Revision;
                 dirty[i] = false;
             }
         }

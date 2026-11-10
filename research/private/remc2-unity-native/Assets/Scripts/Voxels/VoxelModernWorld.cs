@@ -142,7 +142,7 @@ namespace MagicCarpet.Native.Voxels
             if(editRoutine!=null){StopCoroutine(editRoutine);editRoutine=null;}
             editing=false;pendingEdits.Clear();knownRemoved.Clear();visualRemoved=visualGroundRemoved=visualHouseRemoved=0;
             if(clearedPlants.Count>0){clearedPlants.Clear();clearedPlantTiles.Clear();vegetation?.InvalidateFootprint(patch);}
-            if(terrain!=null)terrain.VoxelHeightSampler=null;
+            if(terrain!=null)terrain.SetVoxelHeightSampler(null,null);
             if(clearEffects)rubble?.ClearEmissions();
             ground?.Dispose();house?.Dispose();contact?.Dispose();seam?.Dispose();
             ground=null;house=null;contact=null;seam=null;terrainBase=null;houseBase=null;topColumns=null;ready=false;
@@ -157,7 +157,7 @@ namespace MagicCarpet.Native.Voxels
             nativeTick=session.Tick;worldEpoch=state.worldGeneration;worldGeneration=session.Generation;
             if(!ready)
             {
-                terrain.VoxelHeightSampler=null;
+                terrain.SetVoxelHeightSampler(null,null);
                 if(state.enabled==0){session.EnableVoxelWorld(checked((ushort)input.building.source_slot),SampleSeedHeights(patch,terrain.SampleHeight));state=session.VoxelWorldState();worldEpoch=state.worldGeneration;}
                 var projection=session.VoxelWorldProjection(true,state.impactHead);
                 InitializeProjection(projection);
@@ -205,8 +205,8 @@ namespace MagicCarpet.Native.Voxels
         private void LogProjectionState(bool restored)
         {
             if(!ReceiptLogging)return;
-            var nativeGround=knownRemoved.Count(cell=>cell.kind==0);
-            Debug.Log($"MC_VOXEL_RECEIPT kind=state generation={worldGeneration} tick={nativeTick} revision={lastRevision} content_hash={lastContentHash} native_removed={knownRemoved.Count} visual_removed={visualRemoved} pending={(editing||pendingEdits.Count!=0?1:0)} restored={(restored?1:0)} world_epoch={worldEpoch} house_slot={houseBase.slot} native_ground={nativeGround} visual_ground={visualGroundRemoved} native_house={knownRemoved.Count-nativeGround} visual_house={visualHouseRemoved}");
+            var (nativeGround,nativeHouse)=EffectiveRemovalCounts(knownRemoved,terrainBase,houseBase);
+            Debug.Log($"MC_VOXEL_RECEIPT kind=state generation={worldGeneration} tick={nativeTick} revision={lastRevision} content_hash={lastContentHash} native_removed={nativeGround+nativeHouse} visual_removed={visualRemoved} pending={(editing||pendingEdits.Count!=0?1:0)} restored={(restored?1:0)} world_epoch={worldEpoch} house_slot={houseBase.slot} native_ground={nativeGround} visual_ground={visualGroundRemoved} native_house={nativeHouse} visual_house={visualHouseRemoved} retained_intents={knownRemoved.Count}");
         }
         private void InitializeProjection(NativeCampaignSession.VoxelProjection projection)
         {
@@ -228,7 +228,10 @@ namespace MagicCarpet.Native.Voxels
             if(physical==null){physical=new GameObject("Native fine voxel presentation");physical.layer=8;physical.transform.SetParent(transform,false);rubble=physical.AddComponent<VoxelRubble>();}
             ground=CreateVolume(terrainBase,groundMaterial);house=CreateVolume(houseBase,surface);
             if(visualRemoved!=currentlyRemoved)throw new InvalidOperationException("Restored removal did not match current native base occupancy");
-            terrain.VoxelHeightSampler=NativeHeight;
+            var origin=Origin(terrainBase); var size=terrainBase.cell_size/64f;
+            var width=terrainBase.dimensions[0]*size; var depth=terrainBase.dimensions[1]*size;
+            terrain.SetVoxelHeightSampler(NativeHeight,
+                new Bounds(new Vector3(origin.x+width/2,0,origin.z+depth/2),new Vector3(width,0,depth)));
             contact=new VoxelTerrainContact(physical.transform,terrain.SampleHeight);contact.Update(home,patch);
             seam=new VoxelTerrainSeam(physical.transform,patch,terrain.SampleHeight,groundMaterial);
             Physics.SyncTransforms();
@@ -238,14 +241,34 @@ namespace MagicCarpet.Native.Voxels
         internal static bool RemovedCellIntersectsBase(
             NativeCampaignSession.VoxelVolumeProjection volume,NativeCampaignSession.VoxelRemovedCell cell)
         {
+            if(cell==null)throw new InvalidOperationException("Native removed cell is outside its current volume");
+            return RemovedCellIntersectsBase(volume,(cell.kind,cell.slot,cell.x,cell.y,cell.z));
+        }
+        private static bool RemovedCellIntersectsBase(
+            NativeCampaignSession.VoxelVolumeProjection volume,(int kind,int slot,int x,int y,int z) cell)
+        {
             var dimensions=volume?.dimensions;
-            if(cell==null||dimensions==null||dimensions.Length!=3||cell.kind!=volume.kind||cell.slot!=volume.slot
+            if(dimensions==null||dimensions.Length!=3||cell.kind!=volume.kind||cell.slot!=volume.slot
                 ||cell.x<0||cell.y<0||cell.z<0||cell.x>=dimensions[0]||cell.y>=dimensions[1]||cell.z>=dimensions[2])
                 throw new InvalidOperationException("Native removed cell is outside its current volume");
             if(volume.kind==0)
                 return cell.z<volume.terrain_columns[checked(cell.y*dimensions[0]+cell.x)];
             if(volume.kind==1)return BaseBuildingCell(volume,cell.x,cell.y,cell.z);
             throw new InvalidOperationException("Unknown native voxel volume");
+        }
+
+        internal static (int ground,int house) EffectiveRemovalCounts(
+            IEnumerable<(int kind,int slot,int x,int y,int z)> removed,
+            NativeCampaignSession.VoxelVolumeProjection terrain,NativeCampaignSession.VoxelVolumeProjection house)
+        {
+            int groundCount=0,houseCount=0;
+            foreach(var cell in removed)
+            {
+                if(cell.kind==0) { if(RemovedCellIntersectsBase(terrain,cell))groundCount++; }
+                else if(cell.kind==1) { if(RemovedCellIntersectsBase(house,cell))houseCount++; }
+                else throw new InvalidOperationException("Unknown native voxel volume");
+            }
+            return (groundCount,houseCount);
         }
 
         private VoxelVolume CreateVolume(NativeCampaignSession.VoxelVolumeProjection data,Material material)
@@ -286,7 +309,12 @@ namespace MagicCarpet.Native.Voxels
             int width=terrainBase.dimensions[0], depth=terrainBase.dimensions[1];
             if(x<0||z<0||x>=width||z>=depth)throw new InvalidOperationException("Native terrain cell outside volume");
             int index=z*width+x;
-            topColumns[index]=ColumnTop(topColumns[index],terrainBase.slot,x,z,knownRemoved);
+            var top=ColumnTop(topColumns[index],terrainBase.slot,x,z,knownRemoved);
+            if(top==topColumns[index])return;
+            topColumns[index]=top;
+            var origin=Origin(terrainBase);var size=terrainBase.cell_size/64f;
+            terrain.InvalidateVoxelHeight(new Bounds(new Vector3(origin.x+(x+.5f)*size,0,origin.z+(z+.5f)*size),
+                new Vector3(size,0,size)));
         }
         internal static int ColumnTop(int top,int slot,int x,int z,HashSet<(int kind,int slot,int x,int y,int z)> removed)
         {
