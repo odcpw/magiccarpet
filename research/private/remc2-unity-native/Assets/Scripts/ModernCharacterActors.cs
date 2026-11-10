@@ -141,6 +141,7 @@ namespace MagicCarpet.Native
             Place(actor, position, heading, camera);
             var sampled = actor.RenderedFrame == Time.frameCount;
             actor.Render(Time.deltaTime);
+            actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
             if (!sampled && actor.Goat != null)
                 actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleHeight);
             // Fit this frame's pose. A previously hidden nocking arrow can
@@ -397,6 +398,7 @@ namespace MagicCarpet.Native
                     (actor.Visible || actor == followed || actor.IsDying && actor.WasVisible || Voxels.VoxelModernWorld.Requested&&actor.State.active!=0) && ModernCapture.EntityVisibility != 1,
                     Voxels.VoxelModernWorld.Requested);
                 actor.Render(dt);
+                actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
                 if (!sampled && actor.Goat != null && actor.Root.activeSelf)
                     actor.TerrainContactComplete = actor.Goat.GroundToTerrain(terrain.SampleHeight);
                 FractureIfDead(actor);
@@ -411,6 +413,7 @@ namespace MagicCarpet.Native
                     continue;
                 }
                 actor.Root.SetActive((actor.WasVisible || actor == followed) && ModernCapture.EntityVisibility != 1); actor.Render(dt);
+                actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
                 FractureIfDead(actor);
                 if (actor.Finished) { actor.Dispose(); dying.RemoveAt(i); }
             }
@@ -528,6 +531,8 @@ namespace MagicCarpet.Native
             public float[] hoofClearances; public int hoofStanceMask;
             public bool terrainContactComplete;
             public float terrainSlope;
+            public bool surfaceClearanceChecked;
+            public float surfaceGroundClearance;
             public bool movingHit;
             public int contactBoundMask, contactReachMask; public float[] contactBefore, contactRequested;
         }
@@ -550,6 +555,9 @@ namespace MagicCarpet.Native
                 hoofStanceMask=a.Goat != null && a == Followed() ? a.Goat.HoofStanceMask() : 0,
                 terrainContactComplete=a.TerrainContactComplete,
                 terrainSlope=a.TerrainSlope,
+                surfaceClearanceChecked=capture != null && a == Followed() && a.Villager != null && Time.frameCount % 15 == 0,
+                surfaceGroundClearance=capture != null && a == Followed() && a.Villager != null && Time.frameCount % 15 == 0
+                    ? a.Villager.SurfaceGroundClearance(terrain.SampleHeight) : 0,
                 movingHit=a.Goat != null ? a.Goat.MovingHitActive : a.Villager != null && a.Villager.MovingHit,
                 contactBoundMask=a.Goat != null && a == Followed() ? a.Goat.ContactBoundMask : 0,
                 contactReachMask=a.Goat != null && a == Followed() ? a.Goat.ContactReachMask : 0,

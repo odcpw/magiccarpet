@@ -92,9 +92,21 @@ def main():
                     f"{args.width}x{args.height}x24", "-nolisten", "tcp"], pass_fds=(write_fd,),
                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env)
             os.close(write_fd); write_fd = None
-            if not select.select([read_fd], [], [], 20)[0]:
-                raise TimeoutError("Private Xvfb failed to allocate a display")
-            number = os.read(read_fd, 32).decode().strip()
+            # Xvfb can write the digits and newline separately. Closing after
+            # a partial read can break its final write and kill the display.
+            deadline = time.monotonic() + 20
+            selected = b""
+            while b"\n" not in selected:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([read_fd], [], [], remaining)[0]:
+                    raise TimeoutError("Private Xvfb failed to allocate a display")
+                chunk = os.read(read_fd, 32)
+                if not chunk:
+                    raise RuntimeError("Private Xvfb closed its readiness pipe")
+                selected += chunk
+                if len(selected) > 32:
+                    raise RuntimeError("Private display readiness message is invalid")
+            number = selected.decode().strip()
             if not number.isdigit():
                 raise RuntimeError("Private display number is invalid")
         finally:

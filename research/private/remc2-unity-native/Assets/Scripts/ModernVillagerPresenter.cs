@@ -22,6 +22,12 @@ namespace MagicCarpet.Native
         private Vector3 lastRenderPosition;
         private float deathElapsed, hitElapsed = float.PositiveInfinity;
         private float movingGrace, recentSpeed;
+        private SkinnedMeshRenderer groundRenderer;
+        private Mesh groundMesh;
+        private readonly List<Vector3> groundVertices = new();
+        private int contactStep = -1;
+        private ulong contactRevision;
+        private float corpseLift;
         internal GameObject Root => character.Root;
         internal bool IsDying { get; private set; }
         internal bool DeathFinished => IsDying && deathElapsed >= character.Asset.Clip("Death").length + .25f;
@@ -136,6 +142,53 @@ namespace MagicCarpet.Native
         }
         internal void SetVoxelDetail(VoxelGoatAsset skin) => voxels.SetDetail(skin);
         internal List<VoxelFragment> SnapshotVoxelFragments() => voxels.SnapshotFragments();
-        public void Dispose() { voxels?.Dispose(); character.Dispose(); }
+        // Whole-costume support is only needed during the short authored fall.
+        // Sample at 30Hz, reuse buffers, and retain the result after settling.
+        // The caller places the visual root on terrain before this correction.
+        internal void GroundCorpseToTerrain(Func<float, float, float> terrainHeight, ulong terrainRevision)
+        {
+            if (!IsDying) return;
+            var position = Root.transform.position;
+            position.y = terrainHeight(position.x, position.z);
+            Root.transform.position = position;
+            var step = Mathf.FloorToInt(Mathf.Min(deathElapsed, character.Asset.Clip("Death").length) * 30);
+            if (step != contactStep || terrainRevision != contactRevision)
+            {
+                var started = ModernCapture.BeginMeasurement();
+                corpseLift = Mathf.Max(0, .002f - SurfaceGroundClearance(terrainHeight));
+                contactStep = step;
+                contactRevision = terrainRevision;
+                ModernCapture.EndMeasurement("villager_corpse_ground", started);
+            }
+            Root.transform.position = position + Vector3.up * corpseLift;
+        }
+
+        // Actual posed surface measurement, including the separate robe/shoes.
+        // Living characters only use this in an opt-in diagnostic capture.
+        internal float SurfaceGroundClearance(Func<float, float, float> terrainHeight)
+        {
+            groundRenderer ??= voxels != null ? voxels.Source : Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+            groundMesh ??= new Mesh { name = "Villager costume ground sample" };
+            groundRenderer.BakeMesh(groundMesh, true);
+            groundMesh.GetVertices(groundVertices);
+            var minimum = float.PositiveInfinity;
+            foreach (var point in groundVertices)
+            {
+                var world = groundRenderer.transform.TransformPoint(point);
+                var ground = terrainHeight(world.x, world.z);
+                if (!float.IsFinite(ground)) throw new InvalidOperationException("Non-finite villager terrain height");
+                minimum = Mathf.Min(minimum, world.y - ground);
+            }
+            return minimum;
+        }
+        public void Dispose()
+        {
+            if (groundMesh != null)
+            {
+                if (Application.isPlaying) UnityEngine.Object.Destroy(groundMesh);
+                else UnityEngine.Object.DestroyImmediate(groundMesh);
+            }
+            voxels?.Dispose(); character.Dispose();
+        }
     }
 }

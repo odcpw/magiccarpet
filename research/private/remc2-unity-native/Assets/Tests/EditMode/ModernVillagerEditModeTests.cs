@@ -218,6 +218,46 @@ namespace MagicCarpet.Native.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CaptureClearanceMeasuresActualPosedWorldSurface(bool voxel)
+        {
+            var asset = Asset();
+            using var villager = new ModernVillagerPresenter(asset, null, asset.height);
+            if (voxel) villager.AttachVoxelSkin(Resources.Load<MagicCarpet.Native.Voxels.VoxelGoatAsset>(
+                "ModernCharacters/Villager/Voxels/Villager64"));
+            villager.Observe(Vector3.zero, 0, 100, 111, 1);
+            villager.Render(0);
+            villager.Root.transform.position = new Vector3(20, 4, 30);
+            Assert.That(villager.SurfaceGroundClearance((x, z) => 4), Is.EqualTo(.003f).Within(.0001f));
+            villager.Root.transform.position += Vector3.up;
+            Assert.That(villager.SurfaceGroundClearance((x, z) => 4), Is.EqualTo(1.003f).Within(.0001f));
+            Assert.Throws<InvalidOperationException>(() => villager.SurfaceGroundClearance((x, z) => float.NaN));
+        }
+
+        [Test]
+        public void FallenCostumeRestsOnUnevenTerrainWithoutChangingItsAuthoredPoseOrHorizontalPosition()
+        {
+            var asset = Asset();
+            using var villager = new ModernVillagerPresenter(asset, null, asset.height);
+            villager.Observe(Vector3.zero, 0, -1, 108, 1);
+            villager.Render(asset.Clip("Death").length);
+            float Ground(float x, float z) => .2f * (x * x + z * z);
+            var before = villager.SurfaceGroundClearance(Ground);
+            Assert.That(before, Is.LessThan(-.005f), "The curved surface must expose a real support defect");
+            var time = villager.ClipTime;
+            villager.GroundCorpseToTerrain(Ground, 1);
+            Assert.That(villager.SurfaceGroundClearance(Ground), Is.EqualTo(.002f).Within(.0001f));
+            var supported = villager.Root.transform.position;
+            villager.GroundCorpseToTerrain(Ground, 1);
+            Assert.That(villager.Root.transform.position, Is.EqualTo(supported), "Repeated camera/render visits cannot accumulate lift");
+            Assert.That(supported.x, Is.Zero); Assert.That(supported.z, Is.Zero);
+            Assert.That(villager.ClipTime, Is.EqualTo(time));
+            villager.GroundCorpseToTerrain((x, z) => Ground(x, z) * 2, 2);
+            Assert.That(villager.SurfaceGroundClearance((x, z) => Ground(x, z) * 2), Is.EqualTo(.002f).Within(.0001f),
+                "A later terrain revision must refresh the settled corpse support");
+        }
+
         [Test]
         public void ImportedVillagerKeepsPhysicalMapsAndActualSurfaceNormals()
         {
