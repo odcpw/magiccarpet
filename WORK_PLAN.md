@@ -655,15 +655,46 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current connected capability is `mc-bhq.11`: actual Experience Scroll
-production, overlap, source XP/tier/audio consumers and cleanup. CrimsonForge
-owns the item path and real Level2 group5 producer; Root CopperMountain owns
-the shared reward correction in `native_world/level2_sessions.rs` and serialized
-checks/push/install. Preserve original rows/objectives and use declared fixed
-player controls, without forced groups, phases, RNG or NPC health. The passive
-item checkpoint below is installed; do not restart it. Full `.11`, `.7` and
-their dependencies stay open. Original presentation is this thread's consumer;
-Modern/Voxel work remains separate.
+Current connected capability is `mc-bhq.11`: actual mana/experience jar10/91
+ordinary factory, scheduled action98, three sphere emissions and even-phase
+26-family reward consumers. CrimsonForge owns canonical `world::items` behavior,
+thin simulation joins and the connected check. StormyFalcon owns typed jar
+properties/binding and the existing configured-item seam; Root CopperMountain
+owns shared progression context/cap/announcement joins and serialized checks,
+push and installation. Raw Imported scheduling omits98 and generic authored
+admission omits91, despite the real constructor/callback. Existing direct-step
+tests and final Volcano birth do not prove its scheduled consumers. No shipped
+authored/reset91 row occurs in the30-package census: use a declared single
+source-language91 row with real Level4 switch124/group37, retaining every
+original row/objective. Preserve source RNG/allocation/update order, natural
+child lifetime and persistent parent; invent no jar pickup/expiry. Scroll and
+passive-item checkpoints below are installed; do not restart them. Full `.11`,
+`.7` and dependencies remain open. Modern/Voxel stays in its separate thread.
+
+Installed Experience Scroll checkpoint: source `6f49e2a2`, native
+`5824381c160d020314f96ebcf8dc9e01519b94fdaaf6e2cad6d3cbec3b3e823d`,
+pushed metadata `0cde91bf`. Canonical items now own scroll/portal state,
+constructors, visits and actual original sprite candidates; the missing typed
+projection is fixed. Shared scroll rewards match enabled-only wrapping XP,
+independent normal Castle cap7, all26 tier/selected-clamp visits, ownership/Cave
+announcements and literal63/61 source audio. Actual whole Level2 sequence
+produces four scrolls248–251; award/DTO/reopen/reset passes7.913s, final
+retirement/reuse3.635s. Correct journal boundary binds replacement sphere398g2
+to actual Goat callback73 phase48, after scroll398g1 retires. Prior source-order,
+passive-item and reward counters pass on unchanged owned production; workspace
+alltargets passes13.3s. Five fixed legal player poses and legitimate prior
+semantic carry396 for the actual4XP→400 tier crossing are declared controls,
+not earning396 or a full mission. Independent bounded source/gate review found
+no remaining concrete defect in this checkpoint. Full `.11` remains open.
+Strict Rig release227.256s; all662 inputs and worker/returned bytes match.
+Original full player rebuild `build-gyyievt2` honors the changed shared header
+while preserving all200 UI input hashes;470Rust/200UI/142player-file inputs and
+both plugins independently match. Root viewed canonical map/loading/NightSpire
+terrain/HUD with matching mapped native, one portal/zero retries; owned smoke
+stopped. No native scroll encounter, human combat/FPS/hardwareaudio/fullmissions
+or old-save proof. Evidence `generated/scroll-20261110-integration/candidate-6`
+and prior unchanged checks. Removed four superseded C2–C5 test executables
+(647,986,056bytes); logs/currentC6/source/caches retained, no archive.
 
 2026-11-10: the connected prefix now PASSES on current source C3
 (`generated/objective-20261110-integration/candidate-3`, 5.644s). Four held
