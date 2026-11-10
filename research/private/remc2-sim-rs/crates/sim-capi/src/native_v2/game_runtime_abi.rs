@@ -45,6 +45,7 @@ struct InstalledPackageLocation {
     package_dir: String,
     owner_cache_path: Option<String>,
     presentation_cache_path: Option<String>,
+    authored_workspace_path: Option<String>,
 }
 
 struct InstalledCampaignInput {
@@ -1401,16 +1402,23 @@ fn installed_package_set_inputs(
                     .presentation_cache_path
                     .as_deref()
                     .is_some_and(|path| !path.is_empty() && path.trim().is_empty())
+                || location
+                    .authored_workspace_path
+                    .as_deref()
+                    .is_some_and(|path| path.trim().is_empty())
             {
                 return Err(AbiError::new(
                     MC_STATUS_INVALID_ARGUMENT,
                     "installed package resource paths must be nonblank",
                 ));
             }
-            let campaign = campaign_inputs(
+            let mut campaign = campaign_inputs(
                 location.package_dir,
                 location.owner_cache_path.unwrap_or_default(),
             )?;
+            if let Some(workspace) = location.authored_workspace_path {
+                campaign = campaign.with_authored_workspace(workspace);
+            }
             Ok(InstalledCampaignInput {
                 campaign,
                 sound_bank: None,
@@ -2862,6 +2870,35 @@ mod tests {
 
     #[test]
     fn runtime_resolver_owned_package_set_bootstraps_real_entry_on_same_handle() {
+        // The optional authored content location must survive the public JSON
+        // boundary unchanged; resolver admission still validates its contents.
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../generated/secret-entry-20261110-integration/retained-source4-workspace",
+        );
+        let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5",
+        );
+        let request = serde_json::json!({
+            "request_contract": INSTALLED_PACKAGE_SET_CONTRACT,
+            "packages": [{
+                "package_dir": package,
+                "authored_workspace_path": workspace
+            }]
+        });
+        let encoded = request.to_string();
+        let parsed = installed_package_set_inputs(encoded.clone(), encoded.len() as u32).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].campaign.package_root, package);
+        assert_eq!(
+            parsed[0].campaign.authored_workspace.as_ref(),
+            Some(&workspace)
+        );
+        for blank in ["", " \t"] {
+            let mut invalid = request.clone();
+            invalid["packages"][0]["authored_workspace_path"] = serde_json::json!(blank);
+            let encoded = invalid.to_string();
+            assert!(installed_package_set_inputs(encoded.clone(), encoded.len() as u32).is_err());
+        }
         let contract = read_json(|buffer, capacity, length| {
             mc_game_runtime_contract_json_v1(buffer, capacity, length)
         });

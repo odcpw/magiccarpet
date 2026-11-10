@@ -332,6 +332,7 @@ impl Stream {
             package_root: input.package,
             owner_cache: input.owner_cache,
             dynamic_lighting_enabled: true,
+            authored_workspace: None,
         }))
         .map_err(|error| StreamError::new(error.code.as_str(), error))
     }

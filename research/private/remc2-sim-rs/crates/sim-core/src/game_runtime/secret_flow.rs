@@ -6,7 +6,7 @@
 //! as completion of the parent mission.
 
 use super::{
-    RuntimeTransitionError,
+    CompletedLevelStatistics, RuntimeTransitionError,
     campaign_menu::{self, CampaignMenuPhase, CampaignSaveState},
 };
 use crate::game_definition::{RuntimeFlowDefinition, SemanticLevelId};
@@ -62,6 +62,10 @@ pub(crate) struct SecretFlowState {
     discovered_secret_levels: Vec<SemanticLevelId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     completed_secret_levels: Vec<SemanticLevelId>,
+    /// sub_82AB0's separate five-value row per secret portal. A successful
+    /// replay replaces its row; failure does not create or erase one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    completed_secret_statistics: Vec<CompletedLevelStatistics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     return_frame: Option<SecretMissionReturnFrame>,
 }
@@ -75,6 +79,41 @@ impl SecretFlowState {
     #[must_use]
     pub(crate) fn completed_secret_levels(&self) -> &[SemanticLevelId] {
         &self.completed_secret_levels
+    }
+
+    #[must_use]
+    pub(crate) fn completed_secret_statistics(&self) -> &[CompletedLevelStatistics] {
+        &self.completed_secret_statistics
+    }
+
+    /// Record only an actual completion's statistics after its secret result
+    /// has been accepted. `sub_82AB0` overwrites the same source portal row.
+    pub(crate) fn record_completed_statistics(
+        &mut self,
+        level: &SemanticLevelId,
+        statistics: super::GameCompletionStatistics,
+    ) -> Result<(), RuntimeTransitionError> {
+        if !self.completed_secret_levels.contains(level)
+            || !campaign_menu::valid_percentages(&statistics)
+        {
+            return Err(secret_replay_error(
+                "secret completion statistics have an invalid mission or percentage",
+            ));
+        }
+        let record = CompletedLevelStatistics {
+            level_id: level.clone(),
+            statistics,
+        };
+        if let Some(previous) = self
+            .completed_secret_statistics
+            .iter_mut()
+            .find(|row| &row.level_id == level)
+        {
+            *previous = record;
+        } else {
+            self.completed_secret_statistics.push(record);
+        }
+        Ok(())
     }
 
     /// An unfinished discovery is eligible for its game's parent-replay rule.
@@ -228,6 +267,18 @@ impl SecretFlowState {
             ));
         }
 
+        let mut statistics_levels = std::collections::BTreeSet::new();
+        if self.completed_secret_statistics.iter().any(|record| {
+            !self.completed_secret_levels.contains(&record.level_id)
+                || flow.secret_entry(&record.level_id).is_none()
+                || !statistics_levels.insert(&record.level_id)
+                || !campaign_menu::valid_percentages(&record.statistics)
+        }) {
+            return Err(secret_replay_error(
+                "saved secret statistics have an invalid mission, duplicate or percentage",
+            ));
+        }
+
         match (
             flow.secret_entry(flow.bound_level_id()),
             self.return_frame.as_ref(),
@@ -279,6 +330,7 @@ impl SecretFlowState {
         {
             self.completed_secret_levels.push(secret_level_id);
         }
+
         self.return_frame = None;
         Ok(parent_campaign)
     }
@@ -586,6 +638,98 @@ mod tests {
     }
 
     #[test]
+    fn completed_secret_statistics_survive_save_abandon_and_replace_on_replay() {
+        let (parent, parent_flow, secret_flow, secret_level) = fixture();
+        let stats = super::super::GameCompletionStatistics {
+            spells_found_percent: 11,
+            hit_accuracy_percent: 22,
+            creatures_killed_percent: 33,
+            mana_collected_percent: 44,
+            time_taken_seconds: 55,
+        };
+        let mut state = SecretFlowState::default();
+        state
+            .enter_secret(&parent_flow, parent.clone(), secret_level.clone())
+            .unwrap();
+        assert!(
+            state
+                .record_completed_statistics(&secret_level, stats.clone())
+                .is_err(),
+            "an active but unfinished secret cannot acquire a result row"
+        );
+        state
+            .return_to_parent(&secret_flow, SecretMissionOutcome::Completed)
+            .unwrap();
+        state
+            .record_completed_statistics(&secret_level, stats.clone())
+            .unwrap();
+        state.validate_for_flow(&parent_flow).unwrap();
+        let bytes = serde_json::to_vec(&state).unwrap();
+        let mut restored: SecretFlowState = serde_json::from_slice(&bytes).unwrap();
+        restored.validate_for_flow(&parent_flow).unwrap();
+        assert_eq!(restored.completed_secret_statistics()[0].statistics, stats);
+
+        restored
+            .enter_discovered_secret(&parent_flow, parent.clone(), secret_level.clone())
+            .unwrap();
+        restored
+            .return_to_parent(&secret_flow, SecretMissionOutcome::Abandoned)
+            .unwrap();
+        assert_eq!(
+            restored.completed_secret_statistics()[0].statistics,
+            stats,
+            "abandonment cannot erase or replace an earlier source row"
+        );
+
+        let mut replay_stats = stats.clone();
+        replay_stats.time_taken_seconds += 1;
+        restored
+            .enter_discovered_secret(&parent_flow, parent, secret_level.clone())
+            .unwrap();
+        restored
+            .return_to_parent(&secret_flow, SecretMissionOutcome::Completed)
+            .unwrap();
+        restored
+            .record_completed_statistics(&secret_level, replay_stats.clone())
+            .unwrap();
+        assert_eq!(restored.completed_secret_statistics().len(), 1);
+        assert_eq!(
+            restored.completed_secret_statistics()[0].statistics,
+            replay_stats
+        );
+        restored.validate_for_flow(&parent_flow).unwrap();
+
+        let mut invalid = restored.clone();
+        invalid
+            .completed_secret_statistics
+            .push(invalid.completed_secret_statistics[0].clone());
+        assert!(
+            invalid.validate_for_flow(&parent_flow).is_err(),
+            "duplicate rows are rejected"
+        );
+        let mut invalid = restored.clone();
+        invalid.completed_secret_statistics[0].level_id = parent_flow.bound_level_id().clone();
+        assert!(
+            invalid.validate_for_flow(&parent_flow).is_err(),
+            "ordinary and secret rows cannot be spliced"
+        );
+        let mut invalid = restored.clone();
+        invalid.completed_secret_levels.clear();
+        assert!(
+            invalid.validate_for_flow(&parent_flow).is_err(),
+            "unfinished secrets cannot own a row"
+        );
+        let mut invalid = restored;
+        invalid.completed_secret_statistics[0]
+            .statistics
+            .hit_accuracy_percent = 101;
+        assert!(
+            invalid.validate_for_flow(&parent_flow).is_err(),
+            "invalid source percentages are rejected"
+        );
+    }
+
+    #[test]
     fn discovered_unfinished_and_completed_secrets_reenter_without_advancing_ordinary_frontier() {
         for completed in [false, true] {
             let (parent, parent_flow, _, secret_level) = fixture();
@@ -600,6 +744,7 @@ mod tests {
                     .then(|| secret_level.clone())
                     .into_iter()
                     .collect(),
+                completed_secret_statistics: Vec::new(),
                 return_frame: None,
             };
 
@@ -639,6 +784,7 @@ mod tests {
         let mut state = SecretFlowState {
             discovered_secret_levels: vec![secret_level.clone()],
             completed_secret_levels: Vec::new(),
+            completed_secret_statistics: Vec::new(),
             return_frame: None,
         };
         let before = state.clone();
@@ -663,6 +809,7 @@ mod tests {
         let mut state = SecretFlowState {
             discovered_secret_levels: vec![secret_level.clone()],
             completed_secret_levels: Vec::new(),
+            completed_secret_statistics: Vec::new(),
             return_frame: None,
         };
         state
@@ -690,6 +837,7 @@ mod tests {
         let mut state = SecretFlowState {
             discovered_secret_levels: vec![secret_level.clone()],
             completed_secret_levels: Vec::new(),
+            completed_secret_statistics: Vec::new(),
             return_frame: None,
         };
 
@@ -733,6 +881,7 @@ mod tests {
         let wrong_owner_frame = SecretFlowState {
             discovered_secret_levels: vec![secret_level.clone()],
             completed_secret_levels: Vec::new(),
+            completed_secret_statistics: Vec::new(),
             return_frame: Some(SecretMissionReturnFrame {
                 parent_campaign: wrong_owner_marker,
                 origin_level_id: selected_origin,

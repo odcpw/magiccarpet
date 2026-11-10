@@ -1204,6 +1204,91 @@ namespace MagicCarpet.Native.Tests
                 "secret completions belong to secret_campaign, not the ordinary frontier");
         }
 
+        private static GameRuntimeTransport.CompletedLevelStatistics SecretStatistics(int accuracy = 37) =>
+            new GameRuntimeTransport.CompletedLevelStatistics {
+                level_id = SecretDestinationLevel,
+                statistics = new GameRuntimeTransport.CompletionStatistics {
+                    spells_found_percent = 13, hit_accuracy_percent = accuracy,
+                    creatures_killed_percent = 42, mana_collected_percent = 55,
+                    time_taken_seconds = 219
+                }
+            };
+
+        [Test]
+        public void SecretStatisticsRequireAnEarnedUniqueBoundRowAndReachTheResultsLookup()
+        {
+            var identity = SecretCampaignMapIdentity();
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771),
+                "older identities may omit the new statistics field");
+            var row = SecretStatistics();
+            identity.secret_campaign.level_statistics = new[] { row };
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            var restored = DataContractJsonRoundTrip(identity);
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(restored, 771));
+            Assert.That(GameRuntimeTransport.SameSecretCampaign(identity.secret_campaign, restored.secret_campaign), Is.True);
+            Assert.That(CampaignMenuPresenter.CanShowStatistics(restored.campaign_menu, restored.secret_campaign, SecretDestinationLevel), Is.True);
+            Assert.That(CampaignMenuPresenter.StatisticsForLevel(restored.campaign_menu, restored.secret_campaign, SecretDestinationLevel).hit_accuracy_percent, Is.EqualTo(37));
+            Assert.That(CampaignMenuPresenter.StatisticsForLevel(restored.campaign_menu, restored.secret_campaign, SecretOriginLevel), Is.Null,
+                "a secret row never substitutes for its ordinary parent");
+            restored.secret_campaign.level_statistics[0].statistics.hit_accuracy_percent++;
+            Assert.That(GameRuntimeTransport.SameSecretCampaign(identity.secret_campaign, restored.secret_campaign), Is.False,
+                "save/transition equality observes changed result values");
+
+            identity.secret_campaign.level_statistics = new[] { row, SecretStatistics() };
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771), "duplicate secret rows");
+            identity.secret_campaign.level_statistics = new[] { SecretStatistics() };
+            identity.secret_campaign.level_statistics[0].level_id = SecretOriginLevel;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771), "ordinary row spliced into secret state");
+            identity.secret_campaign.level_statistics = new[] { SecretStatistics() };
+            identity.secret_campaign.completed_levels = Array.Empty<string>();
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771), "uncompleted secret row");
+            identity.secret_campaign.completed_levels = new[] { SecretDestinationLevel };
+            identity.secret_campaign.level_statistics[0].statistics.hit_accuracy_percent = 101;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771), "invalid source percentage");
+            identity.secret_campaign.level_statistics[0].statistics = null;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771), "missing source statistics");
+            identity.secret_campaign.level_statistics = new[] { SecretStatistics() };
+            identity.secret_campaign.level_statistics[0].level_id = "level.magic_carpet_2.unrelated_secret";
+            identity.secret_campaign.discovered_levels = new[] { SecretDestinationLevel, "level.magic_carpet_2.unrelated_secret" };
+            identity.secret_campaign.completed_levels = new[] { SecretDestinationLevel, "level.magic_carpet_2.unrelated_secret" };
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771), "wrong secret outside this catalog");
+        }
+
+        [Test]
+        public void SecretReceiptOnlyAllowsItsActualCompletedSecretRowToChange()
+        {
+            var success = SecretCompletedReturnReceipt();
+            success.after.secret_campaign.level_statistics = new[] { SecretStatistics() };
+            Assert.DoesNotThrow(() => SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(success), success.before, success.after));
+
+            var replay = SecretCompletedReturnReceipt();
+            replay.before.secret_campaign.completed_levels = new[] { SecretDestinationLevel };
+            replay.before.secret_campaign.level_statistics = new[] { SecretStatistics(20) };
+            replay.after.secret_campaign.level_statistics = new[] { SecretStatistics(80) };
+            Assert.DoesNotThrow(() => SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(replay), replay.before, replay.after), "successful replay replaces that source row");
+
+            var abandoned = SecretAbandonedReturnReceipt();
+            abandoned.before.secret_campaign.completed_levels = new[] { SecretDestinationLevel };
+            abandoned.after.secret_campaign.completed_levels = new[] { SecretDestinationLevel };
+            abandoned.before.secret_campaign.level_statistics = new[] { SecretStatistics(20) };
+            abandoned.after.secret_campaign.level_statistics = new[] { SecretStatistics(80) };
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(abandoned), abandoned.before, abandoned.after), "abandonment cannot replace the prior row");
+            abandoned.after.secret_campaign.level_statistics = null;
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(abandoned), abandoned.before, abandoned.after), "abandonment cannot discard the prior row");
+
+            var entry = SecretEntryReceipt();
+            entry.before.secret_campaign = SecretProgress(null, completed: true);
+            entry.after.secret_campaign = SecretProgress(SecretOriginLevel, completed: true);
+            entry.before.secret_campaign.level_statistics = new[] { SecretStatistics(20) };
+            entry.after.secret_campaign.level_statistics = new[] { SecretStatistics(80) };
+            Assert.Throws<InvalidDataException>(() => SecretTransitionTransport.ValidateSecretTransition(
+                DecodeBoundaryEnvelope(entry), entry.before, entry.after), "entry cannot rewrite an earned row");
+        }
+
         [Test]
         public void SecretCampaignSnapshotBindsReturnOriginToLoadingAndPausedBoundSecret()
         {

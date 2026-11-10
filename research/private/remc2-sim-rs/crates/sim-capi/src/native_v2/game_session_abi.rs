@@ -547,14 +547,17 @@ pub extern "C" fn mc_game_session_open_workspace_v1(
             asset_cache_path,
             asset_cache_path_len,
         )?;
-        if is_campaign_descriptor_package(&paths.package) {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "campaign descriptor packages have no workspace-authored variant route yet; \
-                 open the campaign package directly",
-            ));
+        enum Inputs {
+            Campaign(Mc2CampaignInputs),
+            Owned(Mc2OwnedInputs),
         }
-        let inputs = paths.owner_inputs()?;
+        // Select and validate the adapter before loading any workspace or
+        // allocating a session. Both routes retain their own package guards.
+        let inputs = if is_campaign_descriptor_package(&paths.package) {
+            Inputs::Campaign(paths.campaign_inputs()?)
+        } else {
+            Inputs::Owned(paths.owner_inputs()?)
+        };
         let workspace = utf8_input(workspace_path, workspace_path_len, "workspace_path")?;
         if workspace.is_empty() {
             return Err(AbiError::new(
@@ -570,7 +573,10 @@ pub extern "C" fn mc_game_session_open_workspace_v1(
                     format!("cannot load active workspace definition: {error}"),
                 )
             })?;
-        open_neutral_session(inputs, definition)
+        match inputs {
+            Inputs::Campaign(inputs) => open_neutral_campaign_session(inputs, definition),
+            Inputs::Owned(inputs) => open_neutral_session(inputs, definition),
+        }
     })
 }
 
@@ -896,6 +902,502 @@ mod tests {
                 handle, generation, tick, cursor, limit, buffer, capacity, length,
             )
         })
+    }
+
+    #[test]
+    fn retained_portal_workspace_reaches_secret_result_through_public_native_movement() {
+        use sim_core::FlightWorld;
+        use sim_core::campaign::journal::CampaignEffect;
+        use sim_core::level_definition::{
+            LevelDefinition, LevelEntityKind, SceneryKind, SwitchKind,
+        };
+        use sim_core::native_world::Mc2DispatchEvent;
+        use sim_core::world::portals::LevelExitSequence;
+        use std::collections::BTreeSet;
+        let package = std::env::var_os("MC_SOURCE4_CAMPAIGN_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            PathBuf::from,
+        );
+        let original = load_mc2_campaign(&package, &default_catalog().unwrap()).unwrap();
+        let level = original.level_definition().unwrap();
+        let mut encoded = serde_json::to_value(level).unwrap();
+        let mut changed = 0;
+        for (index, row) in level.entities().iter().enumerate() {
+            if matches!(
+                row.kind(),
+                LevelEntityKind::Scenery(SceneryKind::SecretPortal)
+                    | LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger)
+            ) {
+                assert_eq!(row.activation_group().unwrap().get(), 6);
+                encoded["entities"][index]["activation_group"] = serde_json::json!(4);
+                changed += 1;
+            }
+        }
+        assert_eq!(changed, 2);
+        let level: LevelDefinition = serde_json::from_value(encoded).unwrap();
+        assert!(
+            level
+                .verify_session_reset_variant_of(original.level_definition().unwrap())
+                .is_err()
+        );
+        let workspace = std::env::var_os("MC_RETAINED_SECRET_WORKSPACE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/secret-entry-20261110-integration/retained-source4-workspace"),
+            PathBuf::from,
+        );
+        // The preceding authoring-admission check retains this document with
+        // the existing WorkspaceStore API. This public/native check reads the
+        // same immutable input from disk and applies no in-memory fixture.
+        let variant = WorkspaceStore::open(&workspace)
+            .active_definition()
+            .unwrap();
+        assert_eq!(variant.level_definition(), Some(&level));
+        assert_eq!(variant.provenance(), original.provenance());
+        assert_eq!(variant.package_graph_hash(), original.package_graph_hash());
+        assert_ne!(variant.definition_hash(), original.definition_hash());
+        let tuning = sim_core::game_definition::DefinitionFlightBinding::from_definition(&variant)
+            .unwrap()
+            .tuning();
+        assert_eq!(
+            (tuning.forward_acceleration, tuning.max_forward_speed),
+            (16, 80)
+        );
+        let package_text = package.to_string_lossy();
+        let workspace_text = workspace.to_string_lossy();
+        let mut handle = 0;
+        assert_eq!(
+            mc_game_session_open_workspace_v1(
+                package_text.as_ptr(),
+                package_text.len() as u32,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                workspace_text.as_ptr(),
+                workspace_text.len() as u32,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK,
+            "{}",
+            native_last_error()
+        );
+        fn observe(
+            handle: u64,
+        ) -> (
+            sim_session::SessionIdentity,
+            sim_core::FlightState,
+            LevelExitSequence,
+        ) {
+            with_neutral_session(handle, |record| {
+                let NeutralSession::Mc2Campaign(session) = record else {
+                    panic!("workspace must use the actual campaign adapter")
+                };
+                let sim = session
+                    .backend()
+                    .campaign_presentation_source()
+                    .simulation();
+                assert!(
+                    sim.dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "{:?}",
+                    sim.dispatch_events()
+                );
+                Ok((
+                    session.identity(),
+                    sim.state.clone(),
+                    sim.level_exit_sequence(),
+                ))
+            })
+            .unwrap()
+        }
+        fn advance(handle: u64, command: &GameCommand) {
+            let (identity, _, _) = observe(handle);
+            let encoded = serde_json::to_vec(command).unwrap();
+            assert_eq!(
+                mc_game_session_step_json_v1(
+                    handle,
+                    identity.generation,
+                    identity.tick,
+                    encoded.as_ptr(),
+                    encoded.len() as u32
+                ),
+                MC_STATUS_OK,
+                "{}",
+                native_last_error()
+            );
+        }
+        fn public_snapshot(handle: u64) -> serde_json::Value {
+            // The public contract permits16MiB; the old64KiB Level2 helper
+            // is not a bound on this whole source4 snapshot.
+            read_json_with_capacity(4 * 1024 * 1024, |buffer, capacity, length| {
+                mc_game_session_snapshot_json_v1(handle, buffer, capacity, length)
+            })
+        }
+        fn motion_sample(handle: u64, leg: u8, turn: usize) {
+            with_neutral_session(handle, |record| {
+                let NeutralSession::Mc2Campaign(session) = record else { unreachable!() };
+                let sim = session.backend().campaign_presentation_source().simulation();
+                let state = &sim.state;
+                let terrain = sim.canonical_terrain();
+                let player = &sim.entities()[usize::from(state.entity_index)];
+                eprintln!("retainednativeflight leg={leg} turn={turn} tick={} pos={:?} yaw={} speed={}/{} pitch={} ground={} ceiling={:?} life={} slot243_generation={} slot243_phase_after={:?} switch136_matches_after={:?}",
+                    session.identity().tick, state.position, state.yaw, state.actual_speed, state.target_speed,
+                    state.effective_pitch, terrain.ground_height(state.position), terrain.ceiling_height(state.position),
+                    player.life, sim.economy().slot_generation(243), sim.cf10_live_source_phase(243), sim.level2_authored_switch_matches(136));
+                Ok(())
+            }).unwrap();
+        }
+        let (identity, state, exit) = observe(handle);
+        assert_eq!(identity.definition_hash, variant.definition_hash());
+        assert_eq!(identity.package_graph_hash, original.package_graph_hash());
+        assert_eq!(
+            (
+                state.position.x,
+                state.position.y,
+                state.position.z,
+                state.yaw
+            ),
+            (64896, 16000, 2256, 0)
+        );
+        assert_eq!(
+            (
+                state.roll_accumulator,
+                state.pitch_accumulator,
+                state.actual_speed
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(exit, LevelExitSequence::default());
+        let neutral = GameCommand::default();
+        // Original spawn and all authored positions remain unchanged. No pose,
+        // callback, group, objective, health, RNG or lifetime writes occur.
+        for _ in 0..16 {
+            advance(handle, &neutral);
+            assert!(!observe(handle).2.active);
+        }
+        // Fixed source roll arithmetic: a+=(2*126-a)/4, yaw+=a/8.
+        // Twenty-seven pulses and24 neutral inputs turn0→828 with residue3.
+        for _ in 0..27 {
+            advance(
+                handle,
+                &GameCommand {
+                    roll_axis: 126,
+                    ..Default::default()
+                },
+            );
+        }
+        for _ in 0..24 {
+            advance(handle, &neutral);
+        }
+        assert_eq!(
+            (observe(handle).1.yaw, observe(handle).1.roll_accumulator),
+            (828, 3)
+        );
+        let mut group = None;
+        let mut phases = BTreeSet::new();
+        let mut first_active_phase = None;
+        // The real definition caps speed80, not256. The same initial80
+        // commands used by C1 cannot reach136: scalar travel is only6240.
+        // At234 frames source16 acceleration/80 cap gives18560 total.
+        for turn in 0..234 {
+            advance(
+                handle,
+                &GameCommand {
+                    longitudinal: if turn < 16 {
+                        sim_session::LongitudinalControl::Accelerate
+                    } else {
+                        sim_session::LongitudinalControl::Coast
+                    },
+                    ..Default::default()
+                },
+            );
+            with_neutral_session(handle, |record| {
+                let NeutralSession::Mc2Campaign(session) = record else {
+                    unreachable!()
+                };
+                let sim = session
+                    .backend()
+                    .campaign_presentation_source()
+                    .simulation();
+                for event in sim.dispatch_events() {
+                    if let Mc2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: 4,
+                        authored_indices,
+                        ..
+                    } = event
+                    {
+                        assert!(
+                            group
+                                .replace((*source_slot, authored_indices.to_vec()))
+                                .is_none()
+                        );
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+            if [0, 4, 79, 159, 233].contains(&turn) {
+                motion_sample(handle, 1, turn);
+                if turn >= 4 {
+                    assert_eq!(
+                        (
+                            observe(handle).1.actual_speed,
+                            observe(handle).1.target_speed
+                        ),
+                        (80, 80)
+                    );
+                }
+            }
+        }
+        let (producer, members) = group.unwrap_or_else(|| {
+            panic!(
+                "fixed original-spawn flight must reach actual136/group4: player={:?}",
+                observe(handle).1
+            )
+        });
+        assert_eq!(producer, 243);
+        assert_eq!(members, [75, 76, 137, 138, 139, 140, 141, 142, 143, 144]);
+        let (portal, trigger) = with_neutral_session(handle, |record| {
+            let NeutralSession::Mc2Campaign(session) = record else {
+                unreachable!()
+            };
+            let sim = session
+                .backend()
+                .campaign_presentation_source()
+                .simulation();
+            let portal = *sim
+                .economy()
+                .authored_class14()
+                .iter()
+                .find(|row| row.authored_index == 75)
+                .unwrap();
+            let trigger = *sim
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .find(|row| row.authored_index == 76)
+                .unwrap();
+            assert_eq!((portal.model, portal.action, portal.particle), (4, 9, 339));
+            assert_eq!((trigger.model, trigger.action), (31, 31));
+            assert_eq!((portal.position.x >> 8, portal.position.y >> 8), (186, 213));
+            assert_eq!(
+                (trigger.position.x >> 8, trigger.position.y >> 8),
+                (161, 222)
+            );
+            Ok((portal, trigger))
+        })
+        .unwrap();
+        assert!(!observe(handle).2.active);
+        eprintln!(
+            "retainednative136: player={:?} portal={portal:?} controller={trigger:?}",
+            observe(handle).1
+        );
+        advance(
+            handle,
+            &GameCommand {
+                full_stop: true,
+                ..Default::default()
+            },
+        );
+        // Second fixed turn828→736:49 pulses−10 then24 neutral visits.
+        for _ in 0..49 {
+            advance(
+                handle,
+                &GameCommand {
+                    roll_axis: -10,
+                    ..Default::default()
+                },
+            );
+        }
+        for _ in 0..24 {
+            advance(handle, &neutral);
+        }
+        assert_eq!(
+            (observe(handle).1.yaw, observe(handle).1.roll_accumulator),
+            (736, -3)
+        );
+        // Same fixed heading and unchanged80 cap:513 frames give40880
+        // scalar travel; source per-step truncation lands inside76's AABB.
+        for turn in 0..513 {
+            advance(
+                handle,
+                &GameCommand {
+                    longitudinal: if turn < 16 {
+                        sim_session::LongitudinalControl::Accelerate
+                    } else {
+                        sim_session::LongitudinalControl::Coast
+                    },
+                    ..Default::default()
+                },
+            );
+            let exit = observe(handle).2;
+            if exit.active || exit.complete {
+                first_active_phase.get_or_insert(exit.phase);
+                phases.insert(exit.phase);
+            }
+            if [0, 4, 166, 332, 512].contains(&turn) {
+                motion_sample(handle, 2, turn);
+            }
+        }
+        assert!(
+            observe(handle).2.active || observe(handle).2.complete,
+            "fixed controller approach did not start the source sequence: {:?}",
+            observe(handle).1
+        );
+        for _ in 0..700 {
+            let exit = observe(handle).2;
+            if exit.active || exit.complete {
+                phases.insert(exit.phase);
+            }
+            if exit.complete {
+                break;
+            }
+            advance(handle, &neutral);
+        }
+        let (completed, state, exit) = observe(handle);
+        assert_eq!(
+            (
+                exit.active,
+                exit.complete,
+                exit.phase,
+                exit.result_code,
+                exit.player_status_flags
+            ),
+            (false, true, 12, 0x1a, 0x1a),
+            "player={state:?} phases={phases:?}"
+        );
+        assert_eq!(exit.portal_entity_index, portal.source_entity_index);
+        assert_eq!(exit.trigger_entity_index, trigger.source_entity_index);
+        // A controller before the human address executes start0 and the
+        // action11 phase0 body in the same pass. Source41 below proves that
+        // body even when the first end-of-turn observation is phase1.
+        let first_expected = if trigger.source_entity_index < state.entity_index {
+            1
+        } else {
+            0
+        };
+        assert_ne!(trigger.source_entity_index, state.entity_index);
+        assert_eq!(first_active_phase, Some(first_expected));
+        if first_expected == 0 {
+            assert!(phases.contains(&0));
+        }
+        for phase in [1, 3, 4, 5, 6, 7, 10, 11, 12] {
+            assert!(phases.contains(&phase), "phase {phase}: {phases:?}");
+        }
+        let journal_sequence = with_neutral_session(handle, |record| {
+            let NeutralSession::Mc2Campaign(session) = record else {
+                unreachable!()
+            };
+            let sim = session
+                .backend()
+                .campaign_presentation_source()
+                .simulation();
+            let completed = sim
+                .effect_journal
+                .records()
+                .iter()
+                .filter(|row| {
+                    matches!(&row.effect,
+                CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
+                    player_entity_index, result_code: 0x1a, ..
+                }) if *player_entity_index == state.entity_index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(completed.len(), 1);
+            let starts = sim
+                .effect_journal
+                .records()
+                .iter()
+                .filter(|row| {
+                    matches!(&row.effect,
+                CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceStarted {
+                    trigger_entity_index, portal_entity_index, ..
+                }) if *trigger_entity_index == trigger.source_entity_index
+                    && *portal_entity_index == portal.source_entity_index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(starts.len(), 1);
+            let phase_zero = sim
+                .effect_journal
+                .records()
+                .iter()
+                // ExitOverlap41 precedes the real start. The phase0 body
+                // emits the one player/-1/41 after start and before completion.
+                // audio_site is a sim-core-only cfg(test) field, not part of
+                // the actual enum compiled into this dependency/native path.
+                .filter(|row| starts[0].sequence < row.sequence
+                    && row.sequence < completed[0].sequence)
+                .filter(|row| {
+                    matches!(&row.effect,
+                CampaignEffect::Flight(sim_core::FlightEvent::PrepareSound {
+                    entity_index, player_index: -1, sound_id: 41, ..
+                }) if *entity_index == state.entity_index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(phase_zero.len(), 1);
+            assert!(phase_zero[0].audio.is_some());
+            assert!(
+                starts[0].sequence < phase_zero[0].sequence
+                    && phase_zero[0].sequence < completed[0].sequence
+            );
+            assert!(
+                sim.economy()
+                    .authored_switch_producers()
+                    .iter()
+                    .all(|row| row.authored_index != 76)
+            );
+            Ok(completed[0].sequence)
+        })
+        .unwrap();
+        let public = public_snapshot(handle);
+        assert_eq!(
+            public["identity"],
+            serde_json::to_value(&completed).unwrap()
+        );
+        let events = campaign_events(
+            handle,
+            completed.generation,
+            completed.tick,
+            journal_sequence,
+            1,
+        );
+        assert_eq!(
+            events["value"]["events"][0]["sequence"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap(),
+            journal_sequence + 1
+        );
+        for _ in 0..2 {
+            advance(handle, &neutral);
+        }
+        assert_eq!(observe(handle).2, exit);
+        let after = observe(handle).0;
+        let before_stale = public_snapshot(handle);
+        let encoded = serde_json::to_vec(&neutral).unwrap();
+        assert_ne!(
+            mc_game_session_step_json_v1(
+                handle,
+                identity.generation,
+                identity.tick,
+                encoded.as_ptr(),
+                encoded.len() as u32
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(public_snapshot(handle), before_stale);
+        eprintln!(
+            "retainednativeportal: workspace={} identity={after:?} phases={phases:?} result={:#x} journal={journal_sequence}",
+            workspace.display(),
+            exit.result_code
+        );
+        assert_eq!(mc_game_session_destroy_v1(handle), MC_STATUS_OK);
+        // The installed GameRuntime resolver must consume this same authored
+        // identity before an outer destination/load claim is made.
     }
 
     #[test]
@@ -1955,8 +2457,8 @@ mod tests {
         );
         assert_eq!(handle, SENTINEL);
 
-        // The workspace route has no campaign variant yet and must not
-        // allocate a handle or fall back to the owned adapter.
+        // Workspace campaign admission keeps the same shape preflight: an
+        // owner closure must not allocate a handle or select the owned adapter.
         let workspace = b"/must-not-open/neutral-campaign-workspace";
         assert_eq!(
             mc_game_session_open_workspace_v1(

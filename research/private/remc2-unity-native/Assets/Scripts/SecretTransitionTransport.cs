@@ -475,8 +475,28 @@ namespace MagicCarpet.Native
 
             var newCompletions = after.completed_levels.Where(
                 level => !previousCompletions.Contains(level));
-            return newCompletions.All(level => allowNewCompletion && level == secretLevelId) &&
-                (!allowNewCompletion || after.completed_levels.Contains(secretLevelId));
+            if (!newCompletions.All(level => allowNewCompletion && level == secretLevelId) ||
+                (allowNewCompletion && !after.completed_levels.Contains(secretLevelId)))
+                return false;
+
+            var previousStatistics = before?.level_statistics ?? Array.Empty<GameRuntimeTransport.CompletedLevelStatistics>();
+            var nextStatistics = after.level_statistics ?? Array.Empty<GameRuntimeTransport.CompletedLevelStatistics>();
+            if (previousStatistics.Any(row => row == null || row.statistics == null || string.IsNullOrEmpty(row.level_id)) ||
+                nextStatistics.Any(row => row == null || row.statistics == null || string.IsNullOrEmpty(row.level_id)) ||
+                previousStatistics.Select(row => row.level_id).Distinct(StringComparer.Ordinal).Count() != previousStatistics.Length ||
+                nextStatistics.Select(row => row.level_id).Distinct(StringComparer.Ordinal).Count() != nextStatistics.Length)
+                return false;
+            foreach (var previous in previousStatistics)
+            {
+                var next = nextStatistics.SingleOrDefault(row => row.level_id == previous.level_id);
+                if (next == null) return false;
+                if ((!allowNewCompletion || previous.level_id != secretLevelId) &&
+                    !GameRuntimeTransport.SameCompletionStatistics(previous.statistics, next.statistics))
+                    return false;
+            }
+            return nextStatistics.All(row =>
+                (previousStatistics.Any(previous => previous.level_id == row.level_id) ||
+                 (allowNewCompletion && row.level_id == secretLevelId)));
         }
 
         private static bool SameRuntimeIdentity(

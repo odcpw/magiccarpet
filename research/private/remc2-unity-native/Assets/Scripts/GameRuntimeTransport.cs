@@ -370,6 +370,7 @@ namespace MagicCarpet.Native
         {
             public string[] discovered_levels;
             public string[] completed_levels;
+            [OptionalField] public CompletedLevelStatistics[] level_statistics;
             [OptionalField] public string return_origin;
         }
 
@@ -1460,6 +1461,19 @@ namespace MagicCarpet.Native
                     "secret campaign progress is not bound to its runtime-flow catalog");
             }
 
+            if (snapshot.level_statistics != null)
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var row in snapshot.level_statistics)
+                {
+                    if (row == null || !snapshot.completed_levels.Contains(row.level_id) ||
+                        !seen.Add(row.level_id) ||
+                        (flow != null && !secretEntries.Any(entry => entry != null && entry.secret_level_id == row.level_id)))
+                        throw new InvalidOperationException("Secret statistics have an unbound or duplicate mission");
+                    ValidateCompletionStatistics(row.statistics);
+                }
+            }
+
             if (boundSecret != null &&
                 (!snapshot.discovered_levels.Contains(boundSecret.secret_level_id) ||
                  identity.mode is not (LoadingMode or PlayingMode or PausedMode) ||
@@ -1944,10 +1958,29 @@ namespace MagicCarpet.Native
             {
                 return false;
             }
+            var leftStatistics = left.level_statistics ?? Array.Empty<CompletedLevelStatistics>();
+            var rightStatistics = right.level_statistics ?? Array.Empty<CompletedLevelStatistics>();
+            if (leftStatistics.Length != rightStatistics.Length) return false;
+            for (var i = 0; i < leftStatistics.Length; i++)
+            {
+                var a = leftStatistics[i];
+                var b = rightStatistics[i];
+                if (a == null || b == null || a.level_id != b.level_id ||
+                    !SameCompletionStatistics(a.statistics, b.statistics))
+                    return false;
+            }
             return left.return_origin == right.return_origin &&
                 left.discovered_levels.SequenceEqual(right.discovered_levels) &&
                 left.completed_levels.SequenceEqual(right.completed_levels);
         }
+
+        internal static bool SameCompletionStatistics(CompletionStatistics left, CompletionStatistics right) =>
+            left != null && right != null &&
+            left.spells_found_percent == right.spells_found_percent &&
+            left.hit_accuracy_percent == right.hit_accuracy_percent &&
+            left.creatures_killed_percent == right.creatures_killed_percent &&
+            left.mana_collected_percent == right.mana_collected_percent &&
+            left.time_taken_seconds == right.time_taken_seconds;
 
         private static bool SameBriefingSpeech(CampaignSpeechSegment left, CampaignSpeechSegment right)
         {

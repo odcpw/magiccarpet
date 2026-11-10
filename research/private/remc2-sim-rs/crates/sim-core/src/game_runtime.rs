@@ -201,6 +201,8 @@ pub struct RuntimeIdentity {
 pub struct SecretCampaignSnapshot {
     pub discovered_levels: Vec<SemanticLevelId>,
     pub completed_levels: Vec<SemanticLevelId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub level_statistics: Vec<CompletedLevelStatistics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_origin: Option<SemanticLevelId>,
 }
@@ -581,6 +583,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 SecretCampaignSnapshot {
                     discovered_levels: self.secret_flow.discovered_secret_levels().to_vec(),
                     completed_levels: self.secret_flow.completed_secret_levels().to_vec(),
+                    level_statistics: self.secret_flow.completed_secret_statistics().to_vec(),
                     return_origin: self
                         .secret_flow
                         .return_frame()
@@ -808,7 +811,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .map_err(RuntimeTransitionError::SessionGuard)?
             .value;
         if outcome == secret_flow::SecretMissionOutcome::Completed
-            && !matches!(completion, GameCompletionStatus::Completed { .. })
+            && !matches!(&completion, GameCompletionStatus::Completed { .. })
         {
             return Err(RuntimeTransitionError::CompletionNotReady);
         }
@@ -828,6 +831,12 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .ok_or(RuntimeTransitionError::GenerationExhausted)?;
         let mut secret_flow = self.secret_flow.clone();
         let mut parent = secret_flow.return_to_parent(active_flow, outcome)?;
+        if outcome == secret_flow::SecretMissionOutcome::Completed
+            && let GameCompletionStatus::Completed { completion } = &completion
+            && let Some(statistics) = &completion.statistics
+        {
+            secret_flow.record_completed_statistics(&secret_id, statistics.clone())?;
+        }
         let selected = resolve(&mut parent)?;
         let origin = parent.selected_level_id.as_ref().ok_or_else(|| {
             RuntimeTransitionError::InvalidRuntimeFlow {

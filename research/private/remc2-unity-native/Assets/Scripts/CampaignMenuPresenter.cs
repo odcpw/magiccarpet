@@ -329,9 +329,7 @@ namespace MagicCarpet.Native
                     {
                         var menu = identity.campaign_menu;
                         var level = showingResults ? menu.completed_level_id : statisticsLevel;
-                        var stats = menu.completed_level_id == level ? menu.completion_statistics : null;
-                        if (stats == null && menu.level_statistics != null)
-                            stats = Array.Find(menu.level_statistics, row => row.level_id == level)?.statistics;
+                        var stats = StatisticsForLevel(menu, identity.secret_campaign, level);
                         if (campaignCache.Campaign == null)
                             throw new InvalidOperationException("campaign results require the original bank6 artwork; refresh the menu cache");
                         var focus = campaignCache.ForMission(showingResults ? menu.completed_level_id :
@@ -365,7 +363,7 @@ namespace MagicCarpet.Native
                             return Action.None;
                         }
                         if (target != null && Event.current.button == 1 &&
-                            Array.IndexOf(identity.campaign_menu.completed_levels, target) >= 0)
+                            CanShowStatistics(identity.campaign_menu, identity.secret_campaign, target))
                         {
                             statisticsLevel = target;
                             Event.current.Use();
@@ -631,11 +629,30 @@ namespace MagicCarpet.Native
             return completed ? 37 : 70;
         }
 
-        internal string StatisticsText(GameRuntimeTransport.CampaignMenuSnapshot menu, string level)
+        internal static GameRuntimeTransport.CompletionStatistics StatisticsForLevel(
+            GameRuntimeTransport.CampaignMenuSnapshot menu,
+            GameRuntimeTransport.SecretCampaignSnapshot secrets, string level)
         {
             var stats = menu.completed_level_id == level ? menu.completion_statistics : null;
             if (stats == null && menu.level_statistics != null)
                 stats = Array.Find(menu.level_statistics, row => row.level_id == level)?.statistics;
+            if (stats == null && secrets?.level_statistics != null &&
+                secrets.completed_levels != null && Array.IndexOf(secrets.completed_levels, level) >= 0)
+                stats = Array.Find(secrets.level_statistics, row => row.level_id == level)?.statistics;
+            return stats;
+        }
+
+        internal static bool CanShowStatistics(GameRuntimeTransport.CampaignMenuSnapshot menu,
+            GameRuntimeTransport.SecretCampaignSnapshot secrets, string level) =>
+            menu != null && level != null &&
+            ((menu.completed_levels != null && Array.IndexOf(menu.completed_levels, level) >= 0) ||
+             (secrets?.completed_levels != null && Array.IndexOf(secrets.completed_levels, level) >= 0 &&
+              StatisticsForLevel(menu, secrets, level) != null));
+
+        internal string StatisticsText(GameRuntimeTransport.CampaignMenuSnapshot menu, string level,
+            GameRuntimeTransport.SecretCampaignSnapshot secrets = null)
+        {
+            var stats = StatisticsForLevel(menu, secrets, level);
             if (stats == null) return "Statistics are not available for this mission.";
             var seconds = stats.time_taken_seconds;
             return SourceText(386) + ": " + stats.spells_found_percent + "%\n" +

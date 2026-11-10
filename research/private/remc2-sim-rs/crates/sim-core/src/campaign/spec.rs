@@ -2426,9 +2426,9 @@ impl CampaignDefinition {
         Ok(())
     }
 
-    /// Test-only content variant; all production reset validators stay intact.
-    #[cfg(test)]
-    pub(crate) fn configure_portal_source_for_test(
+    /// Establish the immutable portal content of a newly opened authored variant.
+    /// Existing sessions still use the ordinary reset-variant validator.
+    pub(crate) fn configure_portal_source(
         &mut self,
         portal: &LevelEntityId,
         trigger: &LevelEntityId,
@@ -2437,6 +2437,29 @@ impl CampaignDefinition {
     ) -> std::result::Result<(), String> {
         use crate::level_definition::{SceneryKind, SwitchKind};
         let target = sim_definition::adapter::activation_group_id(group);
+        let pair = self
+            .level_definition
+            .entity(portal)
+            .zip(self.level_definition.entity(trigger));
+        if group == 0
+            || pair.is_none_or(|(portal, trigger)| {
+                !matches!(
+                    (portal.kind(), trigger.kind()),
+                    (
+                        LevelEntityKind::Scenery(SceneryKind::SecretPortal),
+                        LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger)
+                    ) | (
+                        LevelEntityKind::Scenery(SceneryKind::ExitPortal),
+                        LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger)
+                    )
+                ) || portal.activation_group().is_none()
+                    || portal.activation_group() != trigger.activation_group()
+            })
+        {
+            return Err(
+                "authored portal content requires one original matching dormant pair".into(),
+            );
+        }
         if level.entities().len() != self.level_definition.entities().len()
             || level.objectives() != self.level_definition.objectives()
             || level.activation_groups().collect::<Vec<_>>()
@@ -2457,14 +2480,14 @@ impl CampaignDefinition {
                 .entity(original.id())
                 .ok_or("configured portal pair lost an original entity")?;
             let expected_kind = if original.id() == portal {
-                Some(LevelEntityKind::Scenery(SceneryKind::SecretPortal))
+                Some(original.kind())
             } else if original.id() == trigger {
-                Some(LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger))
+                Some(original.kind())
             } else {
                 None
             };
             if let Some(kind) = expected_kind {
-                if original.kind() != kind
+                if candidate.kind() != kind
                     || candidate.activation_group() != Some(target)
                     || original.activation_group() == Some(target)
                 {
@@ -2490,6 +2513,63 @@ impl CampaignDefinition {
         }
         self.level_definition = level;
         Ok(())
+    }
+
+    /// Decode one retained authored portal-pair edit without changing owner
+    /// bytes, source facts, runtime bindings, or any other level content.
+    pub(crate) fn with_authored_portal_variant(
+        &self,
+        level: LevelDefinition,
+    ) -> std::result::Result<(Self, [(u16, i16); 2]), String> {
+        use crate::level_definition::{SceneryKind, SwitchKind};
+        let changed = self
+            .level_definition
+            .entities()
+            .iter()
+            .filter(|before| level.entity(before.id()) != Some(*before))
+            .collect::<Vec<_>>();
+        let [first, second] = changed.as_slice() else {
+            return Err("authored portal variant must edit exactly one original pair".into());
+        };
+        let (portal, trigger) = if matches!(first.kind(), LevelEntityKind::Scenery(_)) {
+            (*first, *second)
+        } else {
+            (*second, *first)
+        };
+        if !matches!(
+            (portal.kind(), trigger.kind()),
+            (
+                LevelEntityKind::Scenery(SceneryKind::SecretPortal),
+                LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger)
+            ) | (
+                LevelEntityKind::Scenery(SceneryKind::ExitPortal),
+                LevelEntityKind::Switch(SwitchKind::ExitSequenceTrigger)
+            )
+        ) || portal.activation_group().is_none()
+            || portal.activation_group() != trigger.activation_group()
+        {
+            return Err(
+                "authored portal variant requires an original matching dormant pair".into(),
+            );
+        }
+        let target = level
+            .entity(portal.id())
+            .and_then(|row| row.activation_group())
+            .ok_or("authored portal variant requires a dormant destination group")?;
+        let group = i16::try_from(target.get())
+            .map_err(|_| "authored portal destination exceeds the source group range")?;
+        let record_for = |bindings: &BTreeMap<u16, LevelEntityId>, id: &LevelEntityId| {
+            bindings
+                .iter()
+                .find_map(|(record, entity)| (entity == id).then_some(*record))
+        };
+        let portal_record = record_for(&self.scenery_entity_by_authored_record, portal.id())
+            .ok_or("authored portal is not an original source feature")?;
+        let trigger_record = record_for(&self.switch_entity_by_authored_record, trigger.id())
+            .ok_or("authored portal controller is not an original source feature")?;
+        let mut candidate = self.clone();
+        candidate.configure_portal_source(portal.id(), trigger.id(), group as u16, level)?;
+        Ok((candidate, [(portal_record, group), (trigger_record, group)]))
     }
 
     pub(crate) fn generate_terrain_startup(&self) -> Result<TerrainStartupWorld> {

@@ -638,6 +638,12 @@ impl CampaignDefinition {
         Ok(())
     }
 
+    /// The package descriptor has validated the retained authored pair; all
+    /// source-to-semantic identity maps remain this definition's original maps.
+    pub(crate) fn adopt_authored_portal_level(&mut self, level: LevelDefinition) {
+        self.semantic_level = Some(level);
+    }
+
     pub(crate) fn replace_semantic_level(
         &mut self,
         level: LevelDefinition,

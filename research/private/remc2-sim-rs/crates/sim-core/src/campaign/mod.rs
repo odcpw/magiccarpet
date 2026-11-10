@@ -205,6 +205,45 @@ impl CampaignSession {
         &self.definition
     }
 
+    /// Adopt one explicitly authored portal pair before exposing a fresh
+    /// session. The validated owner members and their provenance stay intact.
+    pub(crate) fn apply_authored_portal_variant(
+        &mut self,
+        level: &crate::level_definition::LevelDefinition,
+    ) -> Result<(), NativeWorldError> {
+        let (descriptor, edits) = self
+            .definition
+            .with_authored_portal_variant(level.clone())
+            .map_err(NativeWorldError::new)?;
+        let mut features = self
+            .simulation
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .to_vec();
+        for (record, group) in edits {
+            let row = features
+                .get_mut(usize::from(record))
+                .ok_or_else(|| NativeWorldError::new("authored portal record is unavailable"))?;
+            row.activation_group = group;
+        }
+        let mut simulation_definition = (*self.simulation.session.definition).clone();
+        simulation_definition.adopt_authored_portal_level(level.clone());
+        self.definition = Arc::new(descriptor);
+        self.simulation.session.definition = Arc::new(simulation_definition);
+        self.simulation
+            .session
+            .state
+            .live
+            .mission
+            .authored_features_mut()
+            .copy_from_slice(&features);
+        self.simulation.session.rebase();
+        Ok(())
+    }
+
     /// Declare a bounded source-language fixture before the first public turn.
     /// Shipped records and production reset admission remain unchanged.
     #[cfg(test)]
@@ -277,7 +316,7 @@ impl CampaignSession {
                 })?;
             let mut descriptor = (*self.definition).clone();
             descriptor
-                .configure_portal_source_for_test(
+                .configure_portal_source(
                     portal_id,
                     trigger_id,
                     group as u16,

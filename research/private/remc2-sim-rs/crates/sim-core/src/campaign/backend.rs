@@ -678,6 +678,7 @@ pub struct Mc2CampaignInputs {
     pub package_root: PathBuf,
     pub owner_cache: Option<PathBuf>,
     pub dynamic_lighting_enabled: bool,
+    pub authored_workspace: Option<PathBuf>,
     #[cfg(test)]
     configured_source: Option<ConfiguredSourceForTest>,
 }
@@ -698,6 +699,7 @@ impl Mc2CampaignInputs {
             package_root: package_root.into(),
             owner_cache: None,
             dynamic_lighting_enabled: true,
+            authored_workspace: None,
             #[cfg(test)]
             configured_source: None,
         }
@@ -712,6 +714,7 @@ impl Mc2CampaignInputs {
             package_root: package_root.into(),
             owner_cache: Some(owner_cache.into()),
             dynamic_lighting_enabled: true,
+            authored_workspace: None,
             #[cfg(test)]
             configured_source: None,
         }
@@ -721,6 +724,15 @@ impl Mc2CampaignInputs {
     #[must_use]
     pub fn with_dynamic_lighting(mut self, enabled: bool) -> Self {
         self.dynamic_lighting_enabled = enabled;
+        self
+    }
+
+    /// Retain explicitly authored content separately from its unchanged owner
+    /// package. Resolver construction validates the immutable workspace against
+    /// that exact package before publishing an installed definition.
+    #[must_use]
+    pub fn with_authored_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.authored_workspace = Some(workspace.into());
         self
     }
 
@@ -756,6 +768,65 @@ fn load_mc2_campaign_inputs(
         ));
     }
     Ok(definition)
+}
+
+/// Validate a newly authored portal content baseline. This does not relax the
+/// writable-field/reset contract of any existing definition or session.
+fn authored_portal_content_base(
+    definition: &GameDefinition,
+    base: &GameDefinition,
+    input: &Mc2CampaignInputs,
+    catalog: &SemanticCatalog,
+) -> crate::game_definition::Result<GameDefinition> {
+    definition.verify_identity()?;
+    if definition.verify_semantic_variant_of(base, catalog).is_ok() {
+        return Ok(base.clone());
+    }
+    // Preserve every package, artifact, provenance, flow and catalog root before
+    // allowing the descriptor to validate the separate authored level content.
+    sim_definition::adapter::with_level_definition(
+        definition.clone(),
+        base.level_definition()
+            .expect("campaign has a level")
+            .clone(),
+    )
+    .verify_semantic_variant_of(base, catalog)?;
+    let level = definition.level_definition().ok_or_else(|| {
+        definition_error(
+            DefinitionErrorCode::InvalidSchema,
+            "mc2_campaign.authored_portal_variant",
+            "authored portal content must retain its semantic level",
+        )
+    })?;
+    let selection =
+        CampaignDescriptor::declared_selection(&input.package_root).map_err(|error| {
+            definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "mc2_campaign.authored_portal_variant",
+                error.to_string(),
+            )
+        })?;
+    let descriptor =
+        CampaignDescriptor::preflight(&input.package_root, selection, &CAMPAIGN_BEHAVIOR_REGISTRY)
+            .map_err(|error| {
+                definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    "mc2_campaign.authored_portal_variant",
+                    error.to_string(),
+                )
+            })?;
+    descriptor
+        .with_authored_portal_variant(level.clone())
+        .map_err(|error| {
+            definition_error(
+                DefinitionErrorCode::InvalidSchema,
+                "mc2_campaign.authored_portal_variant",
+                error,
+            )
+        })?;
+    let content_base = sim_definition::adapter::with_level_definition(base.clone(), level.clone());
+    definition.verify_semantic_variant_of(&content_base, catalog)?;
+    Ok(content_base)
 }
 
 #[cfg(test)]
@@ -1265,12 +1336,21 @@ impl Mc2RuntimePackageResolver {
         let mut by_level = BTreeMap::new();
         let mut loaded = Vec::new();
         for input in inputs {
-            let (definition, selection, source_package_sha256, runtime_capture_sha256) =
+            let (mut definition, selection, source_package_sha256, runtime_capture_sha256) =
                 load_mc2_campaign_internal(
                     &input.package_root,
                     input.owner_cache.as_deref(),
                     &catalog,
                 )?;
+            if let Some(workspace) = &input.authored_workspace {
+                let retained = crate::game_definition::WorkspaceStore::open(workspace)
+                    .active_definition().map_err(|error| definition_error(
+                        DefinitionErrorCode::InvalidSchema, "mc2_campaign.authored_workspace",
+                        error.to_string(),
+                    ))?;
+                authored_portal_content_base(&retained, &definition, &input, &catalog)?;
+                definition = retained;
+            }
             loaded.push((
                 input,
                 definition,
@@ -3337,9 +3417,10 @@ impl GameAdapter for Mc2CampaignAdapter {
                 .clone();
             package_base = with_level_and_runtime_flow(package_base, level, canonical);
         }
-        definition
-            .verify_semantic_variant_of(&package_base, &catalog)
+        let content_base = authored_portal_content_base(definition, &package_base, &input, &catalog)
             .map_err(CampaignBackendError::Definition)?;
+        let authored_portal_variant = content_base.level_definition() != package_base.level_definition();
+        package_base = content_base;
         let mut package_campaign = match &input.owner_cache {
             Some(owner_cache) => CampaignSession::open_with_owner_cache_and_dynamic_lighting(
                 &input.package_root,
@@ -3359,6 +3440,18 @@ impl GameAdapter for Mc2CampaignAdapter {
             package_campaign
                 .configure_source_variant_for_test(&configured.features, &configured.bindings)
                 .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
+        }
+        if authored_portal_variant {
+            let level = definition.level_definition().ok_or_else(|| {
+                CampaignBackendError::Definition(definition_error(
+                    DefinitionErrorCode::InvalidSchema,
+                    "mc2_campaign.authored_portal_variant",
+                    "authored portal content must retain its semantic level",
+                ))
+            })?;
+            package_campaign.apply_authored_portal_variant(level).map_err(|error| {
+                CampaignBackendError::Open(CampaignOpenError::Materialization(error))
+            })?;
         }
         let fireball_launch_sound_choices = fireball_launch_sound_choices(&package_base, &input)?;
         let fireball_launch_sound_id =
@@ -5258,8 +5351,155 @@ pub(crate) mod tests {
             .step(before.guard(), GameCommand::default())
             .unwrap();
         assert!(session.identity().tick > before.tick);
-        // This is a genuine package/open/scheduled-step check. It grants no
-        // discovery, frontier, portal entry, completion, or return result.
+        // Preserve the real secret package, default actor, and ordinary
+        // scheduling. These menu commands do not grant a parent frontier,
+        // portal entry, objective completion, or outer return frame.
+        use sim_session::AbandonAction;
+        let player = session.backend().campaign.simulation().state.entity_index;
+        let local = session
+            .backend()
+            .campaign
+            .simulation()
+            .runtime()
+            .local_player_slot;
+        let player_handle = session
+            .backend()
+            .campaign
+            .simulation()
+            .source_arena()
+            .handle(player)
+            .unwrap();
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .simulation()
+                .session
+                .state
+                .live
+                .source_player_result
+                .raw_word(),
+            0
+        );
+        let mut confirm_guard = None;
+        for (action, admitted, result_word) in [
+            (AbandonAction::ConfirmAbandon, false, 0_u16),
+            (AbandonAction::OpenAbandonConfirmation, true, 0),
+            (AbandonAction::ConfirmAbandon, true, 0x0018),
+        ] {
+            let command_guard = session.identity().guard();
+            if result_word == 0x0018 {
+                confirm_guard = Some(command_guard);
+            }
+            let before_header = session
+                .backend()
+                .campaign
+                .simulation()
+                .session
+                .state
+                .live
+                .source_player_result
+                .raw_headers()[usize::from(local)];
+            let observed = session
+                .step(
+                    command_guard,
+                    GameCommand {
+                        abandon_action: Some(action),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let menu = observed.value.source_menu_admission.unwrap();
+            assert_eq!(
+                (menu.action, menu.admitted, menu.tick),
+                (action, admitted, observed.identity.tick)
+            );
+            assert!(!observed.value.return_to_title_requested);
+            let sim = session.backend().campaign.simulation();
+            let result = sim.session.state.live.source_player_result;
+            assert_eq!(result.source_player_slot(), u16::from(local));
+            assert_eq!(result.raw_word(), result_word);
+            assert_eq!(
+                result.raw_headers()[usize::from(local)] & 0xffff,
+                before_header & 0xffff
+            );
+            assert_eq!(sim.secret_banishment_result(), result_word == 0x0018);
+            assert!(!sim.ordinary_banishment_result());
+            assert!(!result.is_secret_banishment_for(u16::from(local) + 1));
+            assert_eq!(sim.source_arena().handle(player), Some(player_handle));
+            assert_eq!(sim.runtime().player_inputs[usize::from(local)].opcode, 0);
+            assert!(!sim.level_exit_sequence().complete);
+            // Source PlayerEvents1D produces18; it is neither the normal
+            // action12 exit10 nor the action11 entry/continuation26. The
+            // separate portal carrier must not acquire a fabricated result.
+            assert_eq!(sim.level_exit_sequence().result_code, 0);
+        }
+        let before_duplicate = session.snapshot();
+        assert!(
+            session
+                .step(
+                    confirm_guard.unwrap(),
+                    GameCommand {
+                        abandon_action: Some(AbandonAction::ConfirmAbandon),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(session.snapshot(), before_duplicate);
+        let confirmed_word = session
+            .backend()
+            .campaign
+            .simulation()
+            .session
+            .state
+            .live
+            .source_player_result
+            .raw_word();
+        // Reading the result never consumes it. The guarded outer secret-frame
+        // owner performs that transfer; a stale request cannot publish it twice.
+        for _ in 0..2 {
+            assert!(
+                session
+                    .backend()
+                    .campaign
+                    .simulation()
+                    .secret_banishment_result()
+            );
+        }
+        let old_identity = session.identity();
+        session.reset(old_identity.guard()).unwrap();
+        assert!(session.identity().generation > old_identity.generation);
+        assert_eq!(
+            session
+                .backend()
+                .campaign
+                .simulation()
+                .session
+                .state
+                .live
+                .source_player_result
+                .raw_word(),
+            0
+        );
+        assert!(
+            !session
+                .backend()
+                .campaign
+                .simulation()
+                .secret_banishment_result()
+        );
+        let reset = session.snapshot();
+        assert!(
+            session
+                .step(old_identity.guard(), GameCommand::default())
+                .is_err()
+        );
+        assert_eq!(session.snapshot(), reset);
+        eprintln!(
+            "source30publicbanish: player={player_handle:?} sourceplayer={local} confirmed_raw={confirmed_word:#06x} stale-request=refused reset_raw=0 resetgeneration={}",
+            session.identity().generation
+        );
     }
 
     #[test]
@@ -38101,6 +38341,267 @@ pub(crate) mod tests {
         // isolation, strict overlap, exact group-8 activation, consumption,
         // and reset. It does not author Area Exit/Level Exit/Objective triggers,
         // target groups, cadence, placement, player bounds, save/replay, or UI.
+    }
+
+    #[test]
+    fn retained_portal_workspace_binds_only_its_authored_content_and_preserves_reset_guards() {
+        use crate::game_definition::WorkspaceStore;
+        use crate::level_definition::{LevelDefinition, LevelEntityKind, SceneryKind, SwitchKind};
+        let package = std::env::var_os("MC_SOURCE4_CAMPAIGN_PACKAGE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5"),
+            PathBuf::from,
+        );
+        let catalog = default_catalog().unwrap();
+        let original = load_mc2_campaign(&package, &catalog).unwrap();
+        let original_level = original.level_definition().unwrap();
+        let mut encoded = serde_json::to_value(original_level).unwrap();
+        let mut pair = Vec::new();
+        for (index, entity) in original_level.entities().iter().enumerate() {
+            if matches!(
+                entity.kind(),
+                LevelEntityKind::Scenery(SceneryKind::SecretPortal)
+                    | LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger)
+            ) {
+                assert_eq!(entity.activation_group().unwrap().get(), 6);
+                encoded["entities"][index]["activation_group"] = serde_json::json!(4);
+                pair.push(index);
+            }
+        }
+        assert_eq!(pair.len(), 2);
+        let level: LevelDefinition = serde_json::from_value(encoded.clone()).unwrap();
+        // Ordinary reopen/reset admission stays strict; only a new authored
+        // baseline may adopt this content, with its own immutable hash.
+        assert!(
+            level
+                .verify_session_reset_variant_of(original_level)
+                .is_err()
+        );
+        let variant = sim_definition::adapter::with_level_definition(original.clone(), level);
+        assert_ne!(variant.definition_hash(), original.definition_hash());
+        assert_eq!(variant.package_graph_hash(), original.package_graph_hash());
+        assert_eq!(
+            variant.artifact_graph_hash(),
+            original.artifact_graph_hash()
+        );
+        assert_eq!(variant.provenance(), original.provenance());
+        assert!(
+            variant
+                .verify_semantic_variant_of(&original, &catalog)
+                .is_err()
+        );
+        let workspace = std::env::var_os("MC_RETAINED_SECRET_WORKSPACE").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/secret-entry-20261110-integration/retained-source4-workspace"),
+            PathBuf::from,
+        );
+        if !workspace.join("workspace-state.json").exists() {
+            // WorkspaceStore owns its canonical filename and exclusive create.
+            // Repeated checks may reopen the identical retained authored input.
+            match WorkspaceStore::create(&workspace, "source4-secret-portal", variant.clone()) {
+                Ok(_) => {}
+                Err(error)
+                    if error.code
+                        == crate::game_definition::TransactionErrorCode::WorkspaceExists => {}
+                Err(error) => panic!("cannot retain portal workspace: {error}"),
+            }
+        }
+        let retained = WorkspaceStore::open(&workspace)
+            .active_definition()
+            .unwrap();
+        assert_eq!(retained, variant);
+        let mut game = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(retained.clone()),
+            624_004,
+            Mc2CampaignInputs::new(&package),
+        )
+        .unwrap();
+        let features = game
+            .backend()
+            .campaign
+            .simulation()
+            .session
+            .state
+            .live
+            .mission
+            .authored_features()
+            .to_vec();
+        assert_eq!(features[75].activation_group, 4);
+        assert_eq!(features[76].activation_group, 4);
+        let original_features = crate::level1_mission::parse_authored_features(
+            &std::fs::read(package.join("authored-level.bin")).unwrap(),
+        )
+        .unwrap();
+        for (before, after) in original_features.iter().zip(&features) {
+            let mut expected = *before;
+            if matches!(before.index, 75 | 76) {
+                expected.activation_group = 4;
+            }
+            assert_eq!(*after, expected);
+        }
+        game.advance(game.identity().guard(), GameCommand::default())
+            .unwrap();
+        let old_guard = game.identity().guard();
+        game.reset(old_guard).unwrap();
+        assert!(game.snapshot().identity.generation > old_guard.generation);
+        assert_eq!(
+            game.definition().definition_hash(),
+            retained.definition_hash()
+        );
+        assert_eq!(
+            game.backend()
+                .campaign
+                .simulation()
+                .session
+                .state
+                .live
+                .mission
+                .authored_features(),
+            features
+        );
+        assert!(game.advance(old_guard, GameCommand::default()).is_err());
+        // The installed resolver must read the retained workspace itself,
+        // rather than relying on the definition supplied to the direct open.
+        // These real packages close the existing catalog; no campaign frontier
+        // or completed predecessor is constructed to open this local session.
+        let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+        let mut installed_inputs = [
+            "mc-bhq8-level1-collision-v5-night",
+            "level2-day-block32-campaign-v2",
+            "level3-day-block32-campaign-recipe-v2",
+            "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
+            "mc-paj2-source30-campaign-package",
+        ]
+        .map(|path| Mc2CampaignInputs::new(generated.join(path)))
+        .to_vec();
+        installed_inputs.push(Mc2CampaignInputs::new(&package).with_authored_workspace(&workspace));
+        let resolver = Mc2RuntimePackageResolver::load(installed_inputs).unwrap();
+        let source4_id = original.runtime_flow().unwrap().bound_level_id();
+        let installed = resolver.package(source4_id).unwrap();
+        assert_eq!(installed.selection, CampaignSelection::ordinary(5).unwrap());
+        assert_eq!(installed.inputs.package_root, package);
+        assert_eq!(
+            installed.inputs.authored_workspace.as_ref(),
+            Some(&workspace)
+        );
+        assert_eq!(
+            installed.definition.level_definition(),
+            retained.level_definition()
+        );
+        assert_eq!(
+            installed.definition.package_graph_hash(),
+            retained.package_graph_hash()
+        );
+        assert_eq!(
+            installed.definition.artifact_graph_hash(),
+            retained.artifact_graph_hash()
+        );
+        assert_eq!(installed.definition.provenance(), retained.provenance());
+        let installed_flow =
+            runtime_catalog::compose(CampaignSelection::ordinary(5).unwrap(), 5, &[30]).unwrap();
+        assert_eq!(installed.definition.runtime_flow(), Some(&installed_flow));
+        assert_eq!(
+            *installed.definition,
+            with_level_and_runtime_flow(
+                retained.clone(),
+                retained.level_definition().unwrap().clone(),
+                installed_flow
+            )
+        );
+        let mut installed_game = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::clone(&installed.definition),
+            624_005,
+            installed.inputs.clone(),
+        )
+        .unwrap();
+        assert_eq!(installed_game.definition(), &installed.definition);
+        assert_eq!(
+            installed_game
+                .backend()
+                .campaign
+                .simulation()
+                .session
+                .state
+                .live
+                .mission
+                .authored_features(),
+            features
+        );
+        let installed_before = installed_game.identity();
+        installed_game
+            .step(installed_before.guard(), GameCommand::default())
+            .unwrap();
+        assert!(installed_game.identity().tick > installed_before.tick);
+        assert!(
+            installed_game
+                .backend()
+                .campaign
+                .simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+        eprintln!(
+            "retainedresolver: level={} workspace={} installeddefinition={} tick={}",
+            source4_id.as_str(),
+            workspace.display(),
+            installed_game.definition().definition_hash(),
+            installed_game.identity().tick
+        );
+        for case in 0..4 {
+            let mut invalid = encoded.clone();
+            match case {
+                0 => invalid["entities"][pair[0]]["activation_group"] = serde_json::json!(0),
+                1 => invalid["entities"][pair[1]]["activation_group"] = serde_json::json!(3),
+                2 => {
+                    let other = (0..original_level.entities().len())
+                        .find(|index| !pair.contains(index))
+                        .unwrap();
+                    let x = invalid["entities"][other]["position"]["x"]
+                        .as_u64()
+                        .unwrap();
+                    invalid["entities"][other]["position"]["x"] = serde_json::json!((x + 1) & 255);
+                    // Ensure the independent original row actually changed.
+                    assert_ne!(invalid, encoded);
+                }
+                _ => invalid["objectives"] = serde_json::json!([]),
+            }
+            if let Ok(level) = serde_json::from_value::<LevelDefinition>(invalid) {
+                let invalid =
+                    sim_definition::adapter::with_level_definition(original.clone(), level);
+                assert!(
+                    GameSession::open(
+                        &Mc2CampaignAdapter,
+                        Arc::new(invalid),
+                        624_010 + case,
+                        Mc2CampaignInputs::new(&package)
+                    )
+                    .is_err(),
+                    "case {case}"
+                );
+            }
+        }
+        let mut corrupt = serde_json::to_value(&retained).unwrap();
+        corrupt["provenance"]["source_sha256"] = serde_json::json!("00".repeat(32));
+        let corrupt = serde_json::from_value::<GameDefinition>(corrupt).unwrap();
+        assert_ne!(corrupt.provenance(), retained.provenance());
+        assert!(
+            GameSession::open(
+                &Mc2CampaignAdapter,
+                Arc::new(corrupt),
+                624_020,
+                Mc2CampaignInputs::new(&package)
+            )
+            .is_err()
+        );
+        eprintln!(
+            "retainedportalworkspace={} definition={} basepackage={}",
+            workspace.display(),
+            retained.definition_hash(),
+            retained.package_graph_hash()
+        );
     }
 
     #[test]
