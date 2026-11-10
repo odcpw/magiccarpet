@@ -68,13 +68,14 @@ namespace MagicCarpet.Native.Tests
                 string hash;
                 using (var sha = SHA256.Create()) hash = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(replay))).Replace("-", "").ToLowerInvariant();
                 File.WriteAllText(commands, "{\"schema\":\"mc-campaign-input-playback/v1\",\"startingTick\":\"443\",\"replaySha256\":\"" + hash +
-                    "\",\"commands\":[{\"longitudinal\":\"accelerate\",\"lateral\":\"negative\",\"cast_selected\":true,\"roll_axis\":24,\"pitch_axis\":-127,\"look_yaw\":69,\"look_pitch\":365}]}");
+                    "\",\"commands\":[{\"longitudinal\":\"accelerate\",\"lateral\":\"negative\",\"cast_selected\":true,\"roll_axis\":24,\"pitch_axis\":-127,\"look_yaw\":69,\"look_pitch\":365,\"select_spell\":null}]}");
                 var args = new[] { "-mc-input-playback", commands, "-mc-runtime-replay-load", replay };
                 var stream = new CampaignInputPlayback(args);
                 Assert.Throws<InvalidOperationException>(() => stream.At(2, 444));
                 var frame = stream.At(2, 443);
                 Assert.That(frame.Flags, Is.EqualTo(69));
                 Assert.That(frame.look_pitch, Is.EqualTo(365));
+                Assert.That(frame.select_spell, Is.Null, "A JSON null selection must not become an empty semantic command");
                 Assert.That(stream.At(2, 444).Flags, Is.Zero, "Completed stream must coast rather than repeat its last cast");
                 Assert.Throws<InvalidOperationException>(() => stream.At(3, 444));
                 Assert.Throws<InvalidOperationException>(() => stream.At(2, 442));

@@ -48,11 +48,16 @@ namespace MagicCarpet.Native
                     stream.replaySha256, StringComparison.Ordinal))
                     throw new ArgumentException("Input playback starting replay hash differs");
             foreach (var frame in stream.commands)
+            {
                 if (frame == null || !(frame.longitudinal == "coast" || frame.longitudinal == "accelerate" || frame.longitudinal == "decelerate") ||
                     !(frame.lateral == "neutral" || frame.lateral == "negative" || frame.lateral == "positive") ||
                     frame.roll_axis < -128 || frame.roll_axis > 127 || frame.pitch_axis < -128 || frame.pitch_axis > 127 ||
                     frame.look_yaw < short.MinValue || frame.look_yaw > short.MaxValue || frame.look_pitch < short.MinValue || frame.look_pitch > short.MaxValue)
                     throw new ArgumentException("Input playback contains an invalid public control frame");
+                // JsonUtility reads a JSON null string as empty. An absent
+                // optional selection must remain no command at the native join.
+                if (frame.select_spell == string.Empty) frame.select_spell = null;
+            }
             Debug.Log($"MC_INPUT_PLAYBACK_READY start={start} commands={stream.commands.Length} native_controls_only=True");
         }
 
