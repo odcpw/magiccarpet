@@ -9,11 +9,16 @@ import argparse
 import hashlib
 import json
 import math
+import struct
+import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import bpy
 from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+from mathutils.kdtree import KDTree
 
 
 def mat(name, color, roughness=.7, metallic=0):
@@ -163,9 +168,227 @@ def render(path, target, camera, ortho=4.6):
     bpy.ops.render.render(write_still=True);bpy.data.objects.remove(cam,do_unlink=True)
 
 
+HEAD_MESHES = ('Head shell', 'Head underside', 'Eye socket', 'Single red eye',
+               'Eye glint', 'Mandible L', 'Mandible R')
+HEAD_ACTIONS = ('Idle', 'Attack', 'Hit', 'Death')
+PIPELINE = Path(__file__).resolve().parent
+
+
+def mandible_clearance():
+    """Check the two independently animated mandible surfaces at every frame."""
+    rig = bpy.data.objects['WormHeadRig']
+    meshes = [bpy.data.objects['Mandible L'], bpy.data.objects['Mandible R']]
+    results = []
+    for name in HEAD_ACTIONS:
+        action = bpy.data.actions[name]
+        rig.animation_data.action = action; rig.animation_data.action_slot = action.slots[0]
+        for frame in range(round(action.frame_range[0]), round(action.frame_range[1])+1):
+            bpy.context.scene.frame_set(frame); bpy.context.view_layer.update()
+            deps = bpy.context.evaluated_depsgraph_get(); points, trees = [], []
+            for obj in meshes:
+                evaluated = obj.evaluated_get(deps); mesh = evaluated.to_mesh()
+                vertices = [evaluated.matrix_world @ v.co for v in mesh.vertices]
+                faces = [list(p.vertices) for p in mesh.polygons]
+                trees.append(BVHTree.FromPolygons(vertices, faces)); points.append(vertices)
+                evaluated.to_mesh_clear()
+            overlaps = len(trees[0].overlap(trees[1]))
+            if overlaps:
+                raise ValueError(f'Mandibles intersect in {name} frame {frame}')
+            tree = KDTree(len(points[1]))
+            for i, point in enumerate(points[1]): tree.insert(point, i)
+            tree.balance()
+            # Vertex distance is an upper bound, not an exact surface clearance.
+            nearest = min(tree.find(point)[2] for point in points[0])
+            results.append({'clip':name, 'frame':frame, 'surfaceIntersections':overlaps,
+                            'nearestVertexDistanceUpperBound':nearest})
+    rig.animation_data.action = bpy.data.actions['Idle']; bpy.context.scene.frame_set(1)
+    return results
+
+
+def write_map(path, width, height, values):
+    """Write linear, non-color RGBA data without display transforms."""
+    def chunk(tag, payload):
+        return (struct.pack('>I', len(payload)) + tag + payload +
+                struct.pack('>I', zlib.crc32(tag + payload)))
+    rows = b''.join(b'\0' + values[y * width * 4:(y + 1) * width * 4]
+                    for y in range(height))
+    png = (b'\x89PNG\r\n\x1a\n' +
+           chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) +
+           chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+    with path.open('xb') as stream:
+        stream.write(png)
+
+
+def portable_maps(output, prefix, image_prefix):
+    """Preserve albedo; encode linear ORM and the authored normal strength."""
+    rough = bpy.data.images[image_prefix + 'roughness']
+    normal = bpy.data.images[image_prefix + 'normal']
+    width, height = rough.size
+    if tuple(normal.size) != (width, height):
+        raise ValueError('Worm material maps have incompatible dimensions')
+    r, n = list(rough.pixels), list(normal.pixels)
+    orm, normals = bytearray(), bytearray()
+    def byte(value):
+        return round(max(0, min(1, value)) * 255)
+    for i in range(0, len(r), 4):
+        orm.extend((255, byte(r[i]), 0, 255))
+        x, y = .35*(2*n[i]-1), .35*(2*n[i+1]-1)
+        z = math.sqrt(max(0, 1-x*x-y*y))
+        normals.extend((byte((x+1)/2), byte((y+1)/2), byte((z+1)/2), 255))
+    write_map(output/'textures'/f'{prefix}_orm.png', width, height, orm)
+    write_map(output/'textures'/f'{prefix}_normal.png', width, height, normals)
+
+
+def augment_head_samples(out, report):
+    """Add five independent source/game/FBX samples to the standard 20."""
+    import export_character_fbx as exporter
+    rig = bpy.data.objects['WormHeadRig']
+    source_meshes = [bpy.data.objects[name] for name in HEAD_MESHES]
+    game_objects, _ = exporter.bake_deform_rig('WormHeadRig', HEAD_MESHES, HEAD_ACTIONS)
+    game_meshes = [obj for obj in game_objects if obj.type == 'MESH']
+    extra = [('Idle', 4, 4), ('Idle', 9, 9), ('Attack', 4, 29),
+             ('Attack', 8, 33), ('Hit', 3, 49)]
+    samples, source_proof = {}, []
+    for name, source_frame, game_frame in extra:
+        action = bpy.data.actions[name]
+        rig.animation_data.action = action; rig.animation_data.action_slot = action.slots[0]
+        bpy.context.scene.frame_set(source_frame); bpy.context.view_layer.update()
+        expected = [exporter.world_vertices(obj) for obj in source_meshes]
+        bpy.context.scene.frame_set(game_frame); bpy.context.view_layer.update()
+        actual = [exporter.world_vertices(obj) for obj in game_meshes]
+        samples[game_frame] = []
+        for source, dest, mesh in zip(expected, actual, source_meshes):
+            if len(source) != len(dest):
+                raise ValueError('Additional sample lost vertices: '+mesh.name)
+            errors = [(a-b).length for a,b in zip(source,dest)]
+            if not errors or not all(math.isfinite(e) for e in errors) or max(errors) > .0001:
+                raise ValueError('Additional source/game surface mismatch: '+mesh.name)
+            source_proof.append({'clip':name, 'sourceFrame':source_frame, 'frame':game_frame,
+                                 'mesh':mesh.name, 'vertices':len(dest), 'maxError':max(errors)})
+            samples[game_frame].extend(dest)
+    proof, disconnected = exporter.verify_reimport(out/'WormHead.fbx', samples)
+    if max(row['maxError'] for row in proof) > .0001:
+        raise ValueError('Additional FBX sample exceeds 0.1 mm')
+    sample_path = out/'WormHead.samples.bin'
+    data = sample_path.read_bytes()
+    magic, version, count, fps = struct.unpack_from('<4sIId', data)
+    if (magic, version, count) != (b'MCSK', 1, 20):
+        raise ValueError('Unexpected standard head sample file')
+    offset = struct.calcsize('<4sIId'); combined = {}
+    for _ in range(count):
+        frame, n = struct.unpack_from('<II', data, offset); offset += 8
+        combined[frame] = [struct.unpack_from('<fff', data, offset + 12*i) for i in range(n)]
+        offset += 12*n
+    if offset != len(data) or set(combined).intersection(samples):
+        raise ValueError('Malformed or duplicated head samples')
+    combined.update(samples)
+    sample_path.rename(out/'WormHead.standard-20.samples.bin')
+    exporter.write_surface_samples(sample_path, dict(sorted(combined.items())), fps)
+    report['surfaceProof'].extend(source_proof)
+    report['reimportSurfaceProof'].extend(proof)
+    report['additionalSampleFrames'] = sorted(samples)
+    report['additionalReimportDisconnectedBones'] = disconnected
+    (out/'WormHead.export.json').write_text(json.dumps(report, indent=2)+'\n')
+    return report
+
+
+def package(out):
+    """Package an already-open editable master through the shared exporter."""
+    if Path(bpy.data.filepath).name != 'worm-master.blend':
+        raise ValueError('Open the original worm-master.blend before --package')
+    source_master_hash = hashlib.sha256(Path(bpy.data.filepath).read_bytes()).hexdigest()
+    sys.path.insert(0, str(PIPELINE))
+    from character_textures import export_constants, extract_packed
+    records = export_constants(out, ['Head underside', 'Eye socket', 'Single red eye', 'Eye glint'])
+    extract_packed(out, {
+        'Worm chitin albedo': 'head_albedo.png',
+        'Segment albedo': 'segment_albedo.png',
+    })
+    portable_maps(out, 'head', 'Worm chitin ')
+    portable_maps(out, 'segment', 'Segment ')
+    clearance = mandible_clearance()
+    (out/'mandible-clearance.json').write_text(json.dumps({
+        'scope': 'Mandible-to-mandible surface intersections; intentional shell hinge overlap excluded',
+        'frames': clearance,
+    }, indent=2)+'\n')
+
+    segment = bpy.data.objects['WormSegment']
+    segment.hide_viewport = False; segment.hide_render = False
+    bpy.ops.object.armature_add(location=(0, 0, 0))
+    rig = bpy.context.object; rig.name = 'WormSegmentRig'
+    bpy.ops.object.mode_set(mode='EDIT')
+    bone = rig.data.edit_bones[0]; bone.name = 'SegmentRoot'
+    bone.head = (0, 0, 0); bone.tail = (0, 0, .3)
+    bpy.ops.object.mode_set(mode='OBJECT')
+    skin(segment, rig, 'SegmentRoot')
+    rig.animation_data_create(); static = bpy.data.actions.new('SegmentStatic')
+    static.use_fake_user = True; rig.animation_data.action = static
+    pose = rig.pose.bones['SegmentRoot']; pose.rotation_mode = 'XYZ'
+    for frame in (1, 2):
+        pose.rotation_euler = (0, 0, 0); pose.keyframe_insert(data_path='rotation_euler', frame=frame)
+    bpy.context.scene.frame_set(1)
+    bpy.context.view_layer.update()
+    def bounds(objects):
+        coords = [obj.matrix_world @ vertex.co for obj in objects for vertex in obj.data.vertices]
+        return {'min': [min(p[i] for p in coords) for i in range(3)],
+                'max': [max(p[i] for p in coords) for i in range(3)]}
+    head_bounds = bounds([bpy.data.objects[name] for name in HEAD_MESHES])
+    segment_bounds = bounds([segment])
+    master = out/'Worm-portable-master.blend'
+    bpy.ops.wm.save_as_mainfile(filepath=str(master), compress=True)
+
+    def run_export(name, rig_name, meshes, actions):
+        fbx = out/(name+'.fbx')
+        cmd = [bpy.app.binary_path, '-b', str(master), '--python-exit-code', '2',
+               '--python', str(PIPELINE/'export_character_fbx.py'), '--', '--output', str(fbx),
+               '--animations', '--bake-rig', rig_name, '--join-skins']
+        cmd.extend(item for mesh in meshes for item in ('--mesh', mesh))
+        cmd.extend(item for clip in actions for item in ('--action', clip))
+        with (out/(name+'.export.log')).open('x') as log:
+            subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+        return json.loads(fbx.with_suffix('.export.json').read_text())
+
+    head = run_export('WormHead', 'WormHeadRig', HEAD_MESHES, HEAD_ACTIONS)
+    body = run_export('WormSegment', 'WormSegmentRig', ['WormSegment'], ['SegmentStatic'])
+    if body['deformBones'] != 1:
+        raise ValueError('The reusable segment must have one rigid deform bone')
+    head = augment_head_samples(out, head)
+    common = {'fps': head['fps'], 'forward': [0, 1, 0], 'coordinateSystem': 'Blender Z-up',
+              'walkSpeed': 0, 'runSpeed': 0, 'minBoneWeight': 1e-7}
+    head_maps = [{k: m[k] for k in ('name', 'albedo', 'orm')} for m in records['materials']]
+    head_maps.append({'name': 'Olive chitin', 'albedo': 'textures/head_albedo.png',
+                      'orm': 'textures/head_orm.png', 'normal': 'textures/head_normal.png'})
+    segment_maps = [{'name': 'Shared segment atlas', 'albedo': 'textures/segment_albedo.png',
+                     'orm': 'textures/segment_orm.png', 'normal': 'textures/segment_normal.png'}]
+    for name, report, materials, extent in [('WormHead', head, head_maps, head_bounds),
+                                             ('WormSegment', body, segment_maps, segment_bounds)]:
+        manifest = {**common, 'height': extent['max'][2]-extent['min'][2],
+                    'artBounds': extent, 'clips': report['clips'], 'materials': materials}
+        (out/(name+'.clips.json')).write_text(json.dumps(manifest, indent=2)+'\n')
+    (out/'package.json').write_text(json.dumps({
+        'sourceMasterSha256': source_master_hash,
+        'portableMasterSha256': hashlib.sha256(master.read_bytes()).hexdigest(),
+        'generatorSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'artifactSha256': {name: hashlib.sha256((out/name).read_bytes()).hexdigest() for name in (
+            'WormHead.fbx', 'WormHead.samples.bin', 'WormHead.clips.json',
+            'WormSegment.fbx', 'WormSegment.samples.bin', 'WormSegment.clips.json')},
+        'axis': '+Y forward, +Z up; pivot is native entity center',
+        'height': 'authored mesh extent only; native visual calibration remains pending',
+        'sourceReferences': '../reference/sources.json',
+        'headSurfaceSamples': 25, 'segmentDeformBones': body['deformBones'],
+        'scope': 'Blender package; Unity, gameplay, Voxel and installation unverified'
+    }, indent=2)+'\n')
+    print('PORTABLE_PACKAGED', out, flush=True)
+
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True)
-    args=parser.parse_args(sys.argv[sys.argv.index('--')+1:]);out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
+    parser.add_argument('--package', action='store_true')
+    args=parser.parse_args(sys.argv[sys.argv.index('--')+1:]);out=args.output.resolve()
+    if args.package:
+        package(out)
+        return
+    out.mkdir(parents=True,exist_ok=True)
     bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete(use_global=False)
     olive=mat('Olive chitin',(.24,.22,.055),.63); dark=mat('Lower chitin',(.085,.072,.025),.78)
     chitin_maps(olive,out)
