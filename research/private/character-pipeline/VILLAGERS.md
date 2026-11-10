@@ -171,6 +171,11 @@ fresh native instances. The authentic direct Level7 package exposes four
 Traders and positive-life entry/reclaim; its1200-input fresh-instance comparison
 passes. This is not Level1 Trader production or a Trader combat/death proof.
 That direct neutral session cannot use GameRuntime save or voxel-enable APIs.
+One final public route genuinely acquires Whirlwind at tick23; its2000mana
+cost exceeds the direct reset's1000maximum, so casts do not damage the Trader.
+Continuing that route reproduces native status8 at tick1139 (target slot53
+missing its current shared spell record) in two fresh instances. This is a
+shared engine defect, not a reason to grant mana or call the asset complete.
 These limits remain open in mc-oi5; never modify a save or grant a spell to
 manufacture the missing evidence. Detailed source/command/hash evidence is
 generated/settlement-people-20261110/native/PROOF.md.

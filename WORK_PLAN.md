@@ -59,9 +59,14 @@ real direct Level7 session exposes four Traders219/base138/height250 and living
 116→hidden→reclaim house entry; a fresh instance matches1200input steps. This
 does not prove natural Level1 production, lethal combat or a live Voxel death.
 All47 Level1 opening houses have2occupants; bounded public routes did not reach
-the Trader producer population gate. The direct Level7 handle has no acquired
-damaging spells and rejects GameRuntime save/voxel enable; no grants, actor
-injection or replay edits were used. Do not close or start another family.
+the Trader producer population gate. The direct Level7 handle rejects GameRuntime
+save/voxel enable. A real public Whirlwind pickup succeeds at tick23, but its
+2000mana cost exceeds that fresh session's1000maximum; cast attempts match a
+no-cast counterfactual and do no damage. Continuing that public route hits
+native status8 at tick1139: target slot53 lacks its shared spell record. A fresh
+instance reproduces all1140commands and the error. No grants, actor injection
+or replay edits were used. The runtime defect is handed to the shared engine
+owner; do not close Trader or start another family.
 
 Checked16.6s portrait media and evidence are under generated/
 settlement-people-20261110. Actual3090 privateKWin/Vulkan1280×960 no-readback
