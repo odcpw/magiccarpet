@@ -78,19 +78,37 @@ body stays editable; game export may use the garment's authored covered-body
 mask, as documented by MakeHuman. Root corrected the overstrict hidden-skin
 intersection gate: actual visible clipping, exposed stumps/holes, bad garment
 crossings and incomplete moving silhouettes still fail. No arbitrary height
-cutoffs. Free cloth
-locomotion ratcheted and billowed, so the chosen route is a clean fitted,
-anatomically skinned upper garment plus eight authored skirt-sector bones and
-source-inspired hem vents. No more whole-garment locomotion solver variants.
+cutoffs. Clean skinned bodice, human and costume remain the foundation. Eight-
+bone sectors, translation cages, local ease and direct same-leg split panels
+all failed actual moving silhouette/contact checks; stop those variants.
+Test one bounded offline lower-garment cloth cache on the new clean human with
+an initially clear surface, pelvis support and real leg collisions, then bake
+only acceptable motion to cheap game bones. Earlier whole-gown simulation used
+the invalid clothed donor; do not repeat that setup. No runtime cloth solver.
+Oracle's independent actual-image/code review was attempted in
+generated/villager-lower-cloth-oracle-20261110/; browser submission/recovery
+failed, so no new Oracle answer has been used. Actual Blender freefall controls
+proved default air drag incompatible with the trial's tiny areal vertex mass.
+Native-reference material trial16 produces visibly smoother drape; Root reviewed
+large front/side frames and the contact sheet and admits it as raw input for
+explicit loop authoring/skeletal fitting, not final character acceptance. Keep
+its ~2.3 mm sampled fingertip contact caveat visible. Authored loop09 becomes
+polish04's shared 48-bone/fixed-weight Walk, which Root reviewed at large front/
+side worst-contact frames. Actual 120 Hz playback has zero nonneighbor cloth
+self-crossings or shoe pairs; small covered-thigh/fingertip residuals remain
+(worst sampled trouser vertex ~0.34 mm inward, not an exact depth bound).
+Root accepts this as the Walk basis, stops intersection-count polishing and
+continues the same rest mesh/weights through the other actions. Run/Idle/Hit/Death garment behavior, final Blender
+and Unity frames, Voxel and gameplay/install still remain open.
 Oracle GPT-6 Pro source review is retained under generated/villager-robe-oracle-20261109/;
 Root verified the unusual rig layout (Spine02 is lower, Spine is upper), and
 TopazReef corrected garment weights, the collar discontinuity, a 36 mm imported
 origin shift, missing GroundControl and the defective per-proxy clearance gate.
 Use final combined actual-body checks and actual complete-phase frames. Old
 trial27 quarter-frame sole checks did not establish acceptable anatomy or a
-wearable robe. Moving appearance remains unapproved. SilverFox verified isolated released
-py-dem-bones0.13.1 availability only; no actual garment bake was accepted, and
-that optional helper is not needed for directly authored bones.
+wearable robe. The final dressed appearance remains unapproved; AmberCave now
+owns the fixed-weight garment bake with released py-dem-bones0.13.1. Its Walk
+result is admitted above; the remaining actions and consumers are still open.
 GentleBadger owns integration and acceptance. Keep editable body and robe
 separate; a final game export may join disconnected components on one rig
 without fusing garment to skin or shoes. First establish a believable worn

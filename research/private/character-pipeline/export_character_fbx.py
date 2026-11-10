@@ -37,6 +37,8 @@ def bake_deform_rig(rig_name, mesh_names, action_names):
     source = bpy.data.objects[rig_name]
     if source.type != 'ARMATURE' or not action_names or not mesh_names:
         raise ValueError('Deform baking requires a rig, explicit meshes and named actions')
+    if source.animation_data is None or any(not track.mute and len(track.strips) for track in source.animation_data.nla_tracks):
+        raise ValueError('Named-action export requires animation data and muted authoring NLA tracks')
     meshes = [bpy.data.objects[name] for name in mesh_names]
     if any(obj.type != 'MESH' for obj in meshes):
         raise ValueError('Every explicit skin must be a mesh')

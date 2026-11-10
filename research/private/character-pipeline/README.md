@@ -53,7 +53,27 @@ helpers are checked after evaluating REST geometry; deliberately exposing the
 16 unweighted helpers is rejected. The full editable body is retained.
 `measurements-audited.json` records measured stance speeds 1.4300195/3.7283345 m/s,
 action timings, samples and source/master/builder hashes. The garment is still
-under repair and is excluded from these body-only export claims.
+under repair and is excluded from these body-only export claims. Named-action
+export rejects active authoring NLA strips: simulation-time blending must not
+silently layer over the final actions. Actual MPFB Idle export passes this
+guard; an added active NLA strip is rejected before generating an export.
+
+The lower robe now has an explicitly authored periodic Walk derived from an
+offline Blender cloth cache. A 48-bone fit with fixed top-four skin weights
+passes Root's large front/side moving-frame review. Independent 120 Hz playback
+has no nonneighbor cloth self-crossings or shoe intersections; small residual
+covered-thigh/fingertip contacts remain (worst sampled trouser vertex about
+0.34 mm inward; this is not an exact penetration-depth bound). These are
+Blender bone-playback results, not final dressed Unity or gameplay approval.
+Run, Idle, Hit and Death on the same rest mesh/weights are still open.
+
+`character_textures.py --output FRESH_DIRECTORY --mesh NAME` (repeat `--mesh`)
+encodes untextured Principled base color, roughness and metallic into the
+existing importer format. Albedo is sRGB; linear ORM stores AO=1, roughness,
+metallic. This preserves six authored costume material constants without
+inventing surface detail, normals or baked AO. Linked inputs and unsupported
+volume/displacement/emission are rejected rather than silently flattened.
+Use `extract_packed` for existing source texture maps.
 
 ## Local TRELLIS villager comparison — 2026-11-09
 
