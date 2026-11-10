@@ -16,10 +16,17 @@ namespace MagicCarpet.Native
         private int lastLife;
         private byte lastAction;
         private Vector3 lastRenderPosition;
-        private float movingGrace, hitRemaining, attackRemaining, deathElapsed;
+        private float movingGrace, hitRemaining, attackRemaining, fadeElapsed;
         private Transform[] liveTransforms;
         private LocalPose[] livePose;
-        private const float DeathHold = .25f;
+        private readonly List<DeathMaterial> deathMaterials = new List<DeathMaterial>();
+        private const float DeathFadeDuration = .18f;
+
+        private sealed class DeathMaterial
+        {
+            internal Material material;
+            internal Color baseColor, emission;
+        }
 
         private struct LocalPose
         {
@@ -41,7 +48,7 @@ namespace MagicCarpet.Native
 
         internal GameObject Root => character.Root;
         internal bool IsDying { get; private set; }
-        internal bool DeathFinished => IsDying && deathElapsed >= character.Asset.Clip("Death").length + DeathHold;
+        internal bool DeathFinished => IsDying && removed && fadeElapsed >= DeathFadeDuration;
         internal string CurrentClip => character.CurrentClip;
         internal float ClipTime => character.ClipTime;
         internal int VoxelResolution => voxels != null ? voxels.Resolution : 0;
@@ -153,15 +160,64 @@ namespace MagicCarpet.Native
                 index++;
             }
             IsDying = true;
-            deathElapsed = 0;
+            if (voxels == null) CloneDeathMaterials();
             hitRemaining = attackRemaining = 0;
             attackPending = false;
             character.Play("Death", .08f);
+            if (removed) EnableDeathTransparency();
+        }
+
+        private void CloneDeathMaterials()
+        {
+            var copies = new Dictionary<Material, Material>();
+            foreach (var renderer in Root.GetComponentsInChildren<Renderer>(true))
+            {
+                var materials = renderer.sharedMaterials;
+                for (var i = 0; i < materials.Length; i++)
+                {
+                    var original = materials[i];
+                    if (original == null) continue;
+                    if (!copies.TryGetValue(original, out var copy))
+                    {
+                        copy = new Material(original) { name = original.name + " (Firefly death)" };
+                        copies.Add(original, copy);
+                        deathMaterials.Add(new DeathMaterial {
+                            material = copy,
+                            baseColor = copy.HasProperty("_BaseColor") ? copy.GetColor("_BaseColor") : Color.white,
+                            emission = copy.HasProperty("_EmissionColor") ? copy.GetColor("_EmissionColor") : Color.black
+                        });
+                    }
+                    materials[i] = copy;
+                }
+                renderer.sharedMaterials = materials;
+            }
+        }
+
+        private void EnableDeathTransparency()
+        {
+            foreach (var surface in deathMaterials)
+            {
+                var material = surface.material;
+                material.SetFloat("_Surface", 1);
+                material.SetFloat("_Blend", 0);
+                material.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                material.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                material.SetInt("_ZWrite", 0);
+                material.SetOverrideTag("RenderType", "Transparent");
+                material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                material.SetShaderPassEnabled("ShadowCaster", false);
+                material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            }
         }
 
         // Removal alone can be culling or positive-life cleanup. Only a real
         // source death observation starts Death or authorizes a fracture.
-        internal void MarkRemoved() => removed = true;
+        internal void MarkRemoved()
+        {
+            if (removed) return;
+            removed = true;
+            if (IsDying) EnableDeathTransparency();
+        }
 
         // Caller supplies a matching lifetime-qualified native death journal
         // when the negative-life/pre-kill row was not observed directly.
@@ -177,7 +233,18 @@ namespace MagicCarpet.Native
             movingGrace = moved ? .08f : Mathf.Max(0, movingGrace - dt);
             if (IsDying)
             {
-                deathElapsed += dt;
+                if (removed)
+                {
+                    fadeElapsed = Mathf.Min(DeathFadeDuration, fadeElapsed + dt);
+                    var opacity = 1 - fadeElapsed / DeathFadeDuration;
+                    foreach (var surface in deathMaterials)
+                    {
+                        var color = surface.baseColor;
+                        color.a *= opacity;
+                        if (surface.material.HasProperty("_BaseColor")) surface.material.SetColor("_BaseColor", color);
+                        if (surface.material.HasProperty("_EmissionColor")) surface.material.SetColor("_EmissionColor", surface.emission * opacity);
+                    }
+                }
                 character.Tick(dt);
                 return;
             }
@@ -242,6 +309,12 @@ namespace MagicCarpet.Native
         {
             voxels?.Dispose();
             character.Dispose();
+            foreach (var surface in deathMaterials)
+            {
+                if (Application.isPlaying) UnityEngine.Object.Destroy(surface.material);
+                else UnityEngine.Object.DestroyImmediate(surface.material);
+            }
+            deathMaterials.Clear();
         }
     }
 }

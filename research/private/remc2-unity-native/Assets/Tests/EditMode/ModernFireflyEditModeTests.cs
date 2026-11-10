@@ -157,6 +157,7 @@ namespace MagicCarpet.Native.Tests
             Observe(fly, -1, 156, 3);
             fly.Render(.3f);
             Assert.That(fly.IsDying, Is.True);
+            Assert.That(fly.DeathFinished, Is.False, "A live native death row remains visible until removal");
             Assert.That(fly.CurrentClip, Is.EqualTo("Death"));
             var time = fly.ClipTime;
             Observe(fly, -1, 157, 4);
@@ -166,6 +167,47 @@ namespace MagicCarpet.Native.Tests
             fly.Render(1f);
             Assert.That(fly.DeathFinished, Is.True);
             Assert.Throws<InvalidOperationException>(() => Observe(fly, 100, 153, 5));
+        }
+
+        [Test]
+        public void ImportedDeathFadeStartsOnlyOnRemovalAndDoesNotAlterSharedMaterials()
+        {
+            var imported = Resources.Load<ModernCharacterAsset>("ModernCharacters/Firefly/Character");
+            Assert.That(imported, Is.Not.Null, "Prepare the Firefly owner-local import first");
+            using var fly = new ModernFireflyPresenter(imported, null, imported.height);
+            var renderer = fly.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+            var shared = renderer.sharedMaterials;
+            var originalColors = shared.Select(material => material.GetColor("_BaseColor")).ToArray();
+            var originalEmission = shared.Select(material => material.GetColor("_EmissionColor")).ToArray();
+            Observe(fly, 100, 153, 1);
+            fly.Render(.1f);
+            Assert.That(renderer.sharedMaterials, Is.EqualTo(shared));
+            Observe(fly, -1, 156, 2);
+            var death = renderer.sharedMaterials;
+            Assert.That(death.Length, Is.GreaterThan(0));
+            for (var i = 0; i < death.Length; i++)
+            {
+                Assert.That(death[i], Is.Not.SameAs(shared[i]));
+                Assert.That(death[i].GetColor("_BaseColor"), Is.EqualTo(originalColors[i]));
+                Assert.That(death[i].renderQueue, Is.EqualTo(shared[i].renderQueue));
+            }
+            fly.Render(.3f);
+            Assert.That(fly.DeathFinished, Is.False);
+            fly.MarkRemoved();
+            fly.MarkRemoved();
+            fly.Render(.09f);
+            Assert.That(fly.DeathFinished, Is.False);
+            for (var i = 0; i < death.Length; i++)
+            {
+                Assert.That(death[i].renderQueue, Is.EqualTo((int)UnityEngine.Rendering.RenderQueue.Transparent));
+                Assert.That(death[i].GetColor("_BaseColor").a, Is.EqualTo(originalColors[i].a * .5f).Within(.001f));
+                Assert.That(death[i].GetColor("_EmissionColor").r, Is.EqualTo(originalEmission[i].r * .5f).Within(.001f));
+                Assert.That(shared[i].GetColor("_BaseColor"), Is.EqualTo(originalColors[i]));
+                Assert.That(shared[i].GetColor("_EmissionColor"), Is.EqualTo(originalEmission[i]));
+            }
+            fly.Render(.09f);
+            Assert.That(fly.DeathFinished, Is.True);
+            Assert.That(death.All(material => material.GetColor("_BaseColor").a <= .0001f), Is.True);
         }
 
         [Test]
@@ -281,6 +323,11 @@ namespace MagicCarpet.Native.Tests
             Assert.That(fragments.Count, Is.EqualTo(live.Count));
             Assert.That(live.Zip(fragments, (a, b) => Vector3.Distance(a.Position, b.Position)).Max(), Is.LessThan(.0001f));
             Assert.That(fly.ClipTime, Is.EqualTo(deathClipTime), "Snapshot must not advance or restart Death");
+            fly.MarkRemoved();
+            fly.Render(.09f);
+            var afterRemoval = fly.SnapshotVoxelFragments();
+            Assert.That(afterRemoval.Count, Is.EqualTo(live.Count));
+            Assert.That(live.Zip(afterRemoval, (a, b) => Vector3.Distance(a.Position, b.Position)).Max(), Is.LessThan(.0001f));
         }
     }
 }
