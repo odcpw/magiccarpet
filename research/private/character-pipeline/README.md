@@ -1,5 +1,25 @@
 # Character animation experiments
 
+## Installed Level1 villager roster — 2026-11-10
+
+All four appearances now cover the 28 native reset villagers in Modern and
+Voxel: brown robe/cap (239), accepted olive pilot (241), striped robe (242),
+and head-carried jar (271). [VILLAGERS.md](VILLAGERS.md) gives the reproducible
+free authoring/package commands, source bindings and actual verification.
+The same separate MPFB human/garment and five-action foundation is reused;
+accepted goat/archer masters remain unchanged. No paid 3D generation was used.
+
+The actual native kills, all five actions, held-jar contact on slopes/recoil,
+exactly-once Voxel breakup, public R/F5 and cold loads were checked. A real
+impact-storm starvation defect is fixed with bounded debris priorities rather
+than more bodies. Modern stops evaluating offscreen villager rigs. The current
+normal launchers select generated/villager-roster-20261110/player-view, source
+through `9cf9159f`, native `e8a6e707` pinned from `eaf0f1bc`. Prior player and
+owner-local masters are preserved. Private accelerated KWin/3090 Vulkan1280×960
+measured ~222/120 FPS Modern/Voxel in two runs per style, with >100 ms spikes
+and native throughput below 30 ticks/s still present. Capture cadence is not FPS.
+Builders, Traders and other creature/level conversions remain separate work.
+
 ## Installed human-and-robe pilot — 2026-11-10
 
 Villager241 is installed in Modern and Voxel; this closes one appearance, not

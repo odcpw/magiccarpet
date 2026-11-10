@@ -17,6 +17,42 @@ each converted family through real native binding, checked important frames,
 Voxel death breakup and qualified installation before calling it delivered.
 Then run the complete level and gameplay/performance checks in both styles.
 
+### Installed villager roster — 2026-11-10
+
+Oliver's accepted human/robe pilot now covers all28 reset villagers, through
+all four source appearances:239×3,241×6,242×9,271×10. The three new asset
+projects `mc-tfo`/`mc-ijv`/`mc-rio` complete their Modern/Voxel consumers,
+five actions and real native lifetimes. No paid 3D generation. Goat/archer
+masters and the previous Presentation player remain intact. Source is through
+`9cf9159f`; normal run-modern.sh/run-voxels.sh now select generated/
+villager-roster-20261110/player-view. Native is qualified `e8a6e707` from
+`eaf0f1bc`; this asset work does not replace concurrent Original engine work.
+
+All new exports pass25 actual Unity poses within0.1mm. Integrated character,
+ground/material, crown-contact/recoil/fracture, terrain and debris suites pass
+105 cases with one existing optional profiling skip; after view culling,
+53 relevant cases pass again. Real public inputs kill239/slot53/tick352,
+242/slot54/tick415 and271/slot51/tick350; cold replay reproduces every sampled
+native target state and reclamation. Each has one actual Voxel breakup.
+Modern corpse playback completes after native projection removal. Current
+player R/F5 and cold loads retain28 unique villagers with the four exact look
+counts in both styles. Both actual default launchers independently record the
+carrier's native kill without a player override. Prior pilot pointer is
+Builds/Presentation-before-villager-roster-20261110.
+
+The shared768-body debris pool now prioritizes deaths and refreshes old impact
+pieces instead of starving real breakups after repeated Fireballs. The carrier
+uses actual cached rigid crown geometry to support its level jar on terrain
+and progressing recoil; released Death remains authored. Modern culls unseen
+villager animation with generous view bounds. Matching private KWin/3090
+Vulkan1280×960 runs improve Modern~160→222FPS, Voxel~120FPS, two runs/style.
+Native~28.05/27.17ticks/s and>100ms frame outliers remain. Capture cadence is
+separate from performance. No unlocked-desktop, VR or full-Level1 claim.
+Recipe: character-pipeline/VILLAGERS.md. All live/source/install/performance
+proofs and checked portrait media are under generated/villager-roster-20261110/.
+Builders/Traders are the next humanoid conversion family; no new assets were
+started before closing this cycle. The older pilot notes below are history.
+
 ### Installed pilot — 2026-11-10
 
 Oliver accepted this pilot and requests the remaining Level1 villagers with

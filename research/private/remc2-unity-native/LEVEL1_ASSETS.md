@@ -11,7 +11,7 @@ animation and presentation integration, not another mission implementation.
 | --- | --- | --- |
 | Goat | Approved master and five actions; Modern and animated voxel skins | Retain source speed, terrain contact and native death joins |
 | Bow archer, bow, string and arrow | Approved master and eight actions; Modern and voxel character skin | Retain real native release, aim and child lifetime |
-| Villager241 | Installed pilot: TMAP180–182, six residents; human/robe, five actions, Modern and 64/96 voxel skins | Retain native travel/reaction/death/reset/load; other appearances still need conversion |
+| Villagers, all four appearances | All 28 reset residents: brown robe/cap, olive pilot, striped robe, vessel carrier; five actions, Modern and 64/96 voxel skins | Installed; retain native travel/reaction/death/reset/load and bounded breakup admission |
 | Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
 | Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
 | Buildings | Four BUILD profiles: 26, 29, 30, 42, covering 32 opening buildings | Additional selectors and dynamic construction/damage need coverage |
@@ -28,7 +28,6 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 
 | Asset project | Level 1 occurrence | Required conversion |
 | --- | --- | --- |
-| Villagers | 28 at reset; four original appearances | TMAP180 ×6 delivered; TMAP155 ×3, TMAP183 ×9 and TMAP199 ×10 remain, with their admitted native states |
 | Builders | Produced by houses, model 12 | Original appearance, locomotion/work/reaction/death and native production/removal binding |
 | Traders | Produced by houses, model 14 | Original appearance, locomotion/work/reaction/death and native production/removal binding |
 | Worm | Four authored heads, groups 4/34; each can allocate up to 16 segments | Head/repeating segments, native multipart placement, movement/attack/reaction/death and voxel breakup |
@@ -36,18 +35,25 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 | Collector balloon | Spawned by player Castle, class 3/model 3 | Balloon, collection/carry/deposit states, ownership/material feedback and native flight |
 | Castle auxiliary/defender | Produced at higher Castle stages, class 5/model 15 | Inspect original appearance; distinct from balloon and invisible shooting controller; match admitted native states |
 
-Reset villager appearances are TMAP 155 ×3, 180 ×6, 183 ×9 and 199 ×10.
+Reset villager appearances are TMAP 155 ×3, 180 ×6, 183 ×9 and 199 ×10;
+all are converted and installed as of 2026-11-10. Their source logical heights
+are 200/250/250/300. Both Day and Night sheets were inspected; Night palette
+colours are not neutral fabric colours. See character-pipeline/VILLAGERS.md.
 Builders use base TMAP 141 and traders 138. These are source appearances,
 not assumptions about gender, clothes or tools before viewing the sprites.
 Worm base TMAPs are head 30 and segment 66; Firefly base is 279; balloon 88.
 Live animation/direction may select other frames.
 
-The 2026-11-10 Villager241 pilot used no paid 3D generation. Its actual native
-kill, checked Modern fall and Voxel breakup, R/F5 and fresh loads are recorded
-under generated/villager-modern-20261109/runtime-character/. Both normal
-launchers now use that qualified player; the previous Presentation pointer is
-preserved. This does not complete this table's remaining families or whole-map
-voxel coverage.
+The complete 2026-11-10 villager roster used no paid 3D generation. All three
+new appearances have actual public-input kills, checked Modern falls and
+exactly-once Voxel breakups. Both current styles pass R/F5 and fresh loads with
+28 unique residents and all four bindings. Normal launchers use the qualified
+player in generated/villager-roster-20261110/player-view; the previous pilot
+pointer is preserved. Current source is through `9cf9159f`; native remains
+qualified `e8a6e707` from `eaf0f1bc`. Matched private KWin/3090 Vulkan1280×960
+runs measured ~222/120 FPS Modern/Voxel; >100 ms spikes and native throughput
+below 30 ticks/s remain. This does not finish the remaining families or whole-
+map voxel coverage. Checked media and proofs are under that generated folder.
 
 No Bee, Spider or Beetle was found in authored rows or audited direct
 house/Castle producers. Do not commission generic bugs from the full game roster.
@@ -122,7 +128,7 @@ commission a new soundtrack or change gameplay effects.
 
 ## Delivery order and acceptance
 
-1. Villager appearances and shared human rig, then Builder/Trader variants.
+1. Villager appearances/shared human rig are installed; Builder/Trader variants are next.
 2. Firefly and Worm as independent creature projects.
 3. Remaining building profiles, Castle and collector/auxiliary actors.
 4. Authored scenery, pickups, portal and remaining effect replacements.
