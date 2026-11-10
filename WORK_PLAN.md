@@ -17,6 +17,65 @@ each converted family through real native binding, checked important frames,
 Voxel death breakup and qualified installation before calling it delivered.
 Then run the complete level and gameplay/performance checks in both styles.
 
+### Active Builder/Trader delivery — 2026-11-10
+
+Oliver authorizes the next asset batch. `mc-jcy` owns Builder appearance/model12
+(TMAP141–143,parameter221); `mc-oi5` owns Trader/model14
+(TMAP138–140,parameter219). Both use source logical height250. One Terra6.1
+xhigh owner per asset; GentleBadger owns shared rendering/native consumer joins,
+actual Unity/gameplay checks and qualified installation. Preserve all accepted
+villager/goat/archer assets and current player. Use the established free
+human/garment pipeline; inspect Day/Night source frames before choosing clothes
+or props. No paid3D generation. Distinguish real damage/death from positive-life
+house entry/build completion, which may share removal callbacks. Deliver genuine
+house production and admitted behavior, five basic actions plus any source-
+required work, Modern/Voxel binding, exactly-once true-death breakup, public
+reset/save/coldload, important-frame review and performance evidence. Do not start
+another asset family before this batch's complete installed cycle works.
+
+Builder/Trader art is committed in c36150ee/6a0c53dc; shared native/presentation
+joins are65724d7b and the production Unity reader admission is7f554577. Both
+have five same-rig actions, separate editable human/costume/props and64/96Voxel
+derivatives. Both25-pose actual Unity surfaces pass0.1mm; integrated tests pass
+106 with one existing optional profiling skip; final human/reader suite60pass.
+An actual gameplay run found the old reader's model13-only whitelist despite
+standalone art passing; its strict class/model/appearance join is corrected.
+No paid3D generation. The accepted goat/archer/villager masters stay intact.
+
+Actual public Level1 inputs produce Builder454/gen28 from demolished house16.
+One branch kills it at life−1 and emits one retained death; another constructs
+house16/gen1/BUILD39 and enters house38 with life999, without a death. Two
+120-tick fresh native comparisons pass. All four Modern/Voxel death/work
+captures pass180frames. F5/R plus coldloads in both styles preserve the live
+Builder, then clear it and restore28 villagers on reset with no false bursts.
+Nativead803e03 is an isolated committed-source build: base6eb88722 plus owned
+read-only character/death leaves, recorded in65724d7b; concurrent Original WIP
+and its installed player/plugin are excluded. Presentation now selects
+generated/settlement-people-20261110/player-reader; prior pointer is preserved
+at Builds/Presentation-before-settlement-people-20261110.
+
+Trader mc-oi5 remains OPEN. Art/import/animation/Voxel bindings are ready. A
+real direct Level7 session exposes four Traders219/base138/height250 and living
+116→hidden→reclaim house entry; a fresh instance matches1200input steps. This
+does not prove natural Level1 production, lethal combat or a live Voxel death.
+All47 Level1 opening houses have2occupants; bounded public routes did not reach
+the Trader producer population gate. The direct Level7 handle has no acquired
+damaging spells and rejects GameRuntime save/voxel enable; no grants, actor
+injection or replay edits were used. Do not close or start another family.
+
+Checked16.6s portrait media and evidence are under generated/
+settlement-people-20261110. Actual3090 privateKWin/Vulkan1280×960 no-readback
+two-run medians are218/113FPS Modern/Voxel, versus contemporaneous old-player
+229/120. Native throughput is~27.99/27.24ticks/s. This is no speedup claim;
+tails exceed100ms and Voxel is slower in these samples. Performance comparison
+and limits stay explicit; no unlocked-desktop, VR or full-Level1 claim. Source
+recipe is character-pipeline/VILLAGERS.md. UBS C# remains partial owing to
+callable/taint budgets; owned changes were reviewed, compiled and run.
+Both actual default launchers independently passed180frames of the Builder's
+tick1554 kill from the qualified installation, without a player-path override.
+`mc-jcy` is closed; `mc-oi5` retains all unfinished acceptance. Final media is
+builder-trader-installed-checked.mp4 and uses those installed launcher captures.
+
 ### Installed villager roster — 2026-11-10
 
 Oliver's accepted human/robe pilot now covers all28 reset villagers, through

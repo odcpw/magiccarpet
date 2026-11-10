@@ -1,6 +1,6 @@
 # Level 1 Modern and Voxel asset inventory
 
-Verified 2026-11-09 against the active Level 1 owner package, current Rust
+Verified 2026-11-10 against the active Level 1 owner package, current Rust
 constructors and the installed Presentation client's source bindings.
 Use the playable Rust level as the behavior baseline. This work owns art,
 animation and presentation integration, not another mission implementation.
@@ -12,6 +12,8 @@ animation and presentation integration, not another mission implementation.
 | Goat | Approved master and five actions; Modern and animated voxel skins | Retain source speed, terrain contact and native death joins |
 | Bow archer, bow, string and arrow | Approved master and eight actions; Modern and voxel character skin | Retain real native release, aim and child lifetime |
 | Villagers, all four appearances | All 28 reset residents: brown robe/cap, olive pilot, striped robe, vessel carrier; five actions, Modern and 64/96 voxel skins | Installed; retain native travel/reaction/death/reset/load and bounded breakup admission |
+| Builder | Source-inspired vest/trousers/cap/beard, five actions and64/96Voxel skins; real Level1 house birth, construction, living entry and death | Qualified source7f554577; retain native identity, positive-life consumption and exactly-once breakup |
+| Trader | Source-inspired short vest, patched trousers and goods pack; five actions, Modern and64/96Voxel bindings; real directLevel7 movement/entry | Full Level1 house production and live combat/death/reset-save-load verification remain open in mc-oi5 |
 | Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
 | Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
 | Buildings | Four BUILD profiles: 26, 29, 30, 42, covering 32 opening buildings | Additional selectors and dynamic construction/damage need coverage |
@@ -21,6 +23,16 @@ animation and presentation integration, not another mission implementation.
 Unclaimed visible entities still use original sprite billboards. Existing
 attractive scenery does not prove that every gameplay object is converted.
 
+Current normal launchers select generated/settlement-people-20261110/player-reader
+(presentation7f554577, nativead803e03 from65724d7b). The previous player is
+preserved. Builder's real production/build/entry/kill, both installed styles,
+public F5/R and coldloads are qualified; mc-jcy is closed. Trader art/bindings
+are installed but mc-oi5 remains open for Level1 production and combat/death.
+Checked media and current proofs are under that generated folder. No new asset
+family was started before that unfinished acceptance. Matched private3090
+Vulkan1280×960 two-run medians218/113FPS compare with old-player229/120;
+no speedup/full-level/desktop claim, and>100ms frame outliers remain.
+
 ## Remaining living assets
 
 Counts are authored records unless noted. Later groups do not all exist at
@@ -28,8 +40,7 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 
 | Asset project | Level 1 occurrence | Required conversion |
 | --- | --- | --- |
-| Builders | Produced by houses, model 12 | Original appearance, locomotion/work/reaction/death and native production/removal binding |
-| Traders | Produced by houses, model 14 | Original appearance, locomotion/work/reaction/death and native production/removal binding |
+| Traders, remaining runtime qualification | Conditional house production, model14; all47 opening houses have2 occupants | Art/bindings ready; obtain genuine Level1 production and public combat/death/voxel-lifetime evidence without state injection |
 | Worm | Four authored heads, groups 4/34; each can allocate up to 16 segments | Head/repeating segments, native multipart placement, movement/attack/reaction/death and voxel breakup |
 | Firefly | Six authored, groups 6/33 | Original silhouette, wing/body animation, flight/turn/attack/reaction/death and attack effects |
 | Collector balloon | Spawned by player Castle, class 3/model 3 | Balloon, collection/carry/deposit states, ownership/material feedback and native flight |
@@ -40,16 +51,19 @@ all are converted and installed as of 2026-11-10. Their source logical heights
 are 200/250/250/300. Both Day and Night sheets were inspected; Night palette
 colours are not neutral fabric colours. See character-pipeline/VILLAGERS.md.
 Builders use base TMAP 141 and traders 138. These are source appearances,
-not assumptions about gender, clothes or tools before viewing the sprites.
+both inspected in Day/Night banks. Builder has an open olive vest and pale
+trousers with green bands; Trader carries a large pack, blue rolls, sticks
+and side bags. Source frames show no Builder hammer. Their reusable free
+recipes and exact runtime limits are in character-pipeline/VILLAGERS.md.
 Worm base TMAPs are head 30 and segment 66; Firefly base is 279; balloon 88.
 Live animation/direction may select other frames.
 
 The complete 2026-11-10 villager roster used no paid 3D generation. All three
 new appearances have actual public-input kills, checked Modern falls and
 exactly-once Voxel breakups. Both current styles pass R/F5 and fresh loads with
-28 unique residents and all four bindings. Normal launchers use the qualified
+28 unique residents and all four bindings. Those launchers used the qualified
 player in generated/villager-roster-20261110/player-view; the previous pilot
-pointer is preserved. Current source is through `9cf9159f`; native remains
+pointer is preserved. That source was through `9cf9159f`; native was
 qualified `e8a6e707` from `eaf0f1bc`. Matched private KWin/3090 Vulkan1280×960
 runs measured ~222/120 FPS Modern/Voxel; >100 ms spikes and native throughput
 below 30 ticks/s remain. This does not finish the remaining families or whole-
@@ -128,7 +142,7 @@ commission a new soundtrack or change gameplay effects.
 
 ## Delivery order and acceptance
 
-1. Villager appearances/shared human rig are installed; Builder/Trader variants are next.
+1. Villagers and Builder are converted; finish Trader's full runtime acceptance before another asset family.
 2. Firefly and Worm as independent creature projects.
 3. Remaining building profiles, Castle and collector/auxiliary actors.
 4. Authored scenery, pickups, portal and remaining effect replacements.
