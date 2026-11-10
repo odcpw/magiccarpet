@@ -564,11 +564,20 @@ scheduler receipts. C3 corrects both and preserves full acceptance.
 
 The prior Castle bank, carried spells/player funding and initial poses remain
 declared controls. This is not earning all40% from zero, six ordinary Spider
-deaths/exit, complete Level4 or full `.7` acceptance. Commit/push and matching
-Original delivery for the Firefly production fix are in progress. Current
-shared native headers have advanced in the separate character thread, so
-Original qualification may require rebuilding its existing unchanged client;
-do not weaken its source/contract gates or import Modern/Voxel assets.
+deaths/exit, complete Level4 or full `.7` acceptance. Source `bbc831e0` is
+committed/pushed. Strict Rig native build passes244.875s; all659 guarded inputs
+and returned/worker bytes match nativeSHA477e80949eafef202fd18f17b33d079f5b90f92fe445ddbc43510d39f11dd20d.
+Existing Original client was rebuilt as `build-8yrq40i1` for the current shared
+header qualification; all200 UI inputs are unchanged. Root independently
+verified467 Rust/200 UI/142 player inputs and both installed native copies.
+Canonical map/loading/NightSpire terrain/HUD smoke passes with the matching
+mapped library, one portal/zero retries; owned processes stopped. This is not
+a native Firefly/Level4 encounter, human combat, FPS, hardware audio, complete
+missions or old-save proof. Modern/Voxel Presentation remains untouched.
+Next integrate this earned prefix into the existing paid Spider encounter,
+removing its forced prior objective while retaining its web/contact/recovery,
+fatal paid Meteor, mana ownership/deposit and reclaim gates. The six ordinary
+deaths/exit/full objective-language acceptance remain open.
 
 The first prefix candidate (C2 under
 `generated/objective-20261109-integration`) typechecks and builds on Rig, but
