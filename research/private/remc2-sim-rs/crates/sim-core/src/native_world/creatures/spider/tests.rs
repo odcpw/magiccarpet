@@ -1998,19 +1998,17 @@ fn mission_four_earned_mana_forty_drives_original_switch_and_six_living_spiders(
 
 #[test]
 fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
+    use std::collections::BTreeSet;
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
     use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
     use crate::game_session::{GameCommand, GameSession, SpellAssignment, SpellAssignmentHand};
     use crate::level_definition::{CreatureKind, METEOR_PROPERTIES};
-    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage, lightning};
+    use crate::native_world::{Level2EconomyEvent, area_damage, lightning};
     use crate::native_world::level2_dynamic_economy::{
         PossessionSourceReceipt, start_possession_trace, take_possession_trace,
     };
     use crate::{FlightWorld, PlayerCommand};
 
-    const GROUP6: &[u16] = &[
-        8, 9, 10, 11, 12, 137, 138, 139, 141, 250, 251, 255, 601, 602, 724, 725, 726,
-    ];
     let package = mission_four_root();
     let definition = load_mc2_campaign(
         &package,
@@ -2026,23 +2024,18 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
     .unwrap();
     let player = simulation(&game).state.entity_index;
     let player_handle = simulation(&game).source_arena().handle(player).unwrap();
-    let switch = simulation(&game).source_arena().handle(6).unwrap();
-    let switch_row = &simulation(&game).entities()[6];
-    assert_eq!(
-        (
-            switch_row.class,
-            switch_row.model,
-            switch_row.action,
-            switch_row.source_id
-        ),
-        (11, 32, 32, 6)
-    );
-    assert!(
-        !simulation(&game)
-            .creature_runtime_census()
-            .roots_of_kind(CreatureKind::Spider)
-            .any(|row| row.living)
-    );
+    // Continue the SAME real session through earned mana40, reset6 and all
+    // six living Spider callbacks before any encounter-only resource setup.
+    earn_mission_four_mana_and_spawn_spiders(&mut game);
+    let earned_castle = simulation(&game)
+        .economy()
+        .castle_for_owner(player)
+        .unwrap()
+        .source_entity_index;
+    let earned_castle = simulation(&game)
+        .source_arena()
+        .handle(earned_castle)
+        .unwrap();
     // Age actual startup protection before the encounter; its counter, NPCs,
     // source RNG and timers are never edited. All owner-package rows remain.
     for turn in 0..256 {
@@ -2055,16 +2048,15 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
             "natural startup protection",
             turn,
         );
-        assert!(simulation(&game).source_arena().resolve(switch).is_some());
     }
     assert_eq!(
         simulation(&game).session.state.live.player_protection_ticks,
         0
     );
 
-    // Declared prior carry/progression, player resources and a real constructed
-    // Castle are prerequisites for the paid public tierII activation below.
-    // These controls do not assert earned mission progression.
+    // Declared prior carry/progression and player resources are prerequisites
+    // for the paid public tierII activation below. The earned prefix's real
+    // Castle and objective state remain the current session's carriers.
     {
         let sim = simulation_mut(&mut game);
         sim.apply_carried_spell_families(&[9], Some(9)).unwrap();
@@ -2083,30 +2075,24 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
             sim.shared_spells().local_player().spell_unlocked_levels[9],
             1
         );
-        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
-            sim.economy_mut()
-                .set_castle_stage_footprint(stage, footprint);
-        }
-        let site = (1_u16..32)
-            .flat_map(|y| {
-                (1_u16..32).map(move |x| Position {
-                    x: x * 2048,
-                    y: y * 2048,
-                    z: 0,
-                })
-            })
-            .find(|position| {
-                !sim.economy().castle_projectile_site_blocked(
-                    *position,
-                    sim.entities(),
-                    sim.canonical_terrain(),
-                )
-            })
-            .expect("source-valid Castle site");
-        let castle = sim.economy_mut().build_castle(site, player).unwrap();
+        // Only AFTER the real earned crossing/group6 proof, restore the old
+        // declared encounter bank: source68D50 also gates Lightning/Meteor on
+        // Castle mana. This200k is a resource prerequisite, not earned mana.
+        assert_eq!(
+            sim.source_arena().handle(earned_castle.source_slot),
+            Some(earned_castle)
+        );
         assert!(
             sim.economy_mut()
-                .set_castle_mana_prerequisite_for_test(castle, 200_000)
+                .set_castle_mana_prerequisite_for_test(earned_castle.source_slot, 200_000)
+        );
+        assert_eq!(
+            sim.economy().castle_at(earned_castle.source_slot).unwrap().mana,
+            200_000
+        );
+        assert_eq!(
+            sim.source_arena().handle(earned_castle.source_slot),
+            Some(earned_castle)
         );
         let live = &mut sim.session.state.live;
         let row = &mut live.economy.entities[usize::from(player)];
@@ -2128,40 +2114,20 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         }
         live.core.state.actual_speed = 0;
         live.core.state.target_speed = 0;
-        let color = live.core.state.player_color_index;
-        live.core
-            .runtime
-            .set_level2_objective_stage_selector_for(usize::from(color), 0, 2);
     }
-    let mut published = false;
-    // This is the actual source model32 gate. No group is activated directly.
-    for turn in 0..8 {
-        assert_eq!(
-            simulation(&game).source_arena().handle(switch.source_slot),
-            Some(switch),
-            "activation must retain the original reset6 generation"
-        );
-        let command = if turn == 0 {
-            GameCommand {
-                assign_spell: Some(SpellAssignment {
-                    spell_id: crate::game_definition::SemanticId::parse("spell.meteor").unwrap(),
-                    tier: 1,
-                    hand: SpellAssignmentHand::Left,
-                    holder_actor: None,
-                }),
-                ..Default::default()
-            }
-        } else {
-            GameCommand::default()
-        };
-        public_step(&mut game, command, "actual group6 switch", turn);
-        if simulation(&game).dispatch_events().iter().any(|event|
-            matches!(event, Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 6, group: 6, authored_indices, .. }
-                if authored_indices.as_ref() == GROUP6)) { published = true; break; }
-    }
-    assert!(
-        published,
-        "actual reset6 must publish the entire17-member group6"
+    public_step(
+        &mut game,
+        GameCommand {
+            assign_spell: Some(SpellAssignment {
+                spell_id: crate::game_definition::SemanticId::parse("spell.meteor").unwrap(),
+                tier: 1,
+                hand: SpellAssignmentHand::Left,
+                holder_actor: None,
+            }),
+            ..Default::default()
+        },
+        "declared MeteorII public assignment after earned group6",
+        0,
     );
     let roots = simulation(&game)
         .creature_runtime_census()
@@ -2240,8 +2206,8 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         original.source_id
     );
     // Declared prior LightningI carry at the player encounter boundary.
-    // Its real holder is materialised after the wave so the already-pinned
-    // Spider IDs and seeded headings remain the same source inputs as C3.
+    // Its real holder is materialised after the earned wave. Carry adoption
+    // must preserve the current original Spider identities and source state.
     {
         let sim = simulation_mut(&mut game);
         sim.apply_carried_spell_families(&[7, 9], Some(9)).unwrap();
@@ -2339,7 +2305,13 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
     lightning::start_endpoint_birth_trace();
     web::start_trace(root);
     area_damage::start_actor_damage_trace(&[player_handle, root]);
-    area_damage::start_effect_damage_trace(root.source_slot);
+    let mut provocation_effects = Vec::new();
+    let initial_root_mailbox =
+        area_damage::source_bounty(simulation(&game).source_arena(), None, root.source_slot)
+            .unwrap();
+    assert_eq!(initial_root_mailbox, (0, 0));
+    let mut root_health_frames = Vec::new();
+    let mut foreign300_reported = false;
     let mut player_consumptions = Vec::new();
     let mut immobilized = false;
     let mut recovered = false;
@@ -2372,6 +2344,7 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         );
         let mana_before = simulation(&game).shared_spells().player_entity().mana;
         simulation_mut(&mut game).start_creature17_trace();
+        area_damage::start_effect_damage_trace(root.source_slot);
         public_step(
             &mut game,
             GameCommand {
@@ -2382,6 +2355,7 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
             turn,
         );
         let sound_trace = simulation_mut(&mut game).take_creature17_trace();
+        provocation_effects.extend(area_damage::take_effect_damage_trace());
         close_contacts.extend(sound_trace.contacts);
         let sim = simulation(&game);
         lightning_paid = lightning_paid.saturating_add(
@@ -2450,13 +2424,31 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         let (traced_launches, traced_impacts) = web::trace_snapshot();
         let is_own_web = |visit: &area_damage::PlayerDamageConsumptionReceipt| {
             visit.target == player_handle
-                && visit.mailbox == (780, original.source_id)
-                && visit.life_after == visit.life_before.wrapping_sub(780)
+                && visit.mailbox.1 == original.source_id
+                && visit.life_after == visit.life_before.wrapping_sub(visit.mailbox.0)
                 && visit.writer.is_some_and(|writer| {
                     writer.target == player_handle
                         && writer.mailbox == visit.mailbox
                         && traced_impacts.iter().any(|impact| {
                             writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                                && close_contacts.iter().any(|contact| {
+                                    contact.producer == impact.impact
+                                        && contact.current_producer == Some(impact.impact)
+                                        && contact.target == player_handle
+                                        && (contact.payload, contact.attacker) == (780, original.source_id)
+                                        && contact.writer_sequence == Some(writer.sequence)
+                                        && contact.mailbox_after == writer.mailbox
+                                        && contact.mailbox_after == (
+                                            if contact.mailbox_before.1 != 0 {
+                                                780
+                                            } else {
+                                                contact.mailbox_before.0.wrapping_add(780)
+                                            },
+                                            original.source_id,
+                                        )
+                                        && contact.player_life_after == contact.player_life_before
+                                        && visit.event_cursor >= contact.event_cursor
+                                })
                                 && (
                                     impact.packet.class,
                                     impact.packet.model,
@@ -2540,6 +2532,32 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
             }
         }
         player_consumptions.extend(current_consumptions);
+        root_health_frames.push((
+            provocation_effects.len(),
+            player_consumptions.len(),
+            row.life,
+            row.max_life,
+            area_damage::source_bounty(sim.source_arena(), None, root.source_slot).unwrap(),
+        ));
+        // Emit the first real foreign300 writer/consumption before any
+        // player-placement guard, using only the existing collected receipts.
+        if !foreign300_reported {
+            if let Some((effect, consumed)) = provocation_effects.iter().filter(|effect| {
+                effect.target_slot == root.source_slot
+                    && effect.target_generation == root.generation
+                    && effect.pulse.payload == 300
+                    && effect.pulse.owner != player
+                    && effect.writer_sequence.is_some()
+            }).find_map(|effect| {
+                player_consumptions.iter().find(|visit| {
+                    visit.target == root && visit.writer.is_some_and(|writer|
+                        Some(writer.sequence) == effect.writer_sequence)
+                }).map(|consumed| (effect, consumed))
+            }) {
+                eprintln!("actual foreign300 Spider damage: effect={effect:?} consumed={consumed:?}");
+                foreign300_reported = true;
+            }
+        }
         let own_web_consumed = player_consumptions.iter().any(&is_own_web);
         let close = close_hit;
         if turn < 8 || turn % 8 == 0 {
@@ -2592,7 +2610,9 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         {
             let mut position = row.position;
             crate::move_entity(&mut position, row.yaw, 0, 512);
-            position.z = row.position.z.wrapping_add(256);
+            position.z = row.position.z.checked_add(256).unwrap().max(
+                sim.canonical_terrain().ground_height(position).checked_add(256).unwrap()
+            );
             assert!(
                 position.z
                     >= sim
@@ -2622,7 +2642,6 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         }
     }
     let endpoint_births = lightning::take_endpoint_birth_trace();
-    let provocation_effects = area_damage::take_effect_damage_trace();
     let provoked = provocation_visits.iter().any(|(visit, after)| {
         visit.target == root
             && visit.life_after == visit.life_before.wrapping_sub(200)
@@ -2668,16 +2687,160 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         "one real paid LightningI must nonfatally provoke original137: root={root:?} sourceID={} pose={lure:?} aim={provocation_aim:?} paid={lightning_paid} price={lightning_price} holder={lightning_holder_handle:?} rays={provocation_rays:?} endpoints={endpoint_births:?} visits={provocation_visits:?} effects={provocation_effects:?} cadence={cadence_history:?}",
         original.source_id
     );
+    // Source10C80 ordinary writes add to owned payload and replace ownerless
+    // residue. Merge by actual writer sequence, not an ambiguous event cursor;
+    // a queued pulse may be consumed on the following ordinary source pass.
+    let fold_root_write = |effect: &area_damage::EffectDamageReceipt,
+                           mailbox: &mut (i32, u16),
+                           pending: &mut Vec<u64>,
+                           represented: &mut BTreeSet<u64>,
+                           last_source: &mut Option<SourceEntityHandle>| {
+        assert_eq!(
+            (effect.target_slot, effect.target_generation),
+            (root.source_slot, root.generation)
+        );
+        let Some(sequence) = effect.writer_sequence else {
+            assert_eq!(effect.mailbox_before, effect.mailbox_after);
+            return;
+        };
+        assert!(effect.source_scoped && !effect.pulse.continuous);
+        assert!(effect.hit_count.is_some_and(|hits| hits != 0));
+        // Typed carriers can own an address with an inactive raw shadow.
+        // Use the same canonical incarnation as the actual accepted writer;
+        // raw header snapshots remain diagnostic, not producer admission.
+        let source = effect.source_handle
+            .expect("the accepted callback needs its canonical producer handle");
+        assert_eq!(effect.source_slot, Some(source.source_slot));
+        assert_eq!(effect.mailbox_before, Some(*mailbox));
+        let after = (
+            if mailbox.1 != 0 {
+                mailbox.0.wrapping_add(i32::from(effect.pulse.payload))
+            } else {
+                i32::from(effect.pulse.payload)
+            },
+            effect.pulse.owner,
+        );
+        assert_eq!(effect.mailbox_after, Some(after));
+        assert!(
+            represented
+                .last()
+                .is_none_or(|previous| *previous < sequence)
+        );
+        assert!(represented.insert(sequence));
+        pending.push(sequence);
+        *last_source = Some(source);
+        *mailbox = after;
+    };
+    let mut checked_root_life = 5500_i32;
+    let mut checked_root_mailbox = initial_root_mailbox;
+    let mut next_health_effect = 0;
+    let mut next_health_consumption = 0;
+    let mut pending_health_writers = Vec::new();
+    let mut represented_health_writers = BTreeSet::new();
+    let mut consumed_health_writers = BTreeSet::new();
+    let mut latest_health_source = None;
+    for &(effects_end, consumptions_end, actual_life, actual_max, actual_mailbox) in
+        &root_health_frames
+    {
+        for visit in player_consumptions[next_health_consumption..consumptions_end]
+            .iter()
+            .filter(|visit| visit.target == root)
+        {
+            let writer = visit
+                .writer
+                .expect("every original-root subtraction needs its actual writer");
+            while next_health_effect < effects_end
+                && provocation_effects[next_health_effect]
+                    .writer_sequence
+                    .is_none_or(|sequence| sequence <= writer.sequence)
+            {
+                fold_root_write(
+                    &provocation_effects[next_health_effect],
+                    &mut checked_root_mailbox,
+                    &mut pending_health_writers,
+                    &mut represented_health_writers,
+                    &mut latest_health_source,
+                );
+                next_health_effect += 1;
+            }
+            assert_eq!(writer.target, root);
+            assert_eq!(pending_health_writers.last(), Some(&writer.sequence));
+            assert_eq!(
+                writer.source,
+                area_damage::PlayerMailboxSource::Effect(latest_health_source.unwrap())
+            );
+            assert_eq!(
+                (writer.mailbox, visit.mailbox),
+                (checked_root_mailbox, checked_root_mailbox)
+            );
+            assert_eq!(visit.life_before, checked_root_life);
+            checked_root_life = checked_root_life.wrapping_sub(checked_root_mailbox.0);
+            assert_eq!(visit.life_after, checked_root_life);
+            for sequence in pending_health_writers.drain(..) {
+                assert!(
+                    consumed_health_writers.insert(sequence),
+                    "one consumption per writer"
+                );
+            }
+            checked_root_mailbox.1 = 0; // Source1C310 clears owner, retaining payload.
+        }
+        next_health_consumption = consumptions_end;
+        while next_health_effect < effects_end {
+            fold_root_write(
+                &provocation_effects[next_health_effect],
+                &mut checked_root_mailbox,
+                &mut pending_health_writers,
+                &mut represented_health_writers,
+                &mut latest_health_source,
+            );
+            next_health_effect += 1;
+        }
+        assert_eq!(
+            (actual_life, actual_max, actual_mailbox),
+            (checked_root_life, 5500, checked_root_mailbox),
+            "every ordinary frame must preserve the exact original5500HP writer/consumer chain"
+        );
+    }
+    assert_eq!(next_health_effect, provocation_effects.len());
+    assert_eq!(next_health_consumption, player_consumptions.len());
+    assert!(pending_health_writers.is_empty());
+    assert_eq!(checked_root_mailbox.1, 0);
+    assert_eq!(represented_health_writers, consumed_health_writers);
+    eprintln!(
+        "actual original5500HP Spider chain: endpoint={checked_root_life} writers={consumed_health_writers:?} consumed={:?}",
+        player_consumptions
+            .iter()
+            .filter(|visit| visit.target == root)
+            .collect::<Vec<_>>()
+    );
     let (web_launches, web_impacts) = web::take_trace();
     let web_hit = player_consumptions.iter().any(|visit| {
         visit.target == player_handle
-            && visit.mailbox == (780, original.source_id)
-            && visit.life_after == visit.life_before.wrapping_sub(780)
+            && visit.mailbox.1 == original.source_id
+            && visit.life_after == visit.life_before.wrapping_sub(visit.mailbox.0)
             && visit.writer.is_some_and(|writer| {
                 writer.target == player_handle
                     && writer.mailbox == visit.mailbox
                     && web_impacts.iter().any(|impact| {
                         writer.source == area_damage::PlayerMailboxSource::Effect(impact.impact)
+                            && close_contacts.iter().any(|contact| {
+                                contact.producer == impact.impact
+                                    && contact.current_producer == Some(impact.impact)
+                                    && contact.target == player_handle
+                                    && (contact.payload, contact.attacker) == (780, original.source_id)
+                                    && contact.writer_sequence == Some(writer.sequence)
+                                    && contact.mailbox_after == writer.mailbox
+                                    && contact.mailbox_after == (
+                                        if contact.mailbox_before.1 != 0 {
+                                            780
+                                        } else {
+                                            contact.mailbox_before.0.wrapping_add(780)
+                                        },
+                                        original.source_id,
+                                    )
+                                    && contact.player_life_after == contact.player_life_before
+                                    && visit.event_cursor >= contact.event_cursor
+                            })
                             && web_sound_receipts.iter().any(|&(source, target, _)| {
                                 source == impact.impact && target == player_handle
                             })
@@ -2740,6 +2903,25 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         "positive player speed input is suppressed by actual web movement status"
     );
 
+    // The movement clones share observer TLS and physical handle values, but
+    // not this live session. Restart only the observers after asserting that
+    // the real root has no pending owned write at this observation boundary.
+    assert_eq!(
+        simulation(&game).source_arena().handle(root.source_slot),
+        Some(root)
+    );
+    assert_eq!(
+        area_damage::source_bounty(simulation(&game).source_arena(), None, root.source_slot)
+            .unwrap(),
+        checked_root_mailbox
+    );
+    assert_eq!(checked_root_mailbox.1, 0);
+    assert_eq!(
+        simulation(&game).entities()[usize::from(root.source_slot)].life,
+        checked_root_life
+    );
+    area_damage::start_actor_damage_trace(&[root]);
+    area_damage::start_effect_damage_trace(root.source_slot);
     public_step(
         &mut game,
         GameCommand {
@@ -2754,19 +2936,37 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         "restore declared MeteorII public hand",
         0,
     );
+    let restore_consumptions = area_damage::take_player_damage_consumptions();
+    let restore_effects = area_damage::take_effect_damage_trace();
+    assert!(
+        restore_consumptions.is_empty(),
+        "quiet real hand assignment: {restore_consumptions:?}"
+    );
+    assert!(
+        restore_effects
+            .iter()
+            .all(|effect| effect.writer_sequence.is_none()
+                && effect.mailbox_before == effect.mailbox_after),
+        "no unaccounted accepted root write during real hand assignment: {restore_effects:?}"
+    );
+    assert_eq!(
+        area_damage::source_bounty(simulation(&game).source_arena(), None, root.source_slot)
+            .unwrap(),
+        checked_root_mailbox
+    );
 
     // One declared player-only fixed firing placement.1024 behind the current
     // actor leaves the256 hand offset within the source113 acquisition cone.
     // Aim is computed once; no subsequent pose/life read changes the command.
-    // TierII supplies five1600 pulses (four suffice for the actual5300 life)
+    // TierII supplies five1600 pulses against the exact verified life chain,
     // with stationary half-widths0/384/768/1152/1536. C7's tierIII also killed
     // original138; the smaller tierII area must still pass the unchanged
     // five-survivor and +1 credit checks below.
     let target = simulation(&game).entities()[usize::from(root.source_slot)].clone();
     assert_eq!(
         (target.life, target.max_life),
-        (5300, 5500),
-        "only the actual200 provocation changed life"
+        (checked_root_life, 5500),
+        "original5500HP must match every actual admitted writer/subtraction, including the real hand-assignment boundary"
     );
     let mut firing_pose = target.position;
     crate::move_entity(&mut firing_pose, target.yaw, 0, -1024);
@@ -3276,6 +3476,10 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
         .unwrap()
         .source_entity_index;
     let castle_handle = simulation(&game).source_arena().handle(castle).unwrap();
+    assert_eq!(
+        castle_handle, earned_castle,
+        "continue the earned prefix's same Castle generation"
+    );
     let capacity = simulation(&game)
         .economy()
         .castle_at(castle)
@@ -3473,64 +3677,43 @@ fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
 #[test]
 fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_reclaim() {
     use crate::PlayerCommand;
-    use crate::campaign::CampaignSession;
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
     use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::game_session::GameSession;
     use crate::level_definition::{CreatureKind, ObjectiveCondition};
-    use crate::native_world::{Mc2DispatchEvent, area_damage};
+    use crate::native_world::area_damage;
 
-    const GROUP6: &[u16] = &[
-        8, 9, 10, 11, 12, 137, 138, 139, 141, 250, 251, 255, 601, 602, 724, 725, 726,
-    ];
-    let campaign = CampaignSession::open(
-        mission_four_root(),
-        crate::campaign::spec::CampaignSelection::ordinary(4).unwrap(),
+    let package = mission_four_root();
+    let definition = load_mc2_campaign(
+        &package,
+        &crate::game_definition::default_catalog().unwrap(),
     )
     .unwrap();
-    let mut session = campaign.simulation().clone();
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        2004,
+        Mc2CampaignInputs::new(&package),
+    )
+    .unwrap();
+    earn_mission_four_mana_and_spawn_spiders(&mut game);
+    // The explicitly configured lethal-contact continuation starts from the
+    // same real earned stage transition and its unmodified six live roots.
+    let mut session = simulation(&game).clone();
     let stage = 1;
     assert_eq!(
-        campaign.definition().level_definition().objectives()[stage].condition(),
+        game.backend()
+            .compatibility_campaign()
+            .definition()
+            .level_definition()
+            .objectives()[stage]
+            .condition(),
         ObjectiveCondition::NoLivingCreatures(CreatureKind::Spider)
     );
     assert_eq!(session.runtime().stages[stage].kind, 7);
     let owner = usize::from(session.state.player_color_index);
     let player = session.state.entity_index;
-    let switch = session.source_arena().handle(6).unwrap();
-    // Only prior objective progress is declared here. Original placement,
-    // six constructors, source phases, RNG and lifetimes are retained.
-    session
-        .session
-        .state
-        .live
-        .core
-        .runtime
-        .set_level2_objective_stage_selector_for(owner, 0, 2);
-    let mut published = false;
-    for turn in 0..8 {
-        assert_eq!(session.source_arena().handle(6), Some(switch));
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        no_dispatch_errors(&session, "configured absence real producer", turn);
-        if session.dispatch_events().iter().any(|event| {
-            matches!(event, Mc2DispatchEvent::AuthoredGroupActivated {
-                source_slot: 6, group: 6, authored_indices, ..
-            } if authored_indices.as_ref() == GROUP6)
-        }) {
-            published = true;
-            break;
-        }
-    }
-    assert!(published);
-    // The declared prior selector0=2 bypasses its real completion transition,
-    // which alone would advance ObjectiveText. Bind the package's existing
-    // task1 as current only AFTER all six actual roots have been published.
-    session
-        .session
-        .state
-        .live
-        .core
-        .runtime
-        .set_level2_objective_text_selector_for(owner, stage);
-    // Consume any real objective-done pause and require a living blocked pass.
+    // Require an ordinary living blocked pass before the configured contacts.
     session.step_outer_turn(PlayerCommand::default(), 0);
     no_dispatch_errors(&session, "configured absence initial living pass", 0);
     assert_eq!(

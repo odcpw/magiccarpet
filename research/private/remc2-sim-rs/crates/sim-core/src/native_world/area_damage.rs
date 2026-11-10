@@ -1352,6 +1352,10 @@ pub(crate) fn capture_effect_lists(
 pub(crate) struct EffectDamageReceipt {
     pub(crate) source_slot: Option<u16>,
     pub(crate) source_scoped: bool,
+    /// Canonical allocator identity and typed carrier at the damage call.
+    /// A typed producer need not have published an active raw header yet.
+    pub(crate) source_handle: Option<crate::campaign::source_arena::SourceEntityHandle>,
+    pub(crate) source_arena_kind: Option<super::Level2DynamicArenaKind>,
     /// Current typed impact and its generation at the actual damage callback,
     /// before later passes can reclaim or replace the fixed source address.
     pub(crate) source_impact: Option<(u32, super::Level2Model17SpawnedChild)>,
@@ -1688,6 +1692,8 @@ pub(crate) fn begin_model0_damage_trace(
     target_slots.into_iter().map(|target_slot| EffectDamageReceipt {
         source_slot: Some(source_slot),
         source_scoped: true,
+        source_handle: targets.arena.handle(source_slot),
+        source_arena_kind: targets.arena.economy.live_arena_kind(source_slot),
         source_impact,
         source_raw_impact: None,
         pulse: request,
@@ -1776,11 +1782,12 @@ pub(crate) fn apply_effect(
         EffectDamageReceipt {
             source_slot,
             source_scoped: scoped_source.is_some(),
-            // The scoped callback also identifies a real Lightning endpoint.
-            // Preserve its packet/generation for the ordinary Ray ancestry
-            // check; source inference above remains limited to model0.
+            source_handle: source_slot.and_then(|slot| world.targets.arena.handle(slot)),
+            source_arena_kind: source_slot.and_then(|slot| world.targets.arena.economy.live_arena_kind(slot)),
+            // Raw headers are diagnostics, not canonical typed-producer
+            // identity or callback-local state. Unscoped inference above
+            // remains limited to a unique model0 impact.
             source_raw_impact: source_slot.and_then(|slot| world.targets.arena.entities.get(usize::from(slot))
-                .filter(|row| row.active && row.class == 10 && matches!(row.model, 0 | 6 | 23))
                 .map(|row| (world.targets.arena.economy.slot_generation(slot), row.clone()))),
             source_impact: source_slot.and_then(|source_slot| {
                 world.targets.arena.economy.model17_spawned_children().iter()

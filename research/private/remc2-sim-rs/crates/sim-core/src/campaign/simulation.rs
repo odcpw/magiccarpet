@@ -29269,11 +29269,10 @@ impl Mc2Simulation {
             if !enabled {
                 return None;
             }
-            let producer = actor_contact_source?;
             let live = &self.session.state.live;
             Some((
-                producer,
-                live.economy.handle(producer.source_slot),
+                actor_contact_source,
+                actor_contact_source.and_then(|producer| live.economy.handle(producer.source_slot)),
                 live.economy.handle(player_entity_index)?,
                 live.player_life,
             ))
@@ -29320,7 +29319,26 @@ impl Mc2Simulation {
             actor_contact_source.map(area_damage::PlayerMailboxSource::Contact),
         );
         #[cfg(test)]
-        if let Some((producer, current_producer, target, player_life_before)) = contact_observation
+        if let Some((actor_source, actor_current, target, player_life_before)) = contact_observation
+            && let Some((producer, current_producer)) = actor_source
+                .map(|source| (source, actor_current))
+                .or_else(|| {
+                    // Web/status effects use the same source contact primitive.
+                    // Observe its actual fresh writer without relabeling Effect
+                    // as Contact or borrowing an older equal-valued mailbox.
+                    let live = &self.session.state.live;
+                    let writer = area_damage::current_actor_mailbox_writer(
+                        target,
+                        (next_damage, next_attacker),
+                    )?;
+                    if Some(writer.sequence) != writer_sequence {
+                        return None;
+                    }
+                    let area_damage::PlayerMailboxSource::Effect(source) = writer.source else {
+                        return None;
+                    };
+                    Some((source, live.economy.handle(source.source_slot)))
+                })
         {
             let live = &self.session.state.live;
             let row = &live.economy.entities[usize::from(player_entity_index)];
