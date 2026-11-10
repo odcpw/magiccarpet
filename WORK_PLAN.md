@@ -724,8 +724,13 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current installed Original checkpoint is runtime `58e7b65c`, native
-`f76aff6bdee1de80ead42c110c8f373b09cc0e5ea39896997aae5f9d276c95d5`.
+Current installed Original checkpoint is Rust `16be76a3`, client `2961a7a7`,
+native `6f6bc45b13c88de14645f4b90bdef9e47f8219921ea692de6140806e0c0459ba`.
+Both source commits are pushed. Full Original build `build-v9i5fr_r` is installed;
+Root independently matched 470 Rust, 200 Unity and 142 player files, both plugins,
+and all 662 Rig/native compile inputs. The normal canonical launcher reached
+map/loading/NightSpire terrain/HUD with that mapped native, one portal click and
+zero retries; Root viewed both captures and stopped the owned player/display.
 Oliver authorizes the next four priorities in order: deliver current shared
 fixes, retained playable secret entry, source-correct return/carry, then actual
 campaign round trips/save/revisit across all five associations. These priorities
@@ -746,16 +751,59 @@ missions/old-save proof. Evidence: generated/shared-refresh-20261110-integration
 candidate-1. Eighteen superseded owned test executables (~1.7GB) were removed;
 source/logs/current marker proof/caches/player remain, without archival copies.
 
-Active team: Root CopperMountain serializes shared integration/Cargo/Unity/
-push/install; CrimsonForge owns retained portal-content admission and local
-entry/return; GoldElk owns actual outer return/statistics/save/transport consumers;
-the Original integration owner prepares the matching private-client consumer.
-The capacity-stopped Terra worker remains stopped. No new infrastructure.
-Retained variant admission uses existing WorkspaceStore plus exact unchanged
-base package identity, not rewritten/resealed owner bytes. Work in progress is
-not in installed58e7: a confirmed secret-result statistics loss on return/save
-and missing retained workspace→installed resolver/native input joins are being
-implemented. Keep original reset/hash/root/association/phase gates intact.
+Step2 now reaches the actual retained source4 portal through public native
+movement from the unchanged original spawn: real switch136, portal293/controller298,
+full player phases through12 and guarded result0x1A at tick883. The only authored
+content edit is original rows75/76 activation groups6→4. Existing WorkspaceStore,
+package/provenance roots, other entities/objectives/positions, source arithmetic,
+reset and stale guards remain intact. The installed resolver reads that same
+retained workspace. The playable client now forwards `--authored-workspace` per
+package through its existing parser/DTO/native JSON route; it changes no campaign
+entry or frontier rule. Actual Unity revealed null-string serialization as `""`;
+the existing request now uses DataContract optional omission, rejects explicit
+blank values, and passes real default bootstrap/world open with current packages.
+
+Step3 fixes confirmed loss of accepted secret completion statistics: Rust retains
+one keyed row per secret through save/replay, preserves prior rows on abandon,
+and publishes the same rows to receipt validation and Original results lookup.
+The Rust state checks and three Original statistic/receipt fixture cases pass.
+Actual source30 public menu banishment produces0x18 with stale/reset protections;
+its fresh release ABI witness passes too. This is not an earned successful secret
+exit, real outer transfer/carry, or a rendered results-table claim.
+
+Step4's real data prerequisite is further qualified: all five genuine source30–34
+packages already exist; no re-export or replacement content was needed. Current
+installed native opens31–34 and advances16 ordinary neutral commands each, with
+Root independently repeating those exact public checks. Source30's existing
+current admission is retained. Source31's actual authored model28 actors and
+transports also progress through the campaign DTO; neutral presentation_entities
+is not used as their proof. This establishes data/admission, not all-five mission
+completion or campaign round trips. Original acceptance and dependencies remain
+open, including mc-6qf.3's unfinished switch/exit prerequisites.
+
+Still required: source30's actual objective85→normal successful exit, an earned
+parent campaign frontier, actual outer entry/load/return/carry/save/revisit and
+all-five gameplay. Oliver reports no known earned Level5 save. Do not fabricate
+frontiers, completion words or saves, and do not weaken source0 entry admission.
+Human retained-variant play, combat/FPS/hardware audio/full missions/old saves
+remain unverified. The legacy Title test dereferences an absent optional field
+before the new encoder; historical v3 package defaults also reject current
+runtime collision-bank admission. Both negatives are preserved, not greened by
+changing assertions. BCL JSON inspection avoids a Modern-only test dependency.
+UBS C# remains partial; large-file formatting/legacy scanner debt remains.
+
+Evidence: `/mnt/pinokio-shared/magiccarpet-secret-lifecycle-20261110-integration/`
+(candidates1/3/4/5) and generated/secret-packages-20261110-admission. Final resolver
+and native JSON checks pass4.809s/2.534s, retained public flight124.354s, source30
+numeric banishment3.518s, strict Rig workspace check21.722s. Six superseded test
+executables (730,344,456 bytes) were removed after receipt hash verification;
+current candidate5 executables/native, source, logs, caches and players remain.
+
+Root CopperMountain owns this Original checkpoint. CrimsonForge owns the bounded
+secret-package handback; the other available Sol owners are write-stopped after
+integration. The capacity-stopped Terra worker remains stopped. Modern/Voxel
+belongs to GentleBadger's separate task; its execution lanes are now returned.
+Keep the isolated Original2961 snapshot and qualified private client intact.
 
 The previous three sequential steps were delivered as bounded checkpoints: recovery
 admission reconciliation, configured real secret entry, then the reproduced
