@@ -4,6 +4,7 @@ Uses the qualified sandbox native and replay to read the public height plane.
 Writes a new descriptor only after all selected cells and identities validate.
 """
 
+import argparse
 import collections
 import ctypes as c
 import hashlib
@@ -20,7 +21,7 @@ CLOSURE = ROOT / 'research/private/generated/level1-asset-closure.json'
 BUILD = ROOT / 'research/private/remc2-native-runtime/CD_Files/DATA/BUILD0-0.DAT'
 EXPECTED_BUILD_SHA = '3db5d9a763dedafbe3077eeeef47431da0b5d397e311f6ee46719a0fc51e8e5d'
 EXPECTED_PLANE_SHA = 'e62920eb0d61c4a78b9173210f1611797cc714b8edee425b927fd9b8bd06dfbf'
-SELECTORS = {26, 29, 30, 42}
+ARCHITECTURAL_INVENTORY = {26: 9, 29: 11, 30: 8, 31: 3, 34: 1, 42: 4, 47: 2, 50: 3}
 
 
 def sha(data):
@@ -100,6 +101,9 @@ def collect_footprints(value, found):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True, help='Fresh owner-local descriptor path; existing different output is preserved')
+    args = parser.parse_args()
     profile = json.loads((PROJECT / 'sandbox-inputs.json').read_text())
     plane, replay_sha, native_sha = read_frozen_height(profile)
     entities, terrain, build, closure = (p.read_bytes() for p in (ENTITIES, TERRAIN, BUILD, CLOSURE))
@@ -113,10 +117,10 @@ def main():
     reset = terrain[65536:131072]
     footprints = {}
     collect_footprints(json.loads(closure), footprints)
-    buildings, positive_claims, preserved_claims, profiles = [], {}, {}, {}
+    buildings, positive_claims, preserved_claims, profiles, terrain_features = [], {}, {}, {}, []
     for slot in range(1000):
         record = entities[12 + slot * 176:12 + (slot + 1) * 176]
-        if record[2] != 1 or tuple(record[67:69]) != (10, 45) or record[74] not in SELECTORS:
+        if record[2] != 1 or tuple(record[67:69]) != (10, 45):
             continue
         if struct.unpack_from('<H', record)[0] != slot or record[73] != 52:
             raise ValueError(f'unexpected slot identity or action: {slot}')
@@ -127,6 +131,15 @@ def main():
         source = build[offset:offset + f['span']['length']]
         if len(source) != w * h * 2:
             raise ValueError(f'BUILD {selector} extent mismatch')
+        # Some class10/model45 owners stamp water/terrain or nothing at all.
+        # Source materials16..254 identify the architectural surface. Keep
+        # other stamps in native terrain rather than inventing a house mesh.
+        architectural = any(16 <= material < 255 for material in source[::2])
+        if not architectural:
+            terrain_features.append({'source_slot': slot, 'build_index': selector,
+                                     'materials': sorted(set(source[::2])),
+                                     'positive_height_cells': sum(v not in (0, 255) for v in source[1::2])})
+            continue
         sx, sy = ((x + 128) >> 8) - w // 2, ((y + 128) >> 8) - h // 2
         positive, visible = [], []
         zero = missing = 0
@@ -184,8 +197,10 @@ def main():
                            'model_center_basis': 'center of material tile extents'},
             'cells': [{'index': idx, 'expected': actual, 'replacement': base} for idx, actual, _ in positive],
         })
-    if len(buildings) != 32 or collections.Counter(b['build_index'] for b in buildings) != {26: 9, 29: 11, 30: 8, 42: 4}:
-        raise ValueError('selected house inventory changed')
+    if collections.Counter(b['build_index'] for b in buildings) != ARCHITECTURAL_INVENTORY:
+        raise ValueError('source architectural inventory changed')
+    if len(terrain_features) != 6:
+        raise ValueError('source non-architectural stamp inventory changed')
     overlap = positive_claims.keys() & preserved_claims.keys()
     if overlap:
         index = min(overlap)
@@ -206,17 +221,20 @@ def main():
         },
         'profiles': [profiles[key] for key in sorted(profiles)],
         'buildings': buildings,
+        'retained_terrain_features': terrain_features,
     }
-    if OUTPUT.exists():
-        if json.loads(OUTPUT.read_text()) != result:
-            raise ValueError(f'existing descriptor differs; preserve and inspect {OUTPUT}')
+    output = args.output.resolve()
+    if output.exists():
+        if json.loads(output.read_text()) != result:
+            raise ValueError(f'existing descriptor differs; preserve and inspect {output}')
         disposition = 'verified existing descriptor'
     else:
-        with OUTPUT.open('x') as stream:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open('x') as stream:
             json.dump(result, stream, indent=2)
             stream.write('\n')
         disposition = 'created descriptor'
-    print(json.dumps({'output': str(OUTPUT), 'disposition': disposition, 'buildings': len(buildings),
+    print(json.dumps({'output': str(output), 'disposition': disposition, 'buildings': len(buildings),
                       'patched_cells': len(positive_claims), 'plane_sha256': sha(plane),
                       'zero_base_slots': [b['source_slot'] for b in buildings if b['base_height'] == 0]}))
 

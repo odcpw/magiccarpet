@@ -11,6 +11,60 @@ namespace MagicCarpet.Native.Tests
         private static ModernCharacterAsset Character() => Resources.Load<ModernCharacterAsset>("ModernCharacters/Goat/Character");
         private static VoxelGoatAsset Asset(int resolution) => Resources.Load<VoxelGoatAsset>("ModernCharacters/Goat/Voxels/Goat" + resolution);
 
+        [TestCase("Firefly", 64)]
+        [TestCase("Firefly", 96)]
+        [TestCase("WormHead", 64)]
+        [TestCase("WormHead", 96)]
+        [TestCase("WormSegment", 64)]
+        [TestCase("WormSegment", 96)]
+        public void ConvertedCreatureVoxelsRetainAuthoredPalette(string resource, int resolution)
+        {
+            var asset = Resources.Load<VoxelGoatAsset>($"ModernCharacters/{resource}/Voxels/{resource}{resolution}");
+            Assert.That(asset, Is.Not.Null, "Require the actual imported creature derivative");
+            // Firefly has seven authored flat-colour material maps; requiring
+            // eight colours would reject its correct palette. Worms use
+            // textured surfaces. Both must reject the observed one-grey bake.
+            var minimumColours = resource == "Firefly" ? 7 : 9;
+            Assert.That(asset.cellColors.Select(c => ((int)c.r << 16) | (c.g << 8) | c.b).Distinct().Count(), Is.GreaterThanOrEqualTo(minimumColours));
+            Assert.That(asset.cellColors.Any(c => Mathf.Max(c.r, Mathf.Max(c.g, c.b)) - Mathf.Min(c.r, Mathf.Min(c.g, c.b)) > 32), Is.True,
+                "Original olive shells, violet eyes and red lens must survive headless texture sampling");
+            if (resource == "Firefly")
+            {
+                Assert.That(asset.cellColors.Any(c => c.b > c.g * 1.5f && c.r > c.g), Is.True, "Violet eyes");
+                Assert.That(asset.cellColors.Any(c => c.r > c.b * 2 && c.g > c.b * 1.5f), Is.True, "Amber underside");
+            }
+        }
+
+        [Test]
+        public void BoundedSnapshotUsesCurrentPoseWithoutChangingTheExactDefault()
+        {
+            var character = Character(); var asset = Asset(24);
+            Assert.That(character, Is.Not.Null); Assert.That(asset, Is.Not.Null);
+            using var actor = new ModernCharacterInstance(character, null);
+            actor.Root.transform.SetPositionAndRotation(new Vector3(3, 4, -5), Quaternion.Euler(0, 37, 0));
+            actor.Play("Walk", 0); actor.Tick(.2f);
+            using var skin = new VoxelCharacterSkin(actor.Root, asset);
+            var exact = skin.SnapshotFragments();
+            var all = skin.SnapshotFragments(int.MaxValue);
+            Assert.That(all.Count, Is.EqualTo(exact.Count));
+            for (var i = 0; i < exact.Count; i++)
+            {
+                Assert.That(all[i].Position, Is.EqualTo(exact[i].Position));
+                Assert.That(all[i].Size, Is.EqualTo(exact[i].Size));
+                Assert.That(all[i].Color, Is.EqualTo(exact[i].Color));
+            }
+            var positions = new HashSet<Vector3>(exact.Select(c => c.Position));
+            var bounded = skin.SnapshotFragments(17);
+            Assert.That(bounded.Count, Is.InRange(1, 17));
+            Assert.That(bounded.Select(c => c.Position).Distinct().Count(), Is.EqualTo(bounded.Count));
+            foreach (var fragment in bounded)
+            {
+                Assert.That(positions.Contains(fragment.Position), Is.True, "Sample the current posed surface");
+                Assert.That(fragment.Size, Is.EqualTo(exact[0].Size));
+            }
+            Assert.Throws<System.ArgumentOutOfRangeException>(() => skin.SnapshotFragments(0));
+        }
+
         [Test]
         public void ImportedResolutionsUseApprovedSkinAndSampledColors()
         {

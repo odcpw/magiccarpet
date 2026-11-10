@@ -17,6 +17,43 @@ each converted family through real native binding, checked important frames,
 Voxel death breakup and qualified installation before calling it delivered.
 Then run the complete level and gameplay/performance checks in both styles.
 
+### All remaining Level1 assets authorized — 2026-11-10
+
+Oliver now requests all remaining Level1 assets. Preserve the completed
+characters and full acceptance in LEVEL1_ASSETS.md. Trader mc-oi5 stays open;
+its native checks proceed alongside independently owned Firefly and Worm art
+preparation. This newer scope replaces the prior batch-only preparation stop,
+without waiving any unfinished Trader check. Terra6.1xhigh owns one asset per
+worker; GentleBadger owns shared native/render joins, building/scenery/pickup/
+effect coverage, final gameplay checks and installation. Serialize shared-file
+edits and GPU/Unity/Cargo work. No paid3D generation. Finish each asset through
+its real consumer, source lifecycle, checked frames and installed result; do
+not close an art-only handoff or call whole-map Voxel/fullLevel1 complete early.
+Continue through the complete existing inventory and final mission checks.
+
+Current asset integration is through native6e82c62e (release2f441ac4), not yet
+installed. Public Level1 controls now reach Firefly group6, its real lethal
+combat, Worm group4 and a genuine House10 demolition-born Trader172/gen27.
+The duplicate shared StageVar prepass is removed; positive-life Villager entry
+is qualified separately from death. The Castle holder's previously stale
+source-cursor phase is fixed: the original dead-player failure now advances
+3497→3498 and continues120ticks. WormV2 uses stable appearance-based segment
+indices, not the scheduler's advancing cadence byte; all16parts pass121real
+native observations after natural birth. These are native/source results,
+not installed-asset or full-mission completion claims.
+
+Firefly and Worm art/imports pass actual Unity surface/axis checks. The
+current integrated character suites pass146 cases without skips. Inspected
+Firefly Modern/Voxel combat captures pass270frames; camera follow now retains
+one incarnation across numeric slot reuse. Inspection exposed grey new Voxel
+skins from headless GPU texture readback; the CPU albedo repair preserves all
+24skins' render geometry/weights, and retains accepted Goat/Archer palettes.
+Its coloured derivatives, Firefly's short source-removal fade, native2f
+captures, Trader/Worm combat/reset/load, performance and installation are
+still being qualified. All asset beads retain unfinished acceptance; Castle,
+collector/auxiliary, scenery, pickups/effects/HUD and whole-mapVoxel remain
+open in the existing inventory. Keep the current installed players intact.
+
 ### Active Builder/Trader delivery — 2026-11-10
 
 Oliver authorizes the next asset batch. `mc-jcy` owns Builder appearance/model12

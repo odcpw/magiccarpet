@@ -26,6 +26,7 @@ namespace MagicCarpet.Native.Editor
             PrepareCharacter("Goat", new[] { 24, 40, 64, 96 });
             PrepareCharacter("Archer", new[] { 64, 96 });
             foreach (var binding in ModernVillagerAppearances.All) PrepareCharacter(binding.Resource, new[] { 64, 96 });
+            foreach (var binding in ModernCreatureAssets.All) PrepareCharacter(binding.Resource, new[] { 64, 96 });
             AssetDatabase.SaveAssets();
         }
 
@@ -38,7 +39,7 @@ namespace MagicCarpet.Native.Editor
             Directory.CreateDirectory(folder);
             AssetDatabase.Refresh();
             var fingerprint = AssetDatabase.GetAssetDependencyHash(AssetDatabase.GetAssetPath(character.model)).ToString() +
-                "-" + character.height.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                "-" + character.height.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "-cpu-albedo1";
             var instance = UnityEngine.Object.Instantiate(character.model);
             try
             {
@@ -152,18 +153,20 @@ namespace MagicCarpet.Native.Editor
 
         private static Texture2D ReadTexture(Texture texture)
         {
-            var previous = RenderTexture.active;
-            var temporary = RenderTexture.GetTemporary(texture.width, texture.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+            // Graphics.Blit/ReadPixels silently produce grey under -nographics.
+            // Read the authored sRGB image on the CPU so batch conversion and
+            // interactive conversion sample the same texels without a GPU.
+            var path = AssetDatabase.GetAssetPath(texture);
+            var result = new Texture2D(2, 2, TextureFormat.RGBA32, false, false);
             try
             {
-                Graphics.Blit(texture, temporary);
-                RenderTexture.active = temporary;
-                var result = new Texture2D(texture.width, texture.height, TextureFormat.RGBA32, false);
-                result.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0); result.Apply();
+                if (string.IsNullOrEmpty(path) || !File.Exists(path) ||
+                    !ImageConversion.LoadImage(result, File.ReadAllBytes(path), false))
+                    throw new InvalidOperationException("Voxel albedo must be a decodable authored image: " + path);
                 result.wrapMode = texture.wrapMode;
                 return result;
             }
-            finally { RenderTexture.active = previous; RenderTexture.ReleaseTemporary(temporary); }
+            catch { UnityEngine.Object.DestroyImmediate(result); throw; }
         }
 
         private static BoneWeight Blend(BoneWeight a, BoneWeight b, BoneWeight c, Vector3 bary)

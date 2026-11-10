@@ -82,11 +82,12 @@ namespace MagicCarpet.Native
             var args = Environment.GetCommandLineArgs();
             var still = Array.IndexOf(args, "-mc-character-still");
             var appearance = Array.IndexOf(args, "-mc-character-review-appearance");
-            if (appearance >= 0 && (appearance + 1 >= args.Length || !ModernVillagerAppearances.ContainsResource(args[appearance + 1])))
-                throw new ArgumentException("Character review requires a known settlement character resource");
+            if (appearance >= 0 && (appearance + 1 >= args.Length ||
+                !ModernVillagerAppearances.ContainsResource(args[appearance + 1]) && !ModernCreatureAssets.ContainsResource(args[appearance + 1])))
+                throw new ArgumentException("Character review requires an imported character resource");
             var requested = still >= 0 && still + 1 < args.Length ? args[still + 1].Split(',')[0] :
                 appearance >= 0 ? args[appearance + 1] : "Villager";
-            var villagerName = ModernVillagerAppearances.ContainsResource(requested) ? requested : "Villager";
+            var villagerName = ModernVillagerAppearances.ContainsResource(requested) || ModernCreatureAssets.ContainsResource(requested) ? requested : "Villager";
             var villagerAsset = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + villagerName + "/Character");
             if (villagerAsset != null) villager = new ModernCharacterInstance(villagerAsset, transform);
             goatRenderers = goat.Root.GetComponentsInChildren<Renderer>(true);
@@ -106,7 +107,11 @@ namespace MagicCarpet.Native
                 Step(archer, "KneelExit", "ARCHER · rise"),
                 Step(archer, "Idle", "ARCHER · recovered stance", 3)
             };
-            if (villager != null) steps = steps.Concat(new[] {
+            if (villager != null && ModernCreatureAssets.TryGet(villagerName, out var creature))
+                steps = steps.Concat(creature.Clips.Select(clip => Step(villager, clip,
+                    villagerName.ToUpperInvariant() + " · " + clip.ToLowerInvariant(),
+                    clip == "Idle" || clip == "Flight" ? 2 : 0))).ToArray();
+            else if (villager != null) steps = steps.Concat(new[] {
                 Step(villager, "Idle", villagerName.ToUpperInvariant() + " · idle", 2),
                 Step(villager, "Walk", villagerName.ToUpperInvariant() + " · walk", 4),
                 Step(villager, "Run", villagerName.ToUpperInvariant() + " · run", 4),
@@ -153,6 +158,12 @@ namespace MagicCarpet.Native
             if (villager != null) villager.Root.SetActive(current == villager);
             current.Root.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
             current.Play("Idle", 0); current.Tick(0);
+            if (ModernCreatureAssets.ContainsResource(current.Asset.name))
+            {
+                var renderers = current == villager ? villagerRenderers : current.Root.GetComponentsInChildren<Renderer>(true);
+                var bottom = renderers.Min(renderer => renderer.bounds.min.y);
+                current.Root.transform.position = Vector3.up * (-bottom + (current.Asset.name == "Firefly" ? .35f : 0));
+            }
             cameraPositioned = false;
         }
 

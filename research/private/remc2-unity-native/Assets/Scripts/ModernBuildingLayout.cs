@@ -95,7 +95,7 @@ namespace MagicCarpet.Native
             foreach(var entry in buildings)
             {
                 if(entry==null||!slots.Add(entry.source_slot)||entry.cells==null||entry.cells.Length==0||entry.cells.Length>4096
-                    ||(entry.build_index!=26&&entry.build_index!=29&&entry.build_index!=30&&entry.build_index!=42)
+                    ||entry.build_index<0||entry.build_index>255
                     ||!float.IsFinite(entry.x)||!float.IsFinite(entry.z)||entry.x<0||entry.x>=1024||entry.z<0||entry.z>=1024
                     ||!float.IsFinite(entry.base_height)||entry.base_height<0||entry.base_height>127.5f
                     ||!float.IsFinite(entry.width)||!float.IsFinite(entry.depth)||!float.IsFinite(entry.height)

@@ -96,9 +96,9 @@ namespace MagicCarpet.Native
 
         internal static bool Supports(NativeSim.CampaignCharacterState state) =>
             state.classId == 5 && ModernVillagerAppearances.TryGet(state.renderParameter, out var binding) && binding.Model == state.model;
-        internal static bool SourceDeath(byte action, int life, byte model = 13) => life < 0 || (model switch {
+        internal static bool SourceDeath(byte action, int life, byte model = 13, bool livingEntry = false) => life < 0 || (model switch {
             12 => action == 100 || action == 101,
-            13 => action == 108 || action == 109,
+            13 => action == 109 || action == 108 && !livingEntry,
             14 => action == 117,
             _ => false
         });
@@ -108,14 +108,14 @@ namespace MagicCarpet.Native
             _ => action == 110
         };
 
-        internal void Observe(Vector3 position, float yaw, int life, byte action, ulong tick)
+        internal void Observe(Vector3 position, float yaw, int life, byte action, ulong tick, bool livingEntry = false)
         {
             if (removed) throw new InvalidOperationException("Removed villager cannot accept observations");
             if (observed && tick < lastTick) throw new ArgumentOutOfRangeException(nameof(tick));
             if (observed && tick == lastTick) return;
             if (!float.IsFinite(position.x) || !float.IsFinite(position.y) || !float.IsFinite(position.z) || !float.IsFinite(yaw))
                 throw new ArgumentOutOfRangeException(nameof(position));
-            if (SourceDeath(action, life, sourceModel)) BeginDeath();
+            if (SourceDeath(action, life, sourceModel, livingEntry)) BeginDeath();
             else if (!IsDying && (observed && life < lastLife || SourceHit(action) && (!observed || lastAction != action)))
             {
                 hitElapsed = 0;
@@ -135,7 +135,8 @@ namespace MagicCarpet.Native
             character.Play("Death", .1f);
         }
 
-        internal void MarkRemoved() { removed = true; BeginDeath(); }
+        internal void MarkRemoved() { removed = true; }
+        internal void ConfirmDeath() => BeginDeath();
         internal void RebaseTravel() { hasRenderPosition = false; movingGrace = 0; recentSpeed = 0; }
 
         internal void Render(float dt)

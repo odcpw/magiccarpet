@@ -211,6 +211,74 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void QualifiedLivingHouseEntryDoesNotFallOrExplode()
+        {
+            var asset = Asset();
+            Assert.That(asset, Is.Not.Null, "The real imported Villager is required");
+            var entry = new NativeSim.CampaignCharacterState { classId = 5, model = 13,
+                renderParameter = 241, action = 108, life = 1000, lifecycleFlags = 1 };
+            Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(entry), Is.True);
+            using var actor = new ModernVillagerPresenter(asset, null, 250f / 64);
+            actor.Observe(Vector3.zero, 0, 1000, 105, 1);
+            actor.Observe(Vector3.zero, 0, 1000, 108, 2, true);
+            actor.Render(.2f);
+            Assert.That(actor.IsDying, Is.False);
+            Assert.That(actor.CurrentClip, Is.Not.EqualTo("Death"));
+            var lifecycle = new VoxelDeathLifecycle();
+            var calls = 0;
+            lifecycle.TryExplode(ModernCharacterActors.SourceVoxelDeath(13, 108, 1000, true), () => { calls++; return true; });
+            Assert.That(calls, Is.Zero);
+            actor.MarkRemoved();
+            Assert.That(actor.IsDying, Is.False);
+            Assert.That(ModernCharacterActors.SourceVoxelDeath(13, 108, -1, true), Is.True,
+                "Lethal damage overrides entry state");
+            entry.action = 105;
+            Assert.That(NativeCampaignSession.HasSupportedCharacterIdentity(entry), Is.False,
+                "An entry flag cannot be attached to an unrelated living action");
+        }
+
+        [Test]
+        public void PortableForwardAxisPreservesAcceptedHumansAndAdmitsOtherDirections()
+        {
+            var importer = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("MagicCarpet.Native.Editor.ModernCharacterImport")).Single(t => t != null);
+            var method = importer.GetMethod("ForwardYaw", BindingFlags.NonPublic | BindingFlags.Static);
+            float Resolve(float[] forward) => (float)method.Invoke(null, new object[] { forward });
+            Assert.That(Resolve(null), Is.EqualTo(180));
+            Assert.That(Resolve(new float[] { 0, -1, 0 }), Is.EqualTo(180).Within(.001f));
+            Assert.That(Resolve(new float[] { 0, 1, 0 }), Is.Zero.Within(.001f));
+            Assert.That(Resolve(new float[] { 1, 0, 0 }), Is.EqualTo(-90).Within(.001f));
+            foreach (var invalid in new[] { Array.Empty<float>(), new float[] { 0, 0, 0 }, new float[] { 0, 1, 1 }, new float[] { float.NaN, 1, 0 } })
+                Assert.That(Assert.Throws<TargetInvocationException>(() => Resolve(invalid)).InnerException,
+                    Is.TypeOf<InvalidOperationException>());
+        }
+
+        [TestCase("Firefly")]
+        [TestCase("WormHead")]
+        [TestCase("WormSegment")]
+        public void ImportedCreatureCullingBoundsContainTheActualAnimatedSurface(string resource)
+        {
+            var asset = Resources.Load<ModernCharacterAsset>($"ModernCharacters/{resource}/Character");
+            Assert.That(asset, Is.Not.Null, "Require the actual imported creature");
+            using var actor = new ModernCharacterInstance(asset, null);
+            var renderer = actor.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+            var mesh = new Mesh();
+            try
+            {
+                foreach (var clip in asset.clips)
+                    foreach (var time in new[] { 0, clip.length * .5f, clip.length })
+                    {
+                        actor.Sample(clip.name, time);
+                        renderer.BakeMesh(mesh, true);
+                        var bounds = renderer.localBounds;
+                        foreach (var vertex in mesh.vertices)
+                            Assert.That(bounds.Contains(vertex), Is.True,
+                                $"{resource}/{clip.name}@{time}: actual skinned vertex {vertex} lies outside imported culling bounds {bounds}");
+                    }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
         public void MovingHitRequiresExplicitUnambiguousAuthoredBones()
         {
             var asset = ScriptableObject.CreateInstance<ModernCharacterAsset>();

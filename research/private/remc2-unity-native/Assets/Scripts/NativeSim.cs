@@ -575,10 +575,13 @@ namespace MagicCarpet.Native
             internal short targetZ;
             internal uint controlFlags;
             internal ushort ageTicks, renderParameter;
+            internal short roll;
+            internal ushort sourceHalfWidth, renderHeight, previousIndex, nextIndex, partIndex;
+            internal uint lifecycleFlags;
         }
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        internal static extern int mc_native_campaign_character_states_copy(
+        internal static extern int mc_native_campaign_character_states_copy_v2(
             ulong handle, ulong generation, ulong tick,
             [Out] CampaignCharacterState[] buffer, uint capacity, uint elementSize, out uint written);
 
@@ -3404,7 +3407,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<CampaignEntityPresentation>(64);
-            RequireSize<CampaignCharacterState>(80);
+            RequireSize<CampaignCharacterState>(96);
             RequireSize<VoxelState>(64);
             RequireOffset<VoxelState>(nameof(VoxelState.worldGeneration), 56);
             RequireSize<VoxelImpactChild>(32);
@@ -3416,6 +3419,9 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.x), 48);
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.life), 60);
             RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.renderParameter), 78);
+            RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.roll), 80);
+            RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.partIndex), 90);
+            RequireOffset<CampaignCharacterState>(nameof(CampaignCharacterState.lifecycleFlags), 92);
             RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<CampaignInvisibleSnapshot>(80);
             RequireSize<CampaignBeyondSightSnapshot>(80);

@@ -63,5 +63,22 @@ namespace MagicCarpet.Native.Tests
             cells.RemoveAt(0);layout.buildings[0].cells=cells.ToArray();
             Assert.Throws<InvalidDataException>(()=>layout.VisualHeights(source));
         }
+
+        [TestCase(31)]
+        [TestCase(34)]
+        [TestCase(47)]
+        [TestCase(50)]
+        public void SourceProfilesAdmitTheRemainingArchitecturalSelectorsWithoutChangingStampValidation(int selector)
+        {
+            var layout=Layout(out var source);
+            var template=layout.profiles[0];
+            var profiles=new List<ModernBuildingMeshes.Profile>(layout.profiles) { new ModernBuildingMeshes.Profile {
+                build_index=selector,columns=template.columns,rows=template.rows,
+                diagonal_parity=template.diagonal_parity,heights=(float[])template.heights.Clone() } };
+            layout.profiles=profiles.ToArray();layout.buildings[0].build_index=selector;
+            Assert.That(layout.VisualHeights(source)[layout.buildings[0].cells[0].index],Is.EqualTo(20));
+            layout.buildings[0].cells[0].expected--;
+            Assert.Throws<InvalidDataException>(()=>layout.VisualHeights(source), "New art cannot admit a stale source stamp");
+        }
     }
 }

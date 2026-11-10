@@ -30,15 +30,50 @@ def stop(process):
         process.wait(timeout=5)
 
 
+def gameplay_arguments(path):
+    if path is None:
+        return []
+    launch = json.loads(path.read_text())["arguments"]
+    if not isinstance(launch, list) or not all(isinstance(value, str) for value in launch) or "-mc-game-runtime" not in launch or "-mc-modern" not in launch:
+        raise ValueError("Gameplay arguments must launch the actual Modern game runtime")
+    if "-mc-input-playback" in launch:
+        def option(name):
+            if name not in launch or launch.index(name) + 1 >= len(launch):
+                raise ValueError("Input playback requires " + name)
+            return Path(launch[launch.index(name) + 1])
+        source = option("-mc-input-playback")
+        if source.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError("Input playback exceeds 2 MiB")
+        stream = json.loads(source.read_text())
+        tick = stream.get("startingTick")
+        if not isinstance(tick, (int, str)) or isinstance(tick, bool) or not str(tick).isascii() or not str(tick).isdecimal() or int(tick) > 2**64 - 1:
+            raise ValueError("Input playback requires a decimal startingTick")
+        commands = stream.get("commands")
+        if stream.get("schema") != "mc-campaign-input-playback/v1" or not isinstance(commands, list) or not 1 <= len(commands) <= 3600:
+            raise ValueError("Invalid bounded campaign input stream; use the actual CampaignInputPlayback.cs envelope")
+        with option("-mc-runtime-replay-load").open("rb") as replay:
+            if hashlib.file_digest(replay, "sha256").hexdigest() != stream.get("replaySha256"):
+                raise ValueError("Input playback starting replay hash differs")
+        for frame in commands:
+            if not isinstance(frame, dict) or frame.get("longitudinal") not in ("coast", "accelerate", "decelerate") or frame.get("lateral") not in ("neutral", "negative", "positive"):
+                raise ValueError("Input playback contains an invalid public control frame")
+            for axis, low, high in (("roll_axis", -128, 127), ("pitch_axis", -128, 127), ("look_yaw", -32768, 32767), ("look_pitch", -32768, 32767)):
+                value = frame.get(axis, 0)
+                if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+                    raise ValueError("Input playback contains an invalid " + axis)
+    return launch
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--player", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--still", help="character,clip,seconds,camera-yaw; capture one complete frame")
-    parser.add_argument("--review-character", choices=("Builder", "Trader", "Villager", "VillagerBrown", "VillagerStriped", "VillagerCarrier"),
-                        help="Record this villager's complete five-action sequence in the isolated review player")
+    parser.add_argument("--review-character",
+                        help="Record the named imported character; the player validates its resource and required clips")
     parser.add_argument("--gameplay-command", type=Path, help="JSON with actual campaign launch arguments and provenance")
     parser.add_argument("--follow", default="Goat", help="Goat, Archer or native source slot; Player keeps the normal gameplay camera")
+    parser.add_argument("--follow-head", action="store_true", help="Frame only a multipart creature's head for a complementary close gameplay check")
     parser.add_argument("--frames", type=int, default=360, help="Native gameplay capture frame count")
     parser.add_argument("--fps", type=int, choices=(30, 60, 120), default=30, help="Gameplay recording cadence; native simulation stays at 30Hz")
     parser.add_argument("--width", type=int, default=1080)
@@ -49,6 +84,8 @@ def main():
         raise ValueError("Gameplay and isolated still capture are separate modes")
     if args.review_character and (args.gameplay_command or args.still):
         raise ValueError("Full character review cannot be combined with gameplay or a still")
+    if args.follow_head and (not args.gameplay_command or args.follow == "Player"):
+        raise ValueError("Head framing requires a followed native gameplay creature")
     if not 30 <= args.frames <= 3600:
         raise ValueError("--frames must be 30..3600")
     if not args.player.is_file() or not os.access(args.player, os.X_OK):
@@ -58,6 +95,9 @@ def main():
     for command in ("Xvfb", "ffmpeg", "ffprobe"):
         if shutil.which(command) is None:
             raise ValueError("Missing required command: " + command)
+    # Reject incompatible worker envelopes before loading a long native replay
+    # or launching any display/player. Native validation remains authoritative.
+    launch = gameplay_arguments(args.gameplay_command)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     runtime = output / "private-runtime"; runtime.mkdir(mode=0o700)
@@ -117,11 +157,6 @@ def main():
             os.close(read_fd)
             if write_fd is not None: os.close(write_fd)
         env["DISPLAY"] = ":" + number
-        launch = []
-        if args.gameplay_command:
-            launch = json.loads(args.gameplay_command.read_text())["arguments"]
-            if not isinstance(launch, list) or not all(isinstance(value, str) for value in launch) or "-mc-game-runtime" not in launch or "-mc-modern" not in launch:
-                raise ValueError("Gameplay arguments must launch the actual Modern game runtime")
         command = [str(args.player.resolve()), *launch, "-force-vulkan", "-screen-fullscreen", "0",
                    "-screen-width", str(args.width), "-screen-height", str(args.height),
                    "-logFile", str(output / "player.log")]
@@ -131,6 +166,8 @@ def main():
                         "-mc-character-gameplay-fps", str(args.fps)]
             if args.follow != "Player":
                 command += ["-mc-character-follow", args.follow]
+            if args.follow_head:
+                command += ["-mc-character-follow-head"]
         else:
             command += ["-mc-character-capture", str(output / "frames")]
         if args.still:

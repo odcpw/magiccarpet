@@ -14,14 +14,29 @@ animation and presentation integration, not another mission implementation.
 | Villagers, all four appearances | All 28 reset residents: brown robe/cap, olive pilot, striped robe, vessel carrier; five actions, Modern and 64/96 voxel skins | Installed; retain native travel/reaction/death/reset/load and bounded breakup admission |
 | Builder | Source-inspired vest/trousers/cap/beard, five actions and64/96Voxel skins; real Level1 house birth, construction, living entry and death | Qualified source7f554577; retain native identity, positive-life consumption and exactly-once breakup |
 | Trader | Source-inspired short vest, patched trousers and goods pack; five actions, Modern and64/96Voxel bindings; real directLevel7 movement/entry | Full Level1 house production and live combat/death/reset-save-load verification remain open in mc-oi5 |
+| Firefly | Original-inspired olive/bronze body, violet eyes, warm wings and amber underside; actual Unity25-pose import, Modern/Voxel bindings | Real Level1 public-input combat captured in both styles; corrected coloured Voxel skins, short removal fade, reset/load/performance/installation pending in mc-eb8 |
+| Worm | Source-inspired red lens/curved jaws and repeating segment master; actual Unity25+2-pose imports, independent native multipart placement | Natural Level1 group4 birth and121ticks of all16linked bodies verified; actual rendered combat/death and installation pending in mc-7uj |
 | Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
 | Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
-| Buildings | Four BUILD profiles: 26, 29, 30, 42, covering 32 opening buildings | Additional selectors and dynamic construction/damage need coverage |
+| Buildings | Installed:32 opening buildings/four profiles. Current candidate:all41 architectural buildings/eight profiles, imported in Unity | Candidate gameplay/installation, dynamic construction/damage and Castle stages remain open |
 | Mana spheres | Native-owned 3D representation in Voxel | Modern replacement, ownership colours and capture/collection feedback |
 | Fireballs | Native-owned voxel representation and impact fragments | Modern replacement and consistent emission/impact/expiry presentation |
 
 Unclaimed visible entities still use original sprite billboards. Existing
 attractive scenery does not prove that every gameplay object is converted.
+
+The active candidate's shared native source is6e82c62e, releaseSHA256
+2f441ac433d01de189a66b1be1e4027079d9c2615c5ee7e74a94eac29326cab7.
+Its strict96-byte creature observation fixes stable Worm part identity and
+publishes actual source cadence/particle height. It also fixes the reproduced
+Castle holder phase discontinuity and distinguishes positive-life house entry
+from lethal death. The earned public command chain is reexecuted unchanged
+into new native-created replay cuts because the corrected engine changes
+state hashes; old saves/hashes are preserved and not edited or relaxed.
+Trader172/gen27 is now proven to originate from House10 demolition at tick8018.
+Its public lethal branch reaches life−1/action116 at8648 and one death record;
+its neutral branch enters House14 with life999 and no death. Both have cold
+native verification; Modern/Voxel capture/reset/load/installation remain open.
 
 Current normal launchers select generated/settlement-people-20261110/player-reader
 (presentation7f554577, nativead803e03 from65724d7b). The previous player is
@@ -84,27 +99,37 @@ A newly observed natural producer must extend this inventory.
 | Dolmens | Three at reset | Source silhouette, material, contact/charge feedback and live placement |
 | Exit portal/target | One, group 4 | Source appearance, inactive/active/entry and exit-sequence effects |
 
-Initial BUILD selectors and counts:
+Initial BUILD selectors and counts, corrected by the actual material/height
+stamps on 2026-11-10. The47 owner records contain41 architectural buildings
+and six terrain/control stamps; they are not47 house meshes.
 
 | Selector | Instances | Existing Modern profile |
 | ---: | ---: | --- |
-| 17 | 1 | Missing |
+| 17 | 1 | Empty terrain/control stamp; no house mesh |
 | 26 | 9 | Present |
 | 29 | 11 | Present |
 | 30 | 8 | Present |
-| 31 | 3 | Missing |
-| 34 | 1 | Missing |
+| 31 | 3 | Source profile prepared; actual Unity geometry gate passes |
+| 34 | 1 | Source profile prepared; actual Unity geometry gate passes |
 | 42 | 4 | Present |
-| 47 | 2 | Missing |
-| 50 | 3 | Missing |
-| 51 | 2 | Missing |
-| 52 | 2 | Missing |
-| 53 | 1 | Missing |
+| 47 | 2 | Source profile prepared; actual Unity geometry gate passes |
+| 50 | 3 | Source profile prepared; actual Unity geometry gate passes |
+| 51 | 2 | Water/terrain stamp; preserve native terrain |
+| 52 | 2 | Water/terrain stamp; preserve native terrain |
+| 53 | 1 | Water/terrain stamp; preserve native terrain |
 
-The 34 deferred constructor records use BUILD 37. Nine additional selectors
-need inspection: 17, 31, 34, 37, 47, 50, 51, 52, 53. Compare BUILD records before
-claiming nine unique meshes; some can share geometry. Eight uncovered opening
-selectors account for 15 starting buildings.
+The34 deferred constructor records use BUILD37 and still need source-specific
+terrain/fire presentation qualification. Four missing architectural profiles
+31/34/47/50 cover nine buildings. The candidate layout validates all41 exact
+source positions,1729 stamped cells, eight profile shapes and the frozen
+height-plane hash; Unity generated all three mesh LODs per profile. This is
+preparation evidence, not installed dynamic-building coverage.
+
+Builder construction can choose additional selectors19/22/32/33/35/39/40/62/74,
+along with the opening architectural styles. The source construction payload
+uses effective dimensions rawWidth>>1/rawHeight>>1 and the contiguous prefix
+of its cells; downsampling the entire raw matrix gives the wrong geometry.
+These later templates and their actual living constructor consumers remain open.
 
 Modern substitution requires an original intact occupant with expected slot
 generation, selector, action, position and stamped terrain cells. It does not
@@ -142,7 +167,7 @@ commission a new soundtrack or change gameplay effects.
 
 ## Delivery order and acceptance
 
-1. Villagers and Builder are converted; finish Trader's full runtime acceptance before another asset family.
+1. Villagers and Builder are converted; Trader's full runtime acceptance stays open. Oliver's later all-assets authorization permits independent Firefly/Worm preparation while its native checks continue.
 2. Firefly and Worm as independent creature projects.
 3. Remaining building profiles, Castle and collector/auxiliary actors.
 4. Authored scenery, pickups, portal and remaining effect replacements.

@@ -74,6 +74,7 @@ namespace MagicCarpet.Native.Editor
             PrepareCharacter("Goat", .14844f, script);
             PrepareCharacter("Archer", 1.65f, script);
             foreach (var binding in ModernVillagerAppearances.All) PrepareCharacter(binding.Resource, 0, script);
+            foreach (var binding in ModernCreatureAssets.All) PrepareCharacter(binding.Resource, 0, script);
             AssetDatabase.SaveAssets();
             Validate();
             Probe();
@@ -84,12 +85,14 @@ namespace MagicCarpet.Native.Editor
             var script = AssetDatabase.LoadAssetAtPath<MonoScript>("Assets/Scripts/ModernCharacterAsset.cs");
             if (script == null || script.GetClass() != typeof(ModernCharacterAsset))
                 throw new InvalidOperationException("Character asset script binding is unresolved");
-            foreach (var name in new[] { "Goat", "Archer" }.Concat(ModernVillagerAppearances.All.Select(b => b.Resource)))
+            foreach (var name in new[] { "Goat", "Archer" }.Concat(ModernVillagerAppearances.All.Select(b => b.Resource))
+                .Concat(ModernCreatureAssets.All.Select(b => b.Resource)))
             {
                 var asset = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
                 if (asset == null || asset.model == null || MonoScript.FromScriptableObject(asset) != script)
                     throw new InvalidOperationException("Imported character cannot be loaded with its actual script binding: " + name);
-                foreach (var clip in name == "Goat" ? new[] { "Idle", "Walk", "Sprint", "Hit", "Death" } :
+                foreach (var clip in ModernCreatureAssets.TryGet(name, out var creature) ? creature.Clips :
+                    name == "Goat" ? new[] { "Idle", "Walk", "Sprint", "Hit", "Death" } :
                     ModernVillagerAppearances.ContainsResource(name) ? new[] { "Idle", "Walk", "Run", "Hit", "Death" } :
                     new[] { "Idle", "Walk", "StandingShot", "KneelEnter", "KneelingShot", "KneelExit", "Hit", "Death" }) asset.Clip(clip);
                 if (ModernVillagerAppearances.ContainsResource(name))
@@ -113,6 +116,9 @@ namespace MagicCarpet.Native.Editor
             var normalPaths = new HashSet<string>(mapDescriptions.Where(m => !string.IsNullOrWhiteSpace(m.normal)).Select(m => folder + m.normal), StringComparer.Ordinal);
             var ormPaths = new HashSet<string>(mapDescriptions.Select(m => folder + m.orm), StringComparer.Ordinal);
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
+            var clips = AssetDatabase.LoadAllAssetsAtPath(path).OfType<AnimationClip>()
+                .Where(c => manifest.clips.Any(wanted => wanted.name == c.name)).ToArray();
+            if (clips.Length != manifest.clips.Length) throw new InvalidOperationException("Imported clip set differs from manifest");
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
             if (prefab == null) throw new InvalidOperationException("Missing character FBX " + path);
             foreach (var texture in Directory.GetFiles(folder + "textures"))
@@ -161,6 +167,8 @@ namespace MagicCarpet.Native.Editor
                             material.SetFloat("_Smoothness", 1); material.SetFloat("_Metallic", 1);
                         }
                         else material.SetFloat("_Smoothness", .28f);
+                        if (mapDescriptions.FirstOrDefault(m => m.name == source.name) is { } description)
+                            ApplyPhysicalSurface(material, description);
                         EditorUtility.SetDirty(material);
                         return material;
                     }).ToArray();
@@ -168,6 +176,7 @@ namespace MagicCarpet.Native.Editor
                 }
                 if (matched.Count != imported.Count)
                     throw new InvalidOperationException("Declared character material is absent from the FBX: " + string.Join(", ", imported.Keys.Except(matched)));
+                if (ModernCreatureAssets.ContainsResource(name)) PrepareSkinnedBounds(instance, clips);
                 var authored = PrefabUtility.SaveAsPrefabAsset(instance, folder + "character.prefab");
                 var definition = AssetDatabase.LoadAssetAtPath<ModernCharacterAsset>(folder + "Character.asset");
                 if (definition == null)
@@ -182,10 +191,8 @@ namespace MagicCarpet.Native.Editor
                 }
                 definition.name = name;
                 definition.model = authored;
-                definition.clips = AssetDatabase.LoadAllAssetsAtPath(path).OfType<AnimationClip>()
-                    .Where(c => manifest.clips.Any(wanted => wanted.name == c.name)).ToArray();
-                if (definition.clips.Length != manifest.clips.Length) throw new InvalidOperationException("Imported clip set differs from manifest");
-                definition.forwardYaw = 180;
+                definition.clips = clips;
+                definition.forwardYaw = ForwardYaw(manifest.forward);
                 definition.walkSpeed = manifest.walkSpeed > 0 ? manifest.walkSpeed : walkSpeed;
                 definition.runSpeed = manifest.runSpeed;
                 definition.hitOverlayBones = manifest.hitOverlayBones ?? Array.Empty<string>();
@@ -208,6 +215,95 @@ namespace MagicCarpet.Native.Editor
         }
 
         private static string SafeMaterialName(string name) => string.Concat(name.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
+
+        private static void PrepareSkinnedBounds(GameObject instance, AnimationClip[] clips)
+        {
+            // Portable FBX deformation is correctly converted to Unity axes,
+            // but its imported renderer bounds can retain Blender Y/Z order.
+            // Build conservative culling bounds from the actual sampled skin.
+            // Nominal art dimensions are measured independently in Idle.
+            var skins = instance.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            if (skins.Length == 0) throw new InvalidOperationException("Creature has no skinned surface for culling bounds");
+            var bounds = new Bounds[skins.Length]; var sampled = new bool[skins.Length];
+            var mesh = new Mesh();
+            try
+            {
+                foreach (var clip in clips)
+                {
+                    var steps = Math.Max(1, Mathf.CeilToInt(clip.length * clip.frameRate * 2));
+                    for (var frame = 0; frame <= steps; frame++)
+                    {
+                        clip.SampleAnimation(instance, clip.length * frame / steps);
+                        for (var i = 0; i < skins.Length; i++)
+                        {
+                            // Compensate the FBX renderer's Transform scale;
+                            // culling bounds use original mesh-local units.
+                            skins[i].BakeMesh(mesh, true);
+                            if (mesh.vertexCount == 0) throw new InvalidOperationException("Empty creature skin while preparing culling bounds");
+                            mesh.RecalculateBounds();
+                            var current = mesh.bounds;
+                            if (!float.IsFinite(current.center.sqrMagnitude) || !float.IsFinite(current.extents.sqrMagnitude))
+                                throw new InvalidOperationException("Non-finite creature culling bounds");
+                            if (sampled[i]) bounds[i].Encapsulate(current);
+                            else { bounds[i] = current; sampled[i] = true; }
+                        }
+                    }
+                }
+                clips.Single(clip => clip.name == "Idle").SampleAnimation(instance, 0);
+                for (var i = 0; i < skins.Length; i++)
+                {
+                    if (!sampled[i]) throw new InvalidOperationException("Creature has no sampled culling bounds");
+                    bounds[i].Expand(Mathf.Max(.00001f, bounds[i].size.magnitude * .01f));
+                    skins[i].localBounds = bounds[i];
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        private static float ForwardYaw(float[] authored)
+        {
+            // Accepted legacy human manifests predate the explicit axis and
+            // use Blender -Y. Portable exports declare Blender Z-up vectors;
+            // the independently checked FBX mapping is Unity(x,z,y).
+            if (authored == null) return 180;
+            if (authored.Length != 3 || authored.Any(value => !float.IsFinite(value)) ||
+                Mathf.Abs(authored[2]) > .0001f || new Vector2(authored[0], authored[1]).sqrMagnitude < .0001f)
+                throw new InvalidOperationException("Character forward must be a finite horizontal Blender direction");
+            var unity = new Vector3(authored[0], 0, authored[1]).normalized;
+            return Vector3.SignedAngle(unity, Vector3.forward, Vector3.up);
+        }
+
+        private static void ApplyPhysicalSurface(Material material, MaterialMaps maps)
+        {
+            // Optional opacity defaults to opaque. A fully hidden actor belongs
+            // to native drawing admission rather than an invisible art package.
+            if (!float.IsFinite(maps.opacity) || maps.opacity < 0 || maps.opacity > 1 ||
+                !float.IsFinite(maps.emissionStrength) || maps.emissionStrength < 0)
+                throw new InvalidOperationException("Invalid authored character surface: " + maps.name);
+            var opacity = maps.opacity > 0 ? maps.opacity : 1;
+            var transparent = opacity < 1;
+            material.SetColor("_BaseColor", new Color(1, 1, 1, opacity));
+            material.SetFloat("_Surface", transparent ? 1 : 0);
+            material.SetFloat("_Blend", 0);
+            material.SetInt("_SrcBlend", (int)(transparent ? UnityEngine.Rendering.BlendMode.SrcAlpha : UnityEngine.Rendering.BlendMode.One));
+            material.SetInt("_DstBlend", (int)(transparent ? UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha : UnityEngine.Rendering.BlendMode.Zero));
+            material.SetInt("_ZWrite", transparent ? 0 : 1);
+            material.SetInt("_Cull", (int)(transparent ? UnityEngine.Rendering.CullMode.Off : UnityEngine.Rendering.CullMode.Back));
+            material.SetOverrideTag("RenderType", transparent ? "Transparent" : "Opaque");
+            material.renderQueue = transparent ? (int)UnityEngine.Rendering.RenderQueue.Transparent : -1;
+            material.SetShaderPassEnabled("ShadowCaster", !transparent);
+            UnityEditor.BaseShaderGUI.SetupMaterialBlendMode(material);
+            if (transparent) material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT"); else material.DisableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            if (maps.emissionStrength > 0)
+            {
+                if (maps.emissionColor == null || maps.emissionColor.Length != 4 ||
+                    maps.emissionColor.Any(v => !float.IsFinite(v) || v < 0))
+                    throw new InvalidOperationException("Missing authored linear emission colour: " + maps.name);
+                material.SetColor("_EmissionColor", new Color(maps.emissionColor[0], maps.emissionColor[1], maps.emissionColor[2]) * maps.emissionStrength);
+                material.EnableKeyword("_EMISSION");
+            }
+            else { material.SetColor("_EmissionColor", Color.black); material.DisableKeyword("_EMISSION"); }
+        }
 
         private static ImportedMaps ImportMaps(string folder, MaterialMaps maps, string suffix)
         {
@@ -296,9 +392,9 @@ namespace MagicCarpet.Native.Editor
         [Serializable] private sealed class TakeReport { public string name, take; public float first, last; }
         [Serializable] private sealed class BoneReport { public string name; public Vector3 position; }
         [Serializable] private sealed class MaterialReport { public string name, shader, texture; }
-        [Serializable] private sealed class Manifest { public float height, walkSpeed, runSpeed, minBoneWeight, uprightFootRadius; public string[] hitOverlayBones; public string uprightBone, uprightSupportBone; public ClipRange[] clips; public MaterialMaps material; public MaterialMaps[] materials; }
+        [Serializable] private sealed class Manifest { public float height, walkSpeed, runSpeed, minBoneWeight, uprightFootRadius; public float[] forward; public string[] hitOverlayBones; public string uprightBone, uprightSupportBone; public ClipRange[] clips; public MaterialMaps material; public MaterialMaps[] materials; }
         private sealed class ImportedMaps { internal Texture2D albedo, normal, packed; }
         [Serializable] private sealed class ClipRange { public string name; public float firstFrame, lastFrame; public bool loop; }
-        [Serializable] private sealed class MaterialMaps { public string name, albedo, normal, orm; }
+        [Serializable] private sealed class MaterialMaps { public string name, albedo, normal, orm; public float opacity, emissionStrength; public float[] emissionColor; }
     }
 }

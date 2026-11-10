@@ -1536,14 +1536,14 @@ namespace MagicCarpet.Native
         {
             if(cachedCharacterStates!=null && characterStateGeneration==generation && characterStateTick==tick)return cachedCharacterStates;
             var rows = new NativeSim.CampaignCharacterState[1000];
-            var status = NativeSim.mc_native_campaign_character_states_copy(Handle, generation, tick,
-                rows, (uint)rows.Length, 80, out var written);
+            var status = NativeSim.mc_native_campaign_character_states_copy_v2(Handle, generation, tick,
+                rows, (uint)rows.Length, 96, out var written);
             NativeSession.Check(status, "read live character animation state");
             if (written > rows.Length) throw new InvalidOperationException("Character batch exceeds capacity");
             Array.Resize(ref rows, checked((int)written));
             var seen = new HashSet<ushort>();
             foreach (var row in rows)
-                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 80 ||
+                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 96 ||
                     row.generation != generation || row.tick != tick || !seen.Add(row.entityIndex) ||
                     row.stance > 1 || row.active > 1 || row.hasTarget > 1 || row.hasParent > 1 ||
                     !HasSupportedCharacterIdentity(row))
@@ -1554,6 +1554,16 @@ namespace MagicCarpet.Native
 
         internal static bool HasSupportedCharacterIdentity(NativeSim.CampaignCharacterState row)
         {
+            if (row.lifecycleFlags > 1 || row.lifecycleFlags == 1 &&
+                (row.classId != 5 || row.model != 13 || row.action != 108 || row.life < 0)) return false;
+            if (row.classId == 5 && row.model == 19)
+                return row.renderParameter == 287 && row.sourceHalfWidth == 0 && row.renderHeight == 200 &&
+                    row.hasParent == 0 && row.partIndex == 0;
+            if (row.classId == 5 && row.model == 3)
+                return row.sourceHalfWidth > 0 && row.renderHeight > 0 &&
+                    (row.renderParameter == 88 && row.hasParent == 0 && row.partIndex == 0 ||
+                     row.renderParameter >= 89 && row.renderParameter <= 104 &&
+                     row.partIndex == row.renderParameter - 89 && (row.hasParent == 0 || row.parentIndex != 0));
             if (row.classId == 5 && (row.model == 12 || row.model == 13 || row.model == 14))
                 return ModernVillagerAppearances.TryGet(row.renderParameter, out var binding) && binding.Model == row.model;
             return row.renderParameter == 0 &&

@@ -27,8 +27,12 @@ namespace MagicCarpet.Native
             internal ModernGoatPresenter Goat;
             internal ModernArcherPresenter Archer;
             internal ModernVillagerPresenter Villager;
+            internal ModernFireflyPresenter Firefly;
+            internal ModernWormPresenter Worm;
+            internal readonly Dictionary<ushort, Part> Parts = new();
             internal Vector3 From, To;
             internal float FromYaw, ToYaw;
+            internal Quaternion FromRotation, ToRotation;
             internal double ObservedAt;
             internal float Interval = 1f / 30;
             internal bool Visible, WasVisible;
@@ -41,20 +45,29 @@ namespace MagicCarpet.Native
             internal bool AuthoritativeDeath;
             internal List<Voxels.VoxelFragment> DeathFragments;
             internal Vector3 DeathVelocity, DeathOrigin;
-            internal bool IsDying => AuthoritativeDeath || (Goat != null ? Goat.IsDying : Villager != null ? Villager.IsDying : Archer.IsDying);
-            internal bool VoxelIsDying => AuthoritativeDeath || SourceVoxelDeath(State.model, State.action, State.life);
-            internal GameObject Root => Goat != null ? Goat.Root : Villager != null ? Villager.Root : Archer.Root;
-            internal bool Finished => Goat != null ? Goat.DeathFinished : Villager != null ? Villager.DeathFinished : Archer.DeathFinished;
-            internal string Clip => Goat != null ? Goat.CurrentClip : Villager != null ? Villager.CurrentClip : Archer.CurrentClip;
-            internal float ClipTime => Goat != null ? Goat.ClipTime : Villager != null ? Villager.ClipTime : Archer.ClipTime;
+            internal bool IsDying => AuthoritativeDeath || (Goat != null ? Goat.IsDying : Villager != null ? Villager.IsDying : Firefly != null ? Firefly.IsDying : Worm != null ? Worm.IsDying : Archer.IsDying);
+            internal bool VoxelIsDying => AuthoritativeDeath || SourceVoxelDeath(State.model, State.action, State.life, (State.lifecycleFlags & 1) != 0);
+            internal GameObject Root => Goat != null ? Goat.Root : Villager != null ? Villager.Root : Firefly != null ? Firefly.Root : Worm != null ? Worm.Root : Archer.Root;
+            internal bool Finished => Goat != null ? Goat.DeathFinished : Villager != null ? Villager.DeathFinished : Firefly != null ? Firefly.DeathFinished : Worm != null ? Worm.DeathFinished : Archer.DeathFinished;
+            internal string Clip => Goat != null ? Goat.CurrentClip : Villager != null ? Villager.CurrentClip : Firefly != null ? Firefly.CurrentClip : Worm != null ? Worm.CurrentClip : Archer.CurrentClip;
+            internal float ClipTime => Goat != null ? Goat.ClipTime : Villager != null ? Villager.ClipTime : Firefly != null ? Firefly.ClipTime : Worm != null ? Worm.ClipTime : Archer.ClipTime;
+            internal void SetVisible(bool visible) { if (Worm != null) Worm.SetVisible(visible); else Root.SetActive(visible); }
             internal void Render(float dt)
             {
                 if (RenderedFrame == Time.frameCount) return;
                 RenderedFrame = Time.frameCount;
-                if (Goat != null) Goat.Render(dt); else if (Villager != null) Villager.Render(dt); else Archer.Render(dt);
+                if (Goat != null) Goat.Render(dt); else if (Villager != null) Villager.Render(dt); else if (Firefly != null) Firefly.Render(dt); else if (Worm != null) Worm.Render(dt); else Archer.Render(dt);
             }
-            internal void Remove() { if (Goat != null) Goat.MarkRemoved(); else if (Villager != null) Villager.MarkRemoved(); else Archer.MarkRemoved(); }
-            public void Dispose() { Goat?.Dispose(); Archer?.Dispose(); Villager?.Dispose(); }
+            internal void Remove() { if (Goat != null) Goat.MarkRemoved(); else if (Villager != null) Villager.MarkRemoved(); else if (Firefly != null) Firefly.MarkRemoved(); else if (Worm != null) Worm.MarkRemoved(); else Archer.MarkRemoved(); }
+            public void Dispose() { Goat?.Dispose(); Archer?.Dispose(); Villager?.Dispose(); Firefly?.Dispose(); Worm?.Dispose(); }
+        }
+        private sealed class Part
+        {
+            internal NativeSim.CampaignCharacterState State;
+            internal Vector3 From, To;
+            internal Quaternion FromRotation, ToRotation;
+            internal double ObservedAt;
+            internal float Interval = 1f / 30;
         }
         private sealed class Arrow
         {
@@ -78,12 +91,16 @@ namespace MagicCarpet.Native
             internal Voxels.VoxelGoatAsset Fine, Far;
         }
         private readonly Dictionary<ushort, VillagerArt> villagerArt = new();
+        private VillagerArt fireflyArt;
+        private ModernCharacterAsset wormHeadAsset, wormSegmentAsset;
+        private Voxels.VoxelGoatAsset wormHeadVoxels, wormSegmentVoxels;
         private ModernCharacterAsset goatAsset, archerAsset;
         private Voxels.VoxelGoatAsset goatFine,goatMiddle,goatFar,archerFine,archerFar;
         private GameObject arrowTemplate;
         private ulong generation = ulong.MaxValue, tick = ulong.MaxValue;
         private bool logged;
         private readonly string follow;
+        private readonly bool followHead;
         private readonly float followYaw = 45;
         private readonly ModernCharacterGameplayCapture capture;
         private bool reviewPositioned;
@@ -91,12 +108,14 @@ namespace MagicCarpet.Native
         private Quaternion lastReviewRotation;
         private Camera renderedCamera;
         private float reviewDistance;
+        private Actor followedLifetime;
         private readonly Plane[] voxelViewPlanes=new Plane[6];
 
         internal ModernCharacterActors(Transform parent, ModernTerrainMesh terrain)
         {
             this.parent = parent; this.terrain = terrain;
             var args = Environment.GetCommandLineArgs();
+            followHead = args.Contains("-mc-character-follow-head");
             var option = Array.IndexOf(args, "-mc-character-follow");
             if (option >= 0)
             {
@@ -118,10 +137,20 @@ namespace MagicCarpet.Native
         private Actor Followed()
         {
             if (follow == null) return null;
-            if (ushort.TryParse(follow, out var slot)) return actors.TryGetValue(slot, out var value) && !value.VoxelDeath.Exploded ? value : dying.FirstOrDefault(a => a.State.entityIndex == slot && !a.VoxelDeath.Exploded);
-            return actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => !a.VoxelDeath.Exploded &&
+            // A reclaimed numeric slot can immediately belong to another
+            // creature. Keep this review on the selected incarnation through
+            // its corpse/breakup, then hold the camera until an explicit reset.
+            if (followedLifetime != null)
+                return !followedLifetime.VoxelDeath.Exploded &&
+                    (actors.TryGetValue(followedLifetime.State.entityIndex, out var current) && ReferenceEquals(current, followedLifetime)
+                     || dying.Contains(followedLifetime)) ? followedLifetime : null;
+            if (ushort.TryParse(follow, out var slot))
+                return followedLifetime = actors.TryGetValue(slot, out var value) && !value.VoxelDeath.Exploded ? value
+                    : dying.FirstOrDefault(a => a.State.entityIndex == slot && !a.VoxelDeath.Exploded);
+            return followedLifetime = actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => !a.VoxelDeath.Exploded &&
                 (follow == "Goat" ? a.Goat != null : follow == "Villager" ? a.State.model == 13 :
-                a.Villager != null ? ModernVillagerAppearances.Get(a.State.renderParameter).Resource == follow : follow == "Archer" && a.Archer != null));
+                a.Villager != null ? ModernVillagerAppearances.Get(a.State.renderParameter).Resource == follow :
+                follow == "Firefly" ? a.Firefly != null : follow == "Worm" ? a.Worm != null : follow == "Archer" && a.Archer != null));
         }
 
         internal bool ReviewCamera(Camera camera)
@@ -141,7 +170,7 @@ namespace MagicCarpet.Native
                 return true;
             }
             var position = Interpolated(actor);
-            position.y = terrain.SampleHeight(position.x, position.z);
+            if (actor.Firefly == null && actor.Worm == null) position.y = terrain.SampleHeight(position.x, position.z);
             var heading = InterpolatedYaw(actor);
             // Fit the actual terrain-oriented root, including the first frame.
             // Fitting its spawn-upright bounds cropped the later tilted pose.
@@ -154,8 +183,8 @@ namespace MagicCarpet.Native
             // Fit this frame's pose. A previously hidden nocking arrow can
             // extend beyond the preceding frame's body/prop bounds.
             var offset = Quaternion.Euler(0, heading + followYaw, 0) * new Vector3(0, actor.Goat != null ? 1.4f : 1.8f, actor.Goat != null ? 6.5f : 9);
-            var bounds = CharacterBounds(actor);
-            bounds.center += Wrap(position, camera.transform.position) - actor.Root.transform.position;
+            var bounds = CharacterBounds(actor, followHead);
+            if (actor.Worm == null && actor.Firefly == null) bounds.center += Wrap(position, camera.transform.position) - actor.Root.transform.position;
             var rotation = Quaternion.LookRotation(-offset);
             camera.fieldOfView = 48;
             var vertical = Mathf.Tan(camera.fieldOfView * Mathf.Deg2Rad * .5f);
@@ -189,8 +218,9 @@ namespace MagicCarpet.Native
         private static Vector3 Corner(Vector3 extents, int index) => Vector3.Scale(extents,
             new Vector3((index & 1) == 0 ? -1 : 1, (index & 2) == 0 ? -1 : 1, (index & 4) == 0 ? -1 : 1));
 
-        private static Bounds CharacterBounds(Actor actor)
+        private static Bounds CharacterBounds(Actor actor, bool headOnly = false)
         {
+            if (actor.Worm != null && !headOnly && actor.Worm.TryGetFamilyBounds(out var family)) return family;
             actor.Renderers ??= actor.Root.GetComponentsInChildren<Renderer>(true);
             var bounds = new Bounds(); var found = false;
             foreach (var renderer in actor.Renderers)
@@ -210,7 +240,7 @@ namespace MagicCarpet.Native
         {
             var actor = Followed();
             if (actor == null || renderedCamera == null) return true;
-            var bounds = CharacterBounds(actor);
+            var bounds = CharacterBounds(actor, followHead);
             for (var i = 0; i < 8; i++)
             {
                 var point = renderedCamera.WorldToViewportPoint(bounds.center + Corner(bounds.extents, i));
@@ -223,13 +253,26 @@ namespace MagicCarpet.Native
 
         internal static bool IsArcherArrow(NativeSim.CampaignCharacterState state) => state.classId == 9 && state.model == 13;
         internal static bool IsSupportedActor(NativeSim.CampaignCharacterState state) =>
-            state.classId == 5 && (state.model == 1 || state.model == 4 || ModernVillagerPresenter.Supports(state));
-        internal bool Replaces(ushort sourceSlot) => observed.TryGetValue(sourceSlot, out var state) &&
-            (IsSupportedActor(state) || IsArcherArrow(state));
+            state.classId == 5 && (state.model == 1 || state.model == 4 ||
+                state.model == 3 && state.renderParameter == 88 && NativeCampaignSession.HasSupportedCharacterIdentity(state) ||
+                state.model == 19 && NativeCampaignSession.HasSupportedCharacterIdentity(state) || ModernVillagerPresenter.Supports(state));
+        internal bool Replaces(ushort sourceSlot)
+        {
+            if (!observed.TryGetValue(sourceSlot, out var state)) return false;
+            if (IsSupportedActor(state) || IsArcherArrow(state)) return true;
+            if (state.classId != 5 || state.model != 3 || state.renderParameter < 89 || state.renderParameter > 104) return false;
+            foreach (var actor in actors.Values.Concat(dying))
+                if (actor.Worm != null && actor.Parts.TryGetValue(sourceSlot, out var part) &&
+                    part.State.slotGeneration == state.slotGeneration && part.State.sourceId == state.sourceId &&
+                    actor.Worm.SegmentRoot(sourceSlot, state.slotGeneration) != null) return true;
+            return false;
+        }
 
-        internal static bool SourceVoxelDeath(byte model, byte action, int life) => life < 0 ||
+        internal static bool SourceVoxelDeath(byte model, byte action, int life, bool livingEntry = false) => life < 0 ||
             (model == 1 && (action == 12 || action == 13)) || (model == 4 && action == 37) ||
-            ((model == 12 || model == 13 || model == 14) && ModernVillagerPresenter.SourceDeath(action, life, model));
+            (model == 19 && ModernFireflyPresenter.SourceDeath(action, life)) ||
+            (model == 3 && ModernWormPresenter.SourceDeath(action, life)) ||
+            ((model == 12 || model == 13 || model == 14) && ModernVillagerPresenter.SourceDeath(action, life, model, livingEntry));
 
         // The integration delivers lifetime-qualified native death evidence
         // before observing removal or reuse. A slot alone is never sufficient.
@@ -243,6 +286,9 @@ namespace MagicCarpet.Native
                 actor = dying.FirstOrDefault(a => a.State.entityIndex == slot && a.State.slotGeneration == slotGeneration && a.State.sourceId == sourceId);
             if (actor == null) return false;
             actor.AuthoritativeDeath = true;
+            actor.Villager?.ConfirmDeath();
+            actor.Firefly?.ConfirmDeath();
+            actor.Worm?.ConfirmDeath();
             return true;
         }
 
@@ -256,7 +302,7 @@ namespace MagicCarpet.Native
             // house-entry/drawing hide flags in either presentation style.
             // A confirmed fall continues through the hidden reclaim tail. A
             // living entry still disappears immediately, without a death pose.
-            if (!SourceVoxelDeath(state.model, state.action, state.life) &&
+            if (!SourceVoxelDeath(state.model, state.action, state.life, (state.lifecycleFlags & 1) != 0) &&
                 (state.active == 0 || (state.controlFlags & 0x421u) != 0)) eligible = false;
             root.SetActive(eligible);
         }
@@ -287,7 +333,8 @@ namespace MagicCarpet.Native
                 var hadPriorObservation = actors.ContainsKey(state.entityIndex);
                 if (!actors.TryGetValue(state.entityIndex, out var actor))
                 {
-                    actor = new Actor { From = position, To = position, FromYaw = yaw, ToYaw = yaw };
+                    actor = new Actor { From = position, To = position, FromYaw = yaw, ToYaw = yaw,
+                        FromRotation = Rotation(state), ToRotation = Rotation(state) };
                     if (state.model == 1)
                     {
                         goatAsset ??= Load("Goat");
@@ -301,6 +348,29 @@ namespace MagicCarpet.Native
                         actor.Villager = new ModernVillagerPresenter(art.Asset, parent, binding.SourceHeight, binding.Model);
                         if(Voxels.VoxelModernWorld.Requested) actor.Villager.AttachVoxelSkin(art.Fine);
                     }
+                    else if (state.model == 19)
+                    {
+                        fireflyArt ??= new VillagerArt { Asset = Load("Firefly") };
+                        actor.Firefly = new ModernFireflyPresenter(fireflyArt.Asset, parent, state.renderHeight / 64f);
+                        if (Voxels.VoxelModernWorld.Requested)
+                        {
+                            fireflyArt.Fine ??= LoadDetail("Firefly", 96);
+                            fireflyArt.Far ??= LoadDetail("Firefly", 64);
+                            actor.Firefly.AttachVoxelSkin(fireflyArt.Fine);
+                        }
+                    }
+                    else if (state.model == 3)
+                    {
+                        wormHeadAsset ??= Load("WormHead"); wormSegmentAsset ??= Load("WormSegment");
+                        actor.Worm = new ModernWormPresenter(wormHeadAsset, wormSegmentAsset, parent,
+                            state.entityIndex, state.sourceId, state.slotGeneration);
+                        if (Voxels.VoxelModernWorld.Requested)
+                        {
+                            wormHeadVoxels ??= LoadDetail("WormHead", 64);
+                            wormSegmentVoxels ??= LoadDetail("WormSegment", 64);
+                            actor.Worm.AttachVoxelSkins(wormHeadVoxels, wormSegmentVoxels);
+                        }
+                    }
                     else
                     {
                         archerAsset ??= Load("Archer");
@@ -309,20 +379,26 @@ namespace MagicCarpet.Native
                     }
                     actors.Add(state.entityIndex, actor);
                     actor.Root.transform.SetPositionAndRotation(
-                        new Vector3(position.x, terrain.SampleHeight(position.x, position.z), position.z), Quaternion.Euler(0, yaw, 0));
+                        new Vector3(position.x, actor.Firefly != null ? position.y : terrain.SampleHeight(position.x, position.z), position.z),
+                        actor.Firefly != null ? Rotation(state) : Quaternion.Euler(0, yaw, 0));
                 }
                 else
                 {
                     actor.From = Interpolated(actor);
                     actor.FromYaw = InterpolatedYaw(actor);
+                    actor.FromRotation = InterpolatedRotation(actor);
                     actor.Interval = Mathf.Max(1f / 30, (state.tick - actor.State.tick) / 30f);
                 }
                 actor.To = position; actor.ToYaw = yaw; actor.ObservedAt = Time.timeAsDouble;
+                actor.ToRotation = Rotation(state);
                 actor.State = state;
                 actor.Visible = presentations.TryGetValue(state.entityIndex, out var presentation);
                 actor.WasVisible |= actor.Visible;
                 if (actor.Goat != null) actor.Goat.Observe(position, yaw, state.life, state.action, state.tick);
-                else if (actor.Villager != null) actor.Villager.Observe(position, yaw, state.life, state.action, state.tick);
+                else if (actor.Villager != null) actor.Villager.Observe(position, yaw, state.life, state.action, state.tick, (state.lifecycleFlags & 1) != 0);
+                else if (actor.Firefly != null) actor.Firefly.Observe(position, yaw, state.pitch * 360f / 2048f,
+                    state.roll * 360f / 2048f, state.life, state.action, state.phase, state.tick);
+                else if (actor.Worm != null) ObserveWorm(actor, state);
                 else
                 {
                     var aim = state.hasTarget != 0 ? Delta(position, new Vector3(state.targetX / 64f, state.targetZ / 64f, state.targetY / 64f)) : Direction(state.yaw, state.pitch);
@@ -377,6 +453,45 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void ObserveWorm(Actor actor, NativeSim.CampaignCharacterState head)
+        {
+            var rows = observed.Values.Where(part => part.classId == 5 && part.model == 3 &&
+                part.renderParameter >= 89 && part.renderParameter <= 104 && part.hasParent != 0 &&
+                part.parentIndex == head.entityIndex && part.parentId == head.sourceId &&
+                part.parentGeneration == head.slotGeneration).ToArray();
+            var poses = new ModernWormPresenter.SegmentPose[rows.Length];
+            for (var i = 0; i < rows.Length; i++)
+            {
+                var state = rows[i]; var position = Position(state); var rotation = Rotation(state);
+                if (!actor.Parts.TryGetValue(state.entityIndex, out var part) ||
+                    part.State.slotGeneration != state.slotGeneration || part.State.sourceId != state.sourceId)
+                    actor.Parts[state.entityIndex] = part = new Part { From = position, To = position,
+                        FromRotation = rotation, ToRotation = rotation };
+                else
+                {
+                    var weight = Mathf.Clamp01((float)(Time.timeAsDouble - part.ObservedAt) / part.Interval);
+                    part.From += Delta(part.From, part.To) * weight;
+                    part.FromRotation = Quaternion.Slerp(part.FromRotation, part.ToRotation, weight);
+                    part.Interval = Mathf.Max(1f / 30, (state.tick - part.State.tick) / 30f);
+                }
+                part.State = state; part.To = position; part.ToRotation = rotation; part.ObservedAt = Time.timeAsDouble;
+                poses[i] = new ModernWormPresenter.SegmentPose(state.entityIndex, state.sourceId, state.slotGeneration,
+                    state.parentIndex, state.parentGeneration, checked((byte)state.partIndex), position,
+                    180f - state.yaw * 360f / 2048f, state.pitch * 360f / 2048f, -state.roll * 360f / 2048f,
+                    state.renderHeight / 64f * actor.Worm.SegmentWidthToHeight, state.renderHeight / 64f, true,
+                    state.active != 0 && (state.controlFlags & 0x421u) == 0, state.life, state.action);
+            }
+            actor.Worm.Observe(head.life, head.action, head.tick, poses);
+            if (!actor.Worm.IsDying)
+            {
+                var current = rows.Select(row => row.entityIndex).ToHashSet();
+                foreach (var slot in actor.Parts.Keys.Where(slot => !current.Contains(slot)).ToArray()) actor.Parts.Remove(slot);
+                // Retain actual living native placement even offscreen. This
+                // does not advance animation or invent a first-dead pose.
+                PlaceWorm(actor, actor.To, renderedCamera != null ? renderedCamera.transform.position : actor.To);
+            }
+        }
+
         internal void Render(Camera camera)
         {
             renderedCamera = camera;
@@ -386,7 +501,7 @@ namespace MagicCarpet.Native
             foreach (var actor in actors.Values)
             {
                 if (Voxels.VoxelModernWorld.Requested && actor.VoxelDeath.Exploded)
-                { actor.Root.SetActive(false); continue; }
+                { actor.SetVisible(false); continue; }
                 var sampled = actor.RenderedFrame == Time.frameCount;
                 var position = Interpolated(actor);
                 // Keep observing every occupant. Manual PlayableGraph updates
@@ -395,24 +510,32 @@ namespace MagicCarpet.Native
                 // retains nearby offscreen shadow casters and has no distance
                 // cutoff. Deaths continue even when the camera turns away.
                 var voxelMode = Voxels.VoxelModernWorld.Requested;
+                var viewBounds = new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,
+                    voxelMode ? new Vector3(12,16,12) : new Vector3(64,24,64));
+                if (actor.Worm != null)
+                {
+                    Place(actor, position, InterpolatedYaw(actor), camera);
+                    if (actor.Worm.TryGetFamilyBounds(out var wholeFamily)) viewBounds = wholeFamily;
+                }
+                var distanceSquared = actor.Worm != null ? viewBounds.SqrDistance(camera.transform.position)
+                    : Delta(camera.transform.position,position).sqrMagnitude;
                 if(!actor.VoxelIsDying && actor!=followed &&
-                    (voxelMode && Delta(camera.transform.position,position).sqrMagnitude>14400 ||
-                     (voxelMode || actor.Villager != null) && !GeometryUtility.TestPlanesAABB(voxelViewPlanes,
-                        new Bounds(Wrap(position,camera.transform.position)+Vector3.up*3,
-                            voxelMode ? new Vector3(12,16,12) : new Vector3(64,24,64)))))
-                { actor.Root.SetActive(false); actor.WasRendered = false; continue; }
+                    (voxelMode && distanceSquared>14400 ||
+                     (voxelMode || actor.Villager != null || actor.Worm != null) && !GeometryUtility.TestPlanesAABB(voxelViewPlanes,viewBounds)))
+                { actor.SetVisible(false); actor.WasRendered = false; continue; }
                 if(Voxels.VoxelModernWorld.Requested && !actor.VoxelIsDying)SetVoxelDetail(actor,actor==followed?0:Delta(camera.transform.position,position).magnitude);
-                Place(actor, position, InterpolatedYaw(actor), camera);
+                if (actor.Worm == null) Place(actor, position, InterpolatedYaw(actor), camera);
                 if (!actor.WasRendered && actor.Villager != null) actor.Villager.RebaseTravel();
                 actor.WasRendered = true;
                 // Capture the last live pose before advancing a death animation.
                 if (Voxels.VoxelModernWorld.Requested && actor.VoxelIsDying)
-                { FractureIfDead(actor); actor.Root.SetActive(false); continue; }
+                { FractureIfDead(actor); actor.SetVisible(false); continue; }
                 // A voxel observer uses its own spatial admission. Native
                 // liveness and hide flags still control the actual renderer.
                 ApplyActorVisibility(actor.Root,actor.State,
                     (actor.Visible || actor == followed || actor.IsDying && actor.WasVisible || Voxels.VoxelModernWorld.Requested&&actor.State.active!=0) && ModernCapture.EntityVisibility != 1,
                     Voxels.VoxelModernWorld.Requested);
+                if (actor.Worm != null) actor.SetVisible(actor.Root.activeSelf);
                 actor.Render(dt);
                 actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
                 if (!sampled && actor.Goat != null && actor.Root.activeSelf)
@@ -424,11 +547,20 @@ namespace MagicCarpet.Native
                 var actor = dying[i]; Place(actor, actor.To, actor.ToYaw, camera);
                 if (Voxels.VoxelModernWorld.Requested)
                 {
-                    FractureIfDead(actor); actor.Root.SetActive(false);
+                    if (actor.Worm != null && !actor.Worm.HasRetainedLivePose)
+                    {
+                        // First observed after death: there is no live surface
+                        // to fracture. Bound cleanup rather than retaining an
+                        // unfulfillable debris request indefinitely.
+                        actor.SetVisible(false); actor.Render(dt);
+                        if (actor.Finished) { actor.Dispose(); dying.RemoveAt(i); }
+                        continue;
+                    }
+                    FractureIfDead(actor); actor.SetVisible(false);
                     if (actor.VoxelDeath.Exploded) { actor.Dispose(); dying.RemoveAt(i); }
                     continue;
                 }
-                actor.Root.SetActive((actor.WasVisible || actor == followed) && ModernCapture.EntityVisibility != 1); actor.Render(dt);
+                actor.SetVisible((actor.WasVisible || actor == followed) && ModernCapture.EntityVisibility != 1); actor.Render(dt);
                 actor.Villager?.GroundCorpseToTerrain(terrain.SampleHeight, terrain.Revision);
                 FractureIfDead(actor);
                 if (actor.Finished) { actor.Dispose(); dying.RemoveAt(i); }
@@ -455,9 +587,12 @@ namespace MagicCarpet.Native
             if(!Voxels.VoxelModernWorld.Requested)return;
             actor.VoxelDeath.TryExplode(actor.VoxelIsDying, () => {
                 if (Voxels.VoxelModernWorld.Active == null) return false;
+                if (actor.Worm != null && !actor.Worm.HasRetainedLivePose) return false;
                 if (actor.DeathFragments == null)
                 {
-                    actor.DeathFragments = actor.Goat != null ? actor.Goat.SnapshotVoxelFragments() : actor.Villager != null ? actor.Villager.SnapshotVoxelFragments() : actor.Archer.SnapshotVoxelFragments();
+                    actor.DeathFragments = actor.Goat != null ? actor.Goat.SnapshotVoxelFragments() : actor.Villager != null ? actor.Villager.SnapshotVoxelFragments() :
+                        actor.Firefly != null ? actor.Firefly.SnapshotVoxelFragments() :
+                        actor.Worm != null ? actor.Worm.SnapshotVoxelFragments(8192) : actor.Archer.SnapshotVoxelFragments();
                     actor.DeathVelocity = Delta(actor.From, actor.To) / Mathf.Max(actor.Interval, .0333f);
                     actor.DeathOrigin = actor.Root.transform.position;
                 }
@@ -511,7 +646,8 @@ namespace MagicCarpet.Native
         }
         private void SetVoxelDetail(Actor actor,float distance)
         {
-            int current=actor.Goat!=null?actor.Goat.VoxelResolution:actor.Villager!=null?actor.Villager.VoxelResolution:actor.Archer.VoxelResolution;
+            if (actor.Worm != null) return; // Shared64-resolution body meshes; no sixteen-way LOD churn.
+            int current=actor.Goat!=null?actor.Goat.VoxelResolution:actor.Villager!=null?actor.Villager.VoxelResolution:actor.Firefly!=null?actor.Firefly.VoxelResolution:actor.Archer.VoxelResolution;
             bool fine=distance<(current==96?16:12);
             if(actor.Goat!=null)actor.Goat.SetVoxelDetail(fine?goatFine:distance<(current==40?32:40)?goatMiddle:goatFar);
             else if(actor.Villager!=null)
@@ -519,11 +655,23 @@ namespace MagicCarpet.Native
                 var art = villagerArt[actor.State.renderParameter];
                 actor.Villager.SetVoxelDetail(fine ? art.Fine : art.Far);
             }
+            else if (actor.Firefly != null) actor.Firefly.SetVoxelDetail(fine ? fireflyArt.Fine : fireflyArt.Far);
             else actor.Archer.SetVoxelDetail(fine?archerFine:archerFar);
         }
 
         private void Place(Actor actor, Vector3 position, float yaw, Camera camera)
         {
+            if (actor.Worm != null)
+            {
+                PlaceWorm(actor, position, camera.transform.position);
+                return;
+            }
+            if (actor.Firefly != null)
+            {
+                position.y += actor.Firefly.PivotAboveBase;
+                actor.Root.transform.SetPositionAndRotation(Wrap(position, camera.transform.position), InterpolatedRotation(actor));
+                return;
+            }
             position.y = terrain.SampleHeight(position.x, position.z);
             var e = .65f;
             var normal = new Vector3(terrain.SampleHeight(position.x - e, position.z) - terrain.SampleHeight(position.x + e, position.z),
@@ -536,9 +684,31 @@ namespace MagicCarpet.Native
             var rotation = Quaternion.FromToRotation(Vector3.up, normal) * Quaternion.Euler(0, yaw, 0);
             actor.Root.transform.SetPositionAndRotation(Wrap(position, camera.transform.position), rotation);
         }
+        private static void PlaceWorm(Actor actor, Vector3 position, Vector3 reference)
+        {
+            var height = actor.State.renderHeight / 64f;
+            position.y -= height * actor.Worm.HeadBottomToHeight;
+            actor.Worm.PlaceHead(Wrap(position, reference), InterpolatedRotation(actor),
+                height * actor.Worm.HeadWidthToHeight, height, height * actor.Worm.HeadDepthToHeight);
+            foreach (var part in actor.Parts.Values)
+            {
+                var weight = Mathf.Clamp01((float)(Time.timeAsDouble - part.ObservedAt) / part.Interval);
+                var center = part.From + Delta(part.From, part.To) * weight;
+                var bodyHeight = part.State.renderHeight / 64f;
+                center.y -= bodyHeight * actor.Worm.SegmentBottomToHeight;
+                actor.Worm.PlaceSegment(part.State.entityIndex, part.State.slotGeneration,
+                    Wrap(center, reference), Quaternion.Slerp(part.FromRotation, part.ToRotation, weight),
+                    bodyHeight * actor.Worm.SegmentWidthToHeight, bodyHeight, bodyHeight * actor.Worm.SegmentDepthToHeight);
+            }
+        }
         private static Vector3 Interpolated(Actor actor) => actor.From + Delta(actor.From, actor.To) *
             Mathf.Clamp01((float)(Time.timeAsDouble - actor.ObservedAt) / actor.Interval);
         private static float InterpolatedYaw(Actor actor) => Mathf.LerpAngle(actor.FromYaw, actor.ToYaw,
+            Mathf.Clamp01((float)(Time.timeAsDouble - actor.ObservedAt) / actor.Interval));
+        private static Quaternion Rotation(NativeSim.CampaignCharacterState state) => state.model == 3
+            ? ModernWormPresenter.SourceRotation(state.yaw)
+            : Quaternion.Euler(0, 180f - state.yaw * 360f / 2048f, 0);
+        private static Quaternion InterpolatedRotation(Actor actor) => Quaternion.Slerp(actor.FromRotation, actor.ToRotation,
             Mathf.Clamp01((float)(Time.timeAsDouble - actor.ObservedAt) / actor.Interval));
         private static Vector3 ArrowPosition(Arrow arrow) => arrow.From + Delta(arrow.From, arrow.To) *
             Mathf.Clamp01((float)(Time.timeAsDouble - arrow.ObservedAt) / arrow.Interval);
@@ -585,8 +755,8 @@ namespace MagicCarpet.Native
             actors = actors.Values.Concat(dying).Select(a => new ActorReport { slot=a.State.entityIndex,
                 epoch=a.State.slotGeneration, model=a.State.model, action=a.State.action, life=a.State.life,
                 appearance=a.State.renderParameter,
-                asset=a.Villager != null ? ModernVillagerAppearances.Get(a.State.renderParameter).Resource : a.Goat != null ? "Goat" : "Archer",
-                voxelResolution=a.Villager != null ? a.Villager.VoxelResolution : a.Goat != null ? a.Goat.VoxelResolution : a.Archer.VoxelResolution,
+                asset=a.Villager != null ? ModernVillagerAppearances.Get(a.State.renderParameter).Resource : a.Goat != null ? "Goat" : a.Firefly != null ? "Firefly" : a.Worm != null ? "WormHead" : "Archer",
+                voxelResolution=a.Villager != null ? a.Villager.VoxelResolution : a.Goat != null ? a.Goat.VoxelResolution : a.Firefly != null ? a.Firefly.VoxelResolution : a.Worm != null ? (Voxels.VoxelModernWorld.Requested ? 64 : 0) : a.Archer.VoxelResolution,
                 clip=a.Clip,
                 clipTime=a.ClipTime,
                 source=Position(a.State), rendered=a.Root.transform.position,
@@ -620,6 +790,7 @@ namespace MagicCarpet.Native
             actors.Clear(); dying.Clear(); arrows.Clear(); observed.Clear();
             reviewPositioned = false;
             reviewDistance = 0;
+            followedLifetime = null;
         }
         public void Dispose()
         {
