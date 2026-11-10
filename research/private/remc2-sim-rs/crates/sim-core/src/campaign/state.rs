@@ -560,6 +560,60 @@ impl CampaignDefinition {
         self.rival_wizard_by_id = bindings.rival_wizard_by_id;
     }
 
+    #[cfg(test)]
+    pub(crate) fn configured_source_bindings_for_test(
+        &self,
+        level: LevelDefinition,
+    ) -> SemanticLevelBindings {
+        SemanticLevelBindings {
+            level,
+            authored_creature_kinds: self.authored_creature_kinds.clone(),
+            authored_creature_entities: self.authored_creature_entities.clone(),
+            initial_source_creatures: self.initial_source_creatures.clone(),
+            creature_models: self.creature_models.clone(),
+            authored_spells: self.authored_spells.clone(),
+            spell_families: self.spell_families.clone(),
+            authored_buildings: self.authored_buildings.clone(),
+            authored_building_entities: self.authored_building_entities.clone(),
+            initial_source_buildings: self.initial_source_buildings.clone(),
+            authored_scenery: self.authored_scenery.clone(),
+            authored_scenery_entities: self.authored_scenery_entities.clone(),
+            initial_source_scenery: self.initial_source_scenery.clone(),
+            authored_items: self.authored_items.clone(),
+            authored_item_entities: self.authored_item_entities.clone(),
+            authored_switches: self.authored_switches.clone(),
+            authored_switch_entities: self.authored_switch_entities.clone(),
+            initial_source_switches: self.initial_source_switches.clone(),
+            initial_source_switch_entities: self.initial_source_switch_entities.clone(),
+            authored_mechanics: self.authored_mechanics.clone(),
+            initial_source_mechanics: self.initial_source_mechanics.clone(),
+            authored_mechanic_entities: self.authored_mechanic_entities.clone(),
+            initial_source_mechanic_entities: self.initial_source_mechanic_entities.clone(),
+            standing_building_chains: self.standing_building_chains.clone(),
+            rival_wizard_by_id: self.rival_wizard_by_id.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_passive_item_source_for_test(
+        &mut self,
+        record: u16,
+        id: LevelEntityId,
+        bindings: SemanticLevelBindings,
+    ) -> Result<(), String> {
+        let mut expected = self.clone();
+        expected.semantic_level = Some(bindings.level.clone());
+        expected.authored_items.insert(record, ItemKind::PassiveItem);
+        expected.authored_item_entities.insert(record, id);
+        let mut configured = self.clone();
+        configured.bind_semantic_level(bindings);
+        if configured != expected {
+            return Err("configured passive item must preserve every original runtime binding".into());
+        }
+        *self = configured;
+        Ok(())
+    }
+
     pub(crate) fn replace_semantic_level(
         &mut self,
         level: LevelDefinition,
@@ -708,6 +762,13 @@ impl CampaignDefinition {
 
     pub(crate) fn item_for_authored_record(&self, authored_record: u16) -> Option<ItemKind> {
         self.authored_items.get(&authored_record).copied()
+    }
+
+    pub(crate) fn item_entity_for_authored_record(
+        &self,
+        authored_record: u16,
+    ) -> Option<&LevelEntityId> {
+        self.authored_item_entities.get(&authored_record)
     }
 
     pub(crate) fn authored_experience_scroll_award(&self, authored_record: u16) -> Option<u32> {

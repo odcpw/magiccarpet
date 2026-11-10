@@ -2372,6 +2372,37 @@ impl CampaignDefinition {
         &self.level_definition
     }
 
+    #[cfg(test)]
+    pub(crate) fn configure_passive_item_source_for_test(
+        &mut self,
+        record: u16,
+        id: LevelEntityId,
+        level: LevelDefinition,
+    ) -> std::result::Result<(), String> {
+        if level.entities().len() != self.level_definition.entities().len() + 1
+            || self.level_definition.entities().iter().any(|entity| level.entity(entity.id()) != Some(entity))
+            || level.objectives() != self.level_definition.objectives()
+            || level.activation_groups().collect::<Vec<_>>() != self.level_definition.activation_groups().collect::<Vec<_>>()
+            || self.item_by_authored_record.contains_key(&record)
+            || self.movable_entity_bindings.contains_key(&id)
+        {
+            return Err("configured passive item must preserve all original entities, objectives and groups".into());
+        }
+        if level.entity(&id).is_none_or(|entity| {
+            entity.kind() != LevelEntityKind::Item(ItemKind::PassiveItem) || entity.passive_item().is_none()
+        }) {
+            return Err("configured passive item requires its typed definition".into());
+        }
+        self.item_by_authored_record.insert(record, ItemKind::PassiveItem);
+        self.item_entity_by_authored_record.insert(record, id.clone());
+        self.movable_entity_bindings.insert(id, Mc2EntityRuntimeBinding::AuthoredFeature {
+            authored_record: record,
+            kind: LevelEntityKind::Item(ItemKind::PassiveItem),
+        });
+        self.level_definition = level;
+        Ok(())
+    }
+
     pub(crate) fn generate_terrain_startup(&self) -> Result<TerrainStartupWorld> {
         generate_bound_terrain_startup(
             self.identity.map_type_id,

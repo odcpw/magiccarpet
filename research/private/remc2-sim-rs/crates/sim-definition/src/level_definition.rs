@@ -27,6 +27,8 @@ pub use creatures::{
 };
 mod effects;
 pub use effects::{EffectDefinition, EffectKind};
+mod items;
+pub use items::PassiveItemDefinition;
 mod directional_spells;
 mod disaster_spells;
 pub use directional_spells::{DUEL_TIERS, DirectionalSpellTier, STEAL_MANA_TIERS};
@@ -526,6 +528,7 @@ impl SceneryKind {
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     ExperienceScroll,
+    PassiveItem,
 }
 
 impl ItemKind {
@@ -533,6 +536,7 @@ impl ItemKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ExperienceScroll => "experience_scroll",
+            Self::PassiveItem => "passive_item",
         }
     }
 }
@@ -1147,6 +1151,8 @@ pub struct LevelEntityDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     static_scenery: Option<StaticSceneryDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    passive_item: Option<PassiveItemDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     creature_health: Option<CreatureHealthDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     experience_scroll: Option<ExperienceScrollDefinition>,
@@ -1186,6 +1192,7 @@ impl LevelEntityDefinition {
             ballistic_scenery: None,
             dolmen: None,
             static_scenery: None,
+            passive_item: None,
             creature_health,
             experience_scroll,
             house_construction,
@@ -1321,6 +1328,16 @@ impl LevelEntityDefinition {
 
     pub(crate) const fn with_static_scenery(mut self, config: StaticSceneryDefinition) -> Self {
         self.static_scenery = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub const fn passive_item(&self) -> Option<PassiveItemDefinition> {
+        self.passive_item
+    }
+
+    pub(crate) const fn with_passive_item(mut self, config: PassiveItemDefinition) -> Self {
+        self.passive_item = Some(config);
         self
     }
 
@@ -1566,6 +1583,26 @@ impl LevelDefinition {
                 (_, Some(_)) => {
                     return Err(format!(
                         "non-creature entity {} carries creature-health configuration",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, None) => {}
+            }
+            match (entity.kind, entity.passive_item) {
+                (LevelEntityKind::Item(ItemKind::PassiveItem), Some(config)) => {
+                    config.validate().map_err(|error| {
+                        format!("semantic passive item {}: {error}", entity.id.as_str())
+                    })?;
+                }
+                (LevelEntityKind::Item(ItemKind::PassiveItem), None) => {
+                    return Err(format!(
+                        "semantic passive item {} has no class properties",
+                        entity.id.as_str()
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(format!(
+                        "non-passive-item entity {} carries passive item properties",
                         entity.id.as_str()
                     ));
                 }
@@ -2138,6 +2175,7 @@ impl LevelDefinition {
                 || candidate.ballistic_scenery != original.ballistic_scenery
                 || candidate.dolmen != original.dolmen
                 || candidate.static_scenery != original.static_scenery
+                || candidate.passive_item != original.passive_item
                 || candidate.cave_feature != original.cave_feature
             {
                 return Err(format!(
@@ -2749,7 +2787,7 @@ mod tests {
     #[test]
     fn retained_field_and_mushroom_rules_survive_serialization_and_reject_rebinding() {
         use super::*;
-        use crate::adapter::{ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition, mushroom_entity_definition, static_scenery_entity_definition};
+        use crate::adapter::{ballistic_scenery_entity_definition, dolmen_entity_definition, field_entity_definition, mushroom_entity_definition, passive_item_entity_definition, static_scenery_entity_definition};
         let field = field_entity_definition(
             LevelEntityId::parse("mechanic.transport.test").unwrap(),
             TilePosition { x: 10, y: 20 },
@@ -2782,8 +2820,13 @@ mod tests {
             TilePosition { x: 18, y: 18 }, None, LevelEntityPositionAccess::ReadOnly,
             StaticSceneryDefinition::default(),
         );
+        let passive = passive_item_entity_definition(
+            LevelEntityId::parse("item.passive_item.test").unwrap(),
+            TilePosition { x: 19, y: 18 }, None, LevelEntityPositionAccess::ReadOnly,
+            PassiveItemDefinition::default(),
+        );
         let base = LevelDefinition::new(
-            vec![field.clone(), mushroom.clone(), ballistic.clone(), dolmen.clone(), static_object.clone()], vec![], vec![],
+            vec![field.clone(), mushroom.clone(), ballistic.clone(), dolmen.clone(), static_object.clone(), passive.clone()], vec![], vec![],
         ).unwrap();
         let decoded: LevelDefinition =
             serde_json::from_slice(&serde_json::to_vec(&base).unwrap()).unwrap();
@@ -2804,9 +2847,22 @@ mod tests {
         let mut rebound = decoded.clone();
         rebound.entities[3].dolmen.as_mut().unwrap().horizontal_half_extent += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
-        let mut rebound = decoded;
+        let mut rebound = decoded.clone();
         rebound.entities[4].static_scenery.as_mut().unwrap().max_life += 1;
         assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+        let mut rebound = decoded;
+        rebound.entities[5].passive_item.as_mut().unwrap().horizontal_half_extent += 1;
+        assert!(rebound.verify_session_reset_variant_of(&base).is_err());
+
+        let mut invalid = passive.clone();
+        invalid.passive_item = None;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = passive.clone();
+        invalid.passive_item.as_mut().unwrap().vertical_half_extent = 0;
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
+        let mut invalid = passive;
+        invalid.kind = LevelEntityKind::Item(ItemKind::ExperienceScroll);
+        assert!(LevelDefinition::new(vec![invalid], vec![], vec![]).is_err());
 
         let mut invalid = static_object.clone();
         invalid.static_scenery = None;

@@ -20,6 +20,22 @@ pub struct SettlementSourceBinding {
     pub action: u8,
 }
 
+/// Private MC2 construction and asset selectors for a semantic world item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ItemSourceBinding {
+    pub class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub descriptor: u16,
+}
+
+pub const PASSIVE_ITEM_SOURCE_BINDING: ItemSourceBinding = ItemSourceBinding {
+    class: 14,
+    model: 0,
+    action: 0,
+    descriptor: 77,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SettlementAppearanceBinding {
     pub particle: u16,
@@ -483,6 +499,24 @@ pub const fn static_scenery_entity_definition(
         position_access,
         None, None, None, None, None,
     ).with_static_scenery(config)
+}
+
+#[must_use]
+pub const fn passive_item_entity_definition(
+    id: LevelEntityId,
+    position: TilePosition,
+    activation_group: Option<ActivationGroupId>,
+    position_access: LevelEntityPositionAccess,
+    config: crate::level_definition::PassiveItemDefinition,
+) -> LevelEntityDefinition {
+    LevelEntityDefinition::new(
+        id,
+        LevelEntityKind::Item(crate::level_definition::ItemKind::PassiveItem),
+        position,
+        activation_group,
+        position_access,
+        None, None, None, None, None,
+    ).with_passive_item(config)
 }
 
 #[must_use]

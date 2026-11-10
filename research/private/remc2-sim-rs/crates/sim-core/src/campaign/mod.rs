@@ -205,6 +205,50 @@ impl CampaignSession {
         &self.definition
     }
 
+    /// Configure one dormant source-language item without changing the shipped
+    /// records. The descriptor and pristine simulation share this baseline so
+    /// GameSession reset still runs the ordinary semantic validation.
+    #[cfg(test)]
+    pub(crate) fn configure_passive_item_source_for_test(
+        &mut self,
+        features: &[crate::level1_mission::AuthoredFeature],
+        bindings: &state::SemanticLevelBindings,
+    ) -> Result<(), NativeWorldError> {
+        let original = self.simulation.session.state.live.mission.authored_features();
+        if features.len() != original.len() {
+            return Err(NativeWorldError::new("configured item must preserve the authored extent"));
+        }
+        let changed = original.iter().zip(features).filter(|(before, after)| before != after).collect::<Vec<_>>();
+        let [(before, after)] = changed.as_slice() else {
+            return Err(NativeWorldError::new("configured item must add exactly one dormant authored row"));
+        };
+        if before.kind != 0 || before.index != after.index || after.index == 0
+            || after.kind != 14 || after.subtype != 0 || after.activation_group <= 0
+        {
+            return Err(NativeWorldError::new("configured item must use an unused row and real passive item constructor"));
+        }
+        let id = bindings.authored_item_entities.get(&after.index)
+            .ok_or_else(|| NativeWorldError::new("configured item has no semantic authored identity"))?;
+        let entity = bindings.level.entity(id)
+            .ok_or_else(|| NativeWorldError::new("configured item identity has no typed entity"))?;
+        if entity.position().x != after.tile_x || entity.position().y != after.tile_y
+            || entity.activation_group() != Some(sim_definition::adapter::activation_group_id(after.activation_group as u16))
+        {
+            return Err(NativeWorldError::new("configured item semantic pose/group must match its source record"));
+        }
+        let mut descriptor = (*self.definition).clone();
+        descriptor.configure_passive_item_source_for_test(after.index, id.clone(), bindings.level.clone())
+            .map_err(NativeWorldError::new)?;
+        let mut simulation_definition = (*self.simulation.session.definition).clone();
+        simulation_definition.configure_passive_item_source_for_test(after.index, id.clone(), bindings.clone())
+            .map_err(NativeWorldError::new)?;
+        self.definition = Arc::new(descriptor);
+        self.simulation.session.definition = Arc::new(simulation_definition);
+        self.simulation.session.state.live.mission.authored_features_mut().copy_from_slice(features);
+        self.simulation.session.rebase();
+        Ok(())
+    }
+
     #[must_use]
     pub fn inspection(&self) -> &NativeWorldInspection {
         &self.inspection

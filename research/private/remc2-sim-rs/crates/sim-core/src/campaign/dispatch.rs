@@ -485,6 +485,7 @@ compiled_registry! {
         (CaveSpell, 10, [96]);
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (TerrainStripController, 14, [6, 7]);
+        (Class14Events, 14, [0]);
         (SpellHolderAndPickup, 15, [12, 13]);
         (DirectionalSpellProjectile, 9, [7, 8]);
         // 6B5D0/6B830 delegate to ordinary acquisition692A0;
@@ -554,7 +555,7 @@ compiled_registry! {
         (CountdownSwitch, 11, [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44]);
         (ObjectiveSwitch, 11, [32]);
         (TerrainStripController, 14, [1, 2]);
-        (Class14Events, 14, [3, 4, 5]);
+        (Class14Events, 14, [0, 3, 4, 5]);
         (SpellHolderAndPickup, 15, [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 25]);
         (SpellHolderAndPickup, 15, [15, 16, 17, 18]);
         (SpellHolderAndPickup, 15, [20, 21]);
@@ -995,6 +996,7 @@ mod tests {
                 "absence-countdown-switch",
             ),
             (14, &[6, 7][..], "terrain-strip-controller"),
+            (14, &[0][..], "level2-class14-events"),
             (15, &[12, 13][..], "spell-holder-and-pickup-family"),
         ] {
             for action in actions {
@@ -1025,7 +1027,7 @@ mod tests {
                 "absence-countdown-switch",
             ),
             (14, &[1, 2][..], "terrain-strip-controller"),
-            (14, &[4][..], "level2-class14-events"),
+            (14, &[0, 4][..], "level2-class14-events"),
             (
                 15,
                 &[5, 7, 8, 9, 10, 25][..],

@@ -351,6 +351,7 @@ fn validate_semantic_item_dispatch(
     handler: ExistingHandler,
 ) -> std::result::Result<(), String> {
     match (item_kind, raw_model, raw_action, handler) {
+        (Some(ItemKind::PassiveItem), 0, 0, ExistingHandler::Class14Events) => Ok(()),
         (Some(ItemKind::ExperienceScroll), 5, 10, ExistingHandler::Class14Events) => Ok(()),
         (Some(kind), _, _, actual) => Err(format!(
             "item source slot {source_slot} is semantic {}, but the MC2 selector resolved model {raw_model} action {raw_action} through {actual:?}",
@@ -6589,6 +6590,16 @@ impl Mc2Simulation {
     }
 
     #[cfg(test)]
+    pub(crate) fn configured_source_bindings_for_test(
+        &self,
+        level: crate::level_definition::LevelDefinition,
+    ) -> SemanticLevelBindings {
+        self.session
+            .definition
+            .configured_source_bindings_for_test(level)
+    }
+
+    #[cfg(test)]
     pub(crate) fn replace_rival_wizard_binding_for_test(
         &mut self,
         id: sim_definition::level_definition::RivalWizardId,
@@ -6809,6 +6820,13 @@ impl Mc2Simulation {
                 self.session
                     .definition
                     .item_for_authored_record(source.authored_index)
+            })
+            .or_else(|| {
+                let source = self.session.state.live.economy.entities.get(usize::from(source_slot))?;
+                let binding = sim_definition::adapter::PASSIVE_ITEM_SOURCE_BINDING;
+                (source.active && (source.class, source.model, source.action)
+                    == (binding.class, binding.model, binding.action))
+                    .then_some(ItemKind::PassiveItem)
             })
     }
 
@@ -12645,7 +12663,7 @@ impl Mc2Simulation {
                         0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90
                     )
                     | (11, 0..=44)
-                    | (14, 1 | 2 | 3 | 4 | 5)
+                    | (14, 0 | 1 | 2 | 3 | 4 | 5)
                     | (15, 0 | 1 | 2..=22 | 23 | 24 | 25)
             )
         }) {
@@ -13788,6 +13806,28 @@ impl Mc2Simulation {
                         position,
                         properties,
                     );
+                }
+                (14, 0) => {
+                    let properties = self.session.definition
+                        .item_entity_for_authored_record(feature.index)
+                        .and_then(|id| {
+                            self.session.definition.semantic_level()?.entity(id)?.passive_item()
+                        })
+                        .ok_or_else(|| format!(
+                            "authored passive item {} lacks its typed properties", feature.index
+                        ))?;
+                    let live = &mut self.session.state.live;
+                    let position = feature.world_position(live.terrain.ground_height(feature.world_position(0)));
+                    if let Some(slot) = crate::world::items::construct(
+                        &mut live.economy,
+                        &mut live.terrain,
+                        position,
+                        properties,
+                        &self.session.definition.presentation.particles,
+                    )? {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                        live.level2_class14_activated.insert(feature.index);
+                    }
                 }
                 (14, 3 | 4 | 5) => {
                     if let Some(source) = self.allocate_level2_authored_class14(feature.index) {
@@ -15696,7 +15736,7 @@ impl Mc2Simulation {
                                 | (9, 2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 | 14 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 30 | 31)
                                 | (10, 0..=7 | 9 | 10 | 11 | 13 | 14 | 15 | 16 | 18 | 19 | 22 | 23 | 25 | 26 | 27..=38 | 40 | 54 | 55 | 62 | 65 | 66 | 67 | 68..=74 | 77 | 78 | 79 | 85 | 87..=94 | 96)
                                 | (11, 0..=44)
-                                | (14, 6 | 7 | 8 | 9)
+                                | (14, 0 | 6 | 7 | 8 | 9)
                         ))
                 })
         {
@@ -19968,17 +20008,29 @@ impl Mc2Simulation {
                 }
             }
             (ExistingHandler::Class14Events, SourceRoute::Imported) => {
-                let live = &mut self.session.state.live;
-                let source = &mut live.economy.entities[usize::from(source_slot)];
-                if !matches!((source.model, source.action), (3, 8) | (4, 9)) {
-                    return Err(format!(
-                        "imported portal {source_slot} has invalid model/action {}/{}",
-                        source.model, source.action
-                    ));
+                let source = &self.session.state.live.economy.entities[usize::from(source_slot)];
+                if (source.model, source.action) == (0, 0) {
+                    validate_semantic_item_dispatch(
+                        source_slot,
+                        self.item_kind_for_source_slot(source_slot),
+                        source.model,
+                        source.action,
+                        ExistingHandler::Class14Events,
+                    )?;
+                    crate::world::items::step(&self.session.state.live.economy, source_slot)?;
+                } else {
+                    let live = &mut self.session.state.live;
+                    let source = &mut live.economy.entities[usize::from(source_slot)];
+                    if !matches!((source.model, source.action), (3, 8) | (4, 9)) {
+                        return Err(format!(
+                            "imported portal {source_slot} has invalid model/action {}/{}",
+                            source.model, source.action
+                        ));
+                    }
+                    let mut position = source.position;
+                    position.z = live.terrain.ground_height(position);
+                    source.set_position(position);
                 }
-                let mut position = source.position;
-                position.z = live.terrain.ground_height(position);
-                source.set_position(position);
             }
             (ExistingHandler::BallisticScenery, SourceRoute::Imported) => {
                 self.step_imported_ballistic_scenery(source_slot)?;

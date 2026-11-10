@@ -14,7 +14,7 @@ use sim_definition::adapter::{
     exit_sequence_trigger_entity_definition, experience_scroll_entity_definition,
     field_entity_definition, house_construction_entity_definition,
     mc2_authored_terrain_disaster_definition, mc2_effect_definition, mc2_field_definition,
-    mushroom_entity_definition, objective_definition, stable_entity_id, stable_objective_id,
+    mushroom_entity_definition, objective_definition, passive_item_entity_definition, stable_entity_id, stable_objective_id,
     terrain_disaster_entity_definition,
     static_scenery_entity_definition,
 };
@@ -28,7 +28,7 @@ use crate::{
         LevelObjectiveId, MechanicKind, MushroomDefinition, ObjectiveCondition, RivalWizardId,
         SceneryKind, SpellKind, SwitchKind, TerrainDisasterKind, TilePosition,
         supports_authorable_creature_placement,
-        StaticSceneryDefinition,
+        PassiveItemDefinition, StaticSceneryDefinition,
     },
     level1_mission::{AuthoredFeature, parse_authored_features},
 };
@@ -137,6 +137,7 @@ impl Mc2LevelDefinition {
             },
             (14, 3) => Some(LevelEntityKind::Scenery(SceneryKind::ExitPortal)),
             (14, 2) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveCorridor)),
+            (14, 0) => Some(LevelEntityKind::Item(ItemKind::PassiveItem)),
             (14, 5) => Some(LevelEntityKind::Item(ItemKind::ExperienceScroll)),
             (11, 0) => Some(LevelEntityKind::Switch(SwitchKind::AreaEntryTrigger)),
             (11, 1) => Some(LevelEntityKind::Switch(SwitchKind::AreaExitTrigger)),
@@ -928,10 +929,11 @@ impl Mc2LevelDefinition {
                 continue;
             }
 
-            // `sub_51610` constructs model-5 rows and `UpdateScroll_59C80`
-            // awards spell experience on collection. Model 3 shares the raw
-            // class-14 carrier but is an exit target, not an inventory item.
+            // Model0 is the persistent passive item from sub_51530. Model5
+            // uses UpdateScroll_59C80 to award experience on collection.
+            // Portals share class14 but are scenery, not inventory items.
             let item_kind = match (feature.kind, feature.subtype) {
+                (14, 0) => Some(ItemKind::PassiveItem),
                 (14, 5) => Some(ItemKind::ExperienceScroll),
                 _ => None,
             };
@@ -949,14 +951,20 @@ impl Mc2LevelDefinition {
                     LevelEntityKind::Item(kind),
                     position_access,
                 )?;
-                entities.push(experience_scroll_entity_definition(
-                    id.clone(),
-                    position,
-                    activation_group,
-                    position_access,
-                    crate::native_world::LEVEL2_EXPERIENCE_SCROLL_AWARD.cast_unsigned(),
-                    LevelEntityParameterAccess::SessionReset,
-                ));
+                entities.push(match kind {
+                    ItemKind::PassiveItem => passive_item_entity_definition(
+                        id.clone(), position, activation_group, position_access,
+                        PassiveItemDefinition::default(),
+                    ),
+                    ItemKind::ExperienceScroll => experience_scroll_entity_definition(
+                        id.clone(),
+                        position,
+                        activation_group,
+                        position_access,
+                        crate::native_world::LEVEL2_EXPERIENCE_SCROLL_AWARD.cast_unsigned(),
+                        LevelEntityParameterAccess::SessionReset,
+                    ),
+                });
                 item_by_authored_record.insert(feature.index, kind);
                 item_entity_by_authored_record.insert(feature.index, id);
                 continue;

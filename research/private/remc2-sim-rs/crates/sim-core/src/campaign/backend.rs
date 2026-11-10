@@ -678,6 +678,17 @@ pub struct Mc2CampaignInputs {
     pub package_root: PathBuf,
     pub owner_cache: Option<PathBuf>,
     pub dynamic_lighting_enabled: bool,
+    #[cfg(test)]
+    configured_source: Option<ConfiguredSourceForTest>,
+}
+
+/// Declared source-language fixture, installed before the neutral session is
+/// exposed. No runtime carrier, objective state or terrain is injected here.
+#[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConfiguredSourceForTest {
+    features: Vec<crate::level1_mission::AuthoredFeature>,
+    bindings: super::state::SemanticLevelBindings,
 }
 
 impl Mc2CampaignInputs {
@@ -687,6 +698,8 @@ impl Mc2CampaignInputs {
             package_root: package_root.into(),
             owner_cache: None,
             dynamic_lighting_enabled: true,
+            #[cfg(test)]
+            configured_source: None,
         }
     }
 
@@ -699,6 +712,8 @@ impl Mc2CampaignInputs {
             package_root: package_root.into(),
             owner_cache: Some(owner_cache.into()),
             dynamic_lighting_enabled: true,
+            #[cfg(test)]
+            configured_source: None,
         }
     }
 
@@ -708,18 +723,47 @@ impl Mc2CampaignInputs {
         self.dynamic_lighting_enabled = enabled;
         self
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_configured_source_for_test(
+        mut self,
+        features: Vec<crate::level1_mission::AuthoredFeature>,
+        bindings: super::state::SemanticLevelBindings,
+    ) -> Result<Self, String> {
+        if features.iter().enumerate().any(|(index, row)| usize::from(row.index) != index) {
+            return Err("configured source records must preserve physical authored indices".into());
+        }
+        self.configured_source = Some(ConfiguredSourceForTest { features, bindings });
+        Ok(self)
+    }
 }
 
 fn load_mc2_campaign_inputs(
     input: &Mc2CampaignInputs,
     catalog: &SemanticCatalog,
 ) -> crate::game_definition::Result<GameDefinition> {
-    match &input.owner_cache {
+    let definition = match &input.owner_cache {
         Some(owner_cache) => {
             load_mc2_campaign_with_owner_cache(&input.package_root, owner_cache, catalog)
         }
         None => load_mc2_campaign(&input.package_root, catalog),
+    }?;
+    #[cfg(test)]
+    if let Some(configured) = &input.configured_source {
+        return Ok(sim_definition::adapter::with_level_definition(
+            definition,
+            configured.bindings.level.clone(),
+        ));
     }
+    Ok(definition)
+}
+
+#[cfg(test)]
+pub(crate) fn load_configured_mc2_campaign_for_test(
+    input: &Mc2CampaignInputs,
+    catalog: &SemanticCatalog,
+) -> crate::game_definition::Result<GameDefinition> {
+    load_mc2_campaign_inputs(input, catalog)
 }
 
 // Earlier contracts did not retain ordered animation demands. Replaying them
@@ -3310,6 +3354,12 @@ impl GameAdapter for Mc2CampaignAdapter {
             ),
         }
         .map_err(CampaignBackendError::Open)?;
+        #[cfg(test)]
+        if let Some(configured) = &input.configured_source {
+            package_campaign
+                .configure_passive_item_source_for_test(&configured.features, &configured.bindings)
+                .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
+        }
         let fireball_launch_sound_choices = fireball_launch_sound_choices(&package_base, &input)?;
         let fireball_launch_sound_id =
             selected_fireball_launch_sound(definition, &fireball_launch_sound_choices)?;
