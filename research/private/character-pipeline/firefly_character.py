@@ -228,7 +228,7 @@ def package(output):
         height=max(heights)-min(heights)
     finally: skin.evaluated_get(bpy.context.evaluated_depsgraph_get()).to_mesh_clear()
     manifest={'schema':'mc-firefly-clips/v1','fps':report['fps'],'height':height,
-              'forward':'+Y Blender; FBX axis conversion -Z/Y',
+              'forward':[0,1,0], 'forwardConvention':'Blender source coordinates, Z up',
               'logicalHeight':200,'clips':clips,'materials':material_report['materials'],
               'materialDirectory':'pbr','emission':emissive,'opacity':opacity,
               'sourceToGameSurfaceMaxError':max(p['maxError'] for p in report['surfaceProof']),
@@ -260,6 +260,10 @@ def normalize_for_unity(source, target):
         emission = manifest['emission'].get(name, {})
         material['emissionStrength'] = emission.get('strength', 0)
         material['emissionColor'] = emission.get('linearColor', [0, 0, 0, 1])
+    # The source authoring forward is +Y. Unlike legacy humans, Firefly
+    # must not inherit their baked 180-degree importer fallback.
+    manifest['forward'] = [0, 1, 0]
+    manifest['forwardConvention'] = 'Blender source coordinates, Z up'
     manifest['minBoneWeight'] = 1e-7
     manifest.pop('materialDirectory', None)
     (target / 'Firefly.clips.json').write_text(json.dumps(manifest, indent=2) + '\n')

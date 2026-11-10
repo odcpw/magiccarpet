@@ -45,6 +45,9 @@ namespace MagicCarpet.Native
         internal string CurrentClip => character.CurrentClip;
         internal float ClipTime => character.ClipTime;
         internal int VoxelResolution => voxels != null ? voxels.Resolution : 0;
+        // Native position is the source sprite base; the authored FBX origin
+        // is mid-body. The caller adds this vertical offset to its visual root.
+        internal float PivotAboveBase { get; }
 
         internal ModernFireflyPresenter(ModernCharacterAsset asset, Transform parent, float sourceHeight)
         {
@@ -53,7 +56,50 @@ namespace MagicCarpet.Native
                 throw new ArgumentOutOfRangeException(nameof(sourceHeight));
             foreach (var clip in new[] { "Idle", "Flight", "Attack", "Hit", "Death" }) asset.Clip(clip);
             character = new ModernCharacterInstance(asset, parent);
-            Root.transform.localScale = Vector3.one * (sourceHeight / asset.height);
+            try
+            {
+                var scale = sourceHeight / asset.height;
+                PivotAboveBase = MeasureIdlePivotAboveBase() * scale;
+                Root.transform.localScale = Vector3.one * scale;
+            }
+            catch
+            {
+                character.Dispose();
+                throw;
+            }
+        }
+
+        private float MeasureIdlePivotAboveBase()
+        {
+            // ModernCharacterInstance has already evaluated imported Idle at
+            // frame zero. Sample actual skinned surfaces in the root frame,
+            // before source scale or world placement, rather than renderer
+            // bounds (which can include conservative animated padding).
+            var renderers = Root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            if (renderers.Length == 0) throw new InvalidOperationException("Firefly has no imported skinned surface");
+            var mesh = new Mesh { name = "Firefly idle base measurement" };
+            var minimum = float.PositiveInfinity;
+            try
+            {
+                foreach (var renderer in renderers)
+                {
+                    renderer.BakeMesh(mesh, true);
+                    foreach (var point in mesh.vertices)
+                    {
+                        var local = Root.transform.InverseTransformPoint(renderer.transform.TransformPoint(point));
+                        if (!float.IsFinite(local.y)) throw new InvalidOperationException("Firefly idle surface is non-finite");
+                        minimum = Mathf.Min(minimum, local.y);
+                    }
+                }
+            }
+            finally
+            {
+                if (Application.isPlaying) UnityEngine.Object.Destroy(mesh);
+                else UnityEngine.Object.DestroyImmediate(mesh);
+            }
+            if (!float.IsFinite(minimum) || minimum >= 0)
+                throw new InvalidOperationException("Firefly idle surface does not extend below its authored origin");
+            return -minimum;
         }
 
         // Source Firefly pre-kill 156 and kill 157 are distinct from its

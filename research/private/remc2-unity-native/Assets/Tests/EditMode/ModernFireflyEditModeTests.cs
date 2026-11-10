@@ -11,11 +11,27 @@ namespace MagicCarpet.Native.Tests
     {
         private GameObject model;
         private ModernCharacterAsset asset;
+        private Mesh testMesh;
 
         [SetUp]
         public void SetUp()
         {
             model = new GameObject("Firefly test rig");
+            var bone = new GameObject("test bone").transform;
+            bone.SetParent(model.transform, false);
+            testMesh = new Mesh { name = "Firefly test surface" };
+            testMesh.vertices = new[] { new Vector3(0, -.5f, 0), new Vector3(1, 0, 0), new Vector3(0, 1, 0) };
+            testMesh.triangles = new[] { 0, 1, 2 };
+            testMesh.bindposes = new[] { Matrix4x4.identity };
+            testMesh.boneWeights = new[] {
+                new BoneWeight { boneIndex0 = 0, weight0 = 1 },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1 },
+                new BoneWeight { boneIndex0 = 0, weight0 = 1 }
+            };
+            var renderer = model.AddComponent<SkinnedMeshRenderer>();
+            renderer.sharedMesh = testMesh;
+            renderer.bones = new[] { bone };
+            renderer.rootBone = bone;
             asset = ScriptableObject.CreateInstance<ModernCharacterAsset>();
             asset.model = model;
             asset.height = 1;
@@ -40,10 +56,19 @@ namespace MagicCarpet.Native.Tests
             foreach (var clip in asset.clips) UnityEngine.Object.DestroyImmediate(clip);
             UnityEngine.Object.DestroyImmediate(asset);
             UnityEngine.Object.DestroyImmediate(model);
+            UnityEngine.Object.DestroyImmediate(testMesh);
         }
 
         private static void Observe(ModernFireflyPresenter actor, int life, byte action, ulong tick) =>
             actor.Observe(Vector3.zero, 13, 27, 39, life, action, 0, tick);
+
+        [Test]
+        public void NativeBaseOffsetScalesWithTheActualIdleSurface()
+        {
+            using var fly = new ModernFireflyPresenter(asset, null, 2);
+            Assert.That(fly.PivotAboveBase, Is.EqualTo(1).Within(.0001f));
+            Assert.That(fly.Root.transform.localScale, Is.EqualTo(Vector3.one * 2));
+        }
 
         [Test]
         public void LivingFlightUsesSourcePlacementOnlyAndAlwaysAdvancesWings()
@@ -170,6 +195,37 @@ namespace MagicCarpet.Native.Tests
             Assert.That(fly.CurrentClip, Is.EqualTo("Idle"));
             Assert.Throws<ArgumentOutOfRangeException>(() => Observe(fly, 100, 153, 3));
             Assert.Throws<ArgumentOutOfRangeException>(() => fly.Render(float.NaN));
+        }
+
+        [Serializable]
+        private sealed class ForwardManifest { public float[] forward; }
+
+        [Test]
+        public void ImportedForwardAndNativeBaseUseTheActualIdleSurface()
+        {
+            var imported = Resources.Load<ModernCharacterAsset>("ModernCharacters/Firefly/Character");
+            Assert.That(imported, Is.Not.Null, "Prepare the Firefly owner-local import first");
+            var metadata = AssetDatabase.LoadAssetAtPath<TextAsset>("Assets/Resources/ModernCharacters/Firefly/Firefly.clips.json");
+            Assert.That(metadata, Is.Not.Null, "The imported Firefly must retain its source-axis manifest");
+            var forward = JsonUtility.FromJson<ForwardManifest>(metadata.text).forward;
+            Assert.That(forward, Is.EqualTo(new[] { 0f, 1f, 0f }));
+            Assert.That(Mathf.Abs(Mathf.DeltaAngle(imported.forwardYaw, 0)), Is.LessThan(.001f),
+                "The +Y Firefly must not inherit the legacy 180-degree forward correction");
+            using var unscaled = new ModernFireflyPresenter(imported, null, imported.height);
+            using var scaled = new ModernFireflyPresenter(imported, null, 200 / 64f);
+            Assert.That(unscaled.PivotAboveBase, Is.GreaterThan(0));
+            Assert.That(scaled.PivotAboveBase, Is.EqualTo(unscaled.PivotAboveBase * (200 / 64f) / imported.height).Within(.0001f));
+            scaled.Root.transform.position = Vector3.up * scaled.PivotAboveBase;
+            scaled.Render(0);
+            var renderer = scaled.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+            var mesh = new Mesh();
+            try
+            {
+                renderer.BakeMesh(mesh, true);
+                var bottom = mesh.vertices.Min(point => renderer.transform.TransformPoint(point).y);
+                Assert.That(bottom, Is.EqualTo(0).Within(.0001f), "The imported idle surface must meet the native base");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
         [Test]
