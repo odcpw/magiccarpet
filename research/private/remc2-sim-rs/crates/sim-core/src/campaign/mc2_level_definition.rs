@@ -136,6 +136,7 @@ impl Mc2LevelDefinition {
                 None => None,
             },
             (14, 3) => Some(LevelEntityKind::Scenery(SceneryKind::ExitPortal)),
+            (14, 4) => Some(LevelEntityKind::Scenery(SceneryKind::SecretPortal)),
             (14, 2) => Some(LevelEntityKind::Mechanic(MechanicKind::CaveCorridor)),
             (14, 0) => Some(LevelEntityKind::Item(ItemKind::PassiveItem)),
             (14, 5) => Some(LevelEntityKind::Item(ItemKind::ExperienceScroll)),
@@ -398,6 +399,7 @@ impl Mc2LevelDefinition {
             (2, 6, 18 | 19) => Some(SceneryKind::Mushroom),
             (2, 7, 20) | (2, 8, 21) => Some(SceneryKind::BallisticObject),
             (14, 3, 8) => Some(SceneryKind::ExitPortal),
+            (14, 4, 9) => Some(SceneryKind::SecretPortal),
             _ => None,
         }
     }
@@ -820,6 +822,7 @@ impl Mc2LevelDefinition {
                 // `sub_51570` constructs the package's class-14 exit target.
                 // Shared callers see the scenery role, never its MC2 selector.
                 (14, 3) => Some(SceneryKind::ExitPortal),
+                (14, 4) => Some(SceneryKind::SecretPortal),
                 _ => None,
             };
             if let Some(kind) = scenery_kind {
@@ -1710,7 +1713,7 @@ fn bind_private_entity(
                 Mc2MovableRuntimeHint::AuthoredRecord(source_id)
             }
             LevelEntityKind::Item(ItemKind::ExperienceScroll)
-            | LevelEntityKind::Scenery(SceneryKind::ExitPortal) => {
+            | LevelEntityKind::Scenery(SceneryKind::ExitPortal | SceneryKind::SecretPortal) => {
                 Mc2MovableRuntimeHint::AuthoredFeature(feature.index)
             }
             LevelEntityKind::Mechanic(MechanicKind::Field { .. }) => {

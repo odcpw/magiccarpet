@@ -13839,8 +13839,8 @@ impl Level1MissionState {
         camera_fov: &mut i16,
     ) {
         let phase_before = self.exit_sequence_phase;
-        let mut sequence = crate::level_exit::LevelExitSequence {
-            ordinary_exit_route: crate::level_exit::OrdinaryExitRoute::CampaignMap,
+        let mut sequence = crate::world::portals::LevelExitSequence {
+            ordinary_exit_route: crate::world::portals::OrdinaryExitRoute::CampaignMap,
             active: self.exit_sequence_active,
             complete: self.exit_sequence_complete,
             phase: self.exit_sequence_phase,
@@ -13852,10 +13852,10 @@ impl Level1MissionState {
             player_status_flags: self.exit_player_status_flags,
             palette_submode: self.exit_palette_submode,
             last_movement: match self.exit_last_movement_resolution {
-                EXIT_MOVEMENT_ACCEPTED => crate::level_exit::ExitMovementResolution::Accepted,
-                EXIT_MOVEMENT_REDIRECTED => crate::level_exit::ExitMovementResolution::Redirected,
-                EXIT_MOVEMENT_REJECTED => crate::level_exit::ExitMovementResolution::Rejected,
-                _ => crate::level_exit::ExitMovementResolution::NotAttempted,
+                EXIT_MOVEMENT_ACCEPTED => crate::world::portals::ExitMovementResolution::Accepted,
+                EXIT_MOVEMENT_REDIRECTED => crate::world::portals::ExitMovementResolution::Redirected,
+                EXIT_MOVEMENT_REJECTED => crate::world::portals::ExitMovementResolution::Rejected,
+                _ => crate::world::portals::ExitMovementResolution::NotAttempted,
             },
             display_blank: self.exit_display_blank,
             blur_mode: self.exit_blur_mode,
@@ -13908,7 +13908,7 @@ impl Level1MissionState {
         }
         for effect in effects {
             match effect {
-                crate::level_exit::LevelExitEffect::PrepareSound { sound_id, position } => {
+                crate::world::portals::LevelExitEffect::PrepareSound { sound_id, position } => {
                     if sound_id == EXIT_SWITCH_SOUND {
                         mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
                     } else {
@@ -13929,7 +13929,7 @@ impl Level1MissionState {
                         random_state: self.global_rng,
                     });
                 }
-                crate::level_exit::LevelExitEffect::Completed { result_code } => {
+                crate::world::portals::LevelExitEffect::Completed { result_code } => {
                     self.events
                         .push(Level1MissionEvent::ExitSequenceCompleted { result_code });
                 }

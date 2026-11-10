@@ -2045,7 +2045,7 @@ impl Mc2RuntimePackageResolver {
             .simulation()
             .level_exit_sequence()
             .ordinary_exit_route
-            == crate::level_exit::OrdinaryExitRoute::UnfinishedSecretContinuation
+            == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
         {
             save.initial_secret_continuation = Some(
                 self.unfinished_parent_continuation(
@@ -2716,7 +2716,7 @@ impl Mc2RuntimePackageResolver {
                 .simulation()
                 .level_exit_sequence()
                 .ordinary_exit_route
-                == crate::level_exit::OrdinaryExitRoute::UnfinishedSecretContinuation
+                == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
                 && self.unfinished_parent_continuation(
                     session.definition(),
                     runtime.secret_flow_state(),
@@ -3170,9 +3170,9 @@ impl Mc2CampaignBackend {
         continuation: Option<&sim_definition::runtime_flow::RuntimeFlowSecretEntry>,
     ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
         let route = if continuation.is_some() {
-            crate::level_exit::OrdinaryExitRoute::UnfinishedSecretContinuation
+            crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
         } else {
-            crate::level_exit::OrdinaryExitRoute::CampaignMap
+            crate::world::portals::OrdinaryExitRoute::CampaignMap
         };
         for campaign in [&mut self.campaign, &mut self.package_campaign] {
             campaign
@@ -3357,7 +3357,7 @@ impl GameAdapter for Mc2CampaignAdapter {
         #[cfg(test)]
         if let Some(configured) = &input.configured_source {
             package_campaign
-                .configure_item_source_for_test(&configured.features, &configured.bindings)
+                .configure_source_variant_for_test(&configured.features, &configured.bindings)
                 .map_err(|error| CampaignBackendError::Open(CampaignOpenError::Materialization(error)))?;
         }
         let fireball_launch_sound_choices = fireball_launch_sound_choices(&package_base, &input)?;
@@ -38101,6 +38101,654 @@ pub(crate) mod tests {
         // isolation, strict overlap, exact group-8 activation, consumption,
         // and reset. It does not author Area Exit/Level Exit/Objective triggers,
         // target groups, cadence, placement, player bounds, save/replay, or UI.
+    }
+
+    #[test]
+    fn configured_source_four_secret_portal_produces_real_entry_result() {
+        use crate::campaign::{
+            mc2_level_definition::Mc2LevelDefinition,
+            schedule::{ScheduleReceipt, SourcePass},
+            source_arena::SourceEntityHandle,
+        };
+        use crate::native_world::{Mc2Simulation, source_target};
+        use crate::world::portals::{LevelExitSequence, SECRET_EXIT_PLAYER_ACTION};
+        type Game = GameSession<Mc2CampaignBackend>;
+        fn sim(game: &Game) -> &Mc2Simulation {
+            game.backend().campaign.simulation()
+        }
+        fn sim_mut(game: &mut Game) -> &mut Mc2Simulation {
+            game.backend_mut().campaign.simulation_mut()
+        }
+        fn step(game: &mut Game, command: GameCommand) {
+            game.advance(game.identity().guard(), command).unwrap();
+            assert!(
+                sim(game)
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "{:?}",
+                sim(game).dispatch_events()
+            );
+        }
+        fn fixed_cross_command(turn: usize) -> GameCommand {
+            // Four source16 acceleration pulses establish64; then coast.
+            // Input never follows NPCs, position errors or changing headings.
+            GameCommand {
+                longitudinal: if turn < 4 {
+                    LongitudinalControl::Accelerate
+                } else {
+                    LongitudinalControl::Coast
+                },
+                ..Default::default()
+            }
+        }
+        fn overlap(game: &Game, position: crate::Position, width: i16, depth: i16) -> bool {
+            let player = &sim(game).entities()[usize::from(sim(game).state.entity_index)];
+            let extent = |offset| {
+                i16::from_le_bytes(
+                    player.record_bytes()[offset..offset + 2]
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            crate::level1_mission::source_entities_overlap_xy(
+                position,
+                width,
+                depth,
+                sim(game).state.position,
+                extent(88),
+                extent(90),
+            )
+        }
+        fn park_outside(game: &mut Game, position: crate::Position, width: i16, depth: i16) {
+            let player = sim(game).state.entity_index;
+            let mut outside = position;
+            outside.x = outside
+                .x
+                .wrapping_sub(u16::try_from(width).unwrap())
+                .wrapping_sub(512);
+            outside.z = sim(game)
+                .canonical_terrain()
+                .ground_height(outside)
+                .checked_add(sim(game).profile().ground_clearance)
+                .unwrap();
+            assert_eq!(
+                crate::resolve_legacy_movement(
+                    &mut crate::FlightState::default(),
+                    outside,
+                    outside,
+                    sim(game).profile(),
+                    sim(game).canonical_terrain()
+                ),
+                crate::MovementResolution::Accept(outside)
+            );
+            sim_mut(game)
+                .set_level2_entity_position(player, outside)
+                .unwrap();
+            sim_mut(game).set_level2_player_aim_for_test(512, 0);
+            step(
+                game,
+                GameCommand {
+                    full_stop: true,
+                    ..Default::default()
+                },
+            );
+            assert!(!overlap(game, position, width, depth));
+            assert_eq!(
+                (sim(game).state.actual_speed, sim(game).state.target_speed),
+                (0, 0)
+            );
+        }
+        let package = std::env::var_os("MC_SOURCE4_CAMPAIGN_PACKAGE").map_or_else(
+            || {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5")
+            },
+            PathBuf::from,
+        );
+        let selection = CampaignSelection::ordinary(5).unwrap();
+        assert_eq!(selection.internal_level, 4);
+        assert_eq!(
+            crate::campaign::mc2_secret_flow::association_for_origin(selection)
+                .unwrap()
+                .destination_level_index(),
+            30
+        );
+        let original = CampaignSession::open(&package, selection).unwrap();
+        let mut bytes = std::fs::read(package.join("authored-level.bin")).unwrap();
+        let original_features = crate::level1_mission::parse_authored_features(&bytes).unwrap();
+        assert_eq!(
+            (
+                original_features[75].kind,
+                original_features[75].subtype,
+                original_features[75].activation_group
+            ),
+            (14, 4, 6)
+        );
+        assert_eq!(
+            (
+                original_features[76].kind,
+                original_features[76].subtype,
+                original_features[76].activation_group
+            ),
+            (11, 31, 6)
+        );
+        assert_eq!(
+            (
+                original_features[136].kind,
+                original_features[136].subtype,
+                original_features[136].stage_tag
+            ),
+            (11, 0, 4)
+        );
+        assert_ne!(
+            (original_features[75].tile_x, original_features[75].tile_y),
+            (original_features[76].tile_x, original_features[76].tile_y)
+        );
+        assert_eq!(
+            (original_features[132].kind, original_features[132].subtype),
+            (11, 12)
+        );
+        let mut features = original_features.clone();
+        // Declared configured source variant ONLY: preserve all1200 rows,
+        // source selectors/positions/objectives; reparent the real pair6→4.
+        for index in [75_usize, 76] {
+            features[index].activation_group = 4;
+            let offset = crate::level1_mission::AUTHORED_FEATURE_OFFSET + index * 20 + 8;
+            bytes[offset..offset + 2].copy_from_slice(&4_u16.to_le_bytes());
+        }
+        assert_eq!(
+            crate::level1_mission::parse_authored_features(&bytes).unwrap(),
+            features
+        );
+        let translated = Mc2LevelDefinition::catalog_binding(&bytes, selection).unwrap();
+        let original_level = original.simulation().semantic_level_definition().unwrap();
+        let original_bindings = original
+            .simulation()
+            .configured_source_bindings_for_test(original_level.clone());
+        let portal_id = original_bindings
+            .authored_scenery_entities
+            .get(&75)
+            .unwrap()
+            .clone();
+        let trigger_id = original_bindings
+            .authored_switch_entities
+            .get(&76)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            translated.semantic.entity(&portal_id).unwrap().kind(),
+            LevelEntityKind::Scenery(SceneryKind::SecretPortal)
+        );
+        assert_eq!(
+            translated.semantic.entity(&trigger_id).unwrap().kind(),
+            LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger)
+        );
+        let entities = original_level
+            .entities()
+            .iter()
+            .map(|entity| {
+                if entity.id() == &portal_id || entity.id() == &trigger_id {
+                    translated.semantic.entity(entity.id()).unwrap().clone()
+                } else {
+                    entity.clone()
+                }
+            })
+            .collect();
+        let level = build_level_definition(
+            entities,
+            original_level.objectives().to_vec(),
+            original_level.activation_groups().collect(),
+        )
+        .unwrap();
+        let bindings = original
+            .simulation()
+            .configured_source_bindings_for_test(level);
+        let input = Mc2CampaignInputs::new(&package)
+            .with_configured_source_for_test(features.clone(), bindings.clone())
+            .unwrap();
+        let definition = Arc::new(
+            load_configured_mc2_campaign_for_test(&input, &default_catalog().unwrap()).unwrap(),
+        );
+        for invalid in [
+            {
+                let mut changed = features.clone();
+                changed[136].word_10 ^= 1;
+                Mc2CampaignInputs::new(&package)
+                    .with_configured_source_for_test(changed, bindings.clone())
+                    .unwrap()
+            },
+            {
+                let mut changed = features.clone();
+                changed[76].subtype = 12;
+                Mc2CampaignInputs::new(&package)
+                    .with_configured_source_for_test(changed, bindings.clone())
+                    .unwrap()
+            },
+            {
+                let mut changed = bindings.clone();
+                changed.authored_scenery.insert(75, SceneryKind::ExitPortal);
+                Mc2CampaignInputs::new(&package)
+                    .with_configured_source_for_test(features.clone(), changed)
+                    .unwrap()
+            },
+        ] {
+            assert!(
+                GameSession::open(&Mc2CampaignAdapter, Arc::clone(&definition), 2646, invalid).is_err()
+            );
+        }
+        let mut game = GameSession::open(&Mc2CampaignAdapter, definition, 2646, input).unwrap();
+        let initial_identity = game.identity();
+        assert_eq!(sim(&game).mission().authored_features(), features);
+        assert_eq!(
+            sim(&game).semantic_level_definition().unwrap().objectives(),
+            original_level.objectives()
+        );
+        assert_eq!(sim(&game).entities(), original.simulation().entities());
+        assert_eq!(
+            sim(&game).level_exit_sequence(),
+            LevelExitSequence::default()
+        );
+        let producer = sim(&game)
+            .session
+            .state
+            .live
+            .level2_imported_switch_roots
+            .iter()
+            .find(|row| row.authored_index == 136)
+            .copied()
+            .unwrap();
+        let producer_handle = sim(&game)
+            .source_arena()
+            .handle(producer.source_slot)
+            .unwrap();
+        assert_eq!((producer.model, producer.target_group), (0, 4));
+        let producer_extent = producer.word_10.checked_mul(256).unwrap();
+        park_outside(
+            &mut game,
+            producer.position,
+            producer_extent,
+            producer_extent,
+        );
+        for _ in 0..16 {
+            step(
+                &mut game,
+                GameCommand {
+                    full_stop: true,
+                    ..Default::default()
+                },
+            );
+            assert!(!overlap(
+                &game,
+                producer.position,
+                producer_extent,
+                producer_extent
+            ));
+            assert!(
+                sim(&game)
+                    .economy()
+                    .authored_class14()
+                    .iter()
+                    .all(|row| row.authored_index != 75)
+            );
+            assert!(!sim(&game).level_exit_sequence().active);
+        }
+        let expected_group = features
+            .iter()
+            .filter(|row| row.kind != 0 && row.activation_group == 4)
+            .map(|row| row.index)
+            .collect::<Vec<_>>();
+        let mut produced = false;
+        for turn in 0..48 {
+            step(&mut game, fixed_cross_command(turn));
+            if let Some(actual) = sim(&game)
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: 4,
+                        authored_indices,
+                        ..
+                    } if *source_slot == producer.source_slot => Some(authored_indices),
+                    _ => None,
+                })
+            {
+                assert_eq!(actual.as_ref(), expected_group.as_slice());
+                assert!(overlap(
+                    &game,
+                    producer.position,
+                    producer_extent,
+                    producer_extent
+                ));
+                assert_eq!(
+                    sim(&game).source_arena().handle(producer.source_slot),
+                    Some(producer_handle)
+                );
+                assert!(sim(&game).cf10_production_schedule_receipts().iter().any(|receipt|matches!(receipt,ScheduleReceipt::CallbackCompleted{slot,pass:SourcePass::UpdateEntities,selector,..}if *slot==producer.source_slot&&selector.observed_phase().unwrap()&7==0)));
+                produced = true;
+                break;
+            }
+        }
+        assert!(
+            produced,
+            "real136publicfixedcross must construct fullgroup4; player={:?} dispatch={:?}",
+            sim(&game).state,
+            sim(&game).dispatch_events()
+        );
+        let portal = *sim(&game)
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|row| row.authored_index == 75)
+            .unwrap();
+        let trigger = *sim(&game)
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.authored_index == 76)
+            .unwrap();
+        assert_eq!((portal.model, portal.action, portal.particle), (4, 9, 339));
+        assert_eq!(
+            (trigger.model, trigger.action, trigger.word_10),
+            (31, 31, 4)
+        );
+        assert_eq!((portal.position.x >> 8, portal.position.y >> 8), (186, 213));
+        assert_eq!(
+            (trigger.position.x >> 8, trigger.position.y >> 8),
+            (161, 222)
+        );
+        assert_eq!(
+            sim(&game).scenery_kind_for_source_slot(portal.source_entity_index),
+            Some(SceneryKind::SecretPortal)
+        );
+        assert_eq!(
+            sim(&game).switch_kind_for_source_slot(trigger.source_entity_index),
+            Some(SwitchKind::SecretEntryTrigger)
+        );
+        let portal_handle = sim(&game)
+            .source_arena()
+            .handle(portal.source_entity_index)
+            .unwrap();
+        let trigger_handle = sim(&game)
+            .source_arena()
+            .handle(trigger.source_entity_index)
+            .unwrap();
+        assert_ne!(portal_handle, trigger_handle);
+        assert_eq!(portal.control_flags & 1, 1);
+        assert!(
+            !sim(&game)
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == portal.source_entity_index)
+        );
+        let width = trigger.word_10.checked_mul(256).unwrap();
+        park_outside(&mut game, trigger.position, width, width);
+        let mut seen_phases = std::collections::BTreeSet::new();
+        for _ in 0..16 {
+            step(
+                &mut game,
+                GameCommand {
+                    full_stop: true,
+                    ..Default::default()
+                },
+            );
+            assert!(!overlap(&game, trigger.position, width, width));
+            assert!(!sim(&game).level_exit_sequence().active);
+            assert_eq!(
+                sim(&game)
+                    .source_arena()
+                    .handle(trigger.source_entity_index),
+                Some(trigger_handle)
+            );
+            for receipt in sim(&game).cf10_production_schedule_receipts().iter() {
+                if let ScheduleReceipt::CallbackCompleted {
+                    slot,
+                    pass: SourcePass::UpdateEntities,
+                    selector,
+                    ..
+                } = receipt
+                {
+                    if *slot == trigger.source_entity_index {
+                        seen_phases.insert(selector.observed_phase().unwrap() & 7);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            seen_phases.into_iter().collect::<Vec<_>>(),
+            (0..8).collect::<Vec<_>>()
+        );
+        let player = sim(&game).state.entity_index;
+        let player_handle = sim(&game).source_arena().handle(player).unwrap();
+        assert_eq!(
+            (
+                sim(&game).entities()[usize::from(player)].class,
+                sim(&game).entities()[usize::from(player)].model
+            ),
+            (3, 0)
+        );
+        let journal_start = sim(&game).effect_journal().records().len();
+        let mut started = false;
+        for turn in 0..48 {
+            step(&mut game, fixed_cross_command(turn));
+            if sim(&game).level_exit_sequence().active {
+                assert!(overlap(&game, trigger.position, width, width));
+                assert!(sim(&game).cf10_production_schedule_receipts().iter().any(|receipt|matches!(receipt,ScheduleReceipt::CallbackCompleted{slot,pass:SourcePass::UpdateEntities,selector,..}if *slot==trigger.source_entity_index&&selector.observed_dynamic_handle()==Some(trigger_handle)&&selector.observed_phase().unwrap()&7==0)));
+                started = true;
+                break;
+            }
+        }
+        assert!(
+            started,
+            "real76publicfixedcross must startsecret sequence; player={:?} dispatch={:?}",
+            sim(&game).state,
+            sim(&game).dispatch_events()
+        );
+        let exit = sim(&game).level_exit_sequence();
+        assert_eq!(
+            (exit.trigger_entity_index, exit.portal_entity_index),
+            (trigger.source_entity_index, portal.source_entity_index)
+        );
+        let same_pass=sim(&game).cf10_production_schedule_receipts().iter().filter(|receipt|matches!(receipt,ScheduleReceipt::CallbackCompleted{slot,pass:SourcePass::UpdateEntities,selector,..}if *slot==player&&selector.registry_key().selector==crate::campaign::spec::BehaviorSelector::ClassAction{class:3,action:11})).count();
+        assert_eq!(same_pass, usize::from(player > trigger.source_entity_index));
+        assert_eq!(exit.phase, same_pass as u8);
+        assert_eq!(
+            sim(&game).entities()[usize::from(player)].action,
+            SECRET_EXIT_PLAYER_ACTION
+        );
+        let hidden = sim(&game)
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|row| row.authored_index == 76)
+            .unwrap();
+        assert!(hidden.active && !hidden.drawing_enabled && hidden.fired);
+        assert_eq!(
+            sim(&game)
+                .source_arena()
+                .handle(trigger.source_entity_index),
+            Some(trigger_handle)
+        );
+        let revealed = sim(&game)
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|row| row.authored_index == 75)
+            .unwrap();
+        assert_eq!(revealed.control_flags & 1, 0);
+        assert!(
+            sim(&game)
+                .campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|row| row.entity_index == portal.source_entity_index
+                    && row.render_parameter_index == 339
+                    && row.position == revealed.position)
+        );
+        let mut phases = std::collections::BTreeSet::from([0, exit.phase]);
+        for turn in 0..700 {
+            step(&mut game, GameCommand::default());
+            assert_eq!(
+                sim(&game).source_arena().handle(player),
+                Some(player_handle)
+            );
+            assert_eq!(
+                sim(&game).source_arena().handle(portal.source_entity_index),
+                Some(portal_handle)
+            );
+            if turn == 0 {
+                assert!(sim(&game).source_arena().resolve(trigger_handle).is_none());
+                assert!(
+                    sim(&game)
+                        .economy()
+                        .authored_switch_producers()
+                        .iter()
+                        .all(|row| row.authored_index != 76)
+                );
+                if sim(&game)
+                    .source_arena()
+                    .handle(trigger.source_entity_index)
+                    .is_none()
+                {
+                    assert!(
+                        !sim(&game)
+                            .economy()
+                            .map_chains()
+                            .is_linked(trigger.source_entity_index)
+                    );
+                    assert!(
+                        sim(&game)
+                            .source_arena()
+                            .free_source_slots()
+                            .contains(&trigger.source_entity_index)
+                    );
+                } else {
+                    let current = sim(&game)
+                        .source_arena()
+                        .handle(trigger.source_entity_index)
+                        .unwrap();
+                    assert!(current.generation > trigger_handle.generation);
+                    let live = &sim(&game).session.state.live;
+                    let context = source_target::Context {
+                        spells: Some(&live.shared_spells),
+                        map_type: Some(live.terrain.map_type()),
+                        player: Some((player, live.core.state.position, live.player_life)),
+                        player_orientation: Some((
+                            live.core.state.yaw,
+                            live.core.state.roll_accumulator,
+                        )),
+                        particles: Some(&sim(&game).session.definition.presentation.particles),
+                        ..source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+                    };
+                    let target =
+                        source_target::read(sim(&game).source_arena(), context, current.source_slot)
+                            .unwrap()
+                            .unwrap();
+                    eprintln!(
+                        "retiredsecret76={trigger_handle:?} current={current:?} replacement={}/{}/at{:?}",
+                        target.class, target.model, target.position
+                    );
+                    assert!(
+                        !sim(&game)
+                            .source_arena()
+                            .free_source_slots()
+                            .contains(&current.source_slot)
+                    );
+                }
+            }
+            let exit = sim(&game).level_exit_sequence();
+            phases.insert(exit.phase);
+            assert_eq!(
+                sim(&game).entities()[usize::from(player)].record_bytes()[74],
+                exit.phase
+            );
+            if exit.complete {
+                break;
+            }
+        }
+        let result = sim(&game).level_exit_sequence();
+        assert_eq!(
+            (
+                result.active,
+                result.complete,
+                result.phase,
+                result.result_code,
+                result.player_status_flags
+            ),
+            (false, true, 12, 0x1a, 0x1a)
+        );
+        assert!(
+            [0, 1, 3, 4, 5, 6, 7, 10, 11, 12]
+                .iter()
+                .all(|phase| phases.contains(phase)),
+            "sourcephasebody {phases:?}"
+        );
+        assert!(sim(&game).secret_entry_ready());
+        let completed = sim(&game).effect_journal().records()[journal_start..]
+            .iter()
+            .filter_map(|record| match record.effect {
+                CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
+                    player_entity_index,
+                    result_code: 0x1a,
+                    ..
+                }) if player_entity_index == player => Some(record.sequence),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 1);
+        let records = &sim(&game).effect_journal().records()[journal_start..];
+        for site in [
+            crate::MissionAudioSite::ExitOverlap,
+            crate::MissionAudioSite::ExitSequenceSwitch,
+        ] {
+            assert_eq!(records.iter().filter(|record|matches!(record.effect,CampaignEffect::Flight(crate::FlightEvent::PrepareSound{audio_site,entity_index,player_index:-1,sound_id:41,..})if audio_site==site&&entity_index==player)).count(),1);
+        }
+        assert!(records.iter().any(|record|matches!(record.effect,CampaignEffect::Flight(crate::FlightEvent::PrepareSound{entity_index,sound_id:19,..})if entity_index==player)&&record.audio.is_some()));
+        let identity = game.identity();
+        assert_eq!(
+            (identity.session_id, identity.generation),
+            (initial_identity.session_id, initial_identity.generation)
+        );
+        let snapshot = game.snapshot();
+        assert_eq!(snapshot.identity, identity);
+        let page = game
+            .events_after(identity.guard(), completed[0], 16)
+            .unwrap();
+        assert_eq!(page.identity, identity);
+        assert!(
+            page.value
+                .events
+                .iter()
+                .any(|event| event.sequence == completed[0] + 1
+                    && event.actor == game.backend().actor(u64::from(player)))
+        );
+        for _ in 0..2 {
+            step(&mut game, GameCommand::default());
+            assert_eq!(sim(&game).level_exit_sequence(), result);
+        }
+        assert_eq!(
+            sim(&game)
+                .effect_journal()
+                .records()
+                .iter()
+                .filter(|record| matches!(
+                    record.effect,
+                    CampaignEffect::Dispatch(Mc2DispatchEvent::LevelExitSequenceCompleted {
+                        result_code: 0x1a,
+                        ..
+                    })
+                ))
+                .count(),
+            1
+        );
+        eprintln!(
+            "configuredsource4secret: identity={identity:?} producer={producer_handle:?} portal75={portal_handle:?} controller76={trigger_handle:?} player={player_handle:?} phases={phases:?} result=0x1a event={} sourceassociation=4->30",
+            completed[0]
+        );
+        // No vanilla mission, native retained variant, outer loading/return or
+        // carried inventory claim: this is genuine guarded entry production.
     }
 
     #[test]

@@ -331,7 +331,10 @@ fn validate_semantic_scenery_dispatch(
         | (Some(SceneryKind::Dolmen), ExistingHandler::Dolmen)
         | (Some(SceneryKind::StaticObject), ExistingHandler::StaticScenery)
         | (Some(SceneryKind::Stone), ExistingHandler::Stone | ExistingHandler::BadStone)
-        | (Some(SceneryKind::ExitPortal), ExistingHandler::Class14Events) => Ok(()),
+        | (
+            Some(SceneryKind::ExitPortal | SceneryKind::SecretPortal),
+            ExistingHandler::Class14Events,
+        ) => Ok(()),
         (Some(kind), actual) => Err(format!(
             "scenery source slot {source_slot} is semantic {}, but the MC2 selector resolved {actual:?}",
             kind.as_str()
@@ -6769,7 +6772,7 @@ impl Mc2Simulation {
         )
     }
 
-    fn scenery_kind_for_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
+    pub(crate) fn scenery_kind_for_source_slot(&self, source_slot: u16) -> Option<SceneryKind> {
         self.session
             .state
             .live
@@ -6909,7 +6912,7 @@ impl Mc2Simulation {
         }
     }
 
-    fn switch_kind_for_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {
+    pub(crate) fn switch_kind_for_source_slot(&self, source_slot: u16) -> Option<SwitchKind> {
         self.session
             .state
             .live
@@ -8943,7 +8946,7 @@ impl Mc2Simulation {
     /// replaying a candidate. Reset must restore the same source exit route.
     pub(crate) fn install_initial_ordinary_exit_route(
         &mut self,
-        route: crate::level_exit::OrdinaryExitRoute,
+        route: crate::world::portals::OrdinaryExitRoute,
     ) -> std::result::Result<(), String> {
         let exit = self.session.state.live.level_exit;
         if self.campaign_tick() != 0 || self.session.generation != 0 || exit.active || exit.complete
@@ -8970,10 +8973,10 @@ impl Mc2Simulation {
                 .entities
                 .get(usize::from(live.core.state.entity_index))
                 .is_some_and(|player| {
-                    player.action == crate::level_exit::SECRET_EXIT_PLAYER_ACTION
-                        || (player.action == crate::level_exit::EXIT_PLAYER_ACTION
+                    player.action == crate::world::portals::SECRET_EXIT_PLAYER_ACTION
+                        || (player.action == crate::world::portals::EXIT_PLAYER_ACTION
                             && live.level_exit.ordinary_exit_route
-                                == crate::level_exit::OrdinaryExitRoute::UnfinishedSecretContinuation)
+                                == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation)
                 })
     }
 
@@ -17041,16 +17044,17 @@ impl Mc2Simulation {
                     visit.handler,
                 )?;
             }
-            match source.model {
-                3 => validate_semantic_scenery_dispatch(
+            match (source.model, source.action, semantic_scenery) {
+                (3, 8, Some(SceneryKind::ExitPortal))
+                | (4, 9, Some(SceneryKind::SecretPortal)) => validate_semantic_scenery_dispatch(
                     source_slot,
-                    self.scenery_kind_for_source_slot(source_slot),
+                    semantic_scenery,
                     visit.handler,
                 )?,
-                5 => {}
-                model => {
+                (5, _, _) => {}
+                (model, action, kind) => {
                     return Err(format!(
-                        "class-14 source slot {source_slot} has unsupported model {model}"
+                        "class-14 source slot {source_slot} has unsupported model/action {model}/{action} for semantic {kind:?}"
                     ));
                 }
             }
@@ -20533,8 +20537,8 @@ impl Mc2Simulation {
                         evidence.push(body);
                     } else if matches!(
                         player_action_at_visit,
-                        crate::level_exit::EXIT_PLAYER_ACTION
-                            | crate::level_exit::SECRET_EXIT_PLAYER_ACTION
+                        crate::world::portals::EXIT_PLAYER_ACTION
+                            | crate::world::portals::SECRET_EXIT_PLAYER_ACTION
                     ) {
                         self.step_level_exit_player_action(pass, source_slot)?;
                         *player_position = self.session.state.live.core.state.position;
@@ -25954,7 +25958,7 @@ impl Mc2Simulation {
             .get(usize::from(source_slot))
             .map(|player| player.action)
             .ok_or_else(|| format!("exit player source slot {source_slot} is absent"))?;
-        let secret_entry = player_action == crate::level_exit::SECRET_EXIT_PLAYER_ACTION;
+        let secret_entry = player_action == crate::world::portals::SECRET_EXIT_PLAYER_ACTION;
         if !self.session.state.live.level_exit.active
             && !self.session.state.live.level_exit.complete
         {
@@ -26091,15 +26095,15 @@ impl Mc2Simulation {
 
         for effect in effects {
             match effect {
-                crate::level_exit::LevelExitEffect::PrepareSound { sound_id, .. } => {
-                    if sound_id == crate::level_exit::EXIT_SWITCH_SOUND {
+                crate::world::portals::LevelExitEffect::PrepareSound { sound_id, .. } => {
+                    if sound_id == crate::world::portals::EXIT_SWITCH_SOUND {
                         mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
                     } else {
                         mark_source_audio_call(SourceAudioCallTag::ExitAcceleration);
                     }
                     self.push_flight_effect(FlightEvent::PrepareSound {
                         #[cfg(test)]
-                        audio_site: if sound_id == crate::level_exit::EXIT_SWITCH_SOUND {
+                        audio_site: if sound_id == crate::world::portals::EXIT_SWITCH_SOUND {
                             crate::MissionAudioSite::ExitSequenceSwitch
                         } else if exit_phase == 7 {
                             crate::MissionAudioSite::ExitAccelerationPhase6
@@ -26111,7 +26115,7 @@ impl Mc2Simulation {
                         sound_id,
                     });
                 }
-                crate::level_exit::LevelExitEffect::Completed { result_code } => {
+                crate::world::portals::LevelExitEffect::Completed { result_code } => {
                     if secret_entry {
                         self.session.state.live.shared_spells.set_mission_rewards(
                             crate::campaign::rewards::MissionRewards::Enabled,
@@ -41705,7 +41709,7 @@ mod tests {
 
     #[test]
     fn initial_ordinary_exit_route_is_hashed_resettable_and_not_rebound_after_publication() {
-        use crate::level_exit::OrdinaryExitRoute;
+        use crate::world::portals::OrdinaryExitRoute;
 
         let package = level_one_descriptor_fixture_path();
         let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1)
@@ -41897,7 +41901,7 @@ mod tests {
             "the already-visited player slot cannot run action 12 in the trigger pass"
         );
         let armed_player = &session.entities()[usize::from(player_entity_index)];
-        assert_eq!(armed_player.action, crate::level_exit::EXIT_PLAYER_ACTION);
+        assert_eq!(armed_player.action, crate::world::portals::EXIT_PLAYER_ACTION);
         assert_eq!(armed_player.record_bytes()[74], 0);
         let retained = session
             .economy()
@@ -41937,14 +41941,14 @@ mod tests {
                 true,
                 false,
                 1,
-                crate::level_exit::EXIT_PALETTE_ENTRY_FLASH_REQUEST,
+                crate::world::portals::EXIT_PALETTE_ENTRY_FLASH_REQUEST,
                 0x20
             )
         );
         let phase_one_player = &session.entities()[usize::from(player_entity_index)];
         assert_eq!(
             phase_one_player.action,
-            crate::level_exit::EXIT_PLAYER_ACTION
+            crate::world::portals::EXIT_PLAYER_ACTION
         );
         assert_eq!(phase_one_player.record_bytes()[74], 1);
         assert!(
@@ -41955,7 +41959,7 @@ mod tests {
                     crate::campaign::journal::CampaignEffect::Flight(FlightEvent::PrepareSound {
                         audio_site: crate::MissionAudioSite::ExitSequenceSwitch,
                         entity_index,
-                        sound_id: crate::level_exit::EXIT_SWITCH_SOUND,
+                        sound_id: crate::world::portals::EXIT_SWITCH_SOUND,
                         ..
                     }) if entity_index == player_entity_index
                 ))
@@ -41970,17 +41974,19 @@ mod tests {
                 .as_ref()
                 .expect("campaign flight effects remain present")
                 .palette_submode,
-            crate::level_exit::EXIT_PALETTE_ENTRY_FLASH_REQUEST
+            crate::world::portals::EXIT_PALETTE_ENTRY_FLASH_REQUEST
         );
 
         let generation = session.session.generation;
         let mut effect_cursor = session.effect_journal().cursor(generation);
         let mut acceleration_sound_count = 0;
+        let mut palette_modes = std::collections::BTreeSet::new();
         for _ in 0..700 {
             if session.level_exit_sequence().complete {
                 break;
             }
             session.step_outer_turn(PlayerCommand::default(), 0);
+            palette_modes.insert(session.level_exit_sequence().palette_submode);
             let page = session
                 .effect_journal()
                 .page(generation, effect_cursor, usize::MAX)
@@ -41993,7 +41999,7 @@ mod tests {
                         record.effect,
                         crate::campaign::journal::CampaignEffect::Flight(
                             FlightEvent::PrepareSound {
-                                sound_id: crate::level_exit::EXIT_ACCELERATION_SOUND,
+                                sound_id: crate::world::portals::EXIT_ACCELERATION_SOUND,
                                 ..
                             }
                         )
@@ -42024,9 +42030,17 @@ mod tests {
                 true,
                 0,
                 121,
-                crate::level_exit::EXIT_PALETTE_BLACK_REQUEST,
+                crate::world::portals::EXIT_PALETTE_NONE,
             )
         );
+        // PaletteChanges consumes request5 into fade10, then clears the
+        // request at step28. The installed black colors survive mode0.
+        assert!(palette_modes.contains(&crate::world::portals::EXIT_PALETTE_BLACK_REQUEST));
+        assert!(palette_modes.contains(&10));
+        assert!(palette_modes.contains(&crate::world::portals::EXIT_PALETTE_NONE));
+        let mut final_palette = [252_u8; 768];
+        session.session.state.live.economy.fields.palette.apply_rgb8(&mut final_palette);
+        assert_eq!(final_palette, [0; 768]);
         assert_eq!(acceleration_sound_count, 1);
         assert_eq!(
             session
@@ -42046,7 +42060,7 @@ mod tests {
         let completed_player = &session.entities()[usize::from(player_entity_index)];
         assert_eq!(
             completed_player.action,
-            crate::level_exit::EXIT_PLAYER_ACTION
+            crate::world::portals::EXIT_PLAYER_ACTION
         );
         assert_eq!(completed_player.record_bytes()[74], 12);
         campaign.reset();

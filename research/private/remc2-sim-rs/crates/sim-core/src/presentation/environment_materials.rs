@@ -223,7 +223,7 @@ impl EnvironmentResources {
 
     /// Source action12 installs GTD2 at TABLES+0x4000 when phase5 expires.
     /// Immutable normal tables remain available for the next mission load.
-    pub fn renderer_tables(&self, exit: crate::level_exit::LevelExitSequence) -> &[u8] {
+    pub fn renderer_tables(&self, exit: crate::world::portals::LevelExitSequence) -> &[u8] {
         if exit.end_sequence && exit.phase >= 6 {
             self.day_exit_renderer_tables
                 .as_deref()
@@ -237,7 +237,7 @@ impl EnvironmentResources {
         &self,
         current: &mut [u8],
         prior: &[u8],
-        exit: crate::level_exit::LevelExitSequence,
+        exit: crate::world::portals::LevelExitSequence,
     ) -> Result<()> {
         if self.profile.is_none() || exit.blur_mode == 0 {
             return Ok(());

@@ -130,7 +130,7 @@ use crate::{
     },
 };
 
-pub use crate::level_exit::LevelExitSequence;
+pub use crate::world::portals::LevelExitSequence;
 
 #[cfg(test)]
 use crate::level1_mission::POSSESSION_IMPACT_MODEL;

@@ -2822,11 +2822,11 @@ mod tests {
             let session = campaign.simulation_mut();
             let profile = session.profile();
             let live = &mut session.session.state.live;
-            live.level_exit = crate::level_exit::LevelExitSequence {
+            live.level_exit = crate::world::portals::LevelExitSequence {
                 active: true,
                 phase: 5,
                 timer: 12,
-                ..crate::level_exit::LevelExitSequence::default()
+                ..crate::world::portals::LevelExitSequence::default()
             };
             live.level_exit.advance(
                 &live.terrain,

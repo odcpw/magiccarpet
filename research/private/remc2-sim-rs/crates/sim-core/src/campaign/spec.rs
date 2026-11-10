@@ -2426,6 +2426,72 @@ impl CampaignDefinition {
         Ok(())
     }
 
+    /// Test-only content variant; all production reset validators stay intact.
+    #[cfg(test)]
+    pub(crate) fn configure_portal_source_for_test(
+        &mut self,
+        portal: &LevelEntityId,
+        trigger: &LevelEntityId,
+        group: u16,
+        level: LevelDefinition,
+    ) -> std::result::Result<(), String> {
+        use crate::level_definition::{SceneryKind, SwitchKind};
+        let target = sim_definition::adapter::activation_group_id(group);
+        if level.entities().len() != self.level_definition.entities().len()
+            || level.objectives() != self.level_definition.objectives()
+            || level.activation_groups().collect::<Vec<_>>()
+                != self
+                    .level_definition
+                    .activation_groups()
+                    .collect::<Vec<_>>()
+            || !self
+                .level_definition
+                .activation_groups()
+                .any(|value| value == target)
+            || portal == trigger
+        {
+            return Err("configured portal pair must retain original level structure".into());
+        }
+        for original in self.level_definition.entities() {
+            let candidate = level
+                .entity(original.id())
+                .ok_or("configured portal pair lost an original entity")?;
+            let expected_kind = if original.id() == portal {
+                Some(LevelEntityKind::Scenery(SceneryKind::SecretPortal))
+            } else if original.id() == trigger {
+                Some(LevelEntityKind::Switch(SwitchKind::SecretEntryTrigger))
+            } else {
+                None
+            };
+            if let Some(kind) = expected_kind {
+                if original.kind() != kind
+                    || candidate.activation_group() != Some(target)
+                    || original.activation_group() == Some(target)
+                {
+                    return Err("configured portal identity or destination group differs".into());
+                }
+                // Compare every serialized field, including future properties;
+                // the one declared group edit is the only permitted difference.
+                let mut expected =
+                    serde_json::to_value(original).map_err(|error| error.to_string())?;
+                expected["activation_group"] =
+                    serde_json::to_value(Some(target)).map_err(|error| error.to_string())?;
+                if serde_json::to_value(candidate).map_err(|error| error.to_string())? != expected {
+                    return Err("configured portal pair changed another entity property".into());
+                }
+            } else if candidate != original {
+                return Err("configured portal pair changed another original entity".into());
+            }
+        }
+        if self.level_definition.entity(portal).is_none()
+            || self.level_definition.entity(trigger).is_none()
+        {
+            return Err("configured portal pair identities are absent".into());
+        }
+        self.level_definition = level;
+        Ok(())
+    }
+
     pub(crate) fn generate_terrain_startup(&self) -> Result<TerrainStartupWorld> {
         generate_bound_terrain_startup(
             self.identity.map_type_id,

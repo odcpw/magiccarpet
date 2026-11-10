@@ -620,6 +620,24 @@ impl CampaignDefinition {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn configure_portal_source_for_test(
+        &mut self,
+        bindings: SemanticLevelBindings,
+    ) -> Result<(), String> {
+        let mut expected = self.clone();
+        expected.semantic_level = Some(bindings.level.clone());
+        let mut configured = self.clone();
+        configured.bind_semantic_level(bindings);
+        if configured != expected {
+            return Err(
+                "configured portal pair must preserve every original runtime binding".into(),
+            );
+        }
+        *self = configured;
+        Ok(())
+    }
+
     pub(crate) fn replace_semantic_level(
         &mut self,
         level: LevelDefinition,
@@ -1378,7 +1396,7 @@ pub(crate) fn digest_level_exit_sequence(hasher: &mut Sha256, exit: LevelExitSeq
         hasher.update(exit.camera_fov.to_le_bytes());
     }
     if exit.ordinary_exit_route
-        == crate::level_exit::OrdinaryExitRoute::UnfinishedSecretContinuation
+        == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
     {
         hasher.update(b"ordinary-exit-secret-continuation-v1");
     }

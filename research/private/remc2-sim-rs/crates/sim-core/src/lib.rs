@@ -37,7 +37,6 @@ pub mod legacy_terrain;
 pub mod level1_mission;
 pub mod level1_parity;
 pub use sim_definition::level_definition;
-pub mod level_exit;
 pub mod mission_content;
 /// Compatibility facade for the exact mode-26 terrain raster contract.
 pub mod mode26_raster {
@@ -83,7 +82,7 @@ pub mod terrain_presentation;
 pub mod terrain_reflection;
 pub mod villager;
 pub mod voxel_world;
-pub(crate) mod world;
+pub mod world;
 pub use sim_voxel::{voxel_collapse, voxel_damage, voxel_snapshot, voxel_state, voxel_structure};
 
 include!(concat!(env!("OUT_DIR"), "/trig_table.rs"));

@@ -507,6 +507,7 @@ pub enum SceneryKind {
     BallisticObject,
     StaticObject,
     ExitPortal,
+    SecretPortal,
 }
 
 impl SceneryKind {
@@ -520,6 +521,7 @@ impl SceneryKind {
             Self::BallisticObject => "ballistic_object",
             Self::StaticObject => "static_object",
             Self::ExitPortal => "exit_portal",
+            Self::SecretPortal => "secret_portal",
         }
     }
 }

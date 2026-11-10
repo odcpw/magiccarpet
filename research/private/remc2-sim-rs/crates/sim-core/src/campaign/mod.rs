@@ -205,16 +205,21 @@ impl CampaignSession {
         &self.definition
     }
 
-    /// Configure one dormant source-language item without changing the shipped
-    /// records. The descriptor and pristine simulation share this baseline so
-    /// GameSession reset still runs the ordinary semantic validation.
+    /// Declare a bounded source-language fixture before the first public turn.
+    /// Shipped records and production reset admission remain unchanged.
     #[cfg(test)]
-    pub(crate) fn configure_item_source_for_test(
+    pub(crate) fn configure_source_variant_for_test(
         &mut self,
         features: &[crate::level1_mission::AuthoredFeature],
         bindings: &state::SemanticLevelBindings,
     ) -> Result<(), NativeWorldError> {
-        let original = self.simulation.session.state.live.mission.authored_features();
+        let original = self
+            .simulation
+            .session
+            .state
+            .live
+            .mission
+            .authored_features();
         if features.len() != original.len() {
             return Err(NativeWorldError::new(
                 "configured item must preserve the authored extent",
@@ -225,6 +230,76 @@ impl CampaignSession {
             .zip(features)
             .filter(|(before, after)| before != after)
             .collect::<Vec<_>>();
+        if changed.len() == 2 {
+            let portal = changed
+                .iter()
+                .find(|(before, _)| (before.kind, before.subtype) == (14, 4));
+            let trigger = changed
+                .iter()
+                .find(|(before, _)| (before.kind, before.subtype) == (11, 31));
+            let (Some((old_portal, portal)), Some((old_trigger, trigger))) = (portal, trigger)
+            else {
+                return Err(NativeWorldError::new(
+                    "configured pair requires the original secret portal and controller",
+                ));
+            };
+            let group = portal.activation_group;
+            for (before, after) in &changed {
+                let mut unchanged = **after;
+                unchanged.activation_group = before.activation_group;
+                if unchanged != **before {
+                    return Err(NativeWorldError::new(
+                        "configured portal pair may change only its activation group",
+                    ));
+                }
+            }
+            if old_portal.activation_group <= 0
+                || old_portal.activation_group != old_trigger.activation_group
+                || group <= 0
+                || group != trigger.activation_group
+                || group == old_portal.activation_group
+            {
+                return Err(NativeWorldError::new(
+                    "configured portal pair must share a new existing dormant group",
+                ));
+            }
+            let portal_id = bindings
+                .authored_scenery_entities
+                .get(&portal.index)
+                .ok_or_else(|| {
+                    NativeWorldError::new("configured secret portal lacks its typed identity")
+                })?;
+            let trigger_id = bindings
+                .authored_switch_entities
+                .get(&trigger.index)
+                .ok_or_else(|| {
+                    NativeWorldError::new("configured secret controller lacks its typed identity")
+                })?;
+            let mut descriptor = (*self.definition).clone();
+            descriptor
+                .configure_portal_source_for_test(
+                    portal_id,
+                    trigger_id,
+                    group as u16,
+                    bindings.level.clone(),
+                )
+                .map_err(NativeWorldError::new)?;
+            let mut simulation_definition = (*self.simulation.session.definition).clone();
+            simulation_definition
+                .configure_portal_source_for_test(bindings.clone())
+                .map_err(NativeWorldError::new)?;
+            self.definition = Arc::new(descriptor);
+            self.simulation.session.definition = Arc::new(simulation_definition);
+            self.simulation
+                .session
+                .state
+                .live
+                .mission
+                .authored_features_mut()
+                .copy_from_slice(features);
+            self.simulation.session.rebase();
+            return Ok(());
+        }
         let [(before, after)] = changed.as_slice() else {
             return Err(NativeWorldError::new(
                 "configured item must add exactly one dormant authored row",
