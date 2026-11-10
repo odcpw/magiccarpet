@@ -354,6 +354,18 @@ def package(out):
     body = run_export('WormSegment', 'WormSegmentRig', ['WormSegment'], ['SegmentStatic'])
     if body['deformBones'] != 1:
         raise ValueError('The reusable segment must have one rigid deform bone')
+    # Unity's character consumer starts every skin on Idle. The segment's
+    # source-only SegmentStatic action is two identical poses; the FBX contains
+    # a single Scene take, so name its split clip Idle without changing poses.
+    if len(body['clips']) != 1 or body['clips'][0]['name'] != 'SegmentStatic':
+        raise ValueError('Unexpected segment source action')
+    body['sourceAction'] = 'SegmentStatic'
+    body['clips'][0]['name'] = 'Idle'; body['clips'][0]['loop'] = True
+    for sample in body['surfaceProof']:
+        if sample['clip'] != 'SegmentStatic':
+            raise ValueError('Unexpected segment surface proof action')
+        sample['clip'] = 'Idle'
+    (out/'WormSegment.export.json').write_text(json.dumps(body, indent=2)+'\n')
     head = augment_head_samples(out, head)
     common = {'fps': head['fps'], 'forward': [0, 1, 0], 'coordinateSystem': 'Blender Z-up',
               'walkSpeed': 0, 'runSpeed': 0, 'minBoneWeight': 1e-7}
