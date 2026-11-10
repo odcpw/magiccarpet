@@ -1999,7 +1999,7 @@ impl Level2EconomyState {
             .position(|state| state.source_entity_index == source_slot)
             .ok_or_else(|| format!("Firefly source slot {source_slot} has no runtime sidecar"))?;
         let mut source = self.authored_class5[source_index];
-        let mut runtime = self.authored_class5_runtime[runtime_index];
+        let runtime = self.authored_class5_runtime[runtime_index];
         let mut firefly = self.authored_fireflies[firefly_index];
 
         // sub_1C560 returns to base+1 before touching damage when its
@@ -2040,7 +2040,9 @@ impl Level2EconomyState {
             source.life = life;
             source.word_0x26 = attacker;
             source.pending_word_0x62 = 0;
-            runtime.pending_damage = 0;
+            // The source consumers clear only word62, retaining dword5E.
+            // A following ownerless11900 contact adds this residue, while
+            // an ordinary10C80 write replaces it.
             let lethal = source.life < 0;
             let same_family = stage_hit && observation.map_or_else(
                 || self.authored_class5.iter().any(|peer| {
@@ -3318,6 +3320,20 @@ mod tests {
             (FIREFLY_ROAM_ACTION, before.life, player, before.position));
         assert_eq!(arena.economy.authored_class5_runtime.iter()
             .find(|row| row.source_entity_index == slot).unwrap().pending_damage, 100);
+        assert!(step_lifecycle_in_arena(&mut arena, &mut terrain, particles, slot, &[])
+            .unwrap().handled);
+        assert_eq!(crate::native_world::area_damage::source_bounty(&arena, None, slot)
+            .unwrap(), (100, 0), "consumption retains ownerless source damage");
+        crate::native_world::area_damage::contact(&mut arena, None, slot, 25, player).unwrap();
+        assert_eq!(crate::native_world::area_damage::source_bounty(&arena, None, slot)
+            .unwrap(), (125, player), "source11900 adds to the retained residue");
+        assert!(step_lifecycle_in_arena(&mut arena, &mut terrain, particles, slot, &[])
+            .unwrap().handled);
+        let after_contact = arena.economy.authored_class5.iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!(after_contact.life, before.life.wrapping_sub(100).wrapping_sub(125));
+        assert_eq!(crate::native_world::area_damage::source_bounty(&arena, None, slot)
+            .unwrap(), (125, 0));
     }
 
     #[test]

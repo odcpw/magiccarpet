@@ -681,6 +681,1321 @@ fn public_step(
     no_dispatch_errors(simulation(game), label, turn);
 }
 
+fn mission_four_mana_percent(sim: &crate::native_world::Mc2Simulation) -> i32 {
+    let player = sim.state.entity_index;
+    let economy = sim.economy();
+    let denominator = economy.owner_mana_global();
+    assert!(denominator > 0);
+    economy.castle_for_owner(player).map_or(0, |castle| {
+        100 * economy
+            .owner_mana_aggregate(player)
+            .saturating_add(castle.mana)
+            / denominator
+    })
+}
+
+fn declare_mana_prefix_firing_pose(
+    sim: &mut crate::native_world::Mc2Simulation,
+    target: Position,
+    horizontal_distance: i16,
+) -> (i16, i16) {
+    use crate::FlightWorld;
+    let fov = sim.shared_spells().player_entity().array_fov();
+    let mut hand = Position {
+        x: target.x.wrapping_add_signed(horizontal_distance),
+        y: target.y,
+        z: target.z.checked_add(512).unwrap(),
+    };
+    let yaw = crate::level1_mission::projectile_guidance_angles(hand, target).0;
+    let hand_yaw = yaw
+        .wrapping_sub(sim.shared_spells().beyond_sight_auxiliary().next_entity)
+        .wrapping_sub(512);
+    let mut origin = Position {
+        z: hand.z.checked_sub(fov).unwrap(),
+        ..hand
+    };
+    crate::move_entity(&mut origin, hand_yaw.wrapping_add(1024), 0, 256);
+    // The raw parent FOV and source hand offset own the launch, not the
+    // independently displayed FlightState FOV. Raise only the declared player
+    // fixture to the actual floor; reject an impossible Cave clearance.
+    origin.z = origin
+        .z
+        .max(
+            sim.canonical_terrain()
+                .ground_height(origin)
+                .checked_add(sim.profile().ground_clearance)
+                .unwrap(),
+        )
+        .max(
+            sim.canonical_terrain()
+                .ground_height(hand)
+                .checked_add(crate::level1_mission::FIREBALL_COLLISION_HALF_HEIGHT)
+                .unwrap()
+                .checked_sub(fov)
+                .unwrap(),
+        );
+    hand.z = origin.z.checked_add(fov).unwrap();
+    for (position, clearance) in [
+        (origin, sim.profile().ceiling_clearance),
+        (hand, crate::level1_mission::FIREBALL_COLLISION_HALF_HEIGHT),
+    ] {
+        let ceiling = sim.canonical_terrain().ceiling_height(position).unwrap();
+        assert!(
+            position.z <= ceiling.checked_sub(clearance).unwrap(),
+            "declared mana-prefix pose must fit the actual Cave: origin={origin:?} hand={hand:?} target={target:?}"
+        );
+    }
+    assert_eq!(
+        crate::resolve_legacy_movement(
+            &mut crate::FlightState::default(),
+            origin,
+            origin,
+            sim.profile(),
+            sim.canonical_terrain()
+        ),
+        crate::MovementResolution::Accept(origin),
+    );
+    assert!(crate::distance_3d_wrapped(origin, target) >= 1536);
+    let aim = crate::level1_mission::projectile_guidance_angles(hand, target);
+    sim.set_level2_entity_position(sim.state.entity_index, origin)
+        .unwrap();
+    sim.state.actual_speed = 0;
+    sim.state.target_speed = 0;
+    sim.set_level2_player_aim_for_test(aim.0, aim.1);
+    aim
+}
+
+fn assert_mana_prefix_waiting(
+    sim: &crate::native_world::Mc2Simulation,
+    gate: crate::campaign::source_arena::SourceEntityHandle,
+) {
+    let objective = &sim.runtime().objectives[usize::from(sim.state.player_color_index)];
+    assert_eq!(
+        (
+            objective.stage_selectors[0],
+            objective.stage_selectors[1],
+            objective.text_selector,
+            objective.is_level_end
+        ),
+        (1, 1, 0, 0)
+    );
+    assert_eq!(sim.source_arena().handle(6), Some(gate));
+    assert!(!sim.entities()[6].drawing_disabled());
+    assert!(
+        !sim.creature_runtime_census()
+            .roots_of_kind(crate::level_definition::CreatureKind::Spider)
+            .any(|root| root.living)
+    );
+    assert!(!sim.dispatch_events().iter().any(|event| matches!(
+        event,
+        crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
+            source_slot: 6,
+            group: 6,
+            ..
+        }
+    )));
+}
+
+fn observe_mana_prefix_payment(
+    sim: &crate::native_world::Mc2Simulation,
+    holder: crate::campaign::source_arena::SourceEntityHandle,
+    player: crate::campaign::source_arena::SourceEntityHandle,
+    cost: i32,
+    launches: &[(u16, u32)],
+) -> (Vec<(u16, u32)>, i64) {
+    use crate::campaign::schedule::{CurrentOccupant, ScheduleReceipt};
+    let mut charged = Vec::new();
+    let mut debited = 0;
+    for receipt in sim.cf10_production_schedule_receipts() {
+        let ScheduleReceipt::EpilogueCompleted {
+            slot,
+            original,
+            current: CurrentOccupant::Known { selector, .. },
+            ..
+        } = receipt
+        else {
+            continue;
+        };
+        let (Some(before), Some(after)) = (
+            original.observed_player_resources(),
+            selector.observed_player_resources(),
+        ) else {
+            continue;
+        };
+        if slot == holder.source_slot
+            && sim.source_arena().handle(slot) == Some(holder)
+            && before.0 == player
+            && after
+                == (
+                    player,
+                    before.1,
+                    if before.2 >= 0 {
+                        -cost
+                    } else {
+                        before.2.wrapping_sub(cost)
+                    },
+                    before.3,
+                )
+        {
+            charged.extend_from_slice(launches);
+        }
+        if slot == player.source_slot
+            && before.0 == player
+            && after.0 == player
+            && before.2 <= -cost
+            && after.1 == before.1.wrapping_add(before.2).clamp(0, before.3)
+            && before.1 - after.1 >= cost
+        {
+            debited += i64::from(before.1 - after.1);
+        }
+    }
+    (charged, debited)
+}
+
+/// A declared prior bank isolates the last earned increment, not the whole
+/// mission's economy. No objective, creature, RNG, phase or lifetime is staged.
+/// Source60F00 freezes global/owned10/45 counters; 58F00 adds the CURRENT
+/// Castle store. Only a real 60AB0 class3 deposit may cross this boundary.
+fn earn_mission_four_mana_and_spawn_spiders(game: &mut SpiderGame) {
+    use crate::campaign::source_arena::{CreatureRootOrigin, SourceEntityHandle};
+    use crate::game_session::{GameCommand, SpellAssignment, SpellAssignmentHand};
+    use crate::level_definition::{CreatureKind, FIREBALL_PROPERTIES, POSSESSION_PROPERTIES};
+    use crate::native_world::level2_dynamic_economy::{
+        PossessionSourceReceipt, start_possession_trace, take_possession_trace,
+    };
+    use crate::native_world::{Level2EconomyEvent, Mc2DispatchEvent, area_damage};
+    use crate::{FlightWorld, PlayerCommand};
+    use std::collections::BTreeSet;
+
+    const GROUP6: &[u16] = &[
+        8, 9, 10, 11, 12, 137, 138, 139, 141, 250, 251, 255, 601, 602, 724, 725, 726,
+    ];
+    let player = simulation(game).state.entity_index;
+    let player_handle = simulation(game).source_arena().handle(player).unwrap();
+    let gate = simulation(game).source_arena().handle(6).unwrap();
+    assert_eq!(
+        (
+            simulation(game).entities()[6].class,
+            simulation(game).entities()[6].model,
+            simulation(game).entities()[6].source_id,
+            simulation(game).entities()[6].level_gate
+        ),
+        (11, 32, 6, 0)
+    );
+    assert_eq!(
+        (
+            simulation(game).runtime().stages[0].kind,
+            simulation(game).runtime().stages[1].kind
+        ),
+        (0, 7)
+    );
+    let objectives = game
+        .backend()
+        .compatibility_campaign()
+        .definition()
+        .level_definition()
+        .objectives();
+    assert_eq!(
+        objectives[0].condition(),
+        crate::level_definition::ObjectiveCondition::CastleManaPercent(40)
+    );
+    assert_eq!(
+        objectives[1].condition(),
+        crate::level_definition::ObjectiveCondition::NoLivingCreatures(CreatureKind::Spider)
+    );
+    assert_mana_prefix_waiting(simulation(game), gate);
+    assert!(
+        simulation(game)
+            .economy()
+            .castle_for_owner(player)
+            .is_none()
+    );
+    let firefly = simulation(game).source_arena().handle(165).unwrap();
+    let original = *simulation(game)
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == firefly.source_slot)
+        .unwrap();
+    assert_eq!(
+        (
+            original.model,
+            original.life,
+            original.max_life,
+            original.mana
+        ),
+        (19, 600, 600, 300)
+    );
+    let baseline_global = simulation(game).economy().owner_mana_global();
+    assert_eq!(simulation(game).economy().owner_mana_aggregate(player), 0);
+    // Predeclare the bank from the original source projection and this real
+    // actor's body mana, before casting or observing a death/collection.
+    // 100*B/(G+B)<40; one 300 credit must cross, with room in the declared
+    // prior Castle capacity. The paid spell mana is a separate player budget.
+    let crossing_bank = i32::try_from((40_i64 * i64::from(baseline_global) + 59) / 60).unwrap();
+    let bank = crossing_bank.checked_sub(original.mana / 2).unwrap();
+    assert!(bank > 0);
+    simulation_mut(game)
+        .apply_carried_spell_families(&[0, 1], Some(0))
+        .unwrap();
+    simulation_mut(game)
+        .stage_player_mana_for_test(20_000)
+        .unwrap();
+    public_step(
+        game,
+        GameCommand {
+            assign_spell: Some(SpellAssignment {
+                spell_id: crate::game_definition::SemanticId::parse("spell.fireball").unwrap(),
+                tier: 0,
+                hand: SpellAssignmentHand::Left,
+                holder_actor: None,
+            }),
+            ..Default::default()
+        },
+        "mana-prefix carried FireballI assignment",
+        0,
+    );
+    let target = *simulation(game)
+        .economy()
+        .authored_class5()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == firefly.source_slot)
+        .unwrap();
+    assert_eq!(target.life, 600);
+    let collision = crate::native_world::source_target::read(
+        simulation(game).source_arena(),
+        crate::native_world::source_target::Context::default(),
+        firefly.source_slot,
+    )
+    .unwrap()
+    .unwrap()
+    .collision
+    .expect("ordinary Firefly source collision axes");
+    let centre = Position {
+        z: target
+            .position
+            .z
+            .checked_add(collision.half_height)
+            .unwrap()
+            .checked_sub(crate::level1_mission::FIREBALL_COLLISION_VERTICAL_OFFSET)
+            .unwrap(),
+        ..target.position
+    };
+    // C2's east approach put real164 in front of165: source68490 could
+    // acquire164 and10780 could collide with it first. Approach from west,
+    // retaining the same distance/burst/health, and check the actual source
+    // candidate order before committing the one fixed aim.
+    let aim = declare_mana_prefix_firing_pose(simulation_mut(game), centre, -2048);
+    let parent = simulation(game).shared_spells().player_entity();
+    let mut muzzle = parent.position;
+    crate::move_entity(&mut muzzle, parent.yaw.wrapping_sub(512), 0, 256);
+    assert!(
+        simulation(game).canonical_terrain().ground_height(muzzle) <= parent.position.z,
+        "fixed left-hand fixture must not use the source terrain fallback"
+    );
+    muzzle.z = muzzle.z.checked_add(parent.array_fov()).unwrap();
+    let source_scores = simulation(game)
+        .economy()
+        .fireball_guidance_targets(simulation(game).entities())
+        .unwrap()
+        .into_iter()
+        .filter(|target| target.can_be_acquired_by(player))
+        .filter_map(|target| {
+            crate::level1_mission::projectile_target_score(
+                muzzle,
+                aim.0,
+                aim.1,
+                target.top_position,
+            )
+            .map(|score| (target.source_slot, score, target.top_position))
+        })
+        .collect::<Vec<_>>();
+    let score = source_scores
+        .iter()
+        .find(|row| row.0 == firefly.source_slot)
+        .expect("original165 lies inside the actual source acquisition cone/range")
+        .1;
+    assert!(
+        source_scores
+            .iter()
+            .all(|row| row.0 == firefly.source_slot || score < row.1),
+        "original165 must win source68490 scoring before this fixed burst: muzzle={muzzle:?} aim={aim:?} scores={source_scores:?}"
+    );
+    let holder_slot = simulation(game)
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[0];
+    let holder = simulation(game).source_arena().handle(holder_slot).unwrap();
+    let cost = FIREBALL_PROPERTIES.tiers[0].mana_cost;
+    assert_eq!(
+        simulation(game)
+            .shared_spells()
+            .pickup(holder_slot)
+            .unwrap()
+            .max_mana,
+        cost
+    );
+    assert!(!simulation(game).shared_spells().free_spell_usage);
+    let mut no_fireball = game.backend().compatibility_campaign().clone();
+    let (mut launches, mut births, mut accepted, mut damage) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut charged = BTreeSet::new();
+    let mut debited = 0_i64;
+    let mut sphere: Option<SourceEntityHandle> = None;
+    let mut terminals = Vec::new();
+    let mut burst_history = Vec::new();
+    #[derive(Debug)]
+    struct FireflyBoundary {
+        writes_end: usize,
+        events_end: usize,
+        source: Option<(SourceEntityHandle, i32, (i32, u16))>,
+        callbacks: usize,
+    }
+    let mut boundaries = Vec::new();
+    assert_eq!(
+        area_damage::source_bounty(simulation(game).source_arena(), None, firefly.source_slot)
+            .unwrap(),
+        (0, 0)
+    );
+    area_damage::start_actor_damage_trace(&[firefly]);
+    for turn in 0..96 {
+        // One four-frame public held burst, then neutral input. Source5F660
+        // permits tierI reactivation while active; word30=5 is not a minimum
+        // interval. All four flyers can acquire before C4's first turn6 hit
+        // starts the normal phase7/228-speed charge. The one initial pose/aim
+        // above is never updated from a later target or player observation.
+        let cast = turn < 4;
+        let damage_before = damage.len();
+        let had_sphere = sphere.is_some();
+        let events = simulation(game).economy().events().len();
+        let before_holder = simulation(game)
+            .shared_spells()
+            .pickup(holder_slot)
+            .unwrap();
+        let before_holder = (
+            before_holder.active_value,
+            before_holder.activation_value,
+            u16::from_le_bytes([before_holder.record[58], before_holder.record[59]]),
+        );
+        area_damage::start_fireball_launch_trace();
+        crate::native_world::start_fireball_terminal_trace();
+        area_damage::start_effect_damage_trace(firefly.source_slot);
+        public_step(
+            game,
+            GameCommand {
+                cast_left: cast,
+                ..Default::default()
+            },
+            "fixed mana-source Fireball burst",
+            turn,
+        );
+        let own = area_damage::take_fireball_launch_trace()
+            .into_iter()
+            .filter(|(_, _, owner)| *owner == player)
+            .collect::<Vec<_>>();
+        let own_handles = own
+            .iter()
+            .map(|&(slot, generation, _)| (slot, generation))
+            .collect::<Vec<_>>();
+        let payment = observe_mana_prefix_payment(
+            simulation(game),
+            holder,
+            player_handle,
+            cost,
+            &own_handles,
+        );
+        charged.extend(payment.0);
+        debited += payment.1;
+        for &(slot, generation, _) in &own {
+            let packet = *simulation(game)
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                (
+                    packet.owner_entity_index,
+                    packet.holder_entity_index,
+                    packet.source_subspell_index
+                ),
+                (player, holder.source_slot, 250)
+            );
+            assert_eq!(
+                simulation(game).source_arena().slot_generation(slot),
+                generation
+            );
+            launches.push((slot, generation, packet));
+        }
+        births.extend(area_damage::take_fireball_impact_birth_trace());
+        terminals.extend(crate::native_world::take_fireball_terminal_trace());
+        accepted.extend(area_damage::take_effect_damage_trace());
+        let sim = simulation(game);
+        for (offset, event) in sim.economy().events()[events..].iter().enumerate() {
+            match *event {
+                Level2EconomyEvent::DamageApplied {
+                    target_entity_index,
+                    attacker_entity_index,
+                    damage: amount,
+                    lethal,
+                } if target_entity_index == firefly.source_slot => {
+                    assert_eq!(attacker_entity_index, player);
+                    assert_eq!(
+                        sim.source_arena().handle(firefly.source_slot),
+                        Some(firefly),
+                        "DamageApplied must belong to the original Firefly generation"
+                    );
+                    damage.push((events + offset, amount, lethal));
+                }
+                Level2EconomyEvent::ManaSphereSpawned {
+                    sphere_id,
+                    source_entity_index,
+                    mana,
+                } if source_entity_index == firefly.source_slot => {
+                    assert!(sphere.is_none(), "one original Firefly death birth");
+                    assert_eq!(mana, original.mana);
+                    let handle = sim
+                        .source_arena()
+                        .handle(u16::try_from(sphere_id).unwrap())
+                        .unwrap();
+                    assert!(
+                        sim.campaign_entity_presentations(0)
+                            .unwrap()
+                            .iter()
+                            .any(|view| view.entity_index == handle.source_slot)
+                    );
+                    sphere = Some(handle);
+                }
+                _ => {}
+            }
+        }
+        let source = sim
+            .source_arena()
+            .handle(firefly.source_slot)
+            .filter(|handle| *handle == firefly)
+            .map(|handle| {
+                let row = sim
+                    .economy()
+                    .authored_class5()
+                    .iter()
+                    .find(|row| row.active && row.source_entity_index == handle.source_slot)
+                    .unwrap();
+                assert_eq!((row.model, row.max_life), (19, 600));
+                (
+                    handle,
+                    row.life,
+                    area_damage::source_bounty(sim.source_arena(), None, handle.source_slot)
+                        .unwrap(),
+                )
+            });
+        boundaries.push(FireflyBoundary {
+            writes_end: accepted.len(),
+            events_end: sim.economy().events().len(),
+            source,
+            callbacks: sim
+                .cf10_production_schedule_receipts()
+                .iter()
+                .filter(|receipt| {
+                    matches!(receipt,
+                crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. }
+                    if *slot == firefly.source_slot)
+                })
+                .count(),
+        });
+        if turn < 12
+            || turn % 8 == 0
+            || damage.len() != damage_before
+            || (!had_sphere && sphere.is_some())
+        {
+            let current = sim
+                .economy()
+                .authored_class5()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == firefly.source_slot)
+                .map(|row| {
+                    (
+                        sim.source_arena().handle(firefly.source_slot),
+                        row.life,
+                        row.action,
+                        row.position,
+                        row.yaw,
+                        row.byte_0x46_70,
+                        row.pending_word_0x62,
+                    )
+                });
+            let holder_now = sim.shared_spells().pickup(holder_slot).unwrap();
+            let holder_now = (
+                holder_now.active_value,
+                holder_now.activation_value,
+                u16::from_le_bytes([holder_now.record[58], holder_now.record[59]]),
+            );
+            let flyers = sim
+                .economy()
+                .fireball_projectiles()
+                .iter()
+                .filter(|row| row.active && row.owner_entity_index == player)
+                .map(|row| {
+                    (
+                        sim.source_arena().handle(row.source_entity_index),
+                        row.position,
+                        row.yaw,
+                        row.pitch,
+                        row.target_source_entity_index,
+                        row.life,
+                    )
+                })
+                .collect::<Vec<_>>();
+            burst_history.push((
+                turn,
+                cast,
+                sim.state.position,
+                before_holder,
+                holder_now,
+                current,
+                flyers,
+            ));
+        }
+        assert_mana_prefix_waiting(sim, gate);
+        no_fireball.step(PlayerCommand::default(), 0);
+        no_dispatch_errors(
+            no_fireball.simulation(),
+            "equal elapsed no-Fireball mana source",
+            turn,
+        );
+        let negative = no_fireball
+            .simulation()
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|row| row.active && row.source_entity_index == firefly.source_slot)
+            .unwrap();
+        assert_eq!(
+            no_fireball
+                .simulation()
+                .source_arena()
+                .handle(firefly.source_slot),
+            Some(firefly)
+        );
+        assert_eq!(negative.life, 600);
+        if turn >= 32 && sphere.is_some() && sim.source_arena().resolve(firefly).is_none() {
+            break;
+        }
+    }
+    let launch_summary = launches
+        .iter()
+        .map(|&(slot, generation, packet)| {
+            (
+                slot,
+                generation,
+                packet.position,
+                packet.yaw,
+                packet.pitch,
+                packet.target_source_entity_index,
+                packet.life,
+                packet.holder_entity_index,
+            )
+        })
+        .collect::<Vec<_>>();
+    let accepted_summary = accepted
+        .iter()
+        .map(|write| {
+            (
+                write.source_slot,
+                write
+                    .source_raw_impact
+                    .as_ref()
+                    .map(|(generation, row)| (*generation, row.class, row.model)),
+                write.pulse.position,
+                write.pulse.payload,
+                write.target_slot,
+                write.target_generation,
+                write.mailbox_before,
+                write.mailbox_after,
+                write.hit_count,
+                write.event_cursor,
+                write.writer_sequence,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        launches.len(),
+        4,
+        "four held input frames must produce four source launches: launch={launch_summary:?} history={burst_history:?}"
+    );
+    assert!(
+        launches
+            .iter()
+            .all(|&(slot, generation, _)| charged.contains(&(slot, generation)))
+    );
+    assert!(debited >= i64::try_from(launches.len()).unwrap() * i64::from(cost));
+    #[derive(Debug)]
+    struct AdmittedWrite {
+        observation: usize,
+        event_cursor: usize,
+        sequence: u64,
+        before: (i32, u16),
+        after: (i32, u16),
+    }
+    let mut writes = Vec::new();
+    let mut represented_writers = BTreeSet::new();
+    let mut previous_sequence: Option<u64> = None;
+    let mut previous_cursor = 0;
+    for (observation, write) in accepted.iter().enumerate().filter(|(_, write)| {
+        write.target_slot == firefly.source_slot && write.target_generation == firefly.generation
+    }) {
+        let Some(sequence) = write.writer_sequence else {
+            assert_eq!(
+                write.mailbox_before, write.mailbox_after,
+                "an unrepresented write cannot change the original mailbox"
+            );
+            continue;
+        };
+        assert!(
+            represented_writers.insert(sequence),
+            "one observation per actual writer"
+        );
+        assert!(previous_sequence.is_none_or(|previous| previous < sequence));
+        assert!(previous_cursor <= write.event_cursor);
+        previous_sequence = Some(sequence);
+        previous_cursor = write.event_cursor;
+        assert!(write.source_scoped);
+        assert_eq!((write.pulse.owner, write.pulse.payload), (player, 250));
+        let (generation, packet) = write
+            .source_raw_impact
+            .as_ref()
+            .expect("actual ordinary Fireball child packet at its write");
+        assert_eq!(
+            (
+                packet.class,
+                packet.model,
+                packet.subspell_index,
+                packet.source_id
+            ),
+            (10, 0, 250, player)
+        );
+        assert!(
+            births
+                .iter()
+                .any(
+                    |&(impact, actual, parent, parent_generation, owner)| write.source_slot
+                        == Some(impact)
+                        && actual == *generation
+                        && owner == player
+                        && launches
+                            .iter()
+                            .any(|&(slot, launch_generation, launch)| slot == parent
+                                && launch_generation == parent_generation
+                                && launch.owner_entity_index == player
+                                && launch.holder_entity_index == holder.source_slot
+                                && charged.contains(&(slot, launch_generation)))
+                ),
+            "each admitted250 writer needs its own paid launch/child generations: write={accepted_summary:?} births={births:?} launch={launch_summary:?}"
+        );
+        let before = write
+            .mailbox_before
+            .expect("actual pre-write Firefly mailbox");
+        let after = write
+            .mailbox_after
+            .expect("actual post-write Firefly mailbox");
+        // Ordinary10C80 replaces an ownerless payload; otherwise it adds.
+        // This checks the actual writer arithmetic, not a multiple-of250 rule.
+        assert_eq!(
+            after,
+            (
+                if before.1 == 0 {
+                    250
+                } else {
+                    before.0.wrapping_add(250)
+                },
+                player
+            )
+        );
+        writes.push(AdmittedWrite {
+            observation,
+            event_cursor: write.event_cursor,
+            sequence,
+            before,
+            after,
+        });
+    }
+
+    // Effect event_cursor is the append boundary AFTER the write. A write
+    // with cursor<=DamageApplied's index precedes that consumer; after it,
+    // the next cursor is at least index+1. Preserve the frame's receipt bound
+    // too: several ordinary turns can share an unchanged event cursor.
+    let mut next_write = 0;
+    let mut next_damage = 0;
+    let mut mailbox = (0, 0);
+    let mut pending_writers = Vec::new();
+    let mut consumed_writers = BTreeSet::new();
+    let mut consumption_chain = Vec::new();
+    let mut life = original.life;
+    let fold_write = |write: &AdmittedWrite, mailbox: &mut (i32, u16), pending: &mut Vec<u64>| {
+        assert_eq!(
+            *mailbox, write.before,
+            "every observed write must start at the exact preceding write/clear: {write:?}"
+        );
+        *mailbox = write.after;
+        pending.push(write.sequence);
+    };
+    let mut previous_events_end = 0;
+    for boundary in &boundaries {
+        assert!(previous_events_end <= boundary.events_end);
+        previous_events_end = boundary.events_end;
+        let mut frame_consumptions = 0;
+        while next_damage < damage.len() && damage[next_damage].0 < boundary.events_end {
+            let (event, amount, lethal) = damage[next_damage];
+            while next_write < writes.len()
+                && writes[next_write].observation < boundary.writes_end
+                && writes[next_write].event_cursor <= event
+            {
+                fold_write(&writes[next_write], &mut mailbox, &mut pending_writers);
+                next_write += 1;
+            }
+            assert!(
+                !pending_writers.is_empty(),
+                "each consumption needs new admitted writers"
+            );
+            assert_eq!(
+                mailbox,
+                (amount, player),
+                "the complete preceding writer chain must equal the ACTUAL consumed amount: event={event} pending={pending_writers:?} writes={writes:?}"
+            );
+            let contributors = std::mem::take(&mut pending_writers);
+            assert!(
+                contributors
+                    .iter()
+                    .all(|sequence| consumed_writers.insert(*sequence)),
+                "an actual writer cannot fund two consumer events"
+            );
+            let before = life;
+            life = life.wrapping_sub(amount);
+            assert_eq!(lethal, life < 0);
+            consumption_chain.push((event, contributors, before, amount, life, lethal));
+            // Source25610/1BF90 clear only owner62 and retain payload5E.
+            // The frame-end mailbox or next ordinary write must witness it;
+            // Ordinary10C80 then replaces the ownerless retained payload.
+            mailbox = (amount, 0);
+            next_damage += 1;
+            frame_consumptions += 1;
+        }
+        while next_write < writes.len() && writes[next_write].observation < boundary.writes_end {
+            assert!(writes[next_write].event_cursor <= boundary.events_end);
+            fold_write(&writes[next_write], &mut mailbox, &mut pending_writers);
+            next_write += 1;
+        }
+        if frame_consumptions != 0 {
+            assert!(
+                boundary.callbacks >= frame_consumptions && boundary.source.is_some(),
+                "generation-bound DamageApplied must have its actual scheduled consumer: {boundary:?}"
+            );
+        }
+        if let Some((handle, actual_life, actual_mailbox)) = boundary.source {
+            assert_eq!(handle, firefly);
+            assert_eq!(
+                actual_life, life,
+                "exact continuous600HP arithmetic at the actual source boundary: chain={consumption_chain:?}"
+            );
+            assert_eq!(
+                actual_mailbox, mailbox,
+                "observed source mailbox must agree after consumers and any later writes: {boundary:?}"
+            );
+        } else {
+            assert!(
+                life < 0 && mailbox.1 == 0 && pending_writers.is_empty(),
+                "original generation may disappear only after its reconstructed paid fatal subtraction"
+            );
+        }
+    }
+    assert_eq!(next_write, writes.len());
+    assert_eq!(next_damage, damage.len());
+    assert!(pending_writers.is_empty());
+    assert_eq!(
+        consumed_writers, represented_writers,
+        "every admitted writer is consumed exactly once"
+    );
+    assert!(
+        life < 0 && damage.last().is_some_and(|row| row.2),
+        "unchanged600HP original165 must die to this fixed held burst: life={life} damage={damage:?} current={:?} player={:?} muzzle={muzzle:?} aim={aim:?} scores={source_scores:?} launches={launch_summary:?} impacts={births:?} terminals={terminals:?} accepted={accepted_summary:?} history={burst_history:?}",
+        simulation(game)
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|row| row.source_entity_index == firefly.source_slot)
+            .map(|row| (
+                row.life,
+                row.action,
+                row.position,
+                row.source_byte_3e,
+                row.byte_0x46_70,
+                row.pending_word_0x62,
+                row.word_0x26
+            )),
+        simulation(game).state.position
+    );
+    assert!(simulation(game).source_arena().resolve(firefly).is_none());
+    let sphere: SourceEntityHandle = sphere.expect("real paid death produced its mana sphere");
+    eprintln!(
+        "real Level4 paid Firefly death: source={firefly:?} sphere={sphere:?} paid_launches={} debit={debited} consumed={consumption_chain:?} writes={writes:?}",
+        launches.len()
+    );
+
+    // Declare a prior real Castle at a source-valid nearby site. Its bank and
+    // capacity are fixed above; no sphere/collector transform or relation is
+    // edited. This is not proof of earning that prior Castle or bank.
+    let sphere_position = simulation(game)
+        .economy()
+        .spheres()
+        .iter()
+        .find(|row| row.active && row.source_entity_index == sphere.source_slot)
+        .unwrap()
+        .position;
+    let castle = {
+        let sim = simulation_mut(game);
+        for (stage, footprint) in crate::native_world::campaign_castle_stage_footprints().unwrap() {
+            sim.economy_mut()
+                .set_castle_stage_footprint(stage, footprint);
+        }
+        let site = (1_u16..32)
+            .flat_map(|y| {
+                (1_u16..32).map(move |x| Position {
+                    x: x * 2048,
+                    y: y * 2048,
+                    z: 0,
+                })
+            })
+            .filter(|position| crate::distance_3d_wrapped(*position, sphere_position) >= 2048)
+            .filter(|position| {
+                !sim.economy().castle_projectile_site_blocked(
+                    *position,
+                    sim.entities(),
+                    sim.canonical_terrain(),
+                )
+            })
+            .min_by_key(|position| crate::distance_3d_wrapped(*position, sphere_position))
+            .expect("declared prior Castle has an actual admitted site");
+        let castle = sim.economy_mut().build_castle(site, player).unwrap();
+        assert!(
+            sim.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, bank + 2 * original.mana)
+        );
+        assert!(
+            sim.economy_mut()
+                .set_castle_mana_prerequisite_for_test(castle, bank)
+        );
+        castle
+    };
+    public_step(
+        game,
+        GameCommand {
+            assign_spell: Some(SpellAssignment {
+                spell_id: crate::game_definition::SemanticId::parse("spell.possession").unwrap(),
+                tier: 0,
+                hand: SpellAssignmentHand::Left,
+                holder_actor: None,
+            }),
+            ..Default::default()
+        },
+        "mana-prefix carried PossessionI assignment",
+        0,
+    );
+    assert_eq!(
+        simulation(game).economy().castle_at(castle).unwrap().mana,
+        bank
+    );
+    assert!(mission_four_mana_percent(simulation(game)) < 40);
+    assert_mana_prefix_waiting(simulation(game), gate);
+    let castle_handle = simulation(game).source_arena().handle(castle).unwrap();
+    let target = simulation(game)
+        .possession_guidance_target_top_for_test(sphere.source_slot)
+        .unwrap();
+    let possession_aim = declare_mana_prefix_firing_pose(simulation_mut(game), target, 2048);
+    let possession_holder = simulation(game)
+        .shared_spells()
+        .local_player()
+        .enabled_spell_holders[1];
+    let possession_holder = simulation(game)
+        .source_arena()
+        .handle(possession_holder)
+        .unwrap();
+    let mut no_possession = game.backend().compatibility_campaign().clone();
+    let mut claim = false;
+    let mut possession_launches = Vec::new();
+    let mut possession_charged = BTreeSet::new();
+    let mut possession_debited = 0_i64;
+    let mut collected: Option<(SourceEntityHandle, i32)> = None;
+    let mut credited = false;
+    let mut hidden = None;
+    let mut reclaimed = false;
+    let mut claim_receipts = Vec::new();
+    let castle_position = simulation(game)
+        .economy()
+        .castle_at(castle)
+        .unwrap()
+        .position;
+    let bound = 32
+        + 2 * (crate::distance_3d_wrapped(sphere_position, castle_position) as usize).div_ceil(48)
+        + 192;
+    start_possession_trace();
+    for turn in 0..bound {
+        let before_store = simulation(game).economy().castle_at(castle).unwrap().mana;
+        let children = simulation(game).economy().castle_children().to_vec();
+        let events = simulation(game).economy().events().len();
+        public_step(
+            game,
+            GameCommand {
+                cast_left: turn == 0,
+                ..Default::default()
+            },
+            "one paid mana claim and ordinary collection",
+            turn,
+        );
+        let sim = simulation(game);
+        let mut own_this_turn = Vec::new();
+        for row in sim.economy().possession_projectiles().iter().filter(|row| {
+            row.source_id_entity_index == player
+                && row.holder_entity_index == possession_holder.source_slot
+        }) {
+            if let Some(handle) = sim.source_arena().handle(row.source_entity_index)
+                && !possession_launches.contains(&handle)
+            {
+                possession_launches.push(handle);
+                own_this_turn.push((handle.source_slot, handle.generation));
+            }
+        }
+        let payment = observe_mana_prefix_payment(
+            sim,
+            possession_holder,
+            player_handle,
+            POSSESSION_PROPERTIES.tiers[0].mana_cost,
+            &own_this_turn,
+        );
+        possession_charged.extend(payment.0);
+        possession_debited += payment.1;
+        assert_eq!(sim.source_arena().handle(castle), Some(castle_handle));
+        for event in &sim.economy().events()[events..] {
+            match *event {
+                Level2EconomyEvent::ManaSphereClaimed {
+                    sphere_id,
+                    owner_entity_index,
+                } if sphere_id == u32::from(sphere.source_slot) && owner_entity_index == player => {
+                    assert_eq!(sim.source_arena().handle(sphere.source_slot), Some(sphere));
+                    claim = true;
+                }
+                Level2EconomyEvent::CastleDefenderCollectedSphere {
+                    defender_slot,
+                    sphere_id,
+                    mana,
+                } if sphere_id == u32::from(sphere.source_slot) => {
+                    assert!(claim && collected.is_none());
+                    assert_eq!(mana, original.mana);
+                    assert_eq!(sim.source_arena().handle(sphere.source_slot), Some(sphere));
+                    let before = children
+                        .iter()
+                        .find(|row| row.source_entity_index == defender_slot)
+                        .unwrap();
+                    let after = sim
+                        .economy()
+                        .castle_children()
+                        .iter()
+                        .find(|row| row.source_entity_index == defender_slot)
+                        .unwrap();
+                    assert_eq!(
+                        (before.mana, after.mana, after.id_entity_index),
+                        (0, mana, player)
+                    );
+                    collected = Some((sim.source_arena().handle(defender_slot).unwrap(), mana));
+                    hidden = Some(turn);
+                    assert!(
+                        !sim.campaign_entity_presentations(0)
+                            .unwrap()
+                            .iter()
+                            .any(|view| view.entity_index == sphere.source_slot)
+                    );
+                }
+                Level2EconomyEvent::CastleDefenderArrived {
+                    defender_slot,
+                    castle_id,
+                    mana,
+                } if castle_id == castle
+                    && collected.is_some_and(|(holder, payload)| {
+                        holder.source_slot == defender_slot && payload == mana
+                    }) =>
+                {
+                    let (holder, payload) = collected.unwrap();
+                    assert!(!credited);
+                    assert_eq!(sim.source_arena().handle(defender_slot), Some(holder));
+                    assert_eq!(before_store, bank);
+                    assert_eq!(
+                        sim.economy().castle_at(castle).unwrap().mana,
+                        bank + payload
+                    );
+                    assert_eq!(
+                        sim.economy().owner_mana_aggregate(player),
+                        0,
+                        "a ground sphere/3-3 carrier never supplies owned10/45 objective mana"
+                    );
+                    assert!(100 * bank / sim.economy().owner_mana_global() < 40);
+                    assert!(mission_four_mana_percent(sim) >= 40);
+                    let objective =
+                        &sim.runtime().objectives[usize::from(sim.state.player_color_index)];
+                    assert_eq!(
+                        (
+                            objective.stage_selectors[0],
+                            objective.stage_selectors[1],
+                            objective.text_selector,
+                            objective.is_level_end
+                        ),
+                        (2, 1, 1, 0)
+                    );
+                    assert_eq!(sim.source_arena().handle(6), Some(gate));
+                    assert!(!sim.entities()[6].drawing_disabled());
+                    assert!(!sim.dispatch_events().iter().any(|event| matches!(
+                        event,
+                        Mc2DispatchEvent::AuthoredGroupActivated {
+                            source_slot: 6,
+                            group: 6,
+                            ..
+                        }
+                    )));
+                    credited = true;
+                }
+                _ => {}
+            }
+        }
+        if hidden.is_some_and(|hidden| turn == hidden + 1) {
+            assert!(sim.source_arena().resolve(sphere).is_none());
+            reclaimed = true;
+        }
+        if !credited {
+            assert_eq!(sim.economy().castle_at(castle).unwrap().mana, bank);
+            assert!(mission_four_mana_percent(sim) < 40);
+            assert_mana_prefix_waiting(sim, gate);
+        }
+        no_possession.step(PlayerCommand::default(), 0);
+        no_dispatch_errors(
+            no_possession.simulation(),
+            "equal elapsed unclaimed mana/no crossing",
+            turn,
+        );
+        assert_eq!(
+            no_possession
+                .simulation()
+                .economy()
+                .castle_at(castle)
+                .unwrap()
+                .mana,
+            bank
+        );
+        assert!(mission_four_mana_percent(no_possession.simulation()) < 40);
+        assert_mana_prefix_waiting(no_possession.simulation(), gate);
+        if turn < 8 || turn % 32 == 0 || credited {
+            let castle_now = sim.economy().castle_at(castle).unwrap();
+            let sphere_now = sim
+                .economy()
+                .spheres()
+                .iter()
+                .find(|row| row.source_entity_index == sphere.source_slot)
+                .map(|row| {
+                    (
+                        sim.source_arena().handle(sphere.source_slot),
+                        row.position,
+                        row.mana,
+                        row.player_entity_index,
+                        row.pending_delete,
+                        row.control_flags,
+                        row.assigned_defender_slot,
+                    )
+                });
+            let collectors = sim
+                .economy()
+                .castle_children()
+                .iter()
+                .filter(|row| row.active && row.source_class == 3 && row.model == 3)
+                .map(|row| {
+                    (
+                        sim.source_arena().handle(row.source_entity_index),
+                        row.position,
+                        row.target_sphere_slot,
+                        row.mana,
+                        row.action,
+                        row.speed,
+                    )
+                })
+                .collect::<Vec<_>>();
+            claim_receipts.push((
+                turn,
+                sim.economy().owner_mana_global(),
+                (
+                    castle_now.mana,
+                    castle_now.mana_capacity,
+                    castle_now.level,
+                    castle_now.action,
+                ),
+                claim,
+                collected,
+                credited,
+                sphere_now,
+                collectors,
+            ));
+        }
+        if credited {
+            assert!(reclaimed);
+            break;
+        }
+    }
+    let possession_trace = take_possession_trace();
+    assert!(
+        claim && credited && reclaimed,
+        "real same-generation sphere must credit Castle before mana40: sphere={sphere:?} bank={bank} aim={possession_aim:?} history={claim_receipts:?} trace={possession_trace:?}"
+    );
+    assert_eq!(possession_launches.len(), 1);
+    assert!(possession_charged.contains(&(
+        possession_launches[0].source_slot,
+        possession_launches[0].generation
+    )));
+    assert!(possession_debited >= i64::from(POSSESSION_PROPERTIES.tiers[0].mana_cost));
+    assert!(possession_trace.iter().any(|receipt| matches!(receipt,
+        PossessionSourceReceipt::MailboxWrite { effect, target, source_id, amount, possessor, .. }
+            if *target == sphere && *source_id == player && *amount == 0 && *possessor == player
+                && possession_trace.iter().any(|birth| matches!(birth,
+                    PossessionSourceReceipt::ImpactBirth { effect: actual, projectile, holder, owner, .. }
+                        if actual == effect && *projectile == possession_launches[0]
+                            && *holder == possession_holder && *owner == player_handle)))));
+
+    let mut published = false;
+    for turn in 0..8 {
+        assert_eq!(simulation(game).source_arena().handle(6), Some(gate));
+        public_step(
+            game,
+            GameCommand::default(),
+            "following real mana-complete switch",
+            turn,
+        );
+        no_possession.step(PlayerCommand::default(), 0);
+        no_dispatch_errors(
+            no_possession.simulation(),
+            "equal elapsed no mana-complete switch",
+            turn,
+        );
+        assert_mana_prefix_waiting(no_possession.simulation(), gate);
+        let sim = simulation(game);
+        if sim.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 6, group: 6, authored_indices, .. }
+                if authored_indices.as_ref() == GROUP6)) {
+            assert!(sim.entities()[6].drawing_disabled());
+            published = true;
+            break;
+        }
+    }
+    assert!(
+        published,
+        "real earned mana40 must reach original reset6's group6 callback"
+    );
+    let roots = simulation(game)
+        .creature_runtime_census()
+        .roots_of_kind(CreatureKind::Spider)
+        .map(|row| (row.origin, row.handle))
+        .collect::<Vec<_>>();
+    assert_eq!(roots.len(), 6);
+    for authored_record in [137, 138, 139, 724, 725, 726] {
+        let handle = roots
+            .iter()
+            .find_map(|&(origin, handle)| {
+                (origin == CreatureRootOrigin::AuthoredRecord { authored_record }).then_some(handle)
+            })
+            .unwrap();
+        let sim = simulation(game);
+        let row = &sim.entities()[usize::from(handle.source_slot)];
+        assert_eq!(
+            (row.class, row.model, row.life, row.max_life),
+            (5, 20, 5500, 5500)
+        );
+        assert!(
+            sim.campaign_entity_presentations(0)
+                .unwrap()
+                .iter()
+                .any(|view| view.entity_index == handle.source_slot
+                    && view.render_parameter_index == 288)
+        );
+    }
+    let phases_before = roots
+        .iter()
+        .map(|&(_, handle)| simulation(game).entities()[usize::from(handle.source_slot)].phase)
+        .collect::<Vec<_>>();
+    public_step(
+        game,
+        GameCommand::default(),
+        "six real living Spiders block ordered absence",
+        0,
+    );
+    // The scheduler observer is thread-local, not session-owned. Capture the
+    // actual positive pass BEFORE the mirrored control steps and replaces it.
+    // Source58F00 consumes ObjectiveDone after UpdateEntities; the ordinary
+    // pass itself must still reach each original Spider and its phase tail.
+    let living_pass = simulation(game).cf10_production_schedule_receipts();
+    no_possession.step(PlayerCommand::default(), 0);
+    no_dispatch_errors(
+        no_possession.simulation(),
+        "equal elapsed final no-crossing",
+        0,
+    );
+    assert_mana_prefix_waiting(no_possession.simulation(), gate);
+    let sim = simulation(game);
+    let objective = &sim.runtime().objectives[usize::from(sim.state.player_color_index)];
+    assert_eq!(
+        (
+            objective.stage_selectors[0],
+            objective.stage_selectors[1],
+            objective.text_selector,
+            objective.is_level_end,
+            objective.done
+        ),
+        (2, 1, 1, 0, 0)
+    );
+    for (&(_, handle), phase) in roots.iter().zip(phases_before) {
+        assert_eq!(sim.source_arena().handle(handle.source_slot), Some(handle));
+        assert!(
+            sim.creature_identity_for_source_slot(handle.source_slot)
+                .unwrap()
+                .living
+        );
+        let row = &sim.entities()[usize::from(handle.source_slot)];
+        assert_eq!(row.phase, phase.wrapping_add(1));
+        assert_eq!((row.life, row.max_life), (5500, 5500));
+        assert!(living_pass.iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::CallbackCompleted { slot, .. } if *slot == handle.source_slot)));
+        assert!(living_pass.iter().any(|receipt| matches!(receipt,
+            crate::campaign::schedule::ScheduleReceipt::EpilogueCompleted { slot, .. } if *slot == handle.source_slot)));
+    }
+    eprintln!(
+        "real Level4 mana prefix: Firefly={firefly:?} sphere={sphere:?} Castle={castle_handle:?} prior_bank={bank} earned={} source_global={} percent={} gate={gate:?} roots={roots:?}",
+        original.mana,
+        sim.economy().owner_mana_global(),
+        mission_four_mana_percent(sim)
+    );
+}
+
+#[test]
+fn mission_four_earned_mana_forty_drives_original_switch_and_six_living_spiders() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::GameSession;
+    let package = mission_four_root();
+    let definition = load_mc2_campaign(
+        &package,
+        &crate::game_definition::default_catalog().unwrap(),
+    )
+    .unwrap();
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        2004,
+        Mc2CampaignInputs::new(&package),
+    )
+    .unwrap();
+    earn_mission_four_mana_and_spawn_spiders(&mut game);
+}
+
 #[test]
 fn mission_four_actual_spider_web_contact_recovery_and_paid_meteor_cleanup() {
     use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};

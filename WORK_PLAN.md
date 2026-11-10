@@ -538,6 +538,38 @@ alone is not earned mana. Keep the full route and dependencies open. Do not
 replace the real six-death/exit acceptance with this bounded prefix or create
 an automated mission-combat script.
 
+2026-11-10: the connected prefix now PASSES on current source C3
+(`generated/objective-20261110-integration/candidate-3`, 5.644s). Four held
+paid FireballI requests debit400; actual source impacts consume500 then250
+against original600HP Firefly165, producing the real300-mana sphere. Paid
+Possession and the same-generation defender's exact Castle deposit cross40%,
+then original reset6 publishes all six living5500HP Spiders. Positive
+callback/epilogue receipts and exact phase+1 are captured before the mirrored
+negative run overwrites thread-local receipts. This was an observation error,
+not a source objective-pause defect. All no-cast/no-Possession gates remain.
+
+Independent source review found a real Firefly discrepancy: the combined
+consumer cleared both damage and owner, while source1BF90/1C560/1DDA0/1E1C0/
+25610 clear only owner62 and retain damage5E. Root repaired the canonical
+Firefly owner; its existing check now proves consume100→residue(100,0)→actual
+Contact25→125→next consumption/residue125 (1.112s). Linked-child and actual Cave
+adoption/attack/rebind checks pass1.047/2.741s. The paid-path ledger verifies
+exact generation-bound impact writes, numeric aggregation, life and ownerless
+residue at ordinary boundaries. It does not claim direct latest-writer
+consumption metadata against every identical-value unrelated overwrite.
+Fresh bounded source/gate review supports the two-file change. No pre-existing
+Spider bytes were removed. C1 exposed the incorrect per-impact250 consumption
+oracle; C2 reached the deposit/spawn path but read the negative clone's final
+scheduler receipts. C3 corrects both and preserves full acceptance.
+
+The prior Castle bank, carried spells/player funding and initial poses remain
+declared controls. This is not earning all40% from zero, six ordinary Spider
+deaths/exit, complete Level4 or full `.7` acceptance. Commit/push and matching
+Original delivery for the Firefly production fix are in progress. Current
+shared native headers have advanced in the separate character thread, so
+Original qualification may require rebuilding its existing unchanged client;
+do not weaken its source/contract gates or import Modern/Voxel assets.
+
 The first prefix candidate (C2 under
 `generated/objective-20261109-integration`) typechecks and builds on Rig, but
 fails its real Firefly-death predicate. Same-binary read-only GDB confirms all
