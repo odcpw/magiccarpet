@@ -24,6 +24,7 @@ MESHES = ['Human', 'Human.donitz_monk_robe', 'Walk skeletal lower cloth',
           'Brown shoe L', 'Brown shoe R', 'Carrier veil', 'Carrier vessel']
 BONE = 'Carrier vessel bone'
 HEAD = 'DEF-spine.006'
+FOOT_RADIUS = .08
 
 
 def vertices(obj):
@@ -121,7 +122,7 @@ def balance_vessel(rig, rest, headrest):
             point=attached @ anchor
             # The jar foot is horizontal. The highest crown surface under its
             # footprint makes contact without embedding the foot in the wrap.
-            near=[v.z for v in vertices(crown) if (v.x-point.x)**2+(v.y-point.y)**2 <= .08**2]
+            near=[v.z for v in vertices(crown) if (v.x-point.x)**2+(v.y-point.y)**2 <= FOOT_RADIUS**2]
             if not near: raise ValueError(f'No crown support at {name} {frame}')
             point.z=max(near)+.0005
             upright=Matrix.Translation(point-anchor)
@@ -265,7 +266,7 @@ def audit(out):
                 axis=(lip-base).normalized()
                 tilt=math.degrees(math.acos(max(-1,min(1,axis.z))))
                 near=[v.z for v in vertices(bpy.data.objects['Turban crown'])
-                      if (v.x-base.x)**2+(v.y-base.y)**2 <= .08**2]
+                      if (v.x-base.x)**2+(v.y-base.y)**2 <= FOOT_RADIUS**2]
                 if not near: raise ValueError(f'No crown support at {name} {step/2}')
                 gap=base.z-max(near)
                 max_tilt=max(max_tilt,tilt); min_gap=min(min_gap,gap); max_gap=max(max_gap,gap)
@@ -345,7 +346,8 @@ def package(out):
     speeds=json.loads((root/'research/private/generated/human-figure-20261109/mpfb-motion02/measurements-audited.json').read_text())
     manifest={'height':measure['heightAboveGroundOrigin'], 'walkSpeed':speeds['walkSpeed'],
               'runSpeed':speeds['runSpeed'], 'hitOverlayBones':measure['hitOverlayBones'],
-              'minBoneWeight':1e-7, 'uprightBone':BONE, 'clips':report['clips'],
+              'minBoneWeight':1e-7, 'uprightBone':BONE, 'uprightSupportBone':HEAD,
+              'uprightFootRadius':FOOT_RADIUS, 'clips':report['clips'],
               'materials':[{k:m[k] for k in ('name','albedo','orm')} for m in maps['materials']]}
     (runtime/'VillagerCarrier.clips.json').write_text(json.dumps(manifest,indent=2)+'\n')
     receipt={'schema':'mc-villager-carrier-package/v1', 'inputSha256':SOURCE_SHA,
@@ -397,14 +399,30 @@ def compare(other, out):
     print('COMPARE',json.dumps(report),flush=True)
     if report['maxErrorMeters'] > .00001: raise ValueError('Body or released vessel changed by more than 0.01 mm')
 
+
+def derive_manifest(source, destination):
+    """Make a fresh support-aware manifest without rewriting the FBX or input."""
+    manifest=json.loads(source.read_text())
+    if manifest.get('uprightBone') != BONE:
+        raise ValueError('Input manifest is not the authored carrier')
+    manifest['uprightSupportBone']=HEAD
+    manifest['uprightFootRadius']=FOOT_RADIUS
+    with destination.open('x') as output:
+        json.dump(manifest,output,indent=2)
+        output.write('\n')
+    print('CARRIER_MANIFEST',destination,flush=True)
+
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--author',type=Path); p.add_argument('--audit',type=Path); p.add_argument('--preview',type=Path); p.add_argument('--package',type=Path); p.add_argument('--compare',type=Path); p.add_argument('--reference',type=Path)
+    p=argparse.ArgumentParser(); p.add_argument('--author',type=Path); p.add_argument('--audit',type=Path); p.add_argument('--preview',type=Path); p.add_argument('--package',type=Path); p.add_argument('--compare',type=Path); p.add_argument('--reference',type=Path); p.add_argument('--derive-manifest',type=Path); p.add_argument('--output',type=Path)
     args=p.parse_args(sys.argv[sys.argv.index('--')+1:])
-    if sum(bool(x) for x in (args.author,args.audit,args.preview,args.package,args.compare)) != 1: p.error('choose exactly one mode')
+    if sum(bool(x) for x in (args.author,args.audit,args.preview,args.package,args.compare,args.derive_manifest)) != 1: p.error('choose exactly one mode')
     if args.author: author(args.author.resolve())
     elif args.audit: audit(args.audit.resolve())
     elif args.preview: preview(args.preview.resolve())
     elif args.package: package(args.package.resolve())
+    elif args.derive_manifest:
+        if not args.output: p.error('--derive-manifest requires --output')
+        derive_manifest(args.derive_manifest,args.output)
     else:
         if not args.reference: p.error('--compare requires --reference')
         compare(args.reference,args.compare.resolve())
