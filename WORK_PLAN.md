@@ -655,21 +655,55 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current connected capability is `mc-bhq.11`: actual mana/experience jar10/91
-ordinary factory, scheduled action98, three sphere emissions and even-phase
-26-family reward consumers. CrimsonForge owns canonical `world::items` behavior,
-thin simulation joins and the connected check. StormyFalcon owns typed jar
-properties/binding and the existing configured-item seam; Root CopperMountain
-owns shared progression context/cap/announcement joins and serialized checks,
-push and installation. Raw Imported scheduling omits98 and generic authored
-admission omits91, despite the real constructor/callback. Existing direct-step
-tests and final Volcano birth do not prove its scheduled consumers. No shipped
-authored/reset91 row occurs in the30-package census: use a declared single
-source-language91 row with real Level4 switch124/group37, retaining every
-original row/objective. Preserve source RNG/allocation/update order, natural
-child lifetime and persistent parent; invent no jar pickup/expiry. Scroll and
-passive-item checkpoints below are installed; do not restart them. Full `.11`,
-`.7` and dependencies remain open. Modern/Voxel stays in its separate thread.
+Current installed world checkpoint is the reward jar below. Continue original
+`mc-bhq.11` exit/secret-entry/carry acceptance and concrete source admission
+gaps; do not restart installed scroll, passive item or jar paths. Bounded source
+inspection found no missing ordinary-exit join: Level1 rows132/137, human
+action12, result10 and the authoritative flow consumer are connected. The
+existing earned-Level1 runtime test is long/adaptive and has NOT been run;
+Oliver's no automated playthrough rule still applies. Do not substitute a
+forced objective/group completion and call it earned exit proof. Secret entry
+and return qualification remain open. An existing living-actor revival negative
+fails identically on the prior installed Scroll C6 and current Jar C2; its
+source/admission contract needs bounded reconciliation, not assertion removal.
+CrimsonForge and StormyFalcon completed their frozen handbacks; Root
+CopperMountain owns serialized integration, checks, push and installation.
+Keep full `.11`, `.7`, `.6qf.2`, `.bhq.10` and their dependencies open.
+Modern/Voxel remains in its separate thread.
+
+Installed reward-jar checkpoint: runtime `d70dc599`, native
+`97584d162e0a5909c9d4aa4dacc0c1bf998f662a3d0f3fcc4adbd2f7990d3058`.
+Canonical `world::items::reward_source` now owns the source4EF30 controller,
+typed default health10000, ordinary authored91/Imported98 wiring and actual
+32CF0 consumers. The sphere path uses source50080→500C0, no extra child RNG
+draws, five parent draws per birth, real speed/roll/particle dimensions and
+protected140-life behavior. Shared progression joins current human/holder
+classification, actual map context, signed increments, Castle SetSpell before
+cap/tier, and existing runtime/core projections. Whole Level4 plus one declared
+unused source-language91 row reaches real124/group37, jar126g1, actual emissions
+and26-family XP, paid100 Possession192g1→impact205g1→claim53g2, natural hide139,
+following reclaim, persistent parent and reset/reopen (132.739s). No shipped91
+occurrence exists in the30-package census; genuine final-Volcano birth remains
+separate earlier evidence. Prior spell carry/funding/poses are declared controls.
+Protected children are excluded from Castle collection in source; no deposit
+or natural active-holder/typed-nonspell SetSpell coverage is claimed.
+
+Source/definition/shared-boundary/order/passive/scroll checks and workspace
+alltargets pass. The one revival negative above remains an unchanged baseline
+failure, not a clean-suite claim. C3 differs from C2 only in its fixture:
+preserve configured rows while materializing prior carry, and let corridor195
+settle naturally1→3 before approach. Fresh bounded source/gate review supports
+the corrected route; no assertion weakening. UBS added-line findings are public
+test equality false positives and an intentional invalid-map test failure;
+legacy whole-file/format debt remains. Strict Rig release235.905s, all662 inputs
+and worker/returned15497768bytes match. Original native refresh `build-h9h3w259`
+matches470Rust/200UI/142player-file hashes, both plugins and unchanged contract.
+Root viewed canonical map/loading/NightSpire terrain/HUD with matching mapped
+native, one portal/zero retries; owned processes stopped. No native jar encounter,
+human combat/FPS/hardware audio/full missions/old saves proof. Evidence:
+`generated/jar-20261110-integration/candidate-3` and unchanged C2 checks. Obsolete
+Jar C2 and Scroll C6 test executables were deleted after installation; logs,
+source, caches, current Jar C3 and current player remain, with no new archive.
 
 Installed Experience Scroll checkpoint: source `6f49e2a2`, native
 `5824381c160d020314f96ebcf8dc9e01519b94fdaaf6e2cad6d3cbec3b3e823d`,
