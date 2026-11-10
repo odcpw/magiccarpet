@@ -3,7 +3,7 @@
 Run inside Blender against the verified upper-prepared.blend with --author OUT;
 then reopen OUT/master/VillagerCarrier.blend and run --audit OUT. Both modes
 refuse to replace their outputs. The pot is a separate editable skinned mesh;
-its dedicated bone follows the head except for the authored Death release.
+its dedicated bone balances the jar upright on the head, then releases it during Death.
 """
 import argparse
 import hashlib
@@ -98,6 +98,59 @@ def create_veil(rig):
     g=obj.vertex_groups.new(name=HEAD); g.add(list(range(len(vs))),1,'REPLACE')
     mod=obj.modifiers.new('Veil LBS','ARMATURE'); mod.object=rig
 
+
+def balance_vessel(rig, rest, headrest):
+    """Bake gravity-upright carried poses with a crown-supported contact point.
+
+    Death frames 56 onward are the original independent release/settle track;
+    frames 41--55 blend from the balanced pose into that original release.
+    """
+    scene=bpy.context.scene
+    pb=rig.pose.bones[BONE]; pb.rotation_mode='QUATERNION'
+    crown=bpy.data.objects['Turban crown']
+    anchor=Vector((0, -.04, 1.781))
+    for name in ACTIONS:
+        a=action(rig,name)
+        first,last=map(round,a.frame_range)
+        if name=='Death': last=55
+        previous=None
+        for frame in range(first,last+1):
+            scene.frame_set(frame); bpy.context.view_layer.update()
+            head=rig.evaluated_get(bpy.context.evaluated_depsgraph_get()).pose.bones[HEAD].matrix.copy()
+            attached=head @ headrest.inverted()
+            point=attached @ anchor
+            # The jar foot is horizontal. The highest crown surface under its
+            # footprint makes contact without embedding the foot in the wrap.
+            near=[v.z for v in vertices(crown) if (v.x-point.x)**2+(v.y-point.y)**2 <= .08**2]
+            if not near: raise ValueError(f'No crown support at {name} {frame}')
+            point.z=max(near)+.0005
+            upright=Matrix.Translation(point-anchor)
+            if name=='Death' and frame>40:
+                # Retain existing death release exactly from frame 56 onward.
+                t=(frame-40)/16; t=t*t*(3-2*t)
+                aq=attached.to_quaternion()
+                uq=Quaternion((1,0,0,0))
+                contact=point.lerp(attached @ anchor,t)
+                matrix=(Matrix.Translation(contact) @ uq.slerp(aq,t).to_matrix().to_4x4()
+                        @ Matrix.Translation(-anchor))
+            else:
+                matrix=upright
+            desired=matrix @ rest
+            basis=pb.bone.convert_local_to_pose(desired, pb.bone.matrix_local,
+                parent_matrix=head, parent_matrix_local=rig.data.bones[HEAD].matrix_local, invert=True)
+            pb.matrix_basis=basis
+            if previous is not None and pb.rotation_quaternion.dot(previous)<0:
+                pb.rotation_quaternion.negate()
+            previous=pb.rotation_quaternion.copy()
+            for prop in ('location','rotation_quaternion','scale'):
+                pb.keyframe_insert(data_path=prop,frame=frame,group=BONE)
+        for layer in a.layers:
+            for strip in layer.strips:
+                for bag in strip.channelbags:
+                    for curve in bag.fcurves:
+                        if BONE in curve.data_path:
+                            for point in curve.keyframe_points: point.interpolation='LINEAR'
+
 def author(out):
     source = Path(bpy.data.filepath)
     if hashlib.sha256(source.read_bytes()).hexdigest() != SOURCE_SHA:
@@ -174,7 +227,15 @@ def author(out):
                 for curve in bag.fcurves:
                     if BONE in curve.data_path:
                         for point in curve.keyframe_points: point.interpolation = 'LINEAR'
-    action(rig, 'Idle'); scene.frame_set(1)
+    action(rig, 'Idle'); scene.frame_set(1); bpy.context.view_layer.update()
+    # Some authoring controls have no Idle curves. Preserve the original
+    # starting state across the bake, especially after visiting Death.
+    baseline={p.name:p.matrix_basis.copy() for p in rig.pose.bones if p.name != BONE}
+    balance_vessel(rig, rest, headrest)
+    action(rig, 'Idle')
+    for pose in rig.pose.bones:
+        if pose.name in baseline: pose.matrix_basis=baseline[pose.name]
+    scene.frame_set(1); bpy.context.view_layer.update()
     bpy.ops.wm.save_as_mainfile(filepath=str((out/'master/VillagerCarrier.blend').resolve()))
     print('CARRIER_MASTER', out/'master/VillagerCarrier.blend', flush=True)
 
@@ -185,19 +246,41 @@ def audit(out):
     scene = bpy.context.scene; rig = bpy.data.objects['VillagerRig']
     meshes = [bpy.data.objects[n] for n in MESHES]
     report = {'meshes': MESHES, 'fps':scene.render.fps/scene.render.fps_base,
-              'clips':{}, 'hitOverlayBones':['DEF-spine.003','DEF-spine.004','DEF-spine.005','DEF-spine.006']}
+              'clips':{}, 'hitOverlayBones':['DEF-spine.003','DEF-spine.004','DEF-spine.005','DEF-spine.006',BONE]}
     for name in ACTIONS:
         a = action(rig, name); first,last=map(round,a.frame_range); lo=math.inf; potlo=math.inf
         worst = None
+        max_tilt=0.0; min_gap=math.inf; max_gap=-math.inf; max_anchor_offset=0.0
         for step in range(first*2, last*2+1):
             scene.frame_set(step//2, subframe=(step%2)*.5); bpy.context.view_layer.update()
             lower=min(p.z for obj in meshes for p in vertices(obj))
-            pmin=min(p.z for p in vertices(meshes[-1]))
+            potpoints=vertices(meshes[-1]); pmin=min(p.z for p in potpoints)
+            base=sum(potpoints[:48], Vector())/48
+            if name == 'Death' and step <= 112:
+                head=rig.pose.bones[HEAD].matrix @ rig.data.bones[HEAD].matrix_local.inverted()
+                anchor=head @ Vector((0,-.04,1.781))
+                max_anchor_offset=max(max_anchor_offset,(base-anchor).length)
+            if name != 'Death':
+                lip=sum(potpoints[12*48:13*48], Vector())/48
+                axis=(lip-base).normalized()
+                tilt=math.degrees(math.acos(max(-1,min(1,axis.z))))
+                near=[v.z for v in vertices(bpy.data.objects['Turban crown'])
+                      if (v.x-base.x)**2+(v.y-base.y)**2 <= .08**2]
+                if not near: raise ValueError(f'No crown support at {name} {step/2}')
+                gap=base.z-max(near)
+                max_tilt=max(max_tilt,tilt); min_gap=min(min_gap,gap); max_gap=max(max_gap,gap)
             if lower < lo: lo=lower; worst=step/2
             potlo=min(potlo,pmin)
             if name == 'Idle' and step == first*2:
                 report['heightAboveGroundOrigin']=max(p.z for obj in meshes for p in vertices(obj))
         report['clips'][name]={'first':first, 'last':last,'minimum':lo, 'vesselMinimum':potlo,'worstFrame':worst,'sampleStep':.5}
+        if name != 'Death':
+            report['clips'][name].update(maxVesselTiltDegrees=max_tilt,minSupportGap=min_gap,maxSupportGap=max_gap)
+            if max_tilt > .05 or min_gap < -.002 or max_gap > .004:
+                raise ValueError(f'Balance/support failed: {name}, {max_tilt}, {min_gap}, {max_gap}')
+        else:
+            report['clips'][name]['maxPreReleaseAnchorOffset']=max_anchor_offset
+            if max_anchor_offset > .035: raise ValueError('Vessel detached before release')
         print('COSTUME',name,report['clips'][name],flush=True)
         if lo < -.003: raise ValueError('Floor penetration: '+name)
     path.write_text(json.dumps(report,indent=2)+'\n')
@@ -223,7 +306,7 @@ def preview(out):
     scene.render.image_settings.file_format='PNG'
     bpy.ops.object.camera_add(); camera=bpy.context.object; scene.camera=camera
     camera.data.type='ORTHO'; camera.data.ortho_scale=2.7
-    for clip, frame in [('Idle',1),('Walk',31),('Run',20),('Hit',31),('Death',56),('Death',100),('Death',148),('Death',264)]:
+    for clip, frame in [('Idle',1),('Walk',31),('Run',20),('Run',38),('Run',58),('Hit',31),('Death',40),('Death',48),('Death',55),('Death',56),('Death',100),('Death',148),('Death',264)]:
         action(rig,clip); scene.frame_set(frame); bpy.context.view_layer.update()
         points=[point for obj in (bpy.data.objects[n] for n in MESHES) for point in vertices(obj)]
         low=Vector(tuple(min(p[i] for p in points) for i in range(3)))
@@ -262,7 +345,7 @@ def package(out):
     speeds=json.loads((root/'research/private/generated/human-figure-20261109/mpfb-motion02/measurements-audited.json').read_text())
     manifest={'height':measure['heightAboveGroundOrigin'], 'walkSpeed':speeds['walkSpeed'],
               'runSpeed':speeds['runSpeed'], 'hitOverlayBones':measure['hitOverlayBones'],
-              'minBoneWeight':1e-7, 'clips':report['clips'],
+              'minBoneWeight':1e-7, 'uprightBone':BONE, 'clips':report['clips'],
               'materials':[{k:m[k] for k in ('name','albedo','orm')} for m in maps['materials']]}
     (runtime/'VillagerCarrier.clips.json').write_text(json.dumps(manifest,indent=2)+'\n')
     receipt={'schema':'mc-villager-carrier-package/v1', 'inputSha256':SOURCE_SHA,
@@ -276,13 +359,54 @@ def package(out):
     (out/'receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print('CARRIER_PACKAGE',json.dumps(receipt),flush=True)
 
+
+
+def compare(other, out):
+    """Compare 25 body/garment samples and the original released pot track."""
+    import array
+    report_path=out/'comparison-surfaces.json'
+    if report_path.exists(): raise FileExistsError(report_path)
+    def capture():
+        scene=bpy.context.scene; rig=bpy.data.objects['VillagerRig']; records={}
+        def sample(key, names):
+            data=array.array('f')
+            for name in names:
+                for point in vertices(bpy.data.objects[name]): data.extend(point)
+            records[key]=data
+        for name in ACTIONS:
+            a=action(rig,name); first,last=map(round,a.frame_range)
+            for frame in sorted({round(first+(last-first)*fraction) for fraction in (0,.25,.5,.75,1)}):
+                scene.frame_set(frame); bpy.context.view_layer.update()
+                sample(f'{name}:{frame}:body',MESHES[:-1])
+        action(rig,'Death')
+        for frame in (56,100,148,264):
+            scene.frame_set(frame); bpy.context.view_layer.update()
+            sample(f'Death:{frame}:released-vessel',[MESHES[-1]])
+        return records
+    current=capture()
+    bpy.ops.wm.open_mainfile(filepath=str(other.resolve()))
+    previous=capture(); errors={}
+    for key, values in current.items():
+        ref=previous[key]
+        if len(values)!=len(ref): raise ValueError('Geometry count changed: '+key)
+        errors[key]=max(math.sqrt(sum((values[i+j]-ref[i+j])**2 for j in range(3)))
+                        for i in range(0,len(values),3))
+    report={'reference':str(other),'samples':len(current),'maxErrorsMeters':errors,
+            'maxErrorMeters':max(errors.values())}
+    report_path.write_text(json.dumps(report,indent=2)+'\n')
+    print('COMPARE',json.dumps(report),flush=True)
+    if report['maxErrorMeters'] > .00001: raise ValueError('Body or released vessel changed by more than 0.01 mm')
+
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--author',type=Path); p.add_argument('--audit',type=Path); p.add_argument('--preview',type=Path); p.add_argument('--package',type=Path)
+    p=argparse.ArgumentParser(); p.add_argument('--author',type=Path); p.add_argument('--audit',type=Path); p.add_argument('--preview',type=Path); p.add_argument('--package',type=Path); p.add_argument('--compare',type=Path); p.add_argument('--reference',type=Path)
     args=p.parse_args(sys.argv[sys.argv.index('--')+1:])
-    if sum(bool(x) for x in (args.author,args.audit,args.preview,args.package)) != 1: p.error('choose exactly one mode')
+    if sum(bool(x) for x in (args.author,args.audit,args.preview,args.package,args.compare)) != 1: p.error('choose exactly one mode')
     if args.author: author(args.author.resolve())
     elif args.audit: audit(args.audit.resolve())
     elif args.preview: preview(args.preview.resolve())
-    else: package(args.package.resolve())
+    elif args.package: package(args.package.resolve())
+    else:
+        if not args.reference: p.error('--compare requires --reference')
+        compare(args.reference,args.compare.resolve())
 
 if __name__=='__main__': main()
