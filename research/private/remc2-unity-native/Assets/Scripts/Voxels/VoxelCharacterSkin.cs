@@ -138,16 +138,25 @@ namespace MagicCarpet.Native.Voxels
         // Skin one center per occupied source voxel, not 24 cube vertices.
         // Bone matrices are captured once for this pose; cells snap to a common
         // world-axis grid and coincident cells are merged with averaged colors.
-        internal List<VoxelFragment> SnapshotFragments()
+        internal List<VoxelFragment> SnapshotFragments() => SnapshotFragments(int.MaxValue);
+
+        // Decorative breakup can admit a bounded number of representative
+        // source cells. Sample before skinning/allocation, rather than posing
+        // every fine cell and discarding almost all of the result afterwards.
+        // The default exact snapshot retains its original order and merging.
+        internal List<VoxelFragment> SnapshotFragments(int maximumSourceCells)
         {
             if (disposed) throw new ObjectDisposedException(nameof(VoxelCharacterSkin));
+            if (maximumSourceCells <= 0) throw new ArgumentOutOfRangeException(nameof(maximumSourceCells));
             for (var i = 0; i < bones.Length; i++) matrices[i] = bones[i].localToWorldMatrix * bindposes[i];
             var size = asset.cellSize * Mathf.Abs(Source.transform.lossyScale.x);
             var origin = root.position;
-            var byGrid = new Dictionary<Vector3Int, int>(data.Centers.Length);
-            var ordered = new List<Aggregate>(data.Centers.Length);
-            for (var i = 0; i < data.Centers.Length; i++)
+            var count = Math.Min(maximumSourceCells, data.Centers.Length);
+            var byGrid = new Dictionary<Vector3Int, int>(count);
+            var ordered = new List<Aggregate>(count);
+            for (var sample = 0; sample < count; sample++)
             {
+                var i = count == data.Centers.Length ? sample : VoxelRubble.SampleIndex(sample, data.Centers.Length, count);
                 var p = data.Centers[i]; var w = data.Weights[i];
                 var world = matrices[w.boneIndex0].MultiplyPoint3x4(p) * w.weight0;
                 if (w.weight1 > 0) world += matrices[w.boneIndex1].MultiplyPoint3x4(p) * w.weight1;
