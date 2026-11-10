@@ -22,7 +22,7 @@ namespace MagicCarpet.Native.Tests
             };
             var view = new NativeSim.CampaignEntityPresentation {
                 entityIndex = 130, sourceId = 130, renderParameterIndex = 79,
-                baseTmap = 78, selectedTmap = 78, logicalHeight = 250
+                baseTmap = 78, selectedTmap = 78, logicalHeight = 500
             };
             Assert.That(ModernStoneStatues.Matches(entity, view), Is.True);
             var other = entity; other.sourceId++;
