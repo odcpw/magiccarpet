@@ -988,6 +988,15 @@ impl Level2EconomyState {
         &self.authored_class14
     }
 
+    pub(crate) fn authored_class14_mut(
+        &mut self,
+        slot: u16,
+    ) -> Option<&mut Level2AuthoredClass14Source> {
+        self.authored_class14
+            .iter_mut()
+            .find(|row| row.active && row.source_entity_index == slot)
+    }
+
     #[must_use]
     pub fn authored_class5(&self) -> &[Level2AuthoredClass5Source] {
         &self.authored_class5
@@ -2720,15 +2729,8 @@ impl Level2EconomyState {
         stage_tag: i16,
         position: Position,
     ) -> Option<Level2AuthoredClass14Source> {
-        let (action, particle, control_flags, shift_rot_x, shift_rot_y) = match model {
-            3 => (8, 338, 1, 0, 0),
-            4 => (9, 339, 1, 0, 0),
-            5 => (10, 280, 0, 768, 1280),
-            _ => return None,
-        };
-        if (model == 5) != experience_award.is_some_and(|award| award > 0) {
-            return None;
-        }
+        let constructor =
+            crate::world::items::AuthoredConstructor::for_source(model, experience_award)?;
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         if self
@@ -2744,24 +2746,14 @@ impl Level2EconomyState {
             self.release_slot(source_entity_index, None);
             return None;
         }
-        let source = Level2AuthoredClass14Source {
+        let source = constructor.construct(
             source_entity_index,
             entity_rng,
             authored_index,
-            model,
-            experience_award,
-            action,
-            particle,
-            control_flags,
-            shift_rot_x,
-            shift_rot_y,
             activation_group,
             stage_tag,
             position,
-            phase: source_entity_index as u8,
-            drawing_enabled: true,
-            active: true,
-        };
+        );
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_class14.push(source);
         if model == 3 {
@@ -4400,34 +4392,6 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Dispatch the source callbacks selected by the class-14 constructor.
-    /// `sub_59C40_getTerrtoZ` (model 3/action 8) and the non-collecting branch
-    /// of `UpdateScroll_59C80` (model 5/action 10) both snap the row to the
-    /// current terrain height before their mission-specific work.  The
-    /// Level-2 economy owns that shared source write; the enclosing reset
-    /// session owns the model-5 player scan and experience presentation after
-    /// this callback returns.
-    pub fn step_authored_class14_slot(&mut self, source_slot: u16, ground_height: i16) -> bool {
-        let Some(source_index) = self
-            .authored_class14
-            .iter()
-            .position(|source| source.active && source.source_entity_index == source_slot)
-        else {
-            return false;
-        };
-        let mut source = self.authored_class14[source_index];
-        source.position.z = ground_height;
-        self.authored_class14[source_index] = source;
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: source.position.x,
-                y: source.position.y,
-            })
-            .is_ok()
-    }
-
     /// Reveal the captured class-14 exit portal by clearing the constructor's
     /// source no-draw bit. The portal row remains the sole visibility
     /// authority consumed by presentation.
@@ -4439,8 +4403,7 @@ impl Level2EconomyState {
         }) else {
             return false;
         };
-        source.control_flags &= !1;
-        true
+        source.reveal_portal()
     }
 
     /// Apply `DisableEntityDrawing04_57F10` to an authored class-14 row. The
@@ -4454,20 +4417,7 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        source.drawing_enabled = false;
-        true
-    }
-
-    /// UpdateScroll's completed-entry branch hides the actual scroll before
-    /// ground snapping or player scans, retaining it through the common tail.
-    pub(crate) fn suppress_experience_scroll(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self.authored_class14.iter_mut().find(|source| {
-            source.active && source.source_entity_index == source_slot && source.model == 5
-        }) else {
-            return false;
-        };
-        source.control_flags |= 1;
-        source.drawing_enabled = false;
+        source.hide();
         true
     }
 

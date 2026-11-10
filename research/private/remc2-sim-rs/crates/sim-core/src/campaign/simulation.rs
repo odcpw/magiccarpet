@@ -1224,6 +1224,17 @@ impl Level2ResolvedSourcePlan {
     }
 
     #[cfg(test)]
+    pub(crate) fn observed_dynamic_handle(&self) -> Option<SourceEntityHandle> {
+        match self.route() {
+            SourceRoute::Dynamic(row) => Some(SourceEntityHandle {
+                source_slot: row.source_slot,
+                generation: row.generation,
+            }),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn observed_player_resources(
         &self,
     ) -> Option<(crate::campaign::source_arena::SourceEntityHandle, i32, i32, i32)> {
@@ -7824,6 +7835,9 @@ impl Mc2Simulation {
         candidates.extend(crate::world::scenery::trees::sprite_sources(
             self.economy().authored_trees(),
         ));
+        candidates.extend(crate::world::items::sprite_sources(
+            self.economy().authored_class14(),
+        ));
         candidates.extend(self.session.state.live.economy.fields.sprite_sources());
         candidates.extend(creatures::creature_15::mc2::presentation_candidates(
             self.economy().castle_defenders(),
@@ -13831,6 +13845,10 @@ impl Mc2Simulation {
                 }
                 (14, 3 | 4 | 5) => {
                     if let Some(source) = self.allocate_level2_authored_class14(feature.index) {
+                        self.session.state.live.core.runtime.bind_authored_stage_entity(
+                            feature.index,
+                            source.source_entity_index,
+                        );
                         self.session
                             .state
                             .live
@@ -20017,20 +20035,9 @@ impl Mc2Simulation {
                         source.action,
                         ExistingHandler::Class14Events,
                     )?;
-                    crate::world::items::step(&self.session.state.live.economy, source_slot)?;
-                } else {
-                    let live = &mut self.session.state.live;
-                    let source = &mut live.economy.entities[usize::from(source_slot)];
-                    if !matches!((source.model, source.action), (3, 8) | (4, 9)) {
-                        return Err(format!(
-                            "imported portal {source_slot} has invalid model/action {}/{}",
-                            source.model, source.action
-                        ));
-                    }
-                    let mut position = source.position;
-                    position.z = live.terrain.ground_height(position);
-                    source.set_position(position);
                 }
+                let live = &mut self.session.state.live;
+                crate::world::items::visit_imported(&mut live.economy, &live.terrain, source_slot)?;
             }
             (ExistingHandler::BallisticScenery, SourceRoute::Imported) => {
                 self.step_imported_ballistic_scenery(source_slot)?;
@@ -25830,79 +25837,23 @@ impl Mc2Simulation {
     }
 
     pub(super) fn step_level2_authored_class14(&mut self, source_slot: u16) -> bool {
-        let Some((model, experience_award, position)) = self
-            .session
-            .state
-            .live
-            .economy
-            .authored_class14()
-            .iter()
-            .find(|source| source.active && source.source_entity_index == source_slot)
-            .map(|source| (source.model, source.experience_award, source.position))
-        else {
-            return false;
+        let live = &mut self.session.state.live;
+        let state = live.core.state;
+        let player = crate::world::items::ScrollPlayer {
+            slot: live.core.runtime.local_player_slot,
+            source_slot: state.entity_index,
+            position: state.position,
+            life: live.economy.entities.iter()
+                .find(|entity| entity.index == state.entity_index)
+                .map_or(0, |entity| entity.life),
         };
-        if model == 5 && !self.mission_rewards().allows_experience() {
-            self.session.state.live.economy.suppress_experience_scroll(source_slot);
-            return false;
-        }
-        let ground_height = self.canonical_terrain().ground_height(position);
-        if !self
-            .session
-            .state
-            .live
-            .economy
-            .step_authored_class14_slot(source_slot, ground_height)
-        {
-            return false;
-        }
-        let Some(snapped_position) = self
-            .session
-            .state
-            .live
-            .economy
-            .authored_class14()
-            .iter()
-            .find(|source| source.active && source.source_entity_index == source_slot)
-            .map(|source| source.position)
-        else {
-            return false;
-        };
-        let collected = model == 5
-            && self
-                .session
-                .state
-                .live
-                .shared_spells
-                .collect_level2_experience_scroll(
-                    source_slot,
-                    experience_award.expect("live model-5 scroll carries a validated reward"),
-                    snapped_position,
-                    self.session.state.live.core.runtime.local_player_slot,
-                    self.session.state.live.core.state.entity_index,
-                    self.session.state.live.core.state.position,
-                    self.session
-                        .state
-                        .live
-                        .economy
-                        .entities
-                        .iter()
-                        .find(|entity| {
-                            entity.index == self.session.state.live.core.state.entity_index
-                        })
-                        .map_or(0, |entity| entity.life),
-                    &self.session.state.live.economy.entities,
-                );
-        if collected {
-            self.session
-                .state
-                .live
-                .economy
-                .deactivate_authored_class14_slot(source_slot);
-            false
-        } else {
-            true
-        }
+        crate::world::items::visit_authored(
+            &mut live.economy,
+            &live.terrain,
+            &mut live.shared_spells,
+            source_slot,
+            player,
+        )
     }
 
     /// Run the source `AddTree02_00_64E20` callback.  The owner/life/sphere

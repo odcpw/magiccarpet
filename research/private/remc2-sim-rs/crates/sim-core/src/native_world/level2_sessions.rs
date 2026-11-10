@@ -826,7 +826,136 @@ mod source30_house_action_51_tests {
     }
 }
 
+#[cfg(test)]
+mod scroll_progression_tests {
+    use super::*;
+
+    #[test]
+    fn scroll_recomputes_disabled_rows_without_awarding_them_or_announcing_unowned_spells() {
+        let inspection = NativeWorld::inspect_level2(super::super::tests::level_two_fixture_path())
+            .expect("qualified source player records");
+        let baseline = Level2SharedSpellResetSession::from_campaign_parts(
+            inspection.entities(),
+            inspection.players(),
+            inspection.runtime(),
+        )
+        .unwrap();
+        for is_cave in [false, true] {
+            let mut shared = baseline.clone();
+            let player = shared.player_entity.clone();
+            let owner_index = shared
+                .players
+                .iter()
+                .position(|row| row.entity_index == player.index)
+                .unwrap();
+            let mut owner = shared.players[owner_index].clone();
+            // Declared reward-consumer boundary controls, not an ordinary
+            // scroll acquisition. The connected item check owns that path.
+            owner.enabled_spell_holders.fill(0);
+            owner.spell_enabled_flags.fill(0);
+            owner.persistent_spell_experience.fill(0);
+            owner.runtime_spell_experience.fill(0);
+            owner.spell_unlocked_levels.fill(0);
+            owner.family_selected_tiers.fill(2);
+            owner.enabled_spell_holders[0] = 1;
+            owner.runtime_spell_experience[0] = 396;
+            owner.runtime_spell_experience[2] = 11;
+            owner.persistent_spell_experience[5] = 400;
+            owner.persistent_spell_experience[7] = 1_000;
+            owner.spell_enabled_flags[7] = 1;
+            owner.persistent_spell_experience[25] = 400;
+            owner.enabled_spell_holders[25] = 1;
+            for family in 0..PLAYER_SPELL_COUNT {
+                owner.record[60 + family * 4..64 + family * 4]
+                    .copy_from_slice(&owner.persistent_spell_experience[family].to_le_bytes());
+                owner.record[164 + family * 4..168 + family * 4]
+                    .copy_from_slice(&owner.runtime_spell_experience[family].to_le_bytes());
+                owner.record[268 + family * 2..270 + family * 2]
+                    .copy_from_slice(&owner.enabled_spell_holders[family].to_le_bytes());
+                owner.record[450 + family] = owner.spell_enabled_flags[family];
+                owner.record[502 + family] = 0;
+                owner.record[528 + family] = 2;
+            }
+            shared.persistent_spell_experience = owner.persistent_spell_experience;
+            shared.spell_experience = owner.runtime_spell_experience;
+            shared.spell_levels = owner.spell_unlocked_levels;
+            shared.local_player = owner.clone();
+            shared.players[owner_index] = owner;
+            let first_flight = shared.events.len();
+            let first_pickup = shared.pickup_events.len();
+            assert!(shared.collect_level2_experience_scroll(
+                1,
+                4,
+                player.position,
+                shared.local_player.player_color_index(),
+                player.index,
+                player.position,
+                player.life,
+                inspection.entities(),
+                is_cave,
+            ));
+            let owner = &shared.players[owner_index];
+            assert_eq!(owner.runtime_spell_experience[0], 400);
+            assert_eq!(
+                owner.runtime_spell_experience[2], 7,
+                "normal Castle cap also visits disabled Castle"
+            );
+            assert_eq!(owner.runtime_spell_experience[5], 0);
+            assert_eq!(owner.runtime_spell_experience[7], 0);
+            assert_eq!(owner.runtime_spell_experience[25], 4);
+            for family in [0, 5, 7, 25] {
+                assert_eq!(owner.spell_unlocked_levels[family], 1);
+                assert_eq!(owner.family_selected_tiers[family], 1);
+                assert_eq!(owner.record[502 + family], 1);
+                assert_eq!(owner.record[528 + family], 1);
+            }
+            assert_eq!(owner.spell_unlocked_levels[2], 0);
+            assert_eq!(owner.family_selected_tiers[2], 0);
+            assert_eq!(&shared.local_player, owner);
+            let improved = shared.pickup_events[first_pickup..]
+                .iter()
+                .filter_map(|event| match event {
+                    Level2SharedSpellEvent::AbilityImproved {
+                        source_family,
+                        tier,
+                    } => Some((*source_family, *tier)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let mut expected = vec![(0, 1), (7, 1)];
+            if is_cave {
+                expected.push((25, 1));
+            }
+            assert_eq!(
+                improved, expected,
+                "ownership/Cave gate announcements, never tier recomputation"
+            );
+            let sounds = shared.events[first_flight..]
+                .iter()
+                .filter_map(|event| match event {
+                    FlightEvent::PrepareSound { entity_index, player_index, sound_id, .. } =>
+                        Some((*entity_index, *player_index, *sound_id)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sounds,
+                if is_cave {
+                    vec![(0, -1, 63), (0, -1, 61), (0, -1, 61), (0, -1, 61)]
+                } else {
+                    vec![(0, -1, 63), (0, -1, 61), (0, -1, 61)]
+                }
+            );
+        }
+    }
+}
+
 impl Level2SharedSpellResetSession {
+    #[cfg(test)]
+    pub(crate) fn source_spell_tier_thresholds_for_test(family: usize) -> Option<[i32; 3]> {
+        LEVEL2_SPELL_TIER_THRESHOLDS.get(family).copied()
+    }
+
     /// Apply sub_5F890 to the current record named by the owner's SpellEnabled[2].
     /// The source writes this fixed address even after reclaim or replacement;
     /// parent, family and generation checks would change its failure behavior.
@@ -3808,6 +3937,7 @@ impl Level2SharedSpellResetSession {
         local_player_position: Position,
         local_player_life: i32,
         entities: &[EntitySnapshot],
+        is_cave: bool,
     ) -> bool {
         if !self.mission_rewards.allows_experience() {
             return false;
@@ -3861,16 +3991,22 @@ impl Level2SharedSpellResetSession {
             let enabled_holders = self.players[owner_index].enabled_spell_holders;
             let mut improved = Vec::new();
             let mut owner = self.players[owner_index].clone();
+            // UpdateExperience_6E090 adds only to enabled holders, then caps
+            // Castle independently. Normal campaign entry has no WINDY
+            // name-cheat bit; that separate input route is not inferred here.
             for family in 0..PLAYER_SPELL_COUNT {
-                if enabled_holders[family] == 0 {
-                    continue;
+                if enabled_holders[family] != 0 {
+                    owner.runtime_spell_experience[family] = owner.runtime_spell_experience[family]
+                        .wrapping_add(experience_award);
                 }
-                let mut experience =
-                    owner.runtime_spell_experience[family].wrapping_add(experience_award);
-                if family == usize::from(CASTLE_SPELL_FAMILY) {
-                    experience = experience.min(7);
-                }
-                owner.runtime_spell_experience[family] = experience;
+            }
+            let castle = usize::from(CASTLE_SPELL_FAMILY);
+            owner.runtime_spell_experience[castle] = owner.runtime_spell_experience[castle].min(7);
+            // The following sub_6DB50(0,1) visits ALL 26 rows. Disabled
+            // families retain XP but still recompute tiers and clamp their
+            // selected tier. Ownership/Cave gate announcements, not the visit.
+            for family in 0..PLAYER_SPELL_COUNT {
+                let experience = owner.runtime_spell_experience[family];
                 owner.record[164 + family * std::mem::size_of::<i32>()
                     ..164 + (family + 1) * std::mem::size_of::<i32>()]
                     .copy_from_slice(&experience.to_le_bytes());
@@ -3888,7 +4024,10 @@ impl Level2SharedSpellResetSession {
                     owner.family_selected_tiers[family] = level;
                     owner.record[528 + family] = level.cast_unsigned();
                 }
-                if level != previous_level {
+                let announce = (owner.spell_enabled_flags[family] != 0
+                    || enabled_holders[family] != 0)
+                    && (is_cave || family != 25);
+                if level != previous_level && announce {
                     improved.push((family as u8, level));
                 }
             }
@@ -3897,8 +4036,10 @@ impl Level2SharedSpellResetSession {
             self.emit_flight_effect(FlightEvent::PrepareSound {
                 #[cfg(test)]
                 audio_site: crate::MissionAudioSite::ExperienceScroll,
-                entity_index: local_player_entity_index,
-                player_index: i16::from(local_player_slot),
+                // Preserve the literal color/LevelIndex argument. Normal
+                // player zero uses source sound's centered null sentinel.
+                entity_index: u16::from(local_player_slot),
+                player_index: -1,
                 sound_id: 63,
             });
             for (family, tier) in improved {
@@ -3910,8 +4051,8 @@ impl Level2SharedSpellResetSession {
                 self.emit_flight_effect(FlightEvent::PrepareSound {
                     #[cfg(test)]
                     audio_site: crate::MissionAudioSite::AbilityImproved,
-                    entity_index: local_player_entity_index,
-                    player_index: i16::from(local_player_slot),
+                    entity_index: u16::from(local_player_slot),
+                    player_index: -1,
                     sound_id: 61,
                 });
             }

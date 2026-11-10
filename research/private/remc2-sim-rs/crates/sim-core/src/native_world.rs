@@ -2236,39 +2236,7 @@ const fn wrap_source_angle(angle: i16) -> i16 {
     angle & 0x07ff
 }
 
-/// A dormant authored class-14/model-3 or model-5 event materialized by the
-/// generic `sub_4A310` constructor.  The mission callbacks which decide when
-/// groups 5/28/31 fire remain a separate slice; once a row is selected, the
-/// source constructor allocates this inert event, links it to the map, and
-/// leaves the payload unchanged on each cursor visit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level2AuthoredClass14Source {
-    pub source_entity_index: u16,
-    pub entity_rng: u16,
-    pub authored_index: u16,
-    pub model: u8,
-    /// Per-instance reward consumed by model 5. Model 3 carries no reward.
-    pub experience_award: Option<i32>,
-    pub action: u8,
-    pub particle: u16,
-    /// `sub_51570` sets bit 0 unconditionally; `sub_51610` sets it only when
-    /// the source special-settings flag 4 is enabled.  The qualified Level 2
-    /// package has that flag clear for the generic model-5 rows.
-    pub control_flags: u8,
-    /// Model 5 applies `SetEntityShiftRot(768, 1280)`; model 3 leaves the
-    /// constructor's zero shift untouched.
-    pub shift_rot_x: u16,
-    pub shift_rot_y: u16,
-    pub activation_group: i16,
-    pub stage_tag: i16,
-    pub position: Position,
-    pub phase: u8,
-    /// Source byte-1 bit 4 (`DisableEntityDrawing04_57F10`).  This is
-    /// distinct from allocation/liveness until the next UpdateEntities
-    /// reclaim prologue clears the fixed row.
-    pub drawing_enabled: bool,
-    pub active: bool,
-}
+pub use crate::world::items::Level2AuthoredClass14Source;
 
 /// Authored class-5/model-3, model-4, or model-9 source rows reached by a
 /// Level 2 producer.  Model 4 is the `AddArchers_4BA10` group-20 constructor;

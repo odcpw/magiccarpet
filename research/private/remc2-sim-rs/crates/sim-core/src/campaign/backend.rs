@@ -38103,6 +38103,180 @@ pub(crate) mod tests {
         // target groups, cadence, placement, player bounds, save/replay, or UI.
     }
 
+    /// Original Level2 source chain: enter11 -> leave41 -> enter42 ->
+    /// leave64 -> enter65. These are five fixed player-only poses and normal
+    /// neutral public turns, not forced group/objective completion. Every
+    /// authored group (including its other actors) is published unchanged.
+    fn activate_original_level_two_scroll_group(session: &mut GameSession<Mc2CampaignBackend>) {
+        use crate::campaign::schedule::ScheduleReceipt;
+        let features = session
+            .backend()
+            .campaign
+            .simulation()
+            .mission()
+            .authored_features()
+            .to_vec();
+        assert!(
+            session
+                .backend()
+                .campaign
+                .simulation()
+                .economy()
+                .authored_class14()
+                .iter()
+                .all(|row| row.authored_index != 248)
+        );
+        for (authored, model, parent_group, group, inside) in [
+            (11_u16, 0_u8, 0_i16, 1_u16, true),
+            (41, 1, 1, 2, false),
+            (42, 0, 2, 3, true),
+            (64, 1, 3, 4, false),
+            (65, 0, 4, 5, true),
+        ] {
+            let feature = features[usize::from(authored)];
+            assert_eq!(
+                (
+                    feature.kind,
+                    feature.subtype,
+                    feature.activation_group,
+                    feature.stage_tag
+                ),
+                (11, i16::from(model), parent_group, group as i16)
+            );
+            let sim = session.backend().campaign.simulation();
+            let (slot, position, phase, width, depth) = if authored == 11 {
+                let row = sim
+                    .entities()
+                    .iter()
+                    .find(|row| {
+                        row.active
+                            && row.class == 11
+                            && row.model == model
+                            && row.source_id == group
+                            && (row.position.x >> 8, row.position.y >> 8)
+                                == (feature.tile_x, feature.tile_y)
+                    })
+                    .expect("actual frame-zero switch11 carrier");
+                (
+                    row.index,
+                    row.position,
+                    row.phase,
+                    i16::from_le_bytes(row.record_bytes()[88..90].try_into().unwrap()),
+                    i16::from_le_bytes(row.record_bytes()[90..92].try_into().unwrap()),
+                )
+            } else {
+                let row = sim
+                    .economy()
+                    .authored_switch_producers()
+                    .iter()
+                    .find(|row| row.active && row.authored_index == authored)
+                    .expect("preceding ordinary group must construct the next original controller");
+                assert_eq!(
+                    (row.source_class, row.model, row.action, row.stage_tag),
+                    (11, model, model, group)
+                );
+                (
+                    row.source_entity_index,
+                    row.position,
+                    row.phase,
+                    row.word_10.cast_unsigned().wrapping_shl(8).cast_signed(),
+                    row.word_10.cast_unsigned().wrapping_shl(8).cast_signed(),
+                )
+            };
+            let handle = sim.source_arena().handle(slot).unwrap();
+            let player = sim.state.entity_index;
+            let player_row = &sim.entities()[usize::from(player)];
+            let half_width =
+                i16::from_le_bytes(player_row.record_bytes()[88..90].try_into().unwrap());
+            let half_depth =
+                i16::from_le_bytes(player_row.record_bytes()[90..92].try_into().unwrap());
+            let mut pose = position;
+            if !inside {
+                pose.x = pose.x.wrapping_add(16_384);
+            }
+            pose.z = sim
+                .canonical_terrain()
+                .ground_height(pose)
+                .checked_add(sim.profile().ground_clearance)
+                .unwrap();
+            assert_eq!(
+                crate::level1_mission::source_entities_overlap_xy(
+                    position, width, depth, pose, half_width, half_depth
+                ),
+                inside,
+                "fixed entry/exit pose must satisfy this actual source controller"
+            );
+            assert!(!sim.canonical_terrain().cave_collision_blocked(pose));
+            session
+                .backend_mut()
+                .campaign
+                .simulation_mut()
+                .set_level2_entity_position(player, pose)
+                .unwrap();
+            let expected = features
+                .iter()
+                .filter(|row| row.kind != 0 && row.activation_group == group as i16)
+                .map(|row| row.index)
+                .collect::<Vec<_>>();
+            let mut fired = false;
+            for turn in 0..16 {
+                // eight-phase cadence plus one deferred birth cycle
+                session
+                    .advance(guard(session), GameCommand::default())
+                    .unwrap();
+                let sim = session.backend().campaign.simulation();
+                assert!(
+                    sim.dispatch_events()
+                        .iter()
+                        .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                    "group{group} turn{turn}: {:?}",
+                    sim.dispatch_events()
+                );
+                if let Some(actual) = sim.dispatch_events().iter().find_map(|event| match event {
+                    Mc2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group: actual,
+                        authored_indices,
+                        ..
+                    } if *source_slot == slot && *actual == group => Some(authored_indices),
+                    _ => None,
+                }) {
+                    assert_eq!(
+                        actual.as_ref(),
+                        expected.as_slice(),
+                        "complete original group must be consumed in source order"
+                    );
+                    assert!(sim.cf10_production_schedule_receipts().iter().any(|receipt|
+                        matches!(receipt,ScheduleReceipt::CallbackCompleted { slot:current,selector,.. }
+                            if *current==slot && (authored==11 || selector.observed_dynamic_handle()==Some(handle)))));
+                    fired = true;
+                    eprintln!(
+                        "real Level2 row{authored} {handle:?} phase{phase} fixedinside{inside} -> group{group} turn{turn}"
+                    );
+                    break;
+                }
+            }
+            assert!(fired, "actual row{authored} must publish group{group}");
+        }
+        let sim = session.backend().campaign.simulation();
+        for authored in 248..=251 {
+            let row = sim
+                .economy()
+                .authored_class14()
+                .iter()
+                .find(|row| row.active && row.authored_index == authored)
+                .expect("four real group5 scrolls");
+            assert_eq!((row.model, row.action, row.particle), (5, 10, 280));
+            assert!(sim.source_arena().handle(row.source_entity_index).is_some());
+            let presentations = sim.campaign_entity_presentations(0).unwrap();
+            let current = presentations.iter().find(|dto| dto.entity_index == row.source_entity_index);
+            assert!(current.is_some_and(|dto| dto.render_parameter_index == 280),
+                "actual authored{authored} typed{row:?} handle{:?} raw-shadow{:?} DTO{current:?}",
+                sim.source_arena().handle(row.source_entity_index),
+                sim.entities().get(usize::from(row.source_entity_index)));
+        }
+    }
+
     #[test]
     fn campaign_backend_binds_real_experience_scroll_award_before_collection_after_reopen_and_reset()
      {
@@ -38113,12 +38287,7 @@ pub(crate) mod tests {
             session: &mut GameSession<Mc2CampaignBackend>,
             expected_award: i32,
         ) -> ([i32; 26], [i32; 26]) {
-            session
-                .backend_mut()
-                .campaign
-                .simulation_mut()
-                .activate_authored_group_prerequisite_for_test(5)
-                .unwrap();
+            activate_original_level_two_scroll_group(session);
             let scroll = session
                 .backend()
                 .campaign
@@ -38139,7 +38308,13 @@ pub(crate) mod tests {
                 .find(|player| player.entity_index == compatibility.state.entity_index)
                 .unwrap();
             let enabled = local_player.enabled_spell_holders;
+            let owner_before = local_player.clone();
             let player_entity = compatibility.state.entity_index;
+            let handle = compatibility
+                .source_arena()
+                .handle(scroll.source_entity_index)
+                .unwrap();
+            let journal_start = compatibility.effect_journal().records().len();
             session
                 .backend_mut()
                 .campaign
@@ -38150,6 +38325,14 @@ pub(crate) mod tests {
                 .step(guard(session), GameCommand::default())
                 .unwrap();
             let compatibility = session.backend().campaign.simulation();
+            assert!(
+                compatibility
+                    .dispatch_events()
+                    .iter()
+                    .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })),
+                "{:?}",
+                compatibility.dispatch_events()
+            );
             let after = *compatibility.shared_spells().spell_experience();
             for family in 0..after.len() {
                 if enabled[family] == 0 {
@@ -38163,6 +38346,92 @@ pub(crate) mod tests {
                     assert_eq!(after[family], before[family].wrapping_add(expected_award));
                 }
             }
+            let owner_after = compatibility
+                .shared_spells()
+                .players()
+                .iter()
+                .find(|player| player.entity_index == player_entity)
+                .unwrap();
+            let mut improved = Vec::new();
+            for family in 0..26 {
+                let thresholds = crate::native_world::Level2SharedSpellResetSession::source_spell_tier_thresholds_for_test(family).unwrap();
+                let total =
+                    owner_before.persistent_spell_experience[family].wrapping_add(after[family]);
+                let tier = thresholds
+                    .iter()
+                    .rposition(|threshold| total >= *threshold)
+                    .unwrap_or(0) as i8;
+                assert_eq!(owner_after.spell_unlocked_levels[family], tier);
+                assert_eq!(
+                    owner_after.family_selected_tiers[family],
+                    owner_before.family_selected_tiers[family].min(tier)
+                );
+                if tier != owner_before.spell_unlocked_levels[family]
+                    && (owner_before.spell_enabled_flags[family] != 0 || enabled[family] != 0)
+                    && (compatibility.canonical_terrain().map_type()
+                        == crate::native_world::MapType::Cave
+                        || family != 25)
+                {
+                    improved.push((family as u8, tier));
+                }
+            }
+            let records = &compatibility.effect_journal().records()[journal_start..];
+            let mut announced = Vec::new();
+            let mut sound63 = 0;
+            let mut sound61 = 0;
+            for record in records {
+                if let CampaignEffect::SharedSpell(Level2SharedSpellEvent::AbilityImproved {
+                    source_family,
+                    tier,
+                }) = record.effect
+                {
+                    announced.push((source_family, tier));
+                }
+                if let CampaignEffect::Flight(FlightEvent::PrepareSound {
+                    entity_index,
+                    player_index,
+                    sound_id: sound @ (61 | 63),
+                    ..
+                }) = record.effect
+                {
+                    assert_eq!(owner_before.player_color_index(), 0);
+                    assert_eq!((entity_index, player_index), (0, -1));
+                    let audio = record
+                        .audio
+                        .expect("real source preparation must reach positional audio consumer");
+                    assert!(audio.command.audible);
+                    assert_eq!(
+                        (
+                            audio.command.relative_x,
+                            audio.command.relative_y,
+                            audio.command.relative_z
+                        ),
+                        (0, 0, 0)
+                    );
+                    assert_eq!(
+                        (audio.command.volume_q15, audio.command.pan_q16),
+                        (0x7fff, 0x7fff)
+                    );
+                    assert_eq!(
+                        (audio.command.sound_flags, audio.command.rate_delta_percent),
+                        (0, 0)
+                    );
+                    if sound == 63 {
+                        sound63 += 1;
+                    } else {
+                        sound61 += 1;
+                    }
+                }
+            }
+            assert_eq!(sound63, 1);
+            assert_eq!(announced, improved);
+            assert_eq!(sound61, improved.len());
+            assert_eq!(
+                compatibility
+                    .source_arena()
+                    .handle(scroll.source_entity_index),
+                Some(handle)
+            );
             let retained = compatibility
                 .economy()
                 .authored_class14()
@@ -38171,6 +38440,42 @@ pub(crate) mod tests {
                 .unwrap();
             assert!(retained.active);
             assert!(!retained.drawing_enabled);
+            assert!(
+                compatibility
+                    .economy()
+                    .map_chains()
+                    .is_linked(scroll.source_entity_index)
+            );
+            assert!(
+                compatibility
+                    .campaign_entity_presentations(0)
+                    .unwrap()
+                    .iter()
+                    .all(|dto| dto.entity_index != scroll.source_entity_index)
+            );
+            session
+                .step(guard(session), GameCommand::default())
+                .unwrap();
+            let compatibility = session.backend().campaign.simulation();
+            assert!(compatibility.source_arena().resolve(handle).is_none());
+            if compatibility
+                .source_arena()
+                .handle(scroll.source_entity_index)
+                .is_none()
+            {
+                assert!(
+                    !compatibility
+                        .economy()
+                        .map_chains()
+                        .is_linked(scroll.source_entity_index)
+                );
+                assert!(
+                    compatibility
+                        .economy()
+                        .free_source_slots()
+                        .contains(&scroll.source_entity_index)
+                );
+            }
             (before, after)
         }
 
@@ -38258,12 +38563,66 @@ pub(crate) mod tests {
         let (_, reset_after) = collect_scroll(&mut session, AUTHORED_AWARD as i32);
         assert_eq!(reset_after, authored_after);
 
+        // Explicit prior-level progression control, not XP earned here. Keep
+        // the actual acquired families/selection and alter ONLY Fireball's
+        // typed carry row. The real four-XP scroll must cross396->400 itself.
+        let mut carried = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(base.clone()),
+            177,
+            Mc2CampaignInputs::new(&root),
+        )
+        .unwrap();
+        let mut carry = carried.backend().semantic_spell_carry().unwrap();
+        assert!(carry.acquired.contains(&SpellKind::Fireball));
+        let acquired = carry.acquired.clone();
+        let selected = carry.selected;
+        carry
+            .progression
+            .retain(|row| row.spell != SpellKind::Fireball);
+        carry.progression.push(Mc2SemanticSpellProgress {
+            spell: SpellKind::Fireball,
+            persistent_experience: 396,
+            runtime_experience: 0,
+            unlocked_tier: 0,
+            selected_tier: 0,
+        });
+        carried
+            .backend_mut()
+            .apply_semantic_spell_carry(&carry)
+            .unwrap();
+        assert_eq!(carry.acquired, acquired);
+        assert_eq!(carry.selected, selected);
+        let (before, after) = collect_scroll(&mut carried, 4);
+        assert_eq!((before[0], after[0]), (0, 4));
+        let owner = carried
+            .backend()
+            .campaign
+            .simulation()
+            .shared_spells()
+            .local_player();
+        assert_eq!(
+            (
+                owner.persistent_spell_experience[0],
+                owner.runtime_spell_experience[0],
+                owner.spell_unlocked_levels[0]
+            ),
+            (396, 4, 1)
+        );
+        let observation = carried.backend().render_observation();
+        let fireball = observation
+            .player_spells
+            .iter()
+            .find(|spell| spell.id.as_str() == "spell.fireball")
+            .unwrap();
+        assert!(fireball.acquired && fireball.unlocked_tier == 1);
+
         std::fs::remove_dir_all(&workspace_root).unwrap();
         // No-Claim: this proves per-instance Experience Scroll reward publication,
-        // old-session isolation, constructor binding, ordinary local-player XP
-        // consumption, hide, explicit reopen, and reset for one real Level 2 row.
-        // It does not author placement in the same change, scroll population,
-        // enabled spell families, remote-player rewards, save/replay, or Unity UI.
+        // real fixed entry/exit group1->5 production, old-session isolation,
+        // constructor binding, ordinary XP/tier/audio observation, hide/reclaim,
+        // reopen/reset and one declared396 carry prerequisite. It does not
+        // prove396earned, remote rewards, save/replay, native UI or wholeLevel2.
     }
 
     #[test]
@@ -38328,12 +38687,7 @@ pub(crate) mod tests {
             authored_tile
         );
 
-        session
-            .backend_mut()
-            .campaign
-            .simulation_mut()
-            .activate_authored_group_prerequisite_for_test(5)
-            .unwrap();
+        activate_original_level_two_scroll_group(&mut session);
         let package_scroll = session
             .backend()
             .campaign
@@ -38400,12 +38754,7 @@ pub(crate) mod tests {
         );
         let authored_reset_hash = session.backend().campaign.state_hash();
 
-        session
-            .backend_mut()
-            .campaign
-            .simulation_mut()
-            .activate_authored_group_prerequisite_for_test(5)
-            .unwrap();
+        activate_original_level_two_scroll_group(&mut session);
         let authored_scroll = session
             .backend()
             .campaign
@@ -38429,6 +38778,15 @@ pub(crate) mod tests {
             .simulation()
             .shared_spells()
             .spell_experience();
+        let compatibility = session.backend().campaign.simulation();
+        let scroll_handle = compatibility
+            .source_arena()
+            .handle(authored_scroll.source_entity_index)
+            .unwrap();
+        // Read-only snapshots name the actual later producer after its birth
+        // receipt arrives. Neither clone is stepped or used to stage state.
+        let arena_before_collection = compatibility.source_arena().clone();
+        let journal_start = compatibility.effect_journal().records().len();
         session
             .backend_mut()
             .campaign
@@ -38439,6 +38797,9 @@ pub(crate) mod tests {
             .step(guard(&session), GameCommand::default())
             .unwrap();
         let compatibility = session.backend().campaign.simulation();
+        let collection_schedule = compatibility.cf10_production_schedule_receipts();
+        let collection_journal_end = session.backend().campaign.effect_cursor().next_sequence;
+        let arena_before_cleanup = compatibility.source_arena().clone();
         assert!(
             compatibility
                 .shared_spells()
@@ -38468,6 +38829,12 @@ pub(crate) mod tests {
         assert!(retained.active);
         assert!(!retained.drawing_enabled);
         assert_eq!(retained.phase, authored_scroll.phase.wrapping_add(1));
+        assert_eq!(
+            compatibility
+                .source_arena()
+                .handle(authored_scroll.source_entity_index),
+            Some(scroll_handle)
+        );
         assert!(
             compatibility
                 .economy()
@@ -38486,12 +38853,160 @@ pub(crate) mod tests {
                 .iter()
                 .any(|source| source.source_entity_index == authored_scroll.source_entity_index)
         );
-        assert!(
-            !compatibility
-                .economy()
-                .map_chains()
-                .is_linked(authored_scroll.source_entity_index)
+        let arena = compatibility.source_arena();
+        let current = arena.handle(authored_scroll.source_entity_index);
+        let source_events = &compatibility.effect_journal().records()[journal_start..];
+        eprintln!(
+            "scroll retirement old{scroll_handle:?} current{current:?} current-kind{:?} raw-shadow{:?} events{:?}",
+            current.and_then(|handle| arena.resolve(handle)),
+            compatibility
+                .entities()
+                .get(usize::from(authored_scroll.source_entity_index))
+                .map(|row| (row.active, row.class, row.model, row.action, row.position)),
+            source_events
+                .iter()
+                .filter_map(|record| match &record.effect {
+                    CampaignEffect::Dispatch(Mc2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group,
+                        authored_indices,
+                        ..
+                    }) => Some((*source_slot, *group, authored_indices.as_ref())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
         );
+        assert!(
+            arena.resolve(scroll_handle).is_none(),
+            "the collected generation must retire"
+        );
+        let chains = compatibility.economy().map_chains();
+        assert!(
+            !chains
+                .entity_chain(
+                    (authored_scroll.position.x >> 8) as u8,
+                    (authored_scroll.position.y >> 8) as u8
+                )
+                .contains(&authored_scroll.source_entity_index),
+            "the original scroll cell must lose the retired address"
+        );
+        if let Some(replacement) = current {
+            // One increment binds the unique post-cursor birth receipt to
+            // THIS replacement, excluding an intervening retired incarnation.
+            assert_eq!(
+                replacement.generation,
+                scroll_handle.generation.checked_add(1).unwrap()
+            );
+            let row = compatibility
+                .economy()
+                .spheres()
+                .iter()
+                .find(|row| row.active && row.source_entity_index == replacement.source_slot)
+                .expect("a linked replacement requires its actual admitted current carrier");
+            let births = source_events
+                .iter()
+                .filter_map(|record| match &record.effect {
+                    CampaignEffect::Dispatch(Mc2DispatchEvent::Economy {
+                        source_slot,
+                        event:
+                            crate::native_world::Level2EconomyEvent::ManaSphereSpawned {
+                                sphere_id,
+                                source_entity_index,
+                                mana,
+                            },
+                        ..
+                    }) if *sphere_id == row.id => {
+                        Some((record.sequence, *source_slot, *source_entity_index, *mana))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            eprintln!("replacement {replacement:?} actual sphere{row:?} birth-receipts{births:?}");
+            assert_eq!(
+                births.len(),
+                1,
+                "exactly one new constructor receipt must bind this generation"
+            );
+            let (birth_sequence, callback_slot, parent_slot, birth_mana) = births[0];
+            assert_eq!(row.id, u32::from(replacement.source_slot));
+            assert_eq!((row.action, row.mana), (41, birth_mana));
+            let cleanup_schedule = compatibility.cf10_production_schedule_receipts();
+            // A later birth must bind to its own pass, not an earlier visit
+            // of the same address in the preceding collection turn.
+            let birth_schedule = if birth_sequence < collection_journal_end {
+                &collection_schedule
+            } else {
+                &cleanup_schedule
+            };
+            let producer = birth_schedule.iter().find(|receipt|
+                matches!(receipt,crate::campaign::schedule::ScheduleReceipt::CallbackCompleted {
+                    slot,pass:crate::campaign::schedule::SourcePass::UpdateEntities,.. }
+                    if *slot==callback_slot)).expect("actual birth must have its real producing callback");
+            eprintln!("actual sphere birthseq{birth_sequence} collection-end{collection_journal_end} trigger{parent_slot} producing callback{producer:?}");
+            for (label, snapshot) in [
+                ("beforecollection", &arena_before_collection),
+                ("beforecleanup", &arena_before_cleanup),
+                ("after", arena),
+            ] {
+                let handle = snapshot.handle(parent_slot);
+                eprintln!(
+                    "sphere parent {label} handle{handle:?} kind{:?} target{:?}",
+                    handle.and_then(|handle| snapshot.resolve(handle)),
+                    crate::native_world::source_target::read(
+                        snapshot,
+                        crate::native_world::source_target::Context::default(),
+                        parent_slot
+                    )
+                );
+            }
+            let position = row.position;
+            assert!(chains.is_linked(replacement.source_slot));
+            assert!(
+                chains
+                    .entity_chain((position.x >> 8) as u8, (position.y >> 8) as u8)
+                    .contains(&replacement.source_slot)
+            );
+            assert!(
+                !compatibility
+                    .economy()
+                    .free_source_slots()
+                    .contains(&replacement.source_slot)
+            );
+            let target = crate::native_world::source_target::read(
+                arena,
+                crate::native_world::source_target::Context::default(),
+                replacement.source_slot,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                (
+                    target.active,
+                    target.class,
+                    target.model,
+                    target.position,
+                    target.life
+                ),
+                (true, 10, 39, position, row.life)
+            );
+            assert!(
+                compatibility
+                    .campaign_entity_presentations(0)
+                    .unwrap()
+                    .iter()
+                    .any(|dto| dto.entity_index == replacement.source_slot
+                        && dto.render_parameter_index == row.particle_index
+                        && dto.position == position)
+            );
+        } else {
+            assert!(!chains.is_linked(authored_scroll.source_entity_index));
+            assert!(
+                compatibility
+                    .economy()
+                    .free_source_slots()
+                    .contains(&authored_scroll.source_entity_index)
+            );
+        }
 
         session.reset(guard(&session)).unwrap();
         assert_eq!(session.backend().campaign.state_hash(), authored_reset_hash);
@@ -38510,9 +39025,10 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&workspace_root).unwrap();
         // No-Claim: this proves package-bound Experience Scroll placement
         // authoring through explicit reopen/reset, the shared authored-feature
-        // constructor, and one ordinary Level 2 XP pickup/hide/reclaim chain.
-        // It does not prove organic group-5 activation, every scroll's pickup,
-        // spell-experience tuning, other items, save/replay, or Unity rendering.
+        // constructor, real fixed-entry/exit group1->5 production, and one XP
+        // pickup/hide/reclaim chain with exact admitted reuse if it occurs.
+        // It does not prove every scroll's pickup, whole Level2, other items,
+        // save/replay or Unity rendering.
     }
 
     #[test]
