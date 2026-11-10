@@ -57,6 +57,54 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void ImportedHeadMandiblesFaceNativeTravelAtCardinalHeadings()
+        {
+            // The reviewed authoring mesh points along Blender +Y. The fixed
+            // FBX/Unity conversion maps that vector to Unity +Z. Native
+            // move_entity(0) travels source -Y = Unity -Z; yaw512 travels +X.
+            var modelForward = Quaternion.Euler(0, head.forwardYaw, 0) * Vector3.forward;
+            var yawZeroForward = ModernWormPresenter.SourceRotation(0) * modelForward;
+            var yawQuarterForward = ModernWormPresenter.SourceRotation(512) * modelForward;
+            Assert.That(Vector3.Distance(yawZeroForward, Vector3.back), Is.LessThan(.0001f),
+                "The visible mandibles must lead, not trail, native yaw-zero motion");
+            Assert.That(Vector3.Distance(yawQuarterForward, Vector3.right), Is.LessThan(.0001f));
+            Assert.That(segment.forwardYaw, Is.EqualTo(0).Within(.0001f),
+                "The reusable body uses the same asset-axis convention");
+
+            // Check the imported geometry, not only its metadata: both rigid
+            // mandible groups must lie ahead of the head pivot in world space.
+            using var instance = new ModernCharacterInstance(head, null);
+            var renderer = instance.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+            var left = Array.FindIndex(renderer.bones, bone => bone.name == "Mandible.L");
+            var right = Array.FindIndex(renderer.bones, bone => bone.name == "Mandible.R");
+            Assert.That(left, Is.GreaterThanOrEqualTo(0)); Assert.That(right, Is.GreaterThanOrEqualTo(0));
+            var mesh = new Mesh();
+            try
+            {
+                instance.Sample("Idle", 0); renderer.BakeMesh(mesh, true);
+                var weights = renderer.sharedMesh.boneWeights; var vertices = mesh.vertices;
+                Assert.That(weights.Length, Is.EqualTo(vertices.Length));
+                void CheckJaw(int index, Vector3 travel)
+                {
+                    var sum = Vector3.zero; var count = 0;
+                    for (var i = 0; i < weights.Length; i++)
+                    {
+                        if (weights[i].boneIndex0 != index || weights[i].weight0 < .99f) continue;
+                        sum += renderer.transform.TransformPoint(vertices[i]); count++;
+                    }
+                    Assert.That(count, Is.GreaterThan(0), "Imported mandible has no rigid surface");
+                    Assert.That(Vector3.Dot(sum/count-instance.Root.transform.position, travel), Is.GreaterThan(.1f),
+                        "Imported mandible surface must lead the native head pivot");
+                }
+                instance.Root.transform.rotation = ModernWormPresenter.SourceRotation(0);
+                CheckJaw(left, Vector3.back); CheckJaw(right, Vector3.back);
+                instance.Root.transform.rotation = ModernWormPresenter.SourceRotation(512);
+                CheckJaw(left, Vector3.right); CheckJaw(right, Vector3.right);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
         public void NativeRowsOwnPlacementAndRigidPartsHaveNoPerChildAnimator()
         {
             using var worm = Worm();

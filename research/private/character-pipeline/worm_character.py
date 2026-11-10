@@ -96,6 +96,35 @@ def segment_atlas(out):
     return atlas
 
 
+def eye_maps(material, out):
+    """Subtle dark-red pigment variation; the source eye has no visible pupil."""
+    width = 256; images = {}
+    for kind in ('albedo', 'roughness', 'normal'):
+        image = bpy.data.images.new('Worm eye ' + kind, width=width, height=width, alpha=True)
+        pixels = []
+        for y in range(width):
+            v = 2*math.pi*y/width
+            for x in range(width):
+                u = 2*math.pi*x/width
+                mottled = (math.sin(7*u+math.sin(3*v))*math.sin(5*v+math.sin(2*u))
+                           + .3*math.sin(23*u-17*v))/1.3
+                if kind == 'albedo':
+                    color = (.44+.06*mottled, .008+.003*mottled, .004+.002*mottled)
+                elif kind == 'roughness': color = (.43+.04*mottled,)*3
+                else: color = (.5+.008*math.cos(23*u-17*v), .5+.008*math.sin(7*u+3*v), .999)
+                pixels.extend((*color,1))
+        image.pixels.foreach_set(pixels); image.filepath_raw=str(out/('eye-'+kind+'.png'))
+        image.file_format='PNG'; image.save(); image.pack(); images[kind]=image
+    tree=material.node_tree; shader=tree.nodes.get('Principled BSDF')
+    for kind,target in [('albedo','Base Color'),('roughness','Roughness')]:
+        node=tree.nodes.new('ShaderNodeTexImage'); node.image=images[kind]
+        if kind=='roughness': node.image.colorspace_settings.name='Non-Color'
+        tree.links.new(node.outputs['Color'],shader.inputs[target])
+    node=tree.nodes.new('ShaderNodeTexImage'); node.image=images['normal']; node.image.colorspace_settings.name='Non-Color'
+    normal=tree.nodes.new('ShaderNodeNormalMap'); normal.inputs['Strength'].default_value=.35
+    tree.links.new(node.outputs['Color'],normal.inputs['Color']); tree.links.new(normal.outputs['Normal'],shader.inputs['Normal'])
+
+
 def sphere(name, location, scale, material, segments=24, rings=12):
     bpy.ops.mesh.primitive_uv_sphere_add(segments=segments, ring_count=rings, location=location)
     o = bpy.context.object
@@ -110,9 +139,9 @@ def sphere(name, location, scale, material, segments=24, rings=12):
 
 def mandible(name, sign, material):
     # Long, tapered forward-facing arms curve inward, matching TMAP 34–37.
-    points = [(sign*.44,.12,.03,.25), (sign*.66,.39,.01,.22),
-              (sign*.82,.75,-.02,.17), (sign*.82,1.08,-.05,.12),
-              (sign*.65,1.30,-.06,.065), (sign*.46,1.31,-.06,.012)]
+    points = [(sign*.34,.12,.03,.22), (sign*.69,.35,.01,.20),
+              (sign*1.03,.65,-.02,.15), (sign*1.12,.98,-.05,.11),
+              (sign*.94,1.24,-.06,.06), (sign*.64,1.27,-.06,.012)]
     verts=[]; faces=[]; sides=12
     for i,(x,y,z,r) in enumerate(points):
         a=Vector(points[max(0,i-1)][:3]); b=Vector(points[min(len(points)-1,i+1)][:3])
@@ -171,7 +200,7 @@ def render(path, target, camera, ortho=4.6):
 
 
 HEAD_MESHES = ('Head shell', 'Head underside', 'Eye socket', 'Single red eye',
-               'Eye glint', 'Mandible L', 'Mandible R')
+               'Mandible L', 'Mandible R')
 HEAD_ACTIONS = ('Idle', 'Attack', 'Hit', 'Death')
 PIPELINE = Path(__file__).resolve().parent
 
@@ -301,12 +330,14 @@ def package(out):
     source_master_hash = hashlib.sha256(Path(bpy.data.filepath).read_bytes()).hexdigest()
     sys.path.insert(0, str(PIPELINE))
     from character_textures import export_constants, extract_packed
-    records = export_constants(out, ['Head underside', 'Eye socket', 'Single red eye', 'Eye glint'])
+    records = export_constants(out, ['Head underside', 'Eye socket'])
     extract_packed(out, {
         'Worm chitin albedo': 'head_albedo.png',
+        'Worm eye albedo': 'head_eye_albedo.png',
         'Segment albedo': 'segment_albedo.png',
     })
     portable_maps(out, 'head', 'Worm chitin ')
+    portable_maps(out, 'head_eye', 'Worm eye ')
     portable_maps(out, 'segment', 'Segment ')
     clearance = mandible_clearance()
     (out/'mandible-clearance.json').write_text(json.dumps({
@@ -372,6 +403,8 @@ def package(out):
     head_maps = [{k: m[k] for k in ('name', 'albedo', 'orm')} for m in records['materials']]
     head_maps.append({'name': 'Olive chitin', 'albedo': 'textures/head_albedo.png',
                       'orm': 'textures/head_orm.png', 'normal': 'textures/head_normal.png'})
+    head_maps.append({'name': 'Ruby eye', 'albedo': 'textures/head_eye_albedo.png',
+                      'orm': 'textures/head_eye_orm.png', 'normal': 'textures/head_eye_normal.png'})
     segment_maps = [{'name': 'Shared segment atlas', 'albedo': 'textures/segment_albedo.png',
                      'orm': 'textures/segment_orm.png', 'normal': 'textures/segment_normal.png'}]
     for name, report, materials, extent in [('WormHead', head, head_maps, head_bounds),
@@ -406,17 +439,16 @@ def main():
     bpy.ops.object.select_all(action='SELECT');bpy.ops.object.delete(use_global=False)
     olive=mat('Olive chitin',(.24,.22,.055),.63); dark=mat('Lower chitin',(.085,.072,.025),.78)
     chitin_maps(olive,out)
-    red=mat('Ruby eye',(.62,.012,.008),.24,.08);glint=mat('Eye glint',(.95,.62,.43),.18)
+    red=mat('Ruby eye',(.44,.008,.004),.43);eye_maps(red,out)
     bpy.ops.object.armature_add(location=(0,0,0));rig=bpy.context.object;rig.name='WormHeadRig'
     bpy.ops.object.mode_set(mode='EDIT');root=rig.data.edit_bones[0];root.name='Root';root.head=(0,0,0);root.tail=(0,0,.3)
     for side,sign in [('L',1),('R',-1)]:
-        b=rig.data.edit_bones.new('Mandible.'+side);b.head=(sign*.44,.12,.03);b.tail=(sign*.44,.12,.35);b.parent=root
+        b=rig.data.edit_bones.new('Mandible.'+side);b.head=(sign*.34,.12,.03);b.tail=(sign*.34,.12,.35);b.parent=root
     bpy.ops.object.mode_set(mode='OBJECT')
-    head=[sphere('Head shell',(0,-.1,.05),(.77,.65,.37),olive),
-          sphere('Head underside',(0,-.07,-.12),(.74,.61,.22),dark),
-          sphere('Eye socket',(0,.03,.37),(.25,.23,.11),dark),
-          sphere('Single red eye',(0,.04,.43),(.205,.19,.115),red),
-          sphere('Eye glint',(-.055,.13,.515),(.045,.035,.014),glint,16,8)]
+    head=[sphere('Head shell',(0,-.1,.05),(.55,.65,.37),olive),
+          sphere('Head underside',(0,-.07,-.12),(.53,.61,.22),dark),
+          sphere('Eye socket',(0,.15,.37),(.22,.20,.06),dark),
+          sphere('Single red eye',(0,.16,.43),(.205,.19,.115),red)]
     for o in head:skin(o,rig,'Root')
     for side,sign in [('L',1),('R',-1)]:
         o=mandible('Mandible '+side,sign,olive);skin(o,rig,'Mandible.'+side);head.append(o)
