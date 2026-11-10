@@ -1,5 +1,33 @@
 # Character animation experiments
 
+## Installed human-and-robe pilot — 2026-11-10
+
+Villager241 is installed in Modern and Voxel; this closes one appearance, not
+the whole villager roster or Level1. The editable MPFB/MakeHuman body uses its
+own procedural Rigify actions. A separate free CC0 Donitz robe and authored
+costume parts sit over that anatomy. Simulate the lower garment offline,
+author its loops, fit one shared 48-bone/fixed-weight skin across all five
+actions, and export ordinary game bones. See [CLOTH_SKINNING.md](CLOTH_SKINNING.md)
+and the guarded helpers in `villager_cloth.py`/`dressed_villager.py`. No runtime
+cloth solver or paid 3D generation is required for this delivered pilot.
+
+The 224-bone game skin has Idle/Walk/Run/Hit/Death and 64/96 voxel derivatives.
+Root checked actual Unity surfaces, live stride/impact/fall/settled frames,
+exactly-once voxel breakup, R/F5 and fresh save loads, then captured both real
+installed launchers. Corpse support fixes measured 8 cm uneven-bank penetration
+to ~2 mm clearance. Accepted goat/archer masters and the previous player remain.
+Evidence and `villager-installed-checked.mp4` (10.5 seconds, 720×900) are in
+`../generated/villager-modern-20261109/runtime-character/`; current installation
+is `../remc2-unity-native/Builds/Presentation` (native `e8a6e707`, source through
+`69ed7623`). The older body-only/partial-Walk results below are authoring history.
+This is a verified pilot recipe, not automatic conversion of arbitrary clothing.
+The final player measured ~232/123 FPS Modern/Voxel on a private accelerated
+KWin/3090 Vulkan1280×960 surface; >100 ms outliers and native throughput below
+30 ticks/s remain. The corpse support samples the actual posed surface at
+30Hz during its short fall (~5 ms per sampled corpse on this CPU), then caches
+the settled result until terrain changes. Further large-crowd budgets remain
+future whole-Level1 work. Xvfb capture cadence is not a desktop FPS result.
+
 ## Fitted human and portable skin export — 2026-11-10
 
 The current Villager241 route uses a real human and separate authored clothing.

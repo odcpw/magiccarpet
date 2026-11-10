@@ -17,7 +17,37 @@ each converted family through real native binding, checked important frames,
 Voxel death breakup and qualified installation before calling it delivered.
 Then run the complete level and gameplay/performance checks in both styles.
 
-Current pilot `mc-fu7`: finish one Villager appearance 241 (original TMAP
+### Installed pilot — 2026-11-10
+
+`mc-fu7` now delivers one Villager appearance 241 (six residents, TMAP180–182),
+using a separate editable MPFB human and robe. The lower garment is simulated
+offline and fitted to 48 shared cloth bones; the final 224-bone skin has all
+five actions and 64/96 voxel derivatives. No paid 3D generation was used.
+Actual Unity surface conformance passes at 25 poses within 0.1 mm; its rendered-
+point negative control rejects. Focused retained-character, terrain, voxel and
+receipt suites pass. Real native inputs produce the tick529 death: Modern falls
+and settles with measured ~2 mm costume clearance, Voxel emits one breakup.
+Actual R/F5 controls and fresh save loads retain six unique residents in both
+styles. Both installed launchers independently captured the real native kill.
+
+Source includes `59f8a42e` and `69ed7623`. `Builds/Presentation` selects the
+qualified owner-local player in generated/villager-modern-20261109/runtime-character/
+player-receipt, with native SHA256 `e8a6e707` built from `eaf0f1bc`. The previous
+pointer/player remains at `Builds/Presentation-before-villager-20261110`.
+The unchanged real terrain-impact validator also passes: 2,007 current-base
+native removals equal the visual removals; all 6,751 historical intents remain.
+Waterbed updates now use bounded source/voxel invalidation and cached vertices.
+Accelerated KWin/3090 Vulkan1280×960 measurements are separate from capture;
+Xvfb totals are not comparable with the earlier accelerated benchmarks. The
+installed player measured medians 231.54/123.00 FPS Modern/Voxel in two runs per
+style, with >100 ms outliers and native throughput ~28.10/27.23 ticks/s still
+present. No unlocked-desktop, universal
+smoothness, whole-villager-family or complete-Level1 claim. Checked media,
+source hashes, XMLs and install receipt are under that runtime-character folder.
+
+### Pilot authoring history (superseded by the installed result above)
+
+The pilot `mc-fu7` began with one Villager appearance 241 (original TMAP
 180–182; six Level 1 residents), preserving accepted goat/archer and installed
 players. Oliver requires **zero paid 3D generation** and explicitly requests
 setting up local TRELLIS and comparing it with the Blender attempt. Imagegen

@@ -11,6 +11,7 @@ animation and presentation integration, not another mission implementation.
 | --- | --- | --- |
 | Goat | Approved master and five actions; Modern and animated voxel skins | Retain source speed, terrain contact and native death joins |
 | Bow archer, bow, string and arrow | Approved master and eight actions; Modern and voxel character skin | Retain real native release, aim and child lifetime |
+| Villager241 | Installed pilot: TMAP180–182, six residents; human/robe, five actions, Modern and 64/96 voxel skins | Retain native travel/reaction/death/reset/load; other appearances still need conversion |
 | Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
 | Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
 | Buildings | Four BUILD profiles: 26, 29, 30, 42, covering 32 opening buildings | Additional selectors and dynamic construction/damage need coverage |
@@ -27,7 +28,7 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 
 | Asset project | Level 1 occurrence | Required conversion |
 | --- | --- | --- |
-| Villagers | 28 at reset; four original appearances | Four source-matching looks, shared rig where suitable, all native movement/work/reaction/death states |
+| Villagers | 28 at reset; four original appearances | TMAP180 ×6 delivered; TMAP155 ×3, TMAP183 ×9 and TMAP199 ×10 remain, with their admitted native states |
 | Builders | Produced by houses, model 12 | Original appearance, locomotion/work/reaction/death and native production/removal binding |
 | Traders | Produced by houses, model 14 | Original appearance, locomotion/work/reaction/death and native production/removal binding |
 | Worm | Four authored heads, groups 4/34; each can allocate up to 16 segments | Head/repeating segments, native multipart placement, movement/attack/reaction/death and voxel breakup |
@@ -40,6 +41,13 @@ Builders use base TMAP 141 and traders 138. These are source appearances,
 not assumptions about gender, clothes or tools before viewing the sprites.
 Worm base TMAPs are head 30 and segment 66; Firefly base is 279; balloon 88.
 Live animation/direction may select other frames.
+
+The 2026-11-10 Villager241 pilot used no paid 3D generation. Its actual native
+kill, checked Modern fall and Voxel breakup, R/F5 and fresh loads are recorded
+under generated/villager-modern-20261109/runtime-character/. Both normal
+launchers now use that qualified player; the previous Presentation pointer is
+preserved. This does not complete this table's remaining families or whole-map
+voxel coverage.
 
 No Bee, Spider or Beetle was found in authored rows or audited direct
 house/Castle producers. Do not commission generic bugs from the full game roster.
