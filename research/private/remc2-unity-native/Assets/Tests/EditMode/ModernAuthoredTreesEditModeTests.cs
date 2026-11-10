@@ -44,6 +44,38 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(root.transform.childCount, Is.EqualTo(18));
                 var first = root.transform.GetChild(0);
                 Assert.That(first.position, Is.EqualTo(new Vector3(1, 1, 2)));
+                var sourceTrunk = Resources.Load<Mesh>("ModernNature/tree_trunk_mid");
+                var sourceLeaves = Resources.Load<Mesh>("ModernNature/tree_leaves_mid");
+                var trunk = first.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+                var nearLeaves = first.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
+                var farLeaves = first.GetChild(5).GetComponent<MeshFilter>().sharedMesh;
+                var originalVertices = sourceTrunk.vertices;
+                var trunkVertices = trunk.vertices;
+                var originalRoot = Vector3.zero;
+                var thickRoot = Vector3.zero;
+                var rootCount = 0;
+                for (int i = 0; i < originalVertices.Length; i++)
+                {
+                    if (originalVertices[i].y >= sourceTrunk.bounds.min.y + .2f) continue;
+                    originalRoot += new Vector3(originalVertices[i].x, 0f, originalVertices[i].z);
+                    thickRoot += new Vector3(trunkVertices[i].x, 0f, trunkVertices[i].z);
+                    rootCount++;
+                }
+                Assert.That(rootCount, Is.GreaterThan(0));
+                originalRoot /= rootCount;
+                thickRoot /= rootCount;
+                Assert.That(thickRoot.magnitude, Is.LessThan(.0001f), "the bole contacts the native anchor");
+                for (int i = 0; i < originalVertices.Length; i++)
+                {
+                    if (originalVertices[i].y >= sourceTrunk.bounds.min.y + .2f) continue;
+                    var relative = new Vector3(originalVertices[i].x, 0f, originalVertices[i].z) - originalRoot;
+                    Assert.That(Vector3.Distance(new Vector3(trunkVertices[i].x, 0f, trunkVertices[i].z), relative * 3.2f),
+                        Is.LessThan(.0001f));
+                }
+                Assert.That(nearLeaves.GetIndexCount(0), Is.EqualTo(sourceLeaves.GetIndexCount(0) * 10));
+                Assert.That(farLeaves.GetIndexCount(0), Is.EqualTo(sourceLeaves.GetIndexCount(0) * 2));
+                Assert.That(root.transform.GetChild(1).GetChild(2).GetComponent<MeshFilter>().sharedMesh,
+                    Is.SameAs(nearLeaves), "all authored trees share one canopy mesh");
                 Assert.That(trees.Replaces(1, 1), Is.True);
                 Assert.That(trees.Replaces(1, 2), Is.False);
                 Assert.That(first.GetChild(2).GetComponent<MeshRenderer>().enabled, Is.True);
@@ -55,6 +87,15 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(root.transform.childCount, Is.EqualTo(2));
                 Assert.That(first.GetChild(2).GetComponent<MeshRenderer>().enabled, Is.False);
                 Assert.That(first.GetChild(0).GetComponent<MeshFilter>().sharedMesh.name, Does.Contain("voxel"));
+                Assert.That(first.GetChild(2).GetComponent<MeshFilter>().sharedMesh.GetIndexCount(0),
+                    Is.GreaterThan(first.GetChild(5).GetComponent<MeshFilter>().sharedMesh.GetIndexCount(0)),
+                    "the voxel canopy has a smaller distant mesh");
+                var voxelNear = first.GetChild(2).GetComponent<MeshFilter>().sharedMesh;
+                var voxelFar = first.GetChild(5).GetComponent<MeshFilter>().sharedMesh;
+                Assert.That(voxelNear.GetIndexCount(0) / 3, Is.LessThanOrEqualTo(80_000),
+                    "the shared near voxel canopy remains bounded");
+                TestContext.WriteLine($"Tree canopy triangles: Modern near={nearLeaves.GetIndexCount(0) / 3}, far={farLeaves.GetIndexCount(0) / 3}; " +
+                    $"Voxel near={voxelNear.GetIndexCount(0) / 3}, far={voxelFar.GetIndexCount(0) / 3} (null graphics device)");
                 Assert.That(root.transform.GetChild(1).gameObject.activeSelf, Is.False);
                 Assert.That(trees.Replaces(2, 2), Is.False);
                 trees.BeginFrame();
