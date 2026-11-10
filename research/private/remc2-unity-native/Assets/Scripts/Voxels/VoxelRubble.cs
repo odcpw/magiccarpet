@@ -15,6 +15,8 @@ namespace MagicCarpet.Native.Voxels
         internal const int MaxBodies = 768;
         internal const int MaxPiecesPerEmission = 192;
         internal const int MaxActivationsPerFrame = 64;
+        // Leave a full character emission available even during repeated impacts.
+        internal const int MaxImpactBodies = MaxBodies - MaxPiecesPerEmission;
         internal const float MaximumBlockSize = .20f;
         internal const float Density = 1f;
         internal const float MinimumVisibleSeconds = 3f;
@@ -115,8 +117,9 @@ namespace MagicCarpet.Native.Voxels
             internal ContactProbe Probe;
             internal float Born, FadeStart;
             internal Vector3 SpawnPosition;
-            internal int RepresentedCells;
+            internal int RepresentedCells, BornFrame;
             internal RubbleKind Kind;
+            internal Emission Emission;
         }
         private sealed class ContactProbe : MonoBehaviour
         {
@@ -181,9 +184,78 @@ namespace MagicCarpet.Native.Voxels
         internal bool EmitCharacter(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, float energy,
             Func<float, float, float> groundHeight = null)
         {
-            if (cells == null || cells.Count == 0 || available.Count - reserved < Mathf.Min(MaxActivationsPerFrame, cells.Count)) return false;
+            if (cells == null || cells.Count == 0 || !MakeCharacterRoom(Mathf.Min(MaxActivationsPerFrame, cells.Count))) return false;
             EmitInternal(cells, velocity, origin, energy, false, Vector3.zero, true, groundHeight);
             return true;
+        }
+
+        // Reservations of already admitted deaths are never stolen. Recycle
+        // active lower-priority debris first, then old, completely spawned
+        // character debris. A fresh fragment survives at least its birth frame.
+        // If pending deaths own the capacity, retry after their queued pieces
+        // activate; never report a breakup that cannot be produced.
+        private bool MakeCharacterRoom(int required)
+        {
+            int shortage = required - (available.Count - reserved);
+            if (shortage <= 0) return true;
+            int recyclable = 0;
+            foreach (var piece in active)
+                if (CanRecycleForCharacter(piece)) recyclable++;
+            if (recyclable < shortage) return false;
+            for (int pass = 0; pass < 2 && shortage > 0; pass++)
+            {
+                // active is in activation order, so the oldest eligible
+                // fragments are selected without sorting or new allocations.
+                for (int i = 0; i < active.Count && shortage > 0;)
+                {
+                    var piece = active[i];
+                    bool lowerPriority = piece.Kind != RubbleKind.Character;
+                    if (lowerPriority == (pass == 0) && CanRecycleForCharacter(piece))
+                    {
+                        DisposeAt(i);
+                        shortage--;
+                    }
+                    else i++;
+                }
+            }
+            return true;
+        }
+
+        private static bool CanRecycleForCharacter(Piece piece)
+        {
+            if (piece.Kind != RubbleKind.Character) return true;
+            return piece.Emission != null && piece.Emission.Spawned && piece.BornFrame < Time.frameCount;
+        }
+
+        private int ImpactSlots()
+        {
+            int count = 0;
+            foreach (var piece in active) if (piece.Kind == RubbleKind.Impact) count++;
+            foreach (var emission in pending) if (emission.Impact) count += emission.Count - emission.Next;
+            return count;
+        }
+
+        private void Enqueue(Emission emission)
+        {
+            if (!emission.Character || pending.Count == 0) { pending.Enqueue(emission); return; }
+            // FIFO within each priority: already admitted characters remain
+            // protected, but new impacts cannot delay a queued death.
+            var earlier = pending.ToArray();
+            pending.Clear();
+            int i = 0;
+            for (; i < earlier.Length && earlier[i].Character; i++) pending.Enqueue(earlier[i]);
+            pending.Enqueue(emission);
+            for (; i < earlier.Length; i++) pending.Enqueue(earlier[i]);
+        }
+
+        private void DisposeAt(int index)
+        {
+            var piece = active[index];
+            DisposedCells += piece.RepresentedCells;
+            piece.Object.SetActive(false);
+            piece.Emission = null;
+            active.RemoveAt(index);
+            available.Push(piece);
         }
 
         // World reset must cancel both visible and not-yet-activated pieces.
@@ -195,12 +267,35 @@ namespace MagicCarpet.Native.Voxels
             foreach (var piece in active)
             {
                 piece.Object.SetActive(false);
+                piece.Emission = null;
                 available.Push(piece);
             }
             active.Clear();
         }
         internal Emission EmitImpact(IReadOnlyList<VoxelFragment> cells, Vector3 velocity, Vector3 origin, Vector3 normal)
-        { return EmitInternal(cells, velocity, origin, 0f, true, normal, false); }
+        {
+            if (cells != null && cells.Count > 0) MakeImpactRoom(Mathf.Min(cells.Count, MaxPiecesPerEmission));
+            return EmitInternal(cells, velocity, origin, 0f, true, normal, false);
+        }
+
+        private void MakeImpactRoom(int desired)
+        {
+            int impactSlots = ImpactSlots();
+            // Keep newer impacts visible under sustained fire: recycle only
+            // already-active impact pieces from an earlier frame. Pending
+            // emissions and every character reservation remain untouched.
+            for (int i = 0; i < active.Count &&
+                Mathf.Min(available.Count - reserved, MaxImpactBodies - impactSlots) < desired;)
+            {
+                var piece = active[i];
+                if (piece.Kind == RubbleKind.Impact && piece.BornFrame < Time.frameCount)
+                {
+                    DisposeAt(i);
+                    impactSlots--;
+                }
+                else i++;
+            }
+        }
 
         internal static int SampleCount(int cellCount, int freeSlots)
         { return Mathf.Min(Mathf.Max(0, cellCount), Mathf.Min(MaxPiecesPerEmission, Mathf.Max(0, freeSlots))); }
@@ -227,7 +322,9 @@ namespace MagicCarpet.Native.Voxels
         {
             if (cells == null || cells.Count == 0) return null;
             long start = Stopwatch.GetTimestamp();
-            int count = SampleCount(cells.Count, available.Count - reserved);
+            int freeSlots = available.Count - reserved;
+            if (impact) freeSlots = Mathf.Min(freeSlots, MaxImpactBodies - ImpactSlots());
+            int count = SampleCount(cells.Count, freeSlots);
             EmissionCount++; LastEmissionCells = cells.Count; LastEmissionGroups = count;
             MinimumEmissionGroups = Mathf.Min(MinimumEmissionGroups, count);
             if (count == 1) SingleClusterEmissions++;
@@ -251,7 +348,7 @@ namespace MagicCarpet.Native.Voxels
             if (impact && normal.sqrMagnitude > .000001f)
                 emission.Offset = ImpactClearance(copy, count, origin, normal.normalized);
             reserved += count;
-            pending.Enqueue(emission);
+            Enqueue(emission);
             Drain();
             LastEmissionMilliseconds = Milliseconds(Stopwatch.GetTimestamp() - start);
             return emission;
@@ -368,7 +465,8 @@ namespace MagicCarpet.Native.Voxels
                 if (direction.sqrMagnitude > .000001f)
                     p.Body.linearVelocity += direction.normalized * Mathf.Min(5f, Mathf.Sqrt(2f * e.Energy / Mathf.Max(MinimumMass, e.TotalMass)));
             }
-            p.Probe.ResetProbe(p.Body.linearVelocity); p.Born = Time.time; p.FadeStart = -1f; p.RepresentedCells = represented;
+            p.Probe.ResetProbe(p.Body.linearVelocity); p.Born = Time.time; p.BornFrame = Time.frameCount;
+            p.FadeStart = -1f; p.RepresentedCells = represented; p.Emission = e;
             p.Kind = e.Character ? RubbleKind.Character : e.Impact ? RubbleKind.Impact : RubbleKind.Other;
             active.Add(p); PeakBodies = Mathf.Max(PeakBodies, active.Count);
         }
@@ -406,8 +504,7 @@ namespace MagicCarpet.Native.Voxels
                 float alpha = 1f - (Time.time - p.FadeStart) / FadeSeconds;
                 if (alpha <= 0f)
                 {
-                    DisposedCells += p.RepresentedCells; p.Object.SetActive(false);
-                    active.RemoveAt(i); available.Push(p); continue;
+                    DisposeAt(i); continue;
                 }
                 p.Renderer.GetPropertyBlock(properties); properties.SetFloat(AlphaId, alpha); p.Renderer.SetPropertyBlock(properties);
             }

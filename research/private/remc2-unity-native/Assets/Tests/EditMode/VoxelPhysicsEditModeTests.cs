@@ -403,6 +403,166 @@ namespace MagicCarpet.Native.Tests
             finally { Object.DestroyImmediate(root); }
         }
 
+        // EditMode has no advancing player frame loop. Force the same budget
+        // transition that Drain observes on the next frame, while exercising
+        // the actual prewarmed GameObjects, reservations and activation code.
+        private static void AdvanceRubbleFrame(VoxelRubble rubble)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(VoxelRubble).GetField("budgetFrame", flags).SetValue(rubble, -1);
+            typeof(VoxelRubble).GetMethod("Drain", flags).Invoke(rubble, null);
+        }
+
+        private static void AssertRubbleAccounting(VoxelRubble rubble, GameObject root)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var available = (System.Collections.ICollection)typeof(VoxelRubble).GetField("available", flags).GetValue(rubble);
+            var queue = (System.Collections.IEnumerable)typeof(VoxelRubble).GetField("pending", flags).GetValue(rubble);
+            int reserved = (int)typeof(VoxelRubble).GetField("reserved", flags).GetValue(rubble), expected = 0;
+            foreach (VoxelRubble.Emission emission in queue) expected += emission.Count - emission.Next;
+            var bodies = root.GetComponentsInChildren<Rigidbody>(true);
+            Assert.That(bodies.Length, Is.EqualTo(VoxelRubble.MaxBodies));
+            Assert.That(bodies.Count(b => b.gameObject.activeSelf), Is.EqualTo(rubble.ActiveBodies));
+            Assert.That(available.Count + rubble.ActiveBodies, Is.EqualTo(VoxelRubble.MaxBodies));
+            Assert.That(reserved, Is.EqualTo(expected).And.InRange(0, available.Count));
+            Assert.That(rubble.PeakBodies, Is.LessThanOrEqualTo(VoxelRubble.MaxBodies));
+            Assert.That(rubble.PeakActivationsPerFrame, Is.LessThanOrEqualTo(VoxelRubble.MaxActivationsPerFrame));
+        }
+
+        private static int ActiveColorCount(GameObject root, Color32 color)
+        {
+            int count = 0;
+            var properties = new MaterialPropertyBlock();
+            foreach (var body in root.GetComponentsInChildren<Rigidbody>())
+            {
+                body.GetComponent<Renderer>().GetPropertyBlock(properties);
+                if (((Color32)properties.GetColor("_BaseColor")).Equals(color)) count++;
+            }
+            return count;
+        }
+
+        [Test] public void ImpactStormGivesSuccessiveCharacterDeathsBoundedRealFragments()
+        {
+            var root = new GameObject("Impact storm and successive character deaths");
+            try
+            {
+                var rubble = root.AddComponent<VoxelRubble>();
+                typeof(VoxelRubble).GetMethod("Awake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(rubble, null);
+                var impactColor = new Color32(241, 90, 10, 255);
+                var colors = new[] { new Color32(30, 110, 220, 255), new Color32(35, 210, 90, 255), new Color32(210, 45, 180, 255) };
+                var impacts = new List<VoxelFragment>();
+                for (int i = 0; i < 192; i++) impacts.Add(new VoxelFragment(new Vector3(i*.1f, 2, 0), .05f, impactColor));
+                var first = rubble.EmitImpact(impacts, Vector3.zero, Vector3.zero, Vector3.zero);
+                rubble.EmitImpact(impacts, Vector3.zero, Vector3.zero, Vector3.zero);
+                rubble.EmitImpact(impacts, Vector3.zero, Vector3.zero, Vector3.zero);
+                var fourth = rubble.EmitImpact(impacts, Vector3.zero, Vector3.zero, Vector3.zero);
+                Assert.That(fourth.Count, Is.Zero, "The impact cap preserves a full character burst");
+                Assert.That(rubble.ActiveBodies, Is.EqualTo(64));
+                AssertRubbleAccounting(rubble, root);
+                for (int death = 0; death < colors.Length; death++)
+                {
+                    var cells = new List<VoxelFragment>();
+                    for (int i = 0; i < 192; i++) cells.Add(new VoxelFragment(new Vector3(i*.1f, 4 + death, 0), .05f, colors[death]));
+                    Assert.That(rubble.EmitCharacter(cells, Vector3.zero, Vector3.zero, 0), Is.True, "Death must be admitted despite the impact storm");
+                    // A death jumps ahead of the still-pending impact tail.
+                    int impactNext = first.Next;
+                    AdvanceRubbleFrame(rubble);
+                    Assert.That(ActiveColorCount(root, colors[death]), Is.GreaterThan(0), "A distinct real fragment must activate next frame");
+                    Assert.That(first.Next, Is.EqualTo(impactNext));
+                    AssertRubbleAccounting(rubble, root);
+                    // Finish this admitted death so later recycling cannot
+                    // steal its still-reserved samples.
+                    for (int i = 0; i < 3; i++) AdvanceRubbleFrame(rubble);
+                    AssertRubbleAccounting(rubble, root);
+                }
+                Assert.That(ActiveColorCount(root, impactColor), Is.GreaterThan(0), "Admission must not clear all impact rubble");
+                foreach (var color in colors) Assert.That(ActiveColorCount(root, color), Is.GreaterThan(0));
+                Assert.That(rubble.DisposedCells, Is.GreaterThan(0), "Later deaths recycle older lower-priority active pieces");
+                rubble.ClearEmissions();
+                AssertRubbleAccounting(rubble, root);
+                Assert.That(rubble.ActiveBodies, Is.Zero);
+                Assert.That(rubble.PendingEmissions, Is.Zero);
+                Assert.That(rubble.EmitCharacter(new[] { new VoxelFragment(Vector3.up, .05f, colors[0]) }, Vector3.zero, Vector3.zero, 0), Is.True);
+                AdvanceRubbleFrame(rubble);
+                Assert.That(ActiveColorCount(root, colors[0]), Is.EqualTo(1));
+                AssertRubbleAccounting(rubble, root);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        [Test] public void SustainedImpactsReplaceOldVisiblePiecesWithFreshBurst()
+        {
+            var root = new GameObject("Fresh impacts recycle old debris");
+            try
+            {
+                var rubble = root.AddComponent<VoxelRubble>();
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                typeof(VoxelRubble).GetMethod("Awake", flags).Invoke(rubble, null);
+                var colors = new[] { new Color32(240, 20, 20, 255), new Color32(20, 240, 20, 255),
+                                     new Color32(20, 20, 240, 255), new Color32(240, 220, 20, 255) };
+                for (int impact = 0; impact < colors.Length; impact++)
+                {
+                    var cells = new List<VoxelFragment>();
+                    for (int i = 0; i < 192; i++) cells.Add(new VoxelFragment(new Vector3(i*.1f, 2 + impact, 0), .05f, colors[impact]));
+                    var emission = rubble.EmitImpact(cells, Vector3.zero, Vector3.zero, Vector3.zero);
+                    Assert.That(emission.Count, Is.EqualTo(192));
+                    for (int frame = 0; frame < 3; frame++) AdvanceRubbleFrame(rubble);
+                    Assert.That(emission.Spawned, Is.True);
+                    Assert.That(ActiveColorCount(root, colors[impact]), Is.EqualTo(192));
+                    AssertRubbleAccounting(rubble, root);
+                    // EditMode's synthetic budget frames share frameCount.
+                    // Age real active records to model the next player frame.
+                    var active = (System.Collections.IEnumerable)typeof(VoxelRubble).GetField("active", flags).GetValue(rubble);
+                    foreach (var piece in active) piece.GetType().GetField("BornFrame", flags).SetValue(piece, Time.frameCount - 1);
+                }
+                Assert.That(ActiveColorCount(root, colors[0]), Is.Zero, "The oldest impact must be recycled first");
+                for (int i = 1; i < colors.Length; i++) Assert.That(ActiveColorCount(root, colors[i]), Is.EqualTo(192));
+                Assert.That(rubble.ActiveBodies, Is.EqualTo(VoxelRubble.MaxImpactBodies));
+                Assert.That(rubble.DisposedCells, Is.EqualTo(192));
+                Assert.That(rubble.DroppedEmissions, Is.Zero);
+                AssertRubbleAccounting(rubble, root);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        [Test] public void CharacterOnlySaturationRecyclesCompletedOlderDeathAndProtectsPending()
+        {
+            var root = new GameObject("Character-only saturated pool");
+            try
+            {
+                var rubble = root.AddComponent<VoxelRubble>();
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                typeof(VoxelRubble).GetMethod("Awake", flags).Invoke(rubble, null);
+                var color = new Color32(75, 105, 200, 255);
+                var cells = new List<VoxelFragment>();
+                for (int i = 0; i < 192; i++) cells.Add(new VoxelFragment(new Vector3(i*.1f, 3, 0), .05f, color));
+                for (int death = 0; death < 4; death++)
+                {
+                    Assert.That(rubble.EmitCharacter(cells, Vector3.zero, Vector3.zero, 0), Is.True);
+                    for (int frame = 0; frame < 3; frame++) AdvanceRubbleFrame(rubble);
+                }
+                Assert.That(rubble.ActiveBodies, Is.EqualTo(VoxelRubble.MaxBodies));
+                AssertRubbleAccounting(rubble, root);
+                // The synthetic EditMode frames above share Unity's frameCount;
+                // age the actual pooled Piece records by one frame to exercise
+                // the real completed-character recycling path.
+                var active = (System.Collections.IEnumerable)typeof(VoxelRubble).GetField("active", flags).GetValue(rubble);
+                foreach (var piece in active) piece.GetType().GetField("BornFrame", flags).SetValue(piece, Time.frameCount - 1);
+                var nextColor = new Color32(200, 80, 45, 255);
+                var next = cells.Select(c => new VoxelFragment(c.Position, c.Size, nextColor)).ToArray();
+                Assert.That(rubble.EmitCharacter(next, Vector3.zero, Vector3.zero, 0), Is.True);
+                Assert.That(rubble.DisposedCells, Is.EqualTo(VoxelRubble.MaxActivationsPerFrame));
+                AdvanceRubbleFrame(rubble);
+                Assert.That(ActiveColorCount(root, nextColor), Is.EqualTo(VoxelRubble.MaxActivationsPerFrame));
+                AssertRubbleAccounting(rubble, root);
+                rubble.ClearEmissions();
+                AssertRubbleAccounting(rubble, root);
+                Assert.That(rubble.ActiveBodies, Is.Zero);
+                Assert.That(rubble.PendingEmissions, Is.Zero);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
         [Test] public void ResetCancelsQueuedAndAlreadySpawnedImpactEmissions()
         {
             var root = new GameObject("Impact cancellation regression");
