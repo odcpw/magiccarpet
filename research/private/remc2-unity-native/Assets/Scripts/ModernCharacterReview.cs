@@ -79,7 +79,15 @@ namespace MagicCarpet.Native
             reviewCamera.rect = new Rect(0, .15f, 1, .69f);
             reviewCamera.GetUniversalAdditionalCameraData().renderPostProcessing = false;
             goat = Create("Goat"); archer = Create("Archer");
-            var villagerAsset = Resources.Load<ModernCharacterAsset>("ModernCharacters/Villager/Character");
+            var args = Environment.GetCommandLineArgs();
+            var still = Array.IndexOf(args, "-mc-character-still");
+            var appearance = Array.IndexOf(args, "-mc-character-review-appearance");
+            if (appearance >= 0 && (appearance + 1 >= args.Length || !ModernVillagerAppearances.ContainsResource(args[appearance + 1])))
+                throw new ArgumentException("Character review requires a known villager resource");
+            var requested = still >= 0 && still + 1 < args.Length ? args[still + 1].Split(',')[0] :
+                appearance >= 0 ? args[appearance + 1] : "Villager";
+            var villagerName = ModernVillagerAppearances.ContainsResource(requested) ? requested : "Villager";
+            var villagerAsset = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + villagerName + "/Character");
             if (villagerAsset != null) villager = new ModernCharacterInstance(villagerAsset, transform);
             goatRenderers = goat.Root.GetComponentsInChildren<Renderer>(true);
             archerRenderers = archer.Root.GetComponentsInChildren<Renderer>(true);
@@ -105,16 +113,15 @@ namespace MagicCarpet.Native
                 Step(villager, "Hit", "VILLAGER · impact and recover"),
                 Step(villager, "Death", "VILLAGER · fall and settle")
             }).ToArray();
+            if (appearance >= 0) steps = steps.Where(step => step.actor == villager).ToArray();
             duration = steps.Sum(step => step.duration);
-            var args = Environment.GetCommandLineArgs();
-            var still = Array.IndexOf(args, "-mc-character-still");
             if (still >= 0)
             {
                 if (still + 1 >= args.Length) throw new ArgumentException("Still requires character,clip,time,yaw");
                 var values = args[still + 1].Split(',');
                 if (values.Length != 4) throw new ArgumentException("Still requires character,clip,time,yaw");
                 SetCharacter(values[0] == "Goat" ? goat : values[0] == "Archer" ? archer :
-                    values[0] == "Villager" && villager != null ? villager : throw new ArgumentException("Unknown or unavailable character"));
+                    villager != null && values[0] == villager.Asset.name ? villager : throw new ArgumentException("Unknown or unavailable character"));
                 current.Sample(values[1], float.Parse(values[2], CultureInfo.InvariantCulture));
                 orbitYaw = float.Parse(values[3], CultureInfo.InvariantCulture);
                 automatic = false; paused = true; singleFrame = true;

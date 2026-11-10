@@ -13,6 +13,31 @@ namespace MagicCarpet.Native
         public float runSpeed;
         public float height;
         public string[] hitOverlayBones = Array.Empty<string>();
+        public string uprightBone;
+        public string uprightSupportBone;
+        public float uprightFootRadius;
+
+        // Optional carried prop. Its authored pivot stays attached; only its
+        // up direction is stabilized while carried, never during a fall.
+        public Transform ResolveUprightBone(Transform root)
+        {
+            if (string.IsNullOrEmpty(uprightBone)) return null;
+            if (root == null) throw new ArgumentNullException(nameof(root));
+            var matches = Array.FindAll(root.GetComponentsInChildren<Transform>(true), bone => bone.name == uprightBone);
+            if (matches.Length != 1) throw new InvalidOperationException("Character upright prop must identify exactly one transform: " + uprightBone);
+            return matches[0];
+        }
+
+        public Transform ResolveUprightSupport(Transform root)
+        {
+            if (string.IsNullOrEmpty(uprightBone)) return null;
+            if (!float.IsFinite(uprightFootRadius) || uprightFootRadius <= 0 || string.IsNullOrWhiteSpace(uprightSupportBone))
+                throw new InvalidOperationException("Carried prop requires its support bone and measured foot radius");
+            if (root == null) throw new ArgumentNullException(nameof(root));
+            var matches = Array.FindAll(root.GetComponentsInChildren<Transform>(true), bone => bone.name == uprightSupportBone);
+            if (matches.Length != 1) throw new InvalidOperationException("Carried prop support must identify exactly one transform: " + uprightSupportBone);
+            return matches[0];
+        }
 
         // Bone identities belong to the authored asset, rather than one rig's
         // naming convention. Reject missing or ambiguous bindings at admission.

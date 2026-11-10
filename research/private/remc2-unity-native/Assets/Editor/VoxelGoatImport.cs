@@ -25,7 +25,7 @@ namespace MagicCarpet.Native.Editor
         {
             PrepareCharacter("Goat", new[] { 24, 40, 64, 96 });
             PrepareCharacter("Archer", new[] { 64, 96 });
-            PrepareCharacter("Villager", new[] { 64, 96 });
+            foreach (var binding in ModernVillagerAppearances.All) PrepareCharacter(binding.Resource, new[] { 64, 96 });
             AssetDatabase.SaveAssets();
         }
 
@@ -48,7 +48,7 @@ namespace MagicCarpet.Native.Editor
                 {
                     var path = $"{folder}/{name}{resolution}.asset";
                     var existing = AssetDatabase.LoadAssetAtPath<VoxelGoatAsset>(path);
-                    if (existing != null && (name == "Villager" || !string.IsNullOrEmpty(existing.sourceFingerprint)) &&
+                    if (existing != null && (ModernVillagerAppearances.ContainsResource(name) || !string.IsNullOrEmpty(existing.sourceFingerprint)) &&
                         existing.sourceFingerprint != fingerprint)
                     {
                         // Preserve losing derived output outside Resources; it must not

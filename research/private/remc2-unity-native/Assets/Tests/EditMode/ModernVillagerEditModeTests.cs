@@ -11,7 +11,7 @@ namespace MagicCarpet.Native.Tests
 {
     public sealed class ModernVillagerEditModeTests
     {
-        private static ModernCharacterAsset Asset() => Resources.Load<ModernCharacterAsset>("ModernCharacters/Villager/Character");
+        private static ModernCharacterAsset Asset(string name = "Villager") => Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
         [Serializable] private sealed class MaterialSpec { public string name, normal; }
         [Serializable] private sealed class MaterialManifest { public MaterialSpec material; public MaterialSpec[] materials; }
 
@@ -92,14 +92,25 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        public void OnlyReviewedVillagerAppearanceReplacesOriginalSprite()
+        public void AllFourVillagerLooksUseDistinctAssetsAndSourceHeights()
         {
-            var row = new NativeSim.CampaignCharacterState { classId = 5, model = 13, renderParameter = 241 };
-            Assert.That(ModernCharacterActors.IsSupportedActor(row), Is.True);
-            foreach (var look in new ushort[] { 239, 242, 271, 0, 65535 })
+            var row = new NativeSim.CampaignCharacterState { classId = 5, model = 13 };
+            foreach (var (look, resource, height) in new[] {
+                (239, "VillagerBrown", 200), (241, "Villager", 250),
+                (242, "VillagerStriped", 250), (271, "VillagerCarrier", 300) })
+            {
+                row.renderParameter = (ushort)look;
+                Assert.That(ModernCharacterActors.IsSupportedActor(row), Is.True);
+                var binding = ModernVillagerAppearances.Get((ushort)look);
+                Assert.That(binding.Resource, Is.EqualTo(resource));
+                Assert.That(binding.SourceHeight, Is.EqualTo(height / 64f));
+            }
+            Assert.That(ModernVillagerAppearances.All.Select(b => b.Resource).Distinct().Count(), Is.EqualTo(4));
+            foreach (var look in new ushort[] { 0, 221, 219, 65535 })
             {
                 row.renderParameter = look;
                 Assert.That(ModernCharacterActors.IsSupportedActor(row), Is.False);
+                Assert.Throws<ArgumentException>(() => ModernVillagerAppearances.Get(look));
             }
             row.renderParameter = 241;
             row.classId = 9;
@@ -144,6 +155,90 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void UprightPropBindingRejectsMissingAndAmbiguousTargets()
+        {
+            var asset = ScriptableObject.CreateInstance<ModernCharacterAsset>();
+            var root = new GameObject("Carried prop binding");
+            try
+            {
+                Assert.That(asset.ResolveUprightBone(root.transform), Is.Null);
+                asset.uprightBone = "Jar";
+                Assert.Throws<InvalidOperationException>(() => asset.ResolveUprightBone(root.transform));
+                var jar = new GameObject("Jar"); jar.transform.SetParent(root.transform, false);
+                Assert.That(asset.ResolveUprightBone(root.transform), Is.SameAs(jar.transform));
+                new GameObject("Jar").transform.SetParent(root.transform, false);
+                Assert.Throws<InvalidOperationException>(() => asset.ResolveUprightBone(root.transform));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(asset); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CarriedJarStaysLevelDuringSlopeTravelAndHitsButReleasesDuringDeath(bool voxel)
+        {
+            var asset = Asset("VillagerCarrier");
+            using var villager = new ModernVillagerPresenter(asset, null, asset.height);
+            var skin = villager.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+            var support = asset.ResolveUprightSupport(villager.Root.transform);
+            var supportIndex = Array.IndexOf(skin.bones, support);
+            var weights = skin.sharedMesh.boneWeights;
+            var headVertices = Enumerable.Range(0, weights.Length).Where(i => {
+                var w = weights[i];
+                return (w.boneIndex0 == supportIndex ? w.weight0 : 0) + (w.boneIndex1 == supportIndex ? w.weight1 : 0) +
+                    (w.boneIndex2 == supportIndex ? w.weight2 : 0) + (w.boneIndex3 == supportIndex ? w.weight3 : 0) >= .9999f;
+            }).ToArray();
+            Assert.That(headVertices.Length, Is.GreaterThan(0));
+            if (voxel) villager.AttachVoxelSkin(Resources.Load<MagicCarpet.Native.Voxels.VoxelGoatAsset>(
+                "ModernCharacters/VillagerCarrier/Voxels/VillagerCarrier64"));
+            var bone = asset.ResolveUprightBone(villager.Root.transform);
+            Assert.That(bone, Is.Not.Null, "Carrier must declare its actual held vessel");
+            var localUp = bone.InverseTransformDirection(Vector3.up);
+            var mesh = new Mesh();
+            void CheckCrownContact()
+            {
+                skin.BakeMesh(mesh, true);
+                var vertices = mesh.vertices;
+                var radius = asset.uprightFootRadius * villager.Root.transform.lossyScale.x;
+                var under = headVertices.Select(i => skin.transform.TransformPoint(vertices[i])).Where(p =>
+                    new Vector2(p.x - bone.position.x, p.z - bone.position.z).sqrMagnitude <= radius * radius).ToArray();
+                Assert.That(under.Length, Is.GreaterThan(0));
+                Assert.That(bone.position.y - under.Max(p => p.y), Is.EqualTo(.0005f).Within(.0001f),
+                    "Actual baked crown must touch the horizontal vessel foot, on either slope sign and during recoil");
+            }
+            try
+            {
+            villager.Observe(Vector3.zero, 0, 1000, 111, 1);
+            villager.Render(0);
+            for (var i = 0; i < 20; i++)
+            {
+                villager.Root.transform.rotation = Quaternion.Euler(i % 2 == 0 ? -28 : 28, i * 3, i % 2 == 0 ? 15 : -15);
+                villager.Root.transform.position += Vector3.forward * asset.runSpeed * .02f;
+                // One impact then a progressing overlay; do not restart it on every sample.
+                villager.Observe(villager.Root.transform.position, 0, 990, 110, (ulong)i + 2);
+                villager.Render(.02f);
+                Assert.That(villager.MovingHit, Is.True);
+                Assert.That(Vector3.Angle(bone.TransformDirection(localUp), Vector3.up), Is.LessThan(.05f),
+                    "Terrain tilt and moving recoil must not tip a balanced carried jar");
+                CheckCrownContact();
+            }
+            villager.Observe(villager.Root.transform.position, 0, -1, 108, 22);
+            if (voxel)
+            {
+                var time = villager.ClipTime;
+                villager.Root.transform.rotation = Quaternion.Euler(-28, 95, 15);
+                Assert.That(villager.SnapshotVoxelFragments().Count, Is.GreaterThan(0));
+                Assert.That(villager.ClipTime, Is.EqualTo(time), "Fracture samples the last held pose without advancing Death");
+                Assert.That(Vector3.Angle(bone.TransformDirection(localUp), Vector3.up), Is.LessThan(.05f));
+                CheckCrownContact();
+            }
+            villager.Render(asset.Clip("Death").length);
+            Assert.That(Vector3.Angle(bone.TransformDirection(localUp), Vector3.up), Is.GreaterThan(30),
+                "The released jar must keep its authored fall rather than remain gravity-locked");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
         public void ConsecutiveStationaryHitsRestartTheAuthoredReaction()
         {
             var asset = Asset();
@@ -160,10 +255,13 @@ namespace MagicCarpet.Native.Tests
             Assert.That(villager.ClipTime, Is.EqualTo(.01f).Within(.001f), "A new native impact must restart an active stationary reaction");
         }
 
-        [Test]
-        public void AuthoredGaitAdvancesByRenderedTravelAndMovingHitKeepsRunning()
+        [TestCase("Villager")]
+        [TestCase("VillagerBrown")]
+        [TestCase("VillagerStriped")]
+        [TestCase("VillagerCarrier")]
+        public void AuthoredGaitAdvancesByRenderedTravelAndMovingHitKeepsRunning(string name)
         {
-            var asset = Asset();
+            var asset = Asset(name);
             Assert.That(asset, Is.Not.Null);
             using var villager = new ModernVillagerPresenter(asset, null, asset.height);
             villager.Observe(Vector3.zero, 0, 100, 111, 1);
@@ -186,13 +284,10 @@ namespace MagicCarpet.Native.Tests
             Assert.That(villager.CurrentClip, Is.EqualTo("Death"));
         }
 
-        [TestCase("Idle")]
-        [TestCase("Walk")]
-        [TestCase("Run")]
-        [TestCase("Death")]
-        public void ImportedVillagerHasFiniteGeometryAndAppropriateGroundContact(string clip)
+        [TestCaseSource(nameof(ImportedActions))]
+        public void ImportedVillagerHasFiniteGeometryAndAppropriateGroundContact(string name, string clip)
         {
-            using var character = new ModernCharacterInstance(Asset(), null);
+            using var character = new ModernCharacterInstance(Asset(name), null);
             var skin = character.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
             var mesh = new Mesh();
             try
@@ -217,6 +312,10 @@ namespace MagicCarpet.Native.Tests
             }
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
+
+        private static System.Collections.Generic.IEnumerable<TestCaseData> ImportedActions() =>
+            ModernVillagerAppearances.All.SelectMany(binding => new[] { "Idle", "Walk", "Run", "Hit", "Death" }
+                .Select(clip => new TestCaseData(binding.Resource, clip)));
 
         [TestCase(false)]
         [TestCase(true)]
@@ -258,10 +357,13 @@ namespace MagicCarpet.Native.Tests
                 "A later terrain revision must refresh the settled corpse support");
         }
 
-        [Test]
-        public void ImportedVillagerKeepsPhysicalMapsAndActualSurfaceNormals()
+        [TestCase("Villager")]
+        [TestCase("VillagerBrown")]
+        [TestCase("VillagerStriped")]
+        [TestCase("VillagerCarrier")]
+        public void ImportedVillagerKeepsPhysicalMapsAndActualSurfaceNormals(string name)
         {
-            var asset = Asset();
+            var asset = Asset(name);
             Assert.That(asset, Is.Not.Null);
             var maps = asset.model.GetComponentsInChildren<Renderer>(true).SelectMany(r => r.sharedMaterials).Distinct().ToArray();
             Assert.That(maps.Length, Is.GreaterThanOrEqualTo(1));
@@ -270,7 +372,8 @@ namespace MagicCarpet.Native.Tests
                 "A single atlas is valid; every used character material must retain its physical texture maps");
             Assert.That(maps.All(m => m.IsKeywordEnabled("_METALLICSPECGLOSSMAP") && m.IsKeywordEnabled("_OCCLUSIONMAP") &&
                 m.GetTexture("_OcclusionMap") != null), Is.True, "Assigned maps must be enabled in the shader");
-            var manifest = JsonUtility.FromJson<MaterialManifest>(File.ReadAllText("Assets/Resources/ModernCharacters/Villager/Villager.clips.json"));
+            var folder = "Assets/Resources/ModernCharacters/" + name + "/";
+            var manifest = JsonUtility.FromJson<MaterialManifest>(File.ReadAllText(folder + name + ".clips.json"));
             foreach (var description in manifest.materials != null && manifest.materials.Length > 0 ? manifest.materials : new[] { manifest.material })
             {
                 var fileName = string.Concat(description.name.Select(c => char.IsLetterOrDigit(c) ? c : '_')) + ".mat";
@@ -281,7 +384,7 @@ namespace MagicCarpet.Native.Tests
                 {
                     Assert.That(material.IsKeywordEnabled("_NORMALMAP"), Is.True);
                     Assert.That(material.GetTexture("_BumpMap"), Is.EqualTo(AssetDatabase.LoadAssetAtPath<Texture2D>(
-                        "Assets/Resources/ModernCharacters/Villager/" + description.normal)));
+                        folder + description.normal)));
                 }
             }
             var skins = asset.model.GetComponentsInChildren<SkinnedMeshRenderer>(true);

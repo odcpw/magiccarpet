@@ -35,6 +35,8 @@ def main():
     parser.add_argument("--player", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--still", help="character,clip,seconds,camera-yaw; capture one complete frame")
+    parser.add_argument("--review-character", choices=("Villager", "VillagerBrown", "VillagerStriped", "VillagerCarrier"),
+                        help="Record this villager's complete five-action sequence in the isolated review player")
     parser.add_argument("--gameplay-command", type=Path, help="JSON with actual campaign launch arguments and provenance")
     parser.add_argument("--follow", default="Goat", help="Goat, Archer or native source slot; Player keeps the normal gameplay camera")
     parser.add_argument("--frames", type=int, default=360, help="Native gameplay capture frame count")
@@ -45,6 +47,8 @@ def main():
     args = parser.parse_args()
     if args.gameplay_command and args.still:
         raise ValueError("Gameplay and isolated still capture are separate modes")
+    if args.review_character and (args.gameplay_command or args.still):
+        raise ValueError("Full character review cannot be combined with gameplay or a still")
     if not 30 <= args.frames <= 3600:
         raise ValueError("--frames must be 30..3600")
     if not args.player.is_file() or not os.access(args.player, os.X_OK):
@@ -131,6 +135,8 @@ def main():
             command += ["-mc-character-capture", str(output / "frames")]
         if args.still:
             command += ["-mc-character-still", args.still]
+        if args.review_character:
+            command += ["-mc-character-review-appearance", args.review_character]
         (output / "command.json").write_text(json.dumps(command, indent=2) + "\n")
         with (output / "player-stdout.log").open("w") as log:
             player = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)

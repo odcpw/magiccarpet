@@ -73,7 +73,7 @@ namespace MagicCarpet.Native.Editor
             }
             PrepareCharacter("Goat", .14844f, script);
             PrepareCharacter("Archer", 1.65f, script);
-            PrepareCharacter("Villager", 0, script);
+            foreach (var binding in ModernVillagerAppearances.All) PrepareCharacter(binding.Resource, 0, script);
             AssetDatabase.SaveAssets();
             Validate();
             Probe();
@@ -84,15 +84,20 @@ namespace MagicCarpet.Native.Editor
             var script = AssetDatabase.LoadAssetAtPath<MonoScript>("Assets/Scripts/ModernCharacterAsset.cs");
             if (script == null || script.GetClass() != typeof(ModernCharacterAsset))
                 throw new InvalidOperationException("Character asset script binding is unresolved");
-            foreach (var name in new[] { "Goat", "Archer", "Villager" })
+            foreach (var name in new[] { "Goat", "Archer" }.Concat(ModernVillagerAppearances.All.Select(b => b.Resource)))
             {
                 var asset = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
                 if (asset == null || asset.model == null || MonoScript.FromScriptableObject(asset) != script)
                     throw new InvalidOperationException("Imported character cannot be loaded with its actual script binding: " + name);
                 foreach (var clip in name == "Goat" ? new[] { "Idle", "Walk", "Sprint", "Hit", "Death" } :
-                    name == "Villager" ? new[] { "Idle", "Walk", "Run", "Hit", "Death" } :
+                    ModernVillagerAppearances.ContainsResource(name) ? new[] { "Idle", "Walk", "Run", "Hit", "Death" } :
                     new[] { "Idle", "Walk", "StandingShot", "KneelEnter", "KneelingShot", "KneelExit", "Hit", "Death" }) asset.Clip(clip);
-                if (name == "Villager") asset.ResolveHitOverlayBones(asset.model.transform);
+                if (ModernVillagerAppearances.ContainsResource(name))
+                {
+                    asset.ResolveHitOverlayBones(asset.model.transform);
+                    asset.ResolveUprightBone(asset.model.transform);
+                    asset.ResolveUprightSupport(asset.model.transform);
+                }
             }
         }
 
@@ -184,11 +189,19 @@ namespace MagicCarpet.Native.Editor
                 definition.walkSpeed = manifest.walkSpeed > 0 ? manifest.walkSpeed : walkSpeed;
                 definition.runSpeed = manifest.runSpeed;
                 definition.hitOverlayBones = manifest.hitOverlayBones ?? Array.Empty<string>();
-                if (name == "Villager" && (!float.IsFinite(definition.walkSpeed) || definition.walkSpeed <= 0 ||
+                definition.uprightBone = manifest.uprightBone;
+                definition.uprightSupportBone = manifest.uprightSupportBone;
+                definition.uprightFootRadius = manifest.uprightFootRadius;
+                if (ModernVillagerAppearances.ContainsResource(name) && (!float.IsFinite(definition.walkSpeed) || definition.walkSpeed <= 0 ||
                     !float.IsFinite(definition.runSpeed) || definition.runSpeed <= definition.walkSpeed))
                     throw new InvalidOperationException("Villager manifest requires measured Walk and Run travel speeds");
                 definition.height = manifest.height;
-                if (name == "Villager") definition.ResolveHitOverlayBones(authored.transform);
+                if (ModernVillagerAppearances.ContainsResource(name))
+                {
+                    definition.ResolveHitOverlayBones(authored.transform);
+                    definition.ResolveUprightBone(authored.transform);
+                    definition.ResolveUprightSupport(authored.transform);
+                }
                 EditorUtility.SetDirty(definition);
             }
             finally { UnityEngine.Object.DestroyImmediate(instance); }
@@ -283,7 +296,7 @@ namespace MagicCarpet.Native.Editor
         [Serializable] private sealed class TakeReport { public string name, take; public float first, last; }
         [Serializable] private sealed class BoneReport { public string name; public Vector3 position; }
         [Serializable] private sealed class MaterialReport { public string name, shader, texture; }
-        [Serializable] private sealed class Manifest { public float height, walkSpeed, runSpeed, minBoneWeight; public string[] hitOverlayBones; public ClipRange[] clips; public MaterialMaps material; public MaterialMaps[] materials; }
+        [Serializable] private sealed class Manifest { public float height, walkSpeed, runSpeed, minBoneWeight, uprightFootRadius; public string[] hitOverlayBones; public string uprightBone, uprightSupportBone; public ClipRange[] clips; public MaterialMaps material; public MaterialMaps[] materials; }
         private sealed class ImportedMaps { internal Texture2D albedo, normal, packed; }
         [Serializable] private sealed class ClipRange { public string name; public float firstFrame, lastFrame; public bool loop; }
         [Serializable] private sealed class MaterialMaps { public string name, albedo, normal, orm; }

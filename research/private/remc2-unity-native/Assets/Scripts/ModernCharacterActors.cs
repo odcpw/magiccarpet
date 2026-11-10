@@ -72,8 +72,14 @@ namespace MagicCarpet.Native
         private readonly Dictionary<ushort, Arrow> arrows = new();
         private readonly List<Actor> dying = new();
         private readonly Dictionary<ushort, NativeSim.CampaignCharacterState> observed = new();
-        private ModernCharacterAsset goatAsset, archerAsset, villagerAsset;
-        private Voxels.VoxelGoatAsset goatFine,goatMiddle,goatFar,archerFine,archerFar,villagerFine,villagerFar;
+        private sealed class VillagerArt
+        {
+            internal ModernCharacterAsset Asset;
+            internal Voxels.VoxelGoatAsset Fine, Far;
+        }
+        private readonly Dictionary<ushort, VillagerArt> villagerArt = new();
+        private ModernCharacterAsset goatAsset, archerAsset;
+        private Voxels.VoxelGoatAsset goatFine,goatMiddle,goatFar,archerFine,archerFar;
         private GameObject arrowTemplate;
         private ulong generation = ulong.MaxValue, tick = ulong.MaxValue;
         private bool logged;
@@ -286,9 +292,10 @@ namespace MagicCarpet.Native
                     }
                     else if (state.model == 13)
                     {
-                        villagerAsset ??= Load("Villager");
-                        actor.Villager = new ModernVillagerPresenter(villagerAsset, parent, 250f / 64);
-                        if(Voxels.VoxelModernWorld.Requested){PrepareVoxelDetails();actor.Villager.AttachVoxelSkin(villagerFine);}
+                        var binding = ModernVillagerAppearances.Get(state.renderParameter);
+                        var art = PrepareVillagerArt(binding);
+                        actor.Villager = new ModernVillagerPresenter(art.Asset, parent, binding.SourceHeight);
+                        if(Voxels.VoxelModernWorld.Requested) actor.Villager.AttachVoxelSkin(art.Fine);
                     }
                     else
                     {
@@ -468,20 +475,41 @@ namespace MagicCarpet.Native
         private void PrepareVoxelDetails()
         {
             if(goatFine!=null)return;
-            Voxels.VoxelGoatAsset LoadDetail(string name,int resolution) {
-                var asset=Resources.Load<Voxels.VoxelGoatAsset>($"ModernCharacters/{name}/Voxels/{name}{resolution}");
-                Voxels.VoxelCharacterSkin.PrepareDetail(asset);return asset;
-            }
             goatFine=LoadDetail("Goat",96);goatMiddle=LoadDetail("Goat",64);goatFar=LoadDetail("Goat",40);
             archerFine=LoadDetail("Archer",96);archerFar=LoadDetail("Archer",64);
-            villagerFine=LoadDetail("Villager",96);villagerFar=LoadDetail("Villager",64);
+        }
+
+        private static Voxels.VoxelGoatAsset LoadDetail(string name, int resolution)
+        {
+            var asset = Resources.Load<Voxels.VoxelGoatAsset>($"ModernCharacters/{name}/Voxels/{name}{resolution}");
+            Voxels.VoxelCharacterSkin.PrepareDetail(asset);
+            return asset;
+        }
+
+        private VillagerArt PrepareVillagerArt(ModernVillagerAppearances.Binding binding)
+        {
+            if (!villagerArt.TryGetValue(binding.Parameter, out var art))
+            {
+                art = new VillagerArt { Asset = Load(binding.Resource) };
+                if (Voxels.VoxelModernWorld.Requested)
+                {
+                    art.Fine = LoadDetail(binding.Resource, 96);
+                    art.Far = LoadDetail(binding.Resource, 64);
+                }
+                villagerArt.Add(binding.Parameter, art);
+            }
+            return art;
         }
         private void SetVoxelDetail(Actor actor,float distance)
         {
             int current=actor.Goat!=null?actor.Goat.VoxelResolution:actor.Villager!=null?actor.Villager.VoxelResolution:actor.Archer.VoxelResolution;
             bool fine=distance<(current==96?16:12);
             if(actor.Goat!=null)actor.Goat.SetVoxelDetail(fine?goatFine:distance<(current==40?32:40)?goatMiddle:goatFar);
-            else if(actor.Villager!=null)actor.Villager.SetVoxelDetail(fine?villagerFine:villagerFar);
+            else if(actor.Villager!=null)
+            {
+                var art = villagerArt[actor.State.renderParameter];
+                actor.Villager.SetVoxelDetail(fine ? art.Fine : art.Far);
+            }
             else actor.Archer.SetVoxelDetail(fine?archerFine:archerFar);
         }
 
@@ -526,6 +554,7 @@ namespace MagicCarpet.Native
         }
         [Serializable] private sealed class ActorReport {
             public ushort slot; public uint epoch; public byte model, action; public int life;
+            public ushort appearance; public string asset; public int voxelResolution;
             public string clip; public float clipTime; public Vector3 source, rendered; public bool nativePresent;
             public bool visible; public Vector3 up, heldNock, heldDirection;
             public float[] hoofClearances; public int hoofStanceMask;
@@ -546,6 +575,9 @@ namespace MagicCarpet.Native
             framingChecked=follow != null, framingValid=FollowedFramingValid(),
             actors = actors.Values.Concat(dying).Select(a => new ActorReport { slot=a.State.entityIndex,
                 epoch=a.State.slotGeneration, model=a.State.model, action=a.State.action, life=a.State.life,
+                appearance=a.State.renderParameter,
+                asset=a.Villager != null ? ModernVillagerAppearances.Get(a.State.renderParameter).Resource : a.Goat != null ? "Goat" : "Archer",
+                voxelResolution=a.Villager != null ? a.Villager.VoxelResolution : a.Goat != null ? a.Goat.VoxelResolution : a.Archer.VoxelResolution,
                 clip=a.Clip,
                 clipTime=a.ClipTime,
                 source=Position(a.State), rendered=a.Root.transform.position,

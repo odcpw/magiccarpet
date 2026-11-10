@@ -9,11 +9,14 @@ namespace MagicCarpet.Native
     // The native resident owns movement and lifetime. Playback follows travel.
     internal sealed class ModernVillagerPresenter : IDisposable
     {
-        internal const ushort Appearance = 241;
         private readonly ModernCharacterInstance character;
         private readonly float scale;
         private readonly Transform[] recoilBones;
         private readonly Quaternion[][] recoil;
+        private readonly Transform uprightBone;
+        private readonly Vector3 uprightLocalUp;
+        private readonly Transform uprightSupport;
+        private readonly Vector3[] supportSurface;
         private VoxelCharacterSkin voxels;
         private bool observed, removed, hasRenderPosition, restartHit;
         private ulong lastTick;
@@ -49,6 +52,35 @@ namespace MagicCarpet.Native
             Root.transform.localScale = Vector3.one * scale;
             recoilBones = asset.ResolveHitOverlayBones(Root.transform);
             character.Sample("Idle", 0);
+            uprightBone = asset.ResolveUprightBone(Root.transform);
+            if (uprightBone != null)
+            {
+                uprightLocalUp = uprightBone.InverseTransformDirection(Root.transform.up);
+                uprightSupport = asset.ResolveUprightSupport(Root.transform);
+                // Only the rigid crown is a support for this rigid carried prop.
+                // Cache bind-space points once; no per-frame BakeMesh or arrays.
+                var skin = Root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Single();
+                var index = Array.IndexOf(skin.bones, uprightSupport);
+                if (index < 0) throw new InvalidOperationException("Carried support is absent from the actual skin");
+                var mesh = skin.sharedMesh;
+                var vertices = mesh.vertices; var weights = mesh.boneWeights;
+                var bind = mesh.bindposes[index];
+                var radius = asset.uprightFootRadius * Mathf.Abs(Root.transform.lossyScale.x);
+                var pivot = uprightBone.position;
+                var points = new List<Vector3>();
+                for (var i = 0; i < vertices.Length; i++)
+                {
+                    var w = weights[i];
+                    var weight = (w.boneIndex0 == index ? w.weight0 : 0) + (w.boneIndex1 == index ? w.weight1 : 0) +
+                        (w.boneIndex2 == index ? w.weight2 : 0) + (w.boneIndex3 == index ? w.weight3 : 0);
+                    if (weight < .9999f) continue;
+                    var point = bind.MultiplyPoint3x4(vertices[i]);
+                    var y = uprightSupport.TransformPoint(point).y;
+                    if (y >= pivot.y - 2 * radius && y <= pivot.y + radius) points.Add(point);
+                }
+                supportSurface = points.Distinct().ToArray();
+                if (supportSurface.Length == 0) throw new InvalidOperationException("Carried prop has no rigid crown support surface");
+            }
             var neutral = recoilBones.Select(t => t.localRotation).ToArray();
             recoil = new Quaternion[25][];
             for (var i = 0; i < recoil.Length; i++)
@@ -60,7 +92,7 @@ namespace MagicCarpet.Native
         }
 
         internal static bool Supports(NativeSim.CampaignCharacterState state) =>
-            state.classId == 5 && state.model == 13 && state.renderParameter == Appearance;
+            state.classId == 5 && state.model == 13 && ModernVillagerAppearances.TryGet(state.renderParameter, out _);
         internal static bool SourceDeath(byte action, int life) => life < 0 || action == 108 || action == 109;
 
         internal void Observe(Vector3 position, float yaw, int life, byte action, ulong tick)
@@ -130,6 +162,27 @@ namespace MagicCarpet.Native
                     recoilBones[bone].localRotation *= Quaternion.Slerp(recoil[a][bone], recoil[b][bone], sample - a);
             }
             hitElapsed += dt;
+            SupportCarriedProp();
+        }
+
+        private void SupportCarriedProp()
+        {
+            if (uprightBone == null) return;
+            uprightBone.rotation = Quaternion.FromToRotation(uprightBone.TransformDirection(uprightLocalUp), Vector3.up) * uprightBone.rotation;
+            var pivot = uprightBone.position;
+            var scale = Mathf.Abs(Root.transform.lossyScale.x);
+            var radius = character.Asset.uprightFootRadius * scale;
+            var matrix = uprightSupport.localToWorldMatrix;
+            var highest = float.NegativeInfinity;
+            foreach (var local in supportSurface)
+            {
+                var point = matrix.MultiplyPoint3x4(local);
+                var x = point.x - pivot.x; var z = point.z - pivot.z;
+                if (x * x + z * z <= radius * radius) highest = Mathf.Max(highest, point.y);
+            }
+            if (!float.IsFinite(highest)) throw new InvalidOperationException("Carried prop lost its declared crown support");
+            pivot.y = highest + .0005f * scale;
+            uprightBone.position = pivot;
         }
 
         private static Vector3 HorizontalDelta(Vector3 a, Vector3 b) => new Vector3(
@@ -141,7 +194,13 @@ namespace MagicCarpet.Native
             voxels = new VoxelCharacterSkin(Root, skin);
         }
         internal void SetVoxelDetail(VoxelGoatAsset skin) => voxels.SetDetail(skin);
-        internal List<VoxelFragment> SnapshotVoxelFragments() => voxels.SnapshotFragments();
+        internal List<VoxelFragment> SnapshotVoxelFragments()
+        {
+            // Place can change the terrain tilt after the last living render.
+            // Re-support that held pose before fracture, without advancing Death.
+            SupportCarriedProp();
+            return voxels.SnapshotFragments();
+        }
         // Whole-costume support is only needed during the short authored fall.
         // Sample at 30Hz, reuse buffers, and retain the result after settling.
         // The caller places the visual root on terrain before this correction.

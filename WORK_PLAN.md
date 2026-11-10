@@ -19,6 +19,33 @@ Then run the complete level and gameplay/performance checks in both styles.
 
 ### Installed pilot — 2026-11-10
 
+Oliver accepted this pilot and requests the remaining Level1 villagers with
+the same free separate-human/garment pipeline. Active asset owners are
+Villager239 (`mc-tfo`, brown robe/cap, three residents), Villager242 (`mc-ijv`,
+pale vertically striped robe, nine), and Villager271 (`mc-rio`, dark robe,
+pale headcloth and head-carried jar, ten). Day and Night original sheets have
+both been inspected: Night palette colours must not be mistaken for neutral
+fabric colours. GentleBadger owns shared Modern/Voxel admission, import,
+native lifetime verification and qualified installation. Preserve the accepted
+241/goat/archer and currently installed player until the complete roster is
+qualified. No paid 3D generation or Rust gameplay changes. Source logical
+heights are 200/250/250/300 for 239/241/242/271 respectively, as declared in
+sim-definition/adapter.rs; the carrier's total height includes its jar.
+Live roster integration exposed a shared Voxel consumer defect: four Fireball
+impacts exhaust the 768-body rubble pool, so `EmitCharacter` repeatedly refuses
+the real death and its hidden actor never breaks up. Fix bounded priority/
+admission in the shared rubble owner, retain the existing body budget, and
+rerun all three public-input native kills before installing or closing them.
+The bounded pool priority/recycling fix is committed in `8863af56`. The
+integrated roster/import, held-jar contact/recoil/fracture, existing characters,
+terrain/water and rubble suites now pass 105 cases (one existing optional
+terrain/CCD profiling case is skipped). Brown/striped/final carrier exports
+each pass 25 actual Unity surface poses within 0.1 mm. The carrier's actual
+rigid crown supports its level jar on slopes and during hits without per-frame
+mesh baking; released Death remains authored. Native cold replay reproduces
+all three public-input deaths and reclaim. Final player, repeated live Voxel
+breakups, reset/save/load, performance and installation remain pending.
+
 `mc-fu7` now delivers one Villager appearance 241 (six residents, TMAP180–182),
 using a separate editable MPFB human and robe. The lower garment is simulated
 offline and fitted to 48 shared cloth bones; the final 224-bone skin has all
