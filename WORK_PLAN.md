@@ -655,11 +655,11 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current installed world checkpoint remains the reward jar below. Oliver's next
-three sequential steps are now: source recovery admission, real secret entry,
-then the reproduced possession ownership-transfer failure. The latter takes
-priority over further secret return/carry qualification because an ordinary
-Level7 session currently stops at tick1139. Modern/Voxel remains separate.
+Current installed Original checkpoint is runtime `385c63a8`, native
+`59d4c1d9d230fbaa34ed25a9f59210019783c9e41b3d7ead0eb40740d56e88e0`.
+Oliver's three sequential steps are delivered as bounded checkpoints: recovery
+admission reconciliation, configured real secret entry, then the reproduced
+possession ownership-transfer failure. Modern/Voxel remains separate.
 
 Recovery reconciliation is committed/pushed `d16c0607`: source input1/3/15
 admits an existing living human. Runtime behavior was already correct. The
@@ -681,16 +681,43 @@ PaletteChanges consumes5→10→0 while black remains installed. The strengthene
 check observes those modes and actual all-black768-byte palette. Frozen C4
 ordinary/entry checks pass13.750s/17.461s. Its whole-workspace capture refused
 concurrent presentation ABI edits; separate exact Rig/core-artifact evidence
-qualifies only that frozen core candidate, not current native/whole workspace.
-Final matching compilation/installation is still pending the third batch.
+qualifies only that frozen core candidate. Final integrated C1 now passes the
+same entry/ordinary-exit checks22.280s/18.353s, recovery6/6 plus public recovery,
+all five marker/strict-reader/mailbox checks and source order. Strict Rig
+workspace all-target check passes on that exact470-input source snapshot.
 
-Next integrate the one existing Trader worker's marker-transfer repair under
-Root CopperMountain: sub36AE0 must read current shared spell records and update
-current typed/raw word94, including action78 republishing. This is missing
-consumer context, not proof of an expired/missing Whirlwind replacement. The
-worker owns its isolated two-file candidate; Root owns canonical shared joins,
-serialized Cargo/RCH, commit/push and Original installation. Coordinate a stable
-shared Rust/header window with GentleBadger before expensive final stages.
+Possession transfer is committed/pushed `385c63a8`: the actual sub36AE0 scan now
+receives current shared spell context, reads typed word94 before stale raw
+shadows, updates both carriers and synchronizes matching imported records before
+action78 can republish them. Fixed1..999 source scan, strict current-reader
+validation, semantic IDs and unrelated stale identities remain intact. This
+repairs missing context; the live Whirlwind replacement was not absent/expired.
+The one Trader worker supplied the frozen two-file patch; Root integrated and
+independently checked its source, gates and real public consumer. Fresh bounded
+read-only review found no new concrete defect; full Possession remains open.
+
+Actual whole Level7 repeats1260 recorded public inputs twice with identical
+results, all1140 baseline pre-error hashes unchanged, no failure at former
+tick1139 and finalhashc3f6992761a3436f. A separate public raw projection retains
+marker13 through1140 and observes following-pass reclaim1141..1144. No actor,
+inventory, mana or save mutation/adaptive player was used. Strict release build
+and exact Rig/returned native match all470Rust+162upstream+30extra inputs.
+The existing isolated execution worktree pins the committed engine; concurrent
+uncommitted presentation CAPI/header/voxel work is preserved and excluded.
+Original native-only refresh build-rtqcuygb records those470 inputs, both plugin
+hashes,200Unity inputs and142player files. Root viewed canonical map/loading/
+NightSpire terrain/HUD with the matching mapped native, oneportal/zero retries,
+then stopped owned smoke. This is launch/load, not native secret-variant gameplay,
+human combat/FPS/hardware audio/full missions/old-save proof. Evidence is
+generated/marker-transfer-20261110-integration/candidate-1. UBS has4 legacy
+wholefile critical findings, none on added lines; legacy formatting debt remains.
+Four superseded recovery/portal test executables were removed (~650MB); current
+proofs, logs, source, caches and installed player remain. No archive was made.
+
+Next concrete shared blocker: the separate Trader owner reproduced a group7
+pulse consumed twice before28 villagers see it. GentleBadger coordinates that
+owner's immutable narrow goat-prepass repair; Root has not qualified/installed
+it. Keep it separate from this completed three-step checkpoint.
 
 Full `.11`, `.6qf.6`, `.6qf.4`, `.7`, `.6qf.2`, `.bhq.10` and dependencies stay
 open. Retained native variant, vanilla portal mission, outer return/carry and
