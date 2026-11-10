@@ -8968,6 +8968,7 @@ impl Mc2Simulation {
         let live = &self.session.state.live;
         live.level_exit.complete
             && live.level_exit.result_code == 26
+            && live.source_player_result.result_byte() == 26
             && live
                 .economy
                 .entities
@@ -9060,6 +9061,10 @@ impl Mc2Simulation {
         let live = &self.session.state.live;
         live.source_player_result
             .is_ordinary_banishment_for(u16::from(live.core.runtime.local_player_slot))
+    }
+
+    pub(crate) fn source_exit_result_byte(&self) -> u8 {
+        self.session.state.live.source_player_result.result_byte()
     }
 
     pub(crate) fn player_lifecycle_notifications(
@@ -26133,6 +26138,11 @@ impl Mc2Simulation {
                     });
                 }
                 crate::world::portals::LevelExitEffect::Completed { result_code } => {
+                    self.session
+                        .state
+                        .live
+                        .source_player_result
+                        .record_exit_result(result_code);
                     if secret_entry {
                         self.session.state.live.shared_spells.set_mission_rewards(
                             crate::campaign::rewards::MissionRewards::Enabled,
@@ -42169,6 +42179,10 @@ mod tests {
             effect_cursor = page.next_cursor;
         }
         let completed = session.level_exit_sequence();
+        assert_eq!(
+            session.session.state.live.source_player_result.result_byte(),
+            0x0a
+        );
         assert_eq!(
             (
                 completed.active,

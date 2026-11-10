@@ -3,8 +3,8 @@
 //! The remc2 `dw_w_b.word[1]` result is a 16-bit field. Source action 29
 //! reaches PlayerEvents case 0x1D, which writes 8 and sets bit 0x10 in the
 //! low result byte only when the internal source level is greater than 24.
-//! Keep this carrier separate from `LevelExitSequence`: action 11 completes
-//! that sequence with result 0x1A, while ordinary action-12 exit is 0x0A.
+//! The exit sequence writes its result into byte 2 of this same header at
+//! phase 12: action 11 yields 0x1A, and ordinary action 12 yields 0x0A.
 
 const PLAYER_EVENT_1D_RESULT: u16 = 0x0008;
 const SECRET_RESULT_BIT: u16 = 0x0010;
@@ -62,6 +62,16 @@ impl SourcePlayerResult {
 
     pub(crate) const fn source_player_slot(&self) -> u16 {
         self.source_player_slot
+    }
+
+    /// `sub_5E8C0` phase 12 assigns byte 2, preserving the rest of the header.
+    pub(crate) fn record_exit_result(&mut self, result: u8) {
+        let header = &mut self.headers[usize::from(self.source_player_slot)];
+        *header = (*header & !0x00ff_0000) | (u32::from(result) << 16);
+    }
+
+    pub(crate) const fn result_byte(&self) -> u8 {
+        (self.headers[self.source_player_slot as usize] >> 16) as u8
     }
 
     /// Single-player PlayerEvents case 0x0f records the no-Castle retry in
@@ -195,6 +205,17 @@ mod tests {
         last.record_creature25_kill_visit(90, 91).unwrap();
         assert!(last.record_creature25_kill_visit(91, 91).is_err());
         assert_eq!(last.raw_headers(), &[0; 8]);
+    }
+
+    #[test]
+    fn exit_result_replaces_only_the_source_result_byte() {
+        let mut state = SourcePlayerResult::source_level_start(2);
+        state.headers[2] = 0xabcd_9876;
+        state.record_exit_result(0x0a);
+        assert_eq!(state.headers[2], 0xab0a_9876);
+        assert_eq!(state.result_byte(), 0x0a);
+        state.record_exit_result(0x1a);
+        assert_eq!(state.headers[2], 0xab1a_9876);
     }
 
     #[test]

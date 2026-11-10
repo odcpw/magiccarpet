@@ -3908,7 +3908,9 @@ impl GameSessionBackend for Mc2CampaignBackend {
         let exit = self.campaign.simulation().level_exit_sequence();
         if !exit.complete {
             GameCompletionStatus::InProgress
-        } else if exit.result_code == 10 {
+        } else if exit.result_code == 10
+            && self.campaign.simulation().source_exit_result_byte() == 10
+        {
             GameCompletionStatus::Completed {
                 completion: GameCompletion {
                     state_hash: self.campaign.state_hash(),
@@ -3917,7 +3919,8 @@ impl GameSessionBackend for Mc2CampaignBackend {
             }
         } else {
             GameCompletionStatus::Invalid {
-                message: "completed MC2 exit carrier has a non-success result".to_owned(),
+                message: "completed MC2 exit and source player results do not agree on success"
+                    .to_owned(),
             }
         }
     }
@@ -39170,6 +39173,7 @@ pub(crate) mod tests {
             }
         }
         let result = sim(&game).level_exit_sequence();
+        assert_eq!(sim(&game).source_exit_result_byte(), 0x1a);
         assert_eq!(
             (
                 result.active,
