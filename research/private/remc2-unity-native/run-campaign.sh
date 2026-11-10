@@ -19,6 +19,7 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --package DIR           Install a package; repeat for the complete campaign set
   --owner-cache DIR       Native owner cache for the preceding package
   --presentation-cache DIR  Presentation cache for the preceding package
+  --authored-workspace DIR  Retained authored workspace for the preceding package
   --loading-cache DIR     Frontend/loading cache (required with explicit packages)
   --loading-assets DIR    Optional destination loading artwork cache override
   --menu-cache DIR        Optional original campaign-map/menu cache override
@@ -62,6 +63,8 @@ def main(arguments):
         '--owner-cache': 'owner', '-mc-runtime-owner-cache': 'owner',
         '--presentation-cache': 'presentation',
         '-mc-runtime-presentation-cache': 'presentation',
+        '--authored-workspace': 'workspace',
+        '-mc-runtime-authored-workspace': 'workspace',
         '--loading-cache': 'loading', '-mc-runtime-loading-cache': 'loading',
         '--loading-assets': 'loading_assets', '-mc-runtime-loading-assets': 'loading_assets',
         '--menu-cache': 'menu', '-mc-runtime-menu-cache': 'menu',
@@ -104,11 +107,11 @@ def main(arguments):
             kind = aliases[option]
             if kind == 'package':
                 resources.append({'package': value})
-            elif kind in ('owner', 'presentation'):
+            elif kind in ('owner', 'presentation', 'workspace'):
                 if not resources:
                     raise LaunchError(f'{option} must follow a --package')
                 if kind in resources[-1]:
-                    raise LaunchError(f'Duplicate {kind} cache for {resources[-1]["package"]}')
+                    raise LaunchError(f'Duplicate {kind} resource for {resources[-1]["package"]}')
                 resources[-1][kind] = value
             elif kind == 'replay':
                 if route is not None:
@@ -181,6 +184,9 @@ def main(arguments):
             if kind in resource:
                 directory(resource[kind], f'{kind} cache')
                 native.extend((f'-mc-runtime-{kind}-cache', str(resource[kind])))
+        if 'workspace' in resource:
+            directory(resource['workspace'], 'authored workspace')
+            native.extend(('-mc-runtime-authored-workspace', str(resource['workspace'])))
     if loading is None:
         if explicit_resources:
             raise LaunchError('An explicit package set requires --loading-cache DIR '

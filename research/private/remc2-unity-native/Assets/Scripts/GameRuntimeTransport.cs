@@ -122,19 +122,20 @@ namespace MagicCarpet.Native
             public string[] guards;
         }
 
-        [Serializable]
+        [Serializable, DataContract]
         internal sealed class InstalledPackageResource
         {
-            public string package_dir;
-            public string owner_cache_path;
-            public string presentation_cache_path;
+            [DataMember] public string package_dir;
+            [DataMember(EmitDefaultValue = false)] public string owner_cache_path;
+            [DataMember(EmitDefaultValue = false)] public string presentation_cache_path;
+            [DataMember(EmitDefaultValue = false)] public string authored_workspace_path;
         }
 
-        [Serializable]
+        [Serializable, DataContract]
         internal sealed class InstalledPackageSetRequest
         {
-            public string request_contract;
-            public InstalledPackageResource[] packages;
+            [DataMember] public string request_contract;
+            [DataMember] public InstalledPackageResource[] packages;
         }
 
         [Serializable]
@@ -2099,19 +2100,22 @@ namespace MagicCarpet.Native
                     (resource.owner_cache_path != null &&
                      string.IsNullOrWhiteSpace(resource.owner_cache_path)) ||
                     (resource.presentation_cache_path != null &&
-                     string.IsNullOrWhiteSpace(resource.presentation_cache_path)))
+                     string.IsNullOrWhiteSpace(resource.presentation_cache_path)) ||
+                    (resource.authored_workspace_path != null &&
+                     string.IsNullOrWhiteSpace(resource.authored_workspace_path)))
                 {
                     throw new ArgumentException(
-                        "each installed package resource needs a package path and optional nonblank cache path",
+                        "each installed package resource needs a package path and optional nonblank resource paths",
                         nameof(packages));
                 }
             }
-            var request = Encoding.UTF8.GetBytes(JsonUtility.ToJson(
-                new InstalledPackageSetRequest
-                {
+            using var stream = new MemoryStream();
+            new DataContractJsonSerializer(typeof(InstalledPackageSetRequest)).WriteObject(stream,
+                new InstalledPackageSetRequest {
                     request_contract = InstalledPackageSetContract,
                     packages = packages
-                }));
+                });
+            var request = stream.ToArray();
             if ((uint)request.Length >
                 NegotiatedContract.limits.maximum_installed_package_set_json_bytes)
             {

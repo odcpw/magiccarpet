@@ -2190,12 +2190,14 @@ namespace MagicCarpet.Native.Tests
         private static byte[] PackageSetJson(
             params GameRuntimeTransport.InstalledPackageResource[] packages)
         {
-            return Encoding.UTF8.GetBytes(JsonUtility.ToJson(
+            using var stream = new MemoryStream();
+            new DataContractJsonSerializer(typeof(GameRuntimeTransport.InstalledPackageSetRequest)).WriteObject(stream,
                 new GameRuntimeTransport.InstalledPackageSetRequest
                 {
                     request_contract = GameRuntimeTransport.InstalledPackageSetContract,
                     packages = packages
-                }));
+                });
+            return stream.ToArray();
         }
 
         private static void AssertSameCampaignState(
@@ -3293,6 +3295,82 @@ namespace MagicCarpet.Native.Tests
             // fresh real-L1 Rust owner while stale v4 fails atomically. It does
             // not prove paused-frame service, cross-level saves, migration, or
             // menu wiring.
+        }
+
+        [Serializable]
+        private sealed class JsonNullWorkspaceProbe
+        {
+            public string authored_workspace_path;
+        }
+
+        [Test]
+        public void AuthoredWorkspaceArgumentsBindOnePackageAndEncodeOptionalPath()
+        {
+            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            var parse = typeof(MagicCarpetRuntime).GetMethod("GameRuntimePackagesFromArguments", flags);
+            Assert.That(parse, Is.Not.Null);
+            GameRuntimeTransport.InstalledPackageResource[] Parse(params string[] arguments) =>
+                (GameRuntimeTransport.InstalledPackageResource[])parse.Invoke(null, new object[] { arguments });
+            var workspace = Path.GetFullPath("authored-workspace");
+            var packages = Parse("-mc-runtime-package", "first", "-mc-runtime-authored-workspace", "authored-workspace",
+                "-mc-runtime-package", "second");
+            Assert.That(packages.Length, Is.EqualTo(2));
+            Assert.That(packages[0].authored_workspace_path, Is.EqualTo(workspace));
+            Assert.That(packages[1].authored_workspace_path, Is.Null);
+
+            System.Xml.XmlDocument ReadJson(byte[] encoded)
+            {
+                using var reader = JsonReaderWriterFactory.CreateJsonReader(encoded,
+                    System.Xml.XmlDictionaryReaderQuotas.Max);
+                var document = new System.Xml.XmlDocument();
+                document.Load(reader);
+                return document;
+            }
+            var nullJson = JsonUtility.ToJson(new JsonNullWorkspaceProbe());
+            var nullToken = ReadJson(Encoding.UTF8.GetBytes(nullJson))
+                .SelectSingleNode("/root/authored_workspace_path") as System.Xml.XmlElement;
+            TestContext.WriteLine("JsonUtility null string wire JSON: " + nullJson);
+            Assert.That(nullToken == null || nullToken.GetAttribute("type") == "null" ||
+                (nullToken.GetAttribute("type") == "string" && nullToken.InnerText == ""), Is.True);
+
+            using var runtime = new GameRuntimeTransport();
+            var encode = typeof(GameRuntimeTransport).GetMethod("EncodePackageSet",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert.That(encode, Is.Not.Null);
+            var request = (byte[])encode.Invoke(runtime, new object[] { packages });
+            var json = ReadJson(request);
+            Assert.That(json.SelectSingleNode("/root/request_contract")?.InnerText,
+                Is.EqualTo(GameRuntimeTransport.InstalledPackageSetContract));
+            Assert.That(json.SelectSingleNode("/root/packages/item[1]/authored_workspace_path")?.InnerText,
+                Is.EqualTo(workspace));
+            Assert.That(json.SelectSingleNode("/root/packages/item[2]/authored_workspace_path"), Is.Null,
+                "the omitted workspace must not become an explicitly blank path");
+
+            foreach (var arguments in new[] {
+                new[] { "-mc-runtime-authored-workspace", "workspace" },
+                new[] { "-mc-runtime-package", "first", "-mc-runtime-authored-workspace" },
+                new[] { "-mc-runtime-package", "first", "-mc-runtime-authored-workspace", " " },
+                new[] { "-mc-runtime-package", "first", "-mc-runtime-authored-workspace", "one",
+                    "-mc-runtime-authored-workspace", "two" }
+            })
+            {
+                var error = Assert.Throws<System.Reflection.TargetInvocationException>(() => Parse(arguments));
+                Assert.That(error.InnerException, Is.InstanceOf<InvalidDataException>());
+            }
+            packages[0].authored_workspace_path = " ";
+            var blank = Assert.Throws<System.Reflection.TargetInvocationException>(() => encode.Invoke(runtime, new object[] { packages }));
+            Assert.That(blank.InnerException, Is.InstanceOf<ArgumentException>());
+
+            // The new optional field must not invalidate normal installed
+            // packages: exercise their actual native bootstrap and world open.
+            var defaults = ResolverPackages();
+            Array.Find(defaults, resource => resource.package_dir == LevelOnePackage)
+                .owner_cache_path = LevelOneOwnerCache;
+            var loading = runtime.BootstrapPackageSet(defaults);
+            Assert.That(loading.mode, Is.EqualTo(GameRuntimeTransport.LoadingMode));
+            var playing = runtime.OpenLevel();
+            Assert.That(playing.mode, Is.EqualTo(GameRuntimeTransport.PlayingMode));
+            Assert.That(playing.session.tick, Is.EqualTo("0"));
         }
 
         [Test]

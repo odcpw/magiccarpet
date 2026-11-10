@@ -15103,16 +15103,19 @@ namespace MagicCarpet.Native
             for (var index = 0; index < arguments.Length; index++)
             {
                 var option = arguments[index];
-                if (option == "-mc-runtime-owner-cache" || option == "-mc-runtime-presentation-cache")
+                if (option == "-mc-runtime-owner-cache" || option == "-mc-runtime-presentation-cache" ||
+                    option == "-mc-runtime-authored-workspace")
                 {
                     if (packages.Count == 0)
                         throw new InvalidDataException(option + " must follow a package");
                     var resource = packages[packages.Count - 1];
                     var owner = option == "-mc-runtime-owner-cache";
-                    if ((owner ? resource.owner_cache_path : resource.presentation_cache_path) != null)
+                    var workspace = option == "-mc-runtime-authored-workspace";
+                    if ((owner ? resource.owner_cache_path : workspace ? resource.authored_workspace_path : resource.presentation_cache_path) != null)
                         throw new InvalidDataException(option + " is duplicated for one package");
                     var path = GameRuntimePathArgument(arguments, ref index, option);
                     if (owner) resource.owner_cache_path = path;
+                    else if (workspace) resource.authored_workspace_path = path;
                     else resource.presentation_cache_path = path;
                     continue;
                 }
