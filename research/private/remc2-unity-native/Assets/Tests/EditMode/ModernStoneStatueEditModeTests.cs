@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MagicCarpet.Native.Tests
@@ -32,6 +33,13 @@ namespace MagicCarpet.Native.Tests
             Assert.That(ModernStoneStatues.Matches(other, view), Is.False);
             var otherView = view; otherView.selectedTmap = 79;
             Assert.That(ModernStoneStatues.Matches(entity, otherView), Is.False);
+            IReadOnlyDictionary<ushort, NativeSim.CampaignEntitySnapshot> current =
+                new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> { [entity.entityIndex] = entity };
+            Assert.That(ModernStoneStatues.MatchesCurrent(current, view), Is.True);
+            var stale = view; stale.sourceId++;
+            Assert.That(ModernStoneStatues.MatchesCurrent(current, stale), Is.False);
+            stale = view; stale.entityIndex++;
+            Assert.That(ModernStoneStatues.MatchesCurrent(current, stale), Is.False);
         }
 
         [TestCase("ModernScenery/StoneStatue")]

@@ -45,20 +45,25 @@ namespace MagicCarpet.Native
             view.renderParameterIndex == 79 && view.baseTmap == 78 && view.selectedTmap == 78 &&
             view.logicalHeight != 0;
 
+        internal static bool MatchesCurrent(
+            IReadOnlyDictionary<ushort, NativeSim.CampaignEntitySnapshot> entities,
+            NativeSim.CampaignEntityPresentation view) =>
+            entities.TryGetValue(view.entityIndex, out var entity) && Matches(entity, view);
+
         internal bool Replaces(ushort slot) => rows.ContainsKey(slot);
 
         internal void Observe(ulong currentGeneration, ulong currentTick,
-            NativeSim.CampaignEntitySnapshot[] entities, NativeSim.CampaignEntityPresentation[] presentations)
+            IReadOnlyDictionary<ushort, NativeSim.CampaignEntitySnapshot> entities,
+            NativeSim.CampaignEntityPresentation[] presentations)
         {
             if (generation != currentGeneration || currentTick < tick) Clear();
             generation = currentGeneration;
             tick = currentTick;
             if (!enabled) { Clear(); return; }
-            var entityBySlot = entities.ToDictionary(entity => entity.entityIndex);
             rows.Clear();
             foreach (var view in presentations)
             {
-                if (!entityBySlot.TryGetValue(view.entityIndex, out var entity) || !Matches(entity, view)) continue;
+                if (!MatchesCurrent(entities, view)) continue;
                 rows.Add(view.entityIndex, view);
                 if (objects.ContainsKey(view.entityIndex)) continue;
                 var node = UnityEngine.Object.Instantiate(model, root);
