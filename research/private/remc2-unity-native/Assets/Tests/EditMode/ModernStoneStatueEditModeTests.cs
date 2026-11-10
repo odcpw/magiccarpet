@@ -1,6 +1,9 @@
 using NUnit.Framework;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace MagicCarpet.Native.Tests
 {
@@ -12,6 +15,26 @@ namespace MagicCarpet.Native.Tests
             Assert.That(ModernStoneStatues.SupportsBank("TMAPS1-0"), Is.True);
             Assert.That(ModernStoneStatues.SupportsBank("TMAPS0-0"), Is.False);
             Assert.That(ModernStoneStatues.SupportsBank(null), Is.False);
+        }
+
+        [Test]
+        public void PresenterMaterialUsesTheImportedStoneAlbedoAndBlueGreyTint()
+        {
+            var texture = Resources.Load<Texture2D>("ModernScenery/StoneStatueAlbedo");
+            Assert.That(texture, Is.Not.Null);
+            Assert.That(texture.width, Is.EqualTo(1024));
+            Assert.That(texture.height, Is.EqualTo(1024));
+            var material = ModernStoneStatues.CreateMaterial();
+            try
+            {
+                Assert.That(material.shader.name, Is.EqualTo("Universal Render Pipeline/Lit"));
+                Assert.That(material.GetTexture("_BaseMap"), Is.SameAs(texture));
+                var tint = material.GetColor("_BaseColor");
+                Assert.That(tint.b, Is.GreaterThan(tint.g));
+                Assert.That(tint.g, Is.GreaterThan(tint.r));
+                Assert.That(material.GetFloat("_Smoothness"), Is.EqualTo(.08f).Within(.001f));
+            }
+            finally { Object.DestroyImmediate(material); }
         }
 
         [Test]
@@ -63,8 +86,88 @@ namespace MagicCarpet.Native.Tests
                 foreach (var filter in instance.GetComponentsInChildren<MeshFilter>())
                     triangles += filter.sharedMesh.triangles.Length / 3;
                 Assert.That(triangles, Is.InRange(100, 30000));
+                CaptureIfRequested(instance, resource);
             }
             finally { Object.DestroyImmediate(instance); }
+        }
+
+        private static void CaptureIfRequested(GameObject instance, string resource)
+        {
+            var directory = System.Environment.GetEnvironmentVariable("MC_STONE_PREVIEW_DIR");
+            if (string.IsNullOrEmpty(directory)) return;
+            Assert.That(SystemInfo.graphicsDeviceType,
+                Is.Not.EqualTo(UnityEngine.Rendering.GraphicsDeviceType.Null));
+            var root = new GameObject("Stone material review");
+            var target = new RenderTexture(480, 720, 24, RenderTextureFormat.ARGB32);
+            var pixels = new Texture2D(480, 720, TextureFormat.RGB24, false);
+            var material = ModernStoneStatues.CreateMaterial();
+            var previousTarget = RenderTexture.active;
+            var previousAmbient = RenderSettings.ambientLight;
+            var previousAmbientMode = RenderSettings.ambientMode;
+            var previousPipeline = GraphicsSettings.defaultRenderPipeline;
+            var previousQuality = QualitySettings.renderPipeline;
+            try
+            {
+                var pipeline = Resources.Load<UniversalRenderPipelineAsset>("ModernPipeline");
+                Assert.That(pipeline, Is.Not.Null);
+                GraphicsSettings.defaultRenderPipeline = pipeline;
+                QualitySettings.renderPipeline = null;
+                instance.transform.SetParent(root.transform, false);
+                foreach (var renderer in instance.GetComponentsInChildren<Renderer>()) renderer.sharedMaterial = material;
+                var camera = new GameObject("Review camera").AddComponent<Camera>();
+                camera.transform.SetParent(root.transform, false);
+                camera.transform.position = new Vector3(.25f, .65f, 3.5f);
+                camera.transform.LookAt(new Vector3(0, .5f, 0));
+                camera.orthographic = true;
+                camera.orthographicSize = .62f;
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color(.12f, .12f, .12f);
+                camera.targetTexture = target;
+                var light = new GameObject("Review light").AddComponent<Light>();
+                light.transform.SetParent(root.transform, false);
+                light.type = LightType.Directional;
+                light.transform.rotation = Quaternion.Euler(35, 155, 0);
+                light.intensity = 1;
+                RenderSettings.ambientMode = AmbientMode.Flat;
+                RenderSettings.ambientLight = new Color(.28f, .28f, .3f);
+                // The first render initializes URP and its lighting resources.
+                camera.Render();
+                camera.Render();
+                RenderTexture.active = target;
+                pixels.ReadPixels(new Rect(0, 0, 480, 720), 0, 0);
+                pixels.Apply();
+                var image = pixels.GetPixels32();
+                var background = image[0];
+                var changed = 0;
+                var errorPixels = 0;
+                var litPixels = 0;
+                foreach (var pixel in image)
+                {
+                    if (Mathf.Abs(pixel.r - background.r) + Mathf.Abs(pixel.g - background.g) +
+                        Mathf.Abs(pixel.b - background.b) > 12) changed++;
+                    if (pixel.r > 200 && pixel.b > 200 && pixel.g < 50) errorPixels++;
+                    if (pixel.r + pixel.g + pixel.b > background.r + background.g + background.b + 60) litPixels++;
+                }
+                Directory.CreateDirectory(directory);
+                File.WriteAllBytes(Path.Combine(directory, Path.GetFileName(resource) + ".png"), pixels.EncodeToPNG());
+                Assert.That(changed, Is.GreaterThan(1000), "review render contains visible geometry");
+                Assert.That(errorPixels, Is.LessThan(10), "review render must not contain the magenta shader error");
+                Assert.That(litPixels, Is.GreaterThan(5000), "review render contains visibly lit stone");
+            }
+            finally
+            {
+                RenderTexture.active = previousTarget;
+                RenderSettings.ambientLight = previousAmbient;
+                RenderSettings.ambientMode = previousAmbientMode;
+                GraphicsSettings.defaultRenderPipeline = previousPipeline;
+                QualitySettings.renderPipeline = previousQuality;
+                instance.transform.SetParent(null, false);
+                Object.DestroyImmediate(root);
+                target.Release();
+                Object.DestroyImmediate(target);
+                Object.DestroyImmediate(pixels);
+                Object.DestroyImmediate(material);
+            }
         }
     }
 }

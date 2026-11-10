@@ -22,16 +22,23 @@ namespace MagicCarpet.Native
         {
             enabled = SupportsBank(textureBank);
             model = Resources.Load<GameObject>(voxel ? "ModernScenery/StoneStatueVoxel" : "ModernScenery/StoneStatue");
+            if (model == null) throw new InvalidOperationException("Stone statue mesh missing");
+            material = CreateMaterial();
+            root = new GameObject("Native stone statues").transform;
+            root.SetParent(parent, false);
+        }
+
+        internal static Material CreateMaterial()
+        {
             var shader = Shader.Find("Universal Render Pipeline/Lit");
-            var texture = Resources.Load<Texture2D>("ModernTextures/RockAlbedo");
-            if (model == null || shader == null || texture == null)
-                throw new InvalidOperationException("Stone statue mesh, rock texture or URP Lit shader missing");
-            material = new Material(shader) { name = "Statue blue-grey stone", enableInstancing = true };
+            var texture = Resources.Load<Texture2D>("ModernScenery/StoneStatueAlbedo");
+            if (shader == null || texture == null)
+                throw new InvalidOperationException("Stone statue albedo or URP Lit shader missing");
+            var material = new Material(shader) { name = "Statue blue-grey stone", enableInstancing = true };
             material.SetTexture("_BaseMap", texture);
             material.SetColor("_BaseColor", new Color(.42f, .51f, .57f, 1));
             material.SetFloat("_Smoothness", .08f);
-            root = new GameObject("Native stone statues").transform;
-            root.SetParent(parent, false);
+            return material;
         }
 
         // TMAP 78 in the day bank depicts a different object entirely.

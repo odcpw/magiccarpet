@@ -1,17 +1,25 @@
 """Construct the Level 1 night-bank statue as editable stone components.
 
-The owner TMAP 078 is a frontal, blue-grey armored figure on a plinth. Its
+The owner TMAP 078 is a frontal, blue-grey robed figure on a plinth. Its
 unseen rear and depth are interpreted here; no owner pixels are distributed.
 Run with Blender: --background --python-exit-code 2 --python stone_statue.py
 -- --output NEW_DIRECTORY. Both exports use a one-unit total height and
 grounded origin; the caller applies the native logical height.
+
+The Unity material uses the Poly Haven CC0 RockAlbedo derivative described in
+ModernTextures/README.md (source SHA-256 98ecbd1d19953433f5909b79958992b1da2b45addbee772d1d4c27287f368499).
+Reproduce it from the Unity project root with:
+ffmpeg -i Assets/Resources/ModernTextures/RockAlbedo.jpg -vf
+'hue=s=0,eq=contrast=0.45:brightness=0.04,scale=1024:1024'
+Assets/Resources/ModernScenery/StoneStatueAlbedo.png
 """
 import argparse
+import math
 import sys
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Vector, noise
 from mathutils.bvhtree import BVHTree
 
 
@@ -36,8 +44,11 @@ def block(name, location, halfsize, bevel=.006):
 
 
 def oval(name, location, radii):
-    bpy.ops.mesh.primitive_uv_sphere_add(segments=20, ring_count=12)
-    return finish(name, location, radii)
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=20)
+    obj = finish(name, location, radii)
+    for polygon in obj.data.polygons:
+        polygon.use_smooth = True
+    return obj
 
 
 def limb(name, a, b, radius):
@@ -45,6 +56,80 @@ def limb(name, a, b, radius):
     obj = oval(name, (a + b) / 2, (radius, radius, (b - a).length / 2 + radius))
     obj.rotation_euler = (b - a).to_track_quat('Z', 'Y').to_euler()
     return obj
+
+
+def face():
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=40)
+    obj = finish('Weathered human face', (0, -.002, .900), (.057, .049, .075))
+    for polygon in obj.data.polygons:
+        polygon.use_smooth = True
+    # Work the facial planes directly into the head instead of attaching a
+    # mask or geometric features. All displacements are deliberately shallow.
+    def bell(x, center, width):
+        return math.exp(-((x - center) / width) ** 2)
+    for vertex in obj.data.vertices:
+        p = vertex.co
+        if p.y >= -.012:
+            continue
+        frontal = min(1.0, max(0.0, (-p.y - .012) / .025))
+        nose = .014 * bell(p.x, 0, .011) * bell(p.z, -.002, .028)
+        sockets = .006 * (bell(p.x, -.022, .012) + bell(p.x, .022, .012)) * bell(p.z, .014, .010)
+        brow = .004 * bell(p.x, 0, .050) * bell(p.z, .028, .008)
+        cheeks = .003 * (bell(p.x, -.031, .013) + bell(p.x, .031, .013)) * bell(p.z, -.010, .020)
+        mouth = .003 * bell(p.x, 0, .024) * bell(p.z, -.035, .006)
+        p.y += frontal * (-nose + sockets - brow - cheeks + mouth)
+        if p.z < -.025:
+            p.x *= 1 - .12 * min(1, (-p.z - .025) / .05)
+    obj.data.update()
+    return obj
+
+
+def drape(name, rings, folds, seed):
+    """Closed, softly folded stone garment, sampled from editable profiles."""
+    sectors = 48
+    vertices = []
+    for z, rx, ry in rings:
+        for i in range(sectors):
+            angle = 2 * math.pi * i / sectors
+            # Irregular near-vertical folds remain much broader than the
+            # weathering so the drape reads at game-camera scale.
+            ripple = (math.sin(folds * angle + seed + z * 2.3) +
+                      .45 * math.sin((folds + 3) * angle - seed + z * 5))
+            amount = .007 * ripple
+            vertices.append(((rx + amount) * math.cos(angle),
+                             (ry + amount) * math.sin(angle), z))
+    faces = []
+    for j in range(len(rings) - 1):
+        for i in range(sectors):
+            a = j * sectors + i
+            b = j * sectors + (i + 1) % sectors
+            faces.append((a, b, b + sectors, a + sectors))
+    faces.append(tuple(reversed(range(sectors))))
+    faces.append(tuple((len(rings) - 1) * sectors + i for i in range(sectors)))
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    for polygon in mesh.polygons:
+        polygon.use_smooth = len(polygon.vertices) == 4
+    return obj
+
+
+def weather(obj, seed):
+    """Slight surface erosion; component meshes remain separately editable."""
+    mesh = obj.data
+    mesh.update()
+    for vertex in mesh.vertices:
+        point = obj.matrix_world @ vertex.co
+        if point.z < .008:
+            continue
+        grain = noise.noise_vector(Vector((point.x * 32 + seed,
+                                           point.y * 32, point.z * 32))).x
+        weathering = noise.noise_vector(Vector((point.x * 11 + seed,
+                                                point.y * 11, point.z * 11))).y
+        vertex.co += vertex.normal * (.0015 * grain + .0014 * weathering)
+    mesh.update()
 
 
 def uv(obj):
@@ -57,7 +142,7 @@ def uv(obj):
                                    (v.x, v.z) if axis == 1 else (v.x, v.y))
 
 
-def voxelize(objects, step=1 / 48):
+def voxelize(objects, step=1 / 64):
     # BVHs operate in world coordinates, including all component transforms.
     trees = []
     for obj in objects:
@@ -66,8 +151,8 @@ def voxelize(objects, step=1 / 48):
         trees.append(BVHTree.FromPolygons([v.co for v in mesh.vertices],
                                           [p.vertices[:] for p in mesh.polygons]))
         bpy.data.meshes.remove(mesh)
-    lo = (-.25, -.16, 0.0)
-    dims = (24, 16, 49)
+    lo = (-.25, -.17, 0.0)
+    dims = (32, 22, 64)
     solid = set()
     direction = Vector((0, 0, 1))
     for x in range(dims[0]):
@@ -128,48 +213,42 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
-    # Blender's -Y is the statue's front. The broad rectangular pedestal and
-    # crossed arms reproduce the readable silhouette of the source frame.
+    noise.seed_set(17)
+    # Blender's -Y is the front. Source is a single image; the rounder human
+    # form, stone drapery and head details are modeled interpretations.
     parts = [
-        block('Plinth foot', (0,0,.025), (.165,.115,.025)),
-        block('Plinth body', (0,0,.105), (.145,.100,.060)),
-        block('Plinth cap', (0,0,.178), (.175,.118,.013)),
-        block('Left boot', (-.055,-.005,.210), (.045,.075,.021)),
-        block('Right boot', (.055,-.005,.210), (.045,.075,.021)),
-        block('Left greave', (-.054,0,.292), (.043,.047,.065)),
-        block('Right greave', (.054,0,.292), (.043,.047,.065)),
-        block('Lower armor skirt', (0,0,.426), (.109,.053,.077), .012),
-        block('Left skirt panel', (-.073,-.053,.433), (.028,.012,.069)),
-        block('Center skirt panel', (0,-.057,.433), (.029,.012,.070)),
-        block('Right skirt panel', (.073,-.053,.433), (.028,.012,.069)),
-        block('Belt', (0,0,.513), (.110,.059,.013)),
-        oval('Breastplate', (0,0,.620), (.109,.066,.108)),
-        block('Breastplate band upper', (0,-.060,.656), (.088,.012,.010)),
-        block('Breastplate band lower', (0,-.060,.627), (.094,.012,.009)),
-        oval('Left pauldron', (-.130,0,.685), (.064,.062,.040)),
-        oval('Right pauldron', (.130,0,.685), (.064,.062,.040)),
-        limb('Left upper arm', (-.150,0,.664), (-.165,-.007,.581), .032),
-        limb('Right upper arm', (.150,0,.664), (.165,-.007,.581), .032),
-        limb('Left crossed forearm', (-.160,-.010,.573), (.035,-.078,.545), .028),
-        limb('Right crossed forearm', (.160,-.010,.573), (-.035,-.080,.545), .028),
-        oval('Left hand', (.033,-.080,.545), (.030,.024,.025)),
-        oval('Right hand', (-.033,-.083,.545), (.030,.024,.025)),
-        oval('Neck', (0,0,.740), (.040,.038,.034)),
-        oval('Head', (0,0,.813), (.068,.052,.077)),
-        block('Helmet brow', (0,-.040,.850), (.069,.017,.012)),
-        oval('Helmet crown', (0,.005,.869), (.078,.057,.048)),
-        block('Helmet left wing', (-.076,.005,.874), (.024,.045,.015)),
-        block('Helmet right wing', (.076,.005,.874), (.024,.045,.015)),
+        block('Single worn pedestal', (0,0,.085), (.155,.103,.085), .020),
+        oval('Left foot', (-.055,-.018,.195), (.043,.071,.026)),
+        oval('Right foot', (.055,-.018,.195), (.043,.071,.026)),
+        limb('Left lower leg', (-.055,0,.215), (-.053,0,.365), .037),
+        limb('Right lower leg', (.055,0,.215), (.053,0,.365), .037),
+        drape('Folded lower robe', [(.235,.103,.060),(.260,.106,.061),
+              (.285,.108,.061),(.310,.108,.061),(.340,.107,.060),(.365,.111,.061),
+              (.390,.110,.061),(.420,.108,.059),(.450,.107,.058),
+              (.480,.105,.057),(.510,.102,.057),(.540,.098,.057),
+              (.570,.094,.055),(.600,.091,.053)], 7, 1.4),
+        drape('Draped upper robe', [(.555,.090,.053),(.580,.091,.055),
+              (.605,.094,.058),(.630,.099,.060),(.655,.105,.061),
+              (.680,.111,.061),(.705,.116,.060),(.730,.121,.058),
+              (.755,.116,.056),(.780,.101,.051),(.800,.070,.045),
+              (.815,.044,.038)], 6, .5),
+        limb('Left upper sleeve', (-.105,0,.755), (-.145,-.004,.660), .034),
+        limb('Right upper sleeve', (.105,0,.755), (.145,-.004,.660), .034),
+        limb('Left crossed forearm', (-.145,-.010,.655), (.045,-.095,.620), .025),
+        limb('Right crossed forearm', (.145,-.012,.655), (-.045,-.100,.620), .025),
+        oval('Left hand', (.044,-.095,.620), (.027,.020,.018)),
+        oval('Right hand', (-.044,-.100,.620), (.027,.020,.018)),
+        oval('Neck', (0,0,.827), (.035,.034,.042)),
+        face(),
+        oval('Left ear', (-.057,0,.899), (.009,.015,.021)),
+        oval('Right ear', (.057,0,.899), (.009,.015,.021)),
+        oval('Weathered hair', (0,.017,.939), (.057,.041,.036)),
     ]
-    # Extend the source figure to normalized height one without altering its
-    # aspect; the top of the helmet is the highest modeled point.
-    for obj in parts:
-        obj.location /= .917
-        obj.scale /= .917
     bpy.context.view_layer.update()
     mat = bpy.data.materials.new('Blue grey weathered stone')
     mat.diffuse_color = (.24,.31,.35,1)
-    for obj in parts:
+    for index, obj in enumerate(parts):
+        weather(obj, index * .7)
         obj.data.materials.append(mat)
         uv(obj)
     bpy.ops.wm.save_as_mainfile(filepath=str(args.output / 'StoneStatue.blend'))
