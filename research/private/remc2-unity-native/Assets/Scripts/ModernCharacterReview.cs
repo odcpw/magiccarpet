@@ -83,7 +83,7 @@ namespace MagicCarpet.Native
             var still = Array.IndexOf(args, "-mc-character-still");
             var appearance = Array.IndexOf(args, "-mc-character-review-appearance");
             if (appearance >= 0 && (appearance + 1 >= args.Length || !ModernVillagerAppearances.ContainsResource(args[appearance + 1])))
-                throw new ArgumentException("Character review requires a known villager resource");
+                throw new ArgumentException("Character review requires a known settlement character resource");
             var requested = still >= 0 && still + 1 < args.Length ? args[still + 1].Split(',')[0] :
                 appearance >= 0 ? args[appearance + 1] : "Villager";
             var villagerName = ModernVillagerAppearances.ContainsResource(requested) ? requested : "Villager";
@@ -107,11 +107,11 @@ namespace MagicCarpet.Native
                 Step(archer, "Idle", "ARCHER · recovered stance", 3)
             };
             if (villager != null) steps = steps.Concat(new[] {
-                Step(villager, "Idle", "VILLAGER · idle", 2),
-                Step(villager, "Walk", "VILLAGER · walk", 4),
-                Step(villager, "Run", "VILLAGER · run", 4),
-                Step(villager, "Hit", "VILLAGER · impact and recover"),
-                Step(villager, "Death", "VILLAGER · fall and settle")
+                Step(villager, "Idle", villagerName.ToUpperInvariant() + " · idle", 2),
+                Step(villager, "Walk", villagerName.ToUpperInvariant() + " · walk", 4),
+                Step(villager, "Run", villagerName.ToUpperInvariant() + " · run", 4),
+                Step(villager, "Hit", villagerName.ToUpperInvariant() + " · impact and recover"),
+                Step(villager, "Death", villagerName.ToUpperInvariant() + " · fall and settle")
             }).ToArray();
             if (appearance >= 0) steps = steps.Where(step => step.actor == villager).ToArray();
             duration = steps.Sum(step => step.duration);

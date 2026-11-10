@@ -36,7 +36,7 @@ pub struct McCampaignCharacterStateV1 {
     pub target_z: i16,
     pub control_flags: u32,
     pub age_ticks: u16,
-    /// Source appearance parameter for class-5/model-13; zero otherwise.
+    /// Source appearance parameter for settlement humans (models 12–14).
     pub render_parameter: u16,
 }
 
@@ -214,14 +214,14 @@ pub extern "C" fn mc_native_campaign_character_states_copy(
                 });
             }
             for resident in reset.economy().house_residents().iter().filter(|s|
-                s.active && s.model == 13 && live_slots.get(&s.source_entity_index)
+                s.active && matches!(s.model, 12..=14) && live_slots.get(&s.source_entity_index)
                     == Some(&sim_core::native_world::Level2DynamicArenaKind::HouseResident))
             {
                 let target = targets.get(&resident.target_entity_index);
                 rows.push(McCampaignCharacterStateV1 {
                     slot_generation: reset.economy().slot_generation(resident.source_entity_index),
                     entity_index: resident.source_entity_index, source_id: resident.source_id,
-                    class_id: 5, model: 13, action: resident.action, phase: resident.phase,
+                    class_id: 5, model: resident.model, action: resident.action, phase: resident.phase,
                     active: u8::from(resident.drawing_enabled),
                     x: resident.position.x, y: resident.position.y, z: resident.position.z,
                     yaw: resident.yaw, speed: resident.actual_speed, life: resident.life,

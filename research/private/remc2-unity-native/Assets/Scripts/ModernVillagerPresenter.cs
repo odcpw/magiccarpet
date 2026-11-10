@@ -11,6 +11,7 @@ namespace MagicCarpet.Native
     {
         private readonly ModernCharacterInstance character;
         private readonly float scale;
+        private readonly byte sourceModel;
         private readonly Transform[] recoilBones;
         private readonly Quaternion[][] recoil;
         private readonly Transform uprightBone;
@@ -39,9 +40,11 @@ namespace MagicCarpet.Native
         internal int VoxelResolution => voxels != null ? voxels.Resolution : 0;
         internal bool MovingHit { get; private set; }
 
-        internal ModernVillagerPresenter(ModernCharacterAsset asset, Transform parent, float sourceHeight)
+        internal ModernVillagerPresenter(ModernCharacterAsset asset, Transform parent, float sourceHeight, byte model = 13)
         {
             if (asset == null) throw new ArgumentNullException(nameof(asset));
+            if (model != 12 && model != 13 && model != 14) throw new ArgumentOutOfRangeException(nameof(model));
+            sourceModel = model;
             if (!float.IsFinite(sourceHeight) || sourceHeight <= 0 || !float.IsFinite(asset.height) || asset.height <= 0 ||
                 !float.IsFinite(asset.walkSpeed) || asset.walkSpeed <= 0 || !float.IsFinite(asset.runSpeed) || asset.runSpeed <= asset.walkSpeed)
                 throw new ArgumentException("Villager requires measured height and Walk/Run travel speeds");
@@ -92,8 +95,18 @@ namespace MagicCarpet.Native
         }
 
         internal static bool Supports(NativeSim.CampaignCharacterState state) =>
-            state.classId == 5 && state.model == 13 && ModernVillagerAppearances.TryGet(state.renderParameter, out _);
-        internal static bool SourceDeath(byte action, int life) => life < 0 || action == 108 || action == 109;
+            state.classId == 5 && ModernVillagerAppearances.TryGet(state.renderParameter, out var binding) && binding.Model == state.model;
+        internal static bool SourceDeath(byte action, int life, byte model = 13) => life < 0 || (model switch {
+            12 => action == 100 || action == 101,
+            13 => action == 108 || action == 109,
+            14 => action == 117,
+            _ => false
+        });
+        private bool SourceHit(byte action) => sourceModel switch {
+            12 => action == 102 || action == 110,
+            14 => action == 118,
+            _ => action == 110
+        };
 
         internal void Observe(Vector3 position, float yaw, int life, byte action, ulong tick)
         {
@@ -102,8 +115,8 @@ namespace MagicCarpet.Native
             if (observed && tick == lastTick) return;
             if (!float.IsFinite(position.x) || !float.IsFinite(position.y) || !float.IsFinite(position.z) || !float.IsFinite(yaw))
                 throw new ArgumentOutOfRangeException(nameof(position));
-            if (SourceDeath(action, life)) BeginDeath();
-            else if (!IsDying && (observed && life < lastLife || action == 110 && (!observed || lastAction != 110)))
+            if (SourceDeath(action, life, sourceModel)) BeginDeath();
+            else if (!IsDying && (observed && life < lastLife || SourceHit(action) && (!observed || lastAction != action)))
             {
                 hitElapsed = 0;
                 restartHit = true;

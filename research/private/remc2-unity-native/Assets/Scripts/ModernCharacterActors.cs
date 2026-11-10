@@ -100,7 +100,7 @@ namespace MagicCarpet.Native
             var option = Array.IndexOf(args, "-mc-character-follow");
             if (option >= 0)
             {
-                if (option + 1 >= args.Length) throw new ArgumentException("Character follow requires Goat, Archer, Villager or a source slot");
+                if (option + 1 >= args.Length) throw new ArgumentException("Character follow requires Goat, Archer, a settlement character resource, Villager or a source slot");
                 follow = args[option + 1];
             }
             var yawOption = Array.IndexOf(args, "-mc-character-follow-yaw");
@@ -120,7 +120,8 @@ namespace MagicCarpet.Native
             if (follow == null) return null;
             if (ushort.TryParse(follow, out var slot)) return actors.TryGetValue(slot, out var value) && !value.VoxelDeath.Exploded ? value : dying.FirstOrDefault(a => a.State.entityIndex == slot && !a.VoxelDeath.Exploded);
             return actors.OrderBy(p => p.Key).Select(p => p.Value).FirstOrDefault(a => !a.VoxelDeath.Exploded &&
-                (follow == "Goat" ? a.Goat != null : follow == "Villager" ? a.Villager != null : follow == "Archer" && a.Archer != null));
+                (follow == "Goat" ? a.Goat != null : follow == "Villager" ? a.State.model == 13 :
+                a.Villager != null ? ModernVillagerAppearances.Get(a.State.renderParameter).Resource == follow : follow == "Archer" && a.Archer != null));
         }
 
         internal bool ReviewCamera(Camera camera)
@@ -228,7 +229,7 @@ namespace MagicCarpet.Native
 
         internal static bool SourceVoxelDeath(byte model, byte action, int life) => life < 0 ||
             (model == 1 && (action == 12 || action == 13)) || (model == 4 && action == 37) ||
-            (model == 13 && ModernVillagerPresenter.SourceDeath(action, life));
+            ((model == 12 || model == 13 || model == 14) && ModernVillagerPresenter.SourceDeath(action, life, model));
 
         // The integration delivers lifetime-qualified native death evidence
         // before observing removal or reuse. A slot alone is never sufficient.
@@ -251,9 +252,12 @@ namespace MagicCarpet.Native
         internal static void ApplyActorVisibility(GameObject root, NativeSim.CampaignCharacterState state,
             bool eligible, bool voxelMode)
         {
-            // The voxel camera uses its own spatial admission, but it cannot
-            // override native lifecycle/drawing hide flags on a live occupant.
-            if (voxelMode && (state.active == 0 || (state.controlFlags & 0x421u) != 0)) eligible = false;
+            // Spatial admission and spectator follow cannot override native
+            // house-entry/drawing hide flags in either presentation style.
+            // A confirmed fall continues through the hidden reclaim tail. A
+            // living entry still disappears immediately, without a death pose.
+            if (!SourceVoxelDeath(state.model, state.action, state.life) &&
+                (state.active == 0 || (state.controlFlags & 0x421u) != 0)) eligible = false;
             root.SetActive(eligible);
         }
 
@@ -290,11 +294,11 @@ namespace MagicCarpet.Native
                         actor.Goat = new ModernGoatPresenter(goatAsset, parent, 150f / 64);
                         if(Voxels.VoxelModernWorld.Requested){PrepareVoxelDetails();actor.Goat.AttachVoxelSkin(goatFine);}
                     }
-                    else if (state.model == 13)
+                    else if (ModernVillagerPresenter.Supports(state))
                     {
                         var binding = ModernVillagerAppearances.Get(state.renderParameter);
                         var art = PrepareVillagerArt(binding);
-                        actor.Villager = new ModernVillagerPresenter(art.Asset, parent, binding.SourceHeight);
+                        actor.Villager = new ModernVillagerPresenter(art.Asset, parent, binding.SourceHeight, binding.Model);
                         if(Voxels.VoxelModernWorld.Requested) actor.Villager.AttachVoxelSkin(art.Fine);
                     }
                     else

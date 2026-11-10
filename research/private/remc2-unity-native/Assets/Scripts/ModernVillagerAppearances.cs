@@ -12,11 +12,13 @@ namespace MagicCarpet.Native
         internal readonly struct Binding
         {
             internal readonly ushort Parameter;
+            internal readonly byte Model;
             internal readonly string Resource;
             internal readonly float SourceHeight;
 
-            internal Binding(ushort parameter, string resource, ushort logicalHeight)
+            internal Binding(byte model, ushort parameter, string resource, ushort logicalHeight)
             {
+                Model = model;
                 Parameter = parameter;
                 Resource = resource;
                 SourceHeight = logicalHeight / 64f;
@@ -24,10 +26,12 @@ namespace MagicCarpet.Native
         }
 
         internal static readonly IReadOnlyList<Binding> All = Array.AsReadOnly(new[] {
-            new Binding(239, "VillagerBrown", 200),
-            new Binding(241, "Villager", 250),
-            new Binding(242, "VillagerStriped", 250),
-            new Binding(271, "VillagerCarrier", 300)
+            new Binding(12, 221, "Builder", 250),
+            new Binding(14, 219, "Trader", 250),
+            new Binding(13, 239, "VillagerBrown", 200),
+            new Binding(13, 241, "Villager", 250),
+            new Binding(13, 242, "VillagerStriped", 250),
+            new Binding(13, 271, "VillagerCarrier", 300)
         });
 
         internal static bool TryGet(ushort parameter, out Binding binding)

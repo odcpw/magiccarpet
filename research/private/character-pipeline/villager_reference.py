@@ -1,4 +1,4 @@
-"""Extract owner-local original villager views without recoloring the source.
+"""Extract owner-local original settlement-human views without recoloring.
 
 Decodes original SS2 frame packets and records input hashes. Outputs
 are reference material, not distributable game assets.
@@ -73,7 +73,7 @@ def main():
     parser.add_argument('--cache', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--world', choices=['night', 'day'], default='night')
-    parser.add_argument('--appearance', type=int, choices=[239, 241, 242, 271], nargs='+', default=[239, 241, 242, 271])
+    parser.add_argument('--appearance', type=int, choices=[219, 221, 239, 241, 242, 271], nargs='+', default=[239, 241, 242, 271])
     args = parser.parse_args()
     palette_path = args.cache / ('palette/paln.rgb8' if args.world == 'night' else 'palette/pald.rgb8')
     palette = palette_path.read_bytes()
@@ -82,7 +82,7 @@ def main():
     output = args.output
     output.mkdir(parents=True, exist_ok=False)
     records = []
-    for base, parameter in [(155, 239), (180, 241), (183, 242), (199, 271)]:
+    for base, parameter in [(138, 219), (141, 221), (155, 239), (180, 241), (183, 242), (199, 271)]:
         if parameter not in args.appearance:
             continue
         sheet = Image.new('RGB', (1280, 1080), (40, 43, 49))
@@ -118,7 +118,8 @@ def main():
                 sheet.paste(enlarged, (left, top), enlarged)
                 draw.text((phase * 320 + 12, view * 360 + 12),
                     f'TMAP {selector}, phase {phase}, parameter {parameter}', fill='white')
-        sheet.save(output / f'villager-{parameter}-original.png')
+        role = 'trader' if parameter == 219 else 'builder' if parameter == 221 else 'villager'
+        sheet.save(output / f'{role}-{parameter}-original.png')
     (output / 'source.json').write_text(json.dumps(dict(paletteSha256=
         hashlib.sha256(palette).hexdigest(), records=records), indent=2) + '\n')
     print(json.dumps(dict(output=str(output.resolve()), sourceRecords=len(records))))

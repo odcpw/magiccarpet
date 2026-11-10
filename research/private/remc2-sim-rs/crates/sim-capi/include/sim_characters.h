@@ -21,7 +21,7 @@ typedef struct McCampaignCharacterStateV1 {
     uint16_t target_index, target_x, target_y;
     int16_t target_z;
     uint32_t control_flags;
-    /* render_parameter is the original appearance selector for class 5/model 13;
+    /* render_parameter is the original appearance selector for settlement humans (class 5/models 12–14);
      * it is zero for all other admitted families. */
     uint16_t age_ticks, render_parameter;
 } McCampaignCharacterStateV1;

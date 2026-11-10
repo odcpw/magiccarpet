@@ -105,8 +105,8 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(binding.Resource, Is.EqualTo(resource));
                 Assert.That(binding.SourceHeight, Is.EqualTo(height / 64f));
             }
-            Assert.That(ModernVillagerAppearances.All.Select(b => b.Resource).Distinct().Count(), Is.EqualTo(4));
-            foreach (var look in new ushort[] { 0, 221, 219, 65535 })
+            Assert.That(ModernVillagerAppearances.All.Where(b => b.Model == 13).Select(b => b.Resource).Distinct().Count(), Is.EqualTo(4));
+            foreach (var look in new ushort[] { 0, 65535 })
             {
                 row.renderParameter = look;
                 Assert.That(ModernCharacterActors.IsSupportedActor(row), Is.False);
@@ -115,6 +115,64 @@ namespace MagicCarpet.Native.Tests
             row.renderParameter = 241;
             row.classId = 9;
             Assert.That(ModernCharacterActors.IsSupportedActor(row), Is.False);
+        }
+
+        [TestCase(12, 221, "Builder", 97, 102, 108, 101)]
+        [TestCase(14, 219, "Trader", 113, 118, 116, 117)]
+        public void SettlementCharactersBindTheirOwnIdentityHitAndDeath(int model, int parameter, string name,
+            int freeAction, int hitAction, int entryAction, int deathAction)
+        {
+            var state = new NativeSim.CampaignCharacterState { classId = 5, model = (byte)model, renderParameter = (ushort)parameter };
+            Assert.That(ModernCharacterActors.IsSupportedActor(state), Is.True);
+            state.model = 13;
+            Assert.That(ModernCharacterActors.IsSupportedActor(state), Is.False, "Appearance cannot change the native class identity");
+            var binding = ModernVillagerAppearances.Get((ushort)parameter);
+            Assert.That(binding.Resource, Is.EqualTo(name));
+            Assert.That(binding.SourceHeight, Is.EqualTo(250 / 64f));
+            var asset = Asset(name);
+            Assert.That(asset, Is.Not.Null);
+            using var actor = new ModernVillagerPresenter(asset, null, asset.height, (byte)model);
+            actor.Observe(Vector3.zero, 0, 100, (byte)freeAction, 1);
+            actor.Render(0);
+            actor.Observe(Vector3.zero, 0, 100, (byte)hitAction, 2);
+            actor.Render(.05f);
+            Assert.That(actor.CurrentClip, Is.EqualTo("Hit"), "The native hit action must react even when damage was consumed before first observation");
+            actor.Observe(Vector3.zero, 0, 100, (byte)entryAction, 3);
+            Assert.That(actor.IsDying, Is.False, "Living house entry cannot start a fall or fracture");
+            Assert.That(ModernCharacterActors.SourceVoxelDeath((byte)model, (byte)entryAction, 100), Is.False);
+            Assert.That(ModernCharacterActors.SourceVoxelDeath((byte)model, (byte)freeAction, 0), Is.False);
+            actor.Observe(Vector3.zero, 0, -1, (byte)freeAction, 4);
+            Assert.That(actor.IsDying, Is.True);
+            Assert.That(ModernCharacterActors.SourceVoxelDeath((byte)model, (byte)deathAction, 100), Is.True,
+                "Native forced linked-kill action is still a real death");
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BothStylesRespectNativeEntryAndDrawingFlags(bool voxel)
+        {
+            var root = new GameObject("Settlement visibility");
+            try
+            {
+                var state = new NativeSim.CampaignCharacterState { classId = 5, model = 14, active = 1 };
+                ModernCharacterActors.ApplyActorVisibility(root, state, true, voxel);
+                Assert.That(root.activeSelf, Is.True);
+                state.active = 0;
+                ModernCharacterActors.ApplyActorVisibility(root, state, true, voxel);
+                Assert.That(root.activeSelf, Is.False);
+                state.active = 1;
+                foreach (var flag in new uint[] { 1, 0x20, 0x400 })
+                {
+                    state.controlFlags = flag;
+                    ModernCharacterActors.ApplyActorVisibility(root, state, true, voxel);
+                    Assert.That(root.activeSelf, Is.False);
+                }
+                state.life = -1;
+                state.active = 0;
+                ModernCharacterActors.ApplyActorVisibility(root, state, true, voxel);
+                Assert.That(root.activeSelf, Is.True, "A confirmed death must not blink out during the hidden native reclaim tail");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
         }
 
         [Test]
@@ -259,18 +317,23 @@ namespace MagicCarpet.Native.Tests
         [TestCase("VillagerBrown")]
         [TestCase("VillagerStriped")]
         [TestCase("VillagerCarrier")]
+        [TestCase("Builder")]
+        [TestCase("Trader")]
         public void AuthoredGaitAdvancesByRenderedTravelAndMovingHitKeepsRunning(string name)
         {
             var asset = Asset(name);
             Assert.That(asset, Is.Not.Null);
-            using var villager = new ModernVillagerPresenter(asset, null, asset.height);
-            villager.Observe(Vector3.zero, 0, 100, 111, 1);
+            var model = ModernVillagerAppearances.All.Single(b => b.Resource == name).Model;
+            var free = (byte)(model == 12 ? 97 : model == 14 ? 113 : 111);
+            var hit = (byte)(model == 12 ? 102 : model == 14 ? 118 : 110);
+            using var villager = new ModernVillagerPresenter(asset, null, asset.height, model);
+            villager.Observe(Vector3.zero, 0, 100, free, 1);
             villager.Render(0);
             villager.Root.transform.position = new Vector3(0, 0, asset.runSpeed * .1f);
             villager.Render(.1f);
             Assert.That(villager.CurrentClip, Is.EqualTo("Run"));
             Assert.That(villager.ClipTime, Is.EqualTo(.1f).Within(.001f));
-            villager.Observe(villager.Root.transform.position, 0, 90, 110, 2);
+            villager.Observe(villager.Root.transform.position, 0, 90, hit, 2);
             villager.Root.transform.position += Vector3.forward * asset.runSpeed * .1f;
             villager.Render(.1f);
             Assert.That(villager.CurrentClip, Is.EqualTo("Run"));
@@ -361,6 +424,8 @@ namespace MagicCarpet.Native.Tests
         [TestCase("VillagerBrown")]
         [TestCase("VillagerStriped")]
         [TestCase("VillagerCarrier")]
+        [TestCase("Builder")]
+        [TestCase("Trader")]
         public void ImportedVillagerKeepsPhysicalMapsAndActualSurfaceNormals(string name)
         {
             var asset = Asset(name);

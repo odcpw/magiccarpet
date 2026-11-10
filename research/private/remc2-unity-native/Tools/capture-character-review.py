@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--player", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--still", help="character,clip,seconds,camera-yaw; capture one complete frame")
-    parser.add_argument("--review-character", choices=("Villager", "VillagerBrown", "VillagerStriped", "VillagerCarrier"),
+    parser.add_argument("--review-character", choices=("Builder", "Trader", "Villager", "VillagerBrown", "VillagerStriped", "VillagerCarrier"),
                         help="Record this villager's complete five-action sequence in the isolated review player")
     parser.add_argument("--gameplay-command", type=Path, help="JSON with actual campaign launch arguments and provenance")
     parser.add_argument("--follow", default="Goat", help="Goat, Archer or native source slot; Player keeps the normal gameplay camera")

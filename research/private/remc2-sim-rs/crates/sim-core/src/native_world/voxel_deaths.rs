@@ -10,6 +10,17 @@ pub const VOXEL_DEATH_CAPACITY: usize = 1024;
 fn goat_dead(action: u8, life: i32) -> bool { life < 0 || matches!(action, 12 | 13) }
 fn archer_dead(action: u8, life: i32) -> bool { life < 0 || action == 37 }
 fn villager_dead(action: u8, life: i32) -> bool { life < 0 || matches!(action, 108 | 109) }
+fn resident_dead(model: u8, action: u8, life: i32) -> bool {
+    // Builder post-build entry shares Villager actions 108/109. Trader 116
+    // also consumes a living occupant. Neither removal is a death. Trader
+    // 117 can be forced by its dying linked parent even before life changes.
+    match model {
+        12 => life < 0 || matches!(action, 100 | 101),
+        13 => villager_dead(action, life),
+        14 => life < 0 || action == 117,
+        _ => false,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Identity {
@@ -96,10 +107,10 @@ impl Mc2Simulation {
                 slot_generation: handle.generation, source_id: villager.source_id });
         }
         for resident in economy.house_residents().iter().filter(|row|
-            row.active && row.model == 13 && villager_dead(row.action, row.life)) {
+            row.active && resident_dead(row.model, row.action, row.life)) {
             let Some(handle) = arena.handle(resident.source_entity_index) else { continue; };
             let Some(current) = super::source_target::read(arena, context, resident.source_entity_index)? else { continue; };
-            if !current.active || (current.class, current.model, current.source_id) != (5, 13, resident.source_id) { continue; }
+            if !current.active || (current.class, current.model, current.source_id) != (5, resident.model, resident.source_id) { continue; }
             deaths.insert(Identity { slot: resident.source_entity_index,
                 slot_generation: handle.generation, source_id: resident.source_id });
         }
@@ -145,6 +156,24 @@ mod tests {
         assert_eq!(journal.rows().back().unwrap().sequence, 2);
         assert_eq!(old.rows().len(), 1);
         assert!(DeathJournal::default().rows().is_empty());
+    }
+
+    #[test]
+    fn settlement_entry_is_not_death_but_real_and_linked_kills_are() {
+        for action in [96, 97, 98, 99, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111] {
+            assert!(!resident_dead(12, action, 1), "living Builder action {action}");
+            assert!(!resident_dead(12, action, 0), "zero-life Builder action {action}");
+            assert!(resident_dead(12, action, -1));
+        }
+        for action in [112, 113, 114, 115, 116, 118, 119] {
+            assert!(!resident_dead(14, action, 1), "living Trader action {action}");
+            assert!(!resident_dead(14, action, 0));
+            assert!(resident_dead(14, action, -1));
+        }
+        assert!(resident_dead(12, 100, 1));
+        assert!(resident_dead(12, 101, 1));
+        assert!(resident_dead(14, 117, 1));
+        assert!(!resident_dead(4, 117, -1));
     }
 
     #[test]
