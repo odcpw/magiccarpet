@@ -1177,6 +1177,7 @@ pub(crate) fn transfer_possession_player_relations(
     arena: &mut SourceArena,
     houses: &mut HouseFamily,
     villagers: &mut VillagerFamily,
+    spells: &mut super::Level2SharedSpellResetSession,
     from: u16,
     to: u16,
 ) -> Result<usize, String> {
@@ -1188,6 +1189,7 @@ pub(crate) fn transfer_possession_player_relations(
             Context {
                 houses: Some(houses),
                 villagers: Some(villagers),
+                spells: Some(spells),
                 ..Context::default()
             },
             slot,
@@ -1198,6 +1200,9 @@ pub(crate) fn transfer_possession_player_relations(
         let kind = arena.economy.live_arena_kind(slot);
         let raw_relation = arena.entities[index].source_player_entity_index();
         let relation = match kind {
+            Some(Kind::SpellPickup | Kind::SpellReplacement) => spells
+                .pickup(slot)
+                .map(|row| row.source_player_entity_index()),
             Some(Kind::ManaSphere) => arena
                 .economy
                 .spheres
@@ -1255,11 +1260,33 @@ pub(crate) fn transfer_possession_player_relations(
                 .flatten()
         })
         .unwrap_or(raw_relation);
+        // The class-15 carrier can be newer than the raw packet at this
+        // address. Publish its current word94 even when it does not match
+        // the marker; a stale raw match must not transfer that carrier.
+        if matches!(kind, Some(Kind::SpellPickup | Kind::SpellReplacement)) {
+            arena.entities[index].set_source_player_entity_index(relation);
+        }
+        // Imported spells use the raw row as their current authority. Keep
+        // the corresponding shared carrier in step before any later source
+        // visit can publish it, including detached action78's early path.
+        if kind.is_none() && view.active && view.class == 15 {
+            let current = if relation == from { to } else { relation };
+            if let Some(spell) = spells.pickup_mut(slot).filter(|spell| {
+                spell.active && spell.class == view.class && spell.model == view.model
+            }) {
+                spell.set_source_player_entity_index(current);
+            }
+        }
         if relation != from {
             continue;
         }
         arena.entities[index].set_source_player_entity_index(to);
         match kind {
+            Some(Kind::SpellPickup | Kind::SpellReplacement) => {
+                spells.pickup_mut(slot)
+                    .ok_or_else(|| format!("target slot {slot} lost its current shared spell record"))?
+                    .set_source_player_entity_index(to);
+            }
             Some(Kind::ManaSphere) => {
                 if let Some(row) = arena
                     .economy
@@ -6123,6 +6150,18 @@ mod tests {
     #[test]
     fn marker_transfer_updates_current_word94_and_retained_rows_without_changing_ids() {
         let mut session = super::super::tests::level_two_campaign_session();
+        let feature = *session.mission().authored_features().iter()
+            .find(|feature| feature.index == 156)
+            .expect("retained family11 authored producer");
+        session.activate_authored_group_prerequisite_for_test(
+            u16::try_from(feature.activation_group).unwrap(),
+        ).unwrap();
+        let pickup = session.economy().spell_pickups().iter()
+            .find(|row| row.authored_index == feature.index)
+            .expect("real authored spell pickup").source_entity_index;
+        let replacement = session.allocate_level2_spell_replacement(
+            11, pickup, session.state.position,
+        ).expect("real persistent spell replacement").source_entity_index;
         let position = session.state.position;
         let owner = session.state.entity_index;
         let live = &mut session.session.state.live;
@@ -6153,12 +6192,17 @@ mod tests {
         let inactive = live.economy.allocate_source_slot().unwrap();
         live.economy.entities[usize::from(inactive)].active = false;
         live.economy.entities[usize::from(inactive)].set_source_player_entity_index(from);
+        live.shared_spells.pickup_mut(pickup).unwrap().set_source_player_entity_index(from);
+        live.economy.entities[usize::from(pickup)].set_source_player_entity_index(123);
+        live.shared_spells.pickup_mut(replacement).unwrap().set_source_player_entity_index(123);
+        live.economy.entities[usize::from(replacement)].set_source_player_entity_index(from);
         let castle_before = *live.economy.castle_at(castle).unwrap();
         assert!(
             transfer_possession_player_relations(
                 &mut live.economy,
                 &mut live.ordinary.houses,
                 &mut live.ordinary.villagers,
+                &mut live.shared_spells,
                 from,
                 to,
             )
@@ -6195,6 +6239,10 @@ mod tests {
                 live.economy.entities[usize::from(slot)].source_player_entity_index(),
                 to
             );
+        }
+        for (slot, expected) in [(pickup, to), (replacement, 123)] {
+            assert_eq!(live.shared_spells.pickup(slot).unwrap().source_player_entity_index(), expected);
+            assert_eq!(live.economy.entities[usize::from(slot)].source_player_entity_index(), expected);
         }
         assert!(!live.economy.entities[usize::from(inactive)].active);
     }

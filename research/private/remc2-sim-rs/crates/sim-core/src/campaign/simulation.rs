@@ -27764,6 +27764,7 @@ impl Mc2Simulation {
                             &mut live.economy,
                             &mut live.ordinary.houses,
                             &mut live.ordinary.villagers,
+                            &mut live.shared_spells,
                             source_slot,
                             possessor,
                         )?;
@@ -35582,9 +35583,34 @@ mod tests {
             .unwrap();
             (marker.source_entity_index, sphere, slot)
         };
+        // Create two real persistent spell carriers through NewEvent and the
+        // shared constructor. They remain distant from the flyer/player; the
+        // divergent word94 values below exercise current-owner selection.
+        let pickup_position = Position { x: 10_000, y: 10_000, z: 0 };
+        let matching = session
+            .allocate_level2_spell_replacement(1, owner, pickup_position)
+            .expect("first persistent Possession replacement");
+        let nonmatching = session
+            .allocate_level2_spell_replacement(1, owner, pickup_position)
+            .expect("second persistent Possession replacement");
+        let other = if marker_slot != 997 && owner != 997 { 997 } else { 996 };
+        {
+            let spells = &mut session.session.state.live.shared_spells;
+            spells.pickup_mut(matching.source_entity_index).unwrap()
+                .set_source_player_entity_index(marker_slot);
+            spells.pickup_mut(nonmatching.source_entity_index).unwrap()
+                .set_source_player_entity_index(other);
+        }
         let mut saw_flash = false;
         let mut hidden = false;
         for pass in 0..16 {
+            // Deliberately stale raw mirrors must not determine whether a
+            // current shared spell belongs to the marker being claimed.
+            let live = &mut session.session.state.live;
+            live.economy.entities[usize::from(matching.source_entity_index)]
+                .set_source_player_entity_index(other);
+            live.economy.entities[usize::from(nonmatching.source_entity_index)]
+                .set_source_player_entity_index(marker_slot);
             session.step_level2_source_pass(pass);
             assert!(
                 !session
@@ -35625,6 +35651,16 @@ mod tests {
                 .source_player_entity_index(),
             owner
         );
+        let live = &session.session.state.live;
+        for (slot, expected) in [
+            (matching.source_entity_index, owner),
+            (nonmatching.source_entity_index, other),
+        ] {
+            let spell = live.shared_spells.pickup(slot).expect("current replacement remains live");
+            assert!(spell.active && spell.class == 15 && spell.model == 1);
+            assert_eq!(spell.source_player_entity_index(), expected);
+            assert_eq!(live.economy.entities[usize::from(slot)].source_player_entity_index(), expected);
+        }
         session.step_level2_source_pass(17);
         assert!(
             !session
@@ -35634,6 +35670,60 @@ mod tests {
                 .any(|row| row.active && row.source_entity_index == marker_slot),
             "hidden marker reclaims at the following boundary"
         );
+    }
+
+    #[test]
+    fn marker_transfer_synchronizes_imported_spell_word94() {
+        let mut session = level_two_nyphur_possession_session();
+        let slot = session.shared_spells().local_player.enabled_spell_holders[1];
+        let other = session.shared_spells().local_player.enabled_spell_holders[0];
+        let live = &mut session.session.state.live;
+        assert_ne!(slot, 0);
+        assert_ne!(other, 0);
+        assert_ne!(slot, other);
+        assert!(live.economy.live_arena_kind(slot).is_none());
+        let raw = &mut live.economy.entities[usize::from(slot)];
+        assert!(raw.active && raw.class == 15 && raw.model == 1);
+        raw.set_source_player_entity_index(999);
+        let spell = live.shared_spells.pickup_mut(slot).unwrap();
+        assert!(spell.active && spell.class == 15 && spell.model == 1);
+        spell.set_source_player_entity_index(999);
+        assert!(live.economy.live_arena_kind(other).is_none());
+        let raw = &mut live.economy.entities[usize::from(other)];
+        assert!(raw.active && raw.class == 15 && raw.model == 0);
+        raw.set_source_player_entity_index(123);
+        let spell = live.shared_spells.pickup_mut(other).unwrap();
+        assert!(spell.active && spell.class == 15 && spell.model == 0);
+        spell.set_source_player_entity_index(999);
+
+        source_target::transfer_possession_player_relations(
+            &mut live.economy,
+            &mut live.ordinary.houses,
+            &mut live.ordinary.villagers,
+            &mut live.shared_spells,
+            999,
+            998,
+        ).unwrap();
+        assert_eq!(live.economy.entities[usize::from(slot)].source_player_entity_index(), 998);
+        assert_eq!(live.shared_spells.pickup(slot).unwrap().source_player_entity_index(), 998);
+        assert_eq!(live.economy.entities[usize::from(other)].source_player_entity_index(), 123);
+        assert_eq!(live.shared_spells.pickup(other).unwrap().source_player_entity_index(), 123);
+
+        // A different-model stale shared record at the same numeric address
+        // is not the imported raw spell's current carrier.
+        let stale = live.shared_spells.pickup_mut(other).unwrap();
+        stale.model = 21;
+        stale.set_source_player_entity_index(999);
+        source_target::transfer_possession_player_relations(
+            &mut live.economy,
+            &mut live.ordinary.houses,
+            &mut live.ordinary.villagers,
+            &mut live.shared_spells,
+            999,
+            998,
+        ).unwrap();
+        assert_eq!(live.economy.entities[usize::from(other)].source_player_entity_index(), 123);
+        assert_eq!(live.shared_spells.pickup(other).unwrap().source_player_entity_index(), 999);
     }
 
     #[test]
