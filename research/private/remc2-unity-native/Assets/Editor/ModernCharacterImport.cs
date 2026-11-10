@@ -75,6 +75,7 @@ namespace MagicCarpet.Native.Editor
             PrepareCharacter("Archer", 1.65f, script);
             foreach (var binding in ModernVillagerAppearances.All) PrepareCharacter(binding.Resource, 0, script);
             foreach (var binding in ModernCreatureAssets.All) PrepareCharacter(binding.Resource, 0, script);
+            PrepareCharacter("Collector", 0, script);
             AssetDatabase.SaveAssets();
             Validate();
             Probe();
@@ -86,12 +87,13 @@ namespace MagicCarpet.Native.Editor
             if (script == null || script.GetClass() != typeof(ModernCharacterAsset))
                 throw new InvalidOperationException("Character asset script binding is unresolved");
             foreach (var name in new[] { "Goat", "Archer" }.Concat(ModernVillagerAppearances.All.Select(b => b.Resource))
-                .Concat(ModernCreatureAssets.All.Select(b => b.Resource)))
+                .Concat(ModernCreatureAssets.All.Select(b => b.Resource)).Append("Collector"))
             {
                 var asset = Resources.Load<ModernCharacterAsset>("ModernCharacters/" + name + "/Character");
                 if (asset == null || asset.model == null || MonoScript.FromScriptableObject(asset) != script)
                     throw new InvalidOperationException("Imported character cannot be loaded with its actual script binding: " + name);
-                foreach (var clip in ModernCreatureAssets.TryGet(name, out var creature) ? creature.Clips :
+                foreach (var clip in name == "Collector" ? new[] { "Idle" } :
+                    ModernCreatureAssets.TryGet(name, out var creature) ? creature.Clips :
                     name == "Goat" ? new[] { "Idle", "Walk", "Sprint", "Hit", "Death" } :
                     ModernVillagerAppearances.ContainsResource(name) ? new[] { "Idle", "Walk", "Run", "Hit", "Death" } :
                     new[] { "Idle", "Walk", "StandingShot", "KneelEnter", "KneelingShot", "KneelExit", "Hit", "Death" }) asset.Clip(clip);
@@ -102,6 +104,21 @@ namespace MagicCarpet.Native.Editor
                     asset.ResolveUprightSupport(asset.model.transform);
                 }
             }
+        }
+
+        // One-asset import keeps an in-progress Level 1 client from
+        // needlessly reimporting every accepted character master.
+        public static void PrepareCollector()
+        {
+            var script = AssetDatabase.LoadAssetAtPath<MonoScript>("Assets/Scripts/ModernCharacterAsset.cs");
+            if (script == null || script.GetClass() != typeof(ModernCharacterAsset))
+                throw new InvalidOperationException("Collector character asset script binding is unresolved");
+            PrepareCharacter("Collector", 0, script);
+            AssetDatabase.SaveAssets();
+            var asset = Resources.Load<ModernCharacterAsset>("ModernCharacters/Collector/Character");
+            if (asset == null || asset.model == null || MonoScript.FromScriptableObject(asset) != script)
+                throw new InvalidOperationException("Collector import did not create a bound character asset");
+            asset.Clip("Idle");
         }
 
         private static void PrepareCharacter(string name, float walkSpeed, MonoScript script)
@@ -176,7 +193,7 @@ namespace MagicCarpet.Native.Editor
                 }
                 if (matched.Count != imported.Count)
                     throw new InvalidOperationException("Declared character material is absent from the FBX: " + string.Join(", ", imported.Keys.Except(matched)));
-                if (ModernCreatureAssets.ContainsResource(name)) PrepareSkinnedBounds(instance, clips);
+                if (ModernCreatureAssets.ContainsResource(name) || name == "Collector") PrepareSkinnedBounds(instance, clips);
                 var authored = PrefabUtility.SaveAsPrefabAsset(instance, folder + "character.prefab");
                 var definition = AssetDatabase.LoadAssetAtPath<ModernCharacterAsset>(folder + "Character.asset");
                 if (definition == null)

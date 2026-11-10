@@ -12,20 +12,30 @@ namespace MagicCarpet.Native
     {
         private readonly Transform root;
         private readonly OwnerAssetCache cache;
+        private readonly ModernTerrainMesh terrain;
         private readonly Dictionary<int, OwnerAssetCache.Level3Texture> assets;
         private readonly Dictionary<int, Material> materials = new();
         private readonly List<Texture2D> textures = new();
         private readonly Dictionary<ushort, GameObject> objects = new();
         private readonly Dictionary<ushort, NativeSim.CampaignEntityPresentation> rows = new();
+        private readonly Dictionary<ushort, NativeSim.CampaignEntitySnapshot> entitySnapshots = new();
         private readonly HashSet<ushort> voxelImpactChildren = new();
         private readonly byte[] palette;
         private readonly Mesh quad;
         private readonly ModernCharacterActors characters;
+        private readonly ModernDolmens dolmens;
+        private readonly ModernStoneStatues stoneStatues;
+        private readonly ModernExitPortal exitPortal;
+        private readonly ModernAuthoredTrees trees;
+        private readonly ModernCollector collectors;
         private readonly Voxels.VoxelManaSpheres voxelMana;
         private readonly Voxels.VoxelNativeProjectiles voxelProjectiles;
         private readonly Action<NativeSim.CampaignVoxelDeath> applyVoxelDeath;
         private NativeCampaignSession deathSession;
         private readonly Shader shader;
+        private readonly ushort? sceneryReviewSlot;
+        private ushort sceneryReviewSource;
+        private ulong sceneryReviewGeneration = ulong.MaxValue;
         private readonly Shader smokeShader;
         private bool loggedSmoke;
         private bool loggedFamilies;
@@ -38,6 +48,15 @@ namespace MagicCarpet.Native
         internal ModernEntityPresenter(Transform parent, OwnerAssetCache cache, ModernTerrainMesh terrain)
         {
             this.cache = cache;
+            this.terrain = terrain;
+            var args = Environment.GetCommandLineArgs();
+            var reviewOption = Array.IndexOf(args, "-mc-scenery-follow");
+            if (reviewOption >= 0)
+            {
+                if (reviewOption + 1 >= args.Length || !ushort.TryParse(args[reviewOption + 1], out var slot))
+                    throw new ArgumentException("Scenery follow requires a native source slot");
+                sceneryReviewSlot = slot;
+            }
             applyVoxelDeath=ApplyVoxelDeath;
             if (cache.EnvironmentMaterials == null)
                 throw new InvalidOperationException("Modern entities require the validated environment asset bank");
@@ -49,6 +68,11 @@ namespace MagicCarpet.Native
             root = new GameObject("Live campaign actors").transform;
             root.SetParent(parent, false);
             characters = new ModernCharacterActors(root, terrain);
+            dolmens = new ModernDolmens(root, Voxels.VoxelModernWorld.Requested);
+            stoneStatues = new ModernStoneStatues(root, Voxels.VoxelModernWorld.Requested, cache.EnvironmentMaterials.tmaps.bank);
+            exitPortal = new ModernExitPortal(root, Voxels.VoxelModernWorld.Requested);
+            trees = new ModernAuthoredTrees(root);
+            collectors = new ModernCollector(root);
             if(Voxels.VoxelModernWorld.Requested)
             {
                 voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight);
@@ -65,18 +89,25 @@ namespace MagicCarpet.Native
         internal void Present(NativeCampaignSession session, short yaw)
         {
             rows.Clear();
-            var presentations = session.EntityPresentations(yaw);
+            var presentations = session.EntityPresentations(yaw, worldView: sceneryReviewSlot.HasValue);
+            entitySnapshots.Clear();
+            foreach (var entity in session.Entities()) entitySnapshots.Add(entity.entityIndex, entity);
             if(voxelProjectiles!=null)RefreshVoxelImpactChildren(voxelImpactChildren,session.VoxelImpactChildren());
             else voxelImpactChildren.Clear();
             if(voxelProjectiles!=null){deathSession=session;session.DrainVoxelDeaths(applyVoxelDeath);}
             characters.Observe(session, presentations);
+            dolmens.Observe(session.Generation, session.Tick, entitySnapshots, presentations);
+            stoneStatues.Observe(session.Generation, session.Tick, entitySnapshots, presentations);
+            exitPortal.Present(presentations);
+            trees.Present(session, Voxels.VoxelModernWorld.Requested);
+            collectors.Present(session, presentations);
             if(voxelMana!=null)
                 voxelMana.Present(session.ManaSpheres(),session.EntityPresentations(yaw,worldView:true),session.Generation,session.Tick);
             voxelProjectiles?.Present(session.CharacterStates(),presentations,session.Generation,session.VoxelWorldEpoch);
             foreach (var row in presentations)
             {
                 rows.Add(row.entityIndex, row);
-                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
+                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||dolmens.Replaces(row.entityIndex)||stoneStatues.Replaces(row.entityIndex)||exitPortal.Replaces(row.entityIndex)||trees.Replaces(row.entityIndex,row.sourceId)||collectors.Replaces(row.entityIndex,row.sourceId)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
                 if (!assets.TryGetValue(row.selectedTmap, out var texture))
                     throw new InvalidOperationException($"Live entity {row.entityIndex} has absent sprite {row.selectedTmap}");
                 if (!objects.TryGetValue(row.entityIndex, out var node))
@@ -106,7 +137,7 @@ namespace MagicCarpet.Native
                 var height = row.logicalHeight / 64f;
                 node.transform.localScale = new Vector3(height * texture.width / texture.height * (row.mirrored == 0 ? 1 : -1), height, 1);
             }
-            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
+            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||dolmens.Replaces(key)||stoneStatues.Replaces(key)||exitPortal.Replaces(key)||rows.TryGetValue(key,out var row)&&(trees.Replaces(key,row.sourceId)||collectors.Replaces(key,row.sourceId))||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
             {
                 UnityEngine.Object.Destroy(objects[key]);
                 objects.Remove(key);
@@ -140,7 +171,7 @@ namespace MagicCarpet.Native
             var logDiagnostic = ModernCapture.VisualDebug && loggedDebug != ModernCapture.SmokeDebug;
             foreach (var pair in rows)
             {
-                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
+                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||dolmens.Replaces(pair.Key)||stoneStatues.Replaces(pair.Key)||exitPortal.Replaces(pair.Key)||trees.Replaces(pair.Key,pair.Value.sourceId)||collectors.Replaces(pair.Key,pair.Value.sourceId)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
                 var row = pair.Value;
                 var x = position.x + Mathf.Repeat(row.x / 64f - position.x + 512f, 1024f) - 512f;
                 var z = position.z + Mathf.Repeat(row.y / 64f - position.z + 512f, 1024f) - 512f;
@@ -168,11 +199,49 @@ namespace MagicCarpet.Native
             loggedGeometry = true;
             loggedDebug = ModernCapture.SmokeDebug;
             characters.Render(camera);
+            dolmens.Render(camera, ModernCapture.EntityVisibility != 1);
+            stoneStatues.Render(camera, ModernCapture.EntityVisibility != 1);
+            exitPortal.Render(camera, ModernCapture.EntityVisibility != 1);
+            trees.Render(camera, ModernCapture.EntityVisibility != 1);
+            collectors.Render(camera, ModernCapture.EntityVisibility != 1);
             voxelMana?.Render(camera,ModernCapture.EntityVisibility!=1);
             voxelProjectiles?.Render(camera,ModernCapture.EntityVisibility!=1);
         }
 
-        internal bool ReviewCamera(Camera camera) => characters.ReviewCamera(camera);
+        internal bool ReviewCamera(Camera camera)
+        {
+            if (!sceneryReviewSlot.HasValue || !rows.TryGetValue(sceneryReviewSlot.Value, out var row))
+                return characters.ReviewCamera(camera);
+            if (sceneryReviewGeneration != row.generation)
+            {
+                sceneryReviewGeneration = row.generation;
+                sceneryReviewSource = row.sourceId;
+                Debug.Log($"MC_SCENERY_REVIEW slot={row.entityIndex} source={row.sourceId} generation={row.generation}");
+            }
+            if (row.sourceId != sceneryReviewSource) return false;
+            var height = Mathf.Max(1f, row.logicalHeight / 64f);
+            var focus = new Vector3(row.x / 64f, row.z / 64f + height * .5f, row.y / 64f);
+            var horizontal = Mathf.Max(8f, height * 2f);
+            var position = focus + new Vector3(horizontal * .5f, height * .85f + 3f, horizontal);
+            // Keep the review line above native terrain; scenery stays at its
+            // authoritative position and the camera alone moves for inspection.
+            for (var pass = 0; pass < 3; pass++)
+            {
+                var lift = 0f;
+                for (var i = 1; i <= 8; i++)
+                {
+                    var t = i / 9f;
+                    var sample = Vector3.Lerp(position, focus, t);
+                    var clearance = terrain.SampleHeight(sample.x, sample.z) + 1f - sample.y;
+                    lift = Mathf.Max(lift, clearance / (1f - t));
+                }
+                if (lift <= 0f) break;
+                position.y += lift + .5f;
+            }
+            camera.fieldOfView = 48f;
+            camera.transform.SetPositionAndRotation(position, Quaternion.LookRotation(focus - position));
+            return true;
+        }
 
         private Material GetMaterial(OwnerAssetCache.Level3Texture row, bool smoke)
         {
@@ -211,6 +280,11 @@ namespace MagicCarpet.Native
             voxelProjectiles?.Dispose();
             voxelMana?.Dispose();
             characters.Dispose();
+            dolmens.Dispose();
+            stoneStatues.Dispose();
+            exitPortal.Dispose();
+            trees.Dispose();
+            collectors.Dispose();
             UnityEngine.Object.Destroy(root.gameObject);
             UnityEngine.Object.Destroy(quad);
             foreach (var value in materials.Values) UnityEngine.Object.Destroy(value);

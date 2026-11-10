@@ -73,6 +73,7 @@ def main():
                         help="Record the named imported character; the player validates its resource and required clips")
     parser.add_argument("--gameplay-command", type=Path, help="JSON with actual campaign launch arguments and provenance")
     parser.add_argument("--follow", default="Goat", help="Goat, Archer or native source slot; Player keeps the normal gameplay camera")
+    parser.add_argument("--scenery-follow", type=int, help="Review a live native world slot with the scenery camera; use --follow Player")
     parser.add_argument("--follow-head", action="store_true", help="Frame only a multipart creature's head for a complementary close gameplay check")
     parser.add_argument("--frames", type=int, default=360, help="Native gameplay capture frame count")
     parser.add_argument("--fps", type=int, choices=(30, 60, 120), default=30, help="Gameplay recording cadence; native simulation stays at 30Hz")
@@ -86,6 +87,9 @@ def main():
         raise ValueError("Full character review cannot be combined with gameplay or a still")
     if args.follow_head and (not args.gameplay_command or args.follow == "Player"):
         raise ValueError("Head framing requires a followed native gameplay creature")
+    if args.scenery_follow is not None and (not args.gameplay_command or args.follow != "Player" or
+                                            not 0 <= args.scenery_follow <= 65535):
+        raise ValueError("Scenery follow requires gameplay, --follow Player and a 0..65535 source slot")
     if not 30 <= args.frames <= 3600:
         raise ValueError("--frames must be 30..3600")
     if not args.player.is_file() or not os.access(args.player, os.X_OK):
@@ -98,6 +102,8 @@ def main():
     # Reject incompatible worker envelopes before loading a long native replay
     # or launching any display/player. Native validation remains authoritative.
     launch = gameplay_arguments(args.gameplay_command)
+    if args.scenery_follow is not None and "-mc-scenery-follow" in launch:
+        raise ValueError("Scenery follow is already specified in the gameplay command")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     runtime = output / "private-runtime"; runtime.mkdir(mode=0o700)
@@ -157,6 +163,12 @@ def main():
             os.close(read_fd)
             if write_fd is not None: os.close(write_fd)
         env["DISPLAY"] = ":" + number
+        # Publish only our public X11 resource identity. Control checks should
+        # not need to inspect a player's inherited environment or infer sockets.
+        with (output / "display.json").open("x") as stream:
+            json.dump({"schema": "mc-character-capture-display/v1", "display": env["DISPLAY"],
+                       "xvfbPid": display.pid, "wrapperPid": os.getpid()}, stream)
+            stream.write("\n")
         command = [str(args.player.resolve()), *launch, "-force-vulkan", "-screen-fullscreen", "0",
                    "-screen-width", str(args.width), "-screen-height", str(args.height),
                    "-logFile", str(output / "player.log")]
@@ -166,6 +178,8 @@ def main():
                         "-mc-character-gameplay-fps", str(args.fps)]
             if args.follow != "Player":
                 command += ["-mc-character-follow", args.follow]
+            if args.scenery_follow is not None:
+                command += ["-mc-scenery-follow", str(args.scenery_follow)]
             if args.follow_head:
                 command += ["-mc-character-follow-head"]
         else:

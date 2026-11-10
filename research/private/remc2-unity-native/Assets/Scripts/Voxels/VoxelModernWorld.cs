@@ -476,7 +476,7 @@ namespace MagicCarpet.Native.Voxels
             if(!ready)return;
             var style=new GUIStyle(GUI.skin.label){fontSize=Mathf.Max(16,Screen.height/48)};
             GUI.Label(new Rect(20,18,Screen.width-40,38),"MODERN · FINE VOXELS · LIVE GAME BEHAVIOUR",style);
-            string detail=characterReview?"96-cell character skins · original rigs and native behaviour":"25 cm bricks · 12.5 cm ground · Space: cast · F5: save · P: pause · B/F2: view";
+            string detail=characterReview?"Level 1 · live creature gameplay":"25 cm bricks · 12.5 cm ground · Space: cast · F5: save · P: pause · B/F2: view";
             GUI.Label(new Rect(20,Screen.height-45,Screen.width-40,38),$"{detail} · tick {nativeTick}",style);
             if(!automatic&&editing)GUI.Label(new Rect(20,56,500,30),"Applying native destruction",style);
         }

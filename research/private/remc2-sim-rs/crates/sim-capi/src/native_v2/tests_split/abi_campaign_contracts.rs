@@ -167,6 +167,73 @@ fn campaign_native_projection_copies_live_sphere_and_castle_balloon_and_clears_o
         )
     );
     let balloon_row = entities[usize::from(balloon.source_entity_index)];
+    // The same real upkeep product must be observable with its own current
+    // incarnation, owner colour, mana and Castle relation. The generic entity
+    // projection lacks these fields and cannot safely tint the 3D canopy.
+    {
+        use super::castle_child_abi::{
+            McCampaignCastleChildV1, mc_native_campaign_castle_children_copy_v1,
+        };
+        let mut children = [McCampaignCastleChildV1::default(); 16];
+        let mut count = u32::MAX;
+        assert_eq!(
+            mc_native_campaign_castle_children_copy_v1(
+                handle,
+                0,
+                step.revision,
+                children.as_mut_ptr(),
+                children.len() as u32,
+                struct_size::<McCampaignCastleChildV1>(),
+                &raw mut count,
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        let child = children[..count as usize]
+            .iter()
+            .find(|row| row.entity_index == balloon.source_entity_index)
+            .expect("the actual Castle balloon is in the typed observation");
+        let owner_color = with_campaign_session(handle, |record| {
+            let CampaignSessionKind::Campaign { reset, .. } = &record.kind else {
+                unreachable!()
+            };
+            Ok(reset.shared_spells().local_player().player_color_index())
+        })
+        .unwrap();
+        assert_eq!((child.class_id, child.model, child.action), (3, 3, 9));
+        assert_eq!(
+            (child.source_id, child.slot_generation, child.x, child.y, child.z),
+            (
+                balloon.id_entity_index,
+                with_campaign_session(handle, |record| {
+                    let CampaignSessionKind::Campaign { reset, .. } = &record.kind else {
+                        unreachable!()
+                    };
+                    Ok(reset.economy().slot_generation(balloon.source_entity_index))
+                })
+                .unwrap(),
+                balloon.position.x,
+                balloon.position.y,
+                balloon.position.z,
+            )
+        );
+        assert_eq!((child.life, child.max_life, child.mana, child.max_mana),
+            (balloon.life, balloon.max_life, balloon.mana, balloon.max_mana));
+        assert_eq!(child.castle_index, castle.source_entity_index);
+        assert_eq!(child.owner_player_color, owner_color);
+        assert_eq!(child.relation_flags & 3, 3);
+        assert_eq!((child.active, child.drawing, child.render_parameter), (1, 1, 169));
+        assert!(child.render_height > 0);
+        assert_eq!(
+            mc_native_campaign_castle_children_copy_v1(
+                handle, 0, step.revision + 1, children.as_mut_ptr(),
+                children.len() as u32, struct_size::<McCampaignCastleChildV1>(), &raw mut count,
+            ),
+            MC_STATUS_GENERATION_MISMATCH,
+            "stale tick must not read a later incarnation"
+        );
+    }
     assert_eq!(
         (
             balloon_row.authority,

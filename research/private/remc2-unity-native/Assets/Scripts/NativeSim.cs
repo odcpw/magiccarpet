@@ -586,6 +586,27 @@ namespace MagicCarpet.Native
             [Out] CampaignCharacterState[] buffer, uint capacity, uint elementSize, out uint written);
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignCastleChild
+        {
+            internal uint abiVersion, structSize;
+            internal ulong generation, tick;
+            internal uint slotGeneration, castleGeneration, targetGeneration;
+            internal ushort entityIndex, sourceId, ownerEntityIndex, playerEntityIndex;
+            internal ushort castleIndex, targetIndex, x, y;
+            internal short z, yaw, speed;
+            internal ushort renderParameter, renderHeight, reserved0;
+            internal int life, maxLife, mana, maxMana;
+            internal uint controlFlags;
+            internal byte classId, model, action, phase;
+            internal byte active, drawing, ownerPlayerColor, relationFlags;
+        }
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_castle_children_copy_v1(
+            ulong handle, ulong generation, ulong tick,
+            [Out] CampaignCastleChild[] buffer, uint capacity, uint elementSize, out uint written);
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignEntityPresentation
         {
             internal uint abiVersion;

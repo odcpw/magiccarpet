@@ -102,6 +102,7 @@ namespace MagicCarpet.Native
         private readonly string follow;
         private readonly bool followHead;
         private readonly float followYaw = 45;
+        private const float ReviewFieldOfView = 48;
         private readonly ModernCharacterGameplayCapture capture;
         private bool reviewPositioned;
         private Vector3 lastReviewPosition;
@@ -159,6 +160,7 @@ namespace MagicCarpet.Native
             if (actor == null)
             {
                 if (follow == null || !reviewPositioned) return false;
+                camera.fieldOfView = ReviewFieldOfView;
                 camera.transform.SetPositionAndRotation(lastReviewPosition, lastReviewRotation);
                 return true;
             }
@@ -166,6 +168,7 @@ namespace MagicCarpet.Native
             if (Voxels.VoxelModernWorld.Requested && actor.VoxelIsDying)
             {
                 if (!reviewPositioned) return false;
+                camera.fieldOfView = ReviewFieldOfView;
                 camera.transform.SetPositionAndRotation(lastReviewPosition, lastReviewRotation);
                 return true;
             }
@@ -186,7 +189,7 @@ namespace MagicCarpet.Native
             var bounds = CharacterBounds(actor, followHead);
             if (actor.Worm == null && actor.Firefly == null) bounds.center += Wrap(position, camera.transform.position) - actor.Root.transform.position;
             var rotation = Quaternion.LookRotation(-offset);
-            camera.fieldOfView = 48;
+            camera.fieldOfView = ReviewFieldOfView;
             var vertical = Mathf.Tan(camera.fieldOfView * Mathf.Deg2Rad * .5f);
             var horizontal = vertical * camera.aspect;
             var distance = actor.Goat != null ? 6.5f : 9;
@@ -239,6 +242,11 @@ namespace MagicCarpet.Native
         private bool FollowedFramingValid()
         {
             var actor = Followed();
+            // Native camera observation writes its projection every turn.
+            // Retaining only the review transform still zooms away from the
+            // fracture when the followed actor disappears.
+            if (follow != null && reviewPositioned && renderedCamera != null &&
+                Mathf.Abs(renderedCamera.fieldOfView - ReviewFieldOfView) > .0001f) return false;
             if (actor == null || renderedCamera == null) return true;
             var bounds = CharacterBounds(actor, followHead);
             for (var i = 0; i < 8; i++)
@@ -728,6 +736,9 @@ namespace MagicCarpet.Native
             public ulong generation, tick;
             public bool spectatorVisibilityOverride;
             public bool framingChecked, framingValid;
+            public Vector3 cameraPosition;
+            public Quaternion cameraRotation;
+            public float cameraFieldOfView;
             public ActorReport[] actors;
             public ArrowReport[] arrows;
         }
@@ -752,6 +763,9 @@ namespace MagicCarpet.Native
         private string Report() => JsonUtility.ToJson(new FrameReport {
             generation = generation, tick = tick, spectatorVisibilityOverride = follow != null,
             framingChecked=follow != null, framingValid=FollowedFramingValid(),
+            cameraPosition=renderedCamera != null ? renderedCamera.transform.position : Vector3.zero,
+            cameraRotation=renderedCamera != null ? renderedCamera.transform.rotation : Quaternion.identity,
+            cameraFieldOfView=renderedCamera != null ? renderedCamera.fieldOfView : 0,
             actors = actors.Values.Concat(dying).Select(a => new ActorReport { slot=a.State.entityIndex,
                 epoch=a.State.slotGeneration, model=a.State.model, action=a.State.action, life=a.State.life,
                 appearance=a.State.renderParameter,

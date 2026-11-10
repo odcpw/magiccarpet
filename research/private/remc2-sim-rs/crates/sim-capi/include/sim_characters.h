@@ -46,6 +46,29 @@ typedef struct McCampaignCharacterStateV2 {
 int32_t mc_native_campaign_character_states_copy_v2(uint64_t handle,
     uint64_t generation, uint64_t tick, McCampaignCharacterStateV2 *buffer,
     uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+/* The source Castle's class-3/model-3 balloon holders. These are live arena
+ * occupants, including a hidden holder until the following reclaim pass.
+ * castle_index/generation identify the current matching owner Castle, not
+ * the holder's raw (zero) parent word. target_index is the raw sphere word;
+ * relation_flags bit0 means owner_player_color is known, bit1 means castle
+ * is current, bit2 means target_index resolves to a current ManaSphere.
+ * drawing is zero when the source draw-disable flag is set. */
+typedef struct McCampaignCastleChildV1 {
+    uint32_t abi_version, struct_size;
+    uint64_t generation, tick;
+    uint32_t slot_generation, castle_generation, target_generation;
+    uint16_t entity_index, source_id, owner_entity_index, player_entity_index;
+    uint16_t castle_index, target_index, x, y;
+    int16_t z, yaw, speed;
+    uint16_t render_parameter, render_height, reserved_0;
+    int32_t life, max_life, mana, max_mana;
+    uint32_t control_flags;
+    uint8_t class_id, model, action, phase;
+    uint8_t active, drawing, owner_player_color, relation_flags;
+} McCampaignCastleChildV1;
+int32_t mc_native_campaign_castle_children_copy_v1(uint64_t handle,
+    uint64_t generation, uint64_t tick, McCampaignCastleChildV1 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
 /* Retained once-per-incarnation deaths. Row generation is the stable voxel
  * world epoch; the request generation is the current outer session identity.
  * Cursor zero starts at the oldest retained row; an expired nonzero cursor

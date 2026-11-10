@@ -4,6 +4,7 @@
 //! not use the embedded owner regression bytes retained by the legacy v1 ABI.
 
 mod audio_voice_pool;
+mod authored_tree_abi;
 mod campaign_abi;
 mod campaign_audio;
 mod campaign_audio_state;
@@ -11,6 +12,7 @@ mod campaign_facade;
 mod campaign_minimap_labels;
 mod campaign_sound_bank;
 mod campaign_world_map;
+mod castle_child_abi;
 mod character_abi;
 mod events_audio_abi;
 mod game_runtime_abi;

@@ -64,6 +64,10 @@ namespace MagicCarpet.Native
         private ModernBuildings.LiveBuilding[] buildingObservations = Array.Empty<ModernBuildings.LiveBuilding>();
         private NativeSim.CampaignCharacterState[] cachedCharacterStates;
         private ulong characterStateGeneration, characterStateTick;
+        private readonly NativeSim.CampaignCastleChild[] castleChildBuffer = new NativeSim.CampaignCastleChild[128];
+        private readonly HashSet<ushort> castleChildSeen = new HashSet<ushort>();
+        private int castleChildCount;
+        private ulong castleChildGeneration = ulong.MaxValue, castleChildTick;
         private readonly bool ownsHandle;
         private readonly bool dayMusicAvailable;
         private readonly CampaignPackageIdentity packageIdentity;
@@ -1550,6 +1554,33 @@ namespace MagicCarpet.Native
                     throw new InvalidOperationException("Invalid source-backed character state");
             cachedCharacterStates=rows;characterStateGeneration=generation;characterStateTick=tick;
             return rows;
+        }
+
+        internal ArraySegment<NativeSim.CampaignCastleChild> CastleChildren()
+        {
+            if (castleChildGeneration == generation && castleChildTick == tick)
+                return new ArraySegment<NativeSim.CampaignCastleChild>(castleChildBuffer, 0, castleChildCount);
+            var status = NativeSim.mc_native_campaign_castle_children_copy_v1(
+                Handle, generation, tick, castleChildBuffer, (uint)castleChildBuffer.Length, 96, out var written);
+            NativeSession.Check(status, "read live Castle balloon state");
+            if (written > castleChildBuffer.Length) throw new InvalidOperationException("Castle balloon batch exceeds capacity");
+            castleChildSeen.Clear();
+            for (var i = 0; i < written; i++)
+            {
+                var row = castleChildBuffer[i];
+                if (row.abiVersion != NativeSim.AbiVersion || row.structSize != 96 ||
+                    row.generation != generation || row.tick != tick || !castleChildSeen.Add(row.entityIndex) ||
+                    row.classId != 3 || row.model != 3 || row.action != 9 || row.active != 1 ||
+                    row.drawing > 1 || row.relationFlags > 7 ||
+                    (row.relationFlags & 1) != 0 && row.ownerPlayerColor > 7 ||
+                    (row.relationFlags & 2) != 0 && row.castleIndex == 0 ||
+                    (row.relationFlags & 4) != 0 && row.targetIndex == 0 ||
+                    row.renderParameter == 0 || row.renderHeight == 0 || row.reserved0 != 0)
+                    throw new InvalidOperationException("Invalid source-backed Castle balloon state");
+            }
+            castleChildCount = checked((int)written);
+            castleChildGeneration = generation; castleChildTick = tick;
+            return new ArraySegment<NativeSim.CampaignCastleChild>(castleChildBuffer, 0, castleChildCount);
         }
 
         internal static bool HasSupportedCharacterIdentity(NativeSim.CampaignCharacterState row)
