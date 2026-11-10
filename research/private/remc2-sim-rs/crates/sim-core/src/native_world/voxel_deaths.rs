@@ -7,16 +7,29 @@ use super::Mc2Simulation;
 
 pub const VOXEL_DEATH_CAPACITY: usize = 1024;
 
-fn goat_dead(action: u8, life: i32) -> bool { life < 0 || matches!(action, 12 | 13) }
-fn archer_dead(action: u8, life: i32) -> bool { life < 0 || action == 37 }
-fn villager_dead(action: u8, life: i32) -> bool { life < 0 || matches!(action, 108 | 109) }
-fn resident_dead(model: u8, action: u8, life: i32) -> bool {
+fn goat_dead(action: u8, life: i32) -> bool {
+    life < 0 || matches!(action, 12 | 13)
+}
+fn archer_dead(action: u8, life: i32) -> bool {
+    life < 0 || action == 37
+}
+fn villager_dead(action: u8, life: i32, reset_counter: i32) -> bool {
+    life < 0 || action == 109 || action == 108 && reset_counter == 0
+}
+fn creature_root_dead(model: u8, action: u8, life: i32) -> bool {
+    match model {
+        3 => life < 0 || matches!(action, 28 | 29),
+        19 => life < 0 || matches!(action, 156 | 157),
+        _ => false,
+    }
+}
+fn resident_dead(model: u8, action: u8, life: i32, reset_counter: i32) -> bool {
     // Builder post-build entry shares Villager actions 108/109. Trader 116
     // also consumes a living occupant. Neither removal is a death. Trader
     // 117 can be forced by its dying linked parent even before life changes.
     match model {
         12 => life < 0 || matches!(action, 100 | 101),
-        13 => villager_dead(action, life),
+        13 => villager_dead(action, life, reset_counter),
         14 => life < 0 || action == 117,
         _ => false,
     }
@@ -51,20 +64,38 @@ pub struct DeathJournal(Arc<JournalData>);
 
 impl DeathJournal {
     #[must_use]
-    pub fn rows(&self) -> &VecDeque<ActorDeath> { &self.0.rows }
+    pub fn rows(&self) -> &VecDeque<ActorDeath> {
+        &self.0.rows
+    }
 
     fn observe(&mut self, deaths: BTreeSet<Identity>) {
-        if self.0.currently_dead == deaths { return; }
+        if self.0.currently_dead == deaths {
+            return;
+        }
         let data = Arc::make_mut(&mut self.0);
         for identity in deaths.difference(&data.currently_dead) {
             // A temporarily absent row in the same lifetime must not cause a
             // second emission while its previous record remains available.
-            if data.rows.iter().any(|row| row.slot == identity.slot
-                && row.slot_generation == identity.slot_generation && row.source_id == identity.source_id) { continue; }
-            data.next_sequence = data.next_sequence.checked_add(1).expect("voxel death sequence overflow");
-            if data.rows.len() == VOXEL_DEATH_CAPACITY { data.rows.pop_front(); }
-            data.rows.push_back(ActorDeath { sequence: data.next_sequence, slot: identity.slot,
-                slot_generation: identity.slot_generation, source_id: identity.source_id });
+            if data.rows.iter().any(|row| {
+                row.slot == identity.slot
+                    && row.slot_generation == identity.slot_generation
+                    && row.source_id == identity.source_id
+            }) {
+                continue;
+            }
+            data.next_sequence = data
+                .next_sequence
+                .checked_add(1)
+                .expect("voxel death sequence overflow");
+            if data.rows.len() == VOXEL_DEATH_CAPACITY {
+                data.rows.pop_front();
+            }
+            data.rows.push_back(ActorDeath {
+                sequence: data.next_sequence,
+                slot: identity.slot,
+                slot_generation: identity.slot_generation,
+                source_id: identity.source_id,
+            });
         }
         data.currently_dead = deaths;
     }
@@ -74,45 +105,181 @@ impl Mc2Simulation {
     /// Capture immediately after each native damage/dispatch boundary and
     /// before reclamation or reuse can replace the authoritative actor row.
     pub fn capture_voxel_deaths(&mut self) -> Result<(), String> {
-        if self.canonical_terrain().voxel_deaths().is_none() { return Ok(()); }
+        if self.canonical_terrain().voxel_deaths().is_none() {
+            return Ok(());
+        }
         let live = &self.session.state.live;
         let arena = &live.economy;
         let economy = &arena.economy;
         let context = super::source_target::Context::from_ordinary(&live.goats, &live.ordinary);
         let mut deaths = BTreeSet::new();
-        for goat in self.goats().iter().filter(|goat| goat.active && goat_dead(goat.action, goat.life)) {
-            let Some(handle) = arena.handle(goat.entity_index) else { continue; };
-            let Some(current) = super::source_target::read(arena, context, goat.entity_index)? else { continue; };
-            if !current.active || (current.class, current.model, current.source_id) != (5, 1, goat.source_id) { continue; }
-            deaths.insert(Identity { slot: goat.entity_index,
-                slot_generation: handle.generation, source_id: goat.source_id });
+        for goat in self
+            .goats()
+            .iter()
+            .filter(|goat| goat.active && goat_dead(goat.action, goat.life))
+        {
+            let Some(handle) = arena.handle(goat.entity_index) else {
+                continue;
+            };
+            let Some(current) = super::source_target::read(arena, context, goat.entity_index)?
+            else {
+                continue;
+            };
+            if !current.active
+                || (current.class, current.model, current.source_id) != (5, 1, goat.source_id)
+            {
+                continue;
+            }
+            deaths.insert(Identity {
+                slot: goat.entity_index,
+                slot_generation: handle.generation,
+                source_id: goat.source_id,
+            });
         }
-        for source in economy.authored_class5().iter().filter(|source|
-            source.active && source.model == 4 && archer_dead(source.action, source.life)) {
-            let Some(archer) = economy.authored_class5_archer().iter().find(|archer|
-                archer.source_entity_index == source.source_entity_index) else { continue; };
-            let Some(handle) = arena.handle(source.source_entity_index) else { continue; };
-            let Some(current) = super::source_target::read(arena, context, source.source_entity_index)? else { continue; };
-            if !current.active || (current.class, current.model, current.source_id) != (5, 4, archer.entity_id)
-                || handle.generation != archer.slot_generation { continue; }
-            deaths.insert(Identity { slot: source.source_entity_index,
-                slot_generation: archer.slot_generation, source_id: archer.entity_id });
+        for source in economy.authored_class5().iter().filter(|source| {
+            source.active && source.model == 4 && archer_dead(source.action, source.life)
+        }) {
+            let Some(archer) = economy
+                .authored_class5_archer()
+                .iter()
+                .find(|archer| archer.source_entity_index == source.source_entity_index)
+            else {
+                continue;
+            };
+            let Some(handle) = arena.handle(source.source_entity_index) else {
+                continue;
+            };
+            let Some(current) =
+                super::source_target::read(arena, context, source.source_entity_index)?
+            else {
+                continue;
+            };
+            if !current.active
+                || (current.class, current.model, current.source_id) != (5, 4, archer.entity_id)
+                || handle.generation != archer.slot_generation
+            {
+                continue;
+            }
+            deaths.insert(Identity {
+                slot: source.source_entity_index,
+                slot_generation: archer.slot_generation,
+                source_id: archer.entity_id,
+            });
         }
-        for villager in self.ordinary().villagers().iter().filter(|row|
-            row.active && villager_dead(row.action, row.life)) {
-            let Some(handle) = arena.handle(villager.entity_index) else { continue; };
-            let Some(current) = super::source_target::read(arena, context, villager.entity_index)? else { continue; };
-            if !current.active || (current.class, current.model, current.source_id) != (5, 13, villager.source_id) { continue; }
-            deaths.insert(Identity { slot: villager.entity_index,
-                slot_generation: handle.generation, source_id: villager.source_id });
+        for villager in self
+            .ordinary()
+            .villagers()
+            .iter()
+            .filter(|row| row.active && villager_dead(row.action, row.life, row.reset_counter))
+        {
+            let Some(handle) = arena.handle(villager.entity_index) else {
+                continue;
+            };
+            let Some(current) = super::source_target::read(arena, context, villager.entity_index)?
+            else {
+                continue;
+            };
+            if !current.active
+                || (current.class, current.model, current.source_id) != (5, 13, villager.source_id)
+            {
+                continue;
+            }
+            deaths.insert(Identity {
+                slot: villager.entity_index,
+                slot_generation: handle.generation,
+                source_id: villager.source_id,
+            });
         }
-        for resident in economy.house_residents().iter().filter(|row|
-            row.active && resident_dead(row.model, row.action, row.life)) {
-            let Some(handle) = arena.handle(resident.source_entity_index) else { continue; };
-            let Some(current) = super::source_target::read(arena, context, resident.source_entity_index)? else { continue; };
-            if !current.active || (current.class, current.model, current.source_id) != (5, resident.model, resident.source_id) { continue; }
-            deaths.insert(Identity { slot: resident.source_entity_index,
-                slot_generation: handle.generation, source_id: resident.source_id });
+        // A Worm is one visual family: body action29 cleanup must not emit
+        // sixteen additional explosions. Capture only the qualified root.
+        for source in economy
+            .authored_class5()
+            .iter()
+            .filter(|row| row.active && creature_root_dead(row.model, row.action, row.life))
+        {
+            let source_id = if source.model == 3 {
+                economy
+                    .authored_class5_model3()
+                    .iter()
+                    .find(|row| row.source_entity_index == source.source_entity_index)
+                    .map(|row| row.entity_id)
+            } else {
+                economy
+                    .authored_fireflies()
+                    .iter()
+                    .find(|row| row.source_entity_index == source.source_entity_index)
+                    .map(|row| row.entity_id)
+            };
+            let Some(source_id) = source_id else {
+                continue;
+            };
+            let Some(handle) = arena.handle(source.source_entity_index) else {
+                continue;
+            };
+            let Some(current) =
+                super::source_target::read(arena, context, source.source_entity_index)?
+            else {
+                continue;
+            };
+            if !current.active
+                || (current.class, current.model, current.source_id) != (5, source.model, source_id)
+            {
+                continue;
+            }
+            deaths.insert(Identity {
+                slot: source.source_entity_index,
+                slot_generation: handle.generation,
+                source_id,
+            });
+        }
+        for resident in economy.house_residents().iter().filter(|row| {
+            row.active && resident_dead(row.model, row.action, row.life, row.reset_counter)
+        }) {
+            let Some(handle) = arena.handle(resident.source_entity_index) else {
+                continue;
+            };
+            let Some(current) =
+                super::source_target::read(arena, context, resident.source_entity_index)?
+            else {
+                continue;
+            };
+            if !current.active
+                || (current.class, current.model, current.source_id)
+                    != (5, resident.model, resident.source_id)
+            {
+                continue;
+            }
+            deaths.insert(Identity {
+                slot: resident.source_entity_index,
+                slot_generation: handle.generation,
+                source_id: resident.source_id,
+            });
+        }
+        for source in arena.entities.iter().filter(|row| {
+            row.active
+                && row.class == 5
+                && (row.model == 19 && row.particle_parameter_index == Some(287)
+                    || row.model == 3 && row.particle_parameter_index == Some(88))
+                && creature_root_dead(row.model, row.action, row.life)
+                && economy.live_arena_kind(row.index).is_none()
+        }) {
+            let Some(handle) = arena.handle(source.index) else {
+                continue;
+            };
+            let Some(current) = super::source_target::read(arena, context, source.index)? else {
+                continue;
+            };
+            if !current.active
+                || (current.class, current.model, current.source_id)
+                    != (5, source.model, source.source_id)
+            {
+                continue;
+            }
+            deaths.insert(Identity {
+                slot: source.index,
+                slot_generation: handle.generation,
+                source_id: source.source_id,
+            });
         }
         if let Some(journal) = self.session.state.terrain_mut().voxel_deaths_mut() {
             journal.observe(deaths);
@@ -126,7 +293,11 @@ mod tests {
     use super::*;
 
     fn identity(slot: u16, generation: u32, source_id: u16) -> Identity {
-        Identity { slot, slot_generation: generation, source_id }
+        Identity {
+            slot,
+            slot_generation: generation,
+            source_id,
+        }
     }
 
     #[test]
@@ -136,9 +307,31 @@ mod tests {
         assert!(!archer_dead(36, 100));
         assert!(archer_dead(36, -1));
         assert!(archer_dead(37, 1));
-        assert!(!villager_dead(105, 0));
-        assert!(villager_dead(108, 1));
-        assert!(villager_dead(109, 1));
+        assert!(!villager_dead(105, 0, 0));
+        assert!(villager_dead(108, 1, 0));
+        assert!(villager_dead(109, 1, 0));
+        assert!(
+            !villager_dead(108, 1000, 1),
+            "living house entry shares action108"
+        );
+        assert!(!villager_dead(108, 0, 1));
+        assert!(
+            villager_dead(108, -1, 1),
+            "lethal damage still overrides an entry marker"
+        );
+        for (model, living, killing) in [
+            (3, &[25, 26, 27, 31][..], &[28, 29][..]),
+            (19, &[152, 153, 154, 155, 159][..], &[156, 157][..]),
+        ] {
+            for &action in living {
+                assert!(!creature_root_dead(model, action, 0));
+                assert!(creature_root_dead(model, action, -1));
+            }
+            for &action in killing {
+                assert!(creature_root_dead(model, action, 1));
+            }
+        }
+        assert!(!creature_root_dead(4, 29, -1));
     }
 
     #[test]
@@ -160,20 +353,33 @@ mod tests {
 
     #[test]
     fn settlement_entry_is_not_death_but_real_and_linked_kills_are() {
-        for action in [96, 97, 98, 99, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111] {
-            assert!(!resident_dead(12, action, 1), "living Builder action {action}");
-            assert!(!resident_dead(12, action, 0), "zero-life Builder action {action}");
-            assert!(resident_dead(12, action, -1));
+        for action in [
+            96, 97, 98, 99, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+        ] {
+            assert!(
+                !resident_dead(12, action, 1, 0),
+                "living Builder action {action}"
+            );
+            assert!(
+                !resident_dead(12, action, 0, 0),
+                "zero-life Builder action {action}"
+            );
+            assert!(resident_dead(12, action, -1, 0));
         }
         for action in [112, 113, 114, 115, 116, 118, 119] {
-            assert!(!resident_dead(14, action, 1), "living Trader action {action}");
-            assert!(!resident_dead(14, action, 0));
-            assert!(resident_dead(14, action, -1));
+            assert!(
+                !resident_dead(14, action, 1, 0),
+                "living Trader action {action}"
+            );
+            assert!(!resident_dead(14, action, 0, 0));
+            assert!(resident_dead(14, action, -1, 0));
         }
-        assert!(resident_dead(12, 100, 1));
-        assert!(resident_dead(12, 101, 1));
-        assert!(resident_dead(14, 117, 1));
-        assert!(!resident_dead(4, 117, -1));
+        assert!(resident_dead(12, 100, 1, 0));
+        assert!(resident_dead(12, 101, 1, 0));
+        assert!(resident_dead(14, 117, 1, 0));
+        assert!(!resident_dead(4, 117, -1, 0));
+        assert!(!resident_dead(13, 108, 1000, 1));
+        assert!(resident_dead(13, 108, -1, 0));
     }
 
     #[test]
@@ -186,7 +392,11 @@ mod tests {
         assert_eq!(journal.rows().len(), VOXEL_DEATH_CAPACITY);
         assert!(!journal.rows().iter().any(|row| row.slot == 1));
         let last = journal.rows().back().unwrap().sequence;
-        journal.observe([held, identity(2, VOXEL_DEATH_CAPACITY as u32 + 6, 2)].into_iter().collect());
+        journal.observe(
+            [held, identity(2, VOXEL_DEATH_CAPACITY as u32 + 6, 2)]
+                .into_iter()
+                .collect(),
+        );
         assert_eq!(journal.rows().back().unwrap().sequence, last + 1);
         assert!(!journal.rows().iter().any(|row| row.slot == 1));
     }
@@ -197,51 +407,125 @@ mod tests {
         let mut session = super::super::tests::level_two_campaign_session();
         // Only enables the journal; this isolated voxel cell is outside the
         // encounter and is not presented as a real terrain/gameplay fixture.
-        let grid = Grid { origin: Point { x: -100_000, y: -100_000, z: 0 }, cell_size: 8, dimensions: [1, 1, 1] };
+        let grid = Grid {
+            origin: Point {
+                x: -100_000,
+                y: -100_000,
+                z: 0,
+            },
+            cell_size: 8,
+            dimensions: [1, 1, 1],
+        };
         let world = VoxelWorld::new(11, vec![Volume::terrain(grid, vec![1]).unwrap()]).unwrap();
-        session.session.state.terrain_mut().install_voxel_world(world);
-        let goat = session.goats().iter().find(|goat| goat.active && goat.life > 0
-            && matches!(goat.action, 8 | 9 | 10 | 11 | 14 | 15)).unwrap().clone();
+        session
+            .session
+            .state
+            .terrain_mut()
+            .install_voxel_world(world);
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| {
+                goat.active && goat.life > 0 && matches!(goat.action, 8 | 9 | 10 | 11 | 14 | 15)
+            })
+            .unwrap()
+            .clone();
         let generation = session.economy().slot_generation(goat.entity_index);
         let attacker = session.shared_spells().players()[0].entity_index;
-        session.submit_goat_damage(goat.entity_index, goat.life + 1, attacker).unwrap();
+        session
+            .submit_goat_damage(goat.entity_index, goat.life + 1, attacker)
+            .unwrap();
         let mut reclaimed = false;
         for pass in 0..120_u8 {
             session.step_level2_source_pass(pass);
-            if !session.goats().iter().find(|row| row.entity_index == goat.entity_index).unwrap().active {
+            if !session
+                .goats()
+                .iter()
+                .find(|row| row.entity_index == goat.entity_index)
+                .unwrap()
+                .active
+            {
                 reclaimed = true;
                 break;
             }
         }
-        assert!(reclaimed, "actual source damage must reach following-pass Goat reclaim");
+        assert!(
+            reclaimed,
+            "actual source damage must reach following-pass Goat reclaim"
+        );
         let rows = session.canonical_terrain().voxel_deaths().unwrap().rows();
-        let matching = rows.iter().filter(|row| row.slot == goat.entity_index
-            && row.slot_generation == generation && row.source_id == goat.source_id).count();
-        assert_eq!(matching, 1, "one death for the native actor incarnation through reclaim");
+        let matching = rows
+            .iter()
+            .filter(|row| {
+                row.slot == goat.entity_index
+                    && row.slot_generation == generation
+                    && row.source_id == goat.source_id
+            })
+            .count();
+        assert_eq!(
+            matching, 1,
+            "one death for the native actor incarnation through reclaim"
+        );
     }
 
     #[test]
     fn source_villager_damage_records_once_through_following_pass_reclaim() {
         use crate::voxel_world::{Grid, Point, Volume, VoxelWorld};
         let mut session = super::super::tests::level_two_campaign_session();
-        let grid = Grid { origin: Point { x: -100_000, y: -100_000, z: 0 }, cell_size: 8, dimensions: [1, 1, 1] };
+        let grid = Grid {
+            origin: Point {
+                x: -100_000,
+                y: -100_000,
+                z: 0,
+            },
+            cell_size: 8,
+            dimensions: [1, 1, 1],
+        };
         let world = VoxelWorld::new(11, vec![Volume::terrain(grid, vec![1]).unwrap()]).unwrap();
-        session.session.state.terrain_mut().install_voxel_world(world).unwrap();
-        let villager = session.ordinary().villagers().iter().find(|row| row.active && row.action == 105).unwrap().clone();
+        session
+            .session
+            .state
+            .terrain_mut()
+            .install_voxel_world(world)
+            .unwrap();
+        let villager = session
+            .ordinary()
+            .villagers()
+            .iter()
+            .find(|row| row.active && row.action == 105)
+            .unwrap()
+            .clone();
         let generation = session.economy().slot_generation(villager.entity_index);
         let attacker = session.shared_spells().players()[0].entity_index;
-        session.ordinary_mut().inject_villager_damage(villager.entity_index, villager.life + 1, attacker as i16).unwrap();
+        session
+            .ordinary_mut()
+            .inject_villager_damage(villager.entity_index, villager.life + 1, attacker as i16)
+            .unwrap();
         let mut reclaimed = false;
         for pass in 0..120_u8 {
             session.step_level2_source_pass(pass);
-            if !session.ordinary().villagers().iter().any(|row| row.entity_index == villager.entity_index && row.active) {
+            if !session
+                .ordinary()
+                .villagers()
+                .iter()
+                .any(|row| row.entity_index == villager.entity_index && row.active)
+            {
                 reclaimed = true;
                 break;
             }
         }
-        assert!(reclaimed, "actual source damage must reach Villager reclaim");
+        assert!(
+            reclaimed,
+            "actual source damage must reach Villager reclaim"
+        );
         let rows = session.canonical_terrain().voxel_deaths().unwrap().rows();
-        assert_eq!(rows.iter().filter(|row| row.slot == villager.entity_index &&
-            row.slot_generation == generation && row.source_id == villager.source_id).count(), 1);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.slot == villager.entity_index
+                    && row.slot_generation == generation
+                    && row.source_id == villager.source_id)
+                .count(),
+            1
+        );
     }
 }

@@ -28,6 +28,24 @@ typedef struct McCampaignCharacterStateV1 {
 int32_t mc_native_campaign_character_states_copy(uint64_t handle,
     uint64_t generation, uint64_t tick, McCampaignCharacterStateV1 *buffer,
     uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+/* 96-byte V2: V1 families plus Firefly and real linked Worm parts. The prefix
+ * struct_size is 96. render_height is the particle-table projected height,
+ * in original source units (64 per world unit). source_half_width is the
+ * Worm collision-array extent, NOT a visual mesh width; zero for other
+ * families. Raw pitch/roll may be steering fields, not physical Euler angles.
+ * Worm head parameter 88; parts 89..104. A part's
+ * has_parent is false after its original head disappears. No synthetic motion
+ * or gameplay time is produced. lifecycle_flags bit0 identifies a living
+ * model13 action108 house entry; all other bits are zero. */
+typedef struct McCampaignCharacterStateV2 {
+    McCampaignCharacterStateV1 base;
+    int16_t roll;
+    uint16_t source_half_width, render_height, previous_index, next_index, part_index;
+    uint32_t lifecycle_flags;
+} McCampaignCharacterStateV2;
+int32_t mc_native_campaign_character_states_copy_v2(uint64_t handle,
+    uint64_t generation, uint64_t tick, McCampaignCharacterStateV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
 /* Retained once-per-incarnation deaths. Row generation is the stable voxel
  * world epoch; the request generation is the current outer session identity.
  * Cursor zero starts at the oldest retained row; an expired nonzero cursor

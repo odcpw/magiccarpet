@@ -248,7 +248,8 @@ impl GoatFamily {
         self.goats[index].action = 9;
     }
 
-    /// sub_12780/sub_12500 run against frozen lists before proximity and AI.
+    /// Run the goat portion of sub_12500 against frozen lists before AI.
+    /// The scheduler performs the shared sub_12780 update once for all models.
     pub(crate) fn prepare_runtime_pass(
         &mut self,
         arena: &mut SourceArena,
@@ -266,41 +267,6 @@ impl GoatFamily {
                 .into_boxed_slice(),
         );
         self.refresh_views(arena);
-        let active_stage_variable_count = usize::from(runtime.active_stage_variable_count());
-        for index in 1..=active_stage_variable_count {
-            let stage = runtime.stage_variables[index];
-            if stage.kind == 7 && stage.flags as u8 & 0x18 != 0 {
-                runtime.stage_variables[index].flags &= if stage.flags as u8 & 0x10 != 0 {
-                    !0x10
-                } else {
-                    !0x08
-                };
-                runtime.bytes[392 + index * 12 + 1] = runtime.stage_variables[index].flags as u8;
-            }
-            if !matches!(stage.kind, 3 | 4 | 5 | 8 | 9) {
-                continue;
-            }
-            let invalid = if stage.flags as u8 & 2 != 0 {
-                match stage.relation {
-                    RuntimeRelation::AxisScalar(model) => {
-                        model_slots.get(model as usize).is_none_or(Vec::is_empty)
-                    }
-                    _ => false,
-                }
-            } else {
-                match stage.relation {
-                    RuntimeRelation::LiveEntity(slot) | RuntimeRelation::LiveEntityIndex(slot) => {
-                        self.source_entity_view(slot)
-                            .is_some_and(|actor| actor.life < 0 || actor.control_flags & 0x400 != 0)
-                    }
-                    _ => false,
-                }
-            };
-            if invalid {
-                runtime.stage_variables[index].flags |= 4;
-                runtime.bytes[392 + index * 12 + 1] = runtime.stage_variables[index].flags as u8;
-            }
-        }
         for index in 0..self.goats.len() {
             if !self.goats[index].active
                 || !model_slots[1].contains(&self.goats[index].entity_index)

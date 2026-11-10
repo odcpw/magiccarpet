@@ -1,4 +1,57 @@
 #[test]
+fn level_one_group7_switch_releases_all_villagers_once_without_touching_unmatched_group() {
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+
+    let package = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level1"),
+        PathBuf::from,
+    );
+    let campaign = CampaignSession::open(package, CampaignSelection::LEVEL1)
+        .expect("real Level 1 package");
+    let mut session = campaign.simulation().clone();
+    session.activate_authored_group_prerequisite_for_test(1)
+        .expect("real group 1 materializes switch 104");
+    let switch = *session.economy().authored_switch_producers().iter()
+        .find(|row| row.authored_index == 104 && row.active)
+        .expect("real group-7 switch");
+    assert_eq!((switch.model, switch.stage_tag), (0, 7));
+    let assert_waiting = |session: &Mc2Simulation| {
+        let villagers = session.ordinary().villagers();
+        assert_eq!(villagers.len(), 28);
+        assert!(villagers.iter().all(|row| (row.action, row.stage_var_1, row.stage_var_2) == (111, 2, 7)));
+    };
+    assert_waiting(&session);
+    let mut outside = session.clone();
+    outside.activate_authored_group_prerequisite_for_test(255)
+        .expect("empty nonmatching group broadcast");
+    for _ in 0..12 {
+        outside.step_outer_turn(PlayerCommand::default(), 0);
+    }
+    assert_waiting(&outside);
+    assert_eq!(outside.runtime().stage_variables[2].flags as u8 & 0x18, 0);
+    assert!(outside.economy().authored_switch_producers().iter()
+        .any(|row| row.authored_index == 104 && row.active));
+
+    // Test-only placement reaches the genuine authored producer. Public
+    // flight evidence is captured separately; this does not claim gameplay.
+    let player = session.state.entity_index;
+    session.set_level2_entity_position(player, switch.position).unwrap();
+    let mut broadcast = false;
+    for _ in 0..12 {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        broadcast |= session.runtime().stage_variables[2].flags as u8 & 0x18 != 0;
+        if session.ordinary().villagers().iter().all(|row| (row.stage_var_1, row.stage_var_2) == (7, 1)) {
+            break;
+        }
+    }
+    assert!(broadcast, "real group-7 switch must publish its pulse");
+    assert!(session.ordinary().villagers().iter().all(|row| (row.action, row.stage_var_1, row.stage_var_2) == (111, 7, 1)),
+        "the shared pulse must reach every live villager: {:?}",
+        session.ordinary().villagers().iter().map(|row| (row.entity_index, row.action, row.stage_var_1, row.stage_var_2)).collect::<Vec<_>>());
+}
+
+#[test]
 fn level_one_group_schedules_unbound_fireflies_after_stagevar_count_clears() {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
 
