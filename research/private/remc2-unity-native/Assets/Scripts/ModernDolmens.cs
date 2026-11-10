@@ -45,12 +45,12 @@ namespace MagicCarpet.Native
         internal bool Replaces(ushort slot) => rows.ContainsKey(slot);
 
         internal void Observe(ulong currentGeneration, ulong currentTick,
-            NativeSim.CampaignEntitySnapshot[] entities, NativeSim.CampaignEntityPresentation[] presentations)
+            IReadOnlyDictionary<ushort, NativeSim.CampaignEntitySnapshot> entityBySlot,
+            NativeSim.CampaignEntityPresentation[] presentations)
         {
             if (generation != currentGeneration || currentTick < tick) Clear();
             generation = currentGeneration;
             tick = currentTick;
-            var entityBySlot = entities.ToDictionary(entity => entity.entityIndex);
             rows.Clear();
             foreach (var view in presentations)
             {
