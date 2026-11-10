@@ -97,9 +97,20 @@ polish04's shared 48-bone/fixed-weight Walk, which Root reviewed at large front/
 side worst-contact frames. Actual 120 Hz playback has zero nonneighbor cloth
 self-crossings or shoe pairs; small covered-thigh/fingertip residuals remain
 (worst sampled trouser vertex ~0.34 mm inward, not an exact depth bound).
-Root accepts this as the Walk basis, stops intersection-count polishing and
-continues the same rest mesh/weights through the other actions. Run/Idle/Hit/Death garment behavior, final Blender
-and Unity frames, Voxel and gameplay/install still remain open.
+Root accepts this as the Walk basis and stops intersection-count polishing.
+Its complete 18-component joined export now passes five actual Unity poses
+within 0.1 mm in both directions (252 deform bones; 29,405 split vertices).
+Small skin weights must be configured during model preprocessing; a post-import
+setter did not preserve them. This remains a partial Walk conformance check.
+TopazReef's upper-only game preparation is committed in `7bbbd645`; Root reviewed
+the collar correction and large moving upper frames. Root's actual Level1
+calibration measured six residents over 300 unmodified coast ticks: ordinary
+source speed18/action111 yields median 8.30627 world units/s, so Run is the
+principal live gait at the measured costume scale. Walk-only cloth weights lose
+visible folds/contact in Run; AmberCave is testing one jointly trained weight
+set and source-rate transform keys. Keep accepted Walk immutable for comparison.
+Run/Idle/Hit/Death garment behavior, final Unity frames, Voxel and gameplay/install
+still remain open.
 Oracle GPT-6 Pro source review is retained under generated/villager-robe-oracle-20261109/;
 Root verified the unusual rig layout (Spine02 is lower, Spine is upper), and
 TopazReef corrected garment weights, the collar discontinuity, a 36 mm imported

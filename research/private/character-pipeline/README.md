@@ -67,6 +67,16 @@ covered-thigh/fingertip contacts remain (worst sampled trouser vertex about
 Blender bone-playback results, not final dressed Unity or gameplay approval.
 Run, Idle, Hit and Death on the same rest mesh/weights are still open.
 
+The complete 18-component Walk also reaches Unity: one joined skin, 252 deform
+bones and 29,405 split vertices, with no unmatched surface points within 0.1 mm
+at five sampled poses. The join now retains rig handles before Blender deletes
+the absorbed mesh objects. Evidence is under
+`../generated/villager-lower-cloth-20261110/walk-player48-polish04/`.
+Unity's small-weight threshold must be applied in model preprocessing, using
+the clip manifest's positive `minBoneWeight` override (1e-7 for this fitted skin).
+The final five-action dressed asset is still unqualified; retain the accepted
+Walk while fitting a shared set of garment weights for the faster Run.
+
 `character_textures.py --output FRESH_DIRECTORY --mesh NAME` (repeat `--mesh`)
 encodes untextured Principled base color, roughness and metallic into the
 existing importer format. Albedo is sRGB; linear ORM stores AO=1, roughness,

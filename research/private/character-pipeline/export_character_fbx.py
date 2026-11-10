@@ -272,13 +272,16 @@ def main():
         objects = [obj for obj in bpy.context.scene.objects if obj.type in {'ARMATURE', 'MESH', 'CURVE', 'EMPTY'}]
     if args.join_skins:
         skins = [obj for obj in objects if obj.type == 'MESH']
+        armatures = [obj for obj in objects if obj.type == 'ARMATURE']
         bpy.ops.object.select_all(action='DESELECT')
         for obj in skins:
             obj.select_set(True)
         bpy.context.view_layer.objects.active = skins[0]
         if len(skins) > 1:
             bpy.ops.object.join()
-        objects = [obj for obj in objects if obj.type == 'ARMATURE'] + [bpy.context.object]
+        # join invalidates every absorbed mesh's RNA handle. Retain rig handles
+        # before joining, rather than inspecting removed objects afterwards.
+        objects = armatures + [bpy.context.object]
     bpy.ops.object.select_all(action='DESELECT')
     for obj in objects:
         obj.select_set(True)
