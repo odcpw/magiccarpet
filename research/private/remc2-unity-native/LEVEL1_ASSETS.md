@@ -13,9 +13,9 @@ animation and presentation integration, not another mission implementation.
 | Bow archer, bow, string and arrow | Approved master and eight actions; Modern and voxel character skin | Retain real native release, aim and child lifetime |
 | Villagers, all four appearances | All 28 reset residents: brown robe/cap, olive pilot, striped robe, vessel carrier; five actions, Modern and 64/96 voxel skins | Installed; retain native travel/reaction/death/reset/load and bounded breakup admission |
 | Builder | Source-inspired vest/trousers/cap/beard, five actions and64/96Voxel skins; real Level1 house birth, construction, living entry and death | Qualified source7f554577; retain native identity, positive-life consumption and exactly-once breakup |
-| Trader | Source-inspired short vest, patched trousers and goods pack; five actions, Modern and64/96Voxel bindings; real directLevel7 movement/entry | Full Level1 house production and live combat/death/reset-save-load verification remain open in mc-oi5 |
-| Firefly | Original-inspired olive/bronze body, violet eyes, warm wings and amber underside; actual Unity25-pose import, Modern/Voxel bindings | Real Level1 public-input combat captured in both styles; corrected coloured Voxel skins, short removal fade, reset/load/performance/installation pending in mc-eb8 |
-| Worm | Source-inspired red lens/curved jaws and repeating segment master; actual Unity25+2-pose imports, independent native multipart placement | Natural Level1 group4 birth and121ticks of all16linked bodies verified; actual rendered combat/death and installation pending in mc-7uj |
+| Trader | Source-inspired short vest, patched trousers and goods pack; five actions, Modern and64/96Voxel bindings; genuine Level1 demolition birth, public combat and positive-life entry | Candidate Modern/Voxel combat, living-entry and F5/R/coldload checks pass; latest installed launchers and performance remain open in mc-oi5 |
+| Firefly | Original-inspired olive/bronze body, violet eyes, warm wings and amber underside; actual Unity25-pose import, coloured Modern/Voxel bindings | Real Level1 combat and F5/R/coldload pass both styles; Modern fade0.167s; clearer breakup camera/media and installation pending in mc-eb8 |
+| Worm | Source-inspired red lens/curved jaws and repeating segment master; corrected baked size/culling, actual Unity25+2-pose imports, independent native multipart placement | Natural group4 birth, all16linked bodies, actual combat, one8192-cell breakup and both-style F5/R/coldload verified; clearer breakup media, performance and installation remain open in mc-7uj |
 | Terrain, water, shore, sky/clouds, wind and moonlight | Existing shared Modern environment | Whole-map voxel coverage, streaming and real gameplay checks |
 | Decorative vegetation and rocks | Existing grass/fern/shrub/tree/rock resources and LODs | Decorative instances do not replace source-owned scenery |
 | Buildings | Installed:32 opening buildings/four profiles. Current candidate:all41 architectural buildings/eight profiles, imported in Unity | Candidate gameplay/installation, dynamic construction/damage and Castle stages remain open |
@@ -36,7 +36,19 @@ state hashes; old saves/hashes are preserved and not edited or relaxed.
 Trader172/gen27 is now proven to originate from House10 demolition at tick8018.
 Its public lethal branch reaches life−1/action116 at8648 and one death record;
 its neutral branch enters House14 with life999 and no death. Both have cold
-native verification; Modern/Voxel capture/reset/load/installation remain open.
+native verification. Actual candidate Modern/Voxel lethal/entry and F5/R/coldload
+checks pass; matching installed launchers and final performance remain open.
+
+Source49895483 culls only equal-weight coincident interior faces in the three
+new64-cell creature skins. All source cells and four exact posed fragment
+goldens remain unchanged;140focused tests pass. Same-runtime/native private
+3090KWin/Vulkan1280x960 no-readback Voxel combat improves29.25/34.22 to
+36.26/39.95FPS, with~44m→~22m triangles and~8.5→~5.3ms medianGPUtime.
+Physics tails and~19native ticks/s remain unacceptable; these candidates are
+not installed and the level is not performance-qualified. One contaminated
+candidate Modern sample is excluded. Current evidence lives under generated/
+level1-assets-20261110, including creature-surface-comparison.json. A review
+camera lens reset at native removal still needs checked corrected media.
 
 Current normal launchers select generated/settlement-people-20261110/player-reader
 (presentation7f554577, nativead803e03 from65724d7b). The previous player is
@@ -58,7 +70,7 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 | Traders, remaining runtime qualification | Conditional house production, model14; all47 opening houses have2 occupants | Art/bindings ready; obtain genuine Level1 production and public combat/death/voxel-lifetime evidence without state injection |
 | Worm | Four authored heads, groups 4/34; each can allocate up to 16 segments | Head/repeating segments, native multipart placement, movement/attack/reaction/death and voxel breakup |
 | Firefly | Six authored, groups 6/33 | Original silhouette, wing/body animation, flight/turn/attack/reaction/death and attack effects |
-| Collector balloon | Spawned by player Castle, class 3/model 3 | Balloon, collection/carry/deposit states, ownership/material feedback and native flight |
+| Collector balloon | Spawned by player Castle, class 3/model 3 | mc-chx: candidate02 editable model/export ready; actual native2f birth/flight, four500-mana collections and2000 deposit proven; readonly generation/life/mana/target/player-color consumer, Unity import, controls and installation remain open |
 | Castle auxiliary/defender | Produced at higher Castle stages, class 5/model 15 | Inspect original appearance; distinct from balloon and invisible shooting controller; match admitted native states |
 
 Reset villager appearances are TMAP 155 ×3, 180 ×6, 183 ×9 and 199 ×10;

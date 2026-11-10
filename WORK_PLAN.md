@@ -42,17 +42,49 @@ indices, not the scheduler's advancing cadence byte; all16parts pass121real
 native observations after natural birth. These are native/source results,
 not installed-asset or full-mission completion claims.
 
-Firefly and Worm art/imports pass actual Unity surface/axis checks. The
-current integrated character suites pass146 cases without skips. Inspected
-Firefly Modern/Voxel combat captures pass270frames; camera follow now retains
-one incarnation across numeric slot reuse. Inspection exposed grey new Voxel
-skins from headless GPU texture readback; the CPU albedo repair preserves all
-24skins' render geometry/weights, and retains accepted Goat/Archer palettes.
-Its coloured derivatives, Firefly's short source-removal fade, native2f
-captures, Trader/Worm combat/reset/load, performance and installation are
-still being qualified. All asset beads retain unfinished acceptance; Castle,
-collector/auxiliary, scenery, pickups/effects/HUD and whole-mapVoxel remain
-open in the existing inventory. Keep the current installed players intact.
+Firefly and Worm art/imports pass actual Unity surface/axis checks. Correcting
+the imported Worm's swapped height/depth bounds restores the intended native
+visual height; actual baked Idle geometry determines nominal size and sampled
+clip unions determine conservative culling. The integrated character suites
+passed159 cases without skips. CPU albedo sampling repairs grey new Voxel
+skins while preserving all24skins' geometry/weights and accepted Goat/Archer
+palettes. Actual native2f combat confirms Trader's one lethal breakup and
+positive-life house entry without death; its actual F5/R/coldloads pass both
+styles. Firefly's two270frame combat captures and F5/R/coldloads pass; its
+Modern post-removal fade lasts0.167s. Worm's real full-family kill emits one
+8192-cell breakup. Both Worm styles pass actual F5/R/coldload, with all17native
+lifetimes/links checked separately from the head-only frame receipt.
+These are candidate-client checks, not
+installed delivery. Original explosion sprites still obscure some breakup
+frames; a review-camera projection reset also widens the Voxel death view.
+The camera correction is being qualified before new checked media.
+
+Rendering source49895483 removes only coincident equal-weight interior faces
+from Firefly64/WormHead64/WormSegment64, retaining all source cells and exact
+posed breakup goldens. Three new cases reject the old unculled skins;140
+focused cases pass after culling, with no skips. Matched private3090KWin Vulkan
+1280x960 no-readback Voxel combat runs improve29.25/34.22→36.26/39.95FPS;
+GPU median falls~8.5→~5.3ms and submitted triangles~44m→~22m. This is not
+smooth yet: native throughput remains~19ticks/s and frame p95~85–90ms.
+Repeated tiny high-speed impact-body physics is the remaining blocker, not
+the bounded Worm snapshot. A current controlled captured-terrain comparison
+reproduces speculative CCD being~5xslower; do not adopt it. Sphere shapes
+give only a small free-flight gain without any contacts, so are not adopted
+from that evidence. Oracle is cross-examining the code/measurements. One
+candidate Modern sample overlapped an unexpected stopped background index and
+is explicitly excluded. UBS is partial owing to taint-work budgets; doctor
+passes and changed hunks/actual tests are checked. Keep installed players.
+
+Independent collector asset mc-chx now has inspected eight Day/Night owner
+variants, editable candidate02 and Unity-format export. Unchanged earned
+native2f inputs produce Castle115 at1739 and collector372 at1761, collect four
+500-mana spheres and deposit2000 at2745. Full slot generation/life/mana/target
+and player-color observation still needs the shared readonly Castle-child
+consumer, followed by actual Unity import/gameplay/reset/load/installation.
+Generic owner_color is a palette index and is not a safe cloth tint. Root
+owns this join after the separate Original owner's frozen Rust/header window.
+Trader/Firefly/Worm/collector beads retain unfinished acceptance. Castle,
+auxiliary, scenery, pickups/effects/HUD and whole-mapVoxel remain open.
 
 ### Active Builder/Trader delivery — 2026-11-10
 
