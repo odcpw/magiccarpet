@@ -782,7 +782,27 @@ instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Current installed Original checkpoint is Rust `16be76a3`, client `2961a7a7`,
+Original now runs the secret continuation fix from shared main `c1f06874`
+and compatible isolated build `5127083c`, with native `552d43962253`.
+The immediate secret load from an unfinished parent replay retains source bit
+0x10. Its action 12 result 0x1A routes through the active secret return frame,
+including after restore. Direct map revisits use 0x0A. The existing focused
+exit byte, route hash, retained-parent save, actual source4 entry and actual
+source30 banishment checks passed. The save fixture stages entry and now uses
+the current whole Level5 package because the older fixture lacks Castle BUILD1.
+
+Rig and the returned library matched all 662 native inputs and the artifact
+hash. Both installed plugins, 470 Rust inputs, 200 Unity inputs and 142 player
+files matched. The six-package playtest launcher at
+`/mnt/pinokio-shared/magiccarpet-secret-continuation-20261111/play-secret-campaign.sh`
+loaded the Original campaign map and NightSpire with one portal click and zero
+retries. Its new Level5 cache and existing source30 cache passed strict
+environment validation against their exact packages. The earned Level5
+frontier, actual 85% mana victory and the campaign return after a real win still
+need human play. All related unfinished beads stay open. Build and test
+receipts are beside the launcher.
+
+The previous installed Original checkpoint was Rust `16be76a3`, client `2961a7a7`,
 native `6f6bc45b13c88de14645f4b90bdef9e47f8219921ea692de6140806e0c0459ba`.
 Both source commits are pushed. Full Original build `build-v9i5fr_r` is installed;
 Root independently matched 470 Rust, 200 Unity and 142 player files, both plugins,
