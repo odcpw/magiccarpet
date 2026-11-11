@@ -28,6 +28,8 @@ namespace MagicCarpet.Native
         private readonly ModernExitPortal exitPortal;
         private readonly ModernAuthoredTrees trees;
         private readonly ModernCollector collectors;
+        private readonly ModernExperienceScroll scrolls;
+        private readonly ModernCastleSpellJar castleJars;
         private readonly Voxels.VoxelManaSpheres voxelMana;
         private readonly Voxels.VoxelNativeProjectiles voxelProjectiles;
         private readonly Action<NativeSim.CampaignVoxelDeath> applyVoxelDeath;
@@ -68,11 +70,13 @@ namespace MagicCarpet.Native
             root = new GameObject("Live campaign actors").transform;
             root.SetParent(parent, false);
             characters = new ModernCharacterActors(root, terrain);
-            dolmens = new ModernDolmens(root, Voxels.VoxelModernWorld.Requested);
+            dolmens = new ModernDolmens(root, Voxels.VoxelModernWorld.Requested, terrain.SampleHeight);
             stoneStatues = new ModernStoneStatues(root, Voxels.VoxelModernWorld.Requested, cache.EnvironmentMaterials.tmaps.bank);
             exitPortal = new ModernExitPortal(root, Voxels.VoxelModernWorld.Requested);
             trees = new ModernAuthoredTrees(root);
             collectors = new ModernCollector(root);
+            scrolls = new ModernExperienceScroll(root, Voxels.VoxelModernWorld.Requested);
+            castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested);
             if(Voxels.VoxelModernWorld.Requested)
             {
                 voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight);
@@ -101,13 +105,15 @@ namespace MagicCarpet.Native
             exitPortal.Present(presentations);
             trees.Present(session, Voxels.VoxelModernWorld.Requested);
             collectors.Present(session, presentations);
+            scrolls.Present(entitySnapshots, presentations);
+            castleJars.Present(entitySnapshots, presentations);
             if(voxelMana!=null)
                 voxelMana.Present(session.ManaSpheres(),session.EntityPresentations(yaw,worldView:true),session.Generation,session.Tick);
             voxelProjectiles?.Present(session.CharacterStates(),presentations,session.Generation,session.VoxelWorldEpoch);
             foreach (var row in presentations)
             {
                 rows.Add(row.entityIndex, row);
-                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||dolmens.Replaces(row.entityIndex)||stoneStatues.Replaces(row.entityIndex)||exitPortal.Replaces(row.entityIndex)||trees.Replaces(row.entityIndex,row.sourceId)||collectors.Replaces(row.entityIndex,row.sourceId)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
+                if (voxelImpactChildren.Contains(row.entityIndex)||characters.Replaces(row.entityIndex)||dolmens.Replaces(row.entityIndex)||stoneStatues.Replaces(row.entityIndex)||exitPortal.Replaces(row.entityIndex)||trees.Replaces(row.entityIndex,row.sourceId)||collectors.Replaces(row.entityIndex,row.sourceId)||scrolls.Replaces(row.entityIndex)||castleJars.Replaces(row.entityIndex)||voxelMana!=null&&voxelMana.Replaces(row.entityIndex)||voxelProjectiles!=null&&voxelProjectiles.Replaces(row.entityIndex)) continue;
                 if (!assets.TryGetValue(row.selectedTmap, out var texture))
                     throw new InvalidOperationException($"Live entity {row.entityIndex} has absent sprite {row.selectedTmap}");
                 if (!objects.TryGetValue(row.entityIndex, out var node))
@@ -137,7 +143,7 @@ namespace MagicCarpet.Native
                 var height = row.logicalHeight / 64f;
                 node.transform.localScale = new Vector3(height * texture.width / texture.height * (row.mirrored == 0 ? 1 : -1), height, 1);
             }
-            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||dolmens.Replaces(key)||stoneStatues.Replaces(key)||exitPortal.Replaces(key)||rows.TryGetValue(key,out var row)&&(trees.Replaces(key,row.sourceId)||collectors.Replaces(key,row.sourceId))||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
+            foreach (var key in objects.Keys.Where(key => !rows.ContainsKey(key) || voxelImpactChildren.Contains(key)||characters.Replaces(key)||dolmens.Replaces(key)||stoneStatues.Replaces(key)||exitPortal.Replaces(key)||scrolls.Replaces(key)||castleJars.Replaces(key)||rows.TryGetValue(key,out var row)&&(trees.Replaces(key,row.sourceId)||collectors.Replaces(key,row.sourceId))||voxelMana!=null&&voxelMana.Replaces(key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(key)).ToArray())
             {
                 UnityEngine.Object.Destroy(objects[key]);
                 objects.Remove(key);
@@ -171,7 +177,7 @@ namespace MagicCarpet.Native
             var logDiagnostic = ModernCapture.VisualDebug && loggedDebug != ModernCapture.SmokeDebug;
             foreach (var pair in rows)
             {
-                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||dolmens.Replaces(pair.Key)||stoneStatues.Replaces(pair.Key)||exitPortal.Replaces(pair.Key)||trees.Replaces(pair.Key,pair.Value.sourceId)||collectors.Replaces(pair.Key,pair.Value.sourceId)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
+                if (voxelImpactChildren.Contains(pair.Key)||characters.Replaces(pair.Key)||dolmens.Replaces(pair.Key)||stoneStatues.Replaces(pair.Key)||exitPortal.Replaces(pair.Key)||trees.Replaces(pair.Key,pair.Value.sourceId)||collectors.Replaces(pair.Key,pair.Value.sourceId)||scrolls.Replaces(pair.Key)||castleJars.Replaces(pair.Key)||voxelMana!=null&&voxelMana.Replaces(pair.Key)||voxelProjectiles!=null&&voxelProjectiles.Replaces(pair.Key)) continue;
                 var row = pair.Value;
                 var x = position.x + Mathf.Repeat(row.x / 64f - position.x + 512f, 1024f) - 512f;
                 var z = position.z + Mathf.Repeat(row.y / 64f - position.z + 512f, 1024f) - 512f;
@@ -204,6 +210,8 @@ namespace MagicCarpet.Native
             exitPortal.Render(camera, ModernCapture.EntityVisibility != 1);
             trees.Render(camera, ModernCapture.EntityVisibility != 1);
             collectors.Render(camera, ModernCapture.EntityVisibility != 1);
+            scrolls.Render(camera, ModernCapture.EntityVisibility != 1);
+            castleJars.Render(camera, ModernCapture.EntityVisibility != 1);
             voxelMana?.Render(camera,ModernCapture.EntityVisibility!=1);
             voxelProjectiles?.Render(camera,ModernCapture.EntityVisibility!=1);
         }
@@ -285,6 +293,8 @@ namespace MagicCarpet.Native
             exitPortal.Dispose();
             trees.Dispose();
             collectors.Dispose();
+            scrolls.Dispose();
+            castleJars.Dispose();
             UnityEngine.Object.Destroy(root.gameObject);
             UnityEngine.Object.Destroy(quad);
             foreach (var value in materials.Values) UnityEngine.Object.Destroy(value);

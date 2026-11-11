@@ -108,6 +108,19 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     runtime = output / "private-runtime"; runtime.mkdir(mode=0o700)
     env = dict(os.environ)
+    if args.gameplay_command and "MC_SANDBOX_BUILDING_LAYOUT" not in env:
+        layout = json.loads(args.gameplay_command.read_text()).get("owner_building_layout")
+        if layout is not None:
+            if not isinstance(layout, dict) or not isinstance(layout.get("path"), str):
+                raise ValueError("Gameplay building layout requires a file path")
+            layout_path = Path(layout["path"]).resolve()
+            if not layout_path.is_file():
+                raise ValueError("Gameplay building layout is missing: " + str(layout_path))
+            if "sha256" in layout:
+                with layout_path.open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != layout["sha256"]:
+                        raise ValueError("Gameplay building layout hash differs")
+            env["MC_SANDBOX_BUILDING_LAYOUT"] = str(layout_path)
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER", "XAUTHORITY"):
         env.pop(name, None)
     env.update(XDG_RUNTIME_DIR=str(runtime), XDG_CONFIG_HOME=str(runtime / "config"),

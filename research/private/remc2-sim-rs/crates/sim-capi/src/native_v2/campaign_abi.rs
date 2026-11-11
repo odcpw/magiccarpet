@@ -3207,6 +3207,19 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                             rows[slot].active &= u8::from(archer.control_flags & 0x421 == 0);
                         }
                     }
+                    for source in reset.economy().authored_class14().iter().filter(|row| row.active) {
+                        let slot = usize::from(source.source_entity_index);
+                        if slot >= rows.len() || !occupied.insert(source.source_entity_index) {
+                            return Err(AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                format!(
+                                    "campaign live class-14 source slot {} is invalid or duplicated",
+                                    source.source_entity_index
+                                ),
+                            ));
+                        }
+                        rows[slot] = campaign_live_class14_entity_snapshot(source);
+                    }
                     for source in reset.economy().castle_defenders() {
                         let slot = usize::from(source.source_entity_index);
                         if slot >= rows.len() || !occupied.insert(source.source_entity_index) {

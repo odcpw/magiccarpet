@@ -2563,6 +2563,36 @@ pub(super) fn campaign_live_class5_entity_snapshot(
     }
 }
 
+pub(super) fn campaign_live_class14_entity_snapshot(
+    source: &sim_core::native_world::Level2AuthoredClass14Source,
+) -> McCampaignEntitySnapshotV2 {
+    McCampaignEntitySnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+        entity_index: source.source_entity_index,
+        source_id: source.source_entity_index,
+        next_relation: u16::MAX,
+        parameter_relation: u16::MAX,
+        authority: MC_AUTHORITY_CAMPAIGN_LIVE,
+        // A collected scroll remains allocated but hidden until source reclaim.
+        active: u8::from(
+            source.active && source.drawing_enabled && source.control_flags & 0x21 == 0,
+        ),
+        class_id: 14,
+        model: source.model,
+        action: source.action,
+        phase: source.phase,
+        x: source.position.x,
+        y: source.position.y,
+        z: source.position.z,
+        yaw: 0,
+        pitch: 0,
+        fov: 0,
+        actual_speed: 0,
+        reserved: [0; 4],
+    }
+}
+
 pub(super) fn asset_ref(world: &NativeWorld, index: u32) -> AbiResult<&AssetRef> {
     let index = usize::try_from(index)
         .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "asset index does not fit usize"))?;

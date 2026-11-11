@@ -1,4 +1,111 @@
 #[test]
+fn level1_scroll_entity_projection_uses_live_class14_carrier() {
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../generated/settlement-20261105-integration/owner-closed-v6/level1");
+    let package = package.to_string_lossy();
+    let selection = McCampaignSelectionV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSelectionV2>(),
+        external_level: 1,
+        internal_level: 0,
+        map_type: 1,
+        ..Default::default()
+    };
+    let mut handle = 0;
+    assert_eq!(
+        mc_native_campaign_session_open(
+            package.as_ptr(),
+            package.len() as u32,
+            std::ptr::null(),
+            0,
+            &raw const selection,
+            &raw mut handle,
+        ),
+        MC_STATUS_OK
+    );
+    // Exercise only the read-only ABI projection here. The ordinary group-4
+    // producer and scroll collection are verified by the public gameplay run.
+    let scroll = with_campaign_session_mut(handle, |record| {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut record.kind else {
+            unreachable!()
+        };
+        Ok(reset
+            .allocate_level2_authored_class14(21)
+            .expect("Level 1 source scroll constructor must allocate"))
+    })
+    .unwrap();
+    let mut row = McCampaignEntitySnapshotV2::default();
+    let mut written = 0;
+    assert_eq!(
+        mc_native_campaign_entities_copy(
+            handle,
+            u32::from(scroll.source_entity_index),
+            &raw mut row,
+            1,
+            struct_size::<McCampaignEntitySnapshotV2>(),
+            &raw mut written,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!(written, 1);
+    assert_eq!(
+        (
+            row.authority,
+            row.active,
+            row.class_id,
+            row.model,
+            row.action
+        ),
+        (MC_AUTHORITY_CAMPAIGN_LIVE, 1, 14, 5, 10)
+    );
+    assert_eq!(
+        (row.entity_index, row.source_id, row.x, row.y, row.z),
+        (
+            scroll.source_entity_index,
+            scroll.source_entity_index,
+            scroll.position.x,
+            scroll.position.y,
+            scroll.position.z
+        )
+    );
+    assert!(with_campaign_session_mut(handle, |record| {
+        let CampaignSessionKind::Campaign { reset, .. } = &mut record.kind else {
+            unreachable!()
+        };
+        Ok(reset
+            .economy_mut()
+            .deactivate_authored_class14_slot(scroll.source_entity_index))
+    })
+    .unwrap());
+    assert_eq!(
+        mc_native_campaign_entities_copy(
+            handle,
+            u32::from(scroll.source_entity_index),
+            &raw mut row,
+            1,
+            struct_size::<McCampaignEntitySnapshotV2>(),
+            &raw mut written,
+        ),
+        MC_STATUS_OK
+    );
+    assert_eq!((row.class_id, row.model, row.active), (14, 5, 0));
+    assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+    assert_eq!(
+        mc_native_campaign_entities_copy(
+            handle,
+            u32::from(scroll.source_entity_index),
+            &raw mut row,
+            1,
+            struct_size::<McCampaignEntitySnapshotV2>(),
+            &raw mut written,
+        ),
+        MC_STATUS_OK
+    );
+    assert_ne!(row.authority, MC_AUTHORITY_CAMPAIGN_LIVE);
+    assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+}
+
+#[test]
 fn campaign_entity_projection_follows_live_player_and_reset() {
     let handle = open_level2_campaign_handle();
     let live_player = || {
