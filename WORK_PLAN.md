@@ -67,9 +67,10 @@ it through 76 ordinary inputs at t1183; native cold/reset and 4/4 focused Unity
 tests pass. Integrated6 90-frame Modern and Voxel scenery-follow views have
 checked stable lid, body and two handles. A fixed-camera earned Modern capture
 shows the jar through frame74 and absent from frame75 at the native tick1183
-pickup; source sound18 was played by the integrated player. The elevated view
-does not prove precise ground contact; Voxel earned removal, player F5/R and
-installation remain open. Physical sound audibility was not checked.
+pickup; a matching fixed-camera Voxel capture shows the same earned removal.
+Source sound18 was played by the integrated player. The elevated view does
+not prove precise ground contact; player F5/R and installation remain open.
+Physical sound audibility was not checked.
 Experience Scroll has a free editable master, Modern/Voxel import 2/2, and a
 focused live class14 DTO/hide projection test. The current-native earned group4
 cut matches all five live rows; 255 ordinary inputs collect all five with one
