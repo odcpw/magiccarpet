@@ -31,8 +31,43 @@ its real consumer, source lifecycle, checked frames and installed result; do
 not close an art-only handoff or call whole-map Voxel/fullLevel1 complete early.
 Continue through the complete existing inventory and final mission checks.
 
-Current asset integration is through native6e82c62e (release2f441ac4), not yet
-installed. Public Level1 controls now reach Firefly group6, its real lethal
+Private integrated6 contains source-backed Dolmen, Tree, Stone, exit target,
+Collector, Experience Scroll and shared Castle/Speed jar presenters plus final
+native `ed08ffe1`; it is not installed. The pinned integrated5/c58f player remains
+the exact Stone replay/capture pair. The read-only Castle-child ABI passes an earned tick2304
+replay and a focused producer/reset test. The corrected Dolmen passes a checked
+150-frame normal-camera Level1 capture: both feet meet the slope with no visible
+pop; charge and Voxel behavior remain open. The Tree169 teal/cutout trial passes
+focused Unity tests and a checked 150-frame native-gameplay view with fuller,
+cooler crown and stable grounding; Voxel graphics, frame times and installation
+remain open. Stone candidate07 passes five Unity material/lighting checks,
+an exact current-native t10688 replay plus 120 neutral ticks, and a checked
+120-frame Modern night view with a stable source-like silhouette. Its Voxel
+view is running. A Fireball passed through its volume; the original stone lacks
+the direct-hit flag, so that observation is not a demonstrated defect.
+Collector candidate03 passes actual native-gameplay flight; candidate05's
+bright circles read as windows. Candidate06's flatter patches passed a checked
+150-frame night flight without motion defects but still appeared too bright.
+The darker owner-tinted material passes a second 150-frame integrated6 night
+flight with subdued cloth highlights and stable native placement. Voxel form,
+loss/reclaim/reset/load visual qualification and installation remain open.
+The Castle jar passes 2/2 Unity import and public native pickup/reset/cold-load
+checks; checked Modern approach and Voxel orbit frames show its appearance and
+ground contact. Its installed and on-screen pickup-removal checks remain open.
+Speed uses the same source TMAP59 vessel, with a distinct class15/model3
+presentation matcher. Its fresh public route spawns slot49 at t1107 and collects
+it through 76 ordinary inputs at t1183; native cold/reset and 4/4 focused Unity
+tests pass. Actual integrated-player frames and installation remain open.
+Experience Scroll has a free editable master, Modern/Voxel import 2/2, and a
+focused live class14 DTO/hide projection test. The current-native earned group4
+cut matches all five live rows; 255 ordinary inputs collect all five with one
+effect code4 and sound63 each, hidden state and slot reclaim. The focused
+sim-core test passes exact +4 experience per enabled family, sound63, hidden
+same-pass state and following-pass reclaim. Public snapshots expose no raw XP,
+and no tier notice was observed. Actual Modern/Voxel views and installation
+remain open.
+Portal appearance, dynamic effects, whole-map Voxel and gameplay performance
+also remain open. Public Level1 controls reach Firefly group6, its real lethal
 combat, Worm group4 and a genuine House10 demolition-born Trader172/gen27.
 The duplicate shared StageVar prepass is removed; positive-life Villager entry
 is qualified separately from death. The Castle holder's previously stale
@@ -76,13 +111,18 @@ is explicitly excluded. UBS is partial owing to taint-work budgets; doctor
 passes and changed hunks/actual tests are checked. Keep installed players.
 
 Independent collector asset mc-chx now has inspected eight Day/Night owner
-variants, editable candidate02 and Unity-format export. Unchanged earned
+variants, editable candidate06 and Unity-format export. Unchanged earned
 native2f inputs produce Castle115 at1739 and collector372 at1761, collect four
-500-mana spheres and deposit2000 at2745. Full slot generation/life/mana/target
-and player-color observation still needs the shared readonly Castle-child
-consumer, followed by actual Unity import/gameplay/reset/load/installation.
-Generic owner_color is a palette index and is not a safe cloth tint. Root
-owns this join after the separate Original owner's frozen Rust/header window.
+500-mana spheres and deposit2000 at2745. The shared read-only Castle-child
+consumer now reports slot372/gen11, Castle115/gen2, mana2000 and player colour0
+at public tick2304 on native33ce; source8e rebuild retains the same ABI and
+passes the focused native test. Unity import and matching private player build
+pass. Candidate03 and candidate06 in-game Collector flight captures each pass
+150 frames; candidate05's circular detailing read as portholes, and candidate06's
+flat patches were too bright. The darker material passes another checked
+150-frame integrated6 night flight. Voxel/hybrid form,
+loss/reclaim/reset/load visual qualification and installation remain open.
+Generic owner_color is a palette index and is not a safe cloth tint.
 Trader/Firefly/Worm/collector beads retain unfinished acceptance. Castle,
 auxiliary, scenery, pickups/effects/HUD and whole-mapVoxel remain open.
 

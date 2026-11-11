@@ -4,18 +4,25 @@
 colors, not flight frames. Idle is a static binding clip; native position and
 sphere actors carry the actual movement and collection, not invented animation.
 Run: blender -b --threads 8 --python-exit-code 2 --python collector_balloon.py -- --output NEW_DIR
-Run again with --package to export an existing master and surface samples.
+Run --export, then --package on the existing master for checked FBX and textures.
+The final --unity-output package can run under ordinary Python.
 """
 import argparse
 import json
 import math
+import runpy
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
-import bpy
-from mathutils import Vector
+try:
+    import bpy
+    from mathutils import Vector
+except ModuleNotFoundError as error:
+    if error.name not in {'bpy', 'mathutils'}:
+        raise
+    bpy = None
+    Vector = None
 
 
 def material(name, color, metallic=0.0, roughness=0.5):
@@ -40,6 +47,7 @@ def build(output):
         'cloth': material('Owner fabric', (.56, .57, .61), roughness=.78),
         'band': material('Owner band', (.38, .40, .44), roughness=.72),
         'seam': material('Fabric seams', (.20, .20, .22), roughness=.8),
+        'embroider': material('Owner embroidery', (.72, .82, .92), roughness=.58),
         'gold': material('Aged brass', (.55, .30, .035), metallic=.75, roughness=.32),
         'rope': material('Dark suspension rope', (.14, .11, .075), roughness=.9),
         'wood': material('Gondola wood', (.19, .095, .038), roughness=.75),
@@ -92,6 +100,11 @@ def build(output):
     # The source envelope is pavilion-shaped, not a round hot-air balloon:
     # pointed crown, a broad shoulder, band, and a long taper behind the rigging.
     profile=[(.58,.23),(.72,.34),(.96,.51),(1.16,.65),(1.35,.76),(1.43,.79),(1.74,.81),(1.88,.79),(1.94,.75),(2.02,.70),(2.16,.52),(2.30,.30),(2.42,.055)]
+    def envelope_radius(z):
+        for (z0,r0),(z1,r1) in zip(profile,profile[1:]):
+            if z0 <= z <= z1:
+                return r0+(r1-r0)*(z-z0)/(z1-z0)
+        raise ValueError('Embroidery escaped the textile envelope')
     # Source Night palettes keep the crown blue across owners while the
     # lower fabric and band vary; Day tints both. Separate materials preserve
     # that capability without baking lighting into the neutral master.
@@ -107,6 +120,23 @@ def build(output):
         # Short angled inset across the band, matching the striped source rim.
         b=a+.17
         rod('Diagonal band stitch',(.827*math.cos(a),.827*math.sin(a),1.72),(.802*math.cos(b),.802*math.sin(b),1.91),.008,'seam',vertices=6)
+        # The Night source has soft woven highlights on the coloured lower
+        # fabric, not outlined metal windows. Twelve low-relief cloth patches
+        # keep roughly four visible from any ordinary camera angle.
+        center=a+math.pi/12
+        outline=[]
+        for j in range(12):
+            phase=j*math.pi/6
+            theta=center+(.145+.013*math.sin(3*phase+i*.7))*math.cos(phase)
+            z=1.555+(.085+.012*math.cos(4*phase+i*.4))*math.sin(phase)
+            r=envelope_radius(z)+.002
+            outline.append((r*math.cos(theta),r*math.sin(theta),z))
+        r=envelope_radius(1.555)+.002
+        vertices=[(r*math.cos(center),r*math.sin(center),1.555),*outline]
+        faces=[(0,j+1,(j+1)%12+1) for j in range(12)]
+        mesh=bpy.data.meshes.new('Woven cloth highlight');mesh.from_pydata(vertices,[],faces);mesh.update()
+        patch=bpy.data.objects.new('Woven cloth highlight',mesh);scene.collection.objects.link(patch)
+        bind(patch,'Woven cloth highlight','embroider')
     ring('Brass suspension hoop',1.40,.77,.035,'gold')
     ring('Hoop lower wire',1.355,.75,.009,'wood_dark')
     # Alternating brass studs on the visible hoop.
@@ -149,7 +179,7 @@ def build(output):
     scene.frame_set(1)
     bpy.ops.wm.save_as_mainfile(filepath=str(output/'Collector.blend'))
     triangles=sum(len(poly.vertices)-2 for poly in skin.data.polygons)
-    (output/'authoring.json').write_text(json.dumps({'axes':'+Y forward, Z up; origin at basket bottom','source':{'class':3,'model':3,'action':9,'renderIndex':169,'baseTmap':88,'logicalHeight':800,'ownerColorSelectors':list(range(88,96))},'clips':['Idle'], 'triangles':triangles,'materials':list(mats),'ownerTintMaterials':['Owner crown','Owner fabric','Owner band'],'reference':'Private Day/Night TMAP 88..95, each static; source movement and mana are authoritative'},indent=2)+'\n')
+    (output/'authoring.json').write_text(json.dumps({'axes':'+Y forward, Z up; origin at basket bottom','source':{'class':3,'model':3,'action':9,'renderIndex':169,'baseTmap':88,'logicalHeight':800,'ownerColorSelectors':list(range(88,96))},'clips':['Idle'], 'triangles':triangles,'materials':list(mats),'ownerTintMaterials':['Owner crown','Owner fabric','Owner band','Owner embroidery'],'reference':'Private Day/Night TMAP 88..95, each static; source movement and mana are authoritative'},indent=2)+'\n')
     scene.render.engine='CYCLES';scene.cycles.device='CPU';scene.cycles.samples=16
     scene.render.resolution_x=600;scene.render.resolution_y=600;scene.render.resolution_percentage=100
     scene.world.color=(.13,.13,.13)
@@ -162,15 +192,34 @@ def build(output):
     print('COLLECTOR_MASTER_OK',triangles,flush=True)
 
 
+def export(output):
+    target=output/'portable';target.mkdir(exist_ok=False)
+    fbx=target/'Collector.fbx';helper=Path(__file__).resolve().with_name('export_character_fbx.py')
+    original_argv=sys.argv
+    try:
+        sys.argv=[str(helper),'--','--output',str(fbx),'--animations','--bake-rig','CollectorRig',
+                  '--mesh','CollectorSkin','--action','Idle','--join-skins']
+        runpy.run_path(str(helper),run_name='__main__')
+    finally:
+        sys.argv=original_argv
+    print('COLLECTOR_EXPORT_OK',fbx,flush=True)
+
+
 def package(output):
     sys.path.insert(0,str(Path(__file__).resolve().parent))
     from character_textures import export_constants
-    target=output/'portable';target.mkdir(exist_ok=False)
-    fbx=target/'Collector.fbx'; helper=Path(__file__).resolve().with_name('export_character_fbx.py')
-    subprocess.run([bpy.app.binary_path,'-b',str(output/'Collector.blend'),'--threads','8','--python-exit-code','2','--python',str(helper),'--','--output',str(fbx),'--animations','--bake-rig','CollectorRig','--mesh','CollectorSkin','--action','Idle','--join-skins'],check=True,timeout=600)
+    target=output/'portable'
+    fbx=target/'Collector.fbx'
+    export_files=(fbx,fbx.with_suffix('.export.json'),fbx.with_suffix('.samples.bin'))
+    if not all(path.is_file() for path in export_files):
+        raise ValueError('Collector export is incomplete; run --export on a fresh candidate first')
+    # Keep the portable PBR export opaque; the Unity manifest supplies the
+    # owner-coloured night embroidery emission after import.
+    embroidery=bpy.data.materials['Owner embroidery'].node_tree.nodes.get('Principled BSDF')
+    embroidery.inputs['Emission Strength'].default_value=0
     materials=export_constants(target/'textures-pbr',['CollectorSkin'])
     report=json.loads(fbx.with_suffix('.export.json').read_text())
-    manifest={'schema':'mc-collector-clips/v1','fps':report['fps'],'height':2.764,'forward':[0,1,0],'forwardConvention':'Blender source coordinates, Z up','logicalHeight':800,'clips':report['clips'],'materials':materials['materials'],'materialDirectory':'textures-pbr','ownerTintMaterials':['Owner crown','Owner fabric','Owner band'],'sourceToGameSurfaceMaxError':max(p['maxError'] for p in report['surfaceProof']),'fbxReimportSurfaceMaxError':max(p['maxError'] for p in report['reimportSurfaceProof'])}
+    manifest={'schema':'mc-collector-clips/v1','fps':report['fps'],'height':2.764,'forward':[0,1,0],'forwardConvention':'Blender source coordinates, Z up','logicalHeight':800,'clips':report['clips'],'materials':materials['materials'],'materialDirectory':'textures-pbr','ownerTintMaterials':['Owner crown','Owner fabric','Owner band','Owner embroidery'],'sourceToGameSurfaceMaxError':max(p['maxError'] for p in report['surfaceProof']),'fbxReimportSurfaceMaxError':max(p['maxError'] for p in report['reimportSurfaceProof'])}
     (target/'Collector.clips.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('COLLECTOR_PACKAGE_OK',target,flush=True)
 
@@ -188,8 +237,8 @@ def unity_package(output, target):
         raise ValueError('Clip manifests disagree')
     for mat in manifest['materials']:
         mat['opacity']=1.0
-        mat['emissionStrength']=0
-        mat['emissionColor']=[0,0,0,1]
+        mat['emissionStrength']=.08 if mat['name']=='Owner embroidery' else 0
+        mat['emissionColor']=[.46,.67,.84,1] if mat['name']=='Owner embroidery' else [0,0,0,1]
     manifest['minBoneWeight']=1e-7
     manifest.pop('materialDirectory',None)
     (target/'Collector.clips.json').write_text(json.dumps(manifest,indent=2)+'\n')
@@ -199,10 +248,15 @@ def unity_package(output, target):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True)
-    group=parser.add_mutually_exclusive_group();group.add_argument('--package',action='store_true');group.add_argument('--unity-output',type=Path)
-    args=parser.parse_args(sys.argv[sys.argv.index('--')+1:]);out=args.output.resolve()
+    group=parser.add_mutually_exclusive_group();group.add_argument('--export',action='store_true');group.add_argument('--package',action='store_true');group.add_argument('--unity-output',type=Path)
+    arguments = sys.argv[sys.argv.index('--')+1:] if '--' in sys.argv else sys.argv[1:]
+    args=parser.parse_args(arguments);out=args.output.resolve()
     if args.unity_output:
         unity_package(out,args.unity_output.resolve())
+    elif bpy is None:
+        raise RuntimeError('Blender Python is required to build, export or package the master')
+    elif args.export:
+        bpy.ops.wm.open_mainfile(filepath=str(out/'Collector.blend'));export(out)
     elif args.package:
         bpy.ops.wm.open_mainfile(filepath=str(out/'Collector.blend'));package(out)
     else: build(out)

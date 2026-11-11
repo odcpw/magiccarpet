@@ -137,14 +137,16 @@ namespace MagicCarpet.Native
                     else if (name.Contains("owner band")) { tint = band; roles |= 2; }
                     else if (name.Contains("owner fabric")) { tint = cloth; roles |= 4; }
                     else if (name.Contains("fabric seams")) { tint = cloth * .55f; roles |= 8; }
+                    else if (name.Contains("owner embroidery")) { tint = cloth * .72f; roles |= 16; }
                     else continue;
                     renderer.GetPropertyBlock(block, index);
                     block.SetColor("_BaseColor", tint);
+                    if (name.Contains("owner embroidery")) block.SetColor("_EmissionColor", cloth * .08f);
                     renderer.SetPropertyBlock(block, index);
                     block.Clear();
                 }
             }
-            if (roles != 15)
+            if (roles != 31)
                 throw new InvalidOperationException($"Collector material roles missing: {roles}");
         }
 
