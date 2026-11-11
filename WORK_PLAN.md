@@ -846,10 +846,22 @@ OOM remediation on2026-11-11: RAM-backed `/tmp` held about28GiB while swap was
 full. The current Cargo cache has been moved byte-for-byte to SSD at
 `/home/oliver/Projects/mc2-tmp26/cargo-cache-20261111`; all3255 regular files
 (8,734,415,133bytes) and symlinks match, and the old target alias resolves there.
-Available memory rose from~6GiB to~15GiB. No source, save or installed player was
-removed. Receipt: `/home/oliver/Projects/mc2-tmp26/cargo-cache-relocation-20261111.json`.
-Heavy jobs are paused; inspect real RAM/swap pressure before resuming, and keep
-future large build/test outputs off tmpfs. Disk headroom alone is insufficient.
+Further accounting found17GiB of Unity player copies in `/dev/shm`. Source,
+saves and installed launchers were checked and preserved. Root removed the
+inactive8.6GiB `/tmp/magiccarpet-level1-intermediate-builds-20261110` and21
+inactive November3 player copies totaling4.3GiB; no archive was created.
+Available memory rose from~6GiB to~27GiB, swap use fell from16GiB to~8GiB and
+current memory-pressure stalls returned to zero. The diagnostic test peaked
+near200MiB and timed out at180s without an acceptance result; no reward/save
+failure or memory leak is established by that interruption. A temporary
+per-job cap was diagnostic protection, not the operating memory budget.
+DCG blocked both deletion and recoverable relocation of11 obsolete `/dev/shm`
+player copies totaling13GiB; those remain untouched, alongside the latest
+candidates and pinned Stone review. Root did not bypass the guard. Receipts:
+`/home/oliver/Projects/mc2-tmp26/cargo-cache-relocation-20261111.json`,
+`old-tmp-players-cleanup-20261111.json` and `shm-player-cleanup-20261111.json`.
+Use actual measured RAM/swap/output headroom when resuming; large build/test
+outputs belong on disk, not `/tmp`, `/dev/shm` or `/run/user/1000`.
 
 Oliver subsequently authorized deleting obsolete temporary build/test outputs
 instead of archiving them. Root removed19 inactive Nov3/4 output directories

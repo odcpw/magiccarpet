@@ -157,8 +157,9 @@ path, without an unrelated Rust build.
 
 Preserve the workspace's documented compiler stability settings and lockfile.
 Keep target caches; do not clean or change profiles/flags to force a rebuild.
-On `3090`, `/tmp` is RAM-backed tmpfs. Keep large Cargo caches, player copies
-and proof outputs on disk, not `/tmp`. The current warm Cargo target resolves
+On `3090`, `/tmp`, `/dev/shm` and `/run/user/1000` are RAM-backed tmpfs. Keep
+large Cargo caches, player copies and proof outputs on disk, not those mounts.
+The current warm Cargo target resolves
 to `/home/oliver/Projects/mc2-tmp26/cargo-cache-20261111` on SSD. Before heavy
 work inspect available RAM, swap and memory pressure as well as disk headroom;
 pause local heavy jobs under pressure. Free tmpfs space is not free disk.
