@@ -7506,7 +7506,11 @@ impl Level2EconomyState {
                     // sub_4ABA0's class-3/model-3 constructor selects the
                     // balloon particle before sub_5FF50 applies owner color.
                     visual_index: crate::level1_mission::MANA_CARRIER_RENDER_INDEX,
-                    control_flags: 0,
+                    // NewEvent_4A050 starts with collision bit 8, and
+                    // AddEventToMap_57D70 sets linked-map bit 4. Enemy-owned
+                    // projectiles can only hit this collector when bit 8
+                    // survives the class-3/model-3 constructor.
+                    control_flags: 0xC,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
                     source_byte_43: 0,

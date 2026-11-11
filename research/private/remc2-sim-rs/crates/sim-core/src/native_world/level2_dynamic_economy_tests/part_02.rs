@@ -4197,6 +4197,76 @@ fn level_two_reset_projects_static_model39_rows_into_sub5f810_selector() {
 }
 
 #[test]
+fn level_two_castle_collector_birth_enters_projectile_collision_frame() {
+    use crate::native_world::{creatures::archer::ArcherChildRequest, source_target};
+
+    let inspection = NativeWorld::inspect_level2(level_two_fixture_path()).unwrap();
+    let mut session = inspection.level2_reset_session().unwrap();
+    let castle_slot = session
+        .economy_mut()
+        .build_castle(Position::default(), 111)
+        .unwrap();
+    session.economy_mut().castle.as_mut().unwrap().level = 1;
+    session.economy_mut().maintain_castle_defenders(castle_slot);
+    let collector_slot = session.economy().castle().unwrap().defender_slots[0];
+    let position = session
+        .economy()
+        .castle_children()
+        .iter()
+        .find(|child| child.source_entity_index == collector_slot)
+        .unwrap()
+        .position;
+    let packet = session
+        .economy_mut()
+        .allocate_castle_auxiliary_projectile_packet(ArcherChildRequest {
+            parent_entity_index: castle_slot,
+            parent_entity_id: 222,
+            parent_word_0x96: collector_slot,
+            parent_roll: 0,
+            parent_position: position,
+            parent_fov: 0,
+            target_entity_index: collector_slot,
+            target_class: 3,
+            target_model: 3,
+            target_position: position,
+        })
+        .unwrap();
+    let context = source_target::Context {
+        particles: Some(&inspection.presentation().particles),
+        map_type: Some(MapType::Day),
+        ..Default::default()
+    };
+    let admitted =
+        source_target::arrow_collision_frame(&session.economy, packet.source_entity_index, context)
+            .unwrap();
+    assert!(
+        admitted
+            .targets
+            .iter()
+            .any(|row| row.target.source_slot == collector_slot)
+    );
+
+    // The old constructor omitted this source bit and silently removed the
+    // otherwise linked live collector from the real projectile consumer.
+    session
+        .economy_mut()
+        .castle_children
+        .iter_mut()
+        .find(|child| child.source_entity_index == collector_slot)
+        .unwrap()
+        .control_flags &= !8;
+    let excluded =
+        source_target::arrow_collision_frame(&session.economy, packet.source_entity_index, context)
+            .unwrap();
+    assert!(
+        !excluded
+            .targets
+            .iter()
+            .any(|row| row.target.source_slot == collector_slot)
+    );
+}
+
+#[test]
 fn level_two_castle_defender_arbitration_tracks_nearest_sphere_and_aggregate() {
     let inspection =
         NativeWorld::inspect_level2(level_two_fixture_path()).expect("qualified Level 2 package");
