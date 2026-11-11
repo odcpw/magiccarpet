@@ -115,11 +115,11 @@ def loose_sheet(name, side, x0, x1, mat):
             for col in range(columns + 1):
                 u = col / columns
                 x = x0 + (x1 - x0) * u
-                z = .63 - .22 * t + .006 * t * math.sin(u * math.tau * 1.5)
-                # A shallow curve preserves a paper edge while avoiding a
-                # stair-stepped diagonal whose alternating faces dominate the
-                # voxel surface under grazing moonlight.
-                y = side * (.46 + .015 * math.sin(t * math.pi / 2) + thickness)
+                # A broad overwrap follows the roll from its upper face to
+                # the lifted front edge. It is sheet-like from a side view
+                # while staying within the source's low, horizontal shape.
+                z = .86 - .52 * t + .006 * t * math.sin(u * math.tau * 1.5)
+                y = side * (.25 + .24 * math.sin(t * math.pi / 2) + thickness)
                 vertices.append((x, y, z))
     row_stride = columns + 1
     layer_stride = (rows + 1) * row_stride

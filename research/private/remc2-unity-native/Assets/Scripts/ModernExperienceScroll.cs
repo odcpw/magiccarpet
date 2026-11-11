@@ -13,7 +13,7 @@ namespace MagicCarpet.Native
         private readonly GameObject model;
         private readonly bool voxel;
         private readonly Material parchment, overlay, lip, binding, edge;
-        internal const float FacingOffsetDegrees = 25f;
+        internal const float FacingOffsetDegrees = 38f;
         private readonly Dictionary<ushort, Instance> instances = new();
         private readonly HashSet<ushort> current = new();
         private readonly List<ushort> removed = new();
