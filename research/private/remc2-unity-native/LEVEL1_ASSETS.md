@@ -107,7 +107,7 @@ A newly observed natural producer must extend this inventory.
 | House/building library | 47 initial and 34 deferred constructor records | Complete source geometry/material variants, construction/damage/destruction and night windows |
 | Player Castle | Dynamic construction | Source stage silhouettes, growth/construction/removal, owner markings and effects |
 | Authored trees | 18, group 1 | Source-backed teal canopy passes 150-frame live view; fireball live→burning→bare native sequence proven; Voxel graphics, performance and installation remain open |
-| Authored stone | One, group 6 | Candidate07 passes five Unity import/material checks, exact earned current-native replay and checked 120-frame Modern night view; Voxel view and installation remain open. Ordinary Fireballs do not directly collide with unchanged stone in source. |
+| Authored stone | One, group 6 | Candidate07 passes five Unity import/material checks, exact earned current-native replay and checked 120-frame Modern night view. Its first Voxel capture used the wrong camera and showed a building; corrected view and installation remain open. Ordinary Fireballs do not directly collide with unchanged stone in source. |
 | Dolmens | Three at reset | Source-grounded revised model passes 150-frame normal-camera hillside view; charge feedback, Voxel view and installation remain open |
 | Exit portal/target | One, group 4 | Source appearance, inactive/active/entry and exit-sequence effects |
 
@@ -152,8 +152,8 @@ selected house and a local terrain patch; whole-level coverage is integration wo
 
 | Asset project | Source occurrence or role | Required result |
 | --- | --- | --- |
-| Experience scroll | Five authored, group 4 | Free editable rolled-parchment Modern/Voxel master passes 2/2 Unity import checks; current-native earned cut shows five live rows and ordinary controls collect all five with effect4 and sound63 each. Focused source test proves exact +4 XP. Live graphics and installation remain open. |
-| Castle and Speed jars | One authored each | Both share source TMAP59 vessel; Castle live Modern/Voxel views and native pickup/reset/cold-load pass. Speed naturally spawns at t1107 and is collected by t1183 through ordinary input; shared-presenter Unity tests pass 4/4. Speed live graphics and installation remain open. |
+| Experience scroll | Five authored, group 4 | Current-native earned cut shows five live rows and ordinary controls collect all five with effect4 and sound63 each; focused source test proves exact +4 XP. First integrated6 Modern view was rejected as a dark cylinder. Revised lighter layered parchment and spiral ends pass 2/2 Unity import tests; integrated7 live views and installation remain open. |
+| Castle and Speed jars | One authored each | Both share source TMAP59 vessel; Castle live Modern/Voxel views and native pickup/reset/cold-load pass. Speed naturally spawns at t1107 and is collected by t1183 through ordinary input; shared-presenter Unity tests pass 4/4. Checked 90-frame integrated6 Modern/Voxel views show stable jar form. Exact contact, on-screen earned disappearance, actual player F5/R and installation remain open. |
 | Mana spheres | Runtime deaths/economy | Native lifetime/owner/amount in both styles, capture/carry/collection and save/load |
 | Player presentation | First-person and admitted reflection/possession views | Original-informed carpet/hands/casting cues where visible; no invented rival population |
 | Fireball | Available at start | Emission, travel, impact, fire/expiry; only impact debris bounces |

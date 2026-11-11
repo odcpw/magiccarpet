@@ -42,9 +42,11 @@ focused Unity tests and a checked 150-frame native-gameplay view with fuller,
 cooler crown and stable grounding; Voxel graphics, frame times and installation
 remain open. Stone candidate07 passes five Unity material/lighting checks,
 an exact current-native t10688 replay plus 120 neutral ticks, and a checked
-120-frame Modern night view with a stable source-like silhouette. Its Voxel
-view is running. A Fireball passed through its volume; the original stone lacks
-the direct-hit flag, so that observation is not a demonstrated defect.
+120-frame Modern night view with a stable source-like silhouette. Its first
+Voxel capture showed a nearby building because the native-camera flag was
+missing; a corrected nonoverwriting view is queued. A Fireball passed through
+its volume; the original stone lacks the direct-hit flag, so that observation
+is not a demonstrated defect.
 Collector candidate03 passes actual native-gameplay flight; candidate05's
 bright circles read as windows. Candidate06's flatter patches passed a checked
 150-frame night flight without motion defects but still appeared too bright.
@@ -57,15 +59,21 @@ ground contact. Its installed and on-screen pickup-removal checks remain open.
 Speed uses the same source TMAP59 vessel, with a distinct class15/model3
 presentation matcher. Its fresh public route spawns slot49 at t1107 and collects
 it through 76 ordinary inputs at t1183; native cold/reset and 4/4 focused Unity
-tests pass. Actual integrated-player frames and installation remain open.
+tests pass. Integrated6 90-frame Modern and Voxel scenery-follow views have
+checked stable lid, body and two handles. The elevated view does not prove
+precise ground contact; on-screen earned pickup disappearance and installation
+remain open. Source sound18 was prepared and played by the integrated player;
+physical audibility was not checked.
 Experience Scroll has a free editable master, Modern/Voxel import 2/2, and a
 focused live class14 DTO/hide projection test. The current-native earned group4
 cut matches all five live rows; 255 ordinary inputs collect all five with one
 effect code4 and sound63 each, hidden state and slot reclaim. The focused
 sim-core test passes exact +4 experience per enabled family, sound63, hidden
 same-pass state and following-pass reclaim. Public snapshots expose no raw XP,
-and no tier notice was observed. Actual Modern/Voxel views and installation
-remain open.
+and no tier notice was observed. The first integrated6 live Modern capture was
+rejected: its dark smooth cylinder did not read as parchment. Candidate07 adds
+layered lighter sheets and raised spiral ends and passes both focused Unity
+import tests; integrated7 live Modern/Voxel views and installation remain open.
 Portal appearance, dynamic effects, whole-map Voxel and gameplay performance
 also remain open. Public Level1 controls reach Firefly group6, its real lethal
 combat, Worm group4 and a genuine House10 demolition-born Trader172/gen27.
