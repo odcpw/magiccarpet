@@ -1018,6 +1018,17 @@ mod tests {
                 }
                 assert!(captured, "the actual public Fireball is captured by the naturally produced owned Mine");
 
+                // Declared prior progression makes this Mine's next award
+                // cross its tier threshold and exercise Castle's source cap.
+                campaign.simulation_mut().apply_carried_spell_progression(&[
+                    CarriedSpellProgress { family: 23,
+                        persistent_experience: LEVEL2_SPELL_TIER_THRESHOLDS[23][1] - 1,
+                        runtime_experience: 0, unlocked_tier: 0, selected_tier: 0 },
+                    CarriedSpellProgress { family: 2, persistent_experience: 0,
+                        runtime_experience: 12, unlocked_tier: 0, selected_tier: 0 },
+                ]).unwrap();
+                assert_eq!(campaign.simulation().shared_spells().spell_experience()[23], 0);
+                assert_eq!(campaign.simulation().shared_spells().spell_experience()[2], 12);
                 let rival = encounter_rival.expect("natural rival protection expired before casting");
                 assert_ne!(campaign.simulation().entities()[usize::from(rival)].source_id, owner_id);
                 let initial_life = campaign.simulation().entities()[usize::from(rival)].life;
@@ -1026,6 +1037,7 @@ mod tests {
                 let mut emitted = false;
                 let mut damaged = false;
                 let mut rival_placed = false;
+                let mut progression_seen = false;
                 let mut release_trace = Vec::new();
                 for turn in 0..300 {
                     if !rival_placed {
@@ -1044,6 +1056,31 @@ mod tests {
                     campaign.step(PlayerCommand::default(), 0);
                     let session = campaign.simulation();
                     assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Mine release turn {turn}: {:?}", session.dispatch_events());
+                    if !progression_seen && session.shared_spells().spell_experience()[23] != 0 {
+                        let shared = session.shared_spells().players().iter()
+                            .find(|row| row.entity_index == player).expect("shared Mine owner");
+                        let core = session.players().iter()
+                            .find(|row| row.entity_index == player).expect("public Mine owner");
+                        let fire = session.session.state.live.core.context.spell_fire.as_ref()
+                            .filter(|fire| fire.caster.entity_index == player).expect("Mine owner's fire context");
+                        assert_eq!(shared.runtime_spell_experience[23], 1);
+                        assert_eq!(shared.spell_unlocked_levels[23], 1);
+                        assert_eq!(shared.family_selected_tiers[23], 0);
+                        assert_eq!(shared.runtime_spell_experience[2], 7);
+                        for family in [23, 2] {
+                            assert_eq!(core.runtime_spell_experience[family], shared.runtime_spell_experience[family]);
+                            assert_eq!(core.spell_unlocked_levels[family], shared.spell_unlocked_levels[family]);
+                            assert_eq!(fire.spell_experience[family], shared.runtime_spell_experience[family]);
+                            assert_eq!(fire.spell_levels[family], shared.spell_unlocked_levels[family]);
+                            let offset = 164 + family * 4;
+                            assert_eq!(&core.record_bytes()[offset..offset + 4], &shared.record_bytes()[offset..offset + 4]);
+                            assert_eq!(core.record_bytes()[502 + family], shared.record_bytes()[502 + family]);
+                        }
+                        progression_seen = true;
+                    } else if !progression_seen {
+                        assert_eq!(session.shared_spells().spell_experience()[2], 12,
+                            "Castle XP stays at the declared boundary until the Mine award");
+                    }
                     let mine = &session.entities()[usize::from(field_slot)];
                     selected |= mine.source_word_96() == rival;
                     emitted |= session.economy.fireball_projectiles().iter().any(|shot| shot.active && shot.owner_entity_index == owner_id && shot.target_source_entity_index == rival && shot.holder_entity_index == 0);
@@ -1063,6 +1100,7 @@ mod tests {
                     if damaged { break; }
                 }
                 assert!(rival_placed, "the real rival is placed once at the next ordinary Mine target scan");
+                assert!(progression_seen, "the actual Mine firing publishes its source XP and tier");
                 assert!(selected, "charged Mine selects the real opposing wizard");
                 assert!(emitted, "charged Mine emits its captured Fireball at that wizard");
                 assert!(damaged, "the ordinary released Fireball damages the actual wizard with owner attribution: {release_trace:?}");

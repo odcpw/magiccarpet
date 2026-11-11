@@ -509,6 +509,8 @@ fn construct_request(
 
 fn award_source_experience(
     shared: &mut Level2SharedSpellResetSession,
+    players: &mut [super::PlayerSnapshot],
+    fire: Option<&mut crate::SpellFireContext>,
     arena: &SourceArena,
     experience: Option<(u16, u8, u8)>,
 ) -> Result<(), String> {
@@ -528,6 +530,7 @@ fn award_source_experience(
             .any(|player| player.entity_index == owner_slot);
     if is_player {
         shared.award_spell_experience(owner_slot, family, i32::from(amount));
+        super::simulation::publish_family_spell_progression(shared, players, fire, owner_slot, family);
     }
     Ok(())
 }
@@ -560,6 +563,8 @@ fn allocate_expiry_effect(
 /// live guidance roll, while a real null leaves the mine's charge untouched.
 pub(crate) fn consume_visit(
     shared: &mut Level2SharedSpellResetSession,
+    players: &mut [super::PlayerSnapshot],
+    fire: Option<&mut crate::SpellFireContext>,
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
@@ -567,7 +572,7 @@ pub(crate) fn consume_visit(
     captured: Option<CapturedSpell>,
     visit: &Visit,
 ) -> Result<ConsumeOutcome, String> {
-    award_source_experience(shared, arena, visit.spell_experience)?;
+    award_source_experience(shared, players, fire, arena, visit.spell_experience)?;
 
     let mut charge_finished = visit.charge_finished;
     let mut projectiles = Vec::with_capacity(visit.projectiles.len());

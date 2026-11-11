@@ -301,6 +301,13 @@ impl Stage<'_, '_, '_> {
                 })?
                 .entity_index;
             self.players.shared.award_spell_experience(owner, family, 1);
+            crate::native_world::simulation::publish_family_spell_progression(
+                self.players.shared,
+                self.players.core_players,
+                self.players.fire.as_deref_mut(),
+                owner,
+                family,
+            );
         }
         Ok(())
     }
@@ -842,6 +849,7 @@ mod tests {
         let mut feedback = source_target::Creature23PlayerFeedback {
             shared: &mut live.shared_spells,
             core_players: &mut live.core.players,
+            fire: live.core.context.spell_fire.as_mut(),
             local_state: &mut live.core.state,
             domains: Some(
                 area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
@@ -1097,6 +1105,43 @@ mod tests {
         // A configured mode16 relation exercises the fixed-address source
         // helper; it does not assert an authored model23 summon producer.
         let (mut session, slot) = configured(16);
+        // The configured summon route consumes an actual damage mailbox
+        // before source6D8B0. This is a callback/owner boundary control, not
+        // evidence of an authored model23 Army producer.
+        let mut retaliation = session.clone();
+        let owner = retaliation.state.entity_index;
+        let experience_before = retaliation.shared_spells().spell_experience()[19];
+        {
+            let live = &mut retaliation.session.state.live;
+            for player in live.shared_spells.players.iter_mut()
+                .chain(live.core.players.iter_mut())
+                .chain(std::iter::once(&mut live.shared_spells.local_player))
+                .filter(|player| player.entity_index == owner)
+            {
+                player.runtime_spell_experience[2] = 12;
+                player.record[172..176].copy_from_slice(&12_i32.to_le_bytes());
+            }
+            live.shared_spells.spell_experience[2] = 12;
+            live.core.context.spell_fire.as_mut().unwrap().spell_experience[2] = 12;
+            let attacker = live.shared_spells.players.iter()
+                .find(|player| player.entity_index != owner).unwrap().entity_index;
+            area_damage::contact(&mut live.economy, None, slot, 1, attacker).unwrap();
+        }
+        visit(&mut retaliation, slot, &std::array::from_fn(|_| Vec::new()), &[]);
+        assert_eq!(retaliation.entities()[usize::from(slot)].action, 186);
+        let live = &retaliation.session.state.live;
+        assert_eq!(live.shared_spells.spell_experience()[19], experience_before + 1);
+        assert_eq!(live.shared_spells.spell_experience()[2], 7);
+        for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+            .chain(std::iter::once(&live.shared_spells.local_player))
+            .filter(|player| player.entity_index == owner)
+        {
+            assert_eq!(player.runtime_spell_experience[19], experience_before + 1);
+            assert_eq!(player.runtime_spell_experience[2], 7);
+        }
+        let fire = live.core.context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.spell_experience[19], experience_before + 1);
+        assert_eq!(fire.spell_experience[2], 7);
         let child = session.source_arena().handle(slot).unwrap();
         let particles = session.session.definition.presentation.particles.clone();
         let (parent_slot, parent) = {

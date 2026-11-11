@@ -87,7 +87,7 @@ pub(super) fn award_family_spell_experience(
     arena: &SourceArena,
     shared: &mut Level2SharedSpellResetSession,
     players: &mut [PlayerSnapshot],
-    mut fire: Option<&mut crate::SpellFireContext>,
+    fire: Option<&mut crate::SpellFireContext>,
     owner: u16,
     family: u8,
     amount: i32,
@@ -111,21 +111,21 @@ pub(super) fn award_family_spell_experience(
     // sub_6D8B0 takes a signed source word, even when a producer counts
     // damage hits in an unsigned or wider accumulator.
     shared.award_spell_experience(owner, family, i32::from(amount as i16));
-    publish_family_spell_progression(shared, players, fire.as_deref_mut(), owner, family);
-    if family != CASTLE_SPELL_FAMILY {
-        // sub_6D9C0 also caps Castle experience during every family visit.
-        publish_family_spell_progression(shared, players, fire, owner, CASTLE_SPELL_FAMILY);
-    }
+    publish_family_spell_progression(shared, players, fire, owner, family);
 }
 
-fn publish_family_spell_progression(
+pub(super) fn publish_family_spell_progression(
     shared: &Level2SharedSpellResetSession,
     players: &mut [PlayerSnapshot],
-    fire: Option<&mut crate::SpellFireContext>,
+    mut fire: Option<&mut crate::SpellFireContext>,
     owner: u16,
     family: u8,
 ) {
-    shared.publish_spell_progression_family(players, fire, owner, family);
+    shared.publish_spell_progression_family(players, fire.as_deref_mut(), owner, family);
+    if family != CASTLE_SPELL_FAMILY {
+        // sub_6D9C0 also caps Castle experience during every family visit.
+        shared.publish_spell_progression_family(players, fire, owner, CASTLE_SPELL_FAMILY);
+    }
 }
 
 /// Typed payload selected from the fixed numeric source slot at visit time.
@@ -17815,6 +17815,7 @@ impl Mc2Simulation {
                     let player_life = live.player_life;
                     let state = &mut live.core.state;
                     let core_players = &mut live.core.players;
+                    let spell_fire = &mut live.core.context.spell_fire;
                     let flight_effects = &mut live.core.context.effects;
                     let level_exit = &mut live.level_exit;
                     let mut actors = area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
@@ -17840,6 +17841,7 @@ impl Mc2Simulation {
                                 let mut feedback = source_target::Creature23PlayerFeedback {
                                     shared: player_spells,
                                     core_players: &mut *core_players,
+                                    fire: spell_fire.as_mut(),
                                     local_state: &mut *state,
                                     domains: Some(actors.reborrow()),
                                 };
@@ -18689,6 +18691,7 @@ impl Mc2Simulation {
                         let mut player_feedback = source_target::Creature23PlayerFeedback {
                             shared: &mut live.shared_spells,
                             core_players: &mut live.core.players,
+                            fire: live.core.context.spell_fire.as_mut(),
                             local_state: &mut live.core.state,
                             domains: Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
                                 .with_particles(&self.session.definition.presentation.particles)),
@@ -18839,6 +18842,7 @@ impl Mc2Simulation {
                         let mut player_feedback = source_target::Creature23PlayerFeedback {
                             shared: &mut live.shared_spells,
                             core_players: &mut live.core.players,
+                            fire: live.core.context.spell_fire.as_mut(),
                             local_state: &mut live.core.state,
                             domains: Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
                                 .with_particles(&self.session.definition.presentation.particles)),
@@ -19525,6 +19529,8 @@ impl Mc2Simulation {
                 }
                 crate::native_world::magic_mine_discharge::consume_visit(
                     &mut live.shared_spells,
+                    &mut live.core.players,
+                    live.core.context.spell_fire.as_mut(),
                     &mut live.economy,
                     &mut live.terrain,
                     &self.session.definition.presentation.particles,
@@ -19532,29 +19538,6 @@ impl Mc2Simulation {
                     captured,
                     &visit,
                 )?;
-                if let Some((owner, family, _)) = visit.spell_experience {
-                    if let Some(source) = live
-                        .shared_spells
-                        .players
-                        .iter()
-                        .find(|player| player.entity_index == owner)
-                        && let Some(player) = live
-                            .core
-                            .players
-                            .iter_mut()
-                            .find(|player| player.entity_index == owner)
-                    {
-                        player.sync_spell_progression_family_from(source, usize::from(family));
-                    }
-                    if owner == player_entity_index
-                        && let Some(fire) = live.core.context.spell_fire.as_mut()
-                    {
-                        fire.spell_experience[usize::from(family)] =
-                            live.shared_spells.spell_experience[usize::from(family)];
-                        fire.spell_levels[usize::from(family)] =
-                            live.shared_spells.spell_levels[usize::from(family)];
-                    }
-                }
                 self.append_new_economy_events(pass, source_slot);
             }
             (ExistingHandler::Fields, SourceRoute::Imported)
@@ -20300,6 +20283,7 @@ impl Mc2Simulation {
                         let mut feedback = source_target::Creature23PlayerFeedback {
                             shared: &mut live.shared_spells,
                             core_players: &mut live.core.players,
+                            fire: live.core.context.spell_fire.as_mut(),
                             local_state: &mut live.core.state,
                             domains: Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)
                                 .with_particles(&self.session.definition.presentation.particles)),
@@ -20398,6 +20382,8 @@ impl Mc2Simulation {
                     };
                     late_spells::step_sphere_slot(
                         &mut live.shared_spells,
+                        &mut live.core.players,
+                        live.core.context.spell_fire.as_mut(),
                         &mut live.economy,
                         &mut live.terrain,
                         &self.session.definition.presentation.particles,

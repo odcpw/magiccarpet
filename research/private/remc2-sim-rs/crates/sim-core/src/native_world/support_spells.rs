@@ -131,26 +131,14 @@ pub(super) fn commit_reflection(
             .any(|player| player.entity_index == target.index)
     {
         shared.award_spell_experience(target.index, 8, 1);
-        for player in core
-            .players
-            .iter_mut()
-            .filter(|player| player.entity_index == target.index)
-        {
-            if let Some(source) = shared
-                .players
-                .iter()
-                .find(|player| player.entity_index == target.index)
-            {
-                player.sync_spell_progression_family_from(source, 8);
-            }
-        }
+        super::simulation::publish_family_spell_progression(
+            shared, &mut core.players, core.context.spell_fire.as_mut(), target.index, 8,
+        );
     }
     if let Some(fire) = core.context.spell_fire.as_mut()
         && fire.caster.entity_index == target.index
     {
         fire.caster.mana = reflection.mana_after;
-        fire.spell_experience[8] = shared.spell_experience[8];
-        fire.spell_levels[8] = shared.spell_levels[8];
     }
     crate::mark_source_audio_call(crate::SourceAudioCallTag::ReboundReflection);
     shared.emit_flight_effect(crate::FlightEvent::PrepareSound {
@@ -528,6 +516,9 @@ pub(super) fn step_source_slot(
             && parent.as_ref().is_some_and(|actor| actor.life < actor.max_life)))
     {
         shared.award_spell_experience(parent_slot, holder.model, 1);
+        super::simulation::publish_family_spell_progression(
+            shared, &mut core.players, core.context.spell_fire.as_mut(), parent_slot, holder.model,
+        );
         holder = shared.pickup(source_slot).cloned()
             .ok_or("support spell experience lost its current holder")?;
     }
@@ -539,7 +530,8 @@ pub(super) fn step_source_slot(
     );
     if beyond_sight_experience != 0 {
         shared.award_spell_experience(parent_slot, 12, beyond_sight_experience);
-        shared.publish_spell_progression_family(
+        super::simulation::publish_family_spell_progression(
+            shared,
             &mut core.players,
             core.context.spell_fire.as_mut(),
             parent_slot,
@@ -685,6 +677,9 @@ pub(super) fn step_source_slot(
         if is_status && result.award_experience && can_award_experience {
             shared.sync_pickup_from_authority(&holder);
             shared.award_spell_experience(parent_slot, holder.model, 1);
+            super::simulation::publish_family_spell_progression(
+                shared, &mut core.players, core.context.spell_fire.as_mut(), parent_slot, holder.model,
+            );
             holder = shared.pickup(source_slot).cloned()
                 .ok_or("status spell award lost its holder")?;
         }
@@ -1408,6 +1403,21 @@ mod tests {
                 }
                 let initial = simulation.shared_spells().player_entity().clone();
                 let xp = simulation.shared_spells().spell_experience()[usize::from(family)];
+                // Declared arithmetic control on this real acquired cast:
+                // every source tier visit must publish its Castle cap too.
+                {
+                    let live = &mut simulation.session.state.live;
+                    for player in live.shared_spells.players.iter_mut()
+                        .chain(live.core.players.iter_mut())
+                        .chain(std::iter::once(&mut live.shared_spells.local_player))
+                        .filter(|player| player.entity_index == owner)
+                    {
+                        player.runtime_spell_experience[2] = 12;
+                        player.record[172..176].copy_from_slice(&12_i32.to_le_bytes());
+                    }
+                    live.shared_spells.spell_experience[2] = 12;
+                    live.core.context.spell_fire.as_mut().unwrap().spell_experience[2] = 12;
+                }
                 let mut rejected = simulation.clone();
                 if rule.mana_regen != 0 {
                     assert!(
@@ -1456,6 +1466,7 @@ mod tests {
                     rejected.shared_spells().spell_experience()[usize::from(family)],
                     xp
                 );
+                assert_eq!(rejected.shared_spells().spell_experience()[2], 12);
                 assert_eq!(
                     rejected.shared_spells().player_entity().control_flags & 0x8010,
                     0
@@ -1579,6 +1590,22 @@ mod tests {
                     seen_active && paid,
                     "family{family}/tier{tier} actual cast and upkeep payment"
                 );
+                {
+                    let live = &simulation.session.state.live;
+                    assert_eq!(live.shared_spells.spell_experience()[2], 7);
+                    let shared = live.shared_spells.players.iter()
+                        .find(|player| player.entity_index == owner).unwrap();
+                    let core = live.core.players.iter()
+                        .find(|player| player.entity_index == owner).unwrap();
+                    let fire = live.core.context.spell_fire.as_ref().unwrap();
+                    for index in [2, usize::from(family)] {
+                        assert_eq!(core.runtime_spell_experience[index], shared.runtime_spell_experience[index]);
+                        assert_eq!(core.runtime_spell_experience[index], fire.spell_experience[index]);
+                        assert_eq!(core.family_selected_tiers[index], shared.family_selected_tiers[index]);
+                        assert_eq!(core.family_selected_tiers[index], fire.spell_levels[index]);
+                    }
+                    assert_eq!(core.runtime_spell_experience[2], 7);
+                }
                 let player = simulation.shared_spells().player_entity();
                 assert_eq!(player.life, simulation.entities()[usize::from(owner)].life);
                 assert_eq!(

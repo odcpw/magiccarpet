@@ -6,7 +6,9 @@
 //! map-linked until the next source boundary; absorbed spheres are reclaimed
 //! immediately, matching the distinct source tails.
 
-use super::{EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, SessionTerrain};
+use super::{
+    EntitySnapshot, Level2SharedSpellResetSession, ParticleParameter, PlayerSnapshot, SessionTerrain,
+};
 use crate::campaign::source_arena::SourceArena;
 use crate::level_definition::late_spells::FOOLS_MANA_PROPERTIES;
 use crate::level1_mission::{source_map_search_slots, source_search_offsets};
@@ -22,6 +24,26 @@ const SPHERE_ACTION: u8 = 62;
 const MANA_SPHERE_COLOR_BASE: u16 = 52;
 const MANA_SPHERE_THRESHOLDS: [i32; 7] = [256, 512, 1_024, 2_048, 4_096, 9_192, 18_384];
 const MANA_SPHERE_ROTATIONS: [i16; 8] = [13, 28, 42, 56, 70, 84, 98, 112];
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct RetaliationObservation {
+    slot: u16,
+    generation: u32,
+    source_id: u16,
+    parent: u16,
+    target: u16,
+    tier: u8,
+    counter: i32,
+    hidden: bool,
+    projectile: Option<crate::campaign::source_arena::SourceEntityHandle>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static RETALIATION_OBSERVATIONS: std::cell::RefCell<Option<Vec<RetaliationObservation>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct HolderOutcome {
@@ -797,6 +819,8 @@ fn update_merged_sphere_color(
 /// sub_36F30 immediate merge/reclaim.
 pub(crate) fn step_sphere_slot(
     shared: &mut Level2SharedSpellResetSession,
+    players: &mut [PlayerSnapshot],
+    fire: Option<&mut crate::SpellFireContext>,
     arena: &mut SourceArena,
     terrain: &mut SessionTerrain,
     particles: &[ParticleParameter],
@@ -823,6 +847,8 @@ pub(crate) fn step_sphere_slot(
     // sub_35FB0 consumes an existing word68 mailbox. Possession's sub_112D0
     // writes it; nearby spheres do not themselves create a retaliation link.
     let mut state = sphere_state(&row);
+    #[cfg(test)]
+    let before_retaliation = (state, arena.slot_generation(slot));
     let visit = state.visit_retaliation();
     let mut outcome = SphereOutcome {
         clear_target_link: visit.clear_target_link,
@@ -835,13 +861,12 @@ pub(crate) fn step_sphere_slot(
     {
         outcome.projectile = construct_retaliation(arena, terrain, particles, &row, &target, kind)?;
     }
-    if visit.award_spell_experience
-        && let Some(parent) = arena.entities.get(usize::from(state.parent_entity))
-        && parent.active
-        && parent.class == 3
-        && parent.model == 0
-    {
-        shared.award_spell_experience(state.parent_entity, 22, 1);
+    #[cfg(test)]
+    let retaliation_projectile = outcome.projectile.and_then(|slot| arena.handle(slot));
+    if visit.award_spell_experience {
+        super::simulation::award_family_spell_experience(
+            arena, shared, players, fire, state.parent_entity, 22, 1,
+        );
     }
     write_sphere_state(&mut row, state);
     if visit.consume_sphere {
@@ -849,6 +874,22 @@ pub(crate) fn step_sphere_slot(
         row.disable_drawing();
         outcome.hidden = true;
     }
+    #[cfg(test)]
+    RETALIATION_OBSERVATIONS.with(|observations| {
+        if let Some(observations) = observations.borrow_mut().as_mut() {
+            observations.push(RetaliationObservation {
+                slot,
+                generation: before_retaliation.1,
+                source_id: row.source_id,
+                parent: before_retaliation.0.parent_entity,
+                target: before_retaliation.0.target_entity,
+                tier: before_retaliation.0.tier,
+                counter: before_retaliation.0.retaliation_ticks,
+                hidden: row.drawing_disabled(),
+                projectile: retaliation_projectile,
+            });
+        }
+    });
 
     // The sphere callback owns its ordinary source flight before the merge
     // scan. The absorbed row is unlinked and returned to the free stack in
@@ -928,7 +969,7 @@ mod possession_tests {
         assert_eq!((first.position.x.wrapping_add(128) >> 8), ((first.position.x >> 8) + 1) & 255);
         assert_eq!(merge_candidate(&arena, &first), Some(slots[1]));
         let mana = first.mana.wrapping_add(second.mana);
-        let outcome = step_sphere_slot(&mut shared, &mut arena, &mut terrain, particles,
+        let outcome = step_sphere_slot(&mut shared, &mut [], None, &mut arena, &mut terrain, particles,
             slots[0], super::super::source_target::Context::default()).unwrap();
         assert_eq!((outcome.merged_into, outcome.absorbed_sphere), (Some(slots[0]), Some(slots[1])));
         assert_eq!(arena.entities[usize::from(slots[0])].mana, mana);
@@ -978,7 +1019,7 @@ mod possession_tests {
         let expected_velocity = (((a-b-c+d)*250/256) as i16, ((a+b-c-d)*250/256) as i16);
         let expected_mana = first.mana.wrapping_add(second.mana);
         let expected_size = MANA_SPHERE_THRESHOLDS.iter().take_while(|limit| expected_mana > **limit).count();
-        let outcome = step_sphere_slot(&mut shared, &mut arena, &mut terrain, particles, slots[0],
+        let outcome = step_sphere_slot(&mut shared, &mut [], None, &mut arena, &mut terrain, particles, slots[0],
             super::super::source_target::Context::default()).unwrap();
         assert_eq!((outcome.merged_into, outcome.absorbed_sphere), (Some(slots[0]), Some(slots[1])));
         assert!(arena.economy.free_source_slots().contains(&slots[1]), "source immediately reclaims the absorbed sphere");
@@ -1010,7 +1051,7 @@ mod possession_tests {
         set_signed_word(&mut sphere, 48, -128);
         arena.entities[usize::from(slot)] = sphere;
         crate::world::effects::sync_position(&mut arena, &mut terrain, slot, position, true, false).unwrap();
-        step_sphere_slot(&mut shared, &mut arena, &mut terrain, particles, slot,
+        step_sphere_slot(&mut shared, &mut [], None, &mut arena, &mut terrain, particles, slot,
             super::super::source_target::Context::default()).unwrap();
         let row = &arena.entities[usize::from(slot)];
         assert_eq!(row.position.z, terrain.ground_height(row.position));
@@ -1082,7 +1123,7 @@ mod possession_tests {
             crate::world::effects::sync_position(&mut arena, &mut terrain, slot, position, true, false).unwrap();
             slots.push(slot);
         }
-        let outcome = step_sphere_slot(&mut shared, &mut arena, &mut terrain, particles, slots[0],
+        let outcome = step_sphere_slot(&mut shared, &mut [], None, &mut arena, &mut terrain, particles, slots[0],
             super::super::source_target::Context::default()).unwrap();
         assert_eq!(outcome.projectile, None);
         assert!(!outcome.hidden);
@@ -1287,6 +1328,13 @@ mod possession_tests {
                 if target_sphere.is_some() { break; }
             }
             let target_sphere = target_sphere.expect("public carried cast creates a live actual decoy");
+            let born_spheres = encounter.simulation().entities().iter()
+                .filter(|row| row.active && (row.class, row.model) == (10, 57)
+                    && word(row, 44) == owner_id && !previous.contains(&row.index))
+                .map(|row| (row.index,
+                    encounter.simulation().session.state.live.economy.slot_generation(row.index)))
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(born_spheres.len(), 6, "the real carried cast produced all six decoys");
             let sphere = encounter.simulation().entities()[usize::from(target_sphere)].clone();
             let generation = encounter.simulation().session.state.live.economy.economy.slot_generation(target_sphere);
             let rival_holder = encounter.simulation().entities().iter().find(|row| row.active && (row.class,row.model,row.action)==(15,1,3) && word(row,44)==rival)
@@ -1312,8 +1360,27 @@ mod possession_tests {
                         "retaliation geometry is outside the rival's own Castle");
                 }
             }
+            // Declared prior progression puts the next tier one XP away and
+            // exposes sub_6D9C0's cross-family Castle cap on this award.
+            let next_tier = (tier + 1).min(2);
+            let prior = if tier < 2 {
+                LEVEL2_SPELL_TIER_THRESHOLDS[22][next_tier] - 1
+            } else {
+                LEVEL2_SPELL_TIER_THRESHOLDS[22][tier]
+            };
+            encounter.simulation_mut().apply_carried_spell_progression(&[
+                CarriedSpellProgress { family: 22, persistent_experience: prior,
+                    runtime_experience: 0, unlocked_tier: tier as i8, selected_tier: tier as i8 },
+                CarriedSpellProgress { family: 2, persistent_experience: 0,
+                    runtime_experience: 12, unlocked_tier: 0, selected_tier: 0 },
+            ]).unwrap();
             let initial_life = encounter.simulation().entities()[usize::from(rival)].life;
             let xp = encounter.simulation().shared_spells().spell_experience()[22];
+            assert_eq!(xp, 0);
+            assert_eq!(encounter.simulation().shared_spells().spell_experience()[2], 12);
+            RETALIATION_OBSERVATIONS.with(|observations| {
+                *observations.borrow_mut() = Some(Vec::new());
+            });
             let incoming = {
                 let live = &mut encounter.simulation_mut().session.state.live;
                 live.economy.economy.spawn_possession_projectile(origin, rival, rival_holder, 0, 0, 0, sphere.position)
@@ -1324,12 +1391,87 @@ mod possession_tests {
             let mut hidden = false;
             let mut reclaimed = false;
             let mut damaged = false;
+            let mut progression_seen = false;
+            let mut awarded_spheres = std::collections::BTreeSet::new();
+            let mut rival_award_seen = false;
+            let mut retaliation_births = Vec::new();
+            let mut retaliation_terminals = Vec::new();
+            let mut retaliation_endpoints = Vec::new();
             let mut trace = Vec::new();
             super::super::area_damage::start_effect_damage_trace(rival);
+            super::super::area_damage::start_player_damage_trace(rival_handle);
             for turn in 0..200 {
+                super::super::effects::start_fireball_terminal_trace();
+                super::super::lightning::start_endpoint_birth_trace();
                 encounter.step(PlayerCommand::default(), 0);
+                let terminals = super::super::effects::take_fireball_terminal_trace();
+                let endpoints = super::super::lightning::take_endpoint_birth_trace();
+                let consumptions = super::super::area_damage::take_player_damage_consumptions();
                 let session = encounter.simulation();
                 assert!(!session.dispatch_events().iter().any(|event| matches!(event, Mc2DispatchEvent::Error { .. })), "Fool's Mana retaliation tier{tier} turn{turn}: {:?}", session.dispatch_events());
+                let observations = RETALIATION_OBSERVATIONS.with(|observations| {
+                    std::mem::take(observations.borrow_mut().as_mut().expect("retaliation trace"))
+                });
+                for observation in observations {
+                    if observation.parent == owner_id && observation.target == rival {
+                        assert!(born_spheres.contains(&(observation.slot, observation.generation)),
+                            "retaliation must come from this cast's decoy: {observation:?}");
+                        if let Some(projectile) = observation.projectile
+                            && !retaliation_births.iter().any(|(handle, _)| *handle == projectile)
+                        {
+                            retaliation_births.push((projectile, observation.source_id));
+                        }
+                    }
+                    let source_awards = observation.target != 0
+                        && observation.target != observation.parent
+                        && match observation.tier {
+                            0 => true,
+                            1 => observation.counter >= 8,
+                            2 | 3 => observation.counter > 1,
+                            _ => false,
+                        };
+                    if observation.parent == owner_id && source_awards {
+                        let identity = (observation.slot, observation.generation);
+                        assert!(born_spheres.contains(&identity), "award must belong to this cast's real decoy: {observation:?}");
+                        assert!(observation.hidden, "source-awarding retaliation consumes its decoy: {observation:?}");
+                        assert!(awarded_spheres.insert(identity), "one decoy awards once: {observation:?}");
+                        rival_award_seen |= observation.target == rival;
+                    }
+                }
+                retaliation_terminals.extend(terminals.into_iter().filter(|terminal|
+                    retaliation_births.iter().any(|(handle, _)| *handle == terminal.projectile)));
+                retaliation_endpoints.extend(endpoints.into_iter().filter(|endpoint|
+                    retaliation_births.iter().any(|(ray, source_id)|
+                        *ray == endpoint.ray && *source_id == endpoint.owner)));
+                let expected_xp = xp + i32::try_from(awarded_spheres.len()).unwrap();
+                assert_eq!(session.shared_spells().spell_experience()[22], expected_xp,
+                    "XP equals independently observed qualifying source callbacks");
+                if !awarded_spheres.is_empty() {
+                    let shared = session.shared_spells().players().iter()
+                        .find(|player| player.entity_index == owner).expect("shared caster");
+                    let core = session.players().iter()
+                        .find(|player| player.entity_index == owner).expect("public caster");
+                    let fire = session.session.state.live.core.context.spell_fire.as_ref()
+                        .filter(|fire| fire.caster.entity_index == owner).expect("caster's fire context");
+                    assert_eq!(shared.runtime_spell_experience[22], expected_xp);
+                    assert_eq!(shared.spell_unlocked_levels[22], next_tier as i8);
+                    assert_eq!(shared.family_selected_tiers[22], tier as i8,
+                        "source unlock does not automatically select a higher tier");
+                    assert_eq!(shared.runtime_spell_experience[2], 7);
+                    for family in [22, 2] {
+                        assert_eq!(core.runtime_spell_experience[family], shared.runtime_spell_experience[family]);
+                        assert_eq!(core.spell_unlocked_levels[family], shared.spell_unlocked_levels[family]);
+                        assert_eq!(fire.spell_experience[family], shared.runtime_spell_experience[family]);
+                        assert_eq!(fire.spell_levels[family], shared.spell_unlocked_levels[family]);
+                        let offset = 164 + family * 4;
+                        assert_eq!(&core.record_bytes()[offset..offset + 4], &shared.record_bytes()[offset..offset + 4]);
+                        assert_eq!(core.record_bytes()[502 + family], shared.record_bytes()[502 + family]);
+                    }
+                    progression_seen = true;
+                } else {
+                    assert_eq!(session.shared_spells().spell_experience()[2], 12,
+                        "Castle XP stays at the declared boundary until the Fool's Mana award");
+                }
                 let arena = &session.session.state.live.economy;
                 saw_contact |= arena.economy.possession_effects().iter().any(|effect| effect.projectile_entity_index == incoming);
                 if profile.life < 2 {
@@ -1367,18 +1509,34 @@ mod possession_tests {
                         .collect::<Vec<_>>();
                     trace.push((turn, enemy.position, enemy.life, enemy.word_26(), shots));
                 }
-                let source_attributed = if profile.life < 2 {
-                    retaliations.iter().any(|(slot, generation)| *slot == enemy.word_26() && arena.economy.slot_generation(*slot) == *generation)
-                } else {
-                    !retaliations.is_empty() && enemy.word_26() == target_sphere
-                };
-                damaged |= source_attributed && enemy.life < initial_life;
+                // A projectile or decoy slot may already have been reclaimed
+                // before the rival consumes its mailbox. Join the actual
+                // birth, terminal effect and generation-bound latest writer.
+                damaged |= consumptions.iter().any(|receipt| {
+                    receipt.target == rival_handle && receipt.life_after < receipt.life_before
+                        && receipt.writer.is_some_and(|writer| match writer.source {
+                            super::super::area_damage::PlayerMailboxSource::Effect(impact) => {
+                                if profile.life < 2 {
+                                    retaliation_terminals.iter().any(|terminal|
+                                        terminal.impact == Some(impact)
+                                            && terminal.owner == receipt.mailbox.1)
+                                } else {
+                                    retaliation_endpoints.iter().any(|endpoint|
+                                        endpoint.endpoint == impact
+                                            && endpoint.owner == receipt.mailbox.1)
+                                }
+                            }
+                            _ => false,
+                        })
+                });
                 if saw_contact && !retaliations.is_empty() && hidden && reclaimed && damaged && session.shared_spells().spell_experience()[22] > xp { break; }
             }
+            RETALIATION_OBSERVATIONS.with(|observations| *observations.borrow_mut() = None);
             let damage_receipts = super::super::area_damage::take_effect_damage_trace();
             assert!(saw_contact, "real hostile Possession produces the actual contact effect");
             assert!(!retaliations.is_empty(), "source tier{tier} decoy retaliates at the real rival");
-            assert!(encounter.simulation().shared_spells().spell_experience()[22] > xp, "the actual caster receives source Fool's Mana experience");
+            assert!(progression_seen, "the actual retaliation publishes its XP and tier to the public player and fire consumers");
+            assert!(rival_award_seen, "the real rival's Possession mailbox reaches an awarding decoy");
             assert!(hidden && reclaimed, "contact consumes the real sphere and the following boundary reclaims it");
             assert!(damaged, "the real retaliation damages the opposing rival with source attribution: tier={tier}, initial_life={initial_life}, shots={retaliations:?}, trace={trace:?}, damage_receipts={damage_receipts:?}");
         }
@@ -1464,6 +1622,8 @@ mod possession_tests {
         arena.entities[usize::from(trap)].set_control_flags(flags | 0x800);
         let skipped = step_sphere_slot(
             &mut shared,
+            &mut [],
+            None,
             &mut arena,
             &mut terrain,
             particles,
@@ -1481,6 +1641,8 @@ mod possession_tests {
         assert_eq!(word(&arena.entities[usize::from(trap)], 108), claimant);
         let outcome = step_sphere_slot(
             &mut shared,
+            &mut [],
+            None,
             &mut arena,
             &mut terrain,
             particles,

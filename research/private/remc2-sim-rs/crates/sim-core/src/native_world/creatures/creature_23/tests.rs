@@ -320,6 +320,7 @@ fn source_adapter_commits_a_real_ray_runs_its_consumer_and_keeps_failed_birth_si
     let mut feedback = crate::native_world::source_target::Creature23PlayerFeedback {
         shared: &mut live.shared_spells,
         core_players: &mut live.core.players,
+        fire: live.core.context.spell_fire.as_mut(),
         local_state: &mut live.core.state,
         domains: None,
     };

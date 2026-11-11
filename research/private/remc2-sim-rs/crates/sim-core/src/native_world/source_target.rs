@@ -726,6 +726,7 @@ pub(crate) fn creature23_castle_protection(
 pub(crate) struct Creature23PlayerFeedback<'a> {
     pub(crate) shared: &'a mut super::Level2SharedSpellResetSession,
     pub(crate) core_players: &'a mut [super::PlayerSnapshot],
+    pub(crate) fire: Option<&'a mut crate::SpellFireContext>,
     pub(crate) local_state: &'a mut crate::FlightState,
     pub(crate) domains: Option<area_damage::ActorDomains<'a>>,
 }
@@ -3635,7 +3636,7 @@ mod tests {
         let local_before = local_state.music_countdown;
         {
             let mut feedback = Creature23PlayerFeedback {
-                shared: &mut shared, core_players: &mut core_players, local_state: &mut local_state, domains: None,
+                shared: &mut shared, core_players: &mut core_players, fire: None, local_state: &mut local_state, domains: None,
             };
             assert!(feedback.apply(&arena, Context::default(), target).unwrap());
             assert!(!feedback.apply(&arena, Context::default(), 0).unwrap());
@@ -3657,7 +3658,7 @@ mod tests {
             super::super::EntitySpecialRelation::PlayerState(local_index);
         {
             let mut feedback = Creature23PlayerFeedback {
-                shared: &mut shared, core_players: &mut core_players, local_state: &mut local_state, domains: None,
+                shared: &mut shared, core_players: &mut core_players, fire: None, local_state: &mut local_state, domains: None,
             };
             assert!(feedback.apply(&arena, Context::default(), target).unwrap());
         }
@@ -3671,7 +3672,7 @@ mod tests {
             super::super::EntitySpecialRelation::GlobalSpecialState;
         {
             let mut feedback = Creature23PlayerFeedback {
-                shared: &mut shared, core_players: &mut core_players, local_state: &mut local_state, domains: None,
+                shared: &mut shared, core_players: &mut core_players, fire: None, local_state: &mut local_state, domains: None,
             };
             assert!(feedback.apply(&arena, Context::default(), target).unwrap());
             arena.entities[usize::from(target)].model = 1;

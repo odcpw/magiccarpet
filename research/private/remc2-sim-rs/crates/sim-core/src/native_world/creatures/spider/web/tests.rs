@@ -354,6 +354,7 @@ fn mission_four_ordinary_scheduler_carries_web_to_actual_player_damage_and_recla
         let mut feedback = crate::native_world::source_target::Creature23PlayerFeedback {
             shared: &mut live.shared_spells,
             core_players: &mut live.core.players,
+            fire: live.core.context.spell_fire.as_mut(),
             local_state: &mut live.core.state,
             domains: Some(crate::native_world::area_damage::ActorDomains::new(
                 &mut live.goats, &mut live.ordinary,

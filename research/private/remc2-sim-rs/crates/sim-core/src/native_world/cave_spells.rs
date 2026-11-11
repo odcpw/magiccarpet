@@ -758,38 +758,28 @@ pub(crate) fn step_projectile(
                 effect.set_pitch(state.pitch);
                 effect.set_subspell_index(row.subspell_index);
                 effect.set_source_word_96(hit.map_or(0, |hit| hit.source_slot));
-                if hit.is_some()
-                    && arena
-                        .entities
-                        .get(usize::from(row.source_id))
-                        .is_some_and(|parent| {
-                            parent.active && parent.class == 3 && parent.model == 0
-                        })
-                    && shared
-                        .players
-                        .iter()
-                        .any(|player| player.entity_index == row.source_id)
-                {
-                    shared.award_spell_experience(row.source_id, 25, 1);
-                    if let Some(owner) = shared
-                        .players
-                        .iter()
-                        .find(|player| player.entity_index == row.source_id)
-                    {
-                        for player in core
-                            .players
-                            .iter_mut()
-                            .filter(|player| player.entity_index == row.source_id)
-                        {
-                            player.sync_spell_progression_family_from(owner, 25);
-                        }
-                    }
-                    if let Some(fire) = core.context.spell_fire.as_mut()
-                        && fire.caster.entity_index == row.source_id
-                    {
-                        fire.spell_experience[25] = shared.spell_experience[25];
-                        fire.spell_levels[25] = shared.spell_levels[25];
-                    }
+                if hit.is_some() && row.word_26() != 0 {
+                    // sub_65820 reads the model at the current physical
+                    // holder address, not the projectile's original family.
+                    let family = super::source_target::read(
+                        arena,
+                        super::source_target::Context {
+                            spells: Some(shared),
+                            ..super::source_target::Context::default()
+                        },
+                        row.word_26(),
+                    )?
+                    .ok_or_else(|| format!("CaveIn holder {} is outside the source arena", row.word_26()))?
+                    .model;
+                    super::simulation::award_family_spell_experience(
+                        arena,
+                        shared,
+                        &mut core.players,
+                        core.context.spell_fire.as_mut(),
+                        row.source_id,
+                        family,
+                        1,
+                    );
                 }
                 if let Some(hit) = hit
                     && let Some(parent) = arena
@@ -1031,6 +1021,202 @@ mod tests {
                     .iter()
                     .any(|row| row.active && (row.class, row.model) == (9, 30))
             );
+            if tier == 0 {
+                // Keep the actually acquired Cave24 holder and an existing
+                // Cave24 actor. Pose, aim resources and Castle XP are explicit
+                // encounter controls; the Cave12 terrain checks stay separate.
+                let mut contact = source.simulation().clone();
+                let owner = contact.state.entity_index;
+                let position = (0..256_u16)
+                    .flat_map(|y| (0..256_u16).map(move |x| Position {
+                        x: (x << 8) + 128, y: (y << 8) + 128, z: 0,
+                    }))
+                    .filter(|position| contact.canonical_terrain().material_mask(*position) != 1)
+                    .max_by_key(|position| {
+                        i32::from(contact.canonical_terrain().ceiling_height(*position).unwrap())
+                            - i32::from(contact.canonical_terrain().ground_height(*position))
+                    }).expect("real Cave24 nonwater casting room");
+                let floor = contact.canonical_terrain().ground_height(position);
+                let roof = contact.canonical_terrain().ceiling_height(position).unwrap();
+                assert!(i32::from(roof) - i32::from(floor) > 4096);
+                let position = Position { z: floor + (roof - floor) / 2, ..position };
+                contact.set_level2_entity_position(owner, position).unwrap();
+                let castle = contact.economy_mut().build_castle(position, owner).unwrap();
+                assert!(contact.economy_mut().set_castle_mana_prerequisite_for_test(castle, 1_000_000));
+                contact.step_outer_turn(PlayerCommand {
+                    opcode: 31, argument_1: ui, argument_2: 0, ..Default::default()
+                }, 0);
+                {
+                    let live = &mut contact.session.state.live;
+                    live.core.state.target_speed = 0;
+                    live.core.state.actual_speed = 0;
+                    live.core.state.impulse_x = 0;
+                    live.core.state.impulse_y = 0;
+                    live.core.state.impulse_z = 0;
+                    let parent = &mut live.economy.entities[usize::from(owner)];
+                    parent.max_mana = 2_000_000;
+                    parent.record[144..148].copy_from_slice(&2_000_000_i32.to_le_bytes());
+                    parent.set_mana(500_000);
+                    parent.set_mana_regen(0);
+                    let parent = parent.clone();
+                    live.shared_spells.sync_player_entity_from_authority(&parent);
+                    live.shared_spells.player_mana = parent.mana;
+                    live.shared_spells.caster.mana = parent.mana;
+                    live.shared_spells.sync_typed_spell_parent_caches_from_player_entity();
+                    if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                        fire.caster.mana = parent.mana;
+                    }
+                    live.economy.economy.refresh_owner_mana_rows();
+                }
+                let target = {
+                    let live = &contact.session.state.live;
+                    live.economy.economy.fireball_collision_targets(&live.economy.entities)
+                        .into_iter()
+                        .find(|target| {
+                            matches!(target.class, 3 | 5)
+                                && target.source_id != owner
+                                && live.economy.entities.get(usize::from(target.source_slot))
+                                    .is_some_and(|row| row.active && row.control_flags & 0x8010 == 0)
+                        })
+                        .expect("Cave24 has an admitted ordinary actor")
+                };
+                {
+                    let live = &mut contact.session.state.live;
+                    let parent = live.economy.entities[usize::from(owner)].clone();
+                    let mut target_position = parent.position;
+                    crate::move_entity(&mut target_position, parent.yaw, parent.pitch, 768);
+                    target_position.z = parent.position.z.wrapping_add(parent.array_fov())
+                        .wrapping_sub(target.vertical_offset);
+                    live.economy.entities[usize::from(target.source_slot)].set_position(target_position);
+                    crate::world::effects::sync_position(
+                        &mut live.economy, &mut live.terrain, target.source_slot,
+                        target_position, true, true,
+                    ).unwrap();
+                    for player in live.shared_spells.players.iter_mut()
+                        .chain(live.core.players.iter_mut())
+                        .chain(std::iter::once(&mut live.shared_spells.local_player))
+                        .filter(|player| player.entity_index == owner)
+                    {
+                        player.runtime_spell_experience[2] = 12;
+                        player.record[172..176].copy_from_slice(&12_i32.to_le_bytes());
+                    }
+                    live.shared_spells.spell_experience[2] = 12;
+                    live.core.context.spell_fire.as_mut().expect("local spell-fire consumer")
+                        .spell_experience[2] = 12;
+                }
+                let before_xp = contact.shared_spells().spell_experience()[25];
+                let mut suppressed = contact.clone();
+                suppressed.session.state.live.shared_spells.set_mission_rewards(
+                    crate::campaign::rewards::MissionRewards::Suppressed,
+                );
+                let mut unlinked = contact.clone();
+                {
+                    // This is the same bare sub_6DCA0 constructor used by
+                    // Mine's captured CaveIn payload. Its NewEvent word26 is
+                    // zero; the Mine caller writes owner and aim, not a holder.
+                    let particles = unlinked.session.definition.presentation.particles.clone();
+                    let live = &mut unlinked.session.state.live;
+                    let parent = live.economy.entities[usize::from(owner)].clone();
+                    let mut origin = parent.position;
+                    origin.z = origin.z.wrapping_add(parent.array_fov());
+                    let slot = super::super::guided_projectile::construct(
+                        &mut live.economy, &mut live.terrain, &particles, origin,
+                        Some(owner), parent.actual_speed, SOURCE_CONSTRUCTOR,
+                    ).unwrap().expect("real bare CaveIn flyer allocation");
+                    let flyer = &mut live.economy.entities[usize::from(slot)];
+                    assert_eq!(flyer.word_26(), 0, "NewEvent has no source holder");
+                    set_owner(flyer, owner);
+                    flyer.record[71..73].copy_from_slice(&[10, 89]);
+                    flyer.set_yaw(parent.yaw);
+                    flyer.set_pitch(parent.pitch);
+                }
+                for (candidate, expected_xp, expected_castle, cast) in [
+                    (&mut contact, before_xp + 1, 7, true),
+                    (&mut suppressed, before_xp, 12, true),
+                    (&mut unlinked, before_xp, 12, false),
+                ] {
+                    let assert_pre_award = |candidate: &crate::native_world::Mc2Simulation| {
+                        let live = &candidate.session.state.live;
+                        assert_eq!(live.shared_spells.spell_experience()[25], before_xp);
+                        assert_eq!(live.shared_spells.spell_experience()[2], 12);
+                        for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+                            .chain(std::iter::once(&live.shared_spells.local_player))
+                            .filter(|player| player.entity_index == owner)
+                        {
+                            assert_eq!(player.runtime_spell_experience[25], before_xp);
+                            assert_eq!(player.runtime_spell_experience[2], 12);
+                        }
+                        let fire = live.core.context.spell_fire.as_ref().unwrap();
+                        assert_eq!(fire.spell_experience[25], before_xp);
+                        assert_eq!(fire.spell_experience[2], 12);
+                    };
+                    assert_pre_award(candidate);
+                    let mut effect = None;
+                    let mut hidden = false;
+                    let mut reclaimed = false;
+                    for turn in 0..96 {
+                        // A dragon is a linked group: the moved head can
+                        // naturally bring another living body into the flyer.
+                        // Resolve the actual source hit against the current
+                        // collision descriptors and their slot generations.
+                        let admitted_actors = {
+                            let live = &candidate.session.state.live;
+                            live.economy.economy.fireball_collision_targets(&live.economy.entities)
+                                .into_iter()
+                                .filter(|actor| matches!(actor.class, 3 | 5) && actor.source_id != owner)
+                                .map(|actor| (actor.source_slot,
+                                    live.economy.slot_generation(actor.source_slot)))
+                                .collect::<Vec<_>>()
+                        };
+                        candidate.step_outer_turn(if turn == 0 && cast {
+                            PlayerCommand { flags: 0x10, ..Default::default() }
+                        } else { PlayerCommand::default() }, 0);
+                        assert!(candidate.dispatch_events().iter().all(|event|
+                            !matches!(event, Mc2DispatchEvent::Error { .. })),
+                            "CaveIn contact dispatch: {:?}", candidate.dispatch_events());
+                        let live = &candidate.session.state.live;
+                        if effect.is_none() {
+                            effect = live.economy.entities.iter().find(|row|
+                                row.active && (row.class, row.model, row.action) == (10, 89, 96)
+                                    && row.source_id == owner && row.source_word_96() != 0
+                                    && admitted_actors.contains(&(row.source_word_96(),
+                                        live.economy.slot_generation(row.source_word_96()))))
+                                .map(|row| (row.index, live.economy.slot_generation(row.index)));
+                        }
+                        if effect.is_none() {
+                            assert_eq!(live.shared_spells.spell_experience()[25], before_xp,
+                                "turn {turn}, posed actor {}, admitted {admitted_actors:?}, collapse packets {:?}",
+                                target.source_slot, live.economy.entities.iter().filter(|row|
+                                    row.active && (row.class, row.model) == (10, 89))
+                                    .map(|row| (row.index, row.source_id, row.source_word_96(), row.action))
+                                    .collect::<Vec<_>>());
+                            assert_pre_award(candidate);
+                        }
+                        if let Some((slot, generation)) = effect {
+                            let row = &live.economy.entities[usize::from(slot)];
+                            let same = live.economy.slot_generation(slot) == generation;
+                            hidden |= same && row.active && row.drawing_disabled();
+                            reclaimed |= !same || live.economy.free_source_slots().contains(&slot);
+                        }
+                        if reclaimed { break; }
+                    }
+                    assert!(effect.is_some() && hidden && reclaimed,
+                        "actual actor contact creates and naturally reclaims the collapse");
+                    let live = &candidate.session.state.live;
+                    assert_eq!(live.shared_spells.spell_experience()[25], expected_xp);
+                    assert_eq!(live.shared_spells.spell_experience()[2], expected_castle);
+                    for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+                        .chain(std::iter::once(&live.shared_spells.local_player))
+                        .filter(|player| player.entity_index == owner)
+                    {
+                        assert_eq!(player.runtime_spell_experience[25], expected_xp);
+                        assert_eq!(player.runtime_spell_experience[2], expected_castle);
+                    }
+                    let fire = live.core.context.spell_fire.as_ref().unwrap();
+                    assert_eq!(fire.spell_experience[25], expected_xp);
+                    assert_eq!(fire.spell_experience[2], expected_castle);
+                }
+            }
             let mut tracked = [None; 3];
             let mut hidden = [false; 3];
             let mut reclaimed = [false; 3];

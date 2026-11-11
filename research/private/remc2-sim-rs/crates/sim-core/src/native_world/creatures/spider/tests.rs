@@ -149,6 +149,7 @@ fn step_fixture(
     let mut feedback = crate::native_world::source_target::Creature23PlayerFeedback {
         shared: &mut a4.0,
         core_players: &mut a4.1,
+        fire: None,
         local_state: &mut a4.2,
         domains: None,
     };
