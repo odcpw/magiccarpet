@@ -11,6 +11,7 @@ namespace MagicCarpet.Native
     {
         private readonly Transform parent;
         private readonly GameObject model;
+        private readonly bool voxel;
         private readonly Material parchment, overlay, lip, binding, edge;
         internal const float FacingOffsetDegrees = 25f;
         private readonly Dictionary<ushort, Instance> instances = new();
@@ -23,28 +24,37 @@ namespace MagicCarpet.Native
             internal readonly ushort sourceId;
             internal readonly ulong generation;
             internal NativeSim.CampaignEntityPresentation row;
-            internal Instance(NativeSim.CampaignEntityPresentation row, GameObject model, Transform parent)
+            internal Instance(NativeSim.CampaignEntityPresentation row, GameObject model, Transform parent, bool voxel)
             {
                 this.row = row;
                 sourceId = row.sourceId;
                 generation = row.generation;
-                node = UnityEngine.Object.Instantiate(model, parent);
-                node.name = "Experience scroll " + row.entityIndex;
+                // Keep the FBX root's axis/unit conversion beneath our world
+                // placement. The single-mesh voxel export has a nonidentity
+                // import transform; replacing it tilts the parchment upright.
+                node = new GameObject("Experience scroll " + row.entityIndex);
+                node.transform.SetParent(parent, false);
+                var visual = UnityEngine.Object.Instantiate(model, node.transform, false);
+                // The voxel importer bakes the required factor into mesh units
+                // but also leaves it on the FBX root. Keep its axis rotation
+                // while removing that duplicate 100x root scale.
+                if (voxel) visual.transform.localScale = Vector3.one;
             }
         }
 
         internal ModernExperienceScroll(Transform parent, bool voxel)
         {
             this.parent = parent;
+            this.voxel = voxel;
             model = Resources.Load<GameObject>(voxel ?
                 "ModernExperienceScroll/ExperienceScrollVoxel" : "ModernExperienceScroll/ExperienceScroll");
             var texture = Resources.Load<Texture2D>("ModernExperienceScroll/ExperienceScrollAlbedo");
             var shader = Shader.Find("Universal Render Pipeline/Lit");
             // Missing generated resources leave the original sprite visible.
             if (model == null || texture == null || shader == null) { model = null; return; }
-            parchment = MakeMaterial(shader, "Scroll parchment", new Color(.86f, .65f, .40f), texture);
-            overlay = MakeMaterial(shader, "Scroll parchment overlay", new Color(.96f, .77f, .51f), texture);
-            lip = MakeMaterial(shader, "Scroll parchment lip", new Color(1f, .88f, .65f), texture);
+            parchment = MakeMaterial(shader, "Scroll parchment", new Color(.97f, .87f, .72f), texture);
+            overlay = MakeMaterial(shader, "Scroll parchment overlay", new Color(1f, .96f, .86f), texture);
+            lip = MakeMaterial(shader, "Scroll parchment lip", new Color(1f, .98f, .88f), texture);
             binding = MakeMaterial(shader, "Scroll violet binding", new Color(.32f, .10f, .30f), null);
             edge = MakeMaterial(shader, "Scroll rolled edge", new Color(.44f, .28f, .14f), null);
         }
@@ -86,7 +96,7 @@ namespace MagicCarpet.Native
                     }
                     if (!instances.TryGetValue(row.entityIndex, out var instance))
                     {
-                        instance = new Instance(row, model, parent);
+                        instance = new Instance(row, model, parent, voxel);
                         foreach (var renderer in instance.node.GetComponentsInChildren<Renderer>(true))
                         {
                             var materials = renderer.sharedMaterials;

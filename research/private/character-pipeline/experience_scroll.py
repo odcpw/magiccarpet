@@ -104,6 +104,48 @@ def curled_end(name, x, mat):
     return obj
 
 
+def loose_sheet(name, side, x0, x1, mat):
+    # The edge lifts away from the roll into a thin, curved sheet. Splitting
+    # it at the binding keeps the paper physically underneath the violet tie.
+    rows, columns = 16, 32
+    vertices = []
+    for thickness in (0, .04):
+        for row in range(rows + 1):
+            t = row / rows
+            for col in range(columns + 1):
+                u = col / columns
+                x = x0 + (x1 - x0) * u
+                z = .63 - .22 * t + .006 * t * math.sin(u * math.tau * 1.5)
+                # A shallow curve preserves a paper edge while avoiding a
+                # stair-stepped diagonal whose alternating faces dominate the
+                # voxel surface under grazing moonlight.
+                y = side * (.46 + .015 * math.sin(t * math.pi / 2) + thickness)
+                vertices.append((x, y, z))
+    row_stride = columns + 1
+    layer_stride = (rows + 1) * row_stride
+    faces = []
+    for row in range(rows):
+        for col in range(columns):
+            a = row * row_stride + col
+            b = a + 1; c = b + row_stride; d = a + row_stride
+            faces.append((a, b, c, d))
+            faces.append((a + layer_stride, d + layer_stride, c + layer_stride, b + layer_stride))
+    for row in range(rows):
+        a = row * row_stride; b = a + row_stride
+        faces.append((a, b, b + layer_stride, a + layer_stride))
+        a += columns; b += columns
+        faces.append((a, a + layer_stride, b + layer_stride, b))
+    for col in range(columns):
+        a = col; b = col + 1
+        faces.append((a, a + layer_stride, b + layer_stride, b))
+        a += rows * row_stride; b += rows * row_stride
+        faces.append((a, b, b + layer_stride, a + layer_stride))
+    mesh = bpy.data.meshes.new(name); mesh.from_pydata(vertices, [], faces); mesh.update()
+    obj = bpy.data.objects.new(name, mesh); bpy.context.scene.collection.objects.link(obj)
+    mesh.materials.append(mat); scroll_uv(mesh)
+    return obj
+
+
 def scroll_uv(mesh):
     uv = mesh.uv_layers.new(name='Parchment')
     for poly in mesh.polygons:
@@ -147,7 +189,7 @@ def export(path, objects):
 def voxelize(objects, materials, size=1/28):
     # Independently sample the closed pieces, in material priority order.
     trees=[BVHTree.FromObject(o,bpy.context.evaluated_depsgraph_get()) for o in objects]
-    lo=(-1.36,-.5,0); dims=(77,28,28); cells={}
+    lo=(-1.36,-.7,0); dims=(77,40,28); cells={}
     direction=Vector((0,0,1))
     for x in range(dims[0]):
         for y in range(dims[1]):
@@ -173,6 +215,22 @@ def voxelize(objects, materials, size=1/28):
     obj=bpy.data.objects.new('Scroll block surface',mesh); bpy.context.scene.collection.objects.link(obj)
     for m in materials: mesh.materials.append(m)
     for face, index in zip(mesh.polygons,indices): face.material_index=index
+    # Keep the block silhouette, while sharing the rolled surface's radial
+    # lighting direction across staircase faces. Flat axis normals made the
+    # paper and tie alternate between near-black and white in moonlight.
+    normals = []
+    for face in mesh.polygons:
+        face.use_smooth = True
+        for loop in face.loop_indices:
+            point = mesh.vertices[mesh.loops[loop].vertex_index].co
+            if abs(face.normal.x) > .5:
+                normal = face.normal
+            else:
+                normal = Vector((0, point.y, point.z - .5)).normalized()
+                if normal.dot(face.normal) < 0:
+                    normal = -normal
+            normals.append(tuple(normal))
+    mesh.normals_split_custom_set(normals)
     scroll_uv(mesh)
     print(f'SCROLL_VOXEL cells={len(cells)} faces={len(faces)}')
     return obj
@@ -182,9 +240,9 @@ def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args(sys.argv[sys.argv.index('--')+1:]); args.output.mkdir(parents=True,exist_ok=False)
     bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(use_global=False)
-    parchment=material('Scroll parchment',(.86,.65,.40))
-    overlay=material('Scroll parchment overlay',(.96,.77,.51))
-    lip=material('Scroll parchment lip',(1.0,.88,.65))
+    parchment=material('Scroll parchment',(.97,.87,.72))
+    overlay=material('Scroll parchment overlay',(1.0,.96,.86))
+    lip=material('Scroll parchment lip',(1.0,.98,.88))
     binding=material('Scroll violet binding',(.32,.10,.30))
     edge=material('Scroll rolled edge',(.44,.28,.14))
     # A short deep recessed end makes the rolled concentric edge legible.
@@ -195,6 +253,10 @@ def main():
              outer_paper('Top paper lip right', .10, .26, lip, inner=.44, outer=.482, x0=.05),
              outer_paper('Underside paper lip left', 3.24, 3.40, lip, inner=.44, outer=.482, x1=-.21),
              outer_paper('Underside paper lip right', 3.24, 3.40, lip, inner=.44, outer=.482, x0=.05),
+             loose_sheet('Front loose parchment left', -1, -1.25, -.21, lip),
+             loose_sheet('Front loose parchment right', -1, .05, 1.25, lip),
+             loose_sheet('Back loose parchment left', 1, -1.25, -.21, lip),
+             loose_sheet('Back loose parchment right', 1, .05, 1.25, lip),
              tube('Rolled end',1.27,1.34,.37,overlay),
              tube('Inner parchment curl',1.32,1.36,.27,parchment),
              curled_end('Right rolled spiral',1.39,edge),
@@ -212,7 +274,7 @@ def main():
         links.new(multiply.outputs['Color'], nodes.get('Principled BSDF').inputs['Base Color'])
     bpy.ops.wm.save_as_mainfile(filepath=str(args.output/'ExperienceScroll.blend'))
     export(args.output/'ExperienceScroll.fbx',objects)
-    voxel=voxelize(objects,[parchment,overlay,overlay,lip,lip,lip,lip,overlay,parchment,edge,edge,binding])
+    voxel=voxelize(objects,[parchment,overlay,overlay,lip,lip,lip,lip,lip,lip,lip,lip,overlay,parchment,edge,edge,binding])
     export(args.output/'ExperienceScrollVoxel.fbx',[voxel])
 
 
