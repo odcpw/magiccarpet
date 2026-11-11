@@ -11,7 +11,8 @@ namespace MagicCarpet.Native
     {
         private readonly Transform parent;
         private readonly GameObject model;
-        private readonly Material parchment, overlay, binding, edge;
+        private readonly Material parchment, overlay, lip, binding, edge;
+        internal const float FacingOffsetDegrees = 25f;
         private readonly Dictionary<ushort, Instance> instances = new();
         private readonly HashSet<ushort> current = new();
         private readonly List<ushort> removed = new();
@@ -43,6 +44,7 @@ namespace MagicCarpet.Native
             if (model == null || texture == null || shader == null) { model = null; return; }
             parchment = MakeMaterial(shader, "Scroll parchment", new Color(.86f, .65f, .40f), texture);
             overlay = MakeMaterial(shader, "Scroll parchment overlay", new Color(.96f, .77f, .51f), texture);
+            lip = MakeMaterial(shader, "Scroll parchment lip", new Color(1f, .88f, .65f), texture);
             binding = MakeMaterial(shader, "Scroll violet binding", new Color(.32f, .10f, .30f), null);
             edge = MakeMaterial(shader, "Scroll rolled edge", new Color(.44f, .28f, .14f), null);
         }
@@ -93,6 +95,7 @@ namespace MagicCarpet.Native
                                 var name = materials[i] == null ? "" : materials[i].name.ToLowerInvariant();
                                 materials[i] = name.Contains("violet") ? binding :
                                     name.Contains("edge") ? edge :
+                                    name.Contains("lip") ? lip :
                                     name.Contains("overlay") ? overlay : parchment;
                             }
                             renderer.sharedMaterials = materials;
@@ -123,7 +126,7 @@ namespace MagicCarpet.Native
                 var x = eye.x + Mathf.Repeat(row.x / 64f - eye.x + 512f, 1024f) - 512f;
                 var z = eye.z + Mathf.Repeat(row.y / 64f - eye.z + 512f, 1024f) - 512f;
                 instance.node.transform.SetPositionAndRotation(new Vector3(x, row.z / 64f, z),
-                    Quaternion.Euler(0, camera.transform.eulerAngles.y, 0));
+                    Quaternion.Euler(0, camera.transform.eulerAngles.y + FacingOffsetDegrees, 0));
                 instance.node.transform.localScale = Vector3.one * (row.logicalHeight / 64f);
                 instance.node.SetActive(visible);
             }
@@ -133,7 +136,7 @@ namespace MagicCarpet.Native
         {
             foreach (var instance in instances.Values) Destroy(instance.node);
             instances.Clear(); current.Clear();
-            Destroy(parchment); Destroy(overlay); Destroy(binding); Destroy(edge);
+            Destroy(parchment); Destroy(overlay); Destroy(lip); Destroy(binding); Destroy(edge);
         }
 
         private static void Destroy(UnityEngine.Object obj)

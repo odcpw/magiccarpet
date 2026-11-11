@@ -48,14 +48,14 @@ def tube(name, x0, x1, radius, mat, segments=96, rings=24):
     return obj
 
 
-def outer_paper(name, start, end, mat):
+def outer_paper(name, start, end, mat, inner=.405, outer=.47, x0=-1.25, x1=1.25):
     # Closed, irregular overwrap: the exposed edge reads as a sheet wrapped
     # around the roll rather than a seamless wooden cylinder. Its thickness is
     # also resolvable in the voxel sampling grid.
     steps = 48
     vertices = []
-    for radius in (.405, .47):
-        for x in (-1.25, 1.25):
+    for radius in (inner, outer):
+        for x in (x0, x1):
             for i in range(steps + 1):
                 angle = start + (end - start) * i / steps
                 r = radius * (1 + .008 * math.sin(angle * 7 + x * 3))
@@ -184,19 +184,24 @@ def main():
     bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(use_global=False)
     parchment=material('Scroll parchment',(.86,.65,.40))
     overlay=material('Scroll parchment overlay',(.96,.77,.51))
+    lip=material('Scroll parchment lip',(1.0,.88,.65))
     binding=material('Scroll violet binding',(.32,.10,.30))
     edge=material('Scroll rolled edge',(.44,.28,.14))
     # A short deep recessed end makes the rolled concentric edge legible.
     objects=[tube('Parchment body',-1.30,1.30,.43,parchment),
              outer_paper('Outer parchment top fold', .10, 2.78, overlay),
              outer_paper('Outer parchment underside fold', 3.24, 5.92, overlay),
+             outer_paper('Top paper lip left', .10, .26, lip, inner=.44, outer=.482, x1=-.21),
+             outer_paper('Top paper lip right', .10, .26, lip, inner=.44, outer=.482, x0=.05),
+             outer_paper('Underside paper lip left', 3.24, 3.40, lip, inner=.44, outer=.482, x1=-.21),
+             outer_paper('Underside paper lip right', 3.24, 3.40, lip, inner=.44, outer=.482, x0=.05),
              tube('Rolled end',1.27,1.34,.37,overlay),
              tube('Inner parchment curl',1.32,1.36,.27,parchment),
              curled_end('Right rolled spiral',1.39,edge),
              curled_end('Left rolled spiral',-1.33,edge),
-             tube('Central violet binding',-.20,.04,.486,binding)]
+             tube('Central violet binding',-.20,.04,.49,binding)]
     texture = parchment_texture(args.output/'ExperienceScrollAlbedo.png')
-    for paper in (parchment, overlay):
+    for paper in (parchment, overlay, lip):
         nodes = paper.node_tree.nodes
         image_node = nodes.new('ShaderNodeTexImage'); image_node.image = texture
         multiply = nodes.new('ShaderNodeMixRGB'); multiply.blend_type = 'MULTIPLY'
@@ -207,7 +212,7 @@ def main():
         links.new(multiply.outputs['Color'], nodes.get('Principled BSDF').inputs['Base Color'])
     bpy.ops.wm.save_as_mainfile(filepath=str(args.output/'ExperienceScroll.blend'))
     export(args.output/'ExperienceScroll.fbx',objects)
-    voxel=voxelize(objects,[parchment,overlay,overlay,overlay,parchment,edge,edge,binding])
+    voxel=voxelize(objects,[parchment,overlay,overlay,lip,lip,lip,lip,overlay,parchment,edge,edge,binding])
     export(args.output/'ExperienceScrollVoxel.fbx',[voxel])
 
 

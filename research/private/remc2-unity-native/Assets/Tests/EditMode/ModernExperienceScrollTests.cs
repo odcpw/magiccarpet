@@ -49,6 +49,7 @@ namespace MagicCarpet.Native.Tests
                 var materials = renderers.SelectMany(r => r.sharedMaterials).Select(m => m.name).Distinct().ToArray();
                 Assert.That(materials, Does.Contain("Scroll parchment"));
                 Assert.That(materials, Does.Contain("Scroll parchment overlay"));
+                Assert.That(materials, Does.Contain("Scroll parchment lip"));
                 Assert.That(materials, Does.Contain("Scroll rolled edge"));
                 Assert.That(materials, Does.Contain("Scroll violet binding"));
                 var paper = renderers.SelectMany(r => r.sharedMaterials)
@@ -58,6 +59,22 @@ namespace MagicCarpet.Native.Tests
                 foreach (var renderer in renderers.Skip(1)) bounds.Encapsulate(renderer.bounds);
                 Assert.That(bounds.size.x / bounds.size.y, Is.InRange(2.3f, 3.2f));
                 Assert.That(bounds.size.y, Is.InRange(.8f, 1.4f));
+                Assert.That(Quaternion.Angle(first.rotation,
+                    Quaternion.Euler(0, ModernExperienceScroll.FacingOffsetDegrees, 0)), Is.LessThan(.01f));
+                if (!voxel)
+                {
+                    var ends = renderers.Where(r => r.sharedMaterials.Any(m => m.name == "Scroll rolled edge"))
+                        .OrderBy(r => first.InverseTransformPoint(r.bounds.center).x).ToArray();
+                    Assert.That(ends.Length, Is.EqualTo(2));
+                    Assert.That(first.InverseTransformPoint(ends[0].bounds.center).x, Is.LessThan(-1f));
+                    Assert.That(first.InverseTransformPoint(ends[1].bounds.center).x, Is.GreaterThan(1f));
+                    Assert.That(camera.transform.InverseTransformPoint(ends[1].bounds.center).z,
+                        Is.LessThan(camera.transform.InverseTransformPoint(ends[0].bounds.center).z));
+                }
+                camera.transform.rotation = Quaternion.Euler(0, 37, 0);
+                presenter.Render(camera, true);
+                Assert.That(Quaternion.Angle(first.rotation,
+                    Quaternion.Euler(0, 37 + ModernExperienceScroll.FacingOffsetDegrees, 0)), Is.LessThan(.01f));
                 // The next native presentation omits the collected occupant.
                 presenter.Present(entities, Array.Empty<NativeSim.CampaignEntityPresentation>());
                 Assert.That(presenter.Replaces(31), Is.False);
