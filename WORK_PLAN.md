@@ -809,17 +809,30 @@ then level assembly, with his human playtest after those stages. Continue
 independent shared capabilities while recording unverified human gameplay.
 Missing earned campaign saves or human victory evidence do not gate that work.
 
-Latest installed shared checkpoint: canonical `c77a0e7d`, compatible Original
-runtime `566a46ad`, native `69e44aa8debb`. It includes `12d4e808` reward/current
-delivery-target and 32-bit lifetime fixes, then complete Gravity/Wind reward
-publication. Both batches are verified, committed, pushed and installed;
-all 662 build inputs and installed 470 Rust/200 UI/142 player inputs match.
-Each passed one first-attempt Original launch/load; human gameplay is unverified.
-Finite directional `mc-k5k.2` and Army/field `mc-k5k.4` acceptance is closed after
-bounded source/evidence review. `mc-6qf.2`, late spells `.5` and Cave `.6` remain
-active: finish exact reward publication at their actual contact boundaries,
-including current-holder and allocation/reclaim consumers. Current proofs:
-`research/private/generated/shared-engine-20261111-integration/`.
+Latest installed shared checkpoint: canonical `994132fc`, compatible Original
+runtime `22fd2a5a`, native `9f2399ea59db`. Fool's Mana, Magic Mine, Cave In,
+support and model23 feedback now publish authoritative rewards at the actual
+source boundary into core/fire state, including the Castle cap. Cave requires
+the current nonzero holder; Mine publishes before fallible product allocation.
+Acquired all-tier consumers, source-order/negative controls and independent
+source/gate reviews pass. The strict release build and all662 remote inputs,
+installed470Rust/200UI/142player inputs, both plugins and mapped library match.
+One first-attempt Original map/load/NightSpire scene/HUD smoke passed; root
+viewed the scene and stopped its owned processes. No Unity/art change or human
+gameplay claim. Finite late families `mc-k5k.5` and Cave `.6` are now closed,
+alongside directional `.2` and Army/field `.4`; full engine/campaign is open.
+Alliance uses retained acquired all-tier evidence plus current affected holder,
+allocation, projectile, parent/expiry controls and bounded source review; its
+long whole scenario was not repeated. Proofs and exact limits:
+`research/private/generated/shared-engine-20261111-integration/` batch3/candidate3.
+
+The next connected batch keeps `mc-6qf.2` progression/counters and `mc-6qf.1`
+activation open: real reward input through save/replay/carry/reset/results,
+and configured actual final row368 through scheduled group28, BUILD destruction
+and group29 boss production. Terra owners and the Sol integrator must identify
+real defects or close existing finite coverage gaps without inventing missing
+behavior. A configured constructor boundary is not an earned final mission;
+recorded public inputs are fixed regression evidence, not an AI playthrough.
 
 Oliver subsequently authorized deleting obsolete temporary build/test outputs
 instead of archiving them. Root removed19 inactive Nov3/4 output directories
