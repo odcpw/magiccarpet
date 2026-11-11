@@ -4,8 +4,9 @@ using UnityEngine;
 
 namespace MagicCarpet.Native
 {
-    // The native visible presentation stream owns collection, holder and
-    // reset state. This view adds no independent animation or pickup logic.
+    // Castle and Speed world pickups use the same original TMAP 59 vessel.
+    // The native visible stream owns collection, holder and reset state;
+    // this view adds no independent animation or pickup logic.
     internal sealed class ModernCastleSpellJar : IDisposable
     {
         private readonly Transform parent;
@@ -27,7 +28,7 @@ namespace MagicCarpet.Native
                 this.row = row;
                 sourceId = row.sourceId;
                 generation = row.generation;
-                node = new GameObject("Castle spell jar " + row.entityIndex);
+                node = new GameObject("Spell jar " + row.entityIndex);
                 node.transform.SetParent(parent, false);
                 var visual = UnityEngine.Object.Instantiate(model, node.transform);
                 // Blender exports the single voxel mesh Z-up; the multi-object
@@ -65,8 +66,9 @@ namespace MagicCarpet.Native
 
         internal static bool Matches(NativeSim.CampaignEntitySnapshot entity,
             NativeSim.CampaignEntityPresentation row) =>
-            entity.active != 0 && entity.classId == 15 && entity.model == 2 &&
-            (entity.action == 7 || entity.action == 8) &&
+            entity.active != 0 && entity.classId == 15 &&
+            ((entity.model == 2 && (entity.action == 7 || entity.action == 8)) ||
+             (entity.model == 3 && (entity.action == 10 || entity.action == 11))) &&
             entity.entityIndex == row.entityIndex && entity.sourceId == row.sourceId &&
             row.entityIndex != 0 && row.sourceId != 0 && (row.controlFlags & 1) == 0 &&
             row.renderParameterIndex == 77 && row.baseTmap == 59 && row.selectedTmap == 59 &&

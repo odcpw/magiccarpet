@@ -30,7 +30,7 @@ namespace MagicCarpet.Native.Tests
                 var entities = new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> { [31] = entity };
                 Assert.That(ModernCastleSpellJar.Matches(entity, view), Is.True);
                 var other = entity; other.model = 3;
-                Assert.That(ModernCastleSpellJar.Matches(other, view), Is.False, "Speed jar is separate");
+                Assert.That(ModernCastleSpellJar.Matches(other, view), Is.False, "Castle action on Speed model");
                 other = entity; other.action = 6;
                 Assert.That(ModernCastleSpellJar.Matches(other, view), Is.False, "holder is not a world pickup");
                 other = entity; other.action = 8;
