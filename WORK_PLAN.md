@@ -42,17 +42,22 @@ focused Unity tests and a checked 150-frame native-gameplay view with fuller,
 cooler crown and stable grounding; Voxel graphics, frame times and installation
 remain open. Stone candidate07 passes five Unity material/lighting checks,
 an exact current-native t10688 replay plus 120 neutral ticks, and a checked
-120-frame Modern night view with a stable source-like silhouette. Its first
-Voxel capture showed a nearby building because the native-camera flag was
-missing; a corrected nonoverwriting view is queued. A Fireball passed through
-its volume; the original stone lacks the direct-hit flag, so that observation
-is not a demonstrated defect.
+120-frame Modern night view with a stable source-like silhouette. Two Voxel
+captures showed the same scenery but no statue. The built Voxel FBX root carries
+an import rotation and 100x scale that the presenter overwrote. A test measured
+0.0183 instead of about 7.8 height on the old Voxel path; the wrapper fix in
+1bd39f0b preserves the imported transform and passes 7/7 focused Unity tests.
+Matching live Voxel appearance and installation remain open. A Fireball passed
+through its volume; the original stone lacks the direct-hit flag, so that
+observation is not a demonstrated defect.
 Collector candidate03 passes actual native-gameplay flight; candidate05's
 bright circles read as windows. Candidate06's flatter patches passed a checked
 150-frame night flight without motion defects but still appeared too bright.
 The darker owner-tinted material passes a second 150-frame integrated6 night
-flight with subdued cloth highlights and stable native placement. Voxel form,
-loss/reclaim/reset/load visual qualification and installation remain open.
+flight with subdued cloth highlights and stable native placement. A checked
+150-frame Voxel-world flight keeps this smooth balloon stable as a hybrid asset;
+voxelized balloon geometry, loss/reclaim/reset/load qualification and
+installation remain open.
 The Castle jar passes 2/2 Unity import and public native pickup/reset/cold-load
 checks; checked Modern approach and Voxel orbit frames show its appearance and
 ground contact. Its installed and on-screen pickup-removal checks remain open.
@@ -60,10 +65,11 @@ Speed uses the same source TMAP59 vessel, with a distinct class15/model3
 presentation matcher. Its fresh public route spawns slot49 at t1107 and collects
 it through 76 ordinary inputs at t1183; native cold/reset and 4/4 focused Unity
 tests pass. Integrated6 90-frame Modern and Voxel scenery-follow views have
-checked stable lid, body and two handles. The elevated view does not prove
-precise ground contact; on-screen earned pickup disappearance and installation
-remain open. Source sound18 was prepared and played by the integrated player;
-physical audibility was not checked.
+checked stable lid, body and two handles. A fixed-camera earned Modern capture
+shows the jar through frame74 and absent from frame75 at the native tick1183
+pickup; source sound18 was played by the integrated player. The elevated view
+does not prove precise ground contact; Voxel earned removal, player F5/R and
+installation remain open. Physical sound audibility was not checked.
 Experience Scroll has a free editable master, Modern/Voxel import 2/2, and a
 focused live class14 DTO/hide projection test. The current-native earned group4
 cut matches all five live rows; 255 ordinary inputs collect all five with one
@@ -71,9 +77,12 @@ effect code4 and sound63 each, hidden state and slot reclaim. The focused
 sim-core test passes exact +4 experience per enabled family, sound63, hidden
 same-pass state and following-pass reclaim. Public snapshots expose no raw XP,
 and no tier notice was observed. The first integrated6 live Modern capture was
-rejected: its dark smooth cylinder did not read as parchment. Candidate07 adds
-layered lighter sheets and raised spiral ends and passes both focused Unity
-import tests; integrated7 live Modern/Voxel views and installation remain open.
+rejected: its dark smooth cylinder did not read as parchment. Candidate07's
+lighter layers pass 2/2 Unity imports but its integrated7 Modern side view still
+reads as a tan tube and is rejected. Candidate08b has a checked isolated angled
+right-end and exposed lip preview; Unity import and live Modern/Voxel views
+remain open. The next build is held below the plan's 5 GB SSD floor pending
+approved cleanup of an unused generated cache.
 Portal appearance, dynamic effects, whole-map Voxel and gameplay performance
 also remain open. Public Level1 controls reach Firefly group6, its real lethal
 combat, Worm group4 and a genuine House10 demolition-born Trader172/gen27.

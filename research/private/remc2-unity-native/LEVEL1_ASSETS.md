@@ -70,7 +70,7 @@ the start. Further house/Castle production has conditional, non-fixed counts.
 | Traders, remaining runtime qualification | Conditional house production, model14; all47 opening houses have2 occupants | Art/bindings ready; obtain genuine Level1 production and public combat/death/voxel-lifetime evidence without state injection |
 | Worm | Four authored heads, groups 4/34; each can allocate up to 16 segments | Head/repeating segments, native multipart placement, movement/attack/reaction/death and voxel breakup |
 | Firefly | Six authored, groups 6/33 | Original silhouette, wing/body animation, flight/turn/attack/reaction/death and attack effects |
-| Collector balloon | Spawned by player Castle, class 3/model 3 | mc-chx: candidate06 editable model/export and readonly child consumer; earned birth/flight, four500-mana collections and2000 deposit proven. Darker owner tint passes a checked 150-frame integrated6 night flight; Voxel form, visual reset/load and installation remain open. |
+| Collector balloon | Spawned by player Castle, class 3/model 3 | mc-chx: editable model/export and readonly child consumer; earned birth/flight, four500-mana collections and2000 deposit proven. Darker owner tint passes checked 150-frame integrated6 Modern and hybrid Voxel-world flights; balloon geometry remains smooth. Loss/reset/load and installation remain open. |
 | Castle auxiliary/defender | Produced at higher Castle stages, class 5/model 15 | Inspect original appearance; distinct from balloon and invisible shooting controller; match admitted native states |
 
 Reset villager appearances are TMAP 155 ×3, 180 ×6, 183 ×9 and 199 ×10;
@@ -107,7 +107,7 @@ A newly observed natural producer must extend this inventory.
 | House/building library | 47 initial and 34 deferred constructor records | Complete source geometry/material variants, construction/damage/destruction and night windows |
 | Player Castle | Dynamic construction | Source stage silhouettes, growth/construction/removal, owner markings and effects |
 | Authored trees | 18, group 1 | Source-backed teal canopy passes 150-frame live view; fireball live→burning→bare native sequence proven; Voxel graphics, performance and installation remain open |
-| Authored stone | One, group 6 | Candidate07 passes five Unity import/material checks, exact earned current-native replay and checked 120-frame Modern night view. Its first Voxel capture used the wrong camera and showed a building; corrected view and installation remain open. Ordinary Fireballs do not directly collide with unchanged stone in source. |
+| Authored stone | One, group 6 | Candidate07 passes checked 120-frame Modern night view. Two Voxel views show scenery but omit the statue; built FBX root transform was overwritten. Test failed old Voxel height 0.0183 versus about 7.8; wrapper fix 1bd39f0b passes 7/7 Unity tests. Rebuilt live Voxel view and installation remain open. Ordinary Fireballs do not directly collide with unchanged stone in source. |
 | Dolmens | Three at reset | Source-grounded revised model passes 150-frame normal-camera hillside view; charge feedback, Voxel view and installation remain open |
 | Exit portal/target | One, group 4 | Source appearance, inactive/active/entry and exit-sequence effects |
 
@@ -152,8 +152,8 @@ selected house and a local terrain patch; whole-level coverage is integration wo
 
 | Asset project | Source occurrence or role | Required result |
 | --- | --- | --- |
-| Experience scroll | Five authored, group 4 | Current-native earned cut shows five live rows and ordinary controls collect all five with effect4 and sound63 each; focused source test proves exact +4 XP. First integrated6 Modern view was rejected as a dark cylinder. Revised lighter layered parchment and spiral ends pass 2/2 Unity import tests; integrated7 live views and installation remain open. |
-| Castle and Speed jars | One authored each | Both share source TMAP59 vessel; Castle live Modern/Voxel views and native pickup/reset/cold-load pass. Speed naturally spawns at t1107 and is collected by t1183 through ordinary input; shared-presenter Unity tests pass 4/4. Checked 90-frame integrated6 Modern/Voxel views show stable jar form. Exact contact, on-screen earned disappearance, actual player F5/R and installation remain open. |
+| Experience scroll | Five authored, group 4 | Current-native earned cut shows five live rows and ordinary controls collect all five with effect4 and sound63 each; focused source test proves exact +4 XP. Integrated6 and integrated7 Modern views were visually rejected as cylinder/tube. Candidate08b angled right-end and lip pass isolated visual review; Unity import, live Modern/Voxel and installation remain open. |
+| Castle and Speed jars | One authored each | Both share source TMAP59 vessel; Castle live Modern/Voxel views and native pickup/reset/cold-load pass. Speed spawns at t1107 and is collected at t1183 through ordinary input; shared-presenter Unity tests pass 4/4. Checked integrated6 Modern/Voxel views show stable jar form; fixed-camera Modern shows visible through frame74, absent at frame75 on earned pickup. Exact contact, Voxel earned removal, actual player F5/R and installation remain open. |
 | Mana spheres | Runtime deaths/economy | Native lifetime/owner/amount in both styles, capture/carry/collection and save/load |
 | Player presentation | First-person and admitted reflection/possession views | Original-informed carpet/hands/casting cues where visible; no invented rival population |
 | Fireball | Available at start | Emission, travel, impact, fire/expiry; only impact debris bounces |
