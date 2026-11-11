@@ -25,7 +25,7 @@ namespace MagicCarpet.Native.Tests
             var camera = new GameObject("spell jar camera").AddComponent<Camera>();
             try
             {
-                using var presenter = new ModernCastleSpellJar(parent.transform, voxel);
+                using var presenter = new ModernCastleSpellJar(parent.transform, voxel, (_, _) => 3f);
                 var speed = Entity(49, 3, 10); var castle = Entity(31, 2, 7);
                 var speedView = View(49); var castleView = View(31);
                 var entities = new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> { [49] = speed, [31] = castle };

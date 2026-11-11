@@ -10,6 +10,7 @@ namespace MagicCarpet.Native
     internal sealed class ModernCastleSpellJar : IDisposable
     {
         private readonly Transform parent;
+        private readonly Func<float, float, float> terrainHeight;
         private readonly GameObject model;
         private readonly bool voxel;
         private readonly Material silver, rim, red;
@@ -41,9 +42,10 @@ namespace MagicCarpet.Native
             }
         }
 
-        internal ModernCastleSpellJar(Transform parent, bool voxel)
+        internal ModernCastleSpellJar(Transform parent, bool voxel, Func<float, float, float> terrainHeight)
         {
             this.parent = parent;
+            this.terrainHeight = terrainHeight ?? throw new ArgumentNullException(nameof(terrainHeight));
             this.voxel = voxel;
             model = Resources.Load<GameObject>(voxel ?
                 "ModernCastleSpellJar/CastleSpellJarVoxel" : "ModernCastleSpellJar/CastleSpellJar");
@@ -128,7 +130,11 @@ namespace MagicCarpet.Native
                 var row = instance.row;
                 var x = eye.x + Mathf.Repeat(row.x / 64f - eye.x + 512f, 1024f) - 512f;
                 var z = eye.z + Mathf.Repeat(row.y / 64f - eye.z + 512f, 1024f) - 512f;
-                instance.node.transform.SetPositionAndRotation(new Vector3(x, row.z / 64f, z),
+                // The Modern terrain reconstructs the source heightfield. Lift
+                // a jar above that surface when reconstruction would bury it,
+                // while retaining any higher native position during settling.
+                var y = Mathf.Max(row.z / 64f, terrainHeight(x, z));
+                instance.node.transform.SetPositionAndRotation(new Vector3(x, y, z),
                     Quaternion.Euler(0, camera.transform.eulerAngles.y, 0));
                 instance.node.transform.localScale = Vector3.one * (row.logicalHeight / 64f);
                 instance.node.SetActive(visible);

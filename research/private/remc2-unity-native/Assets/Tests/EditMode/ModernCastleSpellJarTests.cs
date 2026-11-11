@@ -19,13 +19,42 @@ namespace MagicCarpet.Native.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public void ReconstructedGroundLiftsJarWithoutDiscardingHigherNativePosition(bool voxel)
+        {
+            var parent = new GameObject("jar ground test");
+            var camera = new GameObject("jar ground camera").AddComponent<Camera>();
+            try
+            {
+                var height = 5f; var sampled = Vector2.zero;
+                using var presenter = new ModernCastleSpellJar(parent.transform, voxel, (x, z) => {
+                    sampled = new Vector2(x, z); return height;
+                });
+                var view = View(); var entity = Entity();
+                presenter.Present(new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> { [31] = entity }, new[] { view });
+                presenter.Render(camera, true);
+                var node = parent.transform.GetChild(0);
+                Assert.That(sampled, Is.EqualTo(new Vector2(10, 20)));
+                Assert.That(node.position.y, Is.EqualTo(5).Within(.0001f), "the visual ground cannot bury the jar");
+                height = 1f;
+                presenter.Render(camera, true);
+                Assert.That(node.position.y, Is.EqualTo(3).Within(.0001f), "native settling above ground is retained");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(camera.gameObject);
+                UnityEngine.Object.DestroyImmediate(parent);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public void VisibleNativeOccupantControlsAdmissionCollectionAndSlotReuse(bool voxel)
         {
             var parent = new GameObject("castle jar test");
             var camera = new GameObject("castle jar camera").AddComponent<Camera>();
             try
             {
-                using var presenter = new ModernCastleSpellJar(parent.transform, voxel);
+                using var presenter = new ModernCastleSpellJar(parent.transform, voxel, (_, _) => 3f);
                 var view = View(); var entity = Entity();
                 var entities = new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> { [31] = entity };
                 Assert.That(ModernCastleSpellJar.Matches(entity, view), Is.True);
