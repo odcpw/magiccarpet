@@ -30,6 +30,10 @@ edits and GPU/Unity/Cargo work. No paid3D generation. Finish each asset through
 its real consumer, source lifecycle, checked frames and installed result; do
 not close an art-only handoff or call whole-map Voxel/fullLevel1 complete early.
 Continue through the complete existing inventory and final mission checks.
+Oliver's current execution preference is a small team: two disjoint asset
+owners plus root integration. Keep one compact capture/video and receipt for a
+decisive behavior, inspect its important frames, then discard redundant raw
+frame sequences; do not accumulate large review-player copies.
 
 Private integrated6 contains source-backed Dolmen, Tree, Stone, exit target,
 Collector, Experience Scroll and shared Castle/Speed jar presenters plus final
@@ -63,8 +67,13 @@ flight with subdued cloth highlights and stable native placement. A checked
 voxelized balloon geometry, loss/reclaim/reset/load qualification and
 installation remain open.
 The Castle jar passes 2/2 Unity import and public native pickup/reset/cold-load
-checks; checked Modern approach and Voxel orbit frames show its appearance and
-ground contact. Its installed and on-screen pickup-removal checks remain open.
+checks; checked Modern approach and Voxel orbit frames show its appearance.
+An earned-terrain Unity check found both jars buried in reconstructed ground
+by 0.1044 Castle and 0.4119 Speed world units in both styles. Jar fix 4df898c7
+and presenter join c03a7c90 sample rendered terrain while preserving a higher
+native position; all four post-fix contact deltas are below 0.0000003, and
+six portable focused checks pass. Actual player F5/R, Castle on-screen pickup
+removal and installation remain open.
 Speed uses the same source TMAP59 vessel, with a distinct class15/model3
 presentation matcher. Its fresh public route spawns slot49 at t1107 and collects
 it through 76 ordinary inputs at t1183; native cold/reset and 4/4 focused Unity
@@ -91,10 +100,17 @@ scroll and the Stone wrapper fix. Its checked 225-frame earned Modern view is
 still rejected: the foreground side view reads as a dark tan cylinder even
 though the rolled end is clearer in the background. A stronger parchment
 shape/material pass, live Modern/Voxel review and installation remain open.
+Candidate08c7 committed as 424763bb removes Voxel preview stripes with
+outward normals, retaining sampled block geometry; its red/green Unity gate
+passes. An integrated9 earned 100-frame Modern view still reads as a gray
+roll with the right rim obscured by vegetation and was rejected. Source TMAP259
+is a horizontal tied roll, so the next pass targets clearer source-faithful
+paper and right-rim visibility in the actual night camera.
 Scoped cleanup of old generated caches, failed villager trials,
-derived character history and obsolete review players recovered about 11 GiB;
-the active Unity and TRELLIS toolchains, accepted masters and current/rollback
-players were retained.
+derived character history, obsolete review players and duplicate PNG frames
+recovered about 22 GiB across SSD and HDD. Videos, receipts and native frame
+observations were retained for qualified captures; the active Unity and
+TRELLIS toolchains, accepted masters and current/rollback players remain.
 Portal appearance, dynamic effects, whole-map Voxel and gameplay performance
 also remain open. Public Level1 controls reach Firefly group6, its real lethal
 combat, Worm group4 and a genuine House10 demolition-born Trader172/gen27.
