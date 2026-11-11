@@ -48,6 +48,7 @@ namespace MagicCarpet.Native
             NativeSim.CampaignEntityPresentation view) =>
             entity.active != 0 && entity.classId == 2 && entity.model == 2 && entity.action == 6 &&
             entity.entityIndex == view.entityIndex && entity.sourceId == view.sourceId &&
+            (view.controlFlags & 0x421) == 0 &&
             view.renderParameterIndex == 39 && view.baseTmap == 79 && view.selectedTmap == 79 &&
             view.logicalHeight != 0;
 
@@ -86,8 +87,11 @@ namespace MagicCarpet.Native
                 if (!entityBySlot.TryGetValue(view.entityIndex, out var entity) || !Matches(entity, view)) continue;
                 rows.Add(view.entityIndex, view);
                 if (objects.ContainsKey(view.entityIndex)) continue;
-                var node = UnityEngine.Object.Instantiate(model, root);
-                node.name = "Dolmen " + view.entityIndex;
+                // The Voxel FBX carries import-axis and scale corrections on
+                // its root; apply world placement to a separate parent.
+                var node = new GameObject("Dolmen " + view.entityIndex);
+                node.transform.SetParent(root, false);
+                UnityEngine.Object.Instantiate(model, node.transform, false);
                 foreach (var renderer in node.GetComponentsInChildren<Renderer>(true))
                 {
                     renderer.sharedMaterial = stone;
@@ -97,7 +101,7 @@ namespace MagicCarpet.Native
             }
             foreach (var slot in objects.Keys.Where(slot => !rows.ContainsKey(slot)).ToArray())
             {
-                UnityEngine.Object.Destroy(objects[slot]);
+                Destroy(objects[slot]);
                 objects.Remove(slot);
             }
         }
@@ -121,15 +125,21 @@ namespace MagicCarpet.Native
         private void Clear()
         {
             rows.Clear();
-            foreach (var node in objects.Values) UnityEngine.Object.Destroy(node);
+            foreach (var node in objects.Values) Destroy(node);
             objects.Clear();
+        }
+
+        private static void Destroy(UnityEngine.Object value)
+        {
+            if (Application.isPlaying) UnityEngine.Object.Destroy(value);
+            else UnityEngine.Object.DestroyImmediate(value);
         }
 
         public void Dispose()
         {
             Clear();
-            UnityEngine.Object.Destroy(root.gameObject);
-            UnityEngine.Object.Destroy(stone);
+            Destroy(root.gameObject);
+            Destroy(stone);
         }
     }
 }
