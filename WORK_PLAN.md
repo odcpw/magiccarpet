@@ -81,9 +81,16 @@ and no tier notice was observed. The first integrated6 live Modern capture was
 rejected: its dark smooth cylinder did not read as parchment. Candidate07's
 lighter layers pass 2/2 Unity imports but its integrated7 Modern side view still
 reads as a tan tube and is rejected. Candidate08b has a checked isolated angled
-right-end and exposed lip preview; Unity import and live Modern/Voxel views
-remain open. The next build is held below the plan's 5 GB SSD floor pending
-approved cleanup of an unused generated cache.
+right-end and exposed lip preview; its 2/2 real Unity import/orientation checks
+pass and it is committed as 2b79eeb4. Integrated8 is built privately with this
+scroll and the Stone wrapper fix. Its checked 225-frame earned Modern view is
+still rejected: the foreground side view reads as a dark tan cylinder even
+though the rolled end is clearer in the background. A stronger parchment
+shape/material pass, live Modern/Voxel review and installation remain open.
+Scoped cleanup of old generated caches, failed villager trials,
+derived character history and obsolete review players recovered about 11 GiB;
+the active Unity and TRELLIS toolchains, accepted masters and current/rollback
+players were retained.
 Portal appearance, dynamic effects, whole-map Voxel and gameplay performance
 also remain open. Public Level1 controls reach Firefly group6, its real lethal
 combat, Worm group4 and a genuine House10 demolition-born Trader172/gen27.
@@ -777,6 +784,10 @@ acceptance open; a working control panel alone does not finish the environment.
 Oliver's 2026-11-09 correction keeps voxel/Modern work in its separate thread.
 This thread continues remc2-to-Rust single-player behavior and qualified
 Original-client delivery. Preserve the already landed cross-thread work.
+Oliver's current sequence is to complete all shared engine implementation,
+then level assembly, with his human playtest after those stages. Continue
+independent shared capabilities while recording unverified human gameplay.
+Missing earned campaign saves or human victory evidence do not gate that work.
 Oliver subsequently authorized deleting obsolete temporary build/test outputs
 instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
