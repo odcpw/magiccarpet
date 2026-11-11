@@ -50,14 +50,19 @@ namespace MagicCarpet.Native
         }
 
         internal void Present(NativeCampaignSession session,
+            NativeSim.CampaignEntityPresentation[] presentations) =>
+            Present(session.Generation, session.Tick, session.CastleChildren(), presentations);
+
+        internal void Present(ulong sessionGeneration, ulong sessionTick,
+            ArraySegment<NativeSim.CampaignCastleChild> children,
             NativeSim.CampaignEntityPresentation[] presentations)
         {
-            if (generation != session.Generation || session.Tick < tick) Clear();
-            generation = session.Generation; tick = session.Tick;
+            if (generation != sessionGeneration || sessionTick < tick) Clear();
+            generation = sessionGeneration; tick = sessionTick;
             visible.Clear();
             foreach (var sprite in presentations) visible.Add(sprite.entityIndex, sprite);
             seen.Clear();
-            foreach (var state in session.CastleChildren())
+            foreach (var state in children)
             {
                 seen.Add(state.entityIndex);
                 if (instances.TryGetValue(state.entityIndex, out var prior) &&
@@ -159,7 +164,8 @@ namespace MagicCarpet.Native
         public void Dispose()
         {
             Clear();
-            UnityEngine.Object.Destroy(root.gameObject);
+            if (Application.isPlaying) UnityEngine.Object.Destroy(root.gameObject);
+            else UnityEngine.Object.DestroyImmediate(root.gameObject);
         }
     }
 }
