@@ -1401,10 +1401,15 @@ pub(crate) fn digest_level_exit_sequence(hasher: &mut Sha256, exit: LevelExitSeq
         ]);
         hasher.update(exit.camera_fov.to_le_bytes());
     }
-    if exit.ordinary_exit_route
-        == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
-    {
-        hasher.update(b"ordinary-exit-secret-continuation-v1");
+    use crate::world::portals::OrdinaryExitRoute;
+    match exit.ordinary_exit_route {
+        OrdinaryExitRoute::CampaignMap => {}
+        OrdinaryExitRoute::UnfinishedSecretContinuation => {
+            hasher.update(b"ordinary-exit-secret-continuation-v1");
+        }
+        OrdinaryExitRoute::SecretReturnFromParentContinuation => {
+            hasher.update(b"secret-return-parent-continuation-v1");
+        }
     }
 }
 

@@ -16,13 +16,14 @@ pub const EXIT_PALETTE_BLACK_REQUEST: u8 = 5;
 
 const EXIT_TARGET_DISTANCE: u32 = 0x180;
 
-/// Destination of an ordinary exit, fixed when the mission is opened.
-/// The game adapter derives this from retained campaign progress.
+/// Route of action 12, fixed when the mission is opened. The source's
+/// continuation bit survives the immediate load from a replayed parent.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OrdinaryExitRoute {
     #[default]
     CampaignMap,
     UnfinishedSecretContinuation,
+    SecretReturnFromParentContinuation,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -122,7 +123,7 @@ impl LevelExitSequence {
             player,
             context,
             portal_position,
-            self.ordinary_exit_route == OrdinaryExitRoute::UnfinishedSecretContinuation,
+            self.ordinary_exit_route != OrdinaryExitRoute::CampaignMap,
         )
     }
 
@@ -461,6 +462,7 @@ mod tests {
         for (route, expected) in [
             (OrdinaryExitRoute::CampaignMap, 10),
             (OrdinaryExitRoute::UnfinishedSecretContinuation, 26),
+            (OrdinaryExitRoute::SecretReturnFromParentContinuation, 26),
         ] {
             let mut sequence = LevelExitSequence {
                 ordinary_exit_route: route,

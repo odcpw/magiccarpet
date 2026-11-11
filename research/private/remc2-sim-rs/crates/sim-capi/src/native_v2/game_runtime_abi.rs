@@ -24,6 +24,7 @@ use sim_core::{
         PausedFrameError, RuntimeGuard, RuntimeGuardError, RuntimeGuardErrorCode, RuntimeMode,
         RuntimeTransitionError,
     },
+    world::portals::OrdinaryExitRoute,
 };
 use sim_session::{GameSession, OpenSessionError, SessionGuard};
 
@@ -1014,7 +1015,10 @@ impl RuntimeRecord {
             .campaign_presentation_source()
             .simulation()
             .level_exit_sequence();
-        if exit.complete && exit.result_code == 0x1a {
+        if exit.complete
+            && exit.result_code == 0x1a
+            && exit.ordinary_exit_route != OrdinaryExitRoute::SecretReturnFromParentContinuation
+        {
             preflight_sound_banks(&mut self.installed_inputs, resolver)?;
         }
         if let Some(receipt) = resolver

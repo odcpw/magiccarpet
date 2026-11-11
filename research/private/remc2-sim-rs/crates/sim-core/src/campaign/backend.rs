@@ -1851,6 +1851,50 @@ impl Mc2RuntimePackageResolver {
         ))
     }
 
+    fn retained_exit_continuation(
+        &self,
+        definition: &GameDefinition,
+        progress: &crate::game_runtime::secret_flow::SecretFlowState,
+    ) -> Result<
+        Option<(
+            crate::world::portals::OrdinaryExitRoute,
+            sim_definition::runtime_flow::RuntimeFlowSecretEntry,
+        )>,
+        crate::game_runtime::RuntimeTransitionError,
+    > {
+        use crate::world::portals::OrdinaryExitRoute;
+
+        let flow = definition.runtime_flow().ok_or_else(|| {
+            crate::game_runtime::RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "exit continuation has no runtime flow".to_owned(),
+            }
+        })?;
+        if let Some(entry) = flow.secret_entry(flow.bound_level_id()) {
+            progress.validate_for_flow(flow)?;
+            return Ok(progress
+                .return_frame()
+                .filter(|frame| {
+                    frame
+                        .parent_campaign()
+                        .completed_levels
+                        .contains(frame.origin_level_id())
+                        && !progress
+                            .completed_secret_levels()
+                            .contains(entry.secret_level_id())
+                })
+                .map(|_| {
+                    (
+                        OrdinaryExitRoute::SecretReturnFromParentContinuation,
+                        entry.clone(),
+                    )
+                }));
+        }
+
+        Ok(self
+            .unfinished_parent_continuation(definition, progress)?
+            .map(|entry| (OrdinaryExitRoute::UnfinishedSecretContinuation, entry)))
+    }
+
     /// Open the currently pending resolver-owned package through the ordinary
     /// MC2 gameplay adapter.
     pub fn open_pending(
@@ -1899,8 +1943,16 @@ impl Mc2RuntimePackageResolver {
                     })
             },
             |candidate| {
-                let continuation =
-                    self.unfinished_parent_continuation(candidate.definition(), &secret_progress)?;
+                use crate::world::portals::OrdinaryExitRoute;
+
+                let exit_route = if self
+                    .unfinished_parent_continuation(candidate.definition(), &secret_progress)?
+                    .is_some()
+                {
+                    OrdinaryExitRoute::UnfinishedSecretContinuation
+                } else {
+                    OrdinaryExitRoute::CampaignMap
+                };
                 if let Some(pending) = &carry {
                     let destination = candidate
                         .definition()
@@ -1930,7 +1982,7 @@ impl Mc2RuntimePackageResolver {
                 // simulation. Bind the route only after that replacement.
                 candidate
                     .backend_mut()
-                    .install_initial_secret_continuation(continuation.as_ref())?;
+                    .install_initial_exit_route(exit_route)?;
                 let level = candidate
                     .definition()
                     .runtime_flow()
@@ -2119,25 +2171,22 @@ impl Mc2RuntimePackageResolver {
         if initial_rewards == super::rewards::MissionRewards::Suppressed {
             save.initial_mission_rewards = Some(initial_rewards);
         }
-        if session
+        let exit_route = session
             .backend()
             .package_campaign
             .simulation()
             .level_exit_sequence()
-            .ordinary_exit_route
-            == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
-        {
-            save.initial_secret_continuation = Some(
-                self.unfinished_parent_continuation(
-                    session.definition(),
-                    runtime.secret_flow_state(),
-                )
+            .ordinary_exit_route;
+        if exit_route != crate::world::portals::OrdinaryExitRoute::CampaignMap {
+            let (_, entry) = self
+                .retained_exit_continuation(session.definition(), runtime.secret_flow_state())
                 .map_err(Mc2CampaignReplaySaveError::Runtime)?
+                .filter(|(route, _)| *route == exit_route)
                 .ok_or_else(|| Mc2CampaignReplaySaveError::InvalidSave {
                     message: "initial secret continuation no longer matches campaign progress"
                         .to_owned(),
-                })?,
-            );
+                })?;
+            save.initial_secret_continuation = Some(entry);
         }
         save.initial_global_context = session.backend().package_campaign.source_global_context();
         save.global_context_changes = session.backend().global_context_changes.clone();
@@ -2477,18 +2526,19 @@ impl Mc2RuntimePackageResolver {
                 });
             }
         }
-        let initial_secret_continuation = save.initial_secret_continuation;
-        if let Some(recorded) = &initial_secret_continuation {
-            let expected = self
-                .unfinished_parent_continuation(&save.definition, &secret_flow)
-                .map_err(Mc2CampaignReplaySaveError::Runtime)?;
-            if expected.as_ref() != Some(recorded) {
-                return Err(Mc2CampaignReplaySaveError::InvalidSave {
+        let initial_exit_route = if let Some(recorded) = &save.initial_secret_continuation {
+            let (route, _) = self
+                .retained_exit_continuation(&save.definition, &secret_flow)
+                .map_err(Mc2CampaignReplaySaveError::Runtime)?
+                .filter(|(_, expected)| expected == recorded)
+                .ok_or_else(|| Mc2CampaignReplaySaveError::InvalidSave {
                     message: "saved secret continuation does not match the retained campaign"
                         .to_owned(),
-                });
-            }
-        }
+                })?;
+            route
+        } else {
+            crate::world::portals::OrdinaryExitRoute::CampaignMap
+        };
         let definition = Arc::new(save.definition);
         let semantic_spell_carry = save.semantic_spell_carry;
         let initial_global_context = save.initial_global_context;
@@ -2541,9 +2591,7 @@ impl Mc2RuntimePackageResolver {
                         .install_initial_source_context(initial_global_context)?;
                     candidate
                         .backend_mut()
-                        .install_initial_secret_continuation(
-                            initial_secret_continuation.as_ref(),
-                        )?;
+                        .install_initial_exit_route(initial_exit_route)?;
                     candidate
                         .backend_mut()
                         .install_initial_mission_rewards(initial_rewards)
@@ -2734,6 +2782,7 @@ impl Mc2RuntimePackageResolver {
         crate::game_runtime::RuntimeTransitionError,
     > {
         use crate::game_runtime::{RuntimeTransitionError, secret_flow::SecretMissionOutcome};
+        use crate::world::portals::OrdinaryExitRoute;
         runtime
             .validate_guard(guard)
             .map_err(Box::new)
@@ -2747,16 +2796,12 @@ impl Mc2RuntimePackageResolver {
             .map_err(RuntimeTransitionError::SessionGuard)?
             .value;
         let source = self.exact_package_for_definition(session.definition())?;
-        if runtime.secret_flow_state().return_frame().is_some()
-            && session
-                .backend()
-                .campaign
-                .simulation()
-                .secret_banishment_result()
-        {
+        let simulation = session.backend().campaign.simulation();
+        let returning = runtime.secret_flow_state().return_frame().is_some();
+        if returning && simulation.secret_banishment_result() {
             return self.abandon_secret_if_active(runtime, guard, session_guard);
         }
-        if session.backend().campaign.simulation().secret_entry_ready() {
+        if !returning && simulation.secret_entry_ready() {
             let association = super::mc2_secret_flow::association_for_origin(source.selection)
                 .ok_or_else(|| RuntimeTransitionError::InvalidRuntimeFlow {
                     message: "secret trigger has no source campaign association".to_owned(),
@@ -2790,13 +2835,9 @@ impl Mc2RuntimePackageResolver {
                 message: "installed secret definition does not match the source association"
                     .to_owned(),
             })?;
-            if session
-                .backend()
-                .campaign
-                .simulation()
-                .level_exit_sequence()
-                .ordinary_exit_route
-                == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
+            let from_parent_continuation = simulation.level_exit_sequence().ordinary_exit_route
+                == OrdinaryExitRoute::UnfinishedSecretContinuation;
+            if from_parent_continuation
                 && self.unfinished_parent_continuation(
                     session.definition(),
                     runtime.secret_flow_state(),
@@ -2810,7 +2851,7 @@ impl Mc2RuntimePackageResolver {
             let secret_id = entry.secret_level_id().clone();
             let carry = session.backend().transition_spell_carry()?;
             let context = session.backend().campaign.source_global_context();
-            let rewards = session.backend().campaign.simulation().mission_rewards();
+            let rewards = simulation.mission_rewards();
             let receipt =
                 runtime.enter_secret_resolved(guard, session_guard, |source_session| {
                     let generation = source_session
@@ -2840,13 +2881,18 @@ impl Mc2RuntimePackageResolver {
                     candidate
                         .backend_mut()
                         .install_initial_mission_rewards(rewards)?;
+                    if from_parent_continuation {
+                        // sub_46830 calls LevelInitGame directly here. Only
+                        // its outer sub_48350 clears setting_38545 bit 0x10.
+                        candidate.backend_mut().install_initial_exit_route(
+                            OrdinaryExitRoute::SecretReturnFromParentContinuation,
+                        )?;
+                    }
                     Ok((secret_id, candidate))
                 })?;
             return Ok(Some(receipt));
         }
-        if runtime.secret_flow_state().return_frame().is_none()
-            || !matches!(status, GameCompletionStatus::Completed { .. })
-        {
+        if !returning || !matches!(status, GameCompletionStatus::Completed { .. }) {
             return Ok(None);
         }
         let carry = session.backend().transition_spell_carry()?;
@@ -3245,15 +3291,10 @@ impl Mc2CampaignBackend {
         Ok(())
     }
 
-    fn install_initial_secret_continuation(
+    fn install_initial_exit_route(
         &mut self,
-        continuation: Option<&sim_definition::runtime_flow::RuntimeFlowSecretEntry>,
+        route: crate::world::portals::OrdinaryExitRoute,
     ) -> Result<(), crate::game_runtime::RuntimeTransitionError> {
-        let route = if continuation.is_some() {
-            crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation
-        } else {
-            crate::world::portals::OrdinaryExitRoute::CampaignMap
-        };
         for campaign in [&mut self.campaign, &mut self.package_campaign] {
             campaign
                 .simulation_mut()
@@ -3905,16 +3946,27 @@ impl GameSessionBackend for Mc2CampaignBackend {
     }
 
     fn completion_status(&self) -> GameCompletionStatus {
-        let exit = self.campaign.simulation().level_exit_sequence();
+        use crate::world::portals::OrdinaryExitRoute;
+
+        let simulation = self.campaign.simulation();
+        let exit = simulation.level_exit_sequence();
         if !exit.complete {
-            GameCompletionStatus::InProgress
-        } else if exit.result_code == 10
-            && self.campaign.simulation().source_exit_result_byte() == 10
-        {
+            return GameCompletionStatus::InProgress;
+        }
+        let successful_exit = match exit.ordinary_exit_route {
+            OrdinaryExitRoute::CampaignMap => exit.result_code == 0x0a,
+            OrdinaryExitRoute::UnfinishedSecretContinuation => false,
+            OrdinaryExitRoute::SecretReturnFromParentContinuation => {
+                exit.result_code == 0x1a
+                    && simulation.exit_player_action()
+                        == Some(crate::world::portals::EXIT_PLAYER_ACTION)
+            }
+        };
+        if successful_exit && exit.result_code == simulation.source_exit_result_byte() {
             GameCompletionStatus::Completed {
                 completion: GameCompletion {
                     state_hash: self.campaign.state_hash(),
-                    statistics: Some(self.campaign.simulation().completion_statistics()),
+                    statistics: Some(simulation.completion_statistics()),
                 },
             }
         } else {
@@ -5512,6 +5564,7 @@ pub(crate) mod tests {
             RuntimeTransitionError, SecretTransitionKind,
         };
         use crate::game_session::GameCompletionStatistics;
+        use crate::world::portals::OrdinaryExitRoute;
 
         // This boundary fixture supplies a retained Level-5 frontier and enters
         // its installed secret through the existing runtime boundary. Inventory
@@ -5524,7 +5577,7 @@ pub(crate) mod tests {
                 "level2-day-block32-campaign-v2",
                 "level3-day-block32-campaign-recipe-v2",
                 "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
-                "mc-paj2-source4-campaign-package",
+                "dragon-bee-20261105-integration/level5-owner-current/level5",
                 "mc-paj2-source30-campaign-package",
             ]
             .map(|path| Mc2CampaignInputs::new(generated.join(path))),
@@ -5685,9 +5738,8 @@ pub(crate) mod tests {
         assert_eq!(retained_parent.completed_levels, completed_levels);
         assert_eq!(retained_parent.level_statistics, level_statistics);
 
-        let parent_session_guard = runtime.session().unwrap().identity().guard();
-        let secret_receipt = runtime
-            .enter_secret_resolved(playing.guard(), parent_session_guard, |parent_session| {
+        let prepare_fixture_secret =
+            |parent_session: &GameSession<Mc2CampaignBackend>, exit_route| {
                 resolver.exact_package_for_definition(parent_session.definition())?;
                 let destination = resolver.package(&secret_level).ok_or_else(|| {
                     RuntimeTransitionError::InvalidRuntimeFlow {
@@ -5718,7 +5770,18 @@ pub(crate) mod tests {
                 candidate
                     .backend_mut()
                     .install_initial_source_context(context)?;
+                candidate.backend_mut().install_initial_mission_rewards(
+                    parent_session.backend().campaign.simulation().mission_rewards(),
+                )?;
+                candidate
+                    .backend_mut()
+                    .install_initial_exit_route(exit_route)?;
                 Ok((secret_level.clone(), candidate))
+            };
+        let parent_session_guard = runtime.session().unwrap().identity().guard();
+        let secret_receipt = runtime
+            .enter_secret_resolved(playing.guard(), parent_session_guard, |parent_session| {
+                prepare_fixture_secret(parent_session, OrdinaryExitRoute::CampaignMap)
             })
             .unwrap();
         assert!(secret_receipt.verify());
@@ -5842,6 +5905,118 @@ pub(crate) mod tests {
         );
         assert_ne!(mission_carry, pending.carry);
         assert_eq!(source_context, paused_context);
+
+        let exit_route = |runtime: &GameRuntime<Mc2CampaignBackend>| {
+            runtime
+                .session()
+                .unwrap()
+                .backend()
+                .campaign
+                .simulation()
+                .level_exit_sequence()
+                .ordinary_exit_route
+        };
+        let selected_secret = resolver
+            .campaign_menu_command(
+                &mut runtime,
+                receipt.after.guard(),
+                CampaignMenuCommand::SelectMission {
+                    level_id: secret_level.clone(),
+                },
+            )
+            .unwrap();
+        let loading = resolver
+            .campaign_menu_command(
+                &mut runtime,
+                selected_secret.guard(),
+                CampaignMenuCommand::StartMission,
+            )
+            .unwrap();
+        let direct_revisit = resolver
+            .open_pending(&mut runtime, loading.guard(), 7433)
+            .unwrap();
+        assert_eq!(exit_route(&runtime), OrdinaryExitRoute::CampaignMap);
+        let direct_save: Mc2CampaignReplaySave =
+            serde_json::from_slice(&resolver.save_replay(&runtime).unwrap()).unwrap();
+        assert!(direct_save.initial_secret_continuation.is_none());
+        let returned = resolver
+            .abandon_secret_if_active(
+                &mut runtime,
+                direct_revisit.guard(),
+                direct_revisit.session.as_ref().unwrap().guard(),
+            )
+            .unwrap()
+            .unwrap();
+
+        let loading = resolver
+            .campaign_menu_command(
+                &mut runtime,
+                returned.after.guard(),
+                CampaignMenuCommand::StartMission,
+            )
+            .unwrap();
+        let parent_replay = resolver
+            .open_pending(&mut runtime, loading.guard(), 7433)
+            .unwrap();
+        assert_eq!(
+            exit_route(&runtime),
+            OrdinaryExitRoute::UnfinishedSecretContinuation
+        );
+
+        // Stage the immediate load at the existing retained-parent fixture
+        // seam. This proves a genuine package's constructor/restore policy,
+        // independently of earning either portal in the live world.
+        runtime
+            .enter_secret_resolved(
+                parent_replay.guard(),
+                parent_replay.session.as_ref().unwrap().guard(),
+                |parent_session| {
+                    prepare_fixture_secret(
+                        parent_session,
+                        OrdinaryExitRoute::SecretReturnFromParentContinuation,
+                    )
+                },
+            )
+            .unwrap();
+        let bytes = resolver.save_replay(&runtime).unwrap();
+        let mut saved: Mc2CampaignReplaySave = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved.initial_secret_continuation.as_ref(), Some(secret_entry));
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(7435).unwrap();
+        let guard = restored.identity().guard();
+        let resumed = resolver
+            .load_replay(&mut restored, guard, 7435, &bytes)
+            .unwrap();
+        assert_eq!(
+            exit_route(&restored),
+            OrdinaryExitRoute::SecretReturnFromParentContinuation
+        );
+        assert_eq!(resolver.save_replay(&restored).unwrap(), bytes);
+        assert!(
+            resolver
+                .advance_secret_if_ready(
+                    &mut restored,
+                    resumed.guard(),
+                    resumed.session.as_ref().unwrap().guard(),
+                )
+                .unwrap()
+                .is_none(),
+            "inheriting the source bit does not complete the secret"
+        );
+
+        saved.initial_secret_continuation = None;
+        saved.receipt_sha256 = saved.compute_receipt_sha256();
+        let mut rejected = GameRuntime::<Mc2CampaignBackend>::title(7436).unwrap();
+        let before = rejected.identity();
+        assert!(matches!(
+            resolver.load_replay(
+                &mut rejected,
+                before.guard(),
+                7436,
+                &serde_json::to_vec(&saved).unwrap(),
+            ),
+            Err(Mc2CampaignReplaySaveError::Restore(_))
+        ));
+        assert_eq!(rejected.identity(), before);
     }
 
     #[test]

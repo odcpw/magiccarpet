@@ -8969,16 +8969,20 @@ impl Mc2Simulation {
         live.level_exit.complete
             && live.level_exit.result_code == 26
             && live.source_player_result.result_byte() == 26
-            && live
-                .economy
-                .entities
-                .get(usize::from(live.core.state.entity_index))
-                .is_some_and(|player| {
-                    player.action == crate::world::portals::SECRET_EXIT_PLAYER_ACTION
-                        || (player.action == crate::world::portals::EXIT_PLAYER_ACTION
-                            && live.level_exit.ordinary_exit_route
-                                == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation)
-                })
+            && self.exit_player_action().is_some_and(|action| {
+                action == crate::world::portals::SECRET_EXIT_PLAYER_ACTION
+                    || (action == crate::world::portals::EXIT_PLAYER_ACTION
+                        && live.level_exit.ordinary_exit_route
+                            == crate::world::portals::OrdinaryExitRoute::UnfinishedSecretContinuation)
+            })
+    }
+
+    pub(crate) fn exit_player_action(&self) -> Option<u8> {
+        let live = &self.session.state.live;
+        live.economy
+            .entities
+            .get(usize::from(live.core.state.entity_index))
+            .map(|player| player.action)
     }
 
     /// Bind the source per-player `MenuState_0x3DF` consumed by the dying
@@ -41890,28 +41894,32 @@ mod tests {
             .install_initial_ordinary_exit_route(OrdinaryExitRoute::CampaignMap)
             .unwrap();
         assert_eq!(campaign.state_hash(), original);
-        campaign
-            .simulation_mut()
-            .install_initial_ordinary_exit_route(OrdinaryExitRoute::UnfinishedSecretContinuation)
-            .unwrap();
-        let continued = campaign.state_hash();
-        assert_ne!(continued, original);
-        campaign.reset();
-        assert_eq!(campaign.state_hash(), continued);
-        assert_eq!(
-            campaign
-                .simulation()
-                .level_exit_sequence()
-                .ordinary_exit_route,
-            OrdinaryExitRoute::UnfinishedSecretContinuation
-        );
-        assert!(
+        let mut hashes = std::collections::BTreeSet::from([original]);
+        for route in [
+            OrdinaryExitRoute::UnfinishedSecretContinuation,
+            OrdinaryExitRoute::SecretReturnFromParentContinuation,
+        ] {
+            let mut campaign = CampaignSession::open(&package, CampaignSelection::LEVEL1).unwrap();
             campaign
                 .simulation_mut()
-                .install_initial_ordinary_exit_route(OrdinaryExitRoute::CampaignMap)
-                .is_err()
-        );
-        assert_eq!(campaign.state_hash(), continued);
+                .install_initial_ordinary_exit_route(route)
+                .unwrap();
+            let continued = campaign.state_hash();
+            assert!(hashes.insert(continued));
+            campaign.reset();
+            assert_eq!(campaign.state_hash(), continued);
+            assert_eq!(
+                campaign.simulation().level_exit_sequence().ordinary_exit_route,
+                route
+            );
+            assert!(
+                campaign
+                    .simulation_mut()
+                    .install_initial_ordinary_exit_route(OrdinaryExitRoute::CampaignMap)
+                    .is_err()
+            );
+            assert_eq!(campaign.state_hash(), continued);
+        }
 
         let mut running = CampaignSession::open(&package, CampaignSelection::LEVEL1).unwrap();
         running
