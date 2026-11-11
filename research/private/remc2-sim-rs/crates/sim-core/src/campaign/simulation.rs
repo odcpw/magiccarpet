@@ -83,7 +83,7 @@ fn publish_spell_progression(live: &mut Mc2LiveState, owner: u16, family: u8) {
     );
 }
 
-fn award_family_spell_experience(
+pub(super) fn award_family_spell_experience(
     arena: &SourceArena,
     shared: &mut Level2SharedSpellResetSession,
     players: &mut [PlayerSnapshot],
@@ -92,7 +92,10 @@ fn award_family_spell_experience(
     family: u8,
     amount: i32,
 ) {
-    if !shared.mission_rewards().allows_experience()
+    // NewEvent marks the raw player active;57F20 clears class with active.
+    // A typed replacement cannot inherit that old human packet's reward.
+    if owner == 0
+        || !shared.mission_rewards().allows_experience()
         || arena.economy.live_arena_cursor_row(owner).is_some()
         || !arena
             .entities
@@ -26274,10 +26277,7 @@ impl Mc2Simulation {
             }
         }
         if experience != 0 {
-            let owner = live.economy.entities.get(usize::from(parent.entity_id))
-                .filter(|_| live.economy.live_arena_cursor_row(parent.entity_id).is_none());
-            crate::world::fields::wind::award_experience(&mut live.shared_spells, owner, experience);
-            publish_spell_progression(live, parent.entity_id, 21);
+            award_source_spell_experience(live, parent.entity_id, 21, i32::from(experience));
         }
         Ok(())
     }
@@ -27296,10 +27296,7 @@ impl Mc2Simulation {
             }
         }
         if experience != 0 {
-            let owner = live.economy.entities.get(usize::from(parent.entity_id))
-                .filter(|_| live.economy.live_arena_cursor_row(parent.entity_id).is_none());
-            wind::award_experience(&mut live.shared_spells, owner, experience);
-            publish_spell_progression(live, parent.entity_id, 21);
+            award_source_spell_experience(live, parent.entity_id, 21, i32::from(experience));
         }
         Ok(())
     }
@@ -34652,6 +34649,19 @@ mod tests {
             signed_boundary);
         live.economy.entities[usize::from(owner)].model = 0;
         live.economy.entities[usize::from(owner)].record[68] = 0;
+        // Wind's retired adapter checked absent and reclaimed owners too;
+        // retain those guards on the one runtime reward transition.
+        for absent in [0, u16::MAX] {
+            let mut missing = live.clone();
+            award_source_spell_experience(&mut missing, absent, 21, 3);
+            assert_eq!(missing, live, "a missing owner cannot award Wind experience");
+        }
+        let mut reclaimed = live.clone();
+        reclaimed.economy.entities[usize::from(owner)].reclaim_source_row();
+        let before_reclaimed_award = reclaimed.clone();
+        award_source_spell_experience(&mut reclaimed, owner, 21, 3);
+        assert_eq!(reclaimed, before_reclaimed_award,
+            "a reclaimed human's stale inventory cannot award Wind experience");
         live.shared_spells.set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
         let suppressed = live.clone();
         award_source_spell_experience(&mut live, owner, 19, 1);

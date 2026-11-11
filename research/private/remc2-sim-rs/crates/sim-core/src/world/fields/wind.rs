@@ -3,28 +3,6 @@
 use super::State;
 use crate::{FlightWorld, Position, heading_for_positions, move_entity};
 
-/// sub_6D8B0: Wind contact awards belong only to a human owner. The shared
-/// progression carrier applies the campaign's actual reward suppression policy.
-pub(crate) fn award_experience(
-    progression: &mut crate::native_world::Level2SharedSpellResetSession,
-    owner: Option<&crate::native_world::EntitySnapshot>,
-    count: u16,
-) {
-    let Some(owner) = owner.filter(|owner| {
-        owner.index != 0
-            && (owner.class, owner.model) == (3, 0)
-            && progression
-                .players()
-                .iter()
-                .any(|player| player.entity_index == owner.index)
-    }) else {
-        return;
-    };
-    if count != 0 {
-        progression.award_spell_experience(owner.index, 21, i32::from(count));
-    }
-}
-
 pub(crate) fn target_slots(
     map: &crate::renderable_map_chain::RenderableMapChains,
     position: Position,

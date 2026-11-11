@@ -63,33 +63,15 @@ fn targets(arena: &SourceArena, position: Position) -> Vec<u16> {
 }
 
 fn award(context: &mut Context<'_>, award: gravity::SpellExperienceAward) {
-    let owner = award.owner_source_id;
-    if owner != 0
-        && context.arena.economy.live_arena_cursor_row(owner).is_none()
-        && context
-            .arena
-            .entities
-            .get(usize::from(owner))
-            .is_some_and(|row| (row.class, row.model) == (3, 0))
-        && context.progression.mission_rewards().allows_experience()
-        && context
-            .progression
-            .players()
-            .iter()
-            .any(|player| player.entity_index == owner)
-    {
-        context.progression.award_spell_experience(
-            award.owner_source_id,
-            award.family,
-            award.amount,
-        );
-        context.progression.publish_spell_progression_family(
-            context.players,
-            context.fire.as_deref_mut(),
-            award.owner_source_id,
-            award.family,
-        );
-    }
+    super::simulation::award_family_spell_experience(
+        context.arena,
+        context.progression,
+        context.players,
+        context.fire.as_deref_mut(),
+        award.owner_source_id,
+        award.family,
+        award.amount,
+    );
 }
 
 pub(crate) fn step(context: &mut Context<'_>, slot: u16) -> Result<(), String> {
@@ -302,6 +284,19 @@ mod tests {
         source.set_source_action(gravity::ACTION_SHRINK);
         source.record[74] = 0;
         let experience_before = live.shared_spells.spell_experience()[20];
+        // Declared arithmetic boundary: this real capture's family20 award
+        // must publish sub6D9C0's Castle cap into every player consumer.
+        for player in live.shared_spells.players.iter_mut()
+            .chain(live.core.players.iter_mut())
+            .chain(std::iter::once(&mut live.shared_spells.local_player))
+            .filter(|player| player.entity_index == owner)
+        {
+            player.runtime_spell_experience[2] = 12;
+            player.record[172..176].copy_from_slice(&12_i32.to_le_bytes());
+        }
+        live.shared_spells.spell_experience[2] = 12;
+        live.core.context.spell_fire.as_mut().expect("local spell-fire consumer")
+            .spell_experience[2] = 12;
         step(
             &mut Context {
                 arena: &mut live.economy,
@@ -319,6 +314,14 @@ mod tests {
         .unwrap();
         let experience = live.shared_spells.spell_experience()[20];
         assert_eq!(experience, experience_before + 2);
+        assert_eq!(live.shared_spells.spell_experience()[2], 7);
+        for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+            .chain(std::iter::once(&live.shared_spells.local_player))
+            .filter(|player| player.entity_index == owner)
+        {
+            assert_eq!(player.runtime_spell_experience[2], 7);
+        }
+        assert_eq!(live.core.context.spell_fire.as_ref().unwrap().spell_experience[2], 7);
         assert_eq!(
             live.core
                 .players

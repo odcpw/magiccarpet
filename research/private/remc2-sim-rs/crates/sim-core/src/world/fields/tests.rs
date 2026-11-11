@@ -984,31 +984,6 @@ fn skeleton_controller_schedules_owned_births_and_respects_owner_cap() {
 }
 
 #[test]
-fn wind_experience_reaches_the_owner_and_respects_source_gates() {
-    let mut session = campaign();
-    let live = &mut session.session.state.live;
-    let owner_slot = live.core.state.entity_index;
-    let owner = live.economy.entities[usize::from(owner_slot)].clone();
-    let before = live.shared_spells.spell_experience()[21];
-    wind::award_experience(&mut live.shared_spells, Some(&owner), 3);
-    assert_eq!(live.shared_spells.spell_experience()[21], before + 3);
-
-    live.shared_spells
-        .set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
-    wind::award_experience(&mut live.shared_spells, Some(&owner), 3);
-    live.shared_spells
-        .set_mission_rewards(crate::campaign::rewards::MissionRewards::Enabled);
-    let mut nonhuman = owner.clone();
-    nonhuman.model = 1;
-    wind::award_experience(&mut live.shared_spells, Some(&nonhuman), 3);
-    let mut freed = owner.clone();
-    freed.reclaim_source_row();
-    wind::award_experience(&mut live.shared_spells, Some(&freed), 3);
-    wind::award_experience(&mut live.shared_spells, None, 3);
-    assert_eq!(live.shared_spells.spell_experience()[21], before + 3);
-}
-
-#[test]
 fn wind_projection_cleanup_does_not_retire_a_reused_generation() {
     let mut session = campaign();
     let particles = &session.session.definition.presentation.particles;

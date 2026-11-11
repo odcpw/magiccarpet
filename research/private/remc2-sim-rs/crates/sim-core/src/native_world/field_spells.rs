@@ -1831,6 +1831,22 @@ mod tests {
                     }
                     let experience_before =
                         session.session.state.live.shared_spells.spell_experience()[21];
+                    // Declared arithmetic boundary on the existing ordinary
+                    // Wind contact: family21 also caps and publishes Castle.
+                    {
+                        let live = &mut session.session.state.live;
+                        for player in live.shared_spells.players.iter_mut()
+                            .chain(live.core.players.iter_mut())
+                            .chain(std::iter::once(&mut live.shared_spells.local_player))
+                            .filter(|player| player.entity_index == owner)
+                        {
+                            player.runtime_spell_experience[2] = 12;
+                            player.record[172..176].copy_from_slice(&12_i32.to_le_bytes());
+                        }
+                        live.shared_spells.spell_experience[2] = 12;
+                        live.core.context.spell_fire.as_mut().expect("local spell-fire consumer")
+                            .spell_experience[2] = 12;
+                    }
                     let mut replay = session.clone();
                     replay
                         .session
@@ -1860,6 +1876,18 @@ mod tests {
                         experience_before,
                         "the same scheduled contact on a completed mission suppresses rewards"
                     );
+                    for (candidate, expected) in [(&session, 7), (&replay, 12)] {
+                        let live = &candidate.session.state.live;
+                        assert_eq!(live.shared_spells.spell_experience()[2], expected);
+                        for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+                            .chain(std::iter::once(&live.shared_spells.local_player))
+                            .filter(|player| player.entity_index == owner)
+                        {
+                            assert_eq!(player.runtime_spell_experience[2], expected);
+                        }
+                        assert_eq!(live.core.context.spell_fire.as_ref().unwrap()
+                            .spell_experience[2], expected);
+                    }
                     let actor = session
                         .ordinary
                         .villagers
