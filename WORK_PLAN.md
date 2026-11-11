@@ -47,7 +47,11 @@ captures showed the same scenery but no statue. The built Voxel FBX root carries
 an import rotation and 100x scale that the presenter overwrote. A test measured
 0.0183 instead of about 7.8 height on the old Voxel path; the wrapper fix in
 1bd39f0b preserves the imported transform and passes 7/7 focused Unity tests.
-Matching live Voxel appearance and installation remain open. A Fireball passed
+An integrated8 player using the pinned c58 native plugin passes a 120-frame
+earned Voxel capture: frames 0/60/110 show the statue present at matching scale
+and stationary on its base, unlike the previous empty scene. Dark Voxel seams
+reduce face/arm legibility and precise terrain contact is unresolved from this
+angle. Installation and a normal full-level pass remain open. A Fireball passed
 through its volume; the original stone lacks the direct-hit flag, so that
 observation is not a demonstrated defect.
 Collector candidate03 passes actual native-gameplay flight; candidate05's
