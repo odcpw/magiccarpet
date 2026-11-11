@@ -5,7 +5,10 @@
 //! from the owning player's eight-slot source list; this leaf does not invent
 //! or synthesize collection authority.
 
-use crate::native_world::{RuntimeRelation, RuntimeStage};
+use crate::{
+    campaign::source_arena::SourceArena,
+    native_world::{RuntimeRelation, RuntimeStage, source_target},
+};
 
 /// The source objective conditions implemented by this leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +102,34 @@ pub(crate) fn delivered_entity_to_point(
         && target_owner_entity_index == active_player_entity_index
         && (i32::from(stage.axis_x) - i32::from(target_position.0)).abs() <= 768
         && (i32::from(stage.axis_y) - i32::from(target_position.1)).abs() <= 768
+}
+
+/// Read the current occupant at the bound source address. Authored spells,
+/// creatures and ordinary actors can own their mutable position and parent
+/// outside the raw arena record, which may still hold a previous occupant.
+pub(crate) fn delivered_entity_in_arena(
+    stage: &RuntimeStage,
+    target_slot: u16,
+    player_slot: u16,
+    arena: &SourceArena,
+    context: source_target::Context<'_>,
+) -> Result<bool, String> {
+    if stage.kind != 4 || !bound_target_matches(stage, target_slot) {
+        return Ok(false);
+    }
+    let Some(target) = source_target::read(arena, context, target_slot)? else {
+        return Ok(false);
+    };
+    let Some(parent) = target.relations.parent else {
+        return Ok(false);
+    };
+    Ok(delivered_entity_to_point(
+        stage,
+        target_slot,
+        parent,
+        player_slot,
+        (target.position.x as i16, target.position.y as i16),
+    ))
 }
 
 /// Check source type 6 against the actual per-player eight-slot entity list.

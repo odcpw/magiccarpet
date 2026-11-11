@@ -1930,8 +1930,9 @@ pub struct Level2AuthoredModel53Source {
     pub source_class: u8,
     pub model: u8,
     pub action: u8,
-    pub max_life: i16,
-    pub life: i16,
+    pub max_life: i32,
+    /// Source life_0x8 keeps counting below zero without hiding the carrier.
+    pub life: i32,
     pub subspell_index: u16,
     pub actual_speed: i16,
     /// Current source orientation, initialized by NewEvent before sub504B0.

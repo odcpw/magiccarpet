@@ -1911,9 +1911,9 @@ fn level_two_model53_action58_runs_through_production_cursor() {
                 child.yaw,
             ),
             // The newly allocated higher slots run later in this same numeric
-            // pass. Their first action-0 visit preserves the constructor
-            // payload and adds source control bit 1 (0x02).
-            (row439.entity_id, 0, 0, 400, 8, 7, 0x0003_0082, 512, 512, 0),
+            // pass. NewAdd0A00 retains AddEventToMap's bit0x04; model53 adds
+            // 0x10080 to its constructor's0x20000, then action0 adds0x02.
+            (row439.entity_id, 0, 0, 400, 8, 7, 0x0003_0086, 512, 512, 0),
             "same-pass model-0 child state for {child:?}"
         );
     }
@@ -1927,6 +1927,54 @@ fn level_two_model53_action58_runs_through_production_cursor() {
             } if *source_slot == row439.source_entity_index
         )
     }));
+
+    let source_slot = row439.source_entity_index;
+    let handle = session.source_arena().handle(source_slot).unwrap();
+    // Finish the actual constructor's remaining life, including one visit
+    // whose old life is negative. Expiry neither hides nor reclaims model53.
+    for _ in 0..row439.life + 2 {
+        session.step_level2_source_pass(0);
+    }
+    let expired = *session.economy().authored_model53().iter()
+        .find(|source| source.source_entity_index == source_slot).unwrap();
+    assert_eq!(expired.life, -2);
+    assert!(expired.active && expired.drawing_enabled);
+    assert_eq!(session.source_arena().handle(source_slot), Some(handle));
+
+    // Declared arithmetic boundary on that same ordinarily produced carrier:
+    // the old i16 counter wrapped positive here and resumed damage/spawning.
+    session.economy_mut().authored_model53.iter_mut()
+        .find(|source| source.source_entity_index == source_slot).unwrap().life = -32768;
+    let prior_children = session.economy().model17_spawned_children().iter()
+        .filter(|child| child.active && child.parent_entity_index == source_slot)
+        .map(|child| (child.source_entity_index,
+            session.economy().slot_generation(child.source_entity_index)))
+        .collect::<BTreeSet<_>>();
+    for visit in 1..=2 {
+        session.step_level2_source_pass(0);
+        assert!(session.dispatch_events().iter()
+            .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+        let current = session.economy().authored_model53().iter()
+            .find(|source| source.source_entity_index == source_slot).unwrap();
+        assert_eq!(current.life, -32768 - visit);
+        assert_eq!(current.phase, expired.phase.wrapping_add(visit as u8));
+        assert_eq!(current.entity_rng, expired.entity_rng);
+        assert_eq!(current.dword_0x10, expired.dword_0x10);
+        assert!(current.active && current.drawing_enabled);
+        assert_eq!(session.source_arena().handle(source_slot), Some(handle));
+        let view = crate::native_world::source_target::read(
+            session.source_arena(),
+            crate::native_world::source_target::Context::default(),
+            source_slot,
+        ).unwrap().unwrap();
+        assert_eq!(view.life, current.life, "current packet retains the full source counter");
+        assert_eq!((view.active, view.class, view.model), (true, 10, 53));
+        assert!(session.economy().model17_spawned_children().iter()
+            .filter(|child| child.active && child.parent_entity_index == source_slot)
+            .all(|child| prior_children.contains(&(child.source_entity_index,
+                session.economy().slot_generation(child.source_entity_index)))),
+            "a terminal model53 visit must not construct another child");
+    }
 
     // A negative pre-decrement return consumes no action-58 RNG and emits
     // no child, while ApplyEvents still advances the source phase.

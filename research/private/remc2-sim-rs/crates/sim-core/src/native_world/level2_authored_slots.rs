@@ -7441,6 +7441,11 @@ impl Level2EconomyState {
             }
         }
         hasher.update(b"level2-authored-model53-v2");
+        if !self.authored_model53.is_empty() {
+            // Empty families keep the existing campaign hash bytes. Only
+            // actual model53 records use the corrected source-width fields.
+            hasher.update(b"source-life-i32-v3");
+        }
         for source in &self.authored_model53 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_id.to_le_bytes());

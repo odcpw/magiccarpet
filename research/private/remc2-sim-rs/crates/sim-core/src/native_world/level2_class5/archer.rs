@@ -2708,7 +2708,13 @@ mod tests {
     fn scheduled_alliance_archer_follows_current_parent_record_and_expires_when_dead() {
         let mut session = crate::native_world::tests::level_two_campaign_session();
         let parent_slot = session.state.entity_index;
-        let position = session.state.position;
+        // The package starts with real Goats. Alliance targets model4 only,
+        // so this differently typed target is not taken over by the impact.
+        let (target, position) = session.goats().iter()
+            .find(|goat| goat.active && goat.life > 0)
+            .map(|goat| (goat.entity_index, goat.position))
+            .expect("package's live reset Goat target");
+        session.set_level2_entity_position(parent_slot, position).unwrap();
         let parent = session.source_arena().handle(parent_slot).unwrap();
         let (slot, effect) = {
             let live = &mut session.session.state.live;
@@ -2743,6 +2749,39 @@ mod tests {
         assert!(session.source_arena().entities[usize::from(effect)].drawing_disabled());
         session.step_level2_source_pass(1);
         assert!(session.source_arena().resolve(effect_handle).is_none());
+
+        // The allied Archer inherits its owner's current target and awards
+        // Alliance XP when it chooses to attack. Check the scheduled producer
+        // and both player projections at that same boundary.
+        let mut reward = session.clone();
+        {
+            let live = &mut reward.session.state.live;
+            live.economy.entities[usize::from(parent_slot)].record[154..156]
+                .copy_from_slice(&target.to_le_bytes());
+        }
+        let before = reward.shared_spells().players().iter()
+            .find(|player| player.entity_index == parent_slot).unwrap()
+            .runtime_spell_experience[24];
+        reward.step_level2_source_pass(0);
+        assert!(!reward.dispatch_events().iter().any(|event|
+            matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })));
+        let archer = reward.source_arena().authored_class5().iter()
+            .find(|row| row.source_entity_index == slot).unwrap();
+        assert_eq!((archer.word_0x96_150, archer.action), (target, ARCHER_ACTION_ATTACK));
+        let expected = before.wrapping_add(1);
+        let shared = reward.shared_spells().players().iter()
+            .find(|player| player.entity_index == parent_slot).unwrap();
+        let core = reward.players().iter()
+            .find(|player| player.entity_index == parent_slot).unwrap();
+        assert_eq!(shared.runtime_spell_experience[24], expected);
+        assert_eq!(core.runtime_spell_experience[24], expected);
+        assert_eq!(core.spell_unlocked_levels[24], shared.spell_unlocked_levels[24]);
+        if let Some(fire) = reward.session.state.live.core.context.spell_fire.as_ref()
+            && fire.caster.entity_index == parent_slot
+        {
+            assert_eq!(fire.spell_experience[24], expected);
+            assert_eq!(fire.spell_levels[24], shared.spell_unlocked_levels[24]);
+        }
 
         for parent_case in ["live", "free", "reused", "dead"] {
             let mut control = session.clone();

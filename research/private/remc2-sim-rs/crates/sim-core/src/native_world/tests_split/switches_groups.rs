@@ -156,13 +156,15 @@ fn level_nine_switch_publishes_ordered_group_and_binds_live_type_two_target() {
     );
     let player = session.state.entity_index;
 
-    let mut outside = session.clone();
+    // Source model 1 passes inverse overlap to 6F850. An overlapping player
+    // blocks it; leaving the region publishes the real group.
+    let mut inside = session.clone();
     let mut distant = switch.position;
     distant.x = distant.x.wrapping_add(0x4000);
-    outside.set_level2_entity_position(player, distant).unwrap();
+    inside.set_level2_entity_position(player, switch.position).unwrap();
     for _ in 0..8 {
-        outside.step_outer_turn(PlayerCommand::default(), 0);
-        assert!(!outside.dispatch_events().iter().any(|event| matches!(
+        inside.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!inside.dispatch_events().iter().any(|event| matches!(
             event,
             Mc2DispatchEvent::AuthoredGroupActivated {
                 source_slot: 17,
@@ -172,12 +174,12 @@ fn level_nine_switch_publishes_ordered_group_and_binds_live_type_two_target() {
         )));
     }
     assert_eq!(
-        outside.runtime().stages[target_stage].relation,
+        inside.runtime().stages[target_stage].relation,
         RuntimeRelation::AuthoredFeature(63)
     );
 
     session
-        .set_level2_entity_position(player, switch.position)
+        .set_level2_entity_position(player, distant)
         .unwrap();
     let mut published = false;
     for _ in 0..8 {

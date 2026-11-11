@@ -251,6 +251,100 @@ mod tests {
     }
 
     #[test]
+    fn configured_delivery_binds_and_reads_real_authored_spell_pickup() {
+        use crate::level_definition::{LevelEntityKind, SpellKind, TilePosition};
+        use crate::native_world::{Mc2DispatchEvent, RuntimeRelation};
+        use sim_definition::level_definition::LevelObjectiveConditionAccess;
+
+        let root = std::env::var_os("MC_ORDINARY_CAMPAIGN_PACKAGES").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj"),
+            PathBuf::from,
+        );
+        let campaign = CampaignSession::open(
+            root.join("level2"), CampaignSelection::ordinary(2).unwrap(),
+        ).expect("whole owner Level 2 package");
+        let mut session = campaign.simulation().clone();
+        let feature = *session.mission().authored_features().iter()
+            .find(|row| row.index == 156).expect("group-27 pickup row");
+        assert_eq!((feature.kind, feature.subtype, feature.activation_group), (15, 11, 27));
+        let location = TilePosition { x: feature.tile_x, y: feature.tile_y };
+        let original = session.semantic_level_definition().unwrap();
+        let target = original.entities().iter().find(|entity|
+            entity.kind() == LevelEntityKind::SpellPickup(SpellKind::Invisibility)
+                && entity.position() == location
+        ).expect("typed identity for the actual pickup").id().clone();
+        let mut objectives = original.objectives().to_vec();
+        objectives[0] = sim_definition::adapter::objective_definition(
+            objectives[0].id().clone(),
+            ObjectiveCondition::OwnedTargetAtLocation { target, location },
+            LevelObjectiveConditionAccess::ReadOnly,
+        );
+        let configured = sim_definition::adapter::build_level_definition(
+            original.entities().to_vec(), objectives, original.activation_groups().collect(),
+        ).expect("configured source-form objective");
+        let bindings = session.configured_source_bindings_for_test(configured);
+        session.bind_semantic_level_definition(bindings);
+        // Configure source form 4 and stage the existing group prerequisite.
+        // The group factory, acquisition and objective consumer run normally.
+        let stage = &mut session.runtime.stages[0];
+        stage.kind = 4;
+        stage.flags = 0;
+        stage.relation = RuntimeRelation::AuthoredFeature(156);
+        stage.axis_x = feature.tile_x.wrapping_mul(256) as i16;
+        stage.axis_y = feature.tile_y.wrapping_mul(256) as i16;
+        session.runtime.objectives[0].stage_selectors[0] = 1;
+        let player = session.state.entity_index;
+        let pickup_position = feature.world_position(0);
+        let mut away = pickup_position;
+        away.x = away.x.wrapping_add(4096);
+        session.set_level2_entity_position(player, away).unwrap();
+        session.activate_authored_group_prerequisite_for_test(27)
+            .expect("actual ordered group factory");
+        assert!(session.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { group: 27, authored_indices, .. }
+                if authored_indices.as_ref() == [156, 157])));
+        let slot = *session.shared_spells().authored_pickup_slots().get(&156)
+            .expect("real group constructs the pickup");
+        assert_eq!(session.runtime.stages[0].relation, RuntimeRelation::LiveEntity(slot));
+        assert_ne!(session.runtime.stages[0].flags & 1, 0);
+        assert_eq!(session.runtime.objectives[0].stage_selectors[0], 1,
+            "an unowned target cannot complete the delivery");
+        session.set_level2_entity_position(player, pickup_position).unwrap();
+        for _ in 0..12 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.runtime.objectives[0].stage_selectors[0] == 2 { break; }
+        }
+        let pickup = session.shared_spells().dynamic_pickups().iter()
+            .find(|pickup| pickup.index == slot).expect("same physical pickup");
+        assert_eq!(pickup.source_spell_parent_entity_index(), player);
+        assert_eq!(session.runtime.objectives[0].stage_selectors[0], 2,
+            "the real acquisition must satisfy the configured delivery predicate");
+
+        // Alias control: retain that actual acquired pickup and deliberately
+        // stale only its raw shadow. The fixed source address must resolve the
+        // current shared-spell packet, not this displaced old projection.
+        let mut alias_control = session.clone();
+        let live = &mut alias_control.session.state.live;
+        live.economy.entities[usize::from(slot)].set_position(away);
+        let raw = &live.economy.entities[usize::from(slot)];
+        let stage = &live.core.runtime.stages[0];
+        assert!(!super::delivery_collection::delivered_entity_to_point(
+            stage, slot, raw.source_spell_parent_entity_index(), player,
+            (raw.position.x as i16, raw.position.y as i16),
+        ));
+        let context = crate::native_world::source_target::Context {
+            spells: Some(&live.shared_spells),
+            particles: Some(&alias_control.session.definition.presentation.particles),
+            player: Some((player, live.core.state.position, live.player_life)),
+            ..crate::native_world::source_target::Context::from_ordinary(&live.goats, &live.ordinary)
+        };
+        assert!(super::delivery_collection::delivered_entity_in_arena(
+            stage, slot, player, &live.economy, context,
+        ).expect("resolve the current spell packet"));
+    }
+
+    #[test]
     fn single_player_reach_objective_does_not_advance_rival_objectives() {
         let mut session = level_two_session();
         assert_eq!(session.runtime().player_count, 2);

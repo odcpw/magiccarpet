@@ -43,8 +43,9 @@ pub(crate) struct CarriedSpellProgress {
 }
 
 /// sub6D8B0 accepts a human wizard owner. Keep all player projections at
-/// the same progression boundary as the source hit award.
-fn award_source_spell_experience(live: &mut Mc2LiveState, owner: u16, family: u8) {
+/// the same progression boundary as the source hit award. A counted award
+/// adds its signed amount once, then performs one source tier visit.
+fn award_source_spell_experience(live: &mut Mc2LiveState, owner: u16, family: u8, amount: i32) {
     if !live.shared_spells.mission_rewards().allows_experience() || !live
         .economy
         .entities
@@ -68,6 +69,7 @@ fn award_source_spell_experience(live: &mut Mc2LiveState, owner: u16, family: u8
         live.core.context.spell_fire.as_mut(),
         owner,
         family,
+        amount,
     );
 }
 
@@ -85,9 +87,10 @@ fn award_family_spell_experience(
     arena: &SourceArena,
     shared: &mut Level2SharedSpellResetSession,
     players: &mut [PlayerSnapshot],
-    fire: Option<&mut crate::SpellFireContext>,
+    mut fire: Option<&mut crate::SpellFireContext>,
     owner: u16,
     family: u8,
+    amount: i32,
 ) {
     if !shared.mission_rewards().allows_experience()
         || arena.economy.live_arena_cursor_row(owner).is_some()
@@ -102,8 +105,14 @@ fn award_family_spell_experience(
     {
         return;
     }
-    shared.award_spell_experience(owner, family, 1);
-    publish_family_spell_progression(shared, players, fire, owner, family);
+    // sub_6D8B0 takes a signed source word, even when a producer counts
+    // damage hits in an unsigned or wider accumulator.
+    shared.award_spell_experience(owner, family, i32::from(amount as i16));
+    publish_family_spell_progression(shared, players, fire.as_deref_mut(), owner, family);
+    if family != CASTLE_SPELL_FAMILY {
+        // sub_6D9C0 also caps Castle experience during every family visit.
+        publish_family_spell_progression(shared, players, fire, owner, CASTLE_SPELL_FAMILY);
+    }
 }
 
 fn publish_family_spell_progression(
@@ -2646,7 +2655,7 @@ impl Mc2Simulation {
             ai.apply_class5_player_feedback(target);
         }
         if let Some((owner, family)) = step.effects.experience_award {
-            live.shared_spells.award_spell_experience(owner, family, 1);
+            award_source_spell_experience(live, owner, family, 1);
         }
         Ok(step.map_synced)
     }
@@ -8577,12 +8586,25 @@ impl Mc2Simulation {
                             projected_stage.axis_x = location.x.wrapping_mul(256) as i16;
                             projected_stage.axis_y = location.y.wrapping_mul(256) as i16;
                             self.session.definition.semantic_level().and_then(|level| level.entity(&target)).is_some()
-                                && self.session.state.live.economy.entities.get(usize::from(slot))
-                                .filter(|entity| entity.index == slot)
-                                .is_some_and(|entity| crate::campaign::objectives::delivery_collection::delivered_entity_to_point(
-                                    &projected_stage, slot, entity.source_spell_parent_entity_index(), player_slot,
-                                    (entity.position.x as i16, entity.position.y as i16),
-                                ))
+                                && crate::campaign::objectives::delivery_collection::delivered_entity_in_arena(
+                                    &projected_stage,
+                                    slot,
+                                    player_slot,
+                                    &self.session.state.live.economy,
+                                    source_target::Context {
+                                        spells: Some(&self.session.state.live.shared_spells),
+                                        particles: Some(&self.session.definition.presentation.particles),
+                                        player: Some((
+                                            self.session.state.live.core.state.entity_index,
+                                            self.session.state.live.core.state.position,
+                                            self.session.state.live.player_life,
+                                        )),
+                                        ..source_target::Context::from_ordinary(
+                                            &self.session.state.live.goats,
+                                            &self.session.state.live.ordinary,
+                                        )
+                                    },
+                                )?
                         }
                         ObjectiveCondition::CollectedTarget(target) => {
                             let RuntimeRelation::LiveEntityIndex(slot) = stage.relation else {
@@ -8745,12 +8767,25 @@ impl Mc2Simulation {
                                 .players
                                 .get(source_player_slot)
                                 .map_or(0, |player| player.entity_index);
-                            self.session.state.live.economy.entities.get(usize::from(slot))
-                                .filter(|entity| entity.index == slot)
-                                .is_some_and(|entity| crate::campaign::objectives::delivery_collection::delivered_entity_to_point(
-                                    stage, slot, entity.source_spell_parent_entity_index(), player_slot,
-                                    (entity.position.x as i16, entity.position.y as i16),
-                                ))
+                            crate::campaign::objectives::delivery_collection::delivered_entity_in_arena(
+                                stage,
+                                slot,
+                                player_slot,
+                                &self.session.state.live.economy,
+                                source_target::Context {
+                                    spells: Some(&self.session.state.live.shared_spells),
+                                    particles: Some(&self.session.definition.presentation.particles),
+                                    player: Some((
+                                        self.session.state.live.core.state.entity_index,
+                                        self.session.state.live.core.state.position,
+                                        self.session.state.live.player_life,
+                                    )),
+                                    ..source_target::Context::from_ordinary(
+                                        &self.session.state.live.goats,
+                                        &self.session.state.live.ordinary,
+                                    )
+                                },
+                            )?
                         }
                         6 => {
                             let RuntimeRelation::LiveEntityIndex(slot) = stage.relation else {
@@ -11980,6 +12015,7 @@ impl Mc2Simulation {
                     &mut self.session.state.live,
                     owner,
                     CASTLE_SPELL_FAMILY,
+                    1,
                 );
             }
             let source_slot = level2_economy_event_source_slot(event, fallback_source_slot);
@@ -13888,18 +13924,18 @@ impl Mc2Simulation {
                     }
                 }
                 (15, 0 | 1 | 2..=22 | 23 | 24 | 25) => {
-                    let terrain = &self.session.state.live.terrain;
-                    self.session
-                        .state
-                        .live
-                        .shared_spells
+                    let live = &mut self.session.state.live;
+                    if let Some(slot) = live.shared_spells
                         .materialize_authored_spell_pickup(
-                            &mut self.session.state.live.economy,
+                            &mut live.economy,
                             feature,
-                            terrain,
+                            &live.terrain,
                             &self.session.definition.presentation.particles,
                         )
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| error.to_string())?
+                    {
+                        live.core.runtime.bind_authored_stage_entity(feature.index, slot);
+                    }
                 }
                 _ => return Err(format!(
                     "authored group {target_group} has no publisher for preflighted constructor {}/{} at row {}",
@@ -15464,6 +15500,7 @@ impl Mc2Simulation {
                 .level2_model17_activated
                 .insert(companion.index);
         }
+        self.session.state.live.core.runtime.bind_authored_stage_entity(feature.index, source_slot);
         let mut activated_indices = vec![feature.index];
         if let Some(companion) = companion {
             activated_indices.push(companion.index);
@@ -17490,22 +17527,12 @@ impl Mc2Simulation {
             });
         }
         for (owner, family, hits) in feedback.experience {
-            if self
-                .session
-                .state
-                .live
-                .economy
-                .entities
-                .get(usize::from(owner))
-                .is_some_and(|s| s.active && (s.class, s.model) == (3, 0))
-            {
-                self.session
-                    .state
-                    .live
-                    .shared_spells
-                    .award_spell_experience(owner, family, i32::from(hits));
-                publish_spell_progression(&mut self.session.state.live, owner, family);
-            }
+            award_source_spell_experience(
+                &mut self.session.state.live,
+                owner,
+                family,
+                i32::from(hits),
+            );
         }
         Ok(())
     }
@@ -17651,6 +17678,7 @@ impl Mc2Simulation {
                         core.context.spell_fire.as_mut(),
                         owner,
                         family,
+                        1,
                     );
                     Ok(())
                 },
@@ -18097,6 +18125,7 @@ impl Mc2Simulation {
                             fire.as_mut(),
                             owner,
                             family,
+                            1,
                         );
                     };
                     creatures::creature_27::mc2::step_row(
@@ -18194,11 +18223,7 @@ impl Mc2Simulation {
                     Vec::push(&mut self.session.state.live.shared_spells.events, event);
                 }
                 for (owner, family) in outcome.feedback {
-                    self.session
-                        .state
-                        .live
-                        .shared_spells
-                        .award_spell_experience(owner, family, 1);
+                    award_source_spell_experience(&mut self.session.state.live, owner, family, 1);
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -18439,7 +18464,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (None, outcome.kill_credit, outcome.feedback, None, None)
                     } else if visit.handler == ExistingHandler::Creature21 {
@@ -18470,7 +18495,7 @@ impl Mc2Simulation {
                         )?;
                         model21_audio = outcome.sound_position.zip(outcome.sound_identity);
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (
                             None,
@@ -18508,7 +18533,7 @@ impl Mc2Simulation {
                         )?;
                         model28_audio = outcome.sound.zip(outcome.sound_origin);
                         for (owner, family) in outcome.feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         let melee = outcome.melee.map(|hit| {
                             (
@@ -18546,7 +18571,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (None, outcome.kill_credit, outcome.feedback, None, None)
                     } else if visit.handler == ExistingHandler::Creature26 {
@@ -18637,7 +18662,7 @@ impl Mc2Simulation {
                             { dispatcher.sync_spell_target_resources(row); }
                         }
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (None, None, outcome.feedback, outcome.sound, None)
                     } else if visit.handler == ExistingHandler::Creature23 {
@@ -18764,7 +18789,7 @@ impl Mc2Simulation {
                             });
                         }
                         for (owner, family) in outcome.feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (
                             outcome.melee,
@@ -18784,7 +18809,7 @@ impl Mc2Simulation {
                             models,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (
                             None,
@@ -18827,7 +18852,7 @@ impl Mc2Simulation {
                             &mut player_feedback,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (
                             outcome.melee,
@@ -18849,7 +18874,7 @@ impl Mc2Simulation {
                             models,
                         )?;
                         if let Some((owner, family)) = outcome.earlier_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         (
                             outcome.melee,
@@ -18928,7 +18953,7 @@ impl Mc2Simulation {
                     }
                 }
                 if let Some((owner, family)) = feedback {
-                    award_source_spell_experience(&mut self.session.state.live, owner, family);
+                    award_source_spell_experience(&mut self.session.state.live, owner, family, 1);
                 }
                 if let Some(sound) = sound.filter(|_| !matches!(
                     visit.handler, ExistingHandler::Creature17 | ExistingHandler::Spider
@@ -19291,29 +19316,7 @@ impl Mc2Simulation {
                     live.core.runtime.clear_alternate_volcano();
                 }
                 if let Some((owner, family, count)) = outcome.experience {
-                    live.shared_spells
-                        .award_spell_experience(owner, family, i32::from(count));
-                    if let Some(source) = live
-                        .shared_spells
-                        .players
-                        .iter()
-                        .find(|player| player.entity_index == owner)
-                        && let Some(player) = live
-                            .core
-                            .players
-                            .iter_mut()
-                            .find(|player| player.entity_index == owner)
-                    {
-                        player.sync_spell_progression_family_from(source, usize::from(family));
-                    }
-                    if owner == player_entity_index
-                        && let Some(fire) = live.core.context.spell_fire.as_mut()
-                    {
-                        fire.spell_experience[usize::from(family)] =
-                            live.shared_spells.spell_experience[usize::from(family)];
-                        fire.spell_levels[usize::from(family)] =
-                            live.shared_spells.spell_levels[usize::from(family)];
-                    }
+                    award_source_spell_experience(live, owner, family, i32::from(count));
                 }
                 for (slot, mana) in outcome.mana_updates {
                     if let Some(player) = live.economy.entities.get_mut(usize::from(slot)) {
@@ -19405,8 +19408,7 @@ impl Mc2Simulation {
                     targets,
                 )?;
                 if let Some((owner, family, count)) = outcome.experience {
-                    live.shared_spells
-                        .award_spell_experience(owner, family, i32::from(count));
+                    award_source_spell_experience(live, owner, family, i32::from(count));
                 }
                 self.append_new_economy_events(pass, source_slot);
             }
@@ -20250,7 +20252,7 @@ impl Mc2Simulation {
                     )?,
                 };
                 for (owner, family) in feedback {
-                    award_source_spell_experience(live, owner, family);
+                    award_source_spell_experience(live, owner, family, 1);
                 }
                 self.append_new_economy_events(pass, source_slot);
                 if let SourceRoute::Dynamic(row) = route {
@@ -21129,7 +21131,7 @@ impl Mc2Simulation {
                     &self.session.definition.presentation.particles,
                 )?;
                 for (owner, family) in step.spell_awards {
-                    live.shared_spells.award_spell_experience(owner, family, 1);
+                    award_source_spell_experience(live, owner, family, 1);
                 }
                 let effects = step.effects;
                 self.session
@@ -21305,7 +21307,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         for (owner, family) in outcome.spell_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         outcome.retained_for_epilogue
                     } else if matches!(stage_mode, 1 | 2 | 6) {
@@ -21320,7 +21322,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         for (owner, family) in outcome.spell_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         outcome.retained_for_epilogue
                     } else {
@@ -21337,7 +21339,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         if let Some((owner, family)) = outcome.spell_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         outcome.retained_for_epilogue
                     };
@@ -21630,7 +21632,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         for (owner, family) in outcome.spell_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         outcome.retained_for_epilogue
                     } else {
@@ -21646,7 +21648,7 @@ impl Mc2Simulation {
                             targets,
                         )?;
                         if let Some((owner, family)) = outcome.spell_feedback {
-                            award_source_spell_experience(live, owner, family);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         outcome.retained_for_epilogue
                     };
@@ -22102,7 +22104,7 @@ impl Mc2Simulation {
                                 "Fireball {source_slot} current holder family {family} exceeds the human spell table"
                             ));
                         }
-                        award_source_spell_experience(&mut self.session.state.live, owner, family);
+                        award_source_spell_experience(&mut self.session.state.live, owner, family, 1);
                     }
                     self.append_new_economy_events(pass, source_slot);
                     if step.live {
@@ -22156,7 +22158,7 @@ impl Mc2Simulation {
                         &self.session.definition.presentation.particles,
                     )? {
                         for (owner, family) in step.spell_awards {
-                            live.shared_spells.award_spell_experience(owner, family, 1);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         if let Some(entity) = step.feedback_entity
                             && let Some(dispatcher) = live.nyphur_dispatcher.get_mut_in_arena(&live.economy, entity)
@@ -22415,11 +22417,7 @@ impl Mc2Simulation {
                     result.spell_awards
                 };
                 for (owner, family) in awards {
-                    self.session
-                        .state
-                        .live
-                        .shared_spells
-                        .award_spell_experience(owner, family, 1);
+                    award_source_spell_experience(&mut self.session.state.live, owner, family, 1);
                 }
                 self.apply_level2_goat_economy_events(&events)?;
                 self.append_new_economy_events(pass, source_slot);
@@ -22972,7 +22970,7 @@ impl Mc2Simulation {
                 )
             }?;
             for (owner, family) in outcome.feedback {
-                award_source_spell_experience(live, owner, family);
+                award_source_spell_experience(live, owner, family, 1);
             }
             if let Some(target) = outcome.target_feedback
                 && target == live.core.state.entity_index
@@ -24727,7 +24725,7 @@ impl Mc2Simulation {
         );
         let holder_handle = live.economy.handle(source_slot);
         if transition.award_experience {
-            award_source_spell_experience(&mut self.session.state.live, owner, 4);
+            award_source_spell_experience(&mut self.session.state.live, owner, 4, 1);
         }
         let mut spawned = None;
         if transition.request_creature
@@ -27638,7 +27636,7 @@ impl Mc2Simulation {
                     &frame,
                 );
                 if let Some(owner) = step.direct_hit_owner {
-                    award_source_spell_experience(live, owner, 1);
+                    award_source_spell_experience(live, owner, 1, 1);
                 }
                 for (owner, hit) in [step.accuracy, step.secondary_accuracy]
                     .into_iter()
@@ -27937,11 +27935,7 @@ impl Mc2Simulation {
                     }
                 }
                 if let Some((owner, family)) = effects.experience_award {
-                    self.session
-                        .state
-                        .live
-                        .shared_spells
-                        .award_spell_experience(owner, family, 1);
+                    award_source_spell_experience(&mut self.session.state.live, owner, family, 1);
                 }
                 if let Some(sound) = effects.sound {
                     let (tag, sound_id) = match sound {
@@ -28239,11 +28233,12 @@ impl Mc2Simulation {
                         }
                     };
                     for (owner, family) in &step.effects.spell_awards {
-                        self.session
-                            .state
-                            .live
-                            .shared_spells
-                            .award_spell_experience(*owner, *family, 1);
+                        award_source_spell_experience(
+                            &mut self.session.state.live,
+                            *owner,
+                            *family,
+                            1,
+                        );
                     }
                     if let Some(target) = step.target {
                         self.apply_level2_trader_target(target);
@@ -28507,47 +28502,8 @@ impl Mc2Simulation {
                         (child.xtype, child.xsubtype),
                     );
                 }
-                if let Some(target) = reflection.filter(|target| {
-                    self.session
-                        .state
-                        .live
-                        .shared_spells
-                        .players
-                        .iter()
-                        .any(|player| player.entity_index == *target)
-                }) {
-                    self.session
-                        .state
-                        .live
-                        .shared_spells
-                        .award_spell_experience(target, 8, 1);
-                    let source_player = self
-                        .session
-                        .state
-                        .live
-                        .shared_spells
-                        .players
-                        .iter()
-                        .find(|player| player.entity_index == target)
-                        .unwrap()
-                        .clone();
-                    if let Some(player) = self
-                        .session
-                        .state
-                        .live
-                        .core
-                        .players
-                        .iter_mut()
-                        .find(|player| player.entity_index == target)
-                    {
-                        player.sync_spell_progression_family_from(&source_player, 8);
-                    }
-                    if let Some(fire) = self.session.state.live.core.context.spell_fire.as_mut() {
-                        fire.spell_experience[8] =
-                            self.session.state.live.shared_spells.spell_experience[8];
-                        fire.spell_levels[8] =
-                            self.session.state.live.shared_spells.spell_levels[8];
-                    }
+                if let Some(target) = reflection {
+                    award_source_spell_experience(&mut self.session.state.live, target, 8, 1);
                 }
                 live
             }
@@ -28657,7 +28613,7 @@ impl Mc2Simulation {
                             live.core.state.music_countdown = 100;
                         }
                         if let Some((owner, family)) = step.effects.feedback {
-                            live.shared_spells.award_spell_experience(owner, family, 1);
+                            award_source_spell_experience(live, owner, family, 1);
                         }
                         step.map_synced
                     }
@@ -29535,7 +29491,7 @@ impl Mc2Simulation {
             .absorb_player_shield_damage(player_entity_index, damage, attacker);
         let applied_damage = shield_damage.map_or(damage, |damage| damage.applied_damage);
         if shield_damage.is_some() {
-            award_source_spell_experience(&mut self.session.state.live, player_entity_index, 6);
+            award_source_spell_experience(&mut self.session.state.live, player_entity_index, 6, 1);
         }
         self.session.state.live.player_life = self
             .session
@@ -34613,6 +34569,26 @@ mod tests {
         ).unwrap();
         let mut live = campaign.simulation().session.state.live.clone();
         let owner = live.core.state.entity_index;
+        let castle = usize::from(CASTLE_SPELL_FAMILY);
+        assert!(live.core.players.iter().any(|player| player.entity_index == owner));
+        assert!(live.core.context.spell_fire.as_ref()
+            .is_some_and(|fire| fire.caster.entity_index == owner));
+        // Declared arithmetic control: a non-Castle source award must
+        // publish sub_6D9C0's cross-family Castle cap at the same boundary.
+        for player in live.shared_spells.players.iter_mut().chain(live.core.players.iter_mut())
+            .filter(|player| player.entity_index == owner)
+        {
+            player.runtime_spell_experience[castle] = 12;
+            player.record[164 + castle * 4..168 + castle * 4]
+                .copy_from_slice(&12_i32.to_le_bytes());
+        }
+        live.shared_spells.local_player.runtime_spell_experience[castle] = 12;
+        live.shared_spells.spell_experience[castle] = 12;
+        if let Some(fire) = live.core.context.spell_fire.as_mut()
+            && fire.caster.entity_index == owner
+        {
+            fire.spell_experience[castle] = 12;
+        }
         let before = live.shared_spells.players.iter()
             .find(|player| player.entity_index == owner).unwrap().runtime_spell_experience[19];
         award_family_spell_experience(
@@ -34622,7 +34598,21 @@ mod tests {
             live.core.context.spell_fire.as_mut(),
             owner,
             19,
+            3,
         );
+        for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+            .filter(|player| player.entity_index == owner)
+        {
+            assert_eq!(player.runtime_spell_experience[19], before.wrapping_add(3));
+            assert_eq!(player.runtime_spell_experience[castle], 7);
+        }
+        if let Some(fire) = live.core.context.spell_fire.as_ref()
+            && fire.caster.entity_index == owner
+        {
+            assert_eq!(fire.spell_experience[19], before.wrapping_add(3));
+            assert_eq!(fire.spell_experience[castle], 7);
+        }
+        award_source_spell_experience(&mut live, owner, 19, -2);
         for player in live.shared_spells.players.iter().chain(live.core.players.iter())
             .filter(|player| player.entity_index == owner)
         {
@@ -34632,6 +34622,18 @@ mod tests {
             && fire.caster.entity_index == owner
         {
             assert_eq!(fire.spell_experience[19], before.wrapping_add(1));
+        }
+        award_source_spell_experience(&mut live, owner, 19, 0x8000);
+        let signed_boundary = before.wrapping_add(1).wrapping_add(i32::from(i16::MIN));
+        for player in live.shared_spells.players.iter().chain(live.core.players.iter())
+            .filter(|player| player.entity_index == owner)
+        {
+            assert_eq!(player.runtime_spell_experience[19], signed_boundary);
+        }
+        if let Some(fire) = live.core.context.spell_fire.as_ref()
+            && fire.caster.entity_index == owner
+        {
+            assert_eq!(fire.spell_experience[19], signed_boundary);
         }
         let player = &mut live.economy.entities[usize::from(owner)];
         player.model = 1;
@@ -34643,16 +34645,17 @@ mod tests {
             live.core.context.spell_fire.as_mut(),
             owner,
             19,
+            1,
         );
         assert_eq!(live.shared_spells.players.iter()
             .find(|player| player.entity_index == owner).unwrap().runtime_spell_experience[19],
-            before.wrapping_add(1));
+            signed_boundary);
         live.economy.entities[usize::from(owner)].model = 0;
         live.economy.entities[usize::from(owner)].record[68] = 0;
         live.shared_spells.set_mission_rewards(crate::campaign::rewards::MissionRewards::Suppressed);
         let suppressed = live.clone();
-        award_source_spell_experience(&mut live, owner, 19);
-        award_source_spell_experience(&mut live, owner, u8::MAX);
+        award_source_spell_experience(&mut live, owner, 19, 1);
+        award_source_spell_experience(&mut live, owner, u8::MAX, 1);
         assert_eq!(live, suppressed, "completed-entry suppression precedes family lookup and publishes no reward");
     }
 
