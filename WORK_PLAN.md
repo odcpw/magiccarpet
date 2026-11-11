@@ -834,6 +834,23 @@ real defects or close existing finite coverage gaps without inventing missing
 behavior. A configured constructor boundary is not an earned final mission;
 recorded public inputs are fixed regression evidence, not an AI playthrough.
 
+The configured final368/374 checks passed7.388s: ordinary switch scheduling,
+ordered group28, BUILD successor/destruction to real boss callback, and real
+row374 overlap to four authored model28 roots and following reclaim. Final392
+exit remains unqualified; no completion flag was forced. The recorded-input
+combat/save/carry check was interrupted by a kernel OOM before a result receipt
+and is NOT a pass. Both new checks are uncommitted test-only work; the installed
+reward runtime above is unchanged. Preserve the current source and batch4 logs.
+
+OOM remediation on2026-11-11: RAM-backed `/tmp` held about28GiB while swap was
+full. The current Cargo cache has been moved byte-for-byte to SSD at
+`/home/oliver/Projects/mc2-tmp26/cargo-cache-20261111`; all3255 regular files
+(8,734,415,133bytes) and symlinks match, and the old target alias resolves there.
+Available memory rose from~6GiB to~15GiB. No source, save or installed player was
+removed. Receipt: `/home/oliver/Projects/mc2-tmp26/cargo-cache-relocation-20261111.json`.
+Heavy jobs are paused; inspect real RAM/swap pressure before resuming, and keep
+future large build/test outputs off tmpfs. Disk headroom alone is insufficient.
+
 Oliver subsequently authorized deleting obsolete temporary build/test outputs
 instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current

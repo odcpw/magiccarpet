@@ -157,6 +157,11 @@ path, without an unrelated Rust build.
 
 Preserve the workspace's documented compiler stability settings and lockfile.
 Keep target caches; do not clean or change profiles/flags to force a rebuild.
+On `3090`, `/tmp` is RAM-backed tmpfs. Keep large Cargo caches, player copies
+and proof outputs on disk, not `/tmp`. The current warm Cargo target resolves
+to `/home/oliver/Projects/mc2-tmp26/cargo-cache-20261111` on SSD. Before heavy
+work inspect available RAM, swap and memory pressure as well as disk headroom;
+pause local heavy jobs under pressure. Free tmpfs space is not free disk.
 Use configured RCH for expensive builds when its worker is healthy; retain the
 local warm path for quick checks. Run RCH from the repository root: build scripts
 read upstream remc2 files outside the Rust workspace. Pin the nested toolchain
