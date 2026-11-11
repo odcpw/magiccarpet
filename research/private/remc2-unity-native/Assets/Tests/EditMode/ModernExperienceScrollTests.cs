@@ -48,7 +48,12 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(renderers.Length, Is.GreaterThan(0));
                 var materials = renderers.SelectMany(r => r.sharedMaterials).Select(m => m.name).Distinct().ToArray();
                 Assert.That(materials, Does.Contain("Scroll parchment"));
+                Assert.That(materials, Does.Contain("Scroll parchment overlay"));
+                Assert.That(materials, Does.Contain("Scroll rolled edge"));
                 Assert.That(materials, Does.Contain("Scroll violet binding"));
+                var paper = renderers.SelectMany(r => r.sharedMaterials)
+                    .First(m => m.name == "Scroll parchment");
+                Assert.That(paper.GetColor("_BaseColor").r, Is.GreaterThan(.8f));
                 var bounds = renderers[0].bounds;
                 foreach (var renderer in renderers.Skip(1)) bounds.Encapsulate(renderer.bounds);
                 Assert.That(bounds.size.x / bounds.size.y, Is.InRange(2.3f, 3.2f));

@@ -11,7 +11,7 @@ namespace MagicCarpet.Native
     {
         private readonly Transform parent;
         private readonly GameObject model;
-        private readonly Material parchment, binding, edge;
+        private readonly Material parchment, overlay, binding, edge;
         private readonly Dictionary<ushort, Instance> instances = new();
         private readonly HashSet<ushort> current = new();
         private readonly List<ushort> removed = new();
@@ -41,9 +41,10 @@ namespace MagicCarpet.Native
             var shader = Shader.Find("Universal Render Pipeline/Lit");
             // Missing generated resources leave the original sprite visible.
             if (model == null || texture == null || shader == null) { model = null; return; }
-            parchment = MakeMaterial(shader, "Scroll parchment", new Color(.56f, .35f, .18f), texture);
+            parchment = MakeMaterial(shader, "Scroll parchment", new Color(.86f, .65f, .40f), texture);
+            overlay = MakeMaterial(shader, "Scroll parchment overlay", new Color(.96f, .77f, .51f), texture);
             binding = MakeMaterial(shader, "Scroll violet binding", new Color(.32f, .10f, .30f), null);
-            edge = MakeMaterial(shader, "Scroll rolled edge", new Color(.32f, .19f, .09f), null);
+            edge = MakeMaterial(shader, "Scroll rolled edge", new Color(.44f, .28f, .14f), null);
         }
 
         private static Material MakeMaterial(Shader shader, string name, Color color, Texture texture)
@@ -91,7 +92,8 @@ namespace MagicCarpet.Native
                             {
                                 var name = materials[i] == null ? "" : materials[i].name.ToLowerInvariant();
                                 materials[i] = name.Contains("violet") ? binding :
-                                    name.Contains("edge") ? edge : parchment;
+                                    name.Contains("edge") ? edge :
+                                    name.Contains("overlay") ? overlay : parchment;
                             }
                             renderer.sharedMaterials = materials;
                         }
@@ -131,7 +133,7 @@ namespace MagicCarpet.Native
         {
             foreach (var instance in instances.Values) Destroy(instance.node);
             instances.Clear(); current.Clear();
-            Destroy(parchment); Destroy(binding); Destroy(edge);
+            Destroy(parchment); Destroy(overlay); Destroy(binding); Destroy(edge);
         }
 
         private static void Destroy(UnityEngine.Object obj)
