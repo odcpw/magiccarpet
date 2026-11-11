@@ -65,6 +65,50 @@ namespace MagicCarpet.Native.Tests
             Assert.That(ModernStoneStatues.MatchesCurrent(current, stale), Is.False);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PresenterPreservesImportedTransformsWhenPlacingStone(bool voxel)
+        {
+            var parent = new GameObject("Stone placement test");
+            Material material = null;
+            try
+            {
+                var camera = new GameObject("Stone camera").AddComponent<Camera>();
+                camera.transform.SetParent(parent.transform, false);
+                camera.transform.position = new Vector3(310, 85, 890);
+                var entity = new NativeSim.CampaignEntitySnapshot {
+                    entityIndex = 53, sourceId = 53, active = 1, classId = 2, model = 1, action = 3
+                };
+                var view = new NativeSim.CampaignEntityPresentation {
+                    entityIndex = 53, sourceId = 53, renderParameterIndex = 79,
+                    baseTmap = 78, selectedTmap = 78, logicalHeight = 500,
+                    x = 19328, y = 55936, z = 4575
+                };
+                var presenter = new ModernStoneStatues(parent.transform, voxel, "TMAPS1-0");
+                presenter.Observe(3, 10688, new Dictionary<ushort, NativeSim.CampaignEntitySnapshot> {
+                    [53] = entity
+                }, new[] { view });
+                Assert.That(presenter.Replaces(53), Is.True);
+                presenter.Render(camera, true);
+                var renderers = parent.GetComponentsInChildren<Renderer>();
+                Assert.That(renderers.Length, Is.GreaterThan(0));
+                material = renderers[0].sharedMaterial;
+                var bounds = renderers[0].bounds;
+                foreach (var renderer in renderers) bounds.Encapsulate(renderer.bounds);
+                var height = view.logicalHeight / 64f;
+                Assert.That(bounds.size.y, Is.InRange(height * .95f, height * 1.05f),
+                    "runtime placement must preserve the prefab's imported axis and scale");
+                Assert.That(bounds.min.y, Is.EqualTo(view.z / 64f).Within(height * .03f));
+                Assert.That(bounds.center.x, Is.EqualTo(view.x / 64f).Within(height * .1f));
+                Assert.That(bounds.center.z, Is.EqualTo(view.y / 64f).Within(height * .1f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(parent);
+                if (material != null) Object.DestroyImmediate(material);
+            }
+        }
+
         [TestCase("ModernScenery/StoneStatue")]
         [TestCase("ModernScenery/StoneStatueVoxel")]
         public void ImportedStatueIsGroundedUprightAndBounded(string resource)

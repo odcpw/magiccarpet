@@ -73,8 +73,11 @@ namespace MagicCarpet.Native
                 if (!MatchesCurrent(entities, view)) continue;
                 rows.Add(view.entityIndex, view);
                 if (objects.ContainsKey(view.entityIndex)) continue;
-                var node = UnityEngine.Object.Instantiate(model, root);
-                node.name = "Stone statue " + view.entityIndex;
+                // Preserve any axis and scale correction on the imported model root.
+                // Runtime placement belongs on a separate parent, not the FBX root.
+                var node = new GameObject("Stone statue " + view.entityIndex);
+                node.transform.SetParent(root, false);
+                UnityEngine.Object.Instantiate(model, node.transform, false);
                 foreach (var renderer in node.GetComponentsInChildren<Renderer>(true))
                 {
                     renderer.sharedMaterial = material;
