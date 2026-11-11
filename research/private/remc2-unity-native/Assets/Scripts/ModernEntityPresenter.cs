@@ -76,7 +76,7 @@ namespace MagicCarpet.Native
             trees = new ModernAuthoredTrees(root);
             collectors = new ModernCollector(root);
             scrolls = new ModernExperienceScroll(root, Voxels.VoxelModernWorld.Requested);
-            castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested);
+            castleJars = new ModernCastleSpellJar(root, Voxels.VoxelModernWorld.Requested, terrain.SampleHeight);
             if(Voxels.VoxelModernWorld.Requested)
             {
                 voxelMana=new Voxels.VoxelManaSpheres(root,cache,terrain.SampleHeight);
