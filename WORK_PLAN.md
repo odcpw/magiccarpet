@@ -808,12 +808,25 @@ Oliver's current sequence is to complete all shared engine implementation,
 then level assembly, with his human playtest after those stages. Continue
 independent shared capabilities while recording unverified human gameplay.
 Missing earned campaign saves or human victory evidence do not gate that work.
+
+Latest installed shared checkpoint: canonical `c77a0e7d`, compatible Original
+runtime `566a46ad`, native `69e44aa8debb`. It includes `12d4e808` reward/current
+delivery-target and 32-bit lifetime fixes, then complete Gravity/Wind reward
+publication. Both batches are verified, committed, pushed and installed;
+all 662 build inputs and installed 470 Rust/200 UI/142 player inputs match.
+Each passed one first-attempt Original launch/load; human gameplay is unverified.
+Finite directional `mc-k5k.2` and Army/field `mc-k5k.4` acceptance is closed after
+bounded source/evidence review. `mc-6qf.2`, late spells `.5` and Cave `.6` remain
+active: finish exact reward publication at their actual contact boundaries,
+including current-holder and allocation/reclaim consumers. Current proofs:
+`research/private/generated/shared-engine-20261111-integration/`.
+
 Oliver subsequently authorized deleting obsolete temporary build/test outputs
 instead of archiving them. Root removed19 inactive Nov3/4 output directories
 and the just-copied old test backups; `/tmp` now has about20GiB free. Current
 source, warm caches, active build and current installation were not removed.
 Do not create more old-output archives or rollback work as a delivery step.
-Original now runs the secret continuation fix from shared main `c1f06874`
+The previous Original checkpoint ran the secret continuation fix from shared main `c1f06874`
 and compatible isolated build `5127083c`, with native `552d43962253`.
 The immediate secret load from an unfinished parent replay retains source bit
 0x10. Its action 12 result 0x1A routes through the active secret return frame,
