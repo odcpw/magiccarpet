@@ -4880,6 +4880,157 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "requires MC_PROGRESSION_PUBLIC_REPLAY and MC_PROGRESSION_PUBLIC_INPUTS from an actual recorded route"]
+    fn public_combat_progression_survives_real_save_and_entry_reset() {
+        use crate::game_runtime::{GameRuntime, ReplayOperation};
+
+        let started = std::time::Instant::now();
+        // The old save supplies inputs and its actual entry geometry, not a
+        // trusted old state receipt or an invented campaign completion.
+        let trace_bytes = std::fs::read(std::env::var_os("MC_PROGRESSION_PUBLIC_REPLAY").unwrap()).unwrap();
+        let trace: Mc2CampaignReplaySave = serde_json::from_slice(&trace_bytes).unwrap();
+        assert!(trace.verify());
+        let input: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(std::env::var_os("MC_PROGRESSION_PUBLIC_INPUTS").unwrap()).unwrap(),
+        ).unwrap();
+        assert_eq!(input["replaySha256"].as_str().unwrap(), hex_digest(Sha256::digest(&trace_bytes).into()));
+        assert!(trace.global_context_changes.is_empty());
+        assert!(trace.dynamic_lighting_changes.is_empty());
+        assert!(trace.primary_visibility_changes.is_empty());
+        assert_eq!(trace.initial_global_context, GlobalSpecialState::default());
+        assert_eq!(trace.initial_dynamic_lighting, default_dynamic_lighting());
+        assert!(trace.initial_mission_rewards.is_none());
+        assert_eq!(input["startingTick"].as_str().unwrap().parse::<u64>().unwrap(), trace.expected_tick);
+        let extra: Vec<GameCommand> = serde_json::from_value(input["commands"].clone()).unwrap();
+        let generated = std::env::var_os("MC_PROGRESSION_GENERATED_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated"));
+        // These are the exact owner packages and caches used by the public
+        // recorder; a similarly named Level 1 package has a different graph.
+        let owner = generated.join("settlement-20261105-integration/owner-closed-v6");
+        let root = owner.join("level1");
+        let cache = owner.join("environment-complete/cache-level1");
+        let next_root = generated.join("mc-level2-vault-successor-closure-20261025");
+        let next_cache = generated.join("mc-b9s2-cursor-level2-vault-20261029");
+        let resolver = Mc2RuntimePackageResolver::load([
+            Mc2CampaignInputs::with_owner_cache(&root, &cache),
+            Mc2CampaignInputs::with_owner_cache(&next_root, &next_cache),
+            Mc2CampaignInputs::with_owner_cache(owner.join("level3"), owner.join("environment-complete/cache-level3")),
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level4"),
+                generated.join("mc-b9s2-cursor-level4-20261029"),
+            ),
+        ]).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter,
+            Arc::new(trace.definition.clone()),
+            61901,
+            Mc2CampaignInputs::with_owner_cache(&root, &cache),
+        ).unwrap();
+        session.backend_mut().apply_semantic_spell_carry(&trace.semantic_spell_carry).unwrap();
+        assert!(trace.voxel_mode_changes.len() <= 1);
+        if let Some(change) = trace.voxel_mode_changes.first() {
+            assert_eq!(change.before_operation, 0);
+            let generation = session.identity().generation;
+            session.backend_mut().apply_voxel_mode_change(change.clone(), generation).unwrap();
+        }
+        let initial = session.backend().semantic_spell_carry().unwrap();
+        let initial_fire = session.backend().campaign.simulation().shared_spells().local_player().runtime_spell_experience[0];
+        eprintln!("progression: loaded route at {:?}", started.elapsed());
+        for (index, operation) in trace.operations.iter().enumerate() {
+            let ReplayOperation::Step { command } = operation else {
+                panic!("this recorded combat route must contain gameplay inputs only");
+            };
+            session.advance(guard(&session), command.clone()).unwrap();
+            if (index + 1) % 50 == 0 {
+                eprintln!("progression: checkpoint input {} at {:?}", index + 1, started.elapsed());
+            }
+        }
+        // The captured checkpoint is the first real hit on source slot 54.
+        // Pin its current generation before observing the remaining inputs.
+        let simulation = session.backend().campaign.simulation();
+        let target = simulation.ordinary().villagers().iter()
+            .find(|row| row.entity_index == 54 && row.active).expect("recorded target");
+        assert!((0..1_000).contains(&target.life), "checkpoint must include actual damage");
+        let raw_target = &simulation.entities()[54];
+        assert_eq!((raw_target.class, raw_target.model), (5, 13));
+        let target_handle = simulation.source_arena().handle(54).expect("live target generation");
+        let mut saw_death = false;
+        let mut saw_reclaim = false;
+        for (index, command) in extra.into_iter().enumerate() {
+            session.advance(guard(&session), command).unwrap();
+            if (index + 1) % 50 == 0 {
+                eprintln!("progression: combat input {} at {:?}", index + 1, started.elapsed());
+            }
+            let simulation = session.backend().campaign.simulation();
+            if simulation.source_arena().resolve(target_handle).is_some() {
+                saw_death |= simulation.ordinary().villagers().iter()
+                    .any(|row| row.entity_index == 54 && row.life < 0);
+            } else if saw_death {
+                saw_reclaim = true;
+            }
+        }
+        assert!(saw_death && saw_reclaim, "the recorded target generation must die and be reclaimed");
+        eprintln!("progression: combat complete at {:?}", started.elapsed());
+        let live = session.backend().semantic_spell_carry().unwrap();
+        let simulation = session.backend().campaign.simulation();
+        let player = simulation.shared_spells().local_player();
+        let kills = simulation.economy().authored_bee_kill_census(player.entity_index);
+        let stats = simulation.completion_statistics();
+        // The captured target is a Villager (class 5/model 13). Source
+        // PreKillEntity excludes models 12..15 from creature kill credit.
+        assert_eq!(kills, 0, "the excluded Villager must not award a kill");
+        assert!(player.runtime_spell_experience[0] > initial_fire, "ordinary Fireball combat must earn XP");
+        let banked = session.backend().transition_spell_carry().unwrap();
+        let mut save = Mc2CampaignReplaySave::new(
+            false, session.definition().as_ref().clone(),
+            session.backend().initial_semantic_spell_carry().unwrap(), Vec::new(),
+            session.backend().replay_operations.clone(), &session.backend().snapshot(),
+        );
+        save.voxel_mode_changes = session.backend().voxel_mode_changes.clone();
+        save.receipt_sha256 = save.compute_receipt_sha256();
+        let mut restored = GameRuntime::<Mc2CampaignBackend>::title(61902).unwrap();
+        let runtime_guard = restored.identity().guard();
+        eprintln!("progression: first replay load starting at {:?}", started.elapsed());
+        resolver.load_replay(&mut restored, runtime_guard, 61902, &serde_json::to_vec(&save).unwrap()).unwrap();
+        eprintln!("progression: first replay load complete at {:?}", started.elapsed());
+        let restored_session = restored.session().unwrap();
+        assert_eq!(restored_session.backend().semantic_spell_carry().unwrap(), live);
+        assert_eq!(restored_session.backend().campaign.simulation().completion_statistics(), stats);
+        assert_eq!(restored_session.backend().transition_spell_carry().unwrap(), banked);
+        let saved = resolver.save_replay(&restored).unwrap();
+        let mut roundtrip = GameRuntime::<Mc2CampaignBackend>::title(61903).unwrap();
+        let runtime_guard = roundtrip.identity().guard();
+        eprintln!("progression: roundtrip load starting at {:?}", started.elapsed());
+        resolver.load_replay(&mut roundtrip, runtime_guard, 61903, &saved).unwrap();
+        eprintln!("progression: roundtrip load complete at {:?}", started.elapsed());
+        assert_eq!(roundtrip.session().unwrap().backend().semantic_spell_carry().unwrap(), live);
+
+        session.reset(guard(&session)).unwrap();
+        eprintln!("progression: source reset complete at {:?}", started.elapsed());
+        assert_eq!(session.backend().semantic_spell_carry().unwrap(), initial);
+        let reset = session.backend().campaign.simulation();
+        let reset_player = reset.shared_spells().local_player();
+        assert_eq!(reset.economy().authored_bee_kill_census(reset_player.entity_index), 0);
+
+        // Exercise the real continuation materializer as a controlled entry;
+        // no objective or successful campaign frontier is fabricated here.
+        let definition = Arc::new(load_mc2_campaign_with_owner_cache(&next_root, &next_cache, &default_catalog().unwrap()).unwrap());
+        let mut next = GameSession::open(&Mc2CampaignAdapter, definition, 61904, Mc2CampaignInputs::with_owner_cache(&next_root, &next_cache)).unwrap();
+        next.backend_mut().apply_semantic_spell_carry(&banked).unwrap();
+        let entry = next.backend().semantic_spell_carry().unwrap();
+        for row in &banked.progression {
+            let actual = entry.progression.iter().find(|actual| actual.spell == row.spell).unwrap();
+            assert_eq!(actual.persistent_experience, row.persistent_experience);
+            assert_eq!(actual.runtime_experience, 0);
+        }
+        next.reset(guard(&next)).unwrap();
+        eprintln!("progression: destination reset complete at {:?}", started.elapsed());
+        assert_eq!(next.backend().semantic_spell_carry().unwrap(), entry);
+        assert_eq!(next.backend().transition_spell_carry().unwrap(), banked);
+    }
+
+    #[test]
     fn spell_carry_repair_preserves_progression_through_two_entries_and_save_payload() {
         let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
         let open = |path: &str| {

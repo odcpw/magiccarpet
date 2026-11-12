@@ -534,6 +534,179 @@ mod tests {
     }
 
     #[test]
+    fn configured_final_switch_368_schedules_group28_through_boss_consumer() {
+        use crate::PlayerCommand;
+        use crate::campaign::{CampaignSession, spec::CampaignSelection};
+        use crate::native_world::Mc2DispatchEvent;
+
+        let package = std::env::var_os("MC_LEVEL25_PACKAGE").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq10-owner-v3-level25-20261029"),
+            std::path::PathBuf::from,
+        );
+        let cache = std::env::var_os("MC_LEVEL25_ENVIRONMENT").map_or_else(
+            || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/dragon-bee-20261105-integration/current-level25-environment"),
+            std::path::PathBuf::from,
+        );
+        let mut campaign = CampaignSession::open_with_owner_cache(
+            package, cache, CampaignSelection::ordinary(25).unwrap(),
+        ).expect("actual final-mission owner package");
+        let feature = *campaign.simulation().mission().authored_features().iter()
+            .find(|row| row.index == 368).expect("actual switch row368");
+        assert_eq!((feature.kind, feature.subtype, feature.activation_group,
+            feature.stage_tag, feature.word_10), (11, 30, 25, 28, 13));
+
+        // Configured admission at the real constructor, not a claim that
+        // the preceding group25 waves were earned. No predicate, timer,
+        // objective, group publication or subsequent consumer is forced.
+        let position = feature.world_position(0);
+        let switch = {
+            let live = &mut campaign.simulation_mut().session.state.live;
+            live.economy.allocate_authored_switch_producer(
+                feature.index, feature.subtype as u8, feature.stage_tag as u16,
+                feature.word_10 as i16, position, &live.terrain,
+            ).expect("ordinary authored switch constructor")
+        };
+        let switch_handle = campaign.simulation().source_arena()
+            .handle(switch.source_entity_index).expect("live switch incarnation");
+        let expected_rows = campaign.simulation().mission().authored_features().iter()
+            .filter(|row| row.kind != 0 && row.activation_group == 28)
+            .map(|row| row.index).collect::<Vec<_>>();
+        assert_eq!(expected_rows, [369, 370, 371, 372, 373, 374]);
+
+        let mut timers = Vec::new();
+        let mut published = 0;
+        let mut saw_hidden = false;
+        for _ in 0..40 {
+            campaign.step(PlayerCommand::default(), 0);
+            let sim = campaign.simulation();
+            assert!(!sim.dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })),
+                "final switch source dispatch: {:?}", sim.dispatch_events());
+            published += sim.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 28, authored_indices, .. }
+                    if *source_slot == switch.source_entity_index
+                        && authored_indices.as_ref() == expected_rows.as_slice())).count();
+            if let Some(row) = sim.economy().authored_switch_producers().iter()
+                .find(|row| row.source_entity_index == switch.source_entity_index) {
+                if timers.last() != Some(&row.dword_0x10) { timers.push(row.dword_0x10); }
+                saw_hidden |= !row.drawing_enabled;
+            }
+            if published > 0 && sim.source_arena().resolve(switch_handle).is_none() { break; }
+        }
+        assert_eq!(timers, (1..=16).rev().collect::<Vec<_>>());
+        assert_eq!(published, 1, "the real switch publishes its group exactly once");
+        assert!(saw_hidden && campaign.simulation().source_arena().resolve(switch_handle).is_none(),
+            "the producer hides and reclaims on the following boundary");
+        let entry = campaign.simulation().economy().authored_switch_producers().iter()
+            .find(|row| row.authored_index == 374).copied()
+            .expect("group28 constructs the real row374 entry switch");
+        assert_eq!((entry.model, entry.action, entry.stage_tag, entry.word_10), (0, 0, 30, 30));
+        let entry_handle = campaign.simulation().source_arena()
+            .handle(entry.source_entity_index).unwrap();
+        let mut encounter = campaign.clone();
+        let player = encounter.simulation().state.entity_index;
+        encounter.simulation_mut().set_level2_entity_position(player, entry.position)
+            .expect("declared player pose overlaps the actual row374 bounds");
+        let mut group30 = 0;
+        let mut entry_hidden = false;
+        for _ in 0..16 {
+            encounter.step(PlayerCommand::default(), 0);
+            let sim = encounter.simulation();
+            assert!(!sim.dispatch_events().iter().any(|event|
+                matches!(event, Mc2DispatchEvent::Error { .. })),
+                "final entry switch source dispatch: {:?}", sim.dispatch_events());
+            group30 += sim.dispatch_events().iter().filter(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 30, authored_indices, .. }
+                    if *source_slot == entry.source_entity_index
+                        && authored_indices.as_ref() == [375, 376, 377, 378])).count();
+            if let Some(row) = sim.economy().authored_switch_producers().iter()
+                .find(|row| row.source_entity_index == entry.source_entity_index) {
+                entry_hidden |= !row.drawing_enabled;
+            }
+            if group30 > 0 && sim.source_arena().resolve(entry_handle).is_none() { break; }
+        }
+        assert_eq!(group30, 1, "row374 consumes the actual ordered group once");
+        assert!(entry_hidden && encounter.simulation().source_arena().resolve(entry_handle).is_none());
+        use crate::campaign::source_arena::CreatureRootOrigin;
+        use crate::level_definition::CreatureKind;
+        let roots = encounter.simulation().creature_runtime_census()
+            .roots_of_kind(CreatureKind::Creature28)
+            .filter(|root| matches!(root.origin,
+                CreatureRootOrigin::AuthoredRecord { authored_record: 375..=378 }))
+            .map(|root| (root.origin, root.handle)).collect::<Vec<_>>();
+        assert_eq!(roots.len(), 4, "all four genuine group30 roots are live");
+        for expected in 375..=378 {
+            assert!(roots.iter().any(|(origin, _)| *origin ==
+                CreatureRootOrigin::AuthoredRecord { authored_record: expected }));
+        }
+        let phases = roots.iter().map(|(_, handle)| (*handle,
+            encounter.simulation().entities()[usize::from(handle.source_slot)].phase))
+            .collect::<Vec<_>>();
+        encounter.step(PlayerCommand::default(), 0);
+        assert!(!encounter.simulation().dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })));
+        for (handle, phase) in phases {
+            assert_eq!(encounter.simulation().source_arena().handle(handle.source_slot), Some(handle));
+            let row = &encounter.simulation().entities()[usize::from(handle.source_slot)];
+            assert_eq!((row.class, row.model, row.phase), (5, 28, phase.wrapping_add(1)));
+        }
+
+        // The produced BUILD68 follows its ordinary successor chain. Apply
+        // arrived damage at the real mailbox; this does not claim paid casts.
+        let owner = campaign.simulation().state.entity_index;
+        for selector in [68, 69, 72, 73] {
+            let slot = campaign.simulation().ordinary().houses().iter()
+                .find(|house| house.active && house.building_index == selector)
+                .unwrap_or_else(|| panic!("produced BUILD{selector} missing"))
+                .entity_index;
+            for _ in 0..=crate::house::AUTHORED_HOUSE_CONSTRUCTION_VISITS + 2 {
+                if campaign.simulation().ordinary().houses().iter().any(|house|
+                    house.entity_index == slot && house.active
+                        && house.action == crate::house::HOUSE_LIVE_ACTION) { break; }
+                campaign.step(PlayerCommand::default(), 0);
+                assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                    matches!(event, Mc2DispatchEvent::Error { .. })));
+            }
+            let house = campaign.simulation().ordinary().houses().iter()
+                .find(|house| house.entity_index == slot && house.active)
+                .expect("building remains live until damage");
+            assert_eq!(house.action, crate::house::HOUSE_LIVE_ACTION);
+            let attempts = u32::try_from(house.life.max(0)).unwrap() / u32::from(u16::MAX) + 3;
+            for _ in 0..attempts {
+                if !campaign.simulation().ordinary().houses().iter()
+                    .any(|house| house.entity_index == slot && house.active) { break; }
+                let live = &mut campaign.simulation_mut().session.state.live;
+                if live.ordinary.houses().iter().any(|house| house.entity_index == slot
+                    && house.active && house.action == crate::house::HOUSE_LIVE_ACTION) {
+                    assert!(live.ordinary.houses.submit_source_damage(slot, u16::MAX, owner));
+                }
+                campaign.step(PlayerCommand::default(), 0);
+                assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+                    matches!(event, Mc2DispatchEvent::Error { .. })));
+            }
+            assert!(!campaign.simulation().ordinary().houses().iter()
+                .any(|house| house.entity_index == slot && house.active));
+        }
+        let sim = campaign.simulation();
+        assert!(sim.session.state.live.level2_class5_activated.contains(&379));
+        let boss = sim.entities().iter().find(|row|
+            row.active && row.class == 5 && row.model == 10 && !row.drawing_disabled())
+            .expect("BUILD73 demolition publishes the actual boss group");
+        let handle = sim.source_arena().handle(boss.index).unwrap();
+        let phase = boss.phase;
+        campaign.step(PlayerCommand::default(), 0);
+        assert_eq!(campaign.simulation().source_arena().handle(handle.source_slot), Some(handle));
+        assert_eq!(campaign.simulation().entities()[usize::from(handle.source_slot)].phase,
+            phase.wrapping_add(1), "the produced boss reaches its ordinary scheduled callback");
+        assert_eq!(campaign.simulation().session.state.live.core.runtime.final_boss_active_counter(),
+            Some(1), "the boss callback publishes the source active counter");
+        assert!(!campaign.simulation().dispatch_events().iter().any(|event|
+            matches!(event, Mc2DispatchEvent::Error { .. })));
+    }
+
+    #[test]
     fn configured_level_five_skeleton_count_edge_drives_real_absence_switch() {
         use crate::PlayerCommand;
         use crate::campaign::{CampaignSession, spec::CampaignSelection};
