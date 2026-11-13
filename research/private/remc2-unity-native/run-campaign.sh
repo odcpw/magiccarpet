@@ -63,10 +63,12 @@ def default_campaign_resources():
         2: 'mc-level2-vault-successor-closure-20261025',
         3: f'{settlement}/level3',
         5: 'dragon-bee-20261105-integration/level5-owner-current/level5',
+        7: 'settlement-20261105-integration/owner-collision-closure-v4/level7',
         9: 'ribbon-20261104-integration/group-zero-owner-package-v4/level9',
         10: 'ribbon-20261104-integration/current-owner-package/level10',
         12: 'archer-20261105-integration/level12-owner-current/level12',
         13: 'volcano-quake-20261104-integration/current-owner-package/level13',
+        17: f'{environments}/level17-package',
         18: 'all-spells-20261104-integration/current-owner-package/level18',
         22: 'volcano-quake-20261104-integration/current-owner-package/level22',
         23: 'creatures-20261104-integration/current-owner-package/level23',
@@ -79,6 +81,8 @@ def default_campaign_resources():
         3: f'{settlement}/environment-complete/cache-level3',
         4: 'mc-b9s2-cursor-level4-20261029',
         5: 'secret-lifecycle-20261111-source4-environment',
+        7: f'{environments}/level7-complete',
+        17: f'{environments}/level17-complete',
         25: 'dragon-bee-20261105-integration/current-level25-environment',
     }
     presentations = {
