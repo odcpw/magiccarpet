@@ -279,14 +279,23 @@ class PlayerLauncherTests(unittest.TestCase):
 
     def campaign_resources(self):
         generated = self.root.parent / "generated"
-        for name in ("mc-bhq8-level1-collision-v5-night", "mc-level2-vault-successor-closure-20261025",
-                     "level3-day-block32-campaign-recipe-v2", "mc-bhq6-ordinary-20261025-zclu5fjj/level4",
-                     "settlement-20261105-integration/owner-closed-v6/level1",
-                     "settlement-20261105-integration/owner-closed-v6/level3"):
-            package = generated / name
+        launcher = (self.root / "run-campaign.sh").read_text()
+        python = launcher.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        helper = Path(self.temporary.name) / "campaign_helpers.py"
+        helper.write_text(python)
+        with patch.object(sys, "argv", ["-", str(self.root)]):
+            namespace = runpy.run_path(str(helper), run_name="campaign_helpers")
+        resources = list(namespace["default_campaign_resources"]())
+        packages = [row["package"] for row in resources]
+        packages.extend(generated / name for name in
+                        ("mc-bhq8-level1-collision-v5-night", "level3-day-block32-campaign-recipe-v2"))
+        for package in packages:
             package.mkdir(parents=True, exist_ok=True)
             # Only argument routing is under test; Rust owns content validation.
             (package / "manifest.json").write_text("{}")
+        for row in resources:
+            for kind in ("owner", "presentation"):
+                row[kind].mkdir(parents=True, exist_ok=True)
         for name in ("mc2-level1-night-cache-v2",
                      "mc-b9s2-cursor-level1-20261029", "mc-b9s2-cursor-level2-vault-20261029",
                      "mc-b9s2-cursor-level3-20261029", "mc-b9s2-cursor-level4-20261029",
@@ -326,9 +335,18 @@ class PlayerLauncherTests(unittest.TestCase):
                 result = self.campaign(*options)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = json.loads(result.stdout.splitlines()[-1])
-                self.assertEqual(arguments.count("-mc-runtime-package"), 4)
-                self.assertIn(str(generated / "settlement-20261105-integration/owner-closed-v6/level1"), arguments)
-                self.assertIn(str(generated / "settlement-20261105-integration/owner-closed-v6/level3"), arguments)
+                packages = [arguments[i + 1] for i, flag in enumerate(arguments)
+                            if flag == "-mc-runtime-package"]
+                self.assertEqual(len(packages), 30)
+                self.assertEqual(len(set(packages)), 30)
+                self.assertEqual(packages[0], str(generated / "settlement-20261105-integration/owner-closed-v6/level1"))
+                self.assertEqual(packages[24], str(generated / "mc-bhq10-owner-v3-level25-20261029"))
+                self.assertEqual(packages[25], str(generated / "mc-paj2-source30-campaign-package"))
+                self.assertEqual(packages[-1], str(generated / "mc-paj2-source-secret-34-campaign-package"))
+                resource_flags = [flag for flag in arguments if flag in (
+                    "-mc-runtime-package", "-mc-runtime-owner-cache", "-mc-runtime-presentation-cache")]
+                self.assertEqual(resource_flags, [
+                    "-mc-runtime-package", "-mc-runtime-owner-cache", "-mc-runtime-presentation-cache"] * 30)
                 self.assertEqual("-mc-runtime-menu" in arguments, menu)
                 self.assertNotIn("-mc-runtime-replay-load", arguments)
                 self.assertEqual(arguments[arguments.index("-mc-runtime-replay-save") + 1],
