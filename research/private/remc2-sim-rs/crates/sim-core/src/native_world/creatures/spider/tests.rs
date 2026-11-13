@@ -3740,6 +3740,25 @@ fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_rec
             ))
     );
     let mut living_control = session.clone();
+    let exit_publications = |events: &[crate::native_world::Mc2DispatchEvent]| {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(event,
+                    crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated {
+                        group: 45, authored_indices, ..
+                    } if authored_indices.contains(&728))
+            })
+            .count()
+    };
+    let has_exit = |sim: &crate::native_world::Mc2Simulation| {
+        sim.economy()
+            .authored_switch_producers()
+            .iter()
+            .any(|row| row.active && row.authored_index == 728)
+    };
+    assert!(!has_exit(&session) && !has_exit(&living_control));
+    let mut exit_group_count = 0;
     // Configured lethal contacts isolate the scheduled absence/lifecycle
     // consumer. The separate ordinary encounter owns real paid combat proof.
     for &(_, handle) in &roots {
@@ -3759,6 +3778,8 @@ fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_rec
     }
     session.step_outer_turn(PlayerCommand::default(), 0);
     living_control.step_outer_turn(PlayerCommand::default(), 0);
+    exit_group_count += exit_publications(session.dispatch_events());
+    assert_eq!(exit_publications(living_control.dispatch_events()), 0);
     no_dispatch_errors(&session, "configured fatal source pass", 0);
     no_dispatch_errors(&living_control, "living negative fatal elapsed pass", 0);
     assert!(roots.iter().all(|&(_, handle)| {
@@ -3776,6 +3797,8 @@ fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_rec
     );
     session.step_outer_turn(PlayerCommand::default(), 0);
     living_control.step_outer_turn(PlayerCommand::default(), 0);
+    exit_group_count += exit_publications(session.dispatch_events());
+    assert_eq!(exit_publications(living_control.dispatch_events()), 0);
     no_dispatch_errors(&session, "following empty source boundary", 0);
     no_dispatch_errors(&living_control, "living negative following boundary", 0);
     assert_eq!(
@@ -3792,6 +3815,8 @@ fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_rec
     for turn in 0..16 {
         session.step_outer_turn(PlayerCommand::default(), 0);
         living_control.step_outer_turn(PlayerCommand::default(), 0);
+        exit_group_count += exit_publications(session.dispatch_events());
+        assert_eq!(exit_publications(living_control.dispatch_events()), 0);
         no_dispatch_errors(&session, "configured natural hide/reclaim", turn);
         no_dispatch_errors(&living_control, "equal elapsed living negative", turn);
         let views = session.campaign_entity_presentations(0).unwrap();
@@ -3847,4 +3872,40 @@ fn configured_mission_four_all_six_spider_deaths_drive_scheduled_absence_and_rec
             .is_some_and(|row| row.handle == handle && row.living)),
         "same elapsed six genuine living roots block absence"
     );
+
+    // The same objective result must drive the ordinary end gate and its
+    // authored exit producer; the equally advanced living control cannot.
+    for turn in 0..32 {
+        if has_exit(&session) {
+            break;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        living_control.step_outer_turn(PlayerCommand::default(), 0);
+        no_dispatch_errors(&session, "absence to exit group", turn);
+        no_dispatch_errors(&living_control, "living negative exit group", turn);
+        exit_group_count += exit_publications(session.dispatch_events());
+        assert_eq!(exit_publications(living_control.dispatch_events()), 0);
+    }
+    assert_eq!(
+        session.runtime().objectives[owner].stage_selectors[..2],
+        [2, 2]
+    );
+    assert_eq!(session.runtime().objectives[owner].is_level_end, 1);
+    assert_eq!(
+        exit_group_count, 1,
+        "the ordinary end gate publishes group 45 once"
+    );
+    let exit = session
+        .economy()
+        .authored_switch_producers()
+        .iter()
+        .find(|row| row.active && row.authored_index == 728)
+        .expect("group 45 constructs the actual Cave exit trigger");
+    assert_eq!((exit.model, exit.action), (12, 12));
+    assert_eq!(
+        living_control.runtime().objectives[owner].stage_selectors[stage],
+        1
+    );
+    assert_eq!(living_control.runtime().objectives[owner].is_level_end, 0);
+    assert!(!has_exit(&living_control));
 }
