@@ -1,5 +1,208 @@
 use super::*;
 
+#[test]
+fn level8_ul_buthnen_authored_objectives_through_real_exit() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::combat::area::{AreaDamage, Shape};
+    use crate::house::HouseStepEvent;
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+
+    fn tick(session: &mut crate::native_world::Mc2Simulation,
+            groups: &mut Vec<(u16, Vec<u16>)>, deaths: &mut Vec<(u16, u16)>) {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        for event in session.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Ul'Buthnen dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { group, authored_indices, .. } =>
+                    groups.push((*group, authored_indices.to_vec())),
+                Mc2DispatchEvent::House { source_slot, events, .. } => {
+                    for event in events.iter() {
+                        if let HouseStepEvent::DestructionStarted { attacker_entity_index, .. } = event {
+                            deaths.push((*source_slot, *attacker_entity_index));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn strike_model(session: &mut crate::native_world::Mc2Simulation, player: u16, model: u8)
+        -> Vec<crate::campaign::source_arena::SourceEntityHandle> {
+        let roots = session.source_arena().rebuilt_class5_model_slots()[usize::from(model)]
+            .iter().map(|slot| session.source_arena().handle(*slot).unwrap()).collect::<Vec<_>>();
+        for handle in &roots {
+            let row = &session.entities()[usize::from(handle.source_slot)];
+            let request = AreaDamage {
+                position: row.position,
+                shape: Shape { half_width: 1, half_depth: 1,
+                    vertical_offset: row.array_yaw(), half_height: 1 },
+                owner: player, payload: 60_000, selector: (5, model), mode: 0,
+            };
+            let live = &mut session.session.state.live;
+            let hits = area_damage::apply(&mut live.economy,
+                Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                Some((player, live.core.state.position)), request).unwrap();
+            let (damage, attacker) = area_damage::source_bounty(&live.economy, None,
+                handle.source_slot).unwrap();
+            assert!(hits > 0 && damage > 0 && attacker == player,
+                "source area admission must accept the selected model{model} generation {handle:?}: hits={hits} bounty=({damage},{attacker})");
+        }
+        roots
+    }
+    fn wait_absence(session: &mut crate::native_world::Mc2Simulation, player: u16,
+                    model: u8, objective: usize, groups: &mut Vec<(u16, Vec<u16>)>,
+                    deaths: &mut Vec<(u16, u16)>) {
+        let mut generations = Vec::new();
+        for _ in 0..512 {
+            let current = session.source_arena().rebuilt_class5_model_slots()[usize::from(model)].clone();
+            if !current.is_empty() {
+                let struck = strike_model(session, player, model);
+                for handle in struck { if !generations.contains(&handle) { generations.push(handle); } }
+            }
+            if session.runtime().objectives[0].stage_selectors[objective] == 2
+                && generations.iter().all(|handle| session.source_arena().resolve(*handle).is_none())
+            { return; }
+            tick(session, groups, deaths);
+        }
+        panic!("model{model} objective{objective} or cleanup did not finish: selector={} remaining={:?}",
+            session.runtime().objectives[0].stage_selectors[objective],
+            session.source_arena().rebuilt_class5_model_slots()[usize::from(model)]);
+    }
+    fn has_group(groups: &[(u16, Vec<u16>)], group: u16, rows: &[u16]) -> bool {
+        groups.iter().any(|(id, authored)| *id == group
+            && rows.iter().all(|row| authored.contains(row)))
+    }
+    fn complete_group(session: &crate::native_world::Mc2Simulation,
+                      groups: &[(u16, Vec<u16>)], group: u16) -> bool {
+        let expected = session.mission().authored_features().iter()
+            .filter(|row| row.kind != 0 && row.activation_group == group as i16)
+            .map(|row| row.index).collect::<Vec<_>>();
+        !expected.is_empty() && groups.iter().any(|(id, rows)| *id == group && *rows == expected)
+    }
+    fn travel(session: &mut crate::native_world::Mc2Simulation, player: u16, x: u16, y: u16) {
+        let position = Position { x: x * 256, y: y * 256, z: session.state.position.z };
+        session.set_level2_entity_position(player, position).unwrap();
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+    }
+
+    let package = std::env::var_os("MC_LEVEL8_PACKAGE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level8"));
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(8).unwrap())
+        .expect("the whole Ul'Buthnen owner package opens").simulation().clone();
+    let player = session.state.entity_index;
+    let mut groups = Vec::new();
+    let mut house_deaths = Vec::new();
+    let initial_houses = session.campaign_building_objective_targets(5).into_iter()
+        .map(|(slot, _)| session.source_arena().handle(slot).unwrap()).collect::<Vec<_>>();
+    assert_eq!(initial_houses.len(), 4, "the package has four selector53 objective houses");
+    assert_eq!(session.runtime().stages[0].relation, crate::native_world::RuntimeRelation::Scalar(20));
+    assert_eq!(session.source_arena().rebuilt_class5_model_slots()[20].len(), 8);
+    let first_spiders = strike_model(&mut session, player, 20);
+    tick(&mut session, &mut groups, &mut house_deaths);
+    assert_eq!(session.runtime().objectives[0].stage_selectors[0], 1,
+        "the fatal pass uses its frozen living Spider census");
+    wait_absence(&mut session, player, 20, 0, &mut groups, &mut house_deaths);
+    for _ in 0..256 {
+        if has_group(&groups, 3, &[26, 28])
+            && first_spiders.iter().all(|handle| session.source_arena().resolve(*handle).is_none())
+        { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(has_group(&groups, 3, &[26, 28]), "Spider absence must publish group3: {groups:?}");
+    assert!(complete_group(&session, &groups, 3));
+    assert!(first_spiders.iter().all(|handle| session.source_arena().resolve(*handle).is_none()));
+
+    travel(&mut session, player, 202, 88);
+    for _ in 0..256 {
+        tick(&mut session, &mut groups, &mut house_deaths);
+        if session.runtime().objectives[0].stage_selectors[1] == 2 { break; }
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[1], 2);
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 1);
+    travel(&mut session, player, 220, 114);
+    for _ in 0..256 {
+        tick(&mut session, &mut groups, &mut house_deaths);
+        if has_group(&groups, 28, &[116, 117, 118, 167, 168]) { break; }
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 2);
+    assert!(has_group(&groups, 28, &[116, 117, 118, 167, 168]),
+        "second reach must publish all five group28 Spell Thieves: {groups:?}");
+    assert!(complete_group(&session, &groups, 28));
+    assert_eq!(session.runtime().stages[3].relation, crate::native_world::RuntimeRelation::Scalar(26));
+    assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
+    wait_absence(&mut session, player, 26, 3, &mut groups, &mut house_deaths);
+    for _ in 0..256 {
+        if has_group(&groups, 26, &[113, 140, 154, 164, 165]) { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(has_group(&groups, 26, &[113, 140, 154, 164, 165]),
+        "Spell Thief absence must publish the model21 group26: {groups:?}");
+    assert!(complete_group(&session, &groups, 26));
+    assert_eq!(session.runtime().stages[4].relation, crate::native_world::RuntimeRelation::Scalar(21));
+    assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
+    wait_absence(&mut session, player, 21, 4, &mut groups, &mut house_deaths);
+
+    // The objective is a selector53 census, not a pointer to only row231.
+    // Route strikes through source area admission and the typed House domain;
+    // other source actors may also contribute their own valid damage.
+    let mut player_house_hits = 0_u32;
+    for _ in 0..512 {
+        let targets = session.campaign_building_objective_targets(5);
+        for (slot, _) in targets {
+            let Some(house) = session.ordinary().houses().iter()
+                .find(|house| house.active && house.entity_index == slot && house.life >= 0)
+                .copied() else { continue; };
+            let request = AreaDamage { position: house.position,
+                shape: Shape { half_width: 1, half_depth: 1,
+                    vertical_offset: house.collision_vertical_offset, half_height: 1 },
+                owner: player, payload: 60_000, selector: (10, 45), mode: 0 };
+            let live = &mut session.session.state.live;
+            let hits = area_damage::apply(&mut live.economy,
+                Some(area_damage::ActorDomains::new(&mut live.goats, &mut live.ordinary)),
+                Some((player, live.core.state.position)), request).unwrap();
+            player_house_hits += u32::from(hits);
+        }
+        if session.runtime().objectives[0].stage_selectors[5] == 2
+            && initial_houses.iter().all(|handle| session.source_arena().resolve(*handle).is_none())
+        { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[5], 2,
+        "the source building-chain census must complete after demolition");
+    assert!(initial_houses.iter().all(|handle| session.source_arena().resolve(*handle).is_none()));
+    assert!(initial_houses.iter().all(|handle| house_deaths.iter()
+        .any(|(slot, _)| *slot == handle.source_slot)),
+        "every original objective House must report its real destruction writer: {house_deaths:?}");
+    assert!(player_house_hits > 0 || house_deaths.iter().any(|(_, attacker)| *attacker != 0),
+        "source-admitted player or NPC damage must account for demolition");
+    for _ in 0..256 {
+        if session.campaign_exit_objective_target().is_some() { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(has_group(&groups, 29, &[170, 179]),
+        "the level-end gate must construct the authored portal and exit: {groups:?}");
+    let (exit_slot, exit_position) = session.campaign_exit_objective_target().expect("real exit");
+    assert!(session.economy().authored_switch_producers().iter().any(|source|
+        source.source_entity_index == exit_slot && source.authored_index == 170));
+    assert!(session.economy().authored_class14().iter().any(|source| source.authored_index == 179));
+    session.set_level2_entity_position(player, exit_position).unwrap();
+    for _ in 0..16 {
+        if session.level_exit_sequence().active { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(session.level_exit_sequence().active);
+    for _ in 0..700 {
+        if session.level_exit_sequence().complete { break; }
+        tick(&mut session, &mut groups, &mut house_deaths);
+    }
+    assert!(session.level_exit_sequence().complete);
+    assert_eq!(session.level_exit_sequence().result_code, 10);
+    assert_eq!(session.session.state.live.source_player_result.result_byte(), 0x0a);
+}
+
 struct EmptyRoutes;
 
 struct PointRoute(crate::native_world::creatures::archer::ArcherStageDescriptor);

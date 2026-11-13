@@ -5421,7 +5421,7 @@ pub(crate) mod tests {
         assert_eq!(destination, entry_carry, "replay entry carry reaches the chosen destination");
     }
 
-    fn install_owner_return_media(runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>) {
+    pub(crate) fn install_owner_return_media(runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>) {
         use crate::game_runtime::media::MediaCommand;
 
         let root = std::env::var_os("MC_ENDING_MEDIA_CACHE")
@@ -5438,7 +5438,7 @@ pub(crate) mod tests {
         }).unwrap();
     }
 
-    fn play_owner_return_clip(
+    pub(crate) fn play_owner_return_clip(
         runtime: &mut crate::game_runtime::GameRuntime<Mc2CampaignBackend>,
         clip: &str,
         frame_count: i32,
@@ -15758,15 +15758,13 @@ pub(crate) mod tests {
                 ..
             } if authored_indices.as_ref() == [153, 154]
         )));
-        assert_eq!(compatibility.economy().authored_model45().len(), 2);
-        assert!(
-            compatibility
-                .economy()
-                .authored_model45()
-                .iter()
-                .all(|source| source.active && !source.drawing_enabled),
-            "the ordinary slot-32 turn hides both group-8 vault rows after their same-pass callbacks"
-        );
+        for record in [153, 154] {
+            let slot = compatibility.economy().authored_house_source_slot(record)
+                .expect("group-8 vault has an ordinary House source");
+            assert!(compatibility.ordinary().houses().iter().any(|house|
+                house.entity_index == slot && house.active && house.building_index == 21
+            ), "group-8 record {record} constructs its BUILD21 vault");
+        }
 
         fly_real_level_two_until_stage_complete_for_test(&mut session, 0);
         let compatibility = session.backend().campaign.simulation();
@@ -16921,8 +16919,8 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
         );
         assert!(
-            compatibility.economy().authored_model45().is_empty(),
-            "the real group-8 vault rows reach ordinary hide and following-pass reclaim before their final absence objective"
+            !compatibility.campaign_building_objective_targets(4).is_empty(),
+            "the standing vaults still require actual demolition at the final objective"
         );
         assert_eq!(
             &compatibility.runtime().objectives[0].stage_selectors[..5],
@@ -17414,6 +17412,263 @@ pub(crate) mod tests {
         )
         .unwrap();
         drive_real_level_two_to_final_vault_objective_for_test(&mut session);
+    }
+
+    #[test]
+    fn campaign_backend_payahandra_public_fireballs_demolish_vault_chains_and_open_exit() {
+        let root = descriptor_fixture_path();
+        let definition = load_mc2_campaign(&root, &default_catalog().unwrap()).unwrap();
+        let mut session = GameSession::open(
+            &Mc2CampaignAdapter, Arc::new(definition), 74, Mc2CampaignInputs::new(&root),
+        ).unwrap();
+        // Controls: preceding objective completion, carried Fireball, mana,
+        // and player pose. Vault construction, casts, damage, rewards and
+        // the final objective remain on their ordinary production paths.
+        session.backend_mut().campaign.simulation_mut()
+            .apply_carried_spell_families(&[0], Some(0)).unwrap();
+        complete_controlled_payahandra_vault_boundary_for_test(&mut session);
+    }
+
+    /// Stage the prior objective only; the group-8 producer, both paid
+    /// demolition chains, rewards and group-31 gate execute normally.
+    pub(crate) fn complete_controlled_payahandra_vault_boundary_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        assert!(session.backend().semantic_spell_state_for_test().unwrap().0.contains(&SpellKind::Fireball));
+        session.advance(guard(session), GameCommand {
+            select_spell: Some(SemanticId::parse("spell.fireball").unwrap()),
+            ..GameCommand::default()
+        }).unwrap();
+        session.backend_mut().campaign.simulation_mut()
+            .set_level2_selected_objective_stage_state(2).unwrap();
+        session.advance(guard(&session), GameCommand::default()).unwrap();
+        let sim = session.backend().campaign.simulation();
+        assert!(sim.dispatch_events().iter().any(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 32, group: 8, authored_indices, .. }
+                if authored_indices.as_ref() == [153, 154]
+        )));
+        let vaults = [153, 154].map(|record| sim.economy().authored_house_source_slot(record).unwrap());
+        for _ in 0..32 {
+            session.advance(guard(&session), GameCommand::default()).unwrap();
+        }
+        {
+            let sim = session.backend_mut().campaign.simulation_mut();
+            for slot in vaults {
+                assert!(sim.ordinary().houses().iter().any(|house| house.entity_index == slot
+                    && house.active && house.action == 52 && house.building_index == 21 && house.life == 6000));
+            }
+            let live = &mut sim.session.state.live;
+            let objective = &mut live.core.runtime.objectives[0];
+            objective.stage_selectors.fill(2);
+            objective.stage_selectors[4] = 1;
+            objective.text_selector = 4;
+            objective.done = 0;
+            objective.is_level_end = 0;
+            live.level2_objective_pause = 0;
+            live.level2_objective_done = false;
+        }
+
+        demolish_real_level_two_vaults_with_public_fireballs_for_test(session);
+        let mut opened = false;
+        for _ in 0..64 {
+            let sim = session.backend().campaign.simulation();
+            assert!(sim.dispatch_events().iter().all(|event| !matches!(event, Mc2DispatchEvent::Error { .. })));
+            opened |= sim.dispatch_events().iter().any(|event| matches!(event,
+                Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 37, group: 31, .. }));
+            if opened { break; }
+            session.advance(guard(&session), GameCommand::default()).unwrap();
+        }
+        let sim = session.backend().campaign.simulation();
+        assert!(sim.campaign_building_objective_targets(4).is_empty());
+        assert_eq!(sim.runtime().objectives[0].stage_selectors[4], 2);
+        for record in [155, 156] {
+            assert!(sim.economy().spell_pickups().iter().any(|row| row.authored_index == record),
+                "vault demolition publishes reward row {record}");
+        }
+        assert!(opened, "the final absence objective opens source group 31");
+        assert!(sim.economy().authored_switch_producers().iter().any(|row| row.authored_index == 209));
+        assert!(sim.economy().authored_class14().iter().any(|row| row.authored_index == 244));
+    }
+
+    /// Controlled resource and pose inputs against the actual group-8 Houses.
+    /// Returns at the final lethal callback, before its following-pass reclaim
+    /// and the source cadence-driven objective and exit producer.
+    pub(crate) fn demolish_real_level_two_vaults_with_public_fireballs_for_test(
+        session: &mut GameSession<Mc2CampaignBackend>,
+    ) {
+        use crate::campaign::schedule::{CurrentOccupant, ScheduleReceipt};
+        use crate::native_world::area_damage;
+
+        fn observe_house_step(
+            session: &GameSession<Mc2CampaignBackend>,
+            slot: u16,
+            history: &mut Vec<(u64, crate::house::HouseStepEvent)>,
+        ) -> Option<u16> {
+            let mut owner = None;
+            for event in session.backend().campaign.simulation().dispatch_events() {
+                if let Mc2DispatchEvent::House { events, .. } = event {
+                    for event in events {
+                        match *event {
+                            crate::house::HouseStepEvent::Damaged { entity_index, .. }
+                                if entity_index == slot => history.push((session.identity().tick, *event)),
+                            crate::house::HouseStepEvent::DestructionStarted { entity_index, attacker_entity_index }
+                                if entity_index == slot => {
+                                    history.push((session.identity().tick, *event));
+                                    owner = Some(attacker_entity_index);
+                                }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            owner
+        }
+
+        // Fixed target order: the source Skeleton contests group 27, so visit
+        // that vault first. No actor or damage mailbox is changed by the test.
+        for (group, selector) in [(27, 21), (27, 54), (22, 21), (22, 54)] {
+            let mut destroyed = false;
+            let mut seen = false;
+            let mut trace_started = false;
+            let mut launches = Vec::new();
+            let mut impacts = Vec::new();
+            let mut contacts = Vec::new();
+            let mut house_history = Vec::new();
+            let mut destruction_owner = None;
+            for _ in 0..192 {
+                let sim = session.backend().campaign.simulation();
+                let house = sim.ordinary().houses().iter().find(|house|
+                    house.active && house.action == 52 && house.xtype == group && house.building_index == selector
+                ).copied();
+                let Some(house) = house else {
+                    if destroyed { break; }
+                    assert!(!seen, "group {group} BUILD{selector} left action52 without a destruction callback; matching houses={:?}, events={:?}",
+                        sim.ordinary().houses().iter().filter(|house| house.xtype == group).collect::<Vec<_>>(), sim.dispatch_events());
+                    session.advance(guard(&session), GameCommand::default()).unwrap();
+                    continue;
+                };
+                seen = true;
+                let player = sim.state.entity_index;
+                let holder = sim.shared_spells().local_player().enabled_spell_holders[0];
+                let packet = sim.shared_spells().pickups().iter()
+                    .chain(sim.shared_spells().holders())
+                    .chain(sim.shared_spells().dynamic_pickups())
+                    .find(|row| row.index == holder).unwrap();
+                if packet.active_value != 0 {
+                    session.advance(guard(&session), GameCommand::default()).unwrap();
+                    if let Some(attacker) = observe_house_step(session, house.entity_index, &mut house_history) {
+                        destruction_owner = Some(attacker);
+                        destroyed = true;
+                        break;
+                    }
+                    continue;
+                }
+                let cost = packet.max_mana;
+                let yaw = 1024_i16;
+                let mut launch = house.position;
+                crate::move_entity(&mut launch, yaw.wrapping_add(1024), 0, 2304);
+                let mut position = launch;
+                let parent = sim.shared_spells().player_entity();
+                let parent_yaw = yaw.wrapping_sub(sim.shared_spells().beyond_sight_auxiliary().next_entity) & 0x07ff;
+                crate::move_entity(&mut position, parent_yaw.wrapping_sub(512).wrapping_add(1024), 0, 256);
+                let centre = house.position.z.wrapping_add(house.collision_vertical_offset);
+                position.z = centre.wrapping_sub(parent.array_fov())
+                    .max(sim.canonical_terrain().ground_height(position).wrapping_add(256))
+                    .max(sim.canonical_terrain().ground_height(launch).wrapping_add(256));
+                launch.z = position.z.wrapping_add(parent.array_fov());
+                let (_, pitch) = crate::level1_mission::projectile_guidance_angles(
+                    launch, crate::Position { z: centre, ..house.position },
+                );
+                let sim = session.backend_mut().campaign.simulation_mut();
+                // Refill to the actual source maximum before each shot; this
+                // is a declared resource control, not a free cast or a
+                // change to the holder's cost or capacity.
+                let live = &mut sim.session.state.live;
+                let capacity = live.economy.entities[usize::from(player)].max_mana;
+                assert!(capacity >= cost && cost > 0);
+                live.shared_spells.set_local_player_mana_for_test(capacity);
+                let parent = &mut live.economy.entities[usize::from(player)];
+                parent.mana = capacity;
+                parent.record[148..152].copy_from_slice(&capacity.to_le_bytes());
+                if let Some(fire) = live.core.context.spell_fire.as_mut() {
+                    fire.caster.mana = capacity;
+                }
+                sim.set_level2_entity_position(player, position).unwrap();
+                sim.state.actual_speed = 0;
+                sim.state.target_speed = 0;
+                sim.set_level2_player_aim_for_test(yaw, pitch);
+                if trace_started {
+                    contacts.extend(area_damage::take_effect_damage_trace());
+                    impacts.extend(area_damage::take_fireball_impact_birth_trace());
+                }
+                area_damage::start_fireball_launch_trace();
+                area_damage::start_effect_damage_trace(house.entity_index);
+                trace_started = true;
+                session.advance(guard(&session), GameCommand { cast_left: true, ..Default::default() }).unwrap();
+                let current_launches = area_damage::take_fireball_launch_trace();
+                assert!(current_launches.iter().any(|(_, _, owner)| *owner == player), "public Fireball launch: {current_launches:?}");
+                launches.extend(current_launches);
+                let paid = session.backend().campaign.simulation().cf10_production_schedule_receipts().into_iter().any(|receipt| match receipt {
+                    ScheduleReceipt::EpilogueCompleted { slot, original, current: CurrentOccupant::Known { selector, .. }, .. } if slot == holder => {
+                        original.observed_player_resources().zip(selector.observed_player_resources()).is_some_and(|(before, after)|
+                            before.1 >= cost && cost > 0 && after.2 == if before.2 >= 0 { -cost } else { before.2.wrapping_sub(cost) })
+                    }
+                    _ => false,
+                });
+                assert!(paid, "the real holder must charge for the public Fireball");
+                let mut destruction = observe_house_step(session, house.entity_index, &mut house_history);
+                for _ in 0..24 {
+                    if destruction.is_some() { break; }
+                    session.advance(guard(&session), GameCommand::default()).unwrap();
+                    destruction = observe_house_step(session, house.entity_index, &mut house_history);
+                }
+                if let Some(attacker) = destruction {
+                    destruction_owner = Some(attacker);
+                    destroyed = true;
+                    break;
+                }
+            }
+            if trace_started {
+                contacts.extend(area_damage::take_effect_damage_trace());
+                impacts.extend(area_damage::take_fireball_impact_birth_trace());
+            }
+            assert!(destroyed, "public Fireballs must destroy group {group} BUILD{selector}");
+            let sim = session.backend().campaign.simulation();
+            let player = sim.state.entity_index;
+            let attacker = destruction_owner.unwrap();
+            let attacker_identity = sim.entities().get(usize::from(attacker)).map(|source|
+                (source.index, sim.economy().slot_generation(source.index), source.active,
+                 source.class, source.model, source.action, source.source_id,
+                 source.source_player_entity_index(), source.position));
+            let mailbox_writes = contacts.iter().filter(|row| row.mailbox_before != row.mailbox_after)
+                .rev().take(32).map(|row| (
+                    row.source_slot, row.source_handle, row.pulse.owner, row.pulse.payload,
+                    row.mailbox_before, row.mailbox_after,
+                    row.source_impact.as_ref().map(|(generation, impact)| (*generation,
+                        impact.source_entity_index, impact.parent_entity_index, impact.parent_entity_id)),
+                    row.source_raw_impact.as_ref().map(|(generation, source)| (*generation,
+                        source.index, source.class, source.model, source.action, source.source_id,
+                        source.source_player_entity_index())),
+                )).collect::<Vec<_>>();
+            assert_eq!(attacker, player,
+                "group {group} BUILD{selector} destruction owner; attacker(slot,generation,active,class,model,action,id,player,position)={attacker_identity:?}; house_events={:?}; mailbox_writes(newest first)={mailbox_writes:?}; Fireball impact births(newest first)={:?}",
+                house_history.iter().rev().take(32).collect::<Vec<_>>(),
+                impacts.iter().rev().take(32).collect::<Vec<_>>());
+            let linked_hit = contacts.iter().any(|contact| contact.mailbox_before != contact.mailbox_after
+                && contact.mailbox_after.is_some_and(|(_, owner)| owner == session.backend().campaign.simulation().state.entity_index)
+                && impacts.iter().any(|&(impact, generation, parent, parent_generation, owner)|
+                    contact.source_slot == Some(impact)
+                    && (contact.source_impact.as_ref().is_some_and(|(g, row)|
+                        *g == generation && row.source_entity_index == impact)
+                        || contact.source_raw_impact.as_ref().is_some_and(|(g, row)|
+                            *g == generation && row.index == impact))
+                    && owner == session.backend().campaign.simulation().state.entity_index
+                    && launches.contains(&(parent, parent_generation, owner))));
+            assert!(linked_hit, "group {group} BUILD{selector} must accept a paid player Fireball: launches={:?}, impacts={:?}, contacts={:?}",
+                launches.iter().rev().take(8).collect::<Vec<_>>(),
+                impacts.iter().rev().take(8).collect::<Vec<_>>(),
+                contacts.iter().rev().take(8).collect::<Vec<_>>());
+        }
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]

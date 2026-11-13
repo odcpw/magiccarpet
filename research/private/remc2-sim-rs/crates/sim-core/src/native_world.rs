@@ -554,6 +554,8 @@ pub(crate) mod castle_defense;
 #[path = "campaign/simulation.rs"]
 mod simulation;
 pub(crate) use simulation::CarriedSpellProgress;
+#[cfg(test)]
+pub(crate) use simulation::player_lifecycle_tests;
 mod campaign_shared_families;
 pub(crate) use crate::world::terrain::cave_features;
 mod cave_spells;

@@ -32,7 +32,7 @@ use crate::native_world::campaign_shared_families::MC2_SKELETON_ASSETS;
 
 #[cfg(test)]
 #[path = "player_lifecycle_tests.rs"]
-mod player_lifecycle_tests;
+pub(crate) mod player_lifecycle_tests;
 
 pub(crate) struct CarriedSpellProgress {
     pub family: u8,
@@ -47144,7 +47144,7 @@ mod tests {
 
         // Continue the unmodified objective branch. No selector, win flag,
         // or exit group is staged: the Bee census above must cause the real
-        // objective and group-31 producer to expose the package exit.
+        // objective and its authored producer to expose the package exit.
         for _ in 0..256 {
             if campaign.simulation().campaign_exit_objective_target().is_some() {
                 break;
@@ -47159,7 +47159,7 @@ mod tests {
                 && source.model == level2_class5::dragon::DRAGON_MODEL).count(), 3,
             "the final Dragons do not gate the Bee objective or exit");
         let (exit_slot, exit_position) = session.campaign_exit_objective_target()
-            .expect("the completed Bee objective produces the live group-31 exit");
+            .expect("the completed Bee objective produces the live authored exit");
         assert!(session.economy().authored_switch_producers().iter().any(|source|
             source.source_entity_index == exit_slot && (source.model, source.action) == (12, 12)));
         campaign.simulation_mut().set_level2_entity_position(player_entity_index, exit_position)
@@ -47169,7 +47169,7 @@ mod tests {
             step(&mut campaign);
         }
         assert!(campaign.simulation().level_exit_sequence().active,
-            "the real group-31 overlap starts the source exit sequence");
+            "the real authored overlap starts the source exit sequence");
         for _ in 0..700 {
             if campaign.simulation().level_exit_sequence().complete { break; }
             step(&mut campaign);
