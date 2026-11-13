@@ -31,7 +31,8 @@ use sim_session::{GameSession, OpenSessionError, SessionGuard};
 const GAME_RUNTIME_TRANSPORT_CONTRACT: &str = "carpet-flight-native-game-runtime-json/v12";
 const INSTALLED_PACKAGE_SET_CONTRACT: &str = "carpet-flight-installed-package-set-bootstrap/v1";
 const MAX_INSTALLED_PACKAGE_SET_JSON_BYTES: u32 = 64 * 1024;
-const MAX_INSTALLED_PACKAGE_COUNT: usize = 16;
+// The canonical MC2 campaign contains 25 ordinary and five secret missions.
+const MAX_INSTALLED_PACKAGE_COUNT: usize = 30;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2961,7 +2962,7 @@ mod tests {
             contract["limits"]["maximum_installed_package_set_json_bytes"],
             64 * 1024
         );
-        assert_eq!(contract["limits"]["maximum_installed_package_count"], 16);
+        assert_eq!(contract["limits"]["maximum_installed_package_count"], 30);
         assert_eq!(
             contract["limits"]["maximum_replay_save_json_bytes"],
             16 * 1024 * 1024

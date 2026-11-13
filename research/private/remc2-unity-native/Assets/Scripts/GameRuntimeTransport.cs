@@ -1307,7 +1307,7 @@ namespace MagicCarpet.Native
                 contract.limits == null ||
                 contract.limits.maximum_output_json_bytes != 16 * 1024 * 1024 ||
                 contract.limits.maximum_installed_package_set_json_bytes != 64 * 1024 ||
-                contract.limits.maximum_installed_package_count != 16 ||
+                contract.limits.maximum_installed_package_count < 16 ||
                 contract.limits.maximum_replay_save_json_bytes != MaximumReplaySaveJsonBytes ||
                 contract.limits.json_length_type != "u32" ||
                 contract.modes == null ||
