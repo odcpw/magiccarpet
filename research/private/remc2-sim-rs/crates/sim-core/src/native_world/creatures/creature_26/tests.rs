@@ -4,6 +4,159 @@ use crate::native_world::{
     ParticleParameter, PlayerSnapshot, RuntimeRelation, RuntimeSnapshot, RuntimeStageVariable,
 };
 
+#[test]
+fn level6_phyrydia_objectives_produce_waves_and_real_exit() {
+    use crate::PlayerCommand;
+    use crate::campaign::{CampaignSession, spec::CampaignSelection};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+
+    const FIRST_WAVE: [u16; 5] = [435, 440, 441, 442, 449];
+    const FINAL_WAVE: [u16; 8] = [448, 450, 451, 453, 454, 473, 474, 475];
+    fn tick(session: &mut crate::native_world::Mc2Simulation,
+            groups: &mut Vec<(u16, Vec<u16>)>) {
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        for event in session.dispatch_events() {
+            match event {
+                Mc2DispatchEvent::Error { .. } => panic!("Phyrydia dispatch: {event:?}"),
+                Mc2DispatchEvent::AuthoredGroupActivated { group, authored_indices, .. } =>
+                    groups.push((*group, authored_indices.to_vec())),
+                _ => {}
+            }
+        }
+    }
+    fn damage_living_roots(session: &mut crate::native_world::Mc2Simulation,
+                           player: u16) -> Vec<SourceEntityHandle> {
+        let roots = session.source_arena().rebuilt_class5_model_slots()[26].iter()
+            .map(|slot| (session.source_arena().handle(*slot).unwrap(),
+                session.entities()[usize::from(*slot)].life))
+            .collect::<Vec<_>>();
+        for (handle, life) in &roots {
+            let damage = u16::try_from(*life + 1).expect("living Spell Thief life fits contact");
+            area_damage::contact(&mut session.session.state.live.economy, None,
+                handle.source_slot, damage, player).expect("real Spell Thief contact mailbox");
+        }
+        roots.into_iter().map(|(handle, _)| handle).collect()
+    }
+    fn seen_group(groups: &[(u16, Vec<u16>)], group: u16, rows: &[u16]) -> bool {
+        groups.iter().any(|(actual, authored)| *actual == group
+            && rows.iter().all(|row| authored.contains(row)))
+    }
+
+    let package = std::env::var_os("MC_LEVEL6_PACKAGE").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level6"));
+    let mut session = CampaignSession::open(package, CampaignSelection::ordinary(6).unwrap())
+        .expect("the real Phyrydia owner package opens").simulation().clone();
+    let player = session.state.entity_index;
+    let stage = &session.runtime().stages[0];
+    assert_eq!(stage.kind, 1);
+    let RuntimeRelation::LiveEntity(target_slot) = stage.relation else {
+        panic!("row433 must bind the initial target-death relation: {stage:?}");
+    };
+    let target = session.source_arena().handle(target_slot).expect("live row433 generation");
+    assert_eq!((session.entities()[usize::from(target_slot)].class,
+        session.entities()[usize::from(target_slot)].model), (5, 26));
+    assert!(session.mission().authored_features().iter().any(|row|
+        (row.index, row.kind, row.subtype, row.activation_group) == (433, 5, 26, 0)));
+    let target_life = session.entities()[usize::from(target_slot)].life;
+    assert!(target_life >= 0);
+    area_damage::contact(&mut session.session.state.live.economy, None, target_slot,
+        u16::try_from(target_life + 1).unwrap(), player).unwrap();
+    let mut groups = Vec::new();
+    for _ in 0..128 {
+        tick(&mut session, &mut groups);
+        if seen_group(&groups, 31, &FIRST_WAVE) { break; }
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[0], 2,
+        "row433 death must advance the real first objective");
+    assert!(seen_group(&groups, 31, &FIRST_WAVE),
+        "the objective gate must publish the entire authored group31: {groups:?}");
+    assert!(session.source_arena().resolve(target).is_none()
+        || session.entities()[usize::from(target_slot)].life < 0,
+        "the target's original generation has really died");
+    for authored_record in FIRST_WAVE {
+        assert!(session.creature_runtime_census().roots_of_kind(
+            crate::level_definition::CreatureKind::Creature26).any(|identity|
+            identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record }),
+            "group31 must produce real authored Spell Thief {authored_record}");
+    }
+    assert_eq!(session.runtime().stages[1].relation, RuntimeRelation::Scalar(26));
+    assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1,
+        "living group31 roots block the source absence objective");
+    let first_roots = damage_living_roots(&mut session, player);
+    assert!(first_roots.len() >= FIRST_WAVE.len());
+    tick(&mut session, &mut groups);
+    assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1,
+        "the fatal pass retains the frozen living census");
+    for _ in 0..256 {
+        if session.runtime().objectives[0].stage_selectors[1] == 2
+            && first_roots.iter().all(|handle| session.source_arena().resolve(*handle).is_none())
+        { break; }
+        tick(&mut session, &mut groups);
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[1], 2);
+    assert!(first_roots.iter().all(|handle| session.source_arena().resolve(*handle).is_none()),
+        "the first wave's killed generations must naturally reclaim");
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 1);
+
+    let reach = Position { x: 196_u16 * 256, y: 256, z: session.state.position.z };
+    session.set_level2_entity_position(player, reach).expect("player travels to the authored reach point");
+    session.state.actual_speed = 0;
+    session.state.target_speed = 0;
+    for _ in 0..256 {
+        tick(&mut session, &mut groups);
+        if seen_group(&groups, 34, &FINAL_WAVE) { break; }
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[2], 2);
+    assert!(seen_group(&groups, 34, &FINAL_WAVE),
+        "the reached objective must produce all group34 roots: {groups:?}");
+    for authored_record in FINAL_WAVE {
+        assert!(session.creature_runtime_census().roots_of_kind(
+            crate::level_definition::CreatureKind::Creature26).any(|identity|
+            identity.origin == CreatureRootOrigin::AuthoredRecord { authored_record }),
+            "group34 must produce real authored Spell Thief {authored_record}");
+    }
+    assert_eq!(session.runtime().stages[3].relation, RuntimeRelation::Scalar(26));
+    assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
+    let final_roots = damage_living_roots(&mut session, player);
+    assert!(final_roots.len() >= FINAL_WAVE.len());
+    tick(&mut session, &mut groups);
+    assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1,
+        "the final fatal pass still sees the pass-start living census");
+    for _ in 0..256 {
+        if session.campaign_exit_objective_target().is_some()
+            && final_roots.iter().all(|handle| session.source_arena().resolve(*handle).is_none())
+        { break; }
+        tick(&mut session, &mut groups);
+    }
+    assert_eq!(session.runtime().objectives[0].stage_selectors[3], 2);
+    assert!(final_roots.iter().all(|handle| session.source_arena().resolve(*handle).is_none()),
+        "the final wave's killed generations must naturally reclaim");
+    assert!(seen_group(&groups, 37, &[359, 438]),
+        "the level-end switch must construct its own exit and portal: {groups:?}");
+    let (exit_slot, exit_position) = session.campaign_exit_objective_target()
+        .expect("the real group37 exit is available");
+    assert!(session.economy().authored_switch_producers().iter().any(|source|
+        source.source_entity_index == exit_slot && source.authored_index == 359
+            && (source.model, source.action) == (12, 12)));
+    assert!(session.economy().authored_class14().iter().any(|source|
+        source.authored_index == 438 && (source.model, source.action) == (3, 8)));
+    session.set_level2_entity_position(player, exit_position).unwrap();
+    for _ in 0..16 {
+        if session.level_exit_sequence().active { break; }
+        tick(&mut session, &mut groups);
+    }
+    assert!(session.level_exit_sequence().active, "the package exit overlaps the real player");
+    for _ in 0..700 {
+        if session.level_exit_sequence().complete { break; }
+        tick(&mut session, &mut groups);
+    }
+    assert!(session.level_exit_sequence().complete);
+    assert_eq!(session.level_exit_sequence().result_code, 10);
+    assert_eq!(session.session.state.live.source_player_result.result_byte(), 0x0a);
+}
+
 fn terrain() -> SessionTerrain {
     let session = crate::native_world::tests::level_two_campaign_session();
     session.canonical_terrain().clone()

@@ -2642,7 +2642,7 @@ mod tests {
                     ..GameCommand::default()
                 }
             };
-            session.step(session.identity().guard(), command).unwrap();
+            session.advance(session.identity().guard(), command).unwrap();
         }
         panic!(
             "ordinary flight did not enter exit row {authored_row}: {:?}",
@@ -2669,26 +2669,44 @@ mod tests {
                 generated.join("dragon-bee-20261105-integration/level5-owner-current/level5"),
                 generated.join("secret-lifecycle-20261111-source4-environment"),
             ),
+            Mc2CampaignInputs::with_owner_cache(
+                generated.join("mc-bhq6-ordinary-20261025-zclu5fjj/level6"),
+                generated.join("campaign-original-environments/level6"),
+            ),
         ])
         .unwrap();
         let mut runtime = GameRuntime::<Mc2CampaignBackend>::title(340).unwrap();
+        crate::campaign::backend::tests::install_owner_return_media(&mut runtime);
         let guard = runtime.identity().guard();
         let loading = resolver.new_game(&mut runtime, guard).unwrap();
         resolver
             .open_pending(&mut runtime, loading.guard(), 340)
             .unwrap();
-        for (level, group, authored_row) in [(1, 4, 137), (2, 31, 209), (3, 6, 201), (4, 45, 728)] {
+        for (level, group, authored_row) in [
+            (1, 4, 137), (2, 31, 209), (3, 6, 201), (4, 45, 728), (5, 1, 132),
+        ] {
             let session = runtime.session_mut().unwrap();
-            // Stage only the completed-objective group and approach position.
+            // Stage the prior objective and approach position. Level 2 runs
+            // its actual vault production, paid demolition, rewards and final
+            // group-31 gate. Level 5 runs its actual rival banishments and
+            // end gate; the other exits stage their completed group.
             // Outdoor exits retain public flight. In the Cave, isolate the
             // overlap callback from the separate wall-collision checks.
+            if level == 2 {
+                crate::campaign::backend::tests::complete_controlled_payahandra_vault_boundary_for_test(session);
+            }
+            if level == 5 {
+                crate::native_world::player_lifecycle_tests::complete_tklom_rival_objectives_for_test(session);
+            }
             let compatibility = session
                 .backend_mut()
                 .compatibility_campaign_mut_for_test()
                 .simulation_mut();
-            compatibility
-                .activate_authored_group_prerequisite_for_test(group)
-                .unwrap();
+            if level != 2 && level != 5 {
+                compatibility
+                    .activate_authored_group_prerequisite_for_test(group)
+                    .unwrap();
+            }
             let trigger = compatibility
                 .economy()
                 .authored_switch_producers()
@@ -2718,7 +2736,7 @@ mod tests {
                     .unwrap();
                 for _ in 0..8 {
                     session
-                        .step(session.identity().guard(), GameCommand::default())
+                        .advance(session.identity().guard(), GameCommand::default())
                         .unwrap();
                     assert!(
                         !session
@@ -2744,7 +2762,7 @@ mod tests {
             if level == 4 {
                 for _ in 0..8 {
                     session
-                        .step(session.identity().guard(), GameCommand::default())
+                        .advance(session.identity().guard(), GameCommand::default())
                         .unwrap();
                     if session
                         .backend()
@@ -2778,9 +2796,11 @@ mod tests {
                     break;
                 }
                 session
-                    .step(session.identity().guard(), GameCommand::default())
+                    .advance(session.identity().guard(), GameCommand::default())
                     .unwrap();
             }
+            let source_spell_state = matches!(level, 2 | 5)
+                .then(|| session.backend().semantic_spell_state_for_test().unwrap());
             let completed = runtime.identity();
             let receipt = resolver
                 .accept_transition(
@@ -2791,6 +2811,21 @@ mod tests {
                 .unwrap();
             assert!(receipt.verify());
             assert_eq!(runtime.completed_levels().len(), level);
+            if level == 5 {
+                let returning = runtime.identity();
+                assert!(runtime.campaign_return_active());
+                assert_eq!(returning.frontend_media.as_ref().unwrap()
+                    .campaign_return.as_ref().unwrap().cutscene_id, Some(1));
+                assert!(resolver.campaign_menu_command(
+                    &mut runtime, returning.guard(), CampaignMenuCommand::DismissResults,
+                ).is_err(), "CUT1 must finish before results can return to the map");
+                assert_eq!(runtime.identity(), returning);
+                crate::campaign::backend::tests::play_owner_return_clip(
+                    &mut runtime, "cut1", 529, None,
+                );
+                assert!(!runtime.campaign_return_active());
+                assert_eq!(runtime.played_cutscenes() & 1, 1);
+            }
             if let Some(next) = resolver.flow().entries().get(level) {
                 let loading = start_selected_campaign_mission(&resolver, &mut runtime);
                 let playing = resolver
@@ -2804,6 +2839,10 @@ mod tests {
                         .bound_level_id(),
                     next.level_id()
                 );
+                if let Some(source_spell_state) = source_spell_state {
+                    assert_eq!(runtime.session().unwrap().backend().semantic_spell_state_for_test().unwrap(), source_spell_state,
+                        "the next mission retains acquired and selected spells from level {level}");
+                }
             }
         }
     }
@@ -2814,6 +2853,9 @@ mod tests {
         session_id: u64,
     ) -> (Vec<SpellKind>, Option<SpellKind>) {
         crate::campaign::backend::tests::drive_real_level_two_to_final_vault_objective_for_test(
+            runtime.session_mut().unwrap(),
+        );
+        crate::campaign::backend::tests::demolish_real_level_two_vaults_with_public_fireballs_for_test(
             runtime.session_mut().unwrap(),
         );
         for _ in 0..32 {
@@ -4639,18 +4681,52 @@ mod tests {
             .unwrap();
         let stale_level_one_tick_zero_guard = playing.session.as_ref().unwrap().guard();
 
-        // Drive the same live Level 1 session through the production Castle
-        // mana objective, all five Firefly lifecycles, and the ordinary final
-        // objective gate before entering the real package exit trigger.
+        // Replay only the retained public inputs in this fresh Level 1
+        // session. The old save's state and receipts are not loaded or trusted.
+        let input_path = std::env::var_os("MC_NIGHT_SPIRE_INPUT_TRACE")
+            .expect("set MC_NIGHT_SPIRE_INPUT_TRACE to the retained Level 1 public input history");
+        let input: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(input_path).expect("retained Level 1 input history is readable"),
+        )
+        .expect("retained Level 1 input history is JSON");
+        let operations = input["operations"]
+            .as_array()
+            .expect("retained input history has operations");
+        assert!(!operations.is_empty());
         {
             let session = runtime.session_mut().unwrap();
-            crate::campaign::backend::tests::complete_real_level_one_castle_route_to_group_six(
-                session,
-            );
-            crate::campaign::backend::tests::complete_real_level_one_firefly_objective_to_exit_group(
-                session,
-                false,
-            );
+            for operation in operations {
+                let operation: ReplayOperation<GameCommand> = serde_json::from_value(operation.clone())
+                    .expect("valid public input operation");
+                let ReplayOperation::Step { command } = operation else {
+                    panic!("Level 1 retained history must contain only gameplay steps");
+                };
+                session.advance(session.identity().guard(), command).unwrap();
+            }
+            let progress = session.snapshot().value.objective_progress;
+            assert_eq!(progress.completed_count, 5);
+            assert!(progress.all_objectives_satisfied);
+        }
+        // The final objective admits the source exit group on a later pass.
+        for _ in 0..8 {
+            let session = runtime.session_mut().unwrap();
+            if session
+                .backend()
+                .compatibility_campaign()
+                .simulation()
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|row| row.authored_index == 137)
+            {
+                break;
+            }
+            session
+                .step(session.identity().guard(), GameCommand::default())
+                .unwrap();
+        }
+        {
+            let session = runtime.session_mut().unwrap();
             let compatibility = session.backend().compatibility_campaign().simulation();
             let trigger = compatibility
                 .economy()
@@ -4748,6 +4824,13 @@ mod tests {
         }
         let completed_identity = runtime.identity();
         let completed_snapshot = runtime.session().unwrap().snapshot();
+        let source_spell_state = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_state_for_test()
+            .unwrap();
+        assert!(source_spell_state.0.contains(&SpellKind::Castle));
         let completion = runtime
             .session()
             .unwrap()
@@ -5003,6 +5086,19 @@ mod tests {
                 .as_str(),
             "level.magic_carpet_2.payahandra_ruins"
         );
+        let destination_spell_state = runtime
+            .session()
+            .unwrap()
+            .backend()
+            .semantic_spell_state_for_test()
+            .unwrap();
+        assert!(
+            source_spell_state
+                .0
+                .iter()
+                .all(|spell| destination_spell_state.0.contains(spell))
+        );
+        assert_eq!(destination_spell_state.1, source_spell_state.1);
         let stale_level_one = runtime
             .session_mut()
             .unwrap()
@@ -5013,15 +5109,13 @@ mod tests {
                 if error.code == SessionGuardErrorCode::GenerationMismatch
         ));
 
-        // No-Claim: this focused gate stages the already-separated real L1
-        // exit-group prerequisite and uses a closed unordered installed set.
-        // It proves resolver-derived entry selection, authoritative phase-12
+        // This uses a fresh execution of retained public inputs and a closed
+        // unordered installed set. It proves authoritative phase-12
         // capture, the declared L1->L2 edge without a caller level or path,
         // one guarded Loading transition, exact pending-definition-to-real-L2
         // same-handle open, and cross-level ABA rejection. It does not prove
-        // organic L1 objective progression, package installation/discovery,
-        // L2 completion, L3->Title, native/Unity transition exposure, results
-        // UI, save/load, or replay.
+        // package installation/discovery, L2 completion, L3->Title,
+        // native/Unity transition exposure, results UI, or save/load.
     }
 
     #[test]
@@ -5192,8 +5286,8 @@ mod tests {
                 .compatibility_campaign()
                 .simulation();
             assert!(
-                session.economy().authored_model45().is_empty(),
-                "organic L2 progression must reach following-pass reclaim for both group-8 vault rows"
+                !session.campaign_building_objective_targets(4).is_empty(),
+                "the real group-8 vaults still require demolition"
             );
             assert_eq!(session.runtime().objectives[0].stage_selectors[4], 1);
             assert!(session.dispatch_events().iter().all(|event| !matches!(
@@ -5201,6 +5295,10 @@ mod tests {
                 crate::native_world::Mc2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
             )));
         }
+
+        crate::campaign::backend::tests::demolish_real_level_two_vaults_with_public_fireballs_for_test(
+            runtime.session_mut().unwrap(),
+        );
 
         let mut objective_completed = false;
         for _ in 0..32 {

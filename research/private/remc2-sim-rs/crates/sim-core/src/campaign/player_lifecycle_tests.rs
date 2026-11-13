@@ -2,6 +2,486 @@ use super::*;
 use crate::campaign::{CampaignSession, journal::CampaignEffect, spec::CampaignSelection};
 use std::path::PathBuf;
 
+pub(crate) type RivalTestGame =
+    crate::game_session::GameSession<crate::campaign::backend::Mc2CampaignBackend>;
+
+pub(crate) fn rival_test_sim(game: &RivalTestGame) -> &Mc2Simulation {
+    game.backend().compatibility_campaign().simulation()
+}
+pub(crate) fn rival_test_sim_mut(game: &mut RivalTestGame) -> &mut Mc2Simulation {
+    game.backend_mut()
+        .compatibility_campaign_mut_for_test()
+        .simulation_mut()
+}
+pub(crate) fn rival_test_step(game: &mut RivalTestGame) {
+    game.advance(
+        game.identity().guard(),
+        crate::game_session::GameCommand::default(),
+    )
+    .unwrap();
+    assert!(
+        rival_test_sim(game)
+            .dispatch_events()
+            .iter()
+            .all(|event| !matches!(event, crate::native_world::Mc2DispatchEvent::Error { .. })),
+        "rival source dispatch: {:?}",
+        rival_test_sim(game).dispatch_events()
+    );
+}
+pub(crate) fn rival_test_participation(game: &RivalTestGame, actor: u16) -> Option<u8> {
+    rival_test_sim(game)
+        .players()
+        .iter()
+        .find(|row| row.entity_index == actor)
+        .unwrap()
+        .objective_player_state()
+}
+pub(crate) fn rival_test_held_spell_generations(
+    game: &RivalTestGame,
+    actor: u16,
+) -> Vec<crate::campaign::source_arena::SourceEntityHandle> {
+    rival_test_sim(game)
+        .players()
+        .iter()
+        .find(|row| row.entity_index == actor)
+        .unwrap()
+        .enabled_spell_holders
+        .into_iter()
+        .filter(|slot| *slot > 1)
+        .map(|slot| rival_test_sim(game).source_arena().handle(slot).unwrap())
+        .collect()
+}
+pub(crate) fn rival_test_contact(game: &mut RivalTestGame, target: u16, owner: u16, life: i32) {
+    crate::native_world::area_damage::contact(
+        &mut rival_test_sim_mut(game).session.state.live.economy,
+        None,
+        target,
+        u16::try_from(life + 1).expect("actual target life fits one declared contact"),
+        owner,
+    )
+    .unwrap();
+}
+pub(crate) fn rival_test_destroy_castle(
+    game: &mut RivalTestGame,
+    owner: u16,
+    attacker: u16,
+) -> crate::campaign::source_arena::SourceEntityHandle {
+    let castle = *rival_test_sim(game)
+        .economy()
+        .castle_for_owner(owner)
+        .expect("current real rival Castle");
+    let handle = rival_test_sim(game)
+        .source_arena()
+        .handle(castle.source_entity_index)
+        .unwrap();
+    let mut hit_level = None;
+    let mut observed_levels = vec![castle.level];
+    for _ in 0..2048 {
+        let Some(current) = rival_test_sim(game)
+            .economy()
+            .castle_for_owner(owner)
+            .copied()
+        else {
+            eprintln!(
+                "rival owner={owner} Castle final loss: {handle:?}, levels={observed_levels:?}"
+            );
+            return handle;
+        };
+        assert_eq!(
+            rival_test_sim(game)
+                .source_arena()
+                .handle(current.source_entity_index),
+            Some(handle),
+            "one original Castle generation owns all stage transitions"
+        );
+        if observed_levels.last().copied() != Some(current.level) {
+            observed_levels.push(current.level);
+        }
+        if current.action == 4
+            && current.timer == 0
+            && current.life > 0
+            && hit_level != Some(current.level)
+        {
+            rival_test_contact(game, current.source_entity_index, attacker, current.life);
+            hit_level = Some(current.level);
+        }
+        rival_test_step(game);
+    }
+    panic!(
+        "real Castle tiers did not reach final owner-link loss: owner={owner} old={handle:?} levels={observed_levels:?} current={:?}",
+        rival_test_sim(game).economy().castle_for_owner(owner)
+    );
+}
+pub(crate) fn rival_test_wait_unprotected(game: &mut RivalTestGame, actor: u16) {
+    let handle = rival_test_sim(game).source_arena().handle(actor).unwrap();
+    for _ in 0..512 {
+        let state = rival_test_sim(game);
+        let row = &state.entities()[usize::from(actor)];
+        let common = state
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .get(handle)
+            .unwrap()
+            .common_upkeep(row.phase);
+        if common.word_0x159 == 0 && !common.high_upkeep {
+            return;
+        }
+        rival_test_step(game);
+    }
+    let state = rival_test_sim(game);
+    let row = &state.entities()[usize::from(actor)];
+    let common = state
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .get(handle)
+        .unwrap()
+        .common_upkeep(row.phase);
+    panic!(
+        "rival protection did not expire naturally: actor={actor} countdown={} high_upkeep={}",
+        common.word_0x159, common.high_upkeep
+    );
+}
+
+pub(crate) fn complete_tklom_rival_objectives_for_test(mut game: &mut RivalTestGame) {
+    use self::{
+        RivalTestGame as Game, rival_test_contact as contact,
+        rival_test_destroy_castle as destroy_castle,
+        rival_test_held_spell_generations as held_spell_generations,
+        rival_test_participation as participation, rival_test_sim as sim, rival_test_step as step,
+        rival_test_wait_unprotected as wait_unprotected,
+    };
+    use crate::level_definition::ObjectiveCondition;
+    use crate::native_world::{Mc2DispatchEvent, area_damage};
+
+    let objectives = game.definition().level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 2);
+    assert!(objectives.iter().all(|objective| matches!(
+        objective.condition(),
+        ObjectiveCondition::DefeatRivalWizard(_)
+    )));
+    let player = sim(&game).state.entity_index;
+    let rahn = 272;
+    let nyphur = 266;
+    let castle = 271;
+    let gate = 1;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    let rahn_handle = sim(&game).source_arena().handle(rahn).unwrap();
+    let nyphur_handle = sim(&game).source_arena().handle(nyphur).unwrap();
+    let castle_handle = sim(&game).source_arena().handle(castle).unwrap();
+    let gate_handle = sim(&game).source_arena().handle(gate).unwrap();
+    assert_eq!(player, 265);
+    assert_eq!(
+        (
+            sim(&game).runtime().stages[0].relation,
+            sim(&game).runtime().stages[1].relation
+        ),
+        (
+            crate::native_world::RuntimeRelation::LiveEntity(rahn),
+            crate::native_world::RuntimeRelation::LiveEntity(nyphur)
+        )
+    );
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..2],
+        [1, 1]
+    );
+    assert_eq!(
+        (participation(&game, rahn), participation(&game, nyphur)),
+        (Some(1), Some(1))
+    );
+    assert!(sim(&game).economy().castle_for_owner(rahn).is_none());
+    assert_eq!(
+        sim(&game)
+            .economy()
+            .castle_for_owner(nyphur)
+            .unwrap()
+            .source_entity_index,
+        castle
+    );
+    let gate_row = &sim(&game).entities()[usize::from(gate)];
+    assert_eq!(
+        (
+            gate_row.class,
+            gate_row.model,
+            gate_row.action,
+            gate_row.source_id
+        ),
+        (11, 4, 4, 1)
+    );
+
+    // Allow Rahn's ordinary AI to construct its real Castle. Selected arrived
+    // contacts isolate real damage consumers without staging health, owner
+    // relations, objective state, participation or protection countdowns.
+    for _ in 0..64 {
+        if sim(&game).economy().castle_for_owner(rahn).is_some() {
+            break;
+        }
+        step(&mut game);
+    }
+    assert!(
+        sim(&game).economy().castle_for_owner(rahn).is_some(),
+        "Rahn's real AI produces a Castle"
+    );
+    wait_unprotected(&mut game, rahn);
+    let rahn_castle = destroy_castle(&mut game, rahn, player);
+    let rahn_common = sim(&game)
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .get(rahn_handle)
+        .unwrap()
+        .common_upkeep(sim(&game).entities()[usize::from(rahn)].phase);
+    assert_eq!(
+        rahn_common.word_0x159, 0,
+        "the actual Castle loss leaves Rahn's current contact admissible"
+    );
+    let mut released_holders = held_spell_generations(&game, rahn);
+    let rahn_life = sim(&game).entities()[usize::from(rahn)].life;
+    contact(&mut game, rahn, player, rahn_life);
+    let observe_rahn = |game: &Game, turn: usize| {
+        let state = sim(game);
+        let row = &state.entities()[usize::from(rahn)];
+        let common = state
+            .session
+            .state
+            .live
+            .nyphur_dispatcher
+            .get(rahn_handle)
+            .unwrap()
+            .common_upkeep(row.phase);
+        eprintln!(
+            "T'Klom Rahn turn={turn} raw_life={} action={} flags={:#x} raw_mailbox=({},{}) canonical_mailbox={:?} typed_life={} regen={} typed_mailbox={:?} linked_castle={:?} participation={:?}",
+            row.life,
+            row.action,
+            row.control_flags,
+            row.source_upkeep_payload(),
+            row.source_upkeep_word_62(),
+            area_damage::source_bounty(state.source_arena(), None, rahn),
+            common.life,
+            common.life_regen,
+            common.source_mailbox,
+            state
+                .economy()
+                .castle_for_owner(rahn)
+                .map(|row| row.source_entity_index),
+            participation(game, rahn)
+        );
+    };
+    observe_rahn(&game, 0);
+    for turn in 0..512 {
+        if participation(&game, rahn) == Some(0) {
+            break;
+        }
+        step(&mut game);
+        if turn < 8 || turn == 511 {
+            observe_rahn(&game, turn + 1);
+        }
+    }
+    assert_eq!(sim(&game).source_arena().handle(rahn), Some(rahn_handle));
+    assert_eq!(
+        participation(&game, rahn),
+        Some(0),
+        "Rahn's source death reaches banishment"
+    );
+    assert_eq!(sim(&game).entities()[usize::from(rahn)].action, 3);
+    assert_eq!(participation(&game, nyphur), Some(1));
+    assert!(
+        sim(&game).source_arena().resolve(rahn_castle).is_none(),
+        "Rahn's original Castle is naturally reclaimed after actor contact"
+    );
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..2],
+        [2, 1]
+    );
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 0);
+    assert_eq!(sim(&game).source_arena().handle(gate), Some(gate_handle));
+    assert!(
+        !sim(&game)
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .any(|row| row.authored_index == 132 && row.active)
+    );
+
+    assert_eq!(
+        sim(&game).source_arena().handle(castle),
+        Some(castle_handle)
+    );
+    wait_unprotected(&mut game, nyphur);
+    let nyphur_castle = destroy_castle(&mut game, nyphur, player);
+    assert_eq!(nyphur_castle, castle_handle);
+    assert_eq!(participation(&game, nyphur), Some(1));
+    let nyphur_common = sim(&game)
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .get(nyphur_handle)
+        .unwrap()
+        .common_upkeep(sim(&game).entities()[usize::from(nyphur)].phase);
+    assert_eq!(
+        nyphur_common.word_0x159, 0,
+        "the actual Castle loss leaves Nyphur's current contact admissible"
+    );
+    released_holders.extend(held_spell_generations(&game, nyphur));
+    let nyphur_life = sim(&game).entities()[usize::from(nyphur)].life;
+    contact(&mut game, nyphur, player, nyphur_life);
+    let mut group_one_count = 0;
+    for _ in 0..512 {
+        step(&mut game);
+        group_one_count += sim(&game)
+            .dispatch_events()
+            .iter()
+            .filter(|event| {
+                matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot, group: 1, authored_indices, .. }
+                if *source_slot == gate && authored_indices.contains(&132))
+            })
+            .count();
+        if sim(&game)
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .any(|row| row.active && row.authored_index == 132)
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        sim(&game).source_arena().handle(nyphur),
+        Some(nyphur_handle)
+    );
+    assert_eq!(participation(&game, nyphur), Some(0));
+    assert!(
+        sim(&game).source_arena().resolve(nyphur_castle).is_none(),
+        "Nyphur's original Castle is naturally reclaimed after actor contact"
+    );
+    assert_eq!(sim(&game).entities()[usize::from(nyphur)].action, 3);
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..2],
+        [2, 2]
+    );
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert_eq!(group_one_count, 1);
+    let trigger = *sim(&game)
+        .economy()
+        .authored_switch_producers()
+        .iter()
+        .find(|row| row.active && row.authored_index == 132)
+        .expect("actual T'Klom exit trigger");
+    assert_eq!((trigger.model, trigger.action), (12, 12));
+
+    // Source death scatters each original spell holder into its ordinary
+    // timed pickup lifetime. Continue normal turns through following reclaim.
+    for _ in 0..320 {
+        if released_holders
+            .iter()
+            .all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
+        {
+            break;
+        }
+        step(&mut game);
+    }
+    assert!(
+        released_holders
+            .iter()
+            .all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "original rival spell-holder generations must reclaim naturally: {released_holders:?}"
+    );
+    assert!(
+        sim(&game)
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .any(|row| row.active
+                && row.authored_index == 132
+                && row.model == 12
+                && row.action == 12)
+    );
+}
+
+#[test]
+fn tklom_selected_rival_contacts_reach_ordinary_exit() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::game_session::{GameCommand, GameCompletionStatus, GameSession};
+    use crate::native_world::Mc2DispatchEvent;
+
+    let package = std::env::var_os("MC_LEVEL5_PACKAGE").map_or_else(
+        || {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../../../generated/dragon-bee-20261105-integration/level5-owner-current/level5",
+            )
+        },
+        PathBuf::from,
+    );
+    let definition = load_mc2_campaign(
+        &package,
+        &crate::game_definition::default_catalog().unwrap(),
+    )
+    .unwrap();
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        2205,
+        Mc2CampaignInputs::new(&package),
+    )
+    .unwrap();
+    complete_tklom_rival_objectives_for_test(&mut game);
+    let simulation = game.backend().compatibility_campaign().simulation();
+    let player = simulation.state.entity_index;
+    let trigger = *simulation
+        .economy()
+        .authored_switch_producers()
+        .iter()
+        .find(|row| row.active && row.authored_index == 132)
+        .expect("actual T'Klom exit trigger after original holder reclaim");
+
+    // Declared player position at the real trigger; the exit's scheduler,
+    // countdown and completion result remain unmodified.
+    game.backend_mut()
+        .compatibility_campaign_mut_for_test()
+        .simulation_mut()
+        .set_level2_entity_position(player, trigger.position)
+        .unwrap();
+    for _ in 0..700 {
+        if matches!(
+            game.completion_status(game.identity().guard())
+                .unwrap()
+                .value,
+            GameCompletionStatus::Completed { .. }
+        ) {
+            break;
+        }
+        game.advance(game.identity().guard(), GameCommand::default())
+            .unwrap();
+        assert!(
+            game.backend()
+                .compatibility_campaign()
+                .simulation()
+                .dispatch_events()
+                .iter()
+                .all(|event| !matches!(event, Mc2DispatchEvent::Error { .. }))
+        );
+    }
+    assert!(matches!(
+        game.completion_status(game.identity().guard())
+            .unwrap()
+            .value,
+        GameCompletionStatus::Completed { .. }
+    ));
+    assert_eq!(
+        game.backend()
+            .compatibility_campaign()
+            .simulation()
+            .source_exit_result_byte(),
+        0x0a
+    );
+}
+
 #[test]
 fn cave_four_ordinary_lethal_spider_hit_scatters_holders_and_binds_death_mana_without_ending_flow()
 {
