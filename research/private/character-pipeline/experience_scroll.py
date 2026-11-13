@@ -13,6 +13,8 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from experience_scroll_paper import modern_paper_texture
 
 
 def material(name, color):
@@ -146,6 +148,23 @@ def loose_sheet(name, side, x0, x1, mat):
     return obj
 
 
+def shape_modern_paper_edges(objects):
+    # Give the Modern roll a single continuous lifted sheet, with a modest
+    # uneven edge. Keep both faces parallel and outside the rolled core.
+    # Apply only after voxel export, preserving its accepted sampled geometry.
+    layer_stride = 17 * 33
+    for obj in objects:
+        if not obj.name.startswith(('Front loose parchment', 'Back loose parchment')):
+            continue
+        for vertex in obj.data.vertices:
+            x, y, _ = vertex.co
+            t = ((vertex.index % layer_stride) // 33) / 16
+            thickness = .04 if vertex.index >= layer_stride else 0
+            vertex.co.y = (1 if y > 0 else -1) * (.36 + .20 * math.sin(t * math.pi / 2) + thickness)
+            vertex.co.z = .86 - .46 * t + .018 * t ** 3 * math.sin(4 * x + .3)
+        obj.data.update()
+
+
 def scroll_uv(mesh):
     uv = mesh.uv_layers.new(name='Parchment')
     for poly in mesh.polygons:
@@ -238,6 +257,7 @@ def voxelize(objects, materials, size=1/28):
 
 def main():
     parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--modern-only', action='store_true')
     args=parser.parse_args(sys.argv[sys.argv.index('--')+1:]); args.output.mkdir(parents=True,exist_ok=False)
     bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete(use_global=False)
     parchment=material('Scroll parchment',(.97,.87,.72))
@@ -263,6 +283,7 @@ def main():
              curled_end('Left rolled spiral',-1.33,edge),
              tube('Central violet binding',-.20,.04,.49,binding)]
     texture = parchment_texture(args.output/'ExperienceScrollAlbedo.png')
+    modern_paper_texture(args.output/'ExperienceScrollPaper.png')
     for paper in (parchment, overlay, lip):
         nodes = paper.node_tree.nodes
         image_node = nodes.new('ShaderNodeTexImage'); image_node.image = texture
@@ -272,10 +293,21 @@ def main():
         links = paper.node_tree.links
         links.new(image_node.outputs['Color'], multiply.inputs[1])
         links.new(multiply.outputs['Color'], nodes.get('Principled BSDF').inputs['Base Color'])
+    if not args.modern_only:
+        voxel=voxelize(objects,[parchment,overlay,overlay,lip,lip,lip,lip,lip,lip,lip,lip,lip,overlay,parchment,edge,edge,binding])
+        export(args.output/'ExperienceScrollVoxel.fbx',[voxel])
+        bpy.data.objects.remove(voxel, do_unlink=True)
+    shape_modern_paper_edges(objects)
+    for obj in list(objects):
+        if obj.name.startswith(('Top paper lip', 'Underside paper lip', 'Front loose parchment')):
+            objects.remove(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
+    modern_texture = bpy.data.images.load(str(args.output/'ExperienceScrollPaper.png'))
+    modern_texture.pack()
+    for paper in (parchment, overlay, lip):
+        next(node for node in paper.node_tree.nodes if node.type == 'TEX_IMAGE').image = modern_texture
     bpy.ops.wm.save_as_mainfile(filepath=str(args.output/'ExperienceScroll.blend'))
     export(args.output/'ExperienceScroll.fbx',objects)
-    voxel=voxelize(objects,[parchment,overlay,overlay,lip,lip,lip,lip,lip,lip,lip,lip,overlay,parchment,edge,edge,binding])
-    export(args.output/'ExperienceScrollVoxel.fbx',[voxel])
 
 
 if __name__=='__main__': main()

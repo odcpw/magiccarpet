@@ -58,6 +58,8 @@ namespace MagicCarpet.Native.Tests
                 var paper = renderers.SelectMany(r => r.sharedMaterials)
                     .First(m => m.name == "Scroll parchment");
                 Assert.That(paper.GetColor("_BaseColor").r, Is.GreaterThan(.8f));
+                Assert.That(paper.GetTexture("_BaseMap").name,
+                    Is.EqualTo(voxel ? "ExperienceScrollAlbedo" : "ExperienceScrollPaper"));
                 var bounds = renderers[0].bounds;
                 foreach (var renderer in renderers.Skip(1)) bounds.Encapsulate(renderer.bounds);
                 Assert.That(bounds.size.x / bounds.size.y, Is.InRange(2.3f, 3.2f));
@@ -195,6 +197,20 @@ namespace MagicCarpet.Native.Tests
                 {
                     var data = pixels.EncodeToPNG();
                     output.Write(data, 0, data.Length);
+                }
+                if (!voxel)
+                {
+                    // A second isolated view removes direct moonlight to
+                    // expose material readability in a cast-shadow case.
+                    // It is a preview, not a replay of the level's lighting.
+                    moon.enabled = false;
+                    camera.Render(); camera.Render();
+                    pixels.ReadPixels(new Rect(0, 0, 960, 720), 0, 0);
+                    pixels.Apply();
+                    using var shadow = new FileStream(Path.Combine(directory, "modern-shadow.png"),
+                        FileMode.CreateNew, FileAccess.Write);
+                    var data = pixels.EncodeToPNG();
+                    shadow.Write(data, 0, data.Length);
                 }
             }
             finally

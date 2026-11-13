@@ -48,7 +48,8 @@ namespace MagicCarpet.Native
             this.voxel = voxel;
             model = Resources.Load<GameObject>(voxel ?
                 "ModernExperienceScroll/ExperienceScrollVoxel" : "ModernExperienceScroll/ExperienceScroll");
-            var texture = Resources.Load<Texture2D>("ModernExperienceScroll/ExperienceScrollAlbedo");
+            var texture = Resources.Load<Texture2D>(voxel ?
+                "ModernExperienceScroll/ExperienceScrollAlbedo" : "ModernExperienceScroll/ExperienceScrollPaper");
             var shader = Shader.Find("Universal Render Pipeline/Lit");
             // Missing generated resources leave the original sprite visible.
             if (model == null || texture == null || shader == null) { model = null; return; }
