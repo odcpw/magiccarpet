@@ -1842,6 +1842,369 @@ fn configured_constructor_and_ranged_allocation_failure_preserve_source_prelude(
 
 
 #[test]
+fn evirith_gor_real_objectives_wave_and_exit_follow_source_order() {
+    use crate::campaign::backend::{Mc2CampaignAdapter, Mc2CampaignInputs, load_mc2_campaign};
+    use crate::campaign::source_arena::CreatureRootOrigin;
+    use crate::game_session::{GameCompletionStatus, GameSession};
+    use crate::level_definition::{CreatureKind, ObjectiveCondition};
+    use crate::native_world::player_lifecycle_tests::{
+        rival_test_contact as contact, rival_test_destroy_castle as destroy_castle,
+        rival_test_held_spell_generations as held_spell_generations,
+        rival_test_participation as participation, rival_test_sim as sim,
+        rival_test_sim_mut as sim_mut, rival_test_step as step,
+        rival_test_wait_unprotected as wait_unprotected,
+    };
+    use crate::native_world::{Mc2DispatchEvent, RuntimeRelation, area_damage};
+    use std::collections::BTreeSet;
+
+    let generated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
+    let package = std::env::var_os("MC_LEVEL9_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            generated.join("ribbon-20261104-integration/group-zero-owner-package-v4/level9")
+        });
+    let cache = std::env::var_os("MC_LEVEL9_OWNER_CACHE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| generated.join("campaign-original-environments/level9"));
+    let definition = load_mc2_campaign(
+        &package,
+        &crate::game_definition::default_catalog().unwrap(),
+    )
+    .unwrap();
+    let objectives = definition.level_definition().unwrap().objectives();
+    assert_eq!(objectives.len(), 5);
+    assert!(matches!(
+        objectives[4].condition(),
+        ObjectiveCondition::NoLivingCreatures(CreatureKind::Creature17)
+    ));
+    let mut game = GameSession::open(
+        &Mc2CampaignAdapter,
+        std::sync::Arc::new(definition),
+        2209,
+        Mc2CampaignInputs::with_owner_cache(&package, &cache),
+    )
+    .unwrap();
+    let player = sim(&game).state.entity_index;
+    let owner = usize::from(sim(&game).state.player_color_index);
+    assert_eq!(player, 104);
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..5],
+        [1; 5]
+    );
+    assert_eq!(
+        (
+            sim(&game).runtime().stages[0].relation,
+            sim(&game).runtime().stages[1].relation,
+            sim(&game).runtime().stages[2].relation
+        ),
+        (
+            RuntimeRelation::LiveEntity(68),
+            RuntimeRelation::LiveEntity(67),
+            RuntimeRelation::LiveEntity(131)
+        )
+    );
+    let initial = [68_u16, 67].map(|slot| sim(&game).source_arena().handle(slot).unwrap());
+    for handle in initial {
+        let row = &sim(&game).entities()[usize::from(handle.source_slot)];
+        assert_eq!((row.class, row.model, row.life), (5, 17, 10_000));
+        let damage = u16::try_from(row.life + 1).unwrap();
+        area_damage::contact(
+            &mut sim_mut(&mut game).session.state.live.economy,
+            None,
+            handle.source_slot,
+            damage,
+            player,
+        )
+        .unwrap();
+    }
+    for _ in 0..128 {
+        if sim(&game).runtime().objectives[owner].stage_selectors[..2] == [2, 2]
+            && initial
+                .iter()
+                .all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
+        {
+            break;
+        }
+        step(&mut game);
+    }
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..2],
+        [2, 2]
+    );
+    assert!(
+        initial
+            .iter()
+            .all(|handle| sim(&game).source_arena().resolve(*handle).is_none()),
+        "the two actual target generations complete natural death and reclaim"
+    );
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[2..5],
+        [1, 1, 1]
+    );
+
+    let rival = 131;
+    let rival_handle = sim(&game).source_arena().handle(rival).unwrap();
+    let initial_castle = sim(&game).source_arena().handle(146).unwrap();
+    assert_eq!(
+        sim(&game)
+            .economy()
+            .castle_for_owner(rival)
+            .unwrap()
+            .source_entity_index,
+        146
+    );
+    assert_eq!(participation(&game, rival), Some(1));
+    wait_unprotected(&mut game, rival);
+    let castle = destroy_castle(&mut game, rival, player);
+    assert_eq!(castle, initial_castle);
+    let row = &sim(&game).entities()[usize::from(rival)];
+    let common = sim(&game)
+        .session
+        .state
+        .live
+        .nyphur_dispatcher
+        .get(rival_handle)
+        .unwrap()
+        .common_upkeep(row.phase);
+    assert!(
+        row.active
+            && row.action == 1
+            && row.life > 0
+            && common.word_0x159 == 0
+            && !common.high_upkeep
+    );
+    assert!(sim(&game).economy().castle_for_owner(rival).is_none());
+    let released = held_spell_generations(&game, rival);
+    let life = row.life;
+    contact(&mut game, rival, player, life);
+    for _ in 0..768 {
+        if participation(&game, rival) == Some(0)
+            && sim(&game).runtime().objectives[owner].stage_selectors[2] == 2
+        {
+            break;
+        }
+        step(&mut game);
+    }
+    assert_eq!(sim(&game).source_arena().handle(rival), Some(rival_handle));
+    assert_eq!(participation(&game, rival), Some(0));
+    assert_eq!(sim(&game).entities()[usize::from(rival)].action, 3);
+    assert_eq!(sim(&game).runtime().objectives[owner].stage_selectors[2], 2);
+    assert!(sim(&game).source_arena().resolve(castle).is_none());
+
+    // Actual area-exit switch17 owns House63. Selected contacts address its
+    // current standing source generation; each real successor rebinds stage3.
+    let mut hit = BTreeSet::new();
+    let mut stages = Vec::new();
+    for _ in 0..768 {
+        if sim(&game).runtime().objectives[owner].stage_selectors[3] == 2 {
+            break;
+        }
+        if let RuntimeRelation::LiveEntity(slot) = sim(&game).runtime().stages[3].relation {
+            if let Some(house) = sim(&game)
+                .ordinary()
+                .houses()
+                .iter()
+                .find(|house| house.active && house.entity_index == slot && house.action == 52)
+                .copied()
+            {
+                let handle = sim(&game).source_arena().handle(slot).unwrap();
+                if hit.insert((handle.source_slot, handle.generation, house.building_index)) {
+                    stages.push(house.building_index);
+                    assert!(
+                        sim_mut(&mut game)
+                            .session
+                            .state
+                            .live
+                            .ordinary
+                            .houses
+                            .submit_source_damage(
+                                slot,
+                                u16::try_from(house.life + 1).unwrap(),
+                                player
+                            )
+                    );
+                }
+            }
+        }
+        step(&mut game);
+    }
+    assert_eq!(
+        stages,
+        [23, 24, 28],
+        "real House63 traverses its full destruction chain"
+    );
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..5],
+        [2, 2, 2, 2, 1]
+    );
+    assert_eq!(sim(&game).runtime().objectives[owner].text_selector, 4);
+    assert!(
+        sim(&game).source_arena().rebuilt_class5_model_slots()[17].is_empty(),
+        "the two reset roots are gone before the actual wave producer"
+    );
+
+    let mut group3 = 0;
+    for _ in 0..16 {
+        let before = sim(&game).runtime().objectives[owner];
+        assert_eq!((before.stage_selectors[4], before.done), (1, 0));
+        step(&mut game);
+        group3 += sim(&game).dispatch_events().iter().filter(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 22, group: 3, authored_indices, .. }
+                if authored_indices.contains(&122))).count();
+        if group3 != 0 {
+            let after = sim(&game).runtime().objectives[owner];
+            assert_eq!(
+                (after.stage_selectors[4], after.done),
+                (1, 0),
+                "the model32 ObjectiveDone pause is consumed after publication, before absence evaluation"
+            );
+            break;
+        }
+    }
+    assert_eq!(group3, 1, "source switch22 publishes its actual wave once");
+    let wave = sim(&game)
+        .creature_runtime_census()
+        .roots_of_kind(CreatureKind::Creature17)
+        .filter(|row| row.living && matches!(row.origin, CreatureRootOrigin::AuthoredRecord { .. }))
+        .map(|row| (row.origin, row.handle))
+        .collect::<Vec<_>>();
+    let expected = [
+        114, 116, 117, 118, 121, 122, 123, 124, 126, 128, 129, 130, 131,
+    ];
+    assert_eq!(wave.len(), expected.len());
+    assert!(expected.into_iter().all(|authored_record| {
+        wave.iter()
+            .any(|(origin, _)| *origin == CreatureRootOrigin::AuthoredRecord { authored_record })
+    }));
+    let survivor = wave.last().unwrap().1;
+    for &(_, handle) in &wave[..wave.len() - 1] {
+        let life = sim(&game).entities()[usize::from(handle.source_slot)].life;
+        area_damage::contact(
+            &mut sim_mut(&mut game).session.state.live.economy,
+            None,
+            handle.source_slot,
+            u16::try_from(life + 1).unwrap(),
+            player,
+        )
+        .unwrap();
+    }
+    for _ in 0..128 {
+        step(&mut game);
+        assert_eq!(
+            sim(&game).runtime().objectives[owner].stage_selectors[4],
+            1,
+            "a genuine living wave root blocks global Manticore absence"
+        );
+        if wave[..wave.len() - 1]
+            .iter()
+            .all(|(_, handle)| sim(&game).source_arena().resolve(*handle).is_none())
+        {
+            break;
+        }
+    }
+    assert!(
+        wave[..wave.len() - 1]
+            .iter()
+            .all(|(_, handle)| sim(&game).source_arena().resolve(*handle).is_none())
+    );
+    assert!(
+        sim(&game)
+            .creature_identity_for_source_slot(survivor.source_slot)
+            .is_some_and(|row| row.handle == survivor && row.living)
+    );
+    let life = sim(&game).entities()[usize::from(survivor.source_slot)].life;
+    area_damage::contact(
+        &mut sim_mut(&mut game).session.state.live.economy,
+        None,
+        survivor.source_slot,
+        u16::try_from(life + 1).unwrap(),
+        player,
+    )
+    .unwrap();
+    let mut group8 = 0;
+    let mut exit_trigger = None;
+    let mut exit_portal = None;
+    for _ in 0..512 {
+        step(&mut game);
+        let published = sim(&game).dispatch_events().iter().filter(|event| matches!(event,
+            Mc2DispatchEvent::AuthoredGroupActivated { source_slot: 74, group: 8, authored_indices, .. }
+                if authored_indices.contains(&161))).count();
+        group8 += published;
+        if published != 0 {
+            exit_trigger = sim(&game).economy().authored_switch_producers().iter()
+                .find(|row| row.authored_index == 161).copied();
+            exit_portal = sim(&game).economy().authored_class14().iter()
+                .find(|row| row.authored_index == 162).copied();
+            assert!(exit_trigger.is_some() && exit_portal.is_some(),
+                "group8 must actually materialize exit161 and portal162; sequence={:?}",
+                sim(&game).level_exit_sequence());
+        }
+        if group8 == 1
+            && wave
+                .iter()
+                .all(|(_, handle)| sim(&game).source_arena().resolve(*handle).is_none())
+            && released
+                .iter()
+                .all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        sim(&game).runtime().objectives[owner].stage_selectors[..5],
+        [2; 5]
+    );
+    assert_eq!(sim(&game).runtime().objectives[owner].is_level_end, 1);
+    assert_eq!(group8, 1);
+    assert!(
+        wave.iter()
+            .all(|(_, handle)| sim(&game).source_arena().resolve(*handle).is_none())
+    );
+    assert!(
+        released
+            .iter()
+            .all(|handle| sim(&game).source_arena().resolve(*handle).is_none())
+    );
+    let trigger = exit_trigger.expect("actual group8 authored exit161");
+    let portal = exit_portal.expect("actual group8 authored portal162");
+    assert_eq!((trigger.model, trigger.action), (12, 12));
+    // Declared player-only placement at the actual exit; its scheduler and
+    // completion remain untouched, including any earlier physical slot161.
+    let exit = sim(&game).level_exit_sequence();
+    if !exit.active && !exit.complete {
+        assert!(sim(&game).economy().authored_switch_producers().iter().any(|row|
+            row.active && row.authored_index == 161 && row.source_entity_index == trigger.source_entity_index),
+            "unconsumed exit must retain its original source identity; sequence={exit:?}");
+        sim_mut(&mut game)
+            .set_level2_entity_position(player, trigger.position)
+            .unwrap();
+    }
+    for _ in 0..700 {
+        if matches!(
+            game.completion_status(game.identity().guard())
+                .unwrap()
+                .value,
+            GameCompletionStatus::Completed { .. }
+        ) {
+            break;
+        }
+        step(&mut game);
+    }
+    assert!(matches!(
+        game.completion_status(game.identity().guard())
+            .unwrap()
+            .value,
+        GameCompletionStatus::Completed { .. }
+    ));
+    assert_eq!(
+        sim(&game).level_exit_sequence().trigger_entity_index,
+        trigger.source_entity_index
+    );
+    assert_eq!(sim(&game).level_exit_sequence().portal_entity_index, portal.source_entity_index);
+    assert_eq!(sim(&game).source_exit_result_byte(), 0x0a);
+}
+
+#[test]
 fn level_nine_public_meteor_reclaims_original_manticores_and_completes_absence() {
     use crate::campaign::{CampaignSession, spec::CampaignSelection};
     use crate::level_definition::{CreatureKind, ObjectiveCondition};

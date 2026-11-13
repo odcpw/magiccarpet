@@ -2112,9 +2112,9 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
                 .filter(|child| child.active && child.model == 3 && child.action == 9)
                 .count(),
             economy
-                .castle_children()
+                .castle_defenders()
                 .iter()
-                .filter(|child| child.active && child.source_class == 5 && child.model == 15)
+                .filter(|child| child.active)
                 .count(),
         )
     };
@@ -2156,7 +2156,7 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
         assert!(economy.set_castle_controller_coefficient(2, 0x2a));
         let castle = economy.castle.as_mut().expect("stage-two Castle");
         castle.action = 5;
-        castle.build_state = 3;
+        castle.build_state = 0;
         castle.level = 1;
         for child in &mut economy.castle_children {
             if child.parent_entity_index == chain_castle_slot && child.model == 42 {
@@ -2244,7 +2244,7 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
                 *slot,
                 chain
                     .economy()
-                    .castle_children()
+                    .castle_defenders()
                     .iter()
                     .find(|child| child.source_entity_index == *slot)
                     .expect("live auxiliary before teardown")
@@ -2293,7 +2293,7 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
         }));
         let auxiliary = chain
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .find(|child| child.active && child.source_entity_index == *slot)
             .expect("UpdateEntities retains and dispatches model-15 auxiliary");
@@ -2387,13 +2387,12 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
         .expect("retry allocator Castle")
         .auxiliary_slots[0];
     assert_ne!(retry_slot, 0);
-    assert!(chain.economy().castle_children().iter().any(|child| {
+    assert!(chain.economy().castle_defenders().iter().any(|child| {
         child.active
             && child.source_entity_index == retry_slot
-            && child.source_class == 5
-            && child.model == 15
             && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
-            && child.parent_entity_index == 0
+            && child.origin == creatures::creature_15::DefenderOrigin::Castle(retry_castle_slot)
+            && (child.target_view().class, child.target_view().model, child.target_view().parent) == (5, 15, 0)
     }));
     let preexisting_death_burst_slot = chain
         .economy_mut()
@@ -2403,12 +2402,10 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
     assert_eq!(
         chain
             .economy()
-            .castle_children()
+            .castle_defenders()
             .iter()
             .filter(|child| {
                 child.active
-                    && child.source_class == 5
-                    && child.model == 15
                     && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
             })
             .map(|child| child.source_entity_index)
@@ -2464,11 +2461,9 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
         retry_generation_before
     );
     assert!(!chain.economy().slot_rng.contains_key(&retry_slot));
-    assert!(!chain.economy().castle_children().iter().any(|child| {
+    assert!(!chain.economy().castle_defenders().iter().any(|child| {
         child.active
             && child.source_entity_index == retry_slot
-            && child.source_class == 5
-            && child.model == 15
     }));
     assert_eq!(
         chain
@@ -2563,11 +2558,9 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
             .count(),
         1
     );
-    assert!(chain.economy().castle_children().iter().any(|child| {
+    assert!(chain.economy().castle_defenders().iter().any(|child| {
         child.active
             && child.source_entity_index == lower_case_auxiliary_slot
-            && child.source_class == 5
-            && child.model == 15
             && child.control_flags & SOURCE_REPLACEABLE_FLAG != 0
     }));
     chain.economy_mut().free_slots.clear();
@@ -2587,11 +2580,9 @@ fn level_two_castle_teardown_and_allocator_failure_are_exact() {
         0,
         "typed authored model-6 row was evicted in place"
     );
-    assert!(chain.economy().castle_children().iter().any(|child| {
+    assert!(chain.economy().castle_defenders().iter().any(|child| {
         child.active
             && child.source_entity_index == lower_case_auxiliary_slot
-            && child.source_class == 5
-            && child.model == 15
     }));
     let replacement_burst = chain
         .economy()

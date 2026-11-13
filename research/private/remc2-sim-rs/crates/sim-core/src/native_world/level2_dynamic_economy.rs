@@ -7870,19 +7870,21 @@ impl Level2EconomyState {
         self.step_castle_action_with_site(castle_slot, terrain, reset_free_slots, site_clear, &mut consumer)
     }
 
-    /// Source 5FA70 states0/3 share this creation operation. Startup uses
-    /// the same root/child allocator without inventing an inventory consumer
-    /// for branches that cannot read inventory or perform final loss.
+    /// Source 5FA70 state 0 upgrades the Castle; state 3 reconstructs the
+    /// terrain for its current stage after a stage is destroyed. The caller
+    /// passes the already-selected state because the preceding holder write
+    /// can address this root's own word2e through an aliased spell slot.
     pub(crate) fn begin_castle_stage_with_site(
         &mut self,
         castle_slot: u16,
         terrain: &mut SessionTerrain,
         site_clear: bool,
+        selected_state: u8,
     ) -> bool {
         let Some(snapshot) = self.castle_at(castle_slot).copied().filter(|castle| {
-            castle.action == 5 && matches!(castle.build_state, 0 | 3)
+            castle.action == 5 && matches!(selected_state, 0 | 3)
         }) else { return false };
-        if snapshot.build_state == 0 {
+        if selected_state == 0 {
             // 5FA70: level-zero creation bypasses 11A10; upgrades
             // recheck after the paid flyer has reached this root.
             self.restore_castle_site_shifts(castle_slot);
@@ -7895,7 +7897,7 @@ impl Level2EconomyState {
                 return true;
             }
         }
-        let source_construction_start = snapshot.level == 0
+        let source_construction_start = selected_state == 0 && snapshot.level == 0
             && snapshot.source_word_2e == 0
             && snapshot.source_class == 3
             && snapshot.source_model == 2;
@@ -7905,14 +7907,17 @@ impl Level2EconomyState {
             }
             return false;
         };
-        let next_level = snapshot.level.saturating_add(1).max(1);
+        let rebuilding = selected_state == 3;
+        let next_level = if rebuilding { snapshot.level } else { snapshot.level.saturating_add(1).max(1) };
         let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
         let stage_coefficient = self.castle_stage_coefficient_for_owner(snapshot.owner_entity_index, next_level);
         let stage_life =
             i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
                 .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
         let (shift_pitch, shift_roll) = level2_castle_shift_axes(next_level);
-        self.retire_castle_controller_chain(snapshot.source_entity_index);
+        if !rebuilding {
+            self.retire_castle_controller_chain(snapshot.source_entity_index);
+        }
         let construction_child = Level2CastleChild {
             source_entity_index: child_slot,
             entity_rng: self.new_event_rng(child_slot),
@@ -7927,8 +7932,9 @@ impl Level2EconomyState {
             action: 44,
             mana: 0,
             max_mana: 0,
-            life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-            max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+            // Both constructors call sub_50370, whose model-42 life is zero.
+            life: 0,
+            max_life: 0,
             speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
             target_sphere_slot: 0,
             pending_damage: 0,
@@ -7939,7 +7945,7 @@ impl Level2EconomyState {
             source_byte_39: 0,
             // `sub_60480` overrides sub50370's byte3B to zero;
             // its BUILD child uses the source -1 completion hold.
-            source_byte_3b: 0,
+            source_byte_3b: u8::from(rebuilding),
             cave_collision_cooldown: next_level,
             source_dword_10: 0,
             source_word_2e: 0,
@@ -7949,7 +7955,7 @@ impl Level2EconomyState {
             roll: 0,
             visual_index: 0,
             // sub60480 adds byte2 bit0; 37BC0 adds the initialized bit.
-            control_flags: 0x0001_0001,
+            control_flags: if rebuilding { 1 } else { 0x0001_0001 },
             chain_previous_slot: 0,
             chain_next_slot: 0,
             source_byte_43: 0,
@@ -7957,6 +7963,28 @@ impl Level2EconomyState {
             active: true,
         };
         self.castle_children.push(construction_child);
+        if rebuilding {
+            // sub_5FBD0 installs only the current-stage model 42. It leaves
+            // the surviving root's life, capacity, ownership and controller
+            // chain alone; 37BC0 supplies the longer -25 completion hold.
+            let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");
+            castle.construction_slot = child_slot;
+            castle.construction_model = 42;
+            castle.construction_action = 44;
+            castle.construction_control_flags = 1;
+            castle.construction_parent_slot = castle.source_entity_index;
+            castle.construction_owner_entity_index = castle.owner_entity_index;
+            castle.construction_id = castle.source_id_entity_index;
+            castle.construction_position = castle.anchor_position;
+            castle.child_chain_slots[0] = child_slot;
+            castle.child_chain_models[0] = 42;
+            castle.child_chain_active[0] = true;
+            castle.construction_child_active = true;
+            castle.build_state = 4;
+            castle.source_word_2e = 4;
+            self.advance_castle_phase(castle_slot);
+            return true;
+        }
         // `sub_613D0` removes the prior `word_0x34_52` chain, then
         // allocates the source-ordered model-79 controller points
         // from x_BYTE_DB038.  NewEvent failure is deliberately
@@ -8123,7 +8151,11 @@ impl Level2EconomyState {
         }
         match snapshot.action {
             5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
-                self.begin_castle_stage_with_site(castle_slot, terrain, site_clear)
+                if snapshot.build_state == 3 {
+                    // 5FA70 calls 5F890 even when model-42 allocation fails.
+                    consumer.holder_busy(self, snapshot);
+                }
+                self.begin_castle_stage_with_site(castle_slot, terrain, site_clear, snapshot.build_state)
             }
             5 if snapshot.build_state == 2 => {
                 let castle = self.castle_entry_mut(castle_slot).expect("Castle remains installed");

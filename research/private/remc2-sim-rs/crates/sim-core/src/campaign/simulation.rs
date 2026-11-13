@@ -12748,7 +12748,7 @@ impl Mc2Simulation {
                     | (5, 0 | 1 | 2 | 3 | 4 | 9 | 10 | 12 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
                     | (
                         10,
-                        0..=7 | 9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90 | 91
+                        0..=9 | 11 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 22 | 23 | 33 | 34 | 35 | 36 | 38 | 39 | 45 | 54 | 57 | 58 | 59 | 60 | 63 | 64 | 70 | 71 | 76 | 80..=88 | 90 | 91
                     )
                     | (11, 0..=44)
                     | (14, 0 | 1 | 2 | 3 | 4 | 5)
@@ -12839,9 +12839,11 @@ impl Mc2Simulation {
                 // returns null without an allocation, RNG draw or StageVar.
                 continue;
             }
-            if feature.kind == 10 && matches!(feature.subtype, 88 | 90) {
-                // Enabled constructor table entries with a null pointer.
-                // Source consumes the record and allocates no event.
+            if feature.kind == 10 && matches!(feature.subtype, 8 | 88 | 90) {
+                // Model8's enabled sub_4E750 returns null unconditionally;
+                // 88/90 have null constructor pointers. All three respect
+                // the caller's row-consumption flag, with no NewEvent,
+                // RNG draw or carrier.
                 continue;
             }
             if feature.kind == 10
