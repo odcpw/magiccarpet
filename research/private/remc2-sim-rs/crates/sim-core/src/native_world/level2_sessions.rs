@@ -1920,7 +1920,7 @@ impl Level2SharedSpellResetSession {
             })
             .map(|family| family as u8)
             .collect::<Vec<_>>();
-        self.materialize_continuation_spell_entry(economy, &learned, &wizard.blocked_spells)
+        self.materialize_continuation_spell_entry(economy, &learned, &wizard.blocked_spells, false)
     }
 
     pub(crate) fn materialize_carried_spell_families(

@@ -21,6 +21,7 @@ use std::{error::Error, fmt, num::NonZeroU64, sync::Arc};
 mod campaign_menu;
 mod loading;
 pub mod media;
+pub mod ending;
 pub mod preferences;
 pub(crate) mod secret_flow;
 pub(crate) use campaign_menu::CampaignSaveState;
@@ -38,7 +39,7 @@ pub use secret_flow::receipt::{
 // gameplay into Results; map selection is a later guarded operation. Existing
 // gameplay/asset goldens and the immutable definition contract stay intact.
 pub const GAME_RUNTIME_CONTRACT: &str = "carpet-flight-game-runtime/v12";
-pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v2";
+pub const COMPLETION_TRANSITION_RECEIPT: &str = "carpet-flight-completion-transition-receipt/v3";
 
 fn serialize_u64_decimal<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -208,6 +209,13 @@ pub struct SecretCampaignSnapshot {
 }
 
 /// Immutable receipt for one accepted semantic level-completion boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionDisposition {
+    Results,
+    ReplayMap,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CompletionTransitionReceipt {
     pub receipt_contract: &'static str,
@@ -217,6 +225,7 @@ pub struct CompletionTransitionReceipt {
     pub completed_level_id: SemanticLevelId,
     pub completion_destination: RuntimeFlowDestination,
     pub completion: GameCompletion,
+    pub disposition: CompletionDisposition,
     pub presentation_sequence: Vec<RuntimePresentationCue>,
     pub receipt_sha256: String,
 }
@@ -235,6 +244,7 @@ impl CompletionTransitionReceipt {
                     &self.completed_level_id,
                     &self.completion_destination,
                     &self.completion,
+                    self.disposition,
                     &self.presentation_sequence,
                 )
     }
@@ -249,6 +259,7 @@ struct CompletionTransitionReceiptPayload<'a> {
     completed_level_id: &'a SemanticLevelId,
     completion_destination: &'a RuntimeFlowDestination,
     completion: &'a GameCompletion,
+    disposition: CompletionDisposition,
     presentation_sequence: &'a [RuntimePresentationCue],
 }
 
@@ -790,6 +801,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         guard: RuntimeGuard,
         session_guard: SessionGuard,
         outcome: secret_flow::SecretMissionOutcome,
+        return_cutscene: Option<u8>,
         resolve: F,
     ) -> Result<SecretTransitionReceipt, RuntimeTransitionError>
     where
@@ -862,7 +874,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         let previous_parent = self.retained_campaign.replace(parent);
         let previous_secret_flow = std::mem::replace(&mut self.secret_flow, secret_flow);
         let previous_generation = self.generation;
+        let previous_media = self.frontend_media.clone();
         self.generation = next_generation;
+        if return_cutscene.is_some() {
+            self.frontend_media.queue_campaign_return(return_cutscene, false);
+        }
         let kind = match outcome {
             secret_flow::SecretMissionOutcome::Completed => SecretTransitionKind::CompletedReturn,
             secret_flow::SecretMissionOutcome::Abandoned => SecretTransitionKind::AbandonedReturn,
@@ -883,6 +899,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 self.retained_campaign = previous_parent;
                 self.secret_flow = previous_secret_flow;
                 self.generation = previous_generation;
+                self.frontend_media = previous_media;
                 Err(RuntimeTransitionError::InvalidRuntimeFlow {
                     message: error.to_string(),
                 })
@@ -926,7 +943,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
-        if !matches!(self.state, RuntimeState::Title { .. }) {
+        if !matches!(self.state, RuntimeState::Title { .. })
+            && !(matches!(self.state, RuntimeState::Campaign { .. }) && self.frontend_media.campaign_return_active()) {
             return Err(RuntimeTransitionError::InvalidMode {
                 expected: RuntimeMode::Title,
                 actual: self.identity().mode,
@@ -935,6 +953,16 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.frontend_media
             .command(command)
             .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })
+    }
+
+    pub(crate) fn campaign_return_active(&self) -> bool { self.frontend_media.campaign_return_active() }
+    pub(crate) fn played_cutscenes(&self) -> u8 { self.frontend_media.played_cutscenes() }
+    pub(crate) fn restore_played_cutscenes(&mut self, played: u8) -> Result<(), RuntimeTransitionError> {
+        self.frontend_media.restore_played_cutscenes(played)
+            .map_err(|message| RuntimeTransitionError::InvalidRuntimeFlow { message })
+    }
+    pub(crate) fn loading_from_campaign(&self) -> bool {
+        matches!(self.state, RuntimeState::Loading { origin: LoadingOrigin::Campaign { .. }, .. })
     }
 
     /// Enter the loading boundary with one immutable definition.
@@ -1371,6 +1399,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             session_guard,
             resolve_definition,
             |_| Ok(()),
+            None,
+            CompletionDisposition::Results,
         )
         .map(|(receipt, ())| receipt)
     }
@@ -1381,6 +1411,8 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         session_guard: SessionGuard,
         resolve_definition: F,
         capture_source: C,
+        campaign_return: Option<(Option<u8>, bool)>,
+        disposition: CompletionDisposition,
     ) -> Result<(CompletionTransitionReceipt, T), RuntimeTransitionError>
     where
         F: FnOnce(
@@ -1446,6 +1478,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             .find(|entry| entry.level_id() == current_flow.bound_level_id())
             .expect("validated runtime flow contains its bound level");
         let completed_level_id = current_entry.level_id().clone();
+        if disposition == CompletionDisposition::ReplayMap && !self.completed_levels.contains(&completed_level_id) {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "replay return requires an already completed ordinary mission".to_owned(),
+            });
+        }
         let completion_destination = current_entry.completion_destination().clone();
         let resolved = resolve_definition(session.definition(), &completion_destination)?;
         let next_definition = match (&completion_destination, resolved) {
@@ -1512,7 +1549,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         if !self.completed_levels.contains(&completed_level_id) {
             self.completed_levels.push(completed_level_id.clone());
         }
-        if let Some(statistics) = completion.statistics.clone() {
+        if let Some(statistics) = completion.statistics.clone().filter(|_| disposition == CompletionDisposition::Results) {
             let record = CompletedLevelStatistics {
                 level_id: completed_level_id.clone(),
                 statistics,
@@ -1530,16 +1567,22 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         // remc2 sub_46830_main_loop -> MainMenu_76FA0 -> NewGameDialog_77350:
         // gameplay ends before the results/map owner runs. Loading the next
         // mission is a later player selection, never this completion edge.
+        let replay_focus_source = disposition == CompletionDisposition::ReplayMap && current_flow.entries().iter().rposition(|entry| self.completed_levels.contains(entry.level_id()))
+            .is_some_and(|last| current_flow.entries()[last].level_id() != &completed_level_id);
+        let selected_definition = if replay_focus_source { Some(Arc::clone(&definition)) } else { next_definition };
         self.state = RuntimeState::Campaign {
             definition,
-            selected_definition: next_definition,
+            selected_definition,
             session_generation: next_session_generation,
-            phase: CampaignMenuPhase::Results,
+            phase: if disposition == CompletionDisposition::Results { CampaignMenuPhase::Results } else { CampaignMenuPhase::MissionSelect },
             completed_level: Some(completed_level_id.clone()),
         };
         self.generation = next_runtime_generation;
+        if let Some((cutscene, credits)) = campaign_return {
+            self.frontend_media.queue_campaign_return(cutscene, credits);
+        }
         let after = self.identity();
-        let presentation_sequence = vec![
+        let presentation_sequence = if disposition == CompletionDisposition::Results { vec![
             RuntimePresentationCue {
                 cue_id: completion_presentation_cue,
                 phase: RuntimePresentationPhase::LevelCompletion,
@@ -1547,7 +1590,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 completion_destination: Some(completion_destination.clone()),
             },
             after.presentation.clone(),
-        ];
+        ] } else { vec![after.presentation.clone()] };
         let receipt_sha256 = completion_receipt_sha256(
             &before,
             &after,
@@ -1555,6 +1598,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             &completed_level_id,
             &completion_destination,
             &completion,
+            disposition,
             &presentation_sequence,
         );
         Ok((
@@ -1566,6 +1610,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 completed_level_id,
                 completion_destination,
                 completion,
+                disposition,
                 presentation_sequence,
                 receipt_sha256,
             },
@@ -1863,6 +1908,7 @@ fn completion_receipt_sha256(
     completed_level_id: &SemanticLevelId,
     completion_destination: &RuntimeFlowDestination,
     completion: &GameCompletion,
+    disposition: CompletionDisposition,
     presentation_sequence: &[RuntimePresentationCue],
 ) -> String {
     let payload = CompletionTransitionReceiptPayload {
@@ -1873,6 +1919,7 @@ fn completion_receipt_sha256(
         completed_level_id,
         completion_destination,
         completion,
+        disposition,
         presentation_sequence,
     };
     let bytes = serde_json::to_vec(&payload)
@@ -4732,6 +4779,20 @@ mod tests {
         assert_eq!(runtime.identity(), completed_identity);
         assert_eq!(runtime.session().unwrap().snapshot(), completed_snapshot);
 
+        // A completed gameplay session alone cannot manufacture the source
+        // replay branch: the campaign must already own that completion.
+        let unearned_replay = runtime.accept_transition_resolved_with_source(
+            completed_identity.guard(),
+            completed_identity.session.as_ref().unwrap().guard(),
+            |_, _| Ok(ResolvedCompletionTarget::Level(Arc::clone(&level_two_definition))),
+            |_| Ok(()),
+            None,
+            CompletionDisposition::ReplayMap,
+        );
+        assert!(matches!(unearned_replay, Err(RuntimeTransitionError::InvalidRuntimeFlow { .. })));
+        assert_eq!(runtime.identity(), completed_identity);
+        assert_eq!(runtime.session().unwrap().snapshot(), completed_snapshot);
+
         let receipt = resolver
             .accept_transition(
                 &mut runtime,
@@ -4749,6 +4810,10 @@ mod tests {
         let mut tampered_receipt = receipt.clone();
         tampered_receipt.completion.state_hash ^= 1;
         assert!(!tampered_receipt.verify());
+        assert_eq!(receipt.disposition, CompletionDisposition::Results);
+        let mut tampered_disposition = receipt.clone();
+        tampered_disposition.disposition = CompletionDisposition::ReplayMap;
+        assert!(!tampered_disposition.verify());
         assert_eq!(
             receipt.completed_level_id.as_str(),
             "level.magic_carpet_2.night_spire"

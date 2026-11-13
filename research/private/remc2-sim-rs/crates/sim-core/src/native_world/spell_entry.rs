@@ -11,6 +11,7 @@ impl Level2SharedSpellResetSession {
         economy: &mut Level2EconomyState,
         learned: &[u8],
         blocked: &[u8; PLAYER_SPELL_COUNT],
+        retain_imported_starting_holders: bool,
     ) -> Result<()> {
         let mut ownership = [0_u8; PLAYER_SPELL_COUNT];
         for &family in learned {
@@ -22,15 +23,28 @@ impl Level2SharedSpellResetSession {
             }
             *flag = 1;
         }
-        if self
-            .local_player
-            .enabled_spell_holders
-            .iter()
-            .any(|index| *index != 0)
-        {
-            return Err(NativeWorldError::new(
-                "continuation admission must run before local spell-holder allocation",
-            ));
+        // NightSpire's reset packet is captured after its two map starting
+        // spells were constructed. On a revisit InitialiseSpells still admits
+        // map starting spells on level zero. Keep those exact source rows and
+        // construct only the additional learned holders.
+        for (family, &slot) in self.local_player.enabled_spell_holders.iter().enumerate() {
+            if slot == 0 {
+                continue;
+            }
+            if !retain_imported_starting_holders
+                || blocked[family] != 0
+                || !self.pickup(slot).is_some_and(|holder| {
+                    holder.active
+                        && holder.class == 15
+                        && usize::from(holder.model) == family
+                        && holder.source_spell_parent_entity_index() == self.local_player.entity_index
+                })
+            {
+                return Err(NativeWorldError::new(
+                    "continuation admission found an unexpected imported local spell holder",
+                ));
+            }
+            ownership[family] = 1;
         }
         let player_index = self
             .players
@@ -59,7 +73,11 @@ impl Level2SharedSpellResetSession {
         player.record[562] = 0;
         self.players[player_index].clone_from(player);
         let admitted = (0..PLAYER_SPELL_COUNT)
-            .filter(|family| ownership[*family] != 0 && blocked[*family] == 0)
+            .filter(|family| {
+                ownership[*family] != 0
+                    && blocked[*family] == 0
+                    && self.local_player.enabled_spell_holders[*family] == 0
+            })
             .map(|family| (family as u8, 0))
             .collect::<Vec<_>>();
         self.materialize_carried_spell_families(economy, &admitted)?;
@@ -105,6 +123,31 @@ mod tests {
         spec::{CampaignDefinition, CampaignSelection},
     };
 
+    #[test]
+    fn nightspire_continuation_retains_imported_holders_and_admits_final_carry() {
+        let root = std::env::var_os("MC_CAMPAIGN_LEVEL1_PACKAGE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/mc-bhq6-ordinary-20261025-zclu5fjj/level1"));
+        let mut campaign = CampaignSession::open(root, CampaignSelection::LEVEL1).unwrap();
+        let original = campaign.simulation().shared_spells().local_player().enabled_spell_holders;
+        assert_ne!(original[0], 0);
+        assert_ne!(original[1], 0);
+        let learned = (0..26).collect::<Vec<_>>();
+        campaign.rebuild_for_spell_carry(&learned, Some(0)).unwrap();
+        let shared = campaign.simulation().shared_spells();
+        let player = shared.local_player();
+        assert_eq!(player.spell_enabled_flags, [1; 26]);
+        assert_eq!(player.acquired_spell_flags, [0; 26]);
+        assert_eq!(player.enabled_spell_holders[..2], original[..2]);
+        let active_holders = player.enabled_spell_holders.iter().copied().filter(|slot| *slot != 0).collect::<Vec<_>>();
+        assert!(active_holders.len() > 2, "NightSpire admits additional unblocked families");
+        for slot in active_holders {
+            assert!(shared.pickup(slot).is_some_and(|holder| holder.active
+                && holder.source_spell_parent_entity_index() == player.entity_index));
+        }
+    }
+
     fn level_two_package() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/level2-day-block32-campaign-v2")
@@ -139,7 +182,7 @@ mod tests {
         let mut blocked = [0; PLAYER_SPELL_COUNT];
         blocked[6] = 1;
         shared
-            .materialize_continuation_spell_entry(&mut economy, &[12, 0, 6, 11], &blocked)
+            .materialize_continuation_spell_entry(&mut economy, &[12, 0, 6, 11], &blocked, false)
             .unwrap();
 
         let player = shared.local_player();

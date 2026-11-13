@@ -1165,6 +1165,29 @@ namespace MagicCarpet.Native.Tests
                 }
             };
             Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            // The transport must retain input ownership after a media frame
+            // disappears, before the Rust owner exposes usable results.
+            identity.frontend_media = DataContractJsonRoundTrip(new GameRuntimeTransport.MediaSnapshot {
+                contract = "mc2-frontend-media/v1", active = false,
+                campaign_return = new GameRuntimeTransport.CampaignReturnMediaSnapshot {
+                    phase = "input_release", blocking = true
+                }
+            });
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            Assert.That(GameRuntimeTransport.CampaignReturnMediaBlocksInput(identity), Is.True);
+            var mediaReturn = identity.frontend_media.campaign_return;
+            mediaReturn.phase = "credits";
+            mediaReturn.credits = new GameRuntimeTransport.CreditsSnapshot {
+                lines = Array.Empty<string>(), cursor = 117
+            };
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            mediaReturn.credits.cursor = 118;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            mediaReturn.credits = null;
+            mediaReturn.phase = "cutscene";
+            mediaReturn.cutscene_id = 7;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+            identity.frontend_media = null;
             identity.campaign_menu.selected_level_id = second;
             Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771),
                 "Results have not yet selected a mission on the campaign map");
@@ -1181,6 +1204,221 @@ namespace MagicCarpet.Native.Tests
             Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
             identity.campaign_menu.selected_level_id = third;
             Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateIdentity(identity, 771));
+        }
+
+        [Test]
+        public void MissingCampaignMapMediaReportsOnceWithoutInterruptingTheMenu()
+        {
+            var root = new GameObject("Missing campaign map media");
+            var missing = Path.Combine(PrivateRoot, "generated", "missing-media-" + Guid.NewGuid().ToString("N"));
+            using var presenter = new FrontendMediaPresenter(root.transform, missing, false);
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                    new System.Text.RegularExpressions.Regex("^MC_FRONTEND_MEDIA_ERROR "));
+                Assert.DoesNotThrow(presenter.StartMapMusic,
+                    "optional missing media must leave the campaign map usable");
+                Assert.That(presenter.Error, Is.Not.Null.And.Not.Empty);
+                Assert.That(presenter.Visible, Is.False);
+                var error = presenter.Error;
+                Assert.DoesNotThrow(presenter.StartMapMusic,
+                    "the next map frame must not retry or log the same broken cache");
+                Assert.That(presenter.Error, Is.EqualTo(error));
+                UnityEngine.TestTools.LogAssert.NoUnexpectedReceived();
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [DllImport("libc", EntryPoint = "symlink", SetLastError = true)]
+        private static extern int LinkMediaCacheFixture(string source, string destination);
+
+        [DllImport("libc", EntryPoint = "unlink", SetLastError = true)]
+        private static extern int UnlinkMediaCacheFixture(string path);
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [Platform("Linux")]
+        public void FailedTitleMediaRetriesOnceAtTheCampaignReturnAdapterBoundary(bool repairCache)
+        {
+            // The native owner here remains at Title. Only the adapter's
+            // return notification is a DTO fixture; native ending selection
+            // and held-input draining are covered by the Rust owner checks.
+            var source = Environment.GetEnvironmentVariable("MC_ENDING_MEDIA_CACHE") ??
+                Path.Combine(PrivateRoot, "generated/ending-media-20261112-owner-v1");
+            Assert.That(File.Exists(Path.Combine(source, "media.json")), Is.True);
+            var fixture = Path.Combine(PrivateRoot, "generated", "media-retry-" + Guid.NewGuid().ToString("N"));
+            var root = new GameObject("Frontend media retry adapter");
+            var linked = false;
+            using var runtime = new GameRuntimeTransport();
+            using var presenter = new FrontendMediaPresenter(root.transform, fixture, false);
+            try
+            {
+                UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                    new System.Text.RegularExpressions.Regex("^MC_FRONTEND_MEDIA_ERROR "));
+                Assert.That(presenter.Step(runtime.Handle, runtime.Current, 0, false, false), Is.True);
+                Assert.That(presenter.Error, Is.Not.Null.And.Not.Empty);
+                Assert.That(runtime.IdentitySnapshot().mode, Is.EqualTo(GameRuntimeTransport.TitleMode));
+                Assert.DoesNotThrow(() => presenter.Step(runtime.Handle, runtime.Current, 0, false, false),
+                    "an absent optional Title cache is not retried each frame");
+                if (repairCache)
+                {
+                    Assert.That(LinkMediaCacheFixture(source, fixture), Is.Zero,
+                        "link the genuine owner cache without copying its large frame payloads");
+                    linked = true;
+                }
+                var returnNotification = DataContractJsonRoundTrip(runtime.IdentitySnapshot());
+                returnNotification.frontend_media.campaign_return = new GameRuntimeTransport.CampaignReturnMediaSnapshot {
+                    phase = "cutscene", blocking = true, cutscene_id = 6
+                };
+                if (!repairCache)
+                    UnityEngine.TestTools.LogAssert.Expect(LogType.Error,
+                        new System.Text.RegularExpressions.Regex("^MC_FRONTEND_MEDIA_ERROR "));
+                else
+                    UnityEngine.TestTools.LogAssert.Expect(LogType.Log,
+                        "MC_FRONTEND_MEDIA_AUDIO op=M id=4 asset=audio/music-4.wav");
+                Assert.That(presenter.Step(runtime.Handle, returnNotification, 0, true, true), Is.True);
+                if (repairCache)
+                {
+                    Assert.That(presenter.Error, Is.Null, "a successful retry clears the adapter failure");
+                    var media = runtime.IdentitySnapshot().frontend_media;
+                    Assert.That(Array.Exists(media.actions, action => action.op == "M" && action.value == 4), Is.True,
+                        "the real Title owner accepted the repaired catalog and emitted menu music");
+                    Assert.That(media.campaign_return, Is.Null, "the DTO fixture never manufactures a native ending");
+                }
+                else
+                {
+                    Assert.That(presenter.Error, Is.Not.Null.And.Not.Empty);
+                    Assert.DoesNotThrow(() => presenter.Step(runtime.Handle, returnNotification, 0, false, false),
+                        "a failed return retry must not become a repeated installation loop");
+                }
+                UnityEngine.TestTools.LogAssert.NoUnexpectedReceived();
+            }
+            finally
+            {
+                if (linked) Assert.That(UnlinkMediaCacheFixture(fixture), Is.Zero,
+                    "remove only the temporary link; preserve the genuine cache");
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void OriginalCreditsComposeTheFirstPageFromOwnerArt()
+        {
+            var source = Environment.GetEnvironmentVariable("MC_ENDING_MEDIA_CACHE") ??
+                Path.Combine(PrivateRoot, "generated/ending-media-20261112-owner-v1");
+            var root = new GameObject("Original credits texture");
+            using var presenter = new FrontendMediaPresenter(root.transform, source, false);
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic;
+            var type = typeof(FrontendMediaPresenter);
+            try
+            {
+                type.GetMethod("LoadCatalog", flags).Invoke(presenter, null);
+                var page = new GameRuntimeTransport.CreditsSnapshot {
+                    cursor = 0, lines = new[] { "Designed By", "Bullfrog Productions Ltd" }
+                };
+                var view = new GameRuntimeTransport.MediaSnapshot { fade_in_level = 31 };
+                type.GetField("current", flags).SetValue(presenter, view);
+                var compose = type.GetMethod("ComposeCredits", flags);
+                compose.Invoke(presenter, new object[] { page });
+                var texture = (Texture2D)type.GetField("creditsTexture", flags).GetValue(presenter);
+                Assert.That((texture.width, texture.height), Is.EqualTo((640, 480)));
+                var visible = texture.GetPixels32();
+                view.fade_in_level = 0;
+                compose.Invoke(presenter, new object[] { page });
+                var black = texture.GetPixels32();
+                var textPixels = 0;
+                var coloredPixels = 0;
+                for (var i = 0; i < visible.Length; i++)
+                {
+                    var color = visible[i];
+                    if (color.r != 0 || color.g != 0 || color.b != 0) coloredPixels++;
+                    var sourceY = 479 - i / 640;
+                    if (sourceY >= 200 && sourceY < 230 && color.r >= 236 &&
+                        color.g >= 236 && color.b >= 236) textPixels++;
+                    Assert.That(black[i].r | black[i].g | black[i].b, Is.Zero);
+                }
+                Assert.That(coloredPixels, Is.GreaterThan(10_000));
+                Assert.That(textPixels, Is.GreaterThan(50));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void CompletionDispositionRequiresExactResultsOrReplayMapPresentation()
+        {
+            // Contract fixtures only: these do not establish an earned
+            // completion or choose the Rust-owned replay disposition.
+            var source = "level.magic_carpet_2.night_spire";
+            var next = "level.magic_carpet_2.payahandra_ruins";
+            var destination = new GameRuntimeTransport.RuntimeFlowDestination {
+                kind = "level", level_id = next
+            };
+            var completion = new GameRuntimeTransport.RuntimePresentationCue {
+                cue_id = "presentation.magic_carpet_2.night_spire.completion",
+                phase = GameRuntimeTransport.LevelCompletionPresentationPhase,
+                level_id = source, completion_destination = destination
+            };
+            var map = new GameRuntimeTransport.RuntimePresentationCue {
+                cue_id = "presentation.campaign.map",
+                phase = GameRuntimeTransport.CampaignMapPresentationPhase,
+                level_id = source
+            };
+            var receipt = new GameRuntimeTransport.CompletionTransitionReceipt {
+                receipt_contract = GameRuntimeTransport.CompletionTransitionReceiptContract,
+                completed_level_id = source, completion_destination = destination,
+                disposition = GameRuntimeTransport.ResultsCompletionDisposition,
+                after = new GameRuntimeTransport.Identity {
+                    mode = GameRuntimeTransport.CampaignMode,
+                    campaign_menu = new GameRuntimeTransport.CampaignMenuSnapshot {
+                        phase = "results", completed_level_id = source
+                    },
+                    presentation = completion
+                },
+                presentation_sequence = new[] { completion, completion }
+            };
+            receipt = DataContractJsonRoundTrip(receipt);
+            Assert.That(receipt.disposition, Is.EqualTo("results"));
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt));
+            receipt.disposition = GameRuntimeTransport.ReplayMapCompletionDisposition;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "a replay disposition cannot keep Results or its success sequence");
+            receipt.after.campaign_menu.phase = "mission_select";
+            receipt.after.campaign_menu.selected_level_id = source;
+            receipt.after.presentation = map;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "a replay map cannot add a level-completion cue");
+            receipt.presentation_sequence = new[] { map };
+            Assert.DoesNotThrow(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt));
+            receipt.receipt_contract = "carpet-flight-completion-transition-receipt/v2";
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "the old receipt contract cannot silently adopt the new replay disposition");
+            receipt.receipt_contract = GameRuntimeTransport.CompletionTransitionReceiptContract;
+            receipt.after.frontend_media = new GameRuntimeTransport.MediaSnapshot {
+                campaign_return = new GameRuntimeTransport.CampaignReturnMediaSnapshot {
+                    phase = "cutscene", blocking = true, cutscene_id = 1
+                }
+            };
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "a replay cannot schedule campaign return media");
+            receipt.after.frontend_media = null;
+            receipt.disposition = GameRuntimeTransport.ResultsCompletionDisposition;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "an ordinary result cannot use the replay map sequence");
+            receipt.disposition = null;
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "the new disposition is required, never inferred from the destination");
+            receipt.disposition = "map";
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "unknown dispositions do not widen campaign return modes");
+            receipt.disposition = GameRuntimeTransport.ReplayMapCompletionDisposition;
+            receipt.after.presentation = new GameRuntimeTransport.RuntimePresentationCue {
+                cue_id = GameRuntimeTransport.TitlePresentationCue,
+                phase = GameRuntimeTransport.TitlePresentationPhase
+            };
+            receipt.presentation_sequence = new[] { receipt.after.presentation };
+            Assert.Throws<InvalidOperationException>(() => GameRuntimeTransport.ValidateCompletionPresentationSequence(receipt),
+                "the replay map disposition does not admit a Title shortcut");
         }
 
         [Test]

@@ -11,6 +11,10 @@ pub struct MediaCatalog {
     pub audio: Vec<MediaAudio>,
     pub subtitles: Vec<String>,
     pub subtitles_enabled: bool,
+    #[serde(default)]
+    pub language: Option<u8>,
+    #[serde(default)]
+    pub credits: Vec<String>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MediaClip {
@@ -41,6 +45,8 @@ pub enum MediaCommand {
         catalog: MediaCatalog,
         #[serde(default = "default_startup")]
         startup: bool,
+        #[serde(default = "default_audio_available")]
+        audio_available: bool,
     },
     Frame {
         elapsed_us: u32,
@@ -76,6 +82,8 @@ pub struct MediaSnapshot {
     pub error: Option<String>,
     pub clear_input: bool,
     pub retain_previous_frame: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign_return: Option<super::ending::CampaignReturnSnapshot>,
 }
 impl Default for MediaSnapshot {
     fn default() -> Self {
@@ -96,11 +104,14 @@ impl Default for MediaSnapshot {
             error: None,
             clear_input: false,
             retain_previous_frame: false,
+            campaign_return: None,
         }
     }
 }
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FrontendMedia {
+    ending: super::ending::CampaignReturn,
+    audio_available: bool,
     catalog: Option<MediaCatalog>,
     view: MediaSnapshot,
     clock: u64,
@@ -136,6 +147,7 @@ fn safe_path(path: &str) -> bool {
 fn default_startup() -> bool {
     true
 }
+fn default_audio_available() -> bool { true }
 
 fn source_deadline_us(ticks: u64) -> u64 {
     // Animation.cpp: static_cast<long long>(AnimCurrentTick * AnimTickTime),
@@ -150,6 +162,11 @@ impl MediaCatalog {
             || self.subtitles.len() > 4096
         {
             return Err("invalid or oversized frontend media catalog".into());
+        }
+        if !self.credits.is_empty() && (self.credits.len() != 117
+            || self.credits.iter().any(|s| !s.is_ascii() || s.len() > 33)
+            || self.credits.split(|s| s == "!").any(|page| page.len() > 8)) {
+            return Err("invalid source credits records".into());
         }
         for id in ["welcome", "intro1", "intro2"] {
             if self.clips.iter().filter(|c| c.id == id).count() != 1 {
@@ -198,11 +215,51 @@ impl MediaCatalog {
 }
 impl FrontendMedia {
     pub fn snapshot(&self) -> Option<MediaSnapshot> {
-        (self.catalog.is_some() || self.view.error.is_some()).then(|| self.view.clone())
+        (self.catalog.is_some() || self.view.error.is_some() || self.ending.active()).then(|| {
+            let mut view = self.view.clone();
+            let records = self.catalog.as_ref().map_or(&[][..], |c| c.credits.as_slice());
+            view.campaign_return = self.ending.snapshot(records);
+            if let Some((fade_in, fade_out)) = self.ending.fade_levels() {
+                view.fade_in_level = fade_in;
+                view.fade_out_level = fade_out;
+            }
+            view
+        })
     }
     pub fn active(&self) -> bool {
-        self.view.active || self.awaiting_release || self.title_entry_pending
+        self.view.active || self.awaiting_release || self.title_entry_pending || self.ending.active()
     }
+    pub(super) fn campaign_return_active(&self) -> bool { self.ending.active() }
+    pub(super) fn played_cutscenes(&self) -> u8 { self.ending.played() }
+    pub(super) fn restore_played_cutscenes(&mut self, played: u8) -> Result<(), String> { self.ending.restore_played(played) }
+    pub(super) fn reset_campaign_return(&mut self) { self.ending.reset(); }
+    pub(super) fn queue_campaign_return(&mut self, cutscene: Option<u8>, credits: bool) {
+        self.ending.queue(cutscene, credits);
+        if self.ending.active() && self.catalog.is_some() { self.start_campaign_return(); }
+    }
+    fn start_campaign_return(&mut self) {
+        if self.ending.needs_start() {
+            let id = format!("cut{}", self.ending.cutscene().expect("cutscene phase"));
+            if self.catalog.as_ref().is_some_and(|c| c.clips.iter().any(|clip| clip.id == id)) {
+                self.startup = false;
+                self.begin(&id);
+                self.ending.mark_started();
+            } else {
+                self.view.error = Some(format!("missing campaign media {id}"));
+                self.ending.cutscene_done();
+            }
+        }
+        if self.ending.active() && !self.ending.is_cutscene()
+            && self.catalog.as_ref().is_none_or(|c| c.credits.is_empty()) {
+            // A non-final CUT may have no credits; its exit drain needs none.
+            if self.ending.snapshot(&[]).is_some_and(|s| s.phase == "input_release")
+                && self.ending_credits_pending() {
+                self.view.error = Some("missing campaign credits".into());
+                self.ending.unavailable();
+            }
+        }
+    }
+    fn ending_credits_pending(&self) -> bool { self.ending.credits_pending() }
     /// Reset source MainMenu entry state; the next scheduled frontend frame
     /// consumes its audio actions, so an intervening identity read cannot lose
     /// the menu-music restoration.
@@ -215,14 +272,18 @@ impl FrontendMedia {
         self.view.actions.clear();
         self.view.clear_input = false;
         match command {
-            MediaCommand::Install { catalog, startup } => {
+            MediaCommand::Install { catalog, startup, audio_available } => {
                 if self.catalog.is_some() {
                     return Err("media catalog already installed".into());
                 }
                 catalog.validate()?;
                 self.catalog = Some(catalog);
+                self.audio_available = audio_available;
                 self.startup = startup;
-                if startup {
+                if self.ending.active() {
+                    self.startup = false;
+                    self.start_campaign_return();
+                } else if startup {
                     self.begin("welcome");
                 } else {
                     // A save/direct-game launch first binds media when it
@@ -231,6 +292,19 @@ impl FrontendMedia {
                 }
             }
             MediaCommand::Failed { message } => {
+                if self.ending.active() {
+                    self.view.error = Some(message.chars().take(2048).collect());
+                    self.view.active = false;
+                    self.prepared = None;
+                    self.awaiting_release = false;
+                    self.view.clear_input = true;
+                    if self.ending.is_cutscene() && self.catalog.as_ref().is_some_and(|c| !c.credits.is_empty()) {
+                        self.ending.cutscene_done();
+                    } else {
+                        self.ending.unavailable();
+                    }
+                    return Ok(());
+                }
                 self.fading = false;
                 self.startup = false;
                 self.prepared = None;
@@ -253,6 +327,17 @@ impl FrontendMedia {
             } => {
                 if elapsed_us > 5_000_000 {
                     return Err("media frame elapsed_us exceeds 5 seconds".into());
+                }
+                if self.ending.active() {
+                    if self.catalog.is_none() && !self.ending.exit_drain() { return Ok(()); }
+                    if self.ending.needs_start() && self.catalog.is_some() { self.start_campaign_return(); }
+                    if self.ending.is_cutscene() && self.ending.needs_start() { return Ok(()); }
+                    if !self.ending.is_cutscene() {
+                        let records = self.catalog.as_ref().map_or(&[][..], |c| c.credits.as_slice());
+                        self.ending.frame(elapsed_us, input || escape, records);
+                        self.view.clear_input = self.ending.active();
+                        return Ok(());
+                    }
                 }
                 if self.title_entry_pending {
                     self.title_entry_pending = false;
@@ -409,6 +494,16 @@ impl FrontendMedia {
     }
     fn complete_segment(&mut self) {
         self.fading = false;
+        if self.ending.is_cutscene() {
+            self.action('T', 0);
+            self.sample_event('T', 0);
+            self.action('X', 0);
+            self.view.active = false;
+            self.view.clear_input = true;
+            self.ending.cutscene_done();
+            self.start_campaign_return();
+            return;
+        }
         let next = if self.startup {
             match self.view.clip_id.as_str() {
                 "welcome" => Some("intro1"),
@@ -492,7 +587,7 @@ impl FrontendMedia {
             }
             return Ok(());
         }
-        if input || escape {
+        if escape || (input && !self.ending.is_cutscene()) {
             // PlayInfoFmv runs events and decodes the current frame before
             // sub_75CB0 observes skip. Skip bypasses the wait, but DrawFrame
             // still installs its palette/subtitles and blits. Escape is also
@@ -556,7 +651,11 @@ impl FrontendMedia {
                     self.action('E', event.value);
                 }
                 'V' => {
-                    self.subtitles_on = self.catalog.as_ref().unwrap().subtitles_enabled;
+                    let catalog = self.catalog.as_ref().unwrap();
+                    self.subtitles_on = if self.ending.is_cutscene() {
+                        self.ending.cutscene() != Some(6)
+                            && catalog.language.map_or(catalog.subtitles_enabled, |language| language != 2 || !self.audio_available)
+                    } else { catalog.subtitles_enabled };
                 }
                 'Q' | 'U' if self.subtitles_on => {
                     self.retained_subtitle =
@@ -620,12 +719,15 @@ mod tests {
         owner
             .command(MediaCommand::Install {
                 startup: true,
+                audio_available: true,
                 catalog: MediaCatalog {
                     schema: MEDIA_CONTRACT.into(),
                     clips,
                     audio: vec![],
                     subtitles: vec!["owner localized line".into()],
                     subtitles_enabled: true,
+                    language: None,
+                    credits: vec![],
                 },
             })
             .unwrap();
@@ -656,6 +758,39 @@ mod tests {
     }
 
     #[test]
+    fn missing_campaign_catalog_drains_input_and_preserves_played_history() {
+        let mut owner = FrontendMedia::default();
+        owner.queue_campaign_return(Some(6), true);
+        assert_eq!(owner.played_cutscenes(), 32);
+        assert!(owner.snapshot().unwrap().campaign_return.unwrap().blocking);
+        owner.command(MediaCommand::Failed { message: "missing media".into() }).unwrap();
+        frame(&mut owner, 0, true);
+        assert!(owner.campaign_return_active());
+        frame(&mut owner, 0, false);
+        assert!(!owner.campaign_return_active());
+        assert_eq!(owner.played_cutscenes(), 32);
+        assert_eq!(owner.snapshot().unwrap().error.as_deref(), Some("missing media"));
+    }
+
+    #[test]
+    fn source_cut_subtitles_use_language_and_actual_audio_capability() {
+        for (cut, audio_available, expected) in [(1, true, false), (1, false, true), (6, false, false)] {
+            let mut catalog = media().catalog.unwrap();
+            let mut clip = catalog.clips.iter().find(|clip| clip.id == "intro1").unwrap().clone();
+            clip.id = format!("cut{cut}");
+            catalog.clips.push(clip);
+            catalog.language = Some(2);
+            catalog.subtitles_enabled = false;
+            let mut owner = FrontendMedia::default();
+            owner.queue_campaign_return(Some(cut), false);
+            owner.command(MediaCommand::Install { catalog, startup: false, audio_available }).unwrap();
+            assert!(owner.prepare_frame());
+            assert_eq!(owner.subtitles_on, expected);
+            assert_eq!(owner.retained_subtitle.is_some(), expected);
+        }
+    }
+
+    #[test]
     fn first_title_after_direct_game_binds_menu_music_without_cold_start() {
         let mut catalog = media().catalog.unwrap();
         catalog.audio.push(MediaAudio {
@@ -669,6 +804,7 @@ mod tests {
             .command(MediaCommand::Install {
                 catalog,
                 startup: false,
+                audio_available: true,
             })
             .unwrap();
         assert!(!owner.view.active);

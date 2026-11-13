@@ -242,6 +242,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
+        if self.frontend_media.campaign_return_active() {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "campaign return media is still active".to_owned(),
+            });
+        }
         let RuntimeState::Title {
             session_generation, ..
         } = &self.state
@@ -362,6 +367,11 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         self.validate_guard(guard)
             .map_err(Box::new)
             .map_err(RuntimeTransitionError::Guard)?;
+        if self.frontend_media.campaign_return_active() {
+            return Err(RuntimeTransitionError::InvalidRuntimeFlow {
+                message: "campaign return media is still active".to_owned(),
+            });
+        }
         let snapshot =
             self.campaign_menu_snapshot()
                 .ok_or_else(|| RuntimeTransitionError::InvalidMode {
@@ -391,6 +401,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
                 self.level_statistics.clear();
                 self.secret_flow = super::secret_flow::SecretFlowState::default();
                 self.retained_campaign = None;
+                self.frontend_media.reset_campaign_return();
             }
             CampaignMenuCommand::DismissResults if *phase == CampaignMenuPhase::Results => {
                 // The map focuses its first unfinished portal, independently

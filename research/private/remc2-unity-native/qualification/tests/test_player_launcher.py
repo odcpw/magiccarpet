@@ -335,6 +335,21 @@ class PlayerLauncherTests(unittest.TestCase):
                                  str(generated / "campaign-save.json"))
         self.assertFalse(list(generated.glob("opened-*.json")))
 
+    def test_campaign_uses_installed_ending_media_unless_overridden(self):
+        generated = self.campaign_resources()
+        installed = generated / "mc2-campaign-media-cache-decoded"
+        custom = generated / "other media"
+        for cache in (installed, custom):
+            cache.mkdir()
+        for options, expected in (([], installed), (["--media-cache", str(custom)], custom)):
+            with self.subTest(options=options):
+                result = self.campaign(*options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(result.stdout.splitlines()[-1])
+                self.assertEqual(arguments.count("-mc-runtime-media-cache"), 1)
+                self.assertEqual(arguments[arguments.index("-mc-runtime-media-cache") + 1],
+                                 str(expected))
+
     def test_campaign_complete_override_preserves_whitespace_and_unordered_resources(self):
         generated = self.campaign_resources()
         loading = generated / "loading cache with spaces"
