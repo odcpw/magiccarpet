@@ -2326,7 +2326,7 @@ impl Mc2RuntimePackageResolver {
             .and_then(serde_json::Value::as_str)
             == Some(MC2_CAMPAIGN_MAP_SAVE_CONTRACT)
         {
-            let save: Mc2CampaignMapSave = serde_json::from_value(envelope).map_err(|error| {
+            let mut save: Mc2CampaignMapSave = serde_json::from_value(envelope).map_err(|error| {
                 Mc2CampaignReplaySaveError::InvalidSave {
                     message: error.to_string(),
                 }
@@ -2351,7 +2351,7 @@ impl Mc2RuntimePackageResolver {
                 &save.state.level_statistics,
             )
             .map_err(Mc2CampaignReplaySaveError::Runtime)?;
-            let destination = save.carry_destination_level;
+            let mut destination = save.carry_destination_level;
             if save.semantic_spell_carry.is_some() != destination.is_some() {
                 return Err(Mc2CampaignReplaySaveError::InvalidSave {
                     message: "campaign carry has no retained destination".to_owned(),
@@ -2371,6 +2371,27 @@ impl Mc2RuntimePackageResolver {
                             "campaign carry destination is not the retained installed selection"
                                 .to_owned(),
                     });
+                }
+            }
+            // A map saved at the end of a shorter installed catalog has no
+            // selected portal. After validating its receipt, open the first
+            // newly installed mission without altering its earned history.
+            if save.state.phase == crate::game_runtime::CampaignMenuPhase::MissionSelect
+                && save.state.selected_level_id.is_none()
+                && let Some(retained) = save.state.definition.runtime_flow()
+                && retained
+                    .entries()
+                    .iter()
+                    .all(|entry| save.state.completed_levels.contains(entry.level_id()))
+                && let Some(next) = self.flow.entries().get(retained.entries().len())
+            {
+                let installed = self
+                    .package(retained.bound_level_id())
+                    .expect("validated saved definition has an installed package");
+                save.state.definition = installed.definition.as_ref().clone();
+                save.state.selected_level_id = Some(next.level_id().clone());
+                if destination.is_some() {
+                    destination = save.state.selected_level_id.clone();
                 }
             }
             let mut pending = self.pending_spell_carries.lock().map_err(|_| {

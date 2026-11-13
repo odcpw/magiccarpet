@@ -362,7 +362,7 @@ impl<B: GameSessionBackend> GameRuntime<B> {
         resolve: F,
     ) -> Result<RuntimeIdentity, RuntimeTransitionError>
     where
-        F: FnOnce(&SemanticLevelId) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
+        F: Fn(&SemanticLevelId) -> Result<Arc<GameDefinition>, RuntimeTransitionError>,
     {
         self.validate_guard(guard)
             .map_err(Box::new)
@@ -405,15 +405,30 @@ impl<B: GameSessionBackend> GameRuntime<B> {
             }
             CampaignMenuCommand::DismissResults if *phase == CampaignMenuPhase::Results => {
                 // The map focuses its first unfinished portal, independently
-                // of which completed portal the results were showing.
-                *selected_definition = match &snapshot.briefing_level_id {
+                // of which completed portal the results were showing. Results
+                // retain their saved flow; the map can adopt an installed suffix.
+                let retained_flow = definition.runtime_flow().unwrap();
+                let bound = retained_flow.bound_level_id();
+                let installed = resolve(bound)?;
+                validate_selected(definition, &installed, bound)?;
+                let installed_flow = installed.runtime_flow().unwrap();
+                let next = installed_flow
+                    .entries()
+                    .iter()
+                    .find(|entry| !self.completed_levels.contains(entry.level_id()))
+                    .map(|entry| entry.level_id());
+                let selected = match next {
                     Some(level_id) => {
                         let selected = resolve(level_id)?;
-                        validate_selected(definition, &selected, level_id)?;
+                        validate_selected(&installed, &selected, level_id)?;
                         Some(selected)
                     }
                     None => None,
                 };
+                if installed_flow != retained_flow {
+                    *definition = installed;
+                }
+                *selected_definition = selected;
                 *phase = CampaignMenuPhase::MissionSelect;
             }
             CampaignMenuCommand::SelectMission { level_id }
@@ -868,6 +883,7 @@ mod tests {
                 )
                 .is_err()
         );
+        let terminal_map_save = resolver.save_replay(&terminal).unwrap();
         let title = resolver
             .campaign_menu_command(&mut terminal, map.guard(), CampaignMenuCommand::ReturnTitle)
             .unwrap();
@@ -887,7 +903,18 @@ mod tests {
                 .map(Mc2CampaignInputs::new),
         )
         .unwrap();
-        let first = definitions[0]
+        let mut expanded_map = GameRuntime::<Mc2CampaignBackend>::title(774).unwrap();
+        let guard = expanded_map.identity().guard();
+        let map = expanded
+            .load_replay(&mut expanded_map, guard, 774, &terminal_map_save)
+            .unwrap();
+        let fourth = expanded.flow().entries()[3].level_id().clone();
+        let menu = map.campaign_menu.as_ref().unwrap();
+        assert_eq!(menu.available_levels.len(), 4);
+        assert_eq!(menu.completed_levels.len(), 3);
+        assert_eq!(menu.selected_level_id.as_ref(), Some(&fourth));
+
+        let third = definitions[2]
             .runtime_flow()
             .unwrap()
             .bound_level_id()
@@ -899,20 +926,43 @@ mod tests {
             retained_campaign: None,
             runtime_id: 773,
             generation: 4,
-            completed_levels: vec![first.clone()],
+            completed_levels: resolver
+                .flow()
+                .entries()
+                .iter()
+                .map(|entry| entry.level_id().clone())
+                .collect(),
             level_statistics: Vec::new(),
             state: RuntimeState::Campaign {
-                definition: Arc::clone(&definitions[0]),
+                definition: Arc::clone(&definitions[2]),
                 selected_definition: None,
                 session_generation: NonZeroU64::new(2).unwrap(),
                 phase: CampaignMenuPhase::Results,
-                completed_level: Some(first),
+                completed_level: Some(third),
             },
         };
+        assert!(
+            retained
+                .campaign_menu_snapshot()
+                .unwrap()
+                .briefing_level_id
+                .is_none()
+        );
+        let saved = resolver.save_replay(&retained).unwrap();
+        retained = GameRuntime::<Mc2CampaignBackend>::title(773).unwrap();
+        let guard = retained.identity().guard();
+        expanded
+            .load_replay(&mut retained, guard, 773, &saved)
+            .unwrap();
+        assert_eq!(expanded.save_replay(&retained).unwrap(), saved);
         let guard = retained.identity().guard();
         let map = expanded
             .campaign_menu_command(&mut retained, guard, CampaignMenuCommand::DismissResults)
             .unwrap();
+        let menu = map.campaign_menu.as_ref().unwrap();
+        assert_eq!(menu.available_levels.len(), 4);
+        assert_eq!(menu.completed_levels.len(), 3);
+        assert_eq!(menu.selected_level_id.as_ref(), Some(&fourth));
         let loading = expanded
             .campaign_menu_command(
                 &mut retained,
@@ -931,7 +981,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             active.bound_level_id().as_str(),
-            "level.magic_carpet_2.payahandra_ruins"
+            "level.magic_carpet_2.spider_cave"
         );
         assert_eq!(active.entries().len(), 4);
     }
