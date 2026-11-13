@@ -25,8 +25,9 @@ HELP = """Usage: run-campaign.sh [campaign options] [Unity player arguments]
   --menu-cache DIR        Optional original campaign-map/menu cache override
   --media-cache DIR       Optional original intro, cutscene and credits cache override
 
-An explicit package set replaces all defaults; Rust validates its semantic flow
-and content identities. There is no fixed package count or canned entry replay.
+The default is the installed Original campaign (25 ordinary and 5 secret
+missions). An explicit package set replaces all defaults; Rust validates its
+semantic flow and content identities. No canned entry replay is required.
 The existing -mc-runtime-* resource/save options are also accepted. Paths are
 relative to the current directory. Use -- before unparsed Unity arguments.
 MC_CAMPAIGN_SAVE and MC_CAMPAIGN_REPLAY set save/load defaults; explicit options
@@ -51,6 +52,60 @@ def directory(path, purpose):
         raise LaunchError(f'Missing {purpose} directory: {path}. '
                           'Supply the installed owner resources with --package, '
                           '--owner-cache and --presentation-cache.')
+
+
+def default_campaign_resources():
+    ordinary = 'mc-bhq6-ordinary-20261025-zclu5fjj'
+    settlement = 'settlement-20261105-integration/owner-closed-v6'
+    environments = 'campaign-original-environments'
+    packages = {
+        1: f'{settlement}/level1',
+        2: 'mc-level2-vault-successor-closure-20261025',
+        3: f'{settlement}/level3',
+        5: 'dragon-bee-20261105-integration/level5-owner-current/level5',
+        9: 'ribbon-20261104-integration/group-zero-owner-package-v4/level9',
+        10: 'ribbon-20261104-integration/current-owner-package/level10',
+        12: 'archer-20261105-integration/level12-owner-current/level12',
+        13: 'volcano-quake-20261104-integration/current-owner-package/level13',
+        18: 'all-spells-20261104-integration/current-owner-package/level18',
+        22: 'volcano-quake-20261104-integration/current-owner-package/level22',
+        23: 'creatures-20261104-integration/current-owner-package/level23',
+        24: 'ribbon-20261104-integration/current-owner-package/level24',
+        25: 'mc-bhq10-owner-v3-level25-20261029',
+    }
+    owners = {
+        1: f'{settlement}/environment-complete/cache-level1',
+        2: 'mc-b9s2-cursor-level2-vault-20261029',
+        3: f'{settlement}/environment-complete/cache-level3',
+        4: 'mc-b9s2-cursor-level4-20261029',
+        5: 'secret-lifecycle-20261111-source4-environment',
+        25: 'dragon-bee-20261105-integration/current-level25-environment',
+    }
+    presentations = {
+        1: f'{settlement}/night-presentation-v6',
+        2: 'level2-vault-successor-owner-cache-20261025',
+    }
+    for level in range(1, 26):
+        owner = owners.get(level, f'{environments}/level{level}')
+        yield {
+            'package': GENERATED / packages.get(level, f'{ordinary}/level{level}'),
+            'owner': GENERATED / owner,
+            'presentation': GENERATED / presentations.get(level, owner),
+        }
+
+    secret_environment = GENERATED / 'mc-paj2-environment-source30-audio-20261026'
+    yield {
+        'package': GENERATED / 'mc-paj2-source30-campaign-package',
+        'owner': secret_environment,
+        'presentation': secret_environment,
+    }
+    for source in range(31, 35):
+        environment = GENERATED / environments / f'source{source}'
+        yield {
+            'package': GENERATED / f'mc-paj2-source-secret-{source}-campaign-package',
+            'owner': environment,
+            'presentation': environment,
+        }
 
 
 def main(arguments):
@@ -153,21 +208,7 @@ def main(arguments):
                           str(GENERATED / 'campaign-save.json'), '--save')
     explicit_resources = bool(resources)
     if not resources:
-        # Local installed owner content. A supplied set replaces this entire list.
-        resources = [
-            {'package': GENERATED / 'settlement-20261105-integration/owner-closed-v6/level1',
-             'owner': GENERATED / 'settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level1',
-             'presentation': GENERATED / 'settlement-20261105-integration/owner-closed-v6/night-presentation-v6'},
-            {'package': GENERATED / 'mc-level2-vault-successor-closure-20261025',
-             'owner': GENERATED / 'mc-b9s2-cursor-level2-vault-20261029',
-             'presentation': GENERATED / 'level2-vault-successor-owner-cache-20261025'},
-            {'package': GENERATED / 'settlement-20261105-integration/owner-closed-v6/level3',
-             'owner': GENERATED / 'settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level3',
-             'presentation': GENERATED / 'settlement-20261105-integration/owner-closed-v6/environment-complete/cache-level3'},
-            {'package': GENERATED / 'mc-bhq6-ordinary-20261025-zclu5fjj/level4',
-             'owner': GENERATED / 'mc-b9s2-cursor-level4-20261029',
-             'presentation': GENERATED / 'mc-b9s2-cursor-level4-20261029'},
-        ]
+        resources = default_campaign_resources()
     seen = set()
     native = ['-mc-game-runtime']
     for resource in resources:
@@ -237,9 +278,10 @@ def main(arguments):
     os.execv('/bin/sh', ['sh', str(player_project / 'run-player.sh'), *native, *player])
 
 
-try:
-    main(sys.argv[2:])
-except (LaunchError, OSError) as error:
-    print(f'Campaign launch failed: {error}', file=sys.stderr)
-    sys.exit(64 if isinstance(error, LaunchError) else 1)
+if __name__ == '__main__':
+    try:
+        main(sys.argv[2:])
+    except (LaunchError, OSError) as error:
+        print(f'Campaign launch failed: {error}', file=sys.stderr)
+        sys.exit(64 if isinstance(error, LaunchError) else 1)
 PY
